@@ -28,6 +28,7 @@ import { HourlyRateLimiter, getRateLimiter } from './RateLimiter';
 import type { SwimchainRpc } from '../lib/rpc';
 import type { StoredIdentity } from '../types';
 import { getStoredIdentity } from '../hooks/useStoredIdentity';
+import { getBlockedUserIds } from '../hooks/useBlocklist';
 import {
   ActionType,
   computePow,
@@ -136,6 +137,80 @@ export class BridgeEngine {
   }
 
   /**
+   * Check if content is spam-flagged via RPC.
+   * Returns true if content has 3+ unique spam attestations (the protocol threshold).
+   */
+  private async isSpamFlagged(contentId: string): Promise<boolean> {
+    if (!this.rpcClient) return false;
+
+    try {
+      const status = await this.rpcClient.getSpamStatus(contentId);
+      return status.is_flagged && !status.is_cleared;
+    } catch (error) {
+      // If spam check fails, err on the side of caution and skip
+      console.warn(`[BridgeEngine] Spam check failed for ${contentId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Check if content is encrypted with a private space key
+   */
+  private isPrivateEncrypted(content: string): boolean {
+    return content.startsWith('[PRIVATE:v1:') || content.startsWith('[ENCRYPTED:v1:');
+  }
+
+  /**
+   * Try to decrypt content using stored private space keys.
+   * Returns decrypted content or null if no key available.
+   */
+  private async tryDecryptContent(content: string, spaceId: string): Promise<string | null> {
+    if (!content.startsWith('[PRIVATE:v1:')) return null;
+
+    // Load key from localStorage
+    const STORAGE_KEY = 'swimchain-bridge-private-keys';
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+
+      const keys: Record<string, { keyHex: string }> = JSON.parse(raw);
+      const keyEntry = keys[spaceId];
+      if (!keyEntry?.keyHex) return null;
+
+      // Extract the base64 payload
+      const prefix = '[PRIVATE:v1:';
+      const suffix = ']';
+      const endIdx = content.indexOf(suffix, prefix.length);
+      if (endIdx === -1) return null;
+
+      const base64Payload = content.substring(prefix.length, endIdx);
+      const rawBytes = Uint8Array.from(atob(base64Payload), c => c.charCodeAt(0));
+
+      // First 12 bytes = IV, rest = ciphertext
+      const iv = rawBytes.slice(0, 12);
+      const ciphertext = rawBytes.slice(12);
+
+      // Convert hex key to bytes
+      const keyHex = keyEntry.keyHex;
+      const keyBytes = new Uint8Array(keyHex.length / 2);
+      for (let i = 0; i < keyBytes.length; i++) {
+        keyBytes[i] = parseInt(keyHex.substring(i * 2, i * 2 + 2), 16);
+      }
+
+      // Decrypt with AES-256-GCM
+      const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+      const decryptedBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
+      const decryptedText = new TextDecoder().decode(decryptedBuffer);
+
+      console.log(`[BridgeEngine] Successfully decrypted private content for space ${spaceId.slice(0, 12)}...`);
+      return decryptedText;
+    } catch (error) {
+      console.warn(`[BridgeEngine] Decryption failed for space ${spaceId}:`, error);
+      return null;
+    }
+  }
+
+  /**
    * Start watching for new Swimchain content to bridge outward.
    */
   startContentWatcher(intervalMs: number = 10000): void {
@@ -155,14 +230,46 @@ export class BridgeEngine {
           this.lastSeenTimestamp
         );
 
+        const blockedUsers = getBlockedUserIds();
+
         for (const item of result.items) {
           // Skip if this was bridged TO Swimchain (would create echo)
           if (this.echoTracker.wasBridgedTo(item.content_id)) {
             continue;
           }
 
+          // Skip content from blocked users
+          if (blockedUsers.has(item.author_id)) {
+            console.log(`[BridgeEngine] Skipping content from blocked user: ${item.author_id}`);
+            continue;
+          }
+
+          // Check spam attestation status before bridging
+          if (await this.isSpamFlagged(item.content_id)) {
+            console.log(`[BridgeEngine] Skipping spam-flagged content: ${item.content_id}`);
+            this.logActivity('spam_blocked', {
+              direction: 'outbound',
+              sourcePlatform: 'cs',
+              description: `Spam-flagged content blocked: ${(item.body ?? item.title ?? '').slice(0, 40)}... (${item.content_id.slice(0, 12)}...)`,
+            });
+            continue;
+          }
+
           // Bridge to external platforms
-          const content = item.body ?? item.title ?? '';
+          let content = item.body ?? item.title ?? '';
+
+          // Try to decrypt if content is encrypted and we have the key
+          if (content && this.isPrivateEncrypted(content)) {
+            const decrypted = await this.tryDecryptContent(content, item.space_id);
+            if (decrypted) {
+              content = decrypted;
+            } else {
+              // Can't decrypt - skip bridging encrypted content without key
+              console.log(`[BridgeEngine] Skipping encrypted content (no key): ${item.content_id.slice(0, 12)}...`);
+              continue;
+            }
+          }
+
           if (content) {
             await this.bridgeToExternal(content, item.author_id, item.content_id);
           }

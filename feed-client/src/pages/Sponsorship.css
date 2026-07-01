@@ -1,0 +1,401 @@
+/* Sponsorship page styles */
+
+.sponsorship-page {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.sponsorship-page h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin: 0 0 1.5rem;
+  color: var(--text-primary, #212529);
+}
+
+/* Tabs */
+.sponsorship-tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border-color, #e1e5eb);
+  margin-bottom: 1.5rem;
+}
+
+.sponsorship-tab {
+  position: relative;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary, #5a6169);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.sponsorship-tab:hover {
+  color: var(--text-primary, #212529);
+}
+
+.sponsorship-tab--active {
+  color: var(--accent-color, #007bff);
+  border-bottom-color: var(--accent-color, #007bff);
+}
+
+.sponsorship-tab__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.375rem;
+  margin-left: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent-color, #007bff);
+  border-radius: 10px;
+}
+
+/* Tab content */
+.sponsorship-tab-content {
+  min-height: 300px;
+}
+
+/* Find tab */
+.sponsorship-find-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.sponsorship-find-desc {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: var(--text-secondary, #5a6169);
+}
+
+.sponsorship-pending-notice {
+  background: var(--warning-bg, #fff3cd);
+  color: var(--warning-text, #856404);
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+  font-size: 0.875rem;
+}
+
+.sponsorship-pending-notice code {
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.1);
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+}
+
+.sponsorship-how-it-works {
+  background: var(--bg-secondary, #f8f9fa);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.sponsorship-how-it-works h3 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.sponsorship-steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+  color: var(--text-secondary, #5a6169);
+}
+
+.sponsorship-steps li {
+  margin-bottom: 0.5rem;
+}
+
+.sponsorship-pubkey-share {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color, #e1e5eb);
+}
+
+.sponsorship-pubkey-label {
+  font-size: 0.8rem;
+  color: var(--text-muted, #6c757d);
+}
+
+.sponsorship-pubkey-code {
+  font-family: monospace;
+  font-size: 0.75rem;
+  background: #fff;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  word-break: break-all;
+  flex: 1;
+  min-width: 200px;
+}
+
+/* My Offers tab */
+.sponsorship-my-offers-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.sponsorship-my-offers-desc {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: var(--text-secondary, #5a6169);
+}
+
+.sponsorship-my-offers-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Offer list */
+.sponsorship-offer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.sponsorship-load-more {
+  display: block;
+  margin: 1.5rem auto 0;
+}
+
+/* Detail view */
+.sponsorship-detail {
+  background: var(--card-bg, #ffffff);
+  border: 1px solid var(--border-color, #e1e5eb);
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.sponsorship-back {
+  margin-bottom: 1rem;
+}
+
+.sponsorship-detail h2 {
+  margin: 0 0 1rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.sponsorship-detail-info {
+  background: var(--bg-secondary, #f8f9fa);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.sponsorship-detail-row {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.sponsorship-detail-row:last-child {
+  margin-bottom: 0;
+}
+
+.sponsorship-detail-label {
+  color: var(--text-secondary, #5a6169);
+  min-width: 70px;
+}
+
+.sponsorship-detail-row code {
+  font-family: monospace;
+  font-size: 0.75rem;
+}
+
+/* Claims list */
+.sponsorship-claims-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.sponsorship-claim-card {
+  background: var(--bg-secondary, #f8f9fa);
+  border: 1px solid var(--border-color, #e1e5eb);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.sponsorship-claim-info {
+  margin-bottom: 1rem;
+}
+
+.sponsorship-claim-row {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  margin-bottom: 0.375rem;
+}
+
+.sponsorship-claim-label {
+  color: var(--text-secondary, #5a6169);
+  min-width: 70px;
+}
+
+.sponsorship-claim-pubkey {
+  font-family: monospace;
+  font-size: 0.75rem;
+}
+
+.sponsorship-claim-application {
+  margin-top: 0.75rem;
+}
+
+.sponsorship-claim-text {
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  color: var(--text-primary, #212529);
+  white-space: pre-wrap;
+}
+
+.sponsorship-claim-actions {
+  display: flex;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-color, #e1e5eb);
+}
+
+/* States */
+.sponsorship-loading {
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-muted, #6c757d);
+}
+
+.sponsorship-empty {
+  background: var(--bg-secondary, #f8f9fa);
+  border-radius: 12px;
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-secondary, #5a6169);
+}
+
+.sponsorship-error {
+  background: var(--danger-bg, #f8d7da);
+  color: var(--danger-color, #721c24);
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  .sponsorship-page h1 {
+    color: var(--text-primary-dark, #e5e7eb);
+  }
+
+  .sponsorship-tabs {
+    border-color: var(--border-color-dark, #333);
+  }
+
+  .sponsorship-tab {
+    color: var(--text-secondary-dark, #9ca3af);
+  }
+
+  .sponsorship-tab:hover {
+    color: var(--text-primary-dark, #e5e7eb);
+  }
+
+  .sponsorship-how-it-works,
+  .sponsorship-detail-info,
+  .sponsorship-claim-card,
+  .sponsorship-empty {
+    background: var(--bg-secondary-dark, #2d2d2d);
+  }
+
+  .sponsorship-detail {
+    background: var(--card-bg-dark, #1e1e1e);
+    border-color: var(--border-color-dark, #333);
+  }
+
+  .sponsorship-pubkey-code {
+    background: var(--bg-input-dark, #1e1e1e);
+    color: var(--text-primary-dark, #e5e7eb);
+  }
+}
+
+/* Modal base styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.modal-content {
+  background: var(--card-bg, #ffffff);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border-color, #e1e5eb);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.modal-close {
+  padding: 0.25rem 0.5rem;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.modal-body {
+  padding: 1.5rem;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color, #e1e5eb);
+}
+
+@media (prefers-color-scheme: dark) {
+  .modal-content {
+    background: var(--card-bg-dark, #1e1e1e);
+  }
+
+  .modal-header,
+  .modal-actions {
+    border-color: var(--border-color-dark, #333);
+  }
+}

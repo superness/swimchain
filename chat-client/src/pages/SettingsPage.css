@@ -147,3 +147,55 @@
 .settings-page__debug-btn svg {
   color: var(--text-muted, #949ba4);
 }
+
+.settings-page__display-name-row {
+  display: flex;
+  gap: var(--spacing-sm, 8px);
+  align-items: center;
+}
+
+.settings-page__display-name-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  background: var(--bg-tertiary, #1e1f22);
+  border: 1px solid var(--bg-modifier-accent, #4e5058);
+  border-radius: 4px;
+  color: var(--text-normal, #dbdee1);
+}
+
+.settings-page__display-name-input:focus {
+  outline: none;
+  border-color: var(--brand-primary, #5865f2);
+}
+
+.settings-page__display-name-input:disabled {
+  opacity: 0.6;
+}
+
+.settings-page__display-name-save {
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: var(--brand-primary, #5865f2);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.settings-page__display-name-save:hover:not(:disabled) {
+  background: var(--brand-primary-hover, #4752c4);
+}
+
+.settings-page__display-name-save:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.settings-page__display-name-status {
+  font-size: 0.75rem;
+  color: var(--color-accent-success, #3ba55d);
+  margin-top: var(--spacing-xs, 4px);
+}

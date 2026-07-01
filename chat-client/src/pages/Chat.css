@@ -1,0 +1,302 @@
+/**
+ * Chat page styles
+ */
+
+.chat-layout {
+  display: flex;
+  flex-wrap: wrap;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* NodeStatusBar positioning */
+.chat-layout > .node-status-bar {
+  flex: 0 0 100%;
+  order: 99; /* Always at the bottom */
+}
+
+/* No channel selected states */
+.no-channel-selected {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-primary);
+  color: var(--text-muted);
+}
+
+.loading-state,
+.empty-server,
+.select-channel {
+  text-align: center;
+  padding: 32px;
+}
+
+.loading-state .loading-spinner,
+.no-channel-selected .loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid var(--bg-modifier-accent);
+  border-top-color: var(--brand-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 16px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.empty-server h2,
+.select-channel h2 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-normal);
+  margin: 0 0 8px;
+}
+
+.empty-server p,
+.select-channel p {
+  font-size: 16px;
+  color: var(--text-muted);
+  margin: 0 0 24px;
+}
+
+.create-channel-btn {
+  padding: 12px 24px;
+  background-color: var(--brand-primary);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.create-channel-btn:hover {
+  background-color: var(--brand-hover);
+}
+
+/* Mining overlay */
+.mining-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.mining-modal {
+  background-color: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 32px;
+  text-align: center;
+  min-width: 300px;
+  box-shadow: var(--shadow-lg);
+}
+
+.mining-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid var(--bg-modifier-accent);
+  border-top-color: var(--brand-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 16px;
+}
+
+.mining-modal h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-normal);
+  margin: 0 0 8px;
+}
+
+.mining-modal p {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0 0 16px;
+}
+
+.mining-stats {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.mining-stats span {
+  font-family: var(--font-mono);
+}
+
+.mining-cancel-btn {
+  margin-top: 16px;
+  padding: 8px 24px;
+  background-color: var(--bg-elevated);
+  color: var(--text-normal);
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+  min-height: var(--min-touch-target);
+}
+
+.mining-cancel-btn:hover {
+  background-color: var(--bg-modifier-accent);
+}
+
+.mining-cancel-btn:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
+/* ==========================================
+   Mobile Responsive Styles
+   ========================================== */
+
+/* Mobile navigation toggle (added via JS) */
+.mobile-nav-toggle {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--bg-modifier-accent);
+  border-radius: 8px;
+  color: var(--text-normal);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mobile-nav-toggle:hover {
+  background: var(--bg-modifier-hover);
+}
+
+/* Mobile overlay for sidebars */
+.mobile-sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 90;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.mobile-sidebar-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Tablet breakpoint: Stack sidebars */
+@media (max-width: 1024px) {
+  .channel-sidebar {
+    width: 200px;
+    min-width: 200px;
+  }
+}
+
+/* Mobile breakpoint: Hide sidebars, show toggle */
+@media (max-width: 768px) {
+  .mobile-nav-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .mobile-sidebar-overlay {
+    display: block;
+  }
+
+  /* Sidebars hidden by default on mobile */
+  .chat-layout > .server-list,
+  .chat-layout > .channel-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 95;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+  }
+
+  .chat-layout > .server-list {
+    left: 0;
+  }
+
+  .chat-layout > .channel-sidebar {
+    left: 72px;
+  }
+
+  /* Show sidebars when mobile nav is open */
+  .chat-layout.mobile-nav-open > .server-list,
+  .chat-layout.mobile-nav-open > .channel-sidebar {
+    transform: translateX(0);
+  }
+
+  .chat-layout.mobile-nav-open .mobile-sidebar-overlay {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Chat area takes full width on mobile */
+  .chat-layout > .chat-area {
+    width: 100%;
+    padding-top: 56px; /* Space for mobile nav toggle */
+  }
+
+  /* Adjust header for mobile */
+  .chat-area .chat-header {
+    padding-left: 56px;
+  }
+
+  /* Mining modal responsive */
+  .mining-modal {
+    min-width: auto;
+    width: calc(100% - 32px);
+    max-width: 320px;
+    padding: 24px;
+  }
+
+  /* Adjust empty states for mobile */
+  .no-channel-selected {
+    padding-top: 56px;
+  }
+}
+
+/* Small mobile breakpoint */
+@media (max-width: 480px) {
+  .mining-stats {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .empty-server h2,
+  .select-channel h2 {
+    font-size: 20px;
+  }
+
+  .empty-server p,
+  .select-channel p {
+    font-size: 14px;
+  }
+
+  .create-channel-btn {
+    padding: 10px 20px;
+  }
+}

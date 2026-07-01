@@ -36,7 +36,7 @@ interface SponsorshipContextValue {
 const SponsorshipContext = createContext<SponsorshipContextValue | null>(null);
 
 export function SponsorshipProvider({ children }: { children: ReactNode }) {
-  const { rpc, connected } = useRpc();
+  const { rpc, connected, authReady } = useRpc();
   const { identity, hasValidIdentity } = useIdentityContext();
 
   const [isSponsored, setIsSponsored] = useState<boolean | null>(null);
@@ -47,11 +47,12 @@ export function SponsorshipProvider({ children }: { children: ReactNode }) {
   const [pendingClaim, setPendingClaim] = useState<PendingClaimInfo | null>(null);
 
   const checkSponsorship = async () => {
-    if (!identity?.publicKey || !rpc || !connected) {
+    if (!identity?.publicKey || !rpc || !connected || !authReady) {
       logger.info('[Sponsorship] Cannot check - missing requirements:', {
         hasIdentity: !!identity?.publicKey,
         hasRpc: !!rpc,
         connected,
+        authReady,
       });
       setIsSponsored(null);
       return;
@@ -110,14 +111,14 @@ export function SponsorshipProvider({ children }: { children: ReactNode }) {
 
   // Check sponsorship when identity or connection changes
   useEffect(() => {
-    if (hasValidIdentity && connected) {
+    if (hasValidIdentity && connected && authReady) {
       checkSponsorship();
     } else {
       setIsSponsored(null);
       setSponsorPubkey(null);
       setDetail(null);
     }
-  }, [identity?.publicKey, connected, hasValidIdentity]);
+  }, [identity?.publicKey, connected, authReady, hasValidIdentity]);
 
   // Poll every 30s when unsponsored (waiting for claim approval)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -126,7 +127,7 @@ export function SponsorshipProvider({ children }: { children: ReactNode }) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
-    if (isSponsored === false && hasValidIdentity && connected) {
+    if (isSponsored === false && hasValidIdentity && connected && authReady) {
       pollRef.current = setInterval(() => {
         checkSponsorship();
       }, 30_000);
@@ -137,7 +138,7 @@ export function SponsorshipProvider({ children }: { children: ReactNode }) {
         pollRef.current = null;
       }
     };
-  }, [isSponsored, hasValidIdentity, connected]);
+  }, [isSponsored, hasValidIdentity, connected, authReady]);
 
   const value: SponsorshipContextValue = {
     isSponsored,

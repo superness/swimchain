@@ -9,6 +9,7 @@ use std::path::Path;
 use sled::{Db, Tree};
 
 use crate::sponsorship::error::SponsorshipError;
+use crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list;
 use crate::sponsorship::types::*;
 use crate::types::identity::PublicKey;
 
@@ -160,11 +161,17 @@ impl SponsorshipStore {
     /// Check if identity can perform actions (active or restricted with valid penalty)
     ///
     /// Returns true if:
+    /// - Identity is in HARDCODED_GENESIS_LIST (always allowed), OR
     /// - Identity is Active, OR
     /// - Identity is Restricted but can still do basic actions
     ///
     /// Restricted identities can post but with limitations (e.g., probationary only sponsorships).
     pub fn can_identity_act(&self, identity: &PublicKey) -> Result<bool, SponsorshipError> {
+        // Genesis identities always allowed - check hardcoded list first
+        if is_in_hardcoded_genesis_list(identity) {
+            return Ok(true);
+        }
+
         match self.get(identity)? {
             Some(sponsorship) => Ok(matches!(
                 sponsorship.status,

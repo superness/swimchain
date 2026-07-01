@@ -1,0 +1,439 @@
+/**
+ * useFeedPreferences - Manage feed preferences and followed sources
+ *
+ * Stores preferences in localStorage (IndexedDB in future for larger data).
+ * Handles following/unfollowing spaces and users, saving posts, and settings.
+ */
+
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import type { FeedSource, FeedPreferences, StoredFeedPreferences } from '../types/feed';
+import { useStoredIdentity } from './useStoredIdentity';
+
+const STORAGE_KEY_PREFIX = 'feed_prefs_';
+const CURRENT_VERSION = 1;
+
+/**
+ * Get storage key for current user
+ */
+function getStorageKey(userPkHex: string): string {
+  return `${STORAGE_KEY_PREFIX}${userPkHex}`;
+}
+
+/**
+ * Default preferences for new users
+ */
+function getDefaultPreferences(): FeedPreferences {
+  return {
+    followedSpaces: [],
+    followedUsers: [],
+    savedPosts: [],
+    showRepliesInFeed: false,
+    showEngagementsInFeed: false,
+    sortOrder: 'recent',
+    compactMode: false,
+  };
+}
+
+/**
+ * Load preferences from localStorage
+ */
+function loadPreferences(userPkHex: string): FeedPreferences {
+  try {
+    const stored = localStorage.getItem(getStorageKey(userPkHex));
+    if (!stored) {
+      return getDefaultPreferences();
+    }
+
+    const parsed = JSON.parse(stored) as StoredFeedPreferences;
+
+    // Migration: handle old versions if needed
+    if (parsed.version !== CURRENT_VERSION) {
+      console.log('[FeedPrefs] Migrating from version', parsed.version, 'to', CURRENT_VERSION);
+      // Currently only version 1, so no migration needed
+    }
+
+    return {
+      followedSpaces: parsed.followedSpaces ?? [],
+      followedUsers: parsed.followedUsers ?? [],
+      savedPosts: parsed.savedPosts ?? [],
+      showRepliesInFeed: parsed.settings?.showRepliesInFeed ?? false,
+      showEngagementsInFeed: parsed.settings?.showEngagementsInFeed ?? false,
+      sortOrder: parsed.settings?.sortOrder ?? 'recent',
+      compactMode: parsed.settings?.compactMode ?? false,
+    };
+  } catch (error) {
+    console.error('[FeedPrefs] Failed to load preferences:', error);
+    return getDefaultPreferences();
+  }
+}
+
+/**
+ * Save preferences to localStorage
+ */
+function savePreferences(userPkHex: string, prefs: FeedPreferences): void {
+  try {
+    const stored: StoredFeedPreferences = {
+      version: CURRENT_VERSION,
+      followedSpaces: prefs.followedSpaces,
+      followedUsers: prefs.followedUsers,
+      savedPosts: prefs.savedPosts,
+      settings: {
+        showRepliesInFeed: prefs.showRepliesInFeed,
+        showEngagementsInFeed: prefs.showEngagementsInFeed,
+        sortOrder: prefs.sortOrder,
+        compactMode: prefs.compactMode,
+      },
+      lastUpdated: Date.now(),
+    };
+    localStorage.setItem(getStorageKey(userPkHex), JSON.stringify(stored));
+  } catch (error) {
+    console.error('[FeedPrefs] Failed to save preferences:', error);
+  }
+}
+
+/**
+ * Hook result type
+ */
+export interface UseFeedPreferencesResult {
+  /** Current preferences */
+  preferences: FeedPreferences;
+  /** Loading state */
+  loading: boolean;
+
+  // Space management
+  followSpace: (spaceId: string, name?: string) => void;
+  unfollowSpace: (spaceId: string) => void;
+  muteSpace: (spaceId: string, muted: boolean) => void;
+  isFollowingSpace: (spaceId: string) => boolean;
+  isSpaceMuted: (spaceId: string) => boolean;
+
+  // User management
+  followUser: (userPk: string, name?: string) => void;
+  unfollowUser: (userPk: string) => void;
+  muteUser: (userPk: string, muted: boolean) => void;
+  isFollowingUser: (userPk: string) => boolean;
+  isUserMuted: (userPk: string) => boolean;
+
+  // Saved posts
+  savePost: (postId: string) => void;
+  unsavePost: (postId: string) => void;
+  isPostSaved: (postId: string) => boolean;
+
+  // Settings
+  updateSettings: (settings: Partial<Pick<FeedPreferences, 'showRepliesInFeed' | 'showEngagementsInFeed' | 'sortOrder' | 'compactMode'>>) => void;
+
+  // Computed values
+  followedSpaceIds: Set<string>;
+  followedUserIds: Set<string>;
+  savedPostIds: Set<string>;
+  activeSpaceCount: number;
+  activeUserCount: number;
+}
+
+/**
+ * Hook to manage feed preferences
+ */
+export function useFeedPreferences(): UseFeedPreferencesResult {
+  const { identity, isLoading: identityLoading } = useStoredIdentity();
+  const [preferences, setPreferences] = useState<FeedPreferences>(getDefaultPreferences);
+  const [loading, setLoading] = useState(true);
+
+  // Load preferences when identity is available
+  useEffect(() => {
+    if (identityLoading) return;
+
+    if (identity?.publicKey) {
+      const prefs = loadPreferences(identity.publicKey);
+      setPreferences(prefs);
+      console.log('[FeedPrefs] Loaded preferences for', identity.publicKey.substring(0, 16) + '...');
+    } else {
+      setPreferences(getDefaultPreferences());
+    }
+    setLoading(false);
+  }, [identity?.publicKey, identityLoading]);
+
+  // Helper to save preferences
+  const persist = useCallback((newPrefs: FeedPreferences) => {
+    if (identity?.publicKey) {
+      savePreferences(identity.publicKey, newPrefs);
+    }
+  }, [identity?.publicKey]);
+
+  // Space management
+  const followSpace = useCallback((spaceId: string, name?: string) => {
+    if (!spaceId) {
+      console.error('[FeedPrefs] Cannot follow space with empty ID');
+      return;
+    }
+    setPreferences(prev => {
+      if (prev.followedSpaces.some(s => s.id === spaceId)) {
+        return prev; // Already following
+      }
+      const newSource: FeedSource = {
+        type: 'space',
+        id: spaceId,
+        displayName: name,
+        addedAt: Date.now(),
+        muted: false,
+        notifications: true,
+      };
+      const newPrefs = {
+        ...prev,
+        followedSpaces: [...prev.followedSpaces, newSource],
+      };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  const unfollowSpace = useCallback((spaceId: string) => {
+    setPreferences(prev => {
+      const newPrefs = {
+        ...prev,
+        followedSpaces: prev.followedSpaces.filter(s => s.id !== spaceId),
+      };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  const muteSpace = useCallback((spaceId: string, muted: boolean) => {
+    setPreferences(prev => {
+      const newPrefs = {
+        ...prev,
+        followedSpaces: prev.followedSpaces.map(s =>
+          s.id === spaceId ? { ...s, muted } : s
+        ),
+      };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  const isFollowingSpace = useCallback((spaceId: string) => {
+    return preferences.followedSpaces.some(s => s.id === spaceId);
+  }, [preferences.followedSpaces]);
+
+  const isSpaceMuted = useCallback((spaceId: string) => {
+    return preferences.followedSpaces.find(s => s.id === spaceId)?.muted ?? false;
+  }, [preferences.followedSpaces]);
+
+  // User management
+  const followUser = useCallback((userPk: string, name?: string) => {
+    setPreferences(prev => {
+      if (prev.followedUsers.some(u => u.id === userPk)) {
+        return prev; // Already following
+      }
+      const newSource: FeedSource = {
+        type: 'user',
+        id: userPk,
+        displayName: name,
+        addedAt: Date.now(),
+        muted: false,
+        notifications: true,
+      };
+      const newPrefs = {
+        ...prev,
+        followedUsers: [...prev.followedUsers, newSource],
+      };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  const unfollowUser = useCallback((userPk: string) => {
+    setPreferences(prev => {
+      const newPrefs = {
+        ...prev,
+        followedUsers: prev.followedUsers.filter(u => u.id !== userPk),
+      };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  const muteUser = useCallback((userPk: string, muted: boolean) => {
+    setPreferences(prev => {
+      const newPrefs = {
+        ...prev,
+        followedUsers: prev.followedUsers.map(u =>
+          u.id === userPk ? { ...u, muted } : u
+        ),
+      };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  const isFollowingUser = useCallback((userPk: string) => {
+    return preferences.followedUsers.some(u => u.id === userPk);
+  }, [preferences.followedUsers]);
+
+  const isUserMuted = useCallback((userPk: string) => {
+    return preferences.followedUsers.find(u => u.id === userPk)?.muted ?? false;
+  }, [preferences.followedUsers]);
+
+  // Saved posts
+  const savePost = useCallback((postId: string) => {
+    setPreferences(prev => {
+      if (prev.savedPosts.includes(postId)) {
+        return prev; // Already saved
+      }
+      const newPrefs = {
+        ...prev,
+        savedPosts: [...prev.savedPosts, postId],
+      };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  const unsavePost = useCallback((postId: string) => {
+    setPreferences(prev => {
+      const newPrefs = {
+        ...prev,
+        savedPosts: prev.savedPosts.filter(id => id !== postId),
+      };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  const isPostSaved = useCallback((postId: string) => {
+    return preferences.savedPosts.includes(postId);
+  }, [preferences.savedPosts]);
+
+  // Settings
+  const updateSettings = useCallback((settings: Partial<Pick<FeedPreferences, 'showRepliesInFeed' | 'showEngagementsInFeed' | 'sortOrder' | 'compactMode'>>) => {
+    setPreferences(prev => {
+      const newPrefs = { ...prev, ...settings };
+      persist(newPrefs);
+      return newPrefs;
+    });
+  }, [persist]);
+
+  // Computed sets for quick lookup
+  const followedSpaceIds = useMemo(
+    () => new Set(preferences.followedSpaces.map(s => s.id)),
+    [preferences.followedSpaces]
+  );
+
+  const followedUserIds = useMemo(
+    () => new Set(preferences.followedUsers.map(u => u.id)),
+    [preferences.followedUsers]
+  );
+
+  const savedPostIds = useMemo(
+    () => new Set(preferences.savedPosts),
+    [preferences.savedPosts]
+  );
+
+  // Count non-muted sources
+  const activeSpaceCount = useMemo(
+    () => preferences.followedSpaces.filter(s => !s.muted).length,
+    [preferences.followedSpaces]
+  );
+
+  const activeUserCount = useMemo(
+    () => preferences.followedUsers.filter(u => !u.muted).length,
+    [preferences.followedUsers]
+  );
+
+  return {
+    preferences,
+    loading,
+    followSpace,
+    unfollowSpace,
+    muteSpace,
+    isFollowingSpace,
+    isSpaceMuted,
+    followUser,
+    unfollowUser,
+    muteUser,
+    isFollowingUser,
+    isUserMuted,
+    savePost,
+    unsavePost,
+    isPostSaved,
+    updateSettings,
+    followedSpaceIds,
+    followedUserIds,
+    savedPostIds,
+    activeSpaceCount,
+    activeUserCount,
+  };
+}
+
+/**
+ * Simple hook for following a specific space
+ */
+export function useFollowSpace(spaceId: string): {
+  isFollowing: boolean;
+  isMuted: boolean;
+  toggle: () => void;
+  toggleMute: () => void;
+  loading: boolean;
+} {
+  const {
+    isFollowingSpace,
+    isSpaceMuted,
+    followSpace,
+    unfollowSpace,
+    muteSpace,
+    loading,
+  } = useFeedPreferences();
+
+  const isFollowing = isFollowingSpace(spaceId);
+  const isMuted = isSpaceMuted(spaceId);
+
+  const toggle = useCallback(() => {
+    if (isFollowing) {
+      unfollowSpace(spaceId);
+    } else {
+      followSpace(spaceId);
+    }
+  }, [isFollowing, spaceId, followSpace, unfollowSpace]);
+
+  const toggleMute = useCallback(() => {
+    muteSpace(spaceId, !isMuted);
+  }, [spaceId, isMuted, muteSpace]);
+
+  return { isFollowing, isMuted, toggle, toggleMute, loading };
+}
+
+/**
+ * Simple hook for following a specific user
+ */
+export function useFollowUser(userPk: string): {
+  isFollowing: boolean;
+  isMuted: boolean;
+  toggle: () => void;
+  toggleMute: () => void;
+  loading: boolean;
+} {
+  const {
+    isFollowingUser,
+    isUserMuted,
+    followUser,
+    unfollowUser,
+    muteUser,
+    loading,
+  } = useFeedPreferences();
+
+  const isFollowing = isFollowingUser(userPk);
+  const isMuted = isUserMuted(userPk);
+
+  const toggle = useCallback(() => {
+    if (isFollowing) {
+      unfollowUser(userPk);
+    } else {
+      followUser(userPk);
+    }
+  }, [isFollowing, userPk, followUser, unfollowUser]);
+
+  const toggleMute = useCallback(() => {
+    muteUser(userPk, !isMuted);
+  }, [userPk, isMuted, muteUser]);
+
+  return { isFollowing, isMuted, toggle, toggleMute, loading };
+}

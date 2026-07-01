@@ -53,15 +53,5 @@ WHITEPAPER.md
 ACADEMIC_WHITEPAPER.md
 
 # Keep only the consolidated whitepaper in docs/
-
-# build artifacts / runtime state (kept out of the clean 2026-07-01 restart)
-.next/
-dist/
-target/
-node_modules/
-.vite/
-*.tsbuildinfo
-pipeline-runs/
-screenshots/
-*-testnet/
-*-regtest/
+desktop-app/public/clients/
+tools/dns-seeder/swimchain-dns-seeder

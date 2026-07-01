@@ -1,0 +1,142 @@
+/**
+ * Invite Modal Styles
+ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.modal-content {
+  background: var(--surface-1, #ffffff);
+  border-radius: 0.75rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
+              0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  max-width: 28rem;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+}
+
+.modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0.375rem;
+  color: var(--text-muted, #6b7280);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modal-close:hover {
+  background: var(--surface-2, #f3f4f6);
+  color: var(--text-primary, #111827);
+}
+
+.invite-form {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.form-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary, #111827);
+}
+
+.form-input,
+.form-textarea {
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  color: var(--text-primary, #111827);
+  background: var(--surface-1, #ffffff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 0.375rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-input:focus,
+.form-textarea:focus {
+  outline: none;
+  border-color: var(--primary, #6366f1);
+  box-shadow: 0 0 0 3px var(--primary-light, rgba(99, 102, 241, 0.1));
+}
+
+.form-input:disabled,
+.form-textarea:disabled {
+  background: var(--surface-2, #f3f4f6);
+  cursor: not-allowed;
+}
+
+.form-textarea {
+  resize: vertical;
+  min-height: 4rem;
+}
+
+.form-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted, #6b7280);
+}
+
+.invite-error {
+  padding: 0.75rem;
+  background: var(--error-bg, #fef2f2);
+  color: var(--error-text, #dc2626);
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+}
+
+.invite-success {
+  padding: 0.75rem;
+  background: var(--success-bg, #f0fdf4);
+  color: var(--success-text, #16a34a);
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  text-align: center;
+  font-weight: 500;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.modal-actions .btn {
+  padding: 0.5rem 1rem;
+}

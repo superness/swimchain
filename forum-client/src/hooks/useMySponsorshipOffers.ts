@@ -39,21 +39,25 @@ interface UseMySponsorshipOffersResult {
   offers: MySponsorshipOfferSummary[];
   isLoading: boolean;
   error: string | null;
+  detailError: string | null;
+  clearDetailError: () => void;
   refresh: () => Promise<void>;
   totalPendingClaims: number;
   getOfferDetail: (offerId: string) => Promise<SponsorshipOfferDetail | null>;
 }
 
 export function useMySponsorshipOffers(): UseMySponsorshipOffersResult {
-  const { rpc, connected } = useRpc();
+  const { rpc, connected, authReady } = useRpc();
   const { identity } = useIdentityContext();
   const { sign, canSign } = useSign();
   const [offers, setOffers] = useState<MySponsorshipOfferSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const clearDetailError = useCallback(() => setDetailError(null), []);
 
   const fetchOffers = useCallback(async () => {
-    if (!rpc || !connected || !identity?.publicKey || !canSign) return;
+    if (!rpc || !connected || !authReady || !identity?.publicKey || !canSign) return;
     setIsLoading(true);
     setError(null);
 
@@ -78,23 +82,25 @@ export function useMySponsorshipOffers(): UseMySponsorshipOffersResult {
     } finally {
       setIsLoading(false);
     }
-  }, [rpc, connected, identity?.publicKey, canSign, sign]);
+  }, [rpc, connected, authReady, identity?.publicKey, canSign, sign]);
 
   const getOfferDetail = useCallback(async (offerId: string): Promise<SponsorshipOfferDetail | null> => {
-    if (!rpc || !connected || !identity?.publicKey) return null;
+    if (!rpc || !connected || !authReady || !identity?.publicKey) return null;
+    setDetailError(null);
     try {
       return await rpc.getSponsorshipOffer(offerId, identity.publicKey);
     } catch (err) {
       logger.error('[MySponsorshipOffers] Failed to get detail:', err);
+      setDetailError(err instanceof Error ? err.message : 'Failed to load offer details. The node may be unreachable.');
       return null;
     }
-  }, [rpc, connected, identity?.publicKey]);
+  }, [rpc, connected, authReady, identity?.publicKey]);
 
   useEffect(() => {
-    if (connected && identity?.publicKey) {
+    if (connected && authReady && identity?.publicKey) {
       fetchOffers();
     }
-  }, [connected, identity?.publicKey]);
+  }, [connected, authReady, identity?.publicKey, fetchOffers]);
 
   // Poll every 30s so the sidebar badge updates when new claims arrive
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -106,7 +112,7 @@ export function useMySponsorshipOffers(): UseMySponsorshipOffersResult {
     }
 
     const hasActiveOffers = offers.some(o => !o.is_expired);
-    if (connected && identity?.publicKey && canSign && hasActiveOffers) {
+    if (connected && authReady && identity?.publicKey && canSign && hasActiveOffers) {
       pollIntervalRef.current = setInterval(() => {
         fetchOffers();
       }, 30_000);
@@ -118,9 +124,9 @@ export function useMySponsorshipOffers(): UseMySponsorshipOffersResult {
         pollIntervalRef.current = null;
       }
     };
-  }, [connected, identity?.publicKey, sign, offers.length]);
+  }, [connected, authReady, identity?.publicKey, canSign, offers.length, fetchOffers]);
 
   const totalPendingClaims = offers.reduce((sum, o) => sum + o.slots_pending, 0);
 
-  return { offers, isLoading, error, refresh: fetchOffers, totalPendingClaims, getOfferDetail };
+  return { offers, isLoading, error, detailError, clearDetailError, refresh: fetchOffers, totalPendingClaims, getOfferDetail };
 }

@@ -9,8 +9,8 @@ use crate::types::network::MessageEnvelope;
 /// Information about a connected peer (extracted from VERSION message)
 #[derive(Debug, Clone)]
 pub struct PeerInfo {
-    /// Node ID: SHA-256(nonce:user_agent) as placeholder
-    /// In production, this would be SHA-256(public_key)
+    /// Node ID per SPEC_06 §128: SHA-256(public_key), ephemeral per session.
+    /// Derived from `VersionPayload.public_key`.
     pub node_id: [u8; 32],
     /// Protocol version supported
     pub protocol_version: u32,
@@ -41,6 +41,9 @@ pub struct LocalNodeInfo {
     pub user_agent: String,
     /// Whether we accept gossip messages
     pub relay: bool,
+    /// Our Ed25519 public key. Required by SPEC_06 §128 — peers compute our
+    /// `node_id` as SHA-256(public_key).
+    pub public_key: [u8; 32],
 }
 
 impl Default for LocalNodeInfo {
@@ -50,6 +53,7 @@ impl Default for LocalNodeInfo {
             height: 0,
             user_agent: format!("Swimchain/{}", env!("CARGO_PKG_VERSION")),
             relay: true,
+            public_key: [0u8; 32],
         }
     }
 }

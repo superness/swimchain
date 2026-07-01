@@ -95,7 +95,16 @@ impl TcpTransport {
     /// - Handshake fails or times out
     /// - Duplicate connection detected (nonce collision)
     pub async fn connect(&self, addr: SocketAddr) -> Result<Connection, TransportError> {
-        let stream = TcpStream::connect(addr).await?;
+        // 10 second connect timeout to avoid blocking on unreachable hosts
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            TcpStream::connect(addr)
+        ).await
+            .map_err(|_| TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("Connection to {} timed out", addr)
+            )))?
+            .map_err(TransportError::Io)?;
         let our_nonce = generate_nonce();
 
         let mut conn = Connection::new_outbound(stream, addr, our_nonce);

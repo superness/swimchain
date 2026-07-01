@@ -1,0 +1,203 @@
+/**
+ * ReactionPicker styles
+ * Uses feed-client theme variables
+ */
+
+.reaction-picker {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.reaction-picker--compact {
+  gap: var(--spacing-xs);
+}
+
+/* Reaction counts row */
+.reaction-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+}
+
+/* Reaction chip (shows emoji + count) */
+.reaction-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+
+.reaction-chip--compact {
+  padding: 2px 6px;
+  font-size: var(--font-size-xs);
+  background: transparent;
+  border: none;
+}
+
+/* Add reaction button */
+.reaction-picker-container {
+  position: relative;
+  display: inline-block;
+}
+
+.reaction-add-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-lg);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.reaction-add-btn:hover:not(:disabled) {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-accent-primary);
+  color: var(--color-accent-primary);
+}
+
+.reaction-add-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.reaction-add-btn--reacting {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+}
+
+.reaction-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-accent-primary);
+  border-radius: 50%;
+  animation: reactionSpin 0.8s linear infinite;
+}
+
+@keyframes reactionSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Emoji picker dropdown */
+.reaction-picker-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--spacing-xs);
+  z-index: 100;
+  animation: reactionPickerFadeIn 0.15s ease-out;
+}
+
+@keyframes reactionPickerFadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Triangle pointer */
+.reaction-picker-dropdown::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 8px solid var(--color-bg-secondary);
+}
+
+.reaction-option {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.reaction-option:hover {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+  transform: scale(1.15);
+}
+
+.reaction-option:active {
+  transform: scale(0.95);
+}
+
+.reaction-option:focus {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}
+
+/* Simple display component */
+.reaction-display {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.reaction-display--compact {
+  display: inline-flex;
+  font-size: var(--font-size-sm);
+}
+
+.reaction-display--compact span {
+  margin-right: 2px;
+}
+
+.reaction-display__count {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  margin-left: 2px;
+}
+
+/* Mobile adjustments */
+@media (max-width: 480px) {
+  .reaction-picker-dropdown {
+    left: 0;
+    transform: none;
+  }
+
+  .reaction-picker-dropdown::after {
+    left: 14px;
+    transform: none;
+  }
+
+  .reaction-option {
+    width: 32px;
+    height: 32px;
+    font-size: 1.1rem;
+  }
+}

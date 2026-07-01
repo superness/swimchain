@@ -4,12 +4,15 @@
 
 import { useParams, Link } from 'react-router-dom';
 import { useMetrics } from '../hooks/useMetrics';
+import { useRpc } from '../hooks/useRpc';
 import { HeatHistogram } from '../components/HeatHistogram';
+import { ContentStatus } from '../components/ContentStatus';
 import './SpaceDetail.css';
 
 export function SpaceDetail(): JSX.Element {
   const { spaceId } = useParams<{ spaceId: string }>();
   const { getSpaceMetrics, recentPosts, refresh, isCollecting } = useMetrics();
+  const { connected, connecting, error: rpcError } = useRpc();
 
   const metrics = spaceId ? getSpaceMetrics(spaceId) : undefined;
   const spacePosts = recentPosts.filter(p => p.spaceId === spaceId);
@@ -26,6 +29,13 @@ export function SpaceDetail(): JSX.Element {
             <h1>Space: {spaceId}</h1>
           </div>
         </header>
+        {!connected && (
+          <div className="detail-offline-banner" role="status">
+            <span className="detail-offline-dot" />
+            <span>{connecting ? 'Reconnecting to node...' : 'Node disconnected — data may be stale'}</span>
+            {rpcError && <span className="detail-offline-detail">{rpcError}</span>}
+          </div>
+        )}
         <main className="detail-main">
           <div className="empty-state">
             No metrics available for this space.
@@ -55,6 +65,14 @@ export function SpaceDetail(): JSX.Element {
           </button>
         </div>
       </header>
+
+      {!connected && (
+        <div className="detail-offline-banner" role="status">
+          <span className="detail-offline-dot" />
+          <span>{connecting ? 'Reconnecting to node...' : 'Node disconnected — data may be stale'}</span>
+          {rpcError && <span className="detail-offline-detail">{rpcError}</span>}
+        </div>
+      )}
 
       <main className="detail-main">
         <section className="overview-section">
@@ -120,6 +138,7 @@ export function SpaceDetail(): JSX.Element {
                   <th>Created</th>
                   <th>Author</th>
                   <th>Heat</th>
+                  <th>Decay</th>
                   <th>Engagements</th>
                   <th>Status</th>
                 </tr>
@@ -133,6 +152,9 @@ export function SpaceDetail(): JSX.Element {
                       <span className={`heat-badge ${post.heat < 30 ? 'low' : post.heat > 70 ? 'high' : 'med'}`}>
                         {formatPercent(post.heat)}
                       </span>
+                    </td>
+                    <td className="col-decay">
+                      <ContentStatus createdAt={post.createdAt} />
                     </td>
                     <td className="col-engagements">{post.engagementCount}</td>
                     <td className="col-status">

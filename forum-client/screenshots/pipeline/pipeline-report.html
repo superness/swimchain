@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SwimChain Feature Screenshot Pipeline Report</title>
+  <style>
+    :root { --bg-primary: #1a1a2e; --bg-secondary: #16213e; --bg-card: #0f3460; --text-primary: #e4e4e7; --text-secondary: #a1a1aa; --accent: #3b82f6; --success: #22c55e; --error: #ef4444; --warning: #f59e0b; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.6; padding: 2rem; }
+    .container { max-width: 1400px; margin: 0 auto; }
+    h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+    h2 { font-size: 1.5rem; margin: 2rem 0 1rem; color: var(--accent); }
+    h3 { font-size: 1.2rem; margin-bottom: 0.5rem; }
+    .subtitle { color: var(--text-secondary); margin-bottom: 2rem; }
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .summary-card { background: var(--bg-card); padding: 1.5rem; border-radius: 8px; text-align: center; }
+    .summary-card .number { font-size: 2.5rem; font-weight: bold; }
+    .summary-card .label { color: var(--text-secondary); font-size: 0.9rem; }
+    .summary-card.pass .number { color: var(--success); }
+    .summary-card.fail .number { color: var(--error); }
+    .summary-card.skip .number { color: var(--warning); }
+    .category-section { background: var(--bg-secondary); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .category-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .category-stats { display: flex; gap: 1rem; font-size: 0.9rem; }
+    .stat { padding: 0.25rem 0.75rem; border-radius: 4px; }
+    .stat.pass { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+    .stat.fail { background: rgba(239, 68, 68, 0.2); color: var(--error); }
+    .stat.skip { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+    .feature-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 1rem; }
+    .feature-card { background: var(--bg-card); border-radius: 8px; padding: 1rem; border-left: 4px solid; }
+    .feature-card.pass { border-left-color: var(--success); }
+    .feature-card.fail { border-left-color: var(--error); }
+    .feature-card.skip { border-left-color: var(--warning); }
+    .feature-card.error { border-left-color: var(--error); }
+    .feature-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem; }
+    .feature-name { font-weight: 600; }
+    .feature-description { color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 0.75rem; white-space: pre-line; }
+    .feature-meta { display: flex; gap: 1rem; font-size: 0.8rem; color: var(--text-secondary); }
+    .screenshots { display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap; }
+    .screenshot-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 0.2rem 0.5rem; background: rgba(59, 130, 246, 0.1); border-radius: 4px; }
+    footer { text-align: center; margin-top: 3rem; color: var(--text-secondary); font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>SwimChain Feature Screenshot Pipeline</h1>
+    <p class="subtitle">Generated: 2026-02-04T20:16:15.053Z | Duration: 94.96s</p>
+
+    <div class="summary-grid">
+      <div class="summary-card"><div class="number">14</div><div class="label">Total Features</div></div>
+      <div class="summary-card pass"><div class="number">8</div><div class="label">Passed</div></div>
+      <div class="summary-card fail"><div class="number">3</div><div class="label">Failed</div></div>
+      <div class="summary-card skip"><div class="number">3</div><div class="label">Skipped</div></div>
+    </div>
+
+    <h2>Results by Category</h2>
+    <div class="category-section">
+      <div class="category-header">
+        <div><h3>Identity Management</h3><p style="color: var(--text-secondary); font-size: 0.9rem;">Identity creation, display, and management features</p></div>
+        <div class="category-stats">
+          <span class="stat pass">✅ 2</span>
+          <span class="stat fail">❌ 1</span>
+          <span class="stat skip">⏭️ 1</span>
+        </div>
+      </div>
+      <div class="feature-grid">
+        <div class="feature-card fail">
+          <div class="feature-header">
+            <span class="feature-name">Identity - No Identity State</span>
+            <span>❌ FAIL</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5173/identity
+**Node**: Disconnected
+**Identity**: Addresscs1qz0...2kj7
+**Missing Elements**: .generate-btn, .import-btn
+**Functional Checks**: 0/2 passed</p>
+          <div class="feature-meta">
+            <span>Node: genesis</span>
+            <span>Duration: 4.31s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-no-identity-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-no-identity-_identity-page.png" target="_blank">📷 .identity-page</a></div>
+        </div>
+        <div class="feature-card pass">
+          <div class="feature-header">
+            <span class="feature-name">Identity - With Identity Loaded</span>
+            <span>✅ PASS</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5173/identity
+**Node**: Disconnected
+**Identity**: Addresscs1qz0...2kj7
+**Elements Found**: 1 of 2 expected
+**Missing Elements**: .public-key
+**Functional Checks**: 2/2 passed</p>
+          <div class="feature-meta">
+            <span>Node: genesis</span>
+            <span>Duration: 4.30s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-with-identity-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-with-identity-_identity-page.png" target="_blank">📷 .identity-page</a></div>
+        </div>
+        <div class="feature-card pass">
+          <div class="feature-header">
+            <span class="feature-name">Identity - Sponsored Status</span>
+            <span>✅ PASS</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5173/identity
+**Node**: Disconnected
+**Identity**: Addresscs1qz0...2kj7
+**Functional Checks**: 1/1 passed</p>
+          <div class="feature-meta">
+            <span>Node: genesis</span>
+            <span>Duration: 4.55s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-sponsored-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-sponsored-_identity-page.png" target="_blank">📷 .identity-page</a></div>
+        </div>
+        <div class="feature-card skip">
+          <div class="feature-header">
+            <span class="feature-name">Identity - Not Sponsored Status</span>
+            <span>⏭️ SKIP</span>
+          </div>
+          <p class="feature-description">Preconditions not met - feature skipped</p>
+          <div class="feature-meta">
+            <span>Node: alpha</span>
+            <span>Duration: 0.32s</span>
+          </div>
+          
+        </div>
+      </div>
+    </div>
+    <div class="category-section">
+      <div class="category-header">
+        <div><h3>Sponsorship System</h3><p style="color: var(--text-secondary); font-size: 0.9rem;">Sponsorship offers, claims, and status</p></div>
+        <div class="category-stats">
+          <span class="stat pass">✅ 6</span>
+          <span class="stat fail">❌ 2</span>
+          <span class="stat skip">⏭️ 2</span>
+        </div>
+      </div>
+      <div class="feature-grid">
+        <div class="feature-card pass">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - Find a Sponsor Tab</span>
+            <span>✅ PASS</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5174/sponsorship
+**Node**: Disconnected
+**Identity**: Not loaded
+**Elements Found**: 1 of 1 expected</p>
+          <div class="feature-meta">
+            <span>Node: alpha</span>
+            <span>Duration: 9.21s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-_sponsorship-page.png" target="_blank">📷 .sponsorship-page</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-_sponsorship-offer-list.png" target="_blank">📷 .sponsorship-offer-list</a></div>
+        </div>
+        <div class="feature-card fail">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - No Offers Available</span>
+            <span>❌ FAIL</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5174/sponsorship
+**Node**: Disconnected
+**Identity**: Not loaded
+**Functional Checks**: 0/1 passed</p>
+          <div class="feature-meta">
+            <span>Node: alpha</span>
+            <span>Duration: 4.82s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-offers-empty-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-offers-empty-_sponsorship-page.png" target="_blank">📷 .sponsorship-page</a></div>
+        </div>
+        <div class="feature-card skip">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - Offers Available</span>
+            <span>⏭️ SKIP</span>
+          </div>
+          <p class="feature-description">Preconditions not met - feature skipped</p>
+          <div class="feature-meta">
+            <span>Node: alpha</span>
+            <span>Duration: 0.32s</span>
+          </div>
+          
+        </div>
+        <div class="feature-card pass">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - My Offers Tab</span>
+            <span>✅ PASS</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5173/sponsorship
+**Node**: Disconnected
+**Identity**: Not loaded
+**Missing Elements**: .create-offer-btn</p>
+          <div class="feature-meta">
+            <span>Node: genesis</span>
+            <span>Duration: 9.05s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-_sponsorship-page.png" target="_blank">📷 .sponsorship-page</a></div>
+        </div>
+        <div class="feature-card fail">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - My Offers With Existing Offers</span>
+            <span>❌ FAIL</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5173/sponsorship
+**Node**: Disconnected
+**Identity**: Not loaded
+**Missing Elements**: .offer-card
+**Functional Checks**: 0/1 passed</p>
+          <div class="feature-meta">
+            <span>Node: genesis</span>
+            <span>Duration: 8.95s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-with-offers-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-with-offers-_sponsorship-page.png" target="_blank">📷 .sponsorship-page</a></div>
+        </div>
+        <div class="feature-card pass">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - Create Offer Modal</span>
+            <span>✅ PASS</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5173/sponsorship
+**Node**: Disconnected
+**Identity**: Not loaded
+**Missing Elements**: .modal, input[type='number']</p>
+          <div class="feature-meta">
+            <span>Node: genesis</span>
+            <span>Duration: 14.94s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-create-modal-fullpage.png" target="_blank">📷 fullpage</a></div>
+        </div>
+        <div class="feature-card skip">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - Claim Offer Modal</span>
+            <span>⏭️ SKIP</span>
+          </div>
+          <p class="feature-description">Preconditions not met - feature skipped</p>
+          <div class="feature-meta">
+            <span>Node: alpha</span>
+            <span>Duration: 0.31s</span>
+          </div>
+          
+        </div>
+        <div class="feature-card pass">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - View Pending Claims</span>
+            <span>✅ PASS</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5173/sponsorship
+**Node**: Disconnected
+**Identity**: Not loaded
+**Missing Elements**: .claim-item, .approve-btn, .reject-btn</p>
+          <div class="feature-meta">
+            <span>Node: genesis</span>
+            <span>Duration: 15.08s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-pending-claims-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-pending-claims-_sponsorship-page.png" target="_blank">📷 .sponsorship-page</a></div>
+        </div>
+        <div class="feature-card pass">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - Status Active</span>
+            <span>✅ PASS</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5174/sponsorship
+**Node**: Disconnected
+**Identity**: Not loaded
+**Missing Elements**: .sponsor-address, .status-active
+**Functional Checks**: 1/1 passed</p>
+          <div class="feature-meta">
+            <span>Node: alpha</span>
+            <span>Duration: 9.18s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-active-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-active-_sponsorship-page.png" target="_blank">📷 .sponsorship-page</a></div>
+        </div>
+        <div class="feature-card pass">
+          <div class="feature-header">
+            <span class="feature-name">Sponsorship - Status Pending</span>
+            <span>✅ PASS</span>
+          </div>
+          <p class="feature-description">**Page**: Swimchain Forum
+**URL**: http://localhost:5174/sponsorship
+**Node**: Disconnected
+**Identity**: Not loaded
+**Functional Checks**: 1/1 passed</p>
+          <div class="feature-meta">
+            <span>Node: alpha</span>
+            <span>Duration: 9.10s</span>
+          </div>
+          <div class="screenshots"><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-pending-fullpage.png" target="_blank">📷 fullpage</a><a class="screenshot-link" href="/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-pending-_sponsorship-page.png" target="_blank">📷 .sponsorship-page</a></div>
+        </div>
+      </div>
+    </div>
+    <footer>
+      <p>SwimChain Feature Screenshot Pipeline v1.0</p>
+    </footer>
+  </div>
+</body>
+</html>

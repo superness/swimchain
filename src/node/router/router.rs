@@ -9,6 +9,7 @@ use std::time::Instant;
 use log::{debug, info, warn};
 
 use super::RouteError;
+use crate::cli::search_index::{IndexableContent, SearchIndex};
 use crate::content::decay_integration::DecayIntegration;
 use crate::content::retrieval::ContentRetrievalManager;
 use crate::dht::{DhtManager, DhtMessage, DhtMessageType, NodeId as DhtNodeId};
@@ -45,6 +46,8 @@ use crate::types::constants::{
     // Branch-Selective Sync
     MSG_GETBLOCKS_BRANCH, MSG_SUBSCRIBE_BRANCH, MSG_UNSUBSCRIBE_BRANCH,
     MSG_BRANCH_ANNOUNCE, MSG_BRANCH_INVENTORY,
+    // Space Name Resolution (Bug #4)
+    MSG_GET_SPACE_META, MSG_SPACE_META,
     // Limits
     MAX_ADDRS_PER_MESSAGE, WIRE_ADDRESS_SIZE,
 };
@@ -167,6 +170,9 @@ pub struct MessageRouter {
 
     /// Node identity for leader election
     node_id: Option<[u8; 32]>,
+
+    /// Search index for full-text content indexing
+    search_index: Option<Arc<RwLock<SearchIndex>>>,
 }
 
 impl MessageRouter {
@@ -197,6 +203,7 @@ impl MessageRouter {
             peer_branch_tracker: None,
             aggregation_cache: None,
             node_id: None,
+            search_index: None,
         }
     }
 
@@ -234,6 +241,7 @@ impl MessageRouter {
             peer_branch_tracker: None,
             aggregation_cache: None,
             node_id: None,
+            search_index: None,
         }
     }
 
@@ -364,6 +372,10 @@ impl MessageRouter {
             MSG_UNSUBSCRIBE_BRANCH => self.handle_unsubscribe_branch(peer_id, payload).await,
             MSG_BRANCH_ANNOUNCE => self.handle_branch_announce(peer_id, payload).await,
             MSG_BRANCH_INVENTORY => self.handle_branch_inventory(peer_id, payload).await,
+
+            // === Space Name Resolution (Bug #4) ===
+            MSG_GET_SPACE_META => self.handle_get_space_meta(peer_id, payload).await,
+            MSG_SPACE_META => self.handle_space_meta(peer_id, payload).await,
 
             // === Chain Status (not yet implemented) ===
             MSG_GETHEADERS | MSG_CHAINSTATUS => {
@@ -1094,6 +1106,67 @@ impl MessageRouter {
                             );
                         }
                     }
+                }
+
+                // Index the content for full-text search if possible
+                // Try to deserialize as ContentItem and extract indexable fields
+                if let Some(ref search_index) = self.search_index {
+                    // Try to deserialize the content as a ContentItem
+                    if let Ok(item) = bincode::deserialize::<crate::types::content::ContentItem>(data) {
+                        // Extract title and body from body_inline (format: "title\n\nbody")
+                        let (title, body) = if let Some(ref body_inline) = item.body_inline {
+                            if let Some(idx) = body_inline.find("\n\n") {
+                                (body_inline[..idx].to_string(), body_inline[idx + 2..].to_string())
+                            } else {
+                                // No title, just body
+                                (String::new(), body_inline.clone())
+                            }
+                        } else {
+                            (String::new(), String::new())
+                        };
+
+                        // Convert space_id to bech32m format (sp1...) for consistency with RPC
+                        let space_id_str = {
+                            use bech32::{Bech32m, Hrp};
+                            let hrp = Hrp::parse("sp").expect("valid HRP");
+                            let space_bytes = item.space_id.as_bytes();
+                            let mut data_vec = Vec::with_capacity(17);
+                            data_vec.push(0); // version byte
+                            data_vec.extend_from_slice(&space_bytes[..16]);
+                            bech32::encode::<Bech32m>(hrp, &data_vec)
+                                .unwrap_or_else(|_| hex::encode(&space_bytes[..16]))
+                        };
+
+                        // Convert author_id to bech32m address format (cs1...) for consistency with RPC
+                        let author_str = crate::crypto::address::encode_address(&item.author_id);
+
+                        let indexable = IndexableContent {
+                            content_id: format!("sha256:{}", hex::encode(&hash_bytes)),
+                            space_id: space_id_str,
+                            author: author_str,
+                            title,
+                            body,
+                            heat: 100.0, // New content starts at 100% heat
+                            timestamp: item.created_at,
+                        };
+
+                        if let Ok(mut index) = search_index.write() {
+                            if let Err(e) = index.add_content(&indexable) {
+                                warn!(
+                                    "[SEARCH] Failed to index network content {}: {}",
+                                    hex::encode(&hash_bytes[..8]),
+                                    e
+                                );
+                            } else {
+                                debug!(
+                                    "[SEARCH] Indexed network content {}",
+                                    hex::encode(&hash_bytes[..8])
+                                );
+                            }
+                        }
+                    }
+                    // If deserialization fails, it's not a ContentItem (might be media blob, etc.)
+                    // This is expected and not an error
                 }
 
                 // Check if there are peers waiting for this content (relay scenario)
@@ -1999,35 +2072,23 @@ impl MessageRouter {
                                 key_version: 0,
                             };
 
-                            // Check if already registered
-                            match chain_store.space_exists(&space_id_16) {
-                                Ok(true) => {
-                                    debug!(
-                                        "[BLOCK] Space {} already registered, skipping",
-                                        hex::encode(&space_id_16[..8])
-                                    );
-                                }
-                                Ok(false) => {
-                                    if let Err(e) = chain_store.register_space(&space_info) {
-                                        warn!(
-                                            "[BLOCK] Failed to register space {}: {}",
-                                            hex::encode(&space_id_16[..8]),
-                                            e
-                                        );
-                                    } else {
-                                        info!(
-                                            "[BLOCK] Registered space '{}' ({}) from synced block",
-                                            metadata.name,
-                                            hex::encode(&space_id_16[..8])
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "[BLOCK] Failed to check space existence: {}",
-                                        e
-                                    );
-                                }
+                            // Always upsert block-derived metadata. The gossip mempool
+                            // path (this file, ~line 4715) writes a placeholder name
+                            // before the block arrives; this must overwrite it.
+                            // Mirrors the unconditional pattern at the PHASE 3 storage
+                            // step further down.
+                            if let Err(e) = chain_store.register_space(&space_info) {
+                                warn!(
+                                    "[BLOCK] Failed to register space {}: {}",
+                                    hex::encode(&space_id_16[..8]),
+                                    e
+                                );
+                            } else {
+                                info!(
+                                    "[BLOCK] Registered space '{}' ({}) from synced block",
+                                    metadata.name,
+                                    hex::encode(&space_id_16[..8])
+                                );
                             }
                         }
                     }
@@ -2100,6 +2161,70 @@ impl MessageRouter {
                 self.extract_engagements_from_block(&content_block);
                 // Update reply counts in aggregation cache
                 self.update_reply_counts_from_block(&content_block);
+            }
+        }
+
+        // CRITICAL: Fetch missing content blobs for actions in this block.
+        // Block sync only transfers content_hash references, not the actual blob data.
+        // We need to request the blobs so users can view the content.
+        //
+        // IMPORTANT: We use WHO_HAS/I_HAVE discovery instead of blindly sending GET to the
+        // block sender, because the sender may have also synced the block and not have the blobs.
+        // The original content creator (who has the blobs) will respond to WHO_HAS with I_HAVE.
+        if let (Some(ref content_mgr), Some(ref pool)) = (&self.content_retrieval, &self.connection_pool) {
+            let mut missing_hashes: Vec<[u8; 32]> = Vec::new();
+
+            // Collect content hashes we don't have locally (text content)
+            for content_hash in &all_content_ids_in_batch {
+                let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                if !content_mgr.has_content(&blob_hash) {
+                    missing_hashes.push(*content_hash);
+                }
+            }
+
+            // Also collect media hashes from actions (images/attachments)
+            for action in &actions_in_block {
+                for media_ref in &action.media_refs {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(media_ref.media_hash);
+                    if !content_mgr.has_content(&blob_hash) && !missing_hashes.contains(&media_ref.media_hash) {
+                        missing_hashes.push(media_ref.media_hash);
+                    }
+                }
+            }
+
+            if !missing_hashes.is_empty() {
+                info!(
+                    "[BLOB-SYNC] Block {} has {} blobs we don't have - discovering via WHO_HAS",
+                    hex::encode(&computed_hash[..8]),
+                    missing_hashes.len()
+                );
+
+                // Strategy: Mark content as wanted, then broadcast WHO_HAS.
+                // When we receive I_HAVE, the handle_i_have code will auto-send GET to the provider.
+                // If block sender has it, they'll respond immediately via I_HAVE.
+                // If not, other peers who have it will respond.
+                for content_hash in &missing_hashes {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                    // Mark as wanted so when I_HAVE arrives, we auto-fetch
+                    content_mgr.mark_wanted(&blob_hash);
+                }
+
+                // Broadcast WHO_HAS to all connected peers for discovery
+                for content_hash in missing_hashes {
+                    let who_has_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                        crate::types::network::MessageType::WhoHas,
+                        content_hash.to_vec(),
+                    );
+
+                    let sent = pool.broadcast(&who_has_envelope).await;
+                    if sent > 0 {
+                        debug!(
+                            "[BLOB-SYNC] Broadcast WHO_HAS for blob {} to {} peers",
+                            hex::encode(&content_hash[..8]),
+                            sent
+                        );
+                    }
+                }
             }
         }
 
@@ -2382,9 +2507,21 @@ impl MessageRouter {
             }
         }
 
+        // Collect content hashes for blob fetching
+        let mut all_content_hashes: Vec<[u8; 32]> = Vec::new();
+
         // Store content and space blocks (simplified - just store, no full validation)
         for content_bytes in &block_data.content_blocks {
             if let Ok(content_block) = bincode::deserialize::<crate::blocks::ContentBlock>(content_bytes) {
+                // Collect content hashes and media refs for blob fetching
+                for action in &content_block.actions {
+                    if let Some(content_hash) = action.content_hash {
+                        all_content_hashes.push(content_hash);
+                    }
+                    for media_ref in &action.media_refs {
+                        all_content_hashes.push(media_ref.media_hash);
+                    }
+                }
                 let _ = chain_store.put_content_block(&content_block);
                 let _ = chain_store.mark_content_block_actions_finalized(&content_block, block_height);
             }
@@ -2397,10 +2534,49 @@ impl MessageRouter {
         }
 
         // Store root block
-        match chain_store.put_root_block_with_fork_resolution(&root_block) {
-            Ok((hash, _)) => Ok(Some(hash)),
-            Err(e) => Err(RouteError::StorageError(format!("{}", e))),
+        let stored_hash = match chain_store.put_root_block_with_fork_resolution(&root_block) {
+            Ok((hash, _)) => hash,
+            Err(e) => return Err(RouteError::StorageError(format!("{}", e))),
+        };
+
+        // CRITICAL: Fetch missing content blobs for orphan block.
+        // This mirrors the blob fetching logic in handle_block_data.
+        if let (Some(ref content_mgr), Some(ref pool)) = (&self.content_retrieval, &self.connection_pool) {
+            let mut missing_hashes: Vec<[u8; 32]> = Vec::new();
+
+            for content_hash in all_content_hashes {
+                let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(content_hash);
+                if !content_mgr.has_content(&blob_hash) {
+                    missing_hashes.push(content_hash);
+                }
+            }
+
+            if !missing_hashes.is_empty() {
+                info!(
+                    "[BLOB-SYNC] Orphan block {} has {} blobs we don't have - discovering via WHO_HAS",
+                    hex::encode(&stored_hash[..8]),
+                    missing_hashes.len()
+                );
+
+                // Mark content as wanted so when I_HAVE arrives, we auto-fetch
+                for content_hash in &missing_hashes {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                    content_mgr.mark_wanted(&blob_hash);
+                }
+
+                // Broadcast WHO_HAS to all connected peers for discovery
+                for content_hash in missing_hashes {
+                    let who_has_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                        crate::types::network::MessageType::WhoHas,
+                        content_hash.to_vec(),
+                    );
+
+                    let _ = pool.broadcast(&who_has_envelope).await;
+                }
+            }
         }
+
+        Ok(Some(stored_hash))
     }
 
     /// Handle GETBLOCKS - respond with blocks in height range
@@ -3252,6 +3428,110 @@ impl MessageRouter {
             "[BLOCK] Stored {}/{} root blocks, {} space blocks, {} content blocks from BLOCKS response",
             stored_count, blocks_data.blocks.len(), space_count_total, content_count_total
         );
+
+        // CRITICAL: Fetch missing content blobs for all blocks we just stored.
+        // Block sync only transfers content_hash references, not the actual blob data.
+        // We need to request the blobs so users can view the content.
+        //
+        // This mirrors the blob fetching logic in handle_block_data.
+        if let (Some(ref content_mgr), Some(ref pool)) = (&self.content_retrieval, &self.connection_pool) {
+            let mut missing_hashes: Vec<[u8; 32]> = Vec::new();
+            let mut seen_hashes: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+
+            // Re-parse blocks to collect content hashes we need to fetch
+            for serialized in &blocks_data.blocks {
+                let data = &serialized.data;
+                let mut offset = 0usize;
+
+                // Skip root block
+                if data.len() < 8 {
+                    continue;
+                }
+                let root_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+                offset += 4 + root_len;
+
+                // Parse space blocks and content blocks
+                if offset + 4 <= data.len() {
+                    let space_count = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                    offset += 4;
+
+                    for _ in 0..space_count {
+                        if offset + 4 > data.len() { break; }
+                        let space_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                        offset += 4 + space_len;
+
+                        if offset + 4 > data.len() { break; }
+                        let content_count = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                        offset += 4;
+
+                        for _ in 0..content_count {
+                            if offset + 4 > data.len() { break; }
+                            let content_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                            offset += 4;
+
+                            if offset + content_len > data.len() { break; }
+
+                            // Parse content block to extract content hashes
+                            if let Ok(content_block) = bincode::deserialize::<crate::blocks::ContentBlock>(&data[offset..offset + content_len]) {
+                                for action in &content_block.actions {
+                                    // Collect content_hash (text content)
+                                    if let Some(content_hash) = action.content_hash {
+                                        if !seen_hashes.contains(&content_hash) {
+                                            seen_hashes.insert(content_hash);
+                                            let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(content_hash);
+                                            if !content_mgr.has_content(&blob_hash) {
+                                                missing_hashes.push(content_hash);
+                                            }
+                                        }
+                                    }
+                                    // Collect media_refs (images/attachments)
+                                    for media_ref in &action.media_refs {
+                                        if !seen_hashes.contains(&media_ref.media_hash) {
+                                            seen_hashes.insert(media_ref.media_hash);
+                                            let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(media_ref.media_hash);
+                                            if !content_mgr.has_content(&blob_hash) {
+                                                missing_hashes.push(media_ref.media_hash);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            offset += content_len;
+                        }
+                    }
+                }
+            }
+
+            if !missing_hashes.is_empty() {
+                info!(
+                    "[BLOB-SYNC] BLOCKS response has {} blobs we don't have - discovering via WHO_HAS",
+                    missing_hashes.len()
+                );
+
+                // Mark content as wanted so when I_HAVE arrives, we auto-fetch
+                for content_hash in &missing_hashes {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                    content_mgr.mark_wanted(&blob_hash);
+                }
+
+                // Broadcast WHO_HAS to all connected peers for discovery
+                for content_hash in missing_hashes {
+                    let who_has_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                        crate::types::network::MessageType::WhoHas,
+                        content_hash.to_vec(),
+                    );
+
+                    let sent = pool.broadcast(&who_has_envelope).await;
+                    if sent > 0 {
+                        debug!(
+                            "[BLOB-SYNC] Broadcast WHO_HAS for blob {} to {} peers",
+                            hex::encode(&content_hash[..8]),
+                            sent
+                        );
+                    }
+                }
+            }
+        }
 
         Ok(None)
     }
@@ -4355,6 +4635,62 @@ impl MessageRouter {
             }
             added
         };
+
+        // CRITICAL: Fetch missing content blobs for gossiped actions (P0 fix)
+        // When we receive an action via gossip, it only contains content_hash references,
+        // NOT the actual blob data. We need to request the blobs so the node can:
+        // 1. Display content if this node becomes the viewer
+        // 2. Form blocks that include the content (as block leader)
+        // 3. Propagate complete content to other peers
+        if added {
+            if let (Some(ref content_mgr), Some(ref pool)) = (&self.content_retrieval, &self.connection_pool) {
+                let mut missing_hashes: Vec<[u8; 32]> = Vec::new();
+
+                // Check if we have the text content blob
+                if let Some(content_hash) = action.content_hash {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(content_hash);
+                    if !content_mgr.has_content(&blob_hash) {
+                        missing_hashes.push(content_hash);
+                    }
+                }
+
+                // Check if we have the media blobs
+                for media_ref in &action.media_refs {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(media_ref.media_hash);
+                    if !content_mgr.has_content(&blob_hash) && !missing_hashes.contains(&media_ref.media_hash) {
+                        missing_hashes.push(media_ref.media_hash);
+                    }
+                }
+
+                if !missing_hashes.is_empty() {
+                    info!(
+                        "[BLOB-GOSSIP] Action from peer {} has {} missing blobs - sending WHO_HAS",
+                        hex::encode(&peer_id[..8]),
+                        missing_hashes.len()
+                    );
+
+                    // Mark content as wanted and broadcast WHO_HAS to discover providers
+                    for content_hash in &missing_hashes {
+                        let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                        content_mgr.mark_wanted(&blob_hash);
+                    }
+
+                    // Broadcast WHO_HAS to all connected peers
+                    for content_hash in missing_hashes {
+                        let who_has_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                            crate::types::network::MessageType::WhoHas,
+                            content_hash.to_vec(),
+                        );
+                        let sent = pool.broadcast(&who_has_envelope).await;
+                        debug!(
+                            "[BLOB-GOSSIP] Sent WHO_HAS for blob {} to {} peers",
+                            hex::encode(&content_hash[..8]),
+                            sent
+                        );
+                    }
+                }
+            }
+        }
 
         // If this is a CreateSpace action, also register the space in chain_store
         // so it's immediately visible to list_spaces queries (before block finalization)
@@ -5701,10 +6037,11 @@ impl MessageRouter {
             response.extend_from_slice(&offer_bytes);
         }
 
-        debug!(
-            "[SPONSORSHIP] Responding to offer query from {} with {} offers",
+        info!(
+            "[SPONSORSHIP] Responding to offer query from {} with {} offers (current_time={})",
             hex::encode(&peer_id[..8]),
-            count
+            count,
+            current_time
         );
 
         Ok(Some((MSG_SPONSORSHIP_OFFER_LIST, response)))
@@ -6122,6 +6459,154 @@ impl MessageRouter {
         // No response needed
         Ok(None)
     }
+
+    // ========================================================================
+    // Space Name Resolution (Bug #4)
+    // ========================================================================
+
+    /// Reply to a peer asking for a space's display metadata, if we know it.
+    ///
+    /// Returns `MSG_SPACE_META` envelope when the space is registered locally
+    /// with a real (non-placeholder) name; otherwise silently no-op.
+    async fn handle_get_space_meta(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        use crate::network::messages::{GetSpaceMetaPayload, SpaceMetaPayload};
+
+        let req = GetSpaceMetaPayload::from_bytes(payload).ok_or_else(|| {
+            RouteError::DeserializationError("GetSpaceMetaPayload".to_string())
+        })?;
+
+        debug!(
+            "[SPACE-META] Received GET_SPACE_META from peer {} for space {}",
+            hex::encode(&peer_id[..8]),
+            hex::encode(&req.space_id[..4])
+        );
+
+        let chain_store = match self.chain_store.as_ref() {
+            Some(cs) => cs,
+            None => return Ok(None),
+        };
+
+        let info = match chain_store.get_space(&req.space_id) {
+            Ok(Some(info)) => info,
+            _ => return Ok(None),
+        };
+
+        // Don't leak names of private spaces.
+        if info.is_private {
+            return Ok(None);
+        }
+
+        // Don't respond if our own copy is just a placeholder — we'd be
+        // forwarding nonsense.
+        let placeholder = format!("Space {}", hex::encode(&info.space_id[..4]));
+        if info.name == placeholder || info.name.is_empty() {
+            debug!(
+                "[SPACE-META] We only have placeholder for {}; not responding",
+                hex::encode(&info.space_id[..4])
+            );
+            return Ok(None);
+        }
+
+        let reply = SpaceMetaPayload::new(
+            info.space_id,
+            info.creator,
+            info.created_at,
+            info.name.clone(),
+            info.description.clone(),
+        );
+        info!(
+            "[SPACE-META] Replying to {} with name '{}' for space {}",
+            hex::encode(&peer_id[..8]),
+            info.name,
+            hex::encode(&info.space_id[..4])
+        );
+        Ok(Some((MSG_SPACE_META, reply.to_bytes())))
+    }
+
+    /// Accept a peer's claim of a space's name; only overwrites placeholders.
+    ///
+    /// Verification is currently trust-the-peer: we accept whatever the
+    /// responder claims. The risk is bounded: an attacker can only mislead
+    /// the local UI of a space the user has NOT yet engaged with. A future
+    /// version should include and verify the full PoW solution that bound
+    /// the name to the space_id (SPEC_04 §283-287).
+    async fn handle_space_meta(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        use crate::network::messages::SpaceMetaPayload;
+
+        let meta = SpaceMetaPayload::from_bytes(payload).ok_or_else(|| {
+            RouteError::DeserializationError("SpaceMetaPayload".to_string())
+        })?;
+
+        debug!(
+            "[SPACE-META] Received SPACE_META from peer {} for space {} name='{}'",
+            hex::encode(&peer_id[..8]),
+            hex::encode(&meta.space_id[..4]),
+            meta.name
+        );
+
+        let chain_store = match self.chain_store.as_ref() {
+            Some(cs) => cs,
+            None => return Ok(None),
+        };
+
+        // Only upsert if the local entry is missing or still a placeholder.
+        let current = chain_store.get_space(&meta.space_id).ok().flatten();
+        let placeholder = format!("Space {}", hex::encode(&meta.space_id[..4]));
+        let should_apply = match &current {
+            None => true,
+            Some(c) => c.name == placeholder || c.name.is_empty(),
+        };
+        if !should_apply {
+            debug!(
+                "[SPACE-META] Local copy of {} already has real name '{}'; ignoring",
+                hex::encode(&meta.space_id[..4]),
+                current.as_ref().map(|c| c.name.as_str()).unwrap_or("?")
+            );
+            return Ok(None);
+        }
+
+        // Preserve creator/timestamp/pow_work from existing entry if any;
+        // otherwise take them from the peer.
+        let preserved_pow_work = current.as_ref().map(|c| c.pow_work).unwrap_or(0);
+        let info = crate::storage::SpaceInfo {
+            space_id: meta.space_id,
+            name: meta.name.clone(),
+            description: meta.description.clone(),
+            creator: meta.creator_pubkey,
+            created_at: meta.timestamp,
+            pow_work: preserved_pow_work,
+            is_private: false,
+            encrypted_name: None,
+            creator_encrypted_key: None,
+            key_version: 0,
+        };
+
+        if let Err(e) = chain_store.register_space(&info) {
+            warn!(
+                "[SPACE-META] Failed to register space {}: {}",
+                hex::encode(&meta.space_id[..4]),
+                e
+            );
+            return Ok(None);
+        }
+
+        info!(
+            "[SPACE-META] Resolved space {} -> '{}' from peer {}",
+            hex::encode(&meta.space_id[..4]),
+            meta.name,
+            hex::encode(&peer_id[..8])
+        );
+
+        Ok(None)
+    }
 }
 
 /// Builder for MessageRouter with fluent configuration
@@ -6147,6 +6632,7 @@ pub struct MessageRouterBuilder {
     peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
     aggregation_cache: Option<Arc<AggregationCache>>,
     node_id: Option<[u8; 32]>,
+    search_index: Option<Arc<RwLock<SearchIndex>>>,
 }
 
 impl MessageRouterBuilder {
@@ -6174,6 +6660,7 @@ impl MessageRouterBuilder {
             peer_branch_tracker: None,
             aggregation_cache: None,
             node_id: None,
+            search_index: None,
         }
     }
 
@@ -6307,6 +6794,12 @@ impl MessageRouterBuilder {
         self
     }
 
+    /// Set the search index for full-text content indexing
+    pub fn search_index(mut self, index: Arc<RwLock<SearchIndex>>) -> Self {
+        self.search_index = Some(index);
+        self
+    }
+
     /// Build the MessageRouter
     ///
     /// # Panics
@@ -6339,6 +6832,7 @@ impl MessageRouterBuilder {
             peer_branch_tracker: self.peer_branch_tracker,
             aggregation_cache: self.aggregation_cache,
             node_id: self.node_id,
+            search_index: self.search_index,
         }
     }
 
@@ -6370,6 +6864,7 @@ impl MessageRouterBuilder {
             peer_branch_tracker: self.peer_branch_tracker,
             aggregation_cache: self.aggregation_cache,
             node_id: self.node_id,
+            search_index: self.search_index,
         })
     }
 }

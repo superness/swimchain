@@ -40,6 +40,7 @@ fn build_version_payload(
         user_agent: local_info.user_agent.clone(),
         start_height: local_info.height,
         relay: local_info.relay,
+        public_key: local_info.public_key,
     }
 }
 
@@ -228,10 +229,9 @@ fn parse_version_payload(
 ) -> Result<PeerInfo, TransportError> {
     let payload = VersionPayload::from_bytes(bytes)?;
 
-    // Compute node_id as SHA-256 of (nonce:user_agent)
-    // NOTE: In production, VERSION should include public key
-    let node_id_input = format!("{}:{}", payload.nonce, payload.user_agent);
-    let node_id: [u8; 32] = Sha256::digest(node_id_input.as_bytes()).into();
+    // Per SPEC_06 §128 + §154: node_id = SHA-256(public_key), deterministic
+    // per identity, ephemeral per session.
+    let node_id: [u8; 32] = Sha256::digest(payload.public_key).into();
 
     Ok(PeerInfo {
         node_id,
@@ -287,6 +287,7 @@ mod tests {
             height: 100,
             user_agent: "Test/1.0".to_string(),
             relay: true,
+            public_key: [0xcd; 32],
         };
         let sender_addr: SocketAddr = "127.0.0.1:9735".parse().unwrap();
         let receiver_addr: SocketAddr = "192.168.1.1:9735".parse().unwrap();

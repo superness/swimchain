@@ -7,6 +7,7 @@
 import { useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useArchiveStorage } from '../hooks/useArchiveStorage';
+import { ContentStatus } from '../components/ContentStatus';
 import './ArchivedContent.css';
 
 export function ArchivedContent(): JSX.Element {
@@ -151,6 +152,7 @@ export function ArchivedContent(): JSX.Element {
                       >
                         <h3 className="archive-item__title">{entry.title}</h3>
                         <div className="archive-item__meta">
+                          <ContentStatus createdAt={entry.timestamp} archived />
                           <span>Archived: {formatDate(entry.archivedAt)}</span>
                           <span>Heat: {(entry.originalHeat * 100).toFixed(1)}%</span>
                         </div>

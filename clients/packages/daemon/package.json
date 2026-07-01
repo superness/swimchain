@@ -1,0 +1,31 @@
+{
+  "name": "@swimchain/daemon",
+  "version": "0.1.0",
+  "description": "Swimchain embedded node daemon manager - runs the node as part of the app",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "vitest"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@swimchain/rpc": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  },
+  "peerDependencies": {},
+  "keywords": [
+    "swimchain",
+    "node",
+    "daemon",
+    "p2p"
+  ],
+  "license": "MIT"
+}

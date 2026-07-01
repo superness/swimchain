@@ -7,8 +7,8 @@ import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useThread, usePoolContribution, useReplies, useReactions } from '../hooks/useRpc';
 import { ImageGallery } from '../components/ImageGallery';
-import { useStoredIdentity } from '../hooks/useStoredIdentity';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useIdentityContext } from '../providers/IdentityProvider';
+import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { usePassphraseStore } from '../hooks/usePassphraseStore';
 import { ContentStatus } from '../components/ContentStatus';
 import { ReplyTree } from '../components/ReplyTree';
@@ -27,8 +27,8 @@ export function ThreadView(): JSX.Element {
   const { thread, loading, error, fetching } = useThread(threadId || '');
   const { replies, loading: repliesLoading, fetching: repliesFetching, error: repliesError, refetch: refetchReplies } = useReplies(threadId || '');
   const { reactions, refetch: refetchReactions } = useReactions(threadId || '');
-  const { identity } = useStoredIdentity();
-  const { keypair } = useStoredKeypair();
+  const { identity } = useIdentityContext();
+  const { sign: nodeSign } = useNodeIdentity();
   const { contribute, contributing, progress, error: poolError } = usePoolContribution();
   const { getPassphrase } = usePassphraseStore();
   const [contributionStatus, setContributionStatus] = useState<string | null>(null);
@@ -112,8 +112,8 @@ export function ThreadView(): JSX.Element {
 
   // Handle reaction - accepts emoji string from ContentStatus
   const handleReact = async (emoji: string) => {
-    if (!threadId || !identity || !keypair) {
-      console.log('[React] Missing required data:', { threadId, hasIdentity: !!identity, hasKeypair: !!keypair });
+    if (!threadId || !identity) {
+      console.log('[React] Missing required data:', { threadId, hasIdentity: !!identity });
       setContributionStatus('Please create an identity first');
       return;
     }
@@ -137,11 +137,18 @@ export function ThreadView(): JSX.Element {
     console.log(`[React] Contributing ${seconds}s to thread ${threadId} with emoji ${emoji} (code ${emojiCode})`);
 
     try {
+      // Use node signing - nodeSign returns Uint8Array | null
+      const signFn = async (message: Uint8Array): Promise<Uint8Array> => {
+        const sig = await nodeSign(message);
+        if (!sig) throw new Error('Failed to sign message');
+        return sig;
+      };
+
       const result = await contribute(
         threadId,
         seconds,
         identity.publicKey,
-        (message: Uint8Array) => keypair.sign(message),
+        signFn,
         emojiCode
       );
 
@@ -252,6 +259,7 @@ export function ThreadView(): JSX.Element {
             onReact={identity ? handleReact : undefined}
             isReacting={contributing}
             emojiCounts={reactions?.reactions}
+            createdAt={thread.createdAt}
           />
 
           {/* Status messages */}

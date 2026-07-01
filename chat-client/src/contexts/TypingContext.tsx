@@ -13,7 +13,7 @@ import {
   type ReactNode,
 } from 'react';
 import { TYPING_TIMEOUT_MS } from '../types';
-import { currentUser } from '../mocks/data';
+import { useIdentityContext } from '@swimchain/frontend';
 
 interface TypingContextValue {
   /** Map of spaceId -> Set of userIds currently typing */
@@ -33,6 +33,9 @@ interface TypingProviderProps {
 }
 
 export function TypingProvider({ children }: TypingProviderProps): JSX.Element {
+  const { identity } = useIdentityContext();
+  const currentUserId = identity?.publicKey ?? '';
+
   // In-memory only - never persisted
   const [typingUsers, setTypingUsers] = useState<Map<string, Set<string>>>(
     new Map()
@@ -48,8 +51,8 @@ export function TypingProvider({ children }: TypingProviderProps): JSX.Element {
   }, []);
 
   const startTyping = useCallback((spaceId: string) => {
-    const userId = currentUser.address;
-    const key = `${spaceId}:${userId}`;
+    if (!currentUserId) return;
+    const key = `${spaceId}:${currentUserId}`;
 
     // Clear existing timeout
     const existingTimeout = timeoutsRef.current.get(key);
@@ -61,7 +64,7 @@ export function TypingProvider({ children }: TypingProviderProps): JSX.Element {
     setTypingUsers((prev) => {
       const next = new Map(prev);
       const spaceTypers = new Set(next.get(spaceId) ?? []);
-      spaceTypers.add(userId);
+      spaceTypers.add(currentUserId);
       next.set(spaceId, spaceTypers);
       return next;
     });
@@ -71,7 +74,7 @@ export function TypingProvider({ children }: TypingProviderProps): JSX.Element {
       setTypingUsers((prev) => {
         const next = new Map(prev);
         const spaceTypers = new Set(next.get(spaceId) ?? []);
-        spaceTypers.delete(userId);
+        spaceTypers.delete(currentUserId);
         if (spaceTypers.size === 0) {
           next.delete(spaceId);
         } else {
@@ -83,11 +86,11 @@ export function TypingProvider({ children }: TypingProviderProps): JSX.Element {
     }, TYPING_TIMEOUT_MS);
 
     timeoutsRef.current.set(key, timeout);
-  }, []);
+  }, [currentUserId]);
 
   const stopTyping = useCallback((spaceId: string) => {
-    const userId = currentUser.address;
-    const key = `${spaceId}:${userId}`;
+    if (!currentUserId) return;
+    const key = `${spaceId}:${currentUserId}`;
 
     // Clear timeout
     const existingTimeout = timeoutsRef.current.get(key);
@@ -100,7 +103,7 @@ export function TypingProvider({ children }: TypingProviderProps): JSX.Element {
     setTypingUsers((prev) => {
       const next = new Map(prev);
       const spaceTypers = new Set(next.get(spaceId) ?? []);
-      spaceTypers.delete(userId);
+      spaceTypers.delete(currentUserId);
       if (spaceTypers.size === 0) {
         next.delete(spaceId);
       } else {
@@ -108,16 +111,16 @@ export function TypingProvider({ children }: TypingProviderProps): JSX.Element {
       }
       return next;
     });
-  }, []);
+  }, [currentUserId]);
 
   const getTypingUsers = useCallback(
     (spaceId: string): string[] => {
       const spaceTypers = typingUsers.get(spaceId);
       if (!spaceTypers) return [];
       // Exclude current user
-      return [...spaceTypers].filter((id) => id !== currentUser.address);
+      return [...spaceTypers].filter((id) => id !== currentUserId);
     },
-    [typingUsers]
+    [typingUsers, currentUserId]
   );
 
   return (

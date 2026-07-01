@@ -1,0 +1,83 @@
+/**
+ * Start DM Button Styles
+ */
+
+.start-dm-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  font-weight: 500;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: none;
+  white-space: nowrap;
+}
+
+/* Sizes */
+.start-dm-button.sm {
+  padding: 0.375rem 0.625rem;
+  font-size: 0.8125rem;
+}
+
+.start-dm-button.md {
+  padding: 0.5rem 0.875rem;
+  font-size: 0.875rem;
+}
+
+.start-dm-button.lg {
+  padding: 0.625rem 1.25rem;
+  font-size: 1rem;
+}
+
+/* Variants */
+.start-dm-button.primary {
+  background: var(--primary, #6366f1);
+  color: white;
+}
+
+.start-dm-button.primary:hover:not(:disabled) {
+  background: var(--primary-dark, #4f46e5);
+}
+
+.start-dm-button.secondary {
+  background: var(--surface-2, #f3f4f6);
+  color: var(--text-primary, #111827);
+  border: 1px solid var(--border, #e5e7eb);
+}
+
+.start-dm-button.secondary:hover:not(:disabled) {
+  background: var(--surface-3, #e5e7eb);
+  border-color: var(--border-dark, #d1d5db);
+}
+
+.start-dm-button.ghost {
+  background: transparent;
+  color: var(--primary, #6366f1);
+}
+
+.start-dm-button.ghost:hover:not(:disabled) {
+  background: var(--primary-light, rgba(99, 102, 241, 0.1));
+}
+
+/* Disabled state */
+.start-dm-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Icon */
+.dm-icon {
+  flex-shrink: 0;
+}
+
+.start-dm-button.sm .dm-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.start-dm-button.lg .dm-icon {
+  width: 18px;
+  height: 18px;
+}

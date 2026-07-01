@@ -1,0 +1,1 @@
+{"version":3,"file":"IdentityCard.d.ts","sourceRoot":"","sources":["../../src/components/IdentityCard.tsx"],"names":[],"mappings":"AAAA;;GAEG;AAEH,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,UAAU,CAAC;AAE/C,OAAO,oBAAoB,CAAC;AAE5B,UAAU,iBAAiB;IACzB,QAAQ,EAAE,cAAc,CAAC;CAC1B;AAED,wBAAgB,YAAY,CAAC,EAAE,QAAQ,EAAE,EAAE,iBAAiB,GAAG,GAAG,CAAC,OAAO,CAwCzE"}

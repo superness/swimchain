@@ -12,6 +12,7 @@ import { useMySponsorshipOffers } from '../hooks/useMySponsorshipOffers';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useRpc } from '../hooks/useRpc';
 import { useSign } from '../hooks/useSign';
+import { useDisplayName, useDisplayNames } from '../hooks/useDisplayName';
 import { SponsorshipOfferCard } from '../components/SponsorshipOfferCard';
 import { SponsorshipStatus } from '../components/SponsorshipStatus';
 import { ClaimOfferModal } from '../components/ClaimOfferModal';
@@ -62,6 +63,9 @@ export function SponsorshipPage(): JSX.Element {
   const { rpc } = useRpc();
   const { sign, canSign } = useSign();
 
+  // Resolve sponsor display name for pending claim
+  const { displayName: pendingSponsorName } = useDisplayName(pendingClaim?.sponsorPubkey);
+
   // Tab state - default to "find" for unsponsored, "my-offers" for sponsored
   const [activeTab, setActiveTab] = useState<Tab>(
     isSponsored ? 'my-offers' : 'find'
@@ -82,6 +86,8 @@ export function SponsorshipPage(): JSX.Element {
     offers: myOffers,
     isLoading: myOffersLoading,
     error: myOffersError,
+    detailError,
+    clearDetailError,
     refresh: refreshMyOffers,
     totalPendingClaims,
     getOfferDetail,
@@ -107,6 +113,13 @@ export function SponsorshipPage(): JSX.Element {
   const [viewingDetail, setViewingDetail] = useState<SponsorshipOfferDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
+  // Resolve display names for all pending claimants in the current detail view
+  const claimantPubkeys = useMemo(
+    () => viewingDetail?.pending_claims.map(c => c.claimant_pubkey) ?? [],
+    [viewingDetail]
+  );
+  const claimantNames = useDisplayNames(claimantPubkeys);
+
   const handleClaim = useCallback((offerId: string) => {
     const offer = publicOffers.find(o => o.offer_id === offerId);
     if (offer) {
@@ -124,11 +137,12 @@ export function SponsorshipPage(): JSX.Element {
   }, [refreshMyOffers]);
 
   const handleViewClaims = useCallback(async (offerId: string) => {
+    clearDetailError();
     setDetailLoading(true);
     const detail = await getOfferDetail(offerId);
     setViewingDetail(detail);
     setDetailLoading(false);
-  }, [getOfferDetail]);
+  }, [getOfferDetail, clearDetailError]);
 
   const handleCancelOffer = useCallback(async (offerId: string) => {
     if (!rpc || !identity?.publicKey || !canSign) return;
@@ -259,8 +273,7 @@ export function SponsorshipPage(): JSX.Element {
             {pendingClaim && (
               <div className="sponsorship-pending-notice">
                 <strong>You have a pending claim.</strong>{' '}
-                Your application to sponsor{' '}
-                <code>{pendingClaim.sponsorPubkey.substring(0, 8)}...</code>{' '}
+                Your application to <span title={pendingClaim.sponsorPubkey}>{pendingSponsorName}</span>{' '}
                 is awaiting review. You can still browse other offers.
               </div>
             )}
@@ -351,6 +364,12 @@ export function SponsorshipPage(): JSX.Element {
           <div className="sponsorship-my-offers">
             {!viewingDetail ? (
               <>
+                {detailError && (
+                  <div className="sponsorship-error">
+                    Failed to load offer details. The node may be unreachable.
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={clearDetailError} style={{ marginLeft: '0.5rem' }}>Dismiss</button>
+                  </div>
+                )}
                 <div className="sponsorship-my-offers-header">
                   <p className="sponsorship-my-offers-desc">
                     Create offers to sponsor new users. Review and approve applications from people who want to join the network.
@@ -417,7 +436,7 @@ export function SponsorshipPage(): JSX.Element {
                 <button
                   type="button"
                   className="btn btn-ghost sponsorship-back"
-                  onClick={() => setViewingDetail(null)}
+                  onClick={() => { setViewingDetail(null); clearDetailError(); }}
                 >
                   &larr; Back to My Offers
                 </button>
@@ -447,9 +466,9 @@ export function SponsorshipPage(): JSX.Element {
                         <div className="sponsorship-claim-info">
                           <div className="sponsorship-claim-row">
                             <span className="sponsorship-claim-label">Claimant:</span>
-                            <code className="sponsorship-claim-pubkey">
-                              {claim.claimant_pubkey.substring(0, 16)}...
-                            </code>
+                            <span className="sponsorship-claim-pubkey" title={claim.claimant_pubkey}>
+                              {claimantNames.get(claim.claimant_pubkey)?.displayName ?? claim.claimant_pubkey.substring(0, 16) + '...'}
+                            </span>
                           </div>
                           <div className="sponsorship-claim-row">
                             <span className="sponsorship-claim-label">Claimed:</span>
@@ -485,6 +504,13 @@ export function SponsorshipPage(): JSX.Element {
 
                 {detailLoading && (
                   <div className="sponsorship-loading">Updating...</div>
+                )}
+
+                {detailError && (
+                  <div className="sponsorship-error">
+                    Failed to load offer details. The node may be unreachable.
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={clearDetailError} style={{ marginLeft: '0.5rem' }}>Dismiss</button>
+                  </div>
                 )}
               </div>
             )}

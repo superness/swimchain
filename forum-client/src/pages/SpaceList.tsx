@@ -5,10 +5,11 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useSpaces, useRpc } from '../hooks/useRpc';
-import { useStoredIdentity } from '../hooks/useStoredIdentity';
-import { useNodeIdentity } from '../hooks/useNodeIdentity';
+import { useIdentityContext } from '../providers/IdentityProvider';
+import { useBlocklist } from '../hooks/useBlocklist';
 import { useSpaceCreationPow } from '../hooks/useActionPow';
 import { useSponsorship } from '../hooks/useSponsorship';
+import { useSign } from '../hooks/useSign';
 import { PowProgress } from '../components/PowProgress';
 import { logger } from '../lib/logger';
 import { formatErrorMessage, getErrorAction, isAuthenticationError } from '../lib/errorMessages';
@@ -23,39 +24,38 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
+// Helper: Convert Uint8Array to hex string
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 export function SpaceList(): JSX.Element {
   logger.info('[SpaceList] ===== COMPONENT MOUNTED =====');
 
   const { spaces, loading, error, refetch } = useSpaces();
-  const { identity: storedIdentity } = useStoredIdentity();
-  const { identity: nodeIdentity } = useNodeIdentity();
+  const { identity } = useIdentityContext();
   const { rpc } = useRpc();
   const { isSponsored } = useSponsorship();
+  const { isSpaceBlocked } = useBlocklist();
+  const { sign } = useSign();
   const navigate = useNavigate();
-
-  // Use stored identity if available, otherwise use node identity
-  const identity = storedIdentity || (nodeIdentity ? { publicKey: nodeIdentity.publicKey } : null);
 
   // Log on every render
   logger.info('[SpaceList] RENDER:', {
-    hasStoredIdentity: !!storedIdentity,
-    hasNodeIdentity: !!nodeIdentity,
-    nodeIdentityValue: nodeIdentity,
-    finalIdentityExists: !!identity,
-    finalIdentityPubKey: identity?.publicKey?.substring(0, 20),
+    hasIdentity: !!identity,
+    identityPubKey: identity?.publicKey?.substring(0, 20),
     willShowButton: !!identity,
   });
 
   // Log identity state for debugging
   useEffect(() => {
     logger.info('[SpaceList] useEffect - Identity state changed:', {
-      hasStoredIdentity: !!storedIdentity,
-      storedIdentityPubKey: storedIdentity?.publicKey?.substring(0, 16),
-      hasNodeIdentity: !!nodeIdentity,
-      nodeIdentityPubKey: nodeIdentity?.publicKey?.substring(0, 16),
-      finalIdentity: identity ? { publicKey: identity.publicKey?.substring(0, 16) } : null,
+      hasIdentity: !!identity,
+      identityPubKey: identity?.publicKey?.substring(0, 16),
     });
-  }, [storedIdentity, nodeIdentity, identity]);
+  }, [identity]);
 
   // Space creation state
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -134,8 +134,17 @@ export function SpaceList(): JSX.Element {
     }
 
     try {
-      // Create signature (placeholder - in production this would sign the request)
-      const signature = '0'.repeat(128); // 64-byte hex signature placeholder
+      // Sign the space creation request with the node's identity
+      const signatureMessage = new TextEncoder().encode(
+        `create_space:${spaceName}:${identity.publicKey}:${params.timestamp}`
+      );
+      const signatureBytes = await sign(signatureMessage);
+      if (!signatureBytes) {
+        setCreateError('Failed to sign space creation request');
+        setIsCreating(false);
+        return;
+      }
+      const signature = bytesToHex(signatureBytes);
 
       logger.info('[SpaceList] Calling createSpace RPC with:', {
         name: spaceName,
@@ -184,7 +193,7 @@ export function SpaceList(): JSX.Element {
     } finally {
       setIsCreating(false);
     }
-  }, [identity, rpc, solution, spaceName, getRpcParams, resetMining, refetch, navigate]);
+  }, [identity, rpc, solution, spaceName, getRpcParams, resetMining, refetch, navigate, sign]);
 
   // Auto-submit when mining completes
   if (miningState === 'complete' && solution && isCreating) {
@@ -353,7 +362,7 @@ export function SpaceList(): JSX.Element {
 
       {spaces.length > 0 && (
         <div className="spaces-grid">
-          {spaces.map((space) => (
+          {spaces.filter((space) => !isSpaceBlocked(space.id)).map((space) => (
             <Link
               key={space.id}
               to={`/spaces/${space.id}`}

@@ -4,7 +4,7 @@
 
 import type { PresenceState } from '../types';
 import { formatLastSeen } from '../utils/time';
-import { truncateAddress } from '../mocks/data';
+import { truncateAddress } from '../lib/utils';
 import './OnlineUsers.css';
 
 interface OnlineUsersProps {

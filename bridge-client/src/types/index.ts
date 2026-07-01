@@ -149,7 +149,7 @@ export interface ActivityLogEntry {
   /** Timestamp */
   timestamp: Date;
   /** Type of activity */
-  type: 'message_bridged' | 'error' | 'connection' | 'rate_limited';
+  type: 'message_bridged' | 'error' | 'connection' | 'rate_limited' | 'spam_blocked';
   /** Direction (if applicable) */
   direction?: BridgeDirection;
   /** Source platform */

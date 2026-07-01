@@ -2,6 +2,8 @@
  * Address display component with truncation
  * Format: DisplayName (cs1abc...xyz) or just cs1abc...xyz if no name
  * Optionally shows avatar and links to profile
+ *
+ * Automatically resolves display names from user profiles when not provided inline.
  */
 
 import { Link } from 'react-router-dom';
@@ -9,6 +11,7 @@ import './AddressDisplay.css';
 import { StartDMButton } from './StartDMButton';
 import { UserAvatar, AvatarSize } from './UserAvatar';
 import { AvatarInfo } from '../lib/profile';
+import { useDisplayName } from '../hooks/useDisplayName';
 
 interface AddressDisplayProps {
   address: string;
@@ -20,6 +23,8 @@ interface AddressDisplayProps {
   avatarSize?: AvatarSize;
   avatar?: AvatarInfo | null;
   linkToProfile?: boolean;
+  /** Skip automatic display name resolution (useful when you know there's no profile) */
+  skipResolve?: boolean;
 }
 
 /**
@@ -32,7 +37,7 @@ export function truncateAddress(address: string): string {
 
 export function AddressDisplay({
   address,
-  displayName,
+  displayName: inlineDisplayName,
   full = false,
   className = '',
   showDM = false,
@@ -40,7 +45,16 @@ export function AddressDisplay({
   avatarSize = 'sm',
   avatar,
   linkToProfile = false,
+  skipResolve = false,
 }: AddressDisplayProps): JSX.Element {
+  // Resolve display name from profile if not provided inline
+  const { displayName: resolvedName, loading } = useDisplayName(
+    skipResolve ? undefined : address,
+    inlineDisplayName
+  );
+
+  // Use inline name if provided, otherwise use resolved name
+  const displayName = inlineDisplayName || (resolvedName && resolvedName !== truncateAddress(address) ? resolvedName : undefined);
   const displayAddress = full ? address : truncateAddress(address);
 
   // Content to display (name + address)
@@ -59,6 +73,11 @@ export function AddressDisplay({
         <>
           <span className="display-name">{displayName}</span>
           <code className="address-text address-secondary">({displayAddress})</code>
+        </>
+      ) : loading && !skipResolve ? (
+        <>
+          <code className="address-text">{displayAddress}</code>
+          <span className="display-name-loading" aria-hidden="true">…</span>
         </>
       ) : (
         <code className="address-text">{displayAddress}</code>

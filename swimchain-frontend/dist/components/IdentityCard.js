@@ -1,0 +1,8 @@
+import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
+import { AddressDisplay } from './AddressDisplay';
+import './IdentityCard.css';
+export function IdentityCard({ identity }) {
+    const createdDate = new Date(identity.createdAt * 1000);
+    return (_jsxs("div", { className: "identity-card card", children: [_jsx("div", { className: "identity-avatar", children: identity.address.slice(3, 5).toUpperCase() }), _jsxs("div", { className: "identity-details", children: [_jsxs("div", { className: "identity-address", children: [_jsx("label", { children: "Your Address" }), _jsx(AddressDisplay, { address: identity.address })] }), _jsxs("div", { className: "identity-meta", children: [_jsxs("div", { className: "meta-item", children: [_jsx("label", { children: "Created" }), _jsx("span", { children: createdDate.toLocaleDateString() })] }), identity.powSolution && (_jsxs("div", { className: "meta-item", children: [_jsx("label", { children: "PoW Difficulty" }), _jsx("span", { children: identity.powSolution.difficulty })] }))] }), _jsx("div", { className: "identity-status", children: _jsxs("span", { className: "status-badge badge-success", children: [_jsx("svg", { width: "12", height: "12", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", "aria-hidden": "true", children: _jsx("polyline", { points: "20 6 9 17 4 12" }) }), "Verified Identity"] }) })] })] }));
+}
+//# sourceMappingURL=IdentityCard.js.map

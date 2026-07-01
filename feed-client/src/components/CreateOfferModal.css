@@ -1,0 +1,144 @@
+/* CreateOfferModal styles */
+
+.create-offer-modal {
+  max-width: 520px;
+  width: 90%;
+}
+
+.create-offer-field {
+  margin-bottom: 1.25rem;
+}
+
+.create-offer-label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary, #212529);
+}
+
+.create-offer-input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color, #e1e5eb);
+  border-radius: 8px;
+  font-size: 0.875rem;
+  transition: border-color 0.2s;
+}
+
+.create-offer-input:focus {
+  outline: none;
+  border-color: var(--accent-color, #007bff);
+}
+
+.create-offer-input:disabled {
+  background: var(--bg-disabled, #e9ecef);
+  cursor: not-allowed;
+}
+
+.create-offer-hint {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted, #6c757d);
+  margin-top: 0.25rem;
+}
+
+.create-offer-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.create-offer-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  cursor: pointer;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color, #e1e5eb);
+  border-radius: 8px;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.create-offer-radio:hover {
+  border-color: var(--border-hover, #c0c5cc);
+}
+
+.create-offer-radio input[type="radio"] {
+  margin-top: 0.25rem;
+  cursor: pointer;
+}
+
+.create-offer-radio input[type="radio"]:checked + .create-offer-radio-text {
+  color: var(--text-primary, #212529);
+}
+
+.create-offer-radio-text {
+  font-size: 0.875rem;
+  color: var(--text-secondary, #5a6169);
+  line-height: 1.5;
+}
+
+.create-offer-radio-text strong {
+  color: var(--text-primary, #212529);
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.create-offer-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-primary, #212529);
+}
+
+.create-offer-checkbox input[type="checkbox"] {
+  cursor: pointer;
+  width: 18px;
+  height: 18px;
+}
+
+.create-offer-error {
+  background: var(--danger-bg, #f8d7da);
+  color: var(--danger-color, #721c24);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  margin-bottom: 1rem;
+}
+
+.create-offer-warning {
+  background: var(--warning-bg, #fff3cd);
+  color: var(--warning-text, #856404);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  .create-offer-input {
+    background: var(--bg-input-dark, #1e1e1e);
+    border-color: var(--border-color-dark, #444);
+    color: var(--text-primary-dark, #e5e7eb);
+  }
+
+  .create-offer-radio {
+    border-color: var(--border-color-dark, #444);
+  }
+
+  .create-offer-radio:hover {
+    border-color: var(--border-hover-dark, #555);
+  }
+
+  .create-offer-radio-text {
+    color: var(--text-secondary-dark, #9ca3af);
+  }
+
+  .create-offer-radio-text strong {
+    color: var(--text-primary-dark, #e5e7eb);
+  }
+}

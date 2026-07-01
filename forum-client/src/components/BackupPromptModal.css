@@ -1,0 +1,172 @@
+/**
+ * Backup Prompt Modal Styles
+ */
+
+.backup-modal-overlay {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.backup-modal {
+  max-width: 32rem;
+}
+
+.backup-modal-header {
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.5rem 1.25rem 1rem;
+  border-bottom: none;
+}
+
+.backup-icon-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  background: var(--warning-bg, #fef3c7);
+  color: var(--warning-text, #d97706);
+  border-radius: 50%;
+}
+
+.backup-modal-header h2 {
+  text-align: center;
+}
+
+.backup-modal-body {
+  padding: 0 1.5rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.backup-warning {
+  background: var(--warning-bg, #fef3c7);
+  color: var(--warning-text-dark, #92400e);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.backup-warning strong {
+  color: var(--warning-text, #d97706);
+}
+
+.backup-seed-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.backup-seed-section label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary, #111827);
+}
+
+.seed-display-wrapper {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.seed-display {
+  flex: 1;
+  padding: 0.75rem;
+  font-family: monospace;
+  font-size: 0.8125rem;
+  color: var(--text-primary, #111827);
+  background: var(--surface-2, #f3f4f6);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 0.375rem;
+  letter-spacing: 0.02em;
+}
+
+.seed-display:focus {
+  outline: none;
+  border-color: var(--primary, #6366f1);
+  box-shadow: 0 0 0 3px var(--primary-light, rgba(99, 102, 241, 0.1));
+}
+
+.btn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  min-width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  background: var(--surface-2, #f3f4f6);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 0.375rem;
+  color: var(--text-muted, #6b7280);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-icon:hover {
+  background: var(--surface-3, #e5e7eb);
+  color: var(--text-primary, #111827);
+}
+
+.seed-note {
+  font-size: 0.75rem;
+  color: var(--text-muted, #6b7280);
+  margin: 0;
+}
+
+.backup-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.backup-action-btn {
+  flex: 1;
+  min-width: 10rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.backup-acknowledgment {
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border, #e5e7eb);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-primary, #111827);
+  line-height: 1.4;
+}
+
+.checkbox-label input[type="checkbox"] {
+  margin-top: 0.125rem;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+  cursor: pointer;
+  accent-color: var(--primary, #6366f1);
+}
+
+.backup-modal-actions {
+  padding: 1rem 1.5rem 1.5rem;
+  justify-content: center;
+}
+
+.backup-modal-actions .btn-large {
+  min-width: 12rem;
+  padding: 0.75rem 2rem;
+  font-size: 1rem;
+}
+
+.backup-modal-actions .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

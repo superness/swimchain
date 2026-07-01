@@ -5,13 +5,22 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { useStoredIdentity } from '../hooks/useStoredIdentity';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useIdentityContext } from '../providers/IdentityProvider';
+import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { useReplySubmit } from '../hooks/useRpc';
 import { useReplyPow } from '../hooks/useActionPow';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { PowProgress } from './PowProgress';
 import './ReplyComposer.css';
+
+// Helper: Convert hex string to Uint8Array
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
 
 interface ReplyComposerProps {
   threadId: string;
@@ -28,8 +37,8 @@ export function ReplyComposer({
 }: ReplyComposerProps): JSX.Element {
   const [content, setContent] = useState('');
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const { identity } = useStoredIdentity();
-  const { keypair } = useStoredKeypair();
+  const { identity } = useIdentityContext();
+  const { sign: nodeSign } = useNodeIdentity();
   const { state, mineReply, cancel, progress, reset, solution } = useReplyPow();
   const { submitReply, submitting, error: rpcError } = useReplySubmit();
   const contentRef = useRef<string>('');
@@ -40,11 +49,7 @@ export function ReplyComposer({
 
     if (!content.trim()) return;
     if (!identity) {
-      setSubmitError('Please create an identity first');
-      return;
-    }
-    if (!keypair) {
-      setSubmitError('Loading keypair...');
+      setSubmitError('Please wait for identity to load');
       return;
     }
 
@@ -54,13 +59,15 @@ export function ReplyComposer({
     submittedRef.current = false;
 
     // Start mining with Argon2id action PoW
+    // Convert hex public key to bytes for mining
+    const publicKeyBytes = hexToBytes(identity.publicKey);
     try {
-      await mineReply(content, keypair.publicKey(), true /* testnet */);
+      await mineReply(content, publicKeyBytes, true /* testnet */);
     } catch (err) {
       // Mining cancelled or failed - error state is handled by hook
       console.log('[Reply] Mining ended:', err);
     }
-  }, [content, identity, keypair, mineReply]);
+  }, [content, identity, mineReply]);
 
   const handleMiningComplete = useCallback(async () => {
     // Prevent double submission
@@ -68,7 +75,7 @@ export function ReplyComposer({
     submittedRef.current = true;
 
     // Submit the reply to the network
-    if (!identity || !keypair || !solution) {
+    if (!identity || !solution) {
       console.error('[Reply] Missing required data for submission');
       setSubmitError('Missing identity or PoW data');
       reset();
@@ -89,12 +96,19 @@ export function ReplyComposer({
       powParams,
     });
 
+    // Use node signing - nodeSign returns Uint8Array | null
+    const signFn = async (message: Uint8Array): Promise<Uint8Array> => {
+      const sig = await nodeSign(message);
+      if (!sig) throw new Error('Failed to sign message');
+      return sig;
+    };
+
     try {
       const result = await submitReply(
         targetParentId,
         contentRef.current,
         identity.publicKey,
-        (message: Uint8Array) => keypair.sign(message),
+        signFn,
         powParams,
       );
 
@@ -114,7 +128,7 @@ export function ReplyComposer({
       setSubmitError(err instanceof Error ? err.message : 'Submission error');
       reset();
     }
-  }, [threadId, parentId, identity, keypair, solution, submitReply, reset, onSuccess]);
+  }, [threadId, parentId, identity, nodeSign, solution, submitReply, reset, onSuccess]);
 
   // Trigger submission when mining completes
   useEffect(() => {

@@ -38,6 +38,7 @@ use crate::crypto::signature::{sign as ed25519_sign, verify as ed25519_verify};
 use crate::crypto::{leading_zeros, pow_hash};
 use crate::dht::ProviderRecord;
 use crate::types::identity::{PublicKey, Signature};
+use crate::cli::search_index::{SearchIndex, IndexableContent, SearchFilters};
 use crate::VERSION;
 
 use super::error::RpcErrorCode;
@@ -46,30 +47,57 @@ use super::types::*;
 // Space ID constants - using 16 bytes (128 bits) for space identification
 const SPACE_HRP: &str = "sp";
 
-/// Decode a bech32m space ID (sp1...) to 16 bytes
+/// Decode a space ID to 16 bytes
+/// Accepts both formats:
+/// - Bech32m: "sp1qqqq..." (preferred, new format)
+/// - Short hex: "0002de81" (legacy, 8 char hex for first 4 bytes, zero-padded to 16)
+/// - Full hex: "0002de81..." (32 char hex for full 16 bytes)
 fn decode_space_id(space_id: &str) -> Result<[u8; 16], String> {
     use bech32::{Bech32m, Hrp};
 
-    if !space_id.starts_with("sp1") {
-        return Err(format!("Space ID must start with 'sp1', got: {}", space_id));
+    // Check if it's Bech32m format (starts with sp1)
+    if space_id.starts_with("sp1") {
+        let hrp = Hrp::parse(SPACE_HRP).map_err(|e| format!("Invalid HRP: {}", e))?;
+        let (decoded_hrp, data) = bech32::decode(space_id)
+            .map_err(|e| format!("Invalid bech32m encoding: {}", e))?;
+
+        if decoded_hrp != hrp {
+            return Err(format!("Expected HRP '{}', got '{}'", SPACE_HRP, decoded_hrp));
+        }
+
+        // Skip version byte (first byte), get the 16-byte space ID
+        if data.len() < 17 {
+            return Err(format!("Space ID data too short: {} bytes", data.len()));
+        }
+
+        let mut space_bytes = [0u8; 16];
+        space_bytes.copy_from_slice(&data[1..17]);
+        return Ok(space_bytes);
     }
 
-    let hrp = Hrp::parse(SPACE_HRP).map_err(|e| format!("Invalid HRP: {}", e))?;
-    let (decoded_hrp, data) = bech32::decode(space_id)
-        .map_err(|e| format!("Invalid bech32m encoding: {}", e))?;
+    // Try hex format (8 or 32 characters)
+    if space_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        let mut space_bytes = [0u8; 16];
 
-    if decoded_hrp != hrp {
-        return Err(format!("Expected HRP '{}', got '{}'", SPACE_HRP, decoded_hrp));
+        if space_id.len() == 8 {
+            // Short hex: first 4 bytes, rest is zero
+            let hex_bytes = hex::decode(space_id)
+                .map_err(|e| format!("Invalid hex: {}", e))?;
+            space_bytes[..4].copy_from_slice(&hex_bytes);
+            return Ok(space_bytes);
+        } else if space_id.len() == 32 {
+            // Full hex: all 16 bytes
+            let hex_bytes = hex::decode(space_id)
+                .map_err(|e| format!("Invalid hex: {}", e))?;
+            space_bytes.copy_from_slice(&hex_bytes);
+            return Ok(space_bytes);
+        }
     }
 
-    // Skip version byte (first byte), get the 16-byte space ID
-    if data.len() < 17 {
-        return Err(format!("Space ID data too short: {} bytes", data.len()));
-    }
-
-    let mut space_bytes = [0u8; 16];
-    space_bytes.copy_from_slice(&data[1..17]);
-    Ok(space_bytes)
+    Err(format!(
+        "Invalid space ID format. Expected bech32m (sp1...) or hex (8 or 32 chars), got: {}",
+        space_id
+    ))
 }
 
 /// Encode 16 bytes as a bech32m space ID (sp1...)
@@ -343,12 +371,18 @@ pub struct NodeRef {
     pub sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
     /// Offer store for public sponsorship offer lifecycle
     pub offer_store: Option<Arc<crate::sponsorship::offer_store::OfferStore>>,
+    /// Branch subscription manager (selective sync; SPEC_06/BRANCH_SELECTIVE_SYNC).
+    /// Uses std::sync::RwLock to match manager.rs construction.
+    pub branch_subscription_manager:
+        Option<Arc<std::sync::RwLock<crate::sync::subscription::BranchSubscriptionManager>>>,
     /// Node's identity keypair for signing
     pub keypair: KeyPair,
     /// Shutdown sender (for stop method)
     pub shutdown_tx: broadcast::Sender<()>,
     /// Display name for this node's identity (passed with actions)
     pub identity_name: Arc<RwLock<Option<String>>>,
+    /// Full-text search index (Tantivy) for content search
+    pub search_index: Option<Arc<std::sync::RwLock<SearchIndex>>>,
 }
 
 /// RPC method dispatcher
@@ -673,8 +707,9 @@ impl RpcMethods {
             "get_content" => self.get_content(params, id).await,
             "list_spaces" => self.list_spaces(params, id).await,
             "create_space" => self.create_space(params, id).await,
+            "resolve_space_name" => self.resolve_space_name(params, id).await,
             "list_space_content" => self.list_space_content(params, id).await,
-            "list_space_posts" => self.list_space_posts(params, id).await,
+            "list_space_posts" | "list_posts_for_space" => self.list_space_posts(params, id).await,
             "get_user_posts" => self.get_user_posts(params, id).await,
             "request_content" => self.request_content(params, id).await,
             "get_replies" => self.get_replies(params, id).await,
@@ -737,6 +772,7 @@ impl RpcMethods {
             "search" => self.search(params, id).await,
             "search_suggest" => self.search_suggest(params, id).await,
             "trending_searches" => self.trending_searches(params, id).await,
+            "rebuild_search_index" => self.rebuild_search_index(params, id).await,
 
             // Sponsorship methods
             "register_genesis_identity" => self.register_genesis_identity(params, id).await,
@@ -1756,6 +1792,26 @@ impl RpcMethods {
                         warn!("Failed to flush content store after post: {}", e);
                     }
                     info!("[POST] Stored ContentItem for post {}", &content_id[..24]);
+
+                    // Index the content for full-text search
+                    if let Some(ref search_index) = self.node.search_index {
+                        let indexable = IndexableContent {
+                            content_id: content_id.clone(),
+                            space_id: params.space_id.clone(),
+                            author: params.author_id.clone(),
+                            title: params.title.clone(),
+                            body: params.body.clone(),
+                            heat: 100.0, // New posts start at 100% heat
+                            timestamp: params.timestamp,
+                        };
+                        if let Ok(mut index) = search_index.write() {
+                            if let Err(e) = index.add_content(&indexable) {
+                                warn!("[SEARCH] Failed to index post: {}", e);
+                            } else {
+                                debug!("[SEARCH] Indexed post {}", &content_id[..24]);
+                            }
+                        }
+                    }
                 }
                 Err(e) if e.to_string().contains("already exists") => {
                     debug!("Post already exists in content store: {}", content_id);
@@ -2369,6 +2425,30 @@ impl RpcMethods {
                             warn!("[REPLY] Failed to increment reply count for parent: {}", e);
                         } else {
                             debug!("[REPLY] Incremented reply count for parent {}", &params.parent_id[..24]);
+                        }
+                    }
+
+                    // Index the reply for full-text search
+                    if let Some(ref search_index) = self.node.search_index {
+                        // Convert space_id bytes to bech32m format for index
+                        let space_id_16: [u8; 16] = space_id_bytes[..16].try_into().unwrap_or([0u8; 16]);
+                        let space_id_str = encode_space_id(&space_id_16);
+
+                        let indexable = IndexableContent {
+                            content_id: content_id.clone(),
+                            space_id: space_id_str,
+                            author: params.author_id.clone(),
+                            title: String::new(), // Replies don't have titles
+                            body: params.body.clone(),
+                            heat: 100.0, // New replies start at 100% heat
+                            timestamp: params.timestamp,
+                        };
+                        if let Ok(mut index) = search_index.write() {
+                            if let Err(e) = index.add_content(&indexable) {
+                                warn!("[SEARCH] Failed to index reply: {}", e);
+                            } else {
+                                debug!("[SEARCH] Indexed reply {}", &content_id[..24]);
+                            }
                         }
                     }
                 }
@@ -3517,7 +3597,7 @@ impl RpcMethods {
         RpcResponse::error(RpcErrorCode::ContentNotFound, "Content not found", id)
     }
 
-    /// Search across spaces and content
+    /// Search across spaces and content using Tantivy full-text search
     async fn search(&self, params: Value, id: Value) -> RpcResponse {
         let start_time = std::time::Instant::now();
 
@@ -3526,11 +3606,10 @@ impl RpcMethods {
         let types = params.get("types").and_then(|v| v.as_array());
         let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
         let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let space_filter = params.get("space_id").and_then(|v| v.as_str()).map(|s| s.to_string());
 
-        let query_lower = query.to_lowercase();
-        let search_terms: Vec<&str> = query_lower.split_whitespace().collect();
-
-        if search_terms.is_empty() {
+        let query_trimmed = query.trim();
+        if query_trimmed.is_empty() {
             return RpcResponse::success(serde_json::json!({
                 "results": [],
                 "total": 0,
@@ -3540,9 +3619,12 @@ impl RpcMethods {
 
         let mut results: Vec<serde_json::Value> = Vec::new();
 
-        // Check if we should search spaces
+        // Check if we should search spaces (substring matching - spaces aren't in Tantivy)
         let search_spaces = types.map(|t| t.iter().any(|x| x.as_str() == Some("space"))).unwrap_or(true);
         if search_spaces {
+            let query_lower = query_trimmed.to_lowercase();
+            let search_terms: Vec<&str> = query_lower.split_whitespace().collect();
+
             if let Some(ref chain_store) = self.node.chain_store {
                 for result in chain_store.list_spaces() {
                     if let Ok(space_info) = result {
@@ -3575,38 +3657,131 @@ impl RpcMethods {
             }
         }
 
-        // Check if we should search threads
+        // Check if we should search threads (using Tantivy full-text search)
         let search_threads = types.map(|t| t.iter().any(|x| x.as_str() == Some("thread"))).unwrap_or(true);
         if search_threads {
-            if let Some(ref content_store) = self.node.content_store {
-                let mut count = 0;
-                for result in content_store.iter_content() {
-                    if count >= 500 { break; }
-                    count += 1;
-                    let item = match result {
-                        Ok(i) => i,
-                        Err(_) => continue,
+            // Try Tantivy search first (fast, relevance-ranked)
+            let tantivy_results = if let Some(ref search_index) = self.node.search_index {
+                if let Ok(index) = search_index.read() {
+                    let filters = SearchFilters {
+                        space_id: space_filter.clone(),
+                        min_heat: None,
+                        sort: crate::cli::commands::search::SortOrder::Heat,
                     };
-                    let body_lower = item.body_inline.as_ref().map(|b| b.to_lowercase()).unwrap_or_default();
+                    // Request more results than limit to account for offset
+                    match index.search(query_trimmed, filters, limit + offset + 100) {
+                        Ok(entries) => Some(entries),
+                        Err(e) => {
+                            debug!("[SEARCH] Tantivy search failed, falling back to scan: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
-                    let matches = search_terms.iter().any(|term| body_lower.contains(term));
+            if let Some(entries) = tantivy_results {
+                // Convert Tantivy results to JSON response format
+                for entry in entries {
+                    // Parse title and body from snippet (Tantivy stores the full body)
+                    let (title, body_preview) = if entry.title.is_empty() {
+                        // For replies or posts without separate title, use snippet directly
+                        (String::new(), entry.snippet.clone())
+                    } else {
+                        (entry.title.clone(), entry.snippet.clone())
+                    };
 
-                    if matches && item.parent_id.is_none() {
+                    // Convert space_id from bech32m to hex if possible
+                    let space_id_hex = if entry.space_id.starts_with("sp1") {
+                        decode_space_id(&entry.space_id)
+                            .map(|bytes| hex::encode(bytes))
+                            .unwrap_or_else(|_| entry.space_id.clone())
+                    } else {
+                        entry.space_id.clone()
+                    };
+
+                    results.push(serde_json::json!({
+                        "id": entry.content_id.replace("sha256:", ""),
+                        "type": "thread",
+                        "score": entry.score as f64,
+                        "highlights": {
+                            "content": body_preview,
+                            "name": if !entry.title.is_empty() { Some(&entry.title) } else { None }
+                        },
+                        "data": {
+                            "contentId": entry.content_id.replace("sha256:", ""),
+                            "spaceId": space_id_hex,
+                            "authorId": entry.author,
+                            "title": title,
+                            "body": body_preview,
+                            "createdAt": entry.timestamp,
+                            "lastEngagement": entry.timestamp,
+                            "replyCount": 0,
+                            "reactionCount": 0,
+                            "hasMedia": false,
+                            "heat": entry.heat
+                        }
+                    }));
+                }
+            } else {
+                // Fallback to content_store scan if Tantivy not available
+                let query_lower = query_trimmed.to_lowercase();
+                let search_terms: Vec<&str> = query_lower.split_whitespace().collect();
+
+                if let Some(ref content_store) = self.node.content_store {
+                    let mut count = 0;
+                    for result in content_store.iter_content() {
+                        if count >= 2000 { break; }
+                        count += 1;
+                        let item = match result {
+                            Ok(i) => i,
+                            Err(_) => continue,
+                        };
+
+                        // Skip replies - only search top-level threads
+                        if item.parent_id.is_some() {
+                            continue;
+                        }
+
+                        // Parse title from body (format is "Title\n\nBody")
+                        let body_text = item.body_inline.as_deref().unwrap_or("");
+                        let (title, body) = if let Some(idx) = body_text.find("\n\n") {
+                            let (t, b) = body_text.split_at(idx);
+                            (t.to_string(), b.trim_start_matches('\n').to_string())
+                        } else {
+                            (String::new(), body_text.to_string())
+                        };
+
+                        let title_lower = title.to_lowercase();
+                        let body_lower = body.to_lowercase();
+
+                        let title_matches = search_terms.iter().any(|term| title_lower.contains(term));
+                        let body_matches = search_terms.iter().any(|term| body_lower.contains(term));
+
+                        if !title_matches && !body_matches {
+                            continue;
+                        }
+
+                        let title_match_count = search_terms.iter().filter(|term| title_lower.contains(*term)).count();
+                        let body_match_count = search_terms.iter().filter(|term| body_lower.contains(*term)).count();
+                        let score = (title_match_count as f64 * 0.3) + (body_match_count as f64 * 0.1) + if title_matches { 0.5 } else { 0.2 };
+
                         let content_id_str = hex::encode(item.content_id.as_bytes());
-                        let body_preview = item.body_inline.as_ref().map(|b| {
-                            if b.len() > 200 { format!("{}...", &b[..200]) } else { b.clone() }
-                        }).unwrap_or_default();
+                        let body_preview = if body.len() > 200 { format!("{}...", &body[..200]) } else { body.clone() };
 
                         results.push(serde_json::json!({
                             "id": content_id_str,
                             "type": "thread",
-                            "score": 0.8,
-                            "highlights": { "content": body_preview },
+                            "score": score,
+                            "highlights": { "content": body_preview, "name": if title_matches { Some(&title) } else { None } },
                             "data": {
                                 "contentId": content_id_str,
                                 "spaceId": hex::encode(item.space_id.as_bytes()),
                                 "authorId": hex::encode(item.author_id.as_bytes()),
-                                "title": "",
+                                "title": title,
                                 "body": body_preview,
                                 "createdAt": item.created_at,
                                 "lastEngagement": item.last_engagement,
@@ -3620,6 +3795,13 @@ impl RpcMethods {
             }
         }
 
+        // Sort by score descending for relevance ranking
+        results.sort_by(|a, b| {
+            let score_a = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let score_b = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         let total = results.len();
         let took_ms = start_time.elapsed().as_millis() as u64;
 
@@ -3631,6 +3813,95 @@ impl RpcMethods {
         RpcResponse::success(serde_json::json!({
             "results": paginated,
             "total": total,
+            "took_ms": took_ms
+        }), id)
+    }
+
+    /// Rebuild the full-text search index from content store
+    ///
+    /// This is useful when:
+    /// - The index is empty or corrupted
+    /// - Content was synced from network but not indexed
+    /// - A fresh index is needed for testing
+    async fn rebuild_search_index(&self, _params: Value, id: Value) -> RpcResponse {
+        let start_time = std::time::Instant::now();
+
+        // Check if search index is available
+        let search_index = match &self.node.search_index {
+            Some(idx) => idx.clone(),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Search index not available",
+                    id,
+                );
+            }
+        };
+
+        // Collect all content to index
+        let mut indexed_count = 0;
+        let mut error_count = 0;
+
+        if let Some(ref content_store) = self.node.content_store {
+            for result in content_store.iter_content() {
+                let item = match result {
+                    Ok(i) => i,
+                    Err(_) => {
+                        error_count += 1;
+                        continue;
+                    }
+                };
+
+                // Parse title and body from inline content
+                let body_text = item.body_inline.as_deref().unwrap_or("");
+                let (title, body) = if let Some(idx) = body_text.find("\n\n") {
+                    let (t, b) = body_text.split_at(idx);
+                    (t.to_string(), b.trim_start_matches('\n').to_string())
+                } else {
+                    (String::new(), body_text.to_string())
+                };
+
+                // Convert space_id to bech32m format
+                let space_id_16: [u8; 16] = item.space_id.as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                let space_id_str = encode_space_id(&space_id_16);
+
+                let content_id_str = format!("sha256:{}", hex::encode(item.content_id.as_bytes()));
+
+                let indexable = IndexableContent {
+                    content_id: content_id_str,
+                    space_id: space_id_str,
+                    author: hex::encode(item.author_id.as_bytes()),
+                    title,
+                    body,
+                    heat: 50.0, // Default heat for existing content
+                    timestamp: item.created_at,
+                };
+
+                if let Ok(mut index) = search_index.write() {
+                    if let Err(e) = index.add_content(&indexable) {
+                        debug!("[SEARCH] Failed to index content: {}", e);
+                        error_count += 1;
+                    } else {
+                        indexed_count += 1;
+                    }
+                }
+            }
+        }
+
+        let took_ms = start_time.elapsed().as_millis() as u64;
+        let doc_count = if let Ok(idx) = search_index.read() {
+            idx.doc_count()
+        } else {
+            0
+        };
+
+        info!("[SEARCH] Rebuilt search index: {} items indexed, {} errors, {} total docs, took {}ms",
+              indexed_count, error_count, doc_count, took_ms);
+
+        RpcResponse::success(serde_json::json!({
+            "indexed": indexed_count,
+            "errors": error_count,
+            "total_docs": doc_count,
             "took_ms": took_ms
         }), id)
     }
@@ -4240,6 +4511,89 @@ impl RpcMethods {
             success: true,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Resolve a space's display name (Bug #4).
+    ///
+    /// If we already have a real name locally, return it immediately.
+    /// Otherwise broadcast GET_SPACE_META to connected peers and return
+    /// `{name: null, status: "queried"}`. The reply, when it arrives, will
+    /// upsert the name into the local registry; clients can re-call list_spaces.
+    async fn resolve_space_name(&self, params: Value, id: Value) -> RpcResponse {
+        #[derive(serde::Deserialize)]
+        struct P { space_id: String }
+
+        let params: P = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!("Invalid params: {}", e),
+                id,
+            ),
+        };
+
+        let space_id_16 = match decode_space_id(&params.space_id) {
+            Ok(b) => b,
+            Err(e) => return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!("Invalid space_id: {}", e),
+                id,
+            ),
+        };
+
+        let placeholder = format!("Space {}", hex::encode(&space_id_16[..4]));
+
+        // Step 1: check local registry
+        if let Some(ref chain_store) = self.node.chain_store {
+            if let Ok(Some(info)) = chain_store.get_space(&space_id_16) {
+                if !info.name.is_empty() && info.name != placeholder {
+                    return RpcResponse::success(
+                        serde_json::json!({
+                            "space_id": params.space_id,
+                            "name": info.name,
+                            "status": "local",
+                        }),
+                        id,
+                    );
+                }
+            }
+        }
+
+        // Step 2: broadcast GET_SPACE_META to peers
+        let pool = match &self.node.connection_pool {
+            Some(p) => p,
+            None => return RpcResponse::error(
+                RpcErrorCode::SubsystemUnavailable,
+                "Connection pool not available",
+                id,
+            ),
+        };
+
+        use crate::network::messages::GetSpaceMetaPayload;
+        use crate::types::network::{MessageEnvelope, MessageType};
+        let req = GetSpaceMetaPayload::new(space_id_16);
+        let envelope = MessageEnvelope::new_fork_agnostic(
+            MessageType::GetSpaceMeta,
+            req.to_bytes(),
+        );
+        let sent = pool.broadcast(&envelope).await;
+
+        info!(
+            "[RESOLVE_SPACE_NAME] Broadcast GET_SPACE_META for {} to {} peers",
+            hex::encode(&space_id_16[..4]),
+            sent
+        );
+
+        RpcResponse::success(
+            serde_json::json!({
+                "space_id": params.space_id,
+                "name": serde_json::Value::Null,
+                "status": "queried",
+                "peers_asked": sent,
+                "message": "Name not local; asked peers. Re-call list_spaces shortly."
+            }),
+            id,
+        )
     }
 
     async fn list_space_content(&self, params: Value, id: Value) -> RpcResponse {

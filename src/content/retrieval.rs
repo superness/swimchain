@@ -894,6 +894,11 @@ impl ContentRetrievalManager {
             pending.remove(expected_hash);
         }
 
+        // Clear from wanted set (content has been received)
+        if let Ok(mut wanted) = self.wanted_content.write() {
+            wanted.remove(expected_hash);
+        }
+
         Ok(())
     }
 

@@ -332,6 +332,13 @@ impl Message {
                     envelope.message_type
                 )))
             }
+            // Space name resolution (Bug #4) — handled at router level
+            MessageType::GetSpaceMeta | MessageType::SpaceMeta => {
+                Err(WireError::payload(format!(
+                    "Space-meta message type {:?} should be handled at router level",
+                    envelope.message_type
+                )))
+            }
         }
     }
 

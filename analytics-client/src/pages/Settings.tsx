@@ -93,19 +93,6 @@ export function Settings(): JSX.Element {
               </label>
             </div>
 
-            {/* TODO: Re-enable when advanced metrics feature is implemented
-            <div className="form-group checkbox-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={config.showAdvanced}
-                  onChange={(e) => setConfig(c => ({ ...c, showAdvanced: e.target.checked }))}
-                />
-                Show advanced metrics
-              </label>
-            </div>
-            */}
-
             <div className="form-group">
               <label htmlFor="pollInterval">
                 Poll Interval (seconds)

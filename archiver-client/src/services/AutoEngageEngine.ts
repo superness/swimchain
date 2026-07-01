@@ -115,6 +115,11 @@ export class AutoEngageEngine {
     // Check policy allows auto-engage
     if (!policy.autoEngage) return false;
 
+    // SPEC_12: Never auto-engage spam-flagged content.
+    // Spam-flagged content has accelerated decay (4-hour half-life).
+    // Engaging it would undermine the protocol's anti-spam mechanism.
+    if (content.spamFlagged) return false;
+
     // Check content is below threshold
     if (content.heat >= AUTO_ENGAGE_THRESHOLD) return false;
 

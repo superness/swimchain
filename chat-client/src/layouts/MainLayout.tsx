@@ -5,10 +5,8 @@
 
 import { ReactNode, useState, useCallback, useMemo } from 'react';
 import { SpaceSidebar } from '../components/SpaceSidebar';
-import { OnlineUsers } from '../components/OnlineUsers';
 import { StatusBar } from '../components/StatusBar';
 import { useSpaces, useNetworkStatus } from '../hooks/useRpc';
-import { mockPresenceStates } from '../mocks/data';
 import type { SpaceCategory } from '../types';
 import './MainLayout.css';
 
@@ -82,9 +80,16 @@ export function MainLayout({ children }: MainLayoutProps): JSX.Element {
         {children}
       </main>
 
-      {/* Right panel with online users */}
+      {/* Right panel - peer info (P2P network has no central presence) */}
       <div className="main-layout__online-panel">
-        <OnlineUsers presenceStates={mockPresenceStates} />
+        <aside className="online-users" aria-label="Network info">
+          <div className="online-users__header">
+            <h3 className="online-users__title">NETWORK</h3>
+          </div>
+          <div className="online-users__footer">
+            <span>{peerCount} peers connected</span>
+          </div>
+        </aside>
       </div>
 
       {/* Status bar at bottom */}

@@ -3,7 +3,7 @@
  */
 
 import { useCallback } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, Link } from 'react-router-dom';
 import {
   useKeypair,
   usePow,
@@ -74,10 +74,9 @@ export function IdentityPage(): JSX.Element {
   return (
     <div className="identity-page">
       <header className="identity-page__header">
-        <button
-          type="button"
+        <Link
+          to="/channels/@me"
           className="identity-page__back"
-          onClick={() => navigate(-1)}
         >
           <svg
             width="20"
@@ -90,8 +89,8 @@ export function IdentityPage(): JSX.Element {
             <line x1="19" y1="12" x2="5" y2="12" />
             <polyline points="12 19 5 12 12 5" />
           </svg>
-          Back
-        </button>
+          Back to Chat
+        </Link>
         <h1 className="identity-page__title">Identity</h1>
       </header>
 

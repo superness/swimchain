@@ -124,10 +124,8 @@ pub const TESTNET_PORT: u16 = 19735;
 #[must_use]
 pub fn default_testnet_seeds() -> Vec<SeedEntry> {
     vec![
-        // DigitalOcean SFO (San Francisco) - Testnet seed
-        SeedEntry::tcp_v4([64, 225, 115, 108], TESTNET_PORT),
-        // DigitalOcean NYC (New York) - Testnet seed
-        SeedEntry::tcp_v4([104, 236, 106, 124], TESTNET_PORT),
+        // DigitalOcean - Testnet seed
+        SeedEntry::tcp_v4([167, 71, 241, 252], TESTNET_PORT),
     ]
 }
 

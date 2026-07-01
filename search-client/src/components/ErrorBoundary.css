@@ -1,0 +1,24 @@
+.error-boundary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #2d1b1b 0%, #1a1a2e 100%);
+  color: white;
+  padding: 2rem;
+}
+.error-content { max-width: 500px; text-align: center; }
+.error-title { font-size: 1.75rem; font-weight: 700; margin: 0 0 1rem; color: #ff6b6b; }
+.error-message { font-size: 1.1rem; color: #e0e0e0; margin: 0 0 1rem; line-height: 1.5; }
+.error-hint { font-size: 0.9rem; color: #a0a0a0; margin: 0 0 1.5rem; line-height: 1.5; }
+.error-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+.error-button { padding: 0.75rem 1.5rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; min-width: 120px; }
+.error-button:hover { transform: translateY(-2px); }
+.error-button:focus-visible { outline: 2px solid #00d4ff; outline-offset: 2px; }
+.error-button.primary { background: linear-gradient(135deg, #00d4ff, #7b68ee); color: white; }
+.error-button.primary:hover { box-shadow: 0 4px 20px rgba(0, 212, 255, 0.4); }
+.error-button.secondary { background: rgba(255, 255, 255, 0.1); color: white; border: 1px solid rgba(255, 255, 255, 0.2); }
+.error-button.secondary:hover { background: rgba(255, 255, 255, 0.15); }
+.error-details { margin-top: 2rem; text-align: left; }
+.error-details summary { cursor: pointer; color: #a0a0a0; font-size: 0.875rem; }
+.error-details pre { margin-top: 0.5rem; padding: 1rem; background: rgba(0, 0, 0, 0.3); border-radius: 8px; overflow-x: auto; font-size: 0.75rem; color: #ff6b6b; }

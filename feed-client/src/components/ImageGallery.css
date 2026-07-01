@@ -1,0 +1,322 @@
+/**
+ * Image Gallery styles
+ * Adapted for feed-client theme
+ */
+
+.image-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.image-gallery.thumbnail-mode {
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.image-gallery.loading .image-loading-placeholder {
+  width: 80px;
+  height: 80px;
+  background: var(--bg-tertiary, #333);
+  border-radius: 6px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+
+/* Gallery Items */
+.image-gallery-item {
+  background: none;
+  border: 1px solid var(--border-color, #3a3a3a);
+  border-radius: 8px;
+  padding: 0;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.15s;
+}
+
+.image-gallery-item:hover {
+  border-color: var(--accent-color, #5865f2);
+  transform: scale(1.02);
+}
+
+.image-gallery-item:focus {
+  outline: 2px solid var(--accent-color, #5865f2);
+  outline-offset: 2px;
+}
+
+/* Full mode images */
+.image-gallery:not(.thumbnail-mode) .image-gallery-item {
+  max-width: 400px;
+  max-height: 300px;
+}
+
+.image-gallery:not(.thumbnail-mode) .image-gallery-img {
+  max-width: 400px;
+  max-height: 300px;
+  object-fit: contain;
+  display: block;
+}
+
+/* Thumbnail mode images */
+.image-gallery.thumbnail-mode .image-gallery-item {
+  width: 56px;
+  height: 56px;
+}
+
+.image-gallery.thumbnail-mode .image-gallery-img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  display: block;
+}
+
+/* Placeholder for failed/loading images */
+.image-gallery-placeholder {
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary, #333);
+  border: 1px solid var(--border-color, #3a3a3a);
+  border-radius: 8px;
+  color: var(--text-tertiary, #666);
+}
+
+.image-gallery-placeholder.encrypted-locked {
+  background: var(--bg-secondary, #2a2a2a);
+  color: var(--status-warning, #f0b232);
+}
+
+.image-gallery.thumbnail-mode .image-gallery-placeholder {
+  width: 56px;
+  height: 56px;
+}
+
+/* "More" button */
+.image-gallery-more {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary, #333);
+  border: 1px solid var(--border-color, #3a3a3a);
+  border-radius: 8px;
+  color: var(--text-secondary, #a0a0a0);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+.image-gallery-more:hover {
+  background: var(--bg-secondary, #2a2a2a);
+  border-color: var(--accent-color, #5865f2);
+  color: var(--text-primary, #fff);
+}
+
+/* ========================================
+   Lightbox Overlay
+   ======================================== */
+
+.image-lightbox-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.92);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.image-lightbox-content {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.image-lightbox-img {
+  max-width: 90vw;
+  max-height: 85vh;
+  object-fit: contain;
+  border-radius: 4px;
+  animation: scaleIn 0.2s ease-out;
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* Close button */
+.image-lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 44px;
+  height: 44px;
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s;
+  z-index: 10000;
+}
+
+.image-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.image-lightbox-close:focus {
+  outline: 2px solid var(--accent-color, #5865f2);
+  outline-offset: 2px;
+}
+
+/* Navigation arrows */
+.image-lightbox-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.2s, opacity 0.2s;
+  z-index: 10000;
+}
+
+.image-lightbox-nav:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.image-lightbox-nav:focus:not(:disabled) {
+  outline: 2px solid var(--accent-color, #5865f2);
+  outline-offset: 2px;
+}
+
+.image-lightbox-nav:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.image-lightbox-nav.prev {
+  left: 16px;
+}
+
+.image-lightbox-nav.next {
+  right: 16px;
+}
+
+/* Counter */
+.image-lightbox-counter {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  color: white;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 500;
+  z-index: 10000;
+}
+
+/* ========================================
+   Thumbnail Indicator for feed cards
+   ======================================== */
+
+.image-thumbnail-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text-tertiary, #666);
+  vertical-align: middle;
+  margin-left: 6px;
+}
+
+.image-thumbnail-indicator svg {
+  opacity: 0.7;
+}
+
+.image-thumbnail-indicator .image-count {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* ========================================
+   Mobile Adjustments
+   ======================================== */
+
+@media (max-width: 768px) {
+  .image-lightbox-nav {
+    width: 40px;
+    height: 40px;
+  }
+
+  .image-lightbox-nav.prev {
+    left: 8px;
+  }
+
+  .image-lightbox-nav.next {
+    right: 8px;
+  }
+
+  .image-lightbox-close {
+    top: 8px;
+    right: 8px;
+    width: 40px;
+    height: 40px;
+  }
+
+  .image-gallery.thumbnail-mode .image-gallery-item,
+  .image-gallery.thumbnail-mode .image-gallery-img {
+    width: 48px;
+    height: 48px;
+  }
+
+  .image-gallery.thumbnail-mode .image-gallery-placeholder {
+    width: 48px;
+    height: 48px;
+  }
+
+  .image-gallery-more {
+    width: 48px;
+    height: 48px;
+    font-size: 12px;
+  }
+
+  .image-lightbox-counter {
+    bottom: 16px;
+    font-size: 13px;
+    padding: 6px 12px;
+  }
+}

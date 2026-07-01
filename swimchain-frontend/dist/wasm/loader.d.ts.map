@@ -1,0 +1,1 @@
+{"version":3,"file":"loader.d.ts","sourceRoot":"","sources":["../../src/wasm/loader.ts"],"names":[],"mappings":"AAAA;;;GAGG;AAGH,OAAa,KAAK,IAAI,MAAM,uBAAuB,CAAC;AAQpD,wBAAsB,QAAQ,IAAI,OAAO,CAAC,OAAO,IAAI,CAAC,CAkBrD;AAED,wBAAgB,OAAO,IAAI,OAAO,IAAI,CAOrC;AAED,wBAAgB,YAAY,IAAI,OAAO,CAEtC;AAGD,cAAc,uBAAuB,CAAC"}

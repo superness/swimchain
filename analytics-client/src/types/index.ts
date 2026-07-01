@@ -8,6 +8,21 @@ import { NETWORK_STATUS } from './constants';
 
 export * from './constants';
 
+/**
+ * Stored identity data (persisted in localStorage)
+ */
+export interface StoredIdentity {
+  address: string;         // cs1... bech32m address
+  publicKey: string;       // Hex-encoded public key (64 hex chars = 32 bytes)
+  seed: string;            // Hex-encoded seed/private key (64 hex chars = 32 bytes)
+  createdAt: number;       // UNIX timestamp of creation
+  powSolution?: {          // Optional stored PoW solution
+    nonce: string;
+    timestamp: string;
+    difficulty: number;
+  };
+}
+
 // === Configuration ===
 export interface AnalyticsConfig {
   /** Enable real-time metrics collection */
@@ -18,8 +33,6 @@ export interface AnalyticsConfig {
   watchedSpaces: string[];
   /** Enable browser notifications for alerts */
   enableAlerts: boolean;
-  /** Show advanced metrics */
-  showAdvanced: boolean;
 }
 
 // === Network Health (SPEC_09 §6) ===
@@ -292,6 +305,5 @@ export function getDefaultConfig(): AnalyticsConfig {
     pollIntervalMs: 30_000,
     watchedSpaces: [],
     enableAlerts: true,
-    showAdvanced: false,
   };
 }

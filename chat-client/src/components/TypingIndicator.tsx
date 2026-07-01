@@ -2,7 +2,7 @@
  * Typing indicator component
  */
 
-import { truncateAddress } from '../mocks/data';
+import { truncateAddress } from '../lib/utils';
 import './TypingIndicator.css';
 
 interface TypingIndicatorProps {

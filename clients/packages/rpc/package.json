@@ -1,0 +1,47 @@
+{
+  "name": "@swimchain/rpc",
+  "version": "0.1.0",
+  "description": "Swimchain RPC client for browser and Node.js",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^1.1.0"
+  },
+  "peerDependencies": {
+    "@swimchain/core": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@swimchain/core": {
+      "optional": true
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "swimchain",
+    "rpc",
+    "decentralized",
+    "social"
+  ],
+  "license": "MIT"
+}

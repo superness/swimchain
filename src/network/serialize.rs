@@ -125,7 +125,7 @@ impl Deserialize for GetMempoolPayload {
 
 impl Serialize for VersionPayload {
     fn to_bytes(&self) -> Vec<u8> {
-        let mut w = ByteWriter::with_capacity(128);
+        let mut w = ByteWriter::with_capacity(160);
         w.write_u32_le(self.protocol_version);
         w.write_u64_le(self.node_services);
         w.write_u64_le(self.timestamp);
@@ -135,6 +135,7 @@ impl Serialize for VersionPayload {
         w.write_string_u8(&self.user_agent);
         w.write_u32_le(self.start_height);
         w.write_u8(if self.relay { 1 } else { 0 });
+        w.write_bytes32(&self.public_key);
         w.finish()
     }
 }
@@ -156,6 +157,7 @@ impl Deserialize for VersionPayload {
         let user_agent = r.read_string_u8()?;
         let start_height = r.read_u32_le()?;
         let relay = r.read_u8()? != 0;
+        let public_key = r.read_bytes32()?;
 
         Ok(Self {
             protocol_version,
@@ -167,6 +169,7 @@ impl Deserialize for VersionPayload {
             user_agent,
             start_height,
             relay,
+            public_key,
         })
     }
 }
@@ -857,6 +860,7 @@ mod tests {
             user_agent: "test/1.0".to_string(),
             start_height: 12345,
             relay: true,
+            public_key: [0x12; 32],
         };
         let bytes = original.to_bytes();
         let recovered = VersionPayload::from_bytes(&bytes).unwrap();

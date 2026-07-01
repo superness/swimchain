@@ -402,7 +402,6 @@ class MetricsCollectorImpl {
 
   private async fetchNetworkStats(): Promise<NetworkStatsResponse & { lastSyncAgeMinutes: number }> {
     if (!this.rpcClient) {
-      console.warn('[MetricsCollector] No RPC client available');
       return {
         activeSwimmers: 0,
         totalPosts: 0,
@@ -481,7 +480,6 @@ class MetricsCollectorImpl {
 
   private async fetchSpaceStats(spaceId: string): Promise<SpaceStatsResponse> {
     if (!this.rpcClient) {
-      console.warn('[MetricsCollector] No RPC client available');
       return {
         spaceId,
         name: spaceId,

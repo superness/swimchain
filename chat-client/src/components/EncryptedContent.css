@@ -1,0 +1,130 @@
+.encrypted-content {
+  background: var(--color-bg-secondary, #1e1e2e);
+  border: 1px solid var(--color-border, #2d2d3d);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+}
+
+.encrypted-content.locked {
+  text-align: center;
+  padding: 2rem;
+}
+
+.encrypted-lock-icon {
+  margin-bottom: 1rem;
+  color: var(--color-text-tertiary, #6b7280);
+}
+
+.encrypted-content.locked h2 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1.25rem;
+}
+
+.encrypted-description {
+  color: var(--color-text-secondary, #9ca3af);
+  margin-bottom: 1rem;
+}
+
+.encrypted-form {
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.encrypted-input-group {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.encrypted-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  background: var(--color-bg-primary, #111827);
+  border: 1px solid var(--color-border, #2d2d3d);
+  border-radius: 0.375rem;
+  color: var(--color-text-primary, #f3f4f6);
+  font-size: 0.875rem;
+}
+
+.encrypted-input:focus {
+  outline: none;
+  border-color: var(--color-accent-primary, #6366f1);
+}
+
+.encrypted-remember {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-secondary, #9ca3af);
+  cursor: pointer;
+}
+
+.encrypted-remember input {
+  cursor: pointer;
+}
+
+.encrypted-error {
+  margin-top: 0.75rem;
+  color: var(--color-error, #ef4444);
+  font-size: 0.8125rem;
+}
+
+.encrypted-content.unlocked {
+  position: relative;
+}
+
+.encrypted-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--color-border, #2d2d3d);
+}
+
+.encrypted-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-warning, #f59e0b);
+  background: rgba(245, 158, 11, 0.1);
+  border-radius: 0.25rem;
+}
+
+.encrypted-badge.unlocked {
+  color: var(--color-success, #22c55e);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.encrypted-lock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  background: transparent;
+  border: 1px solid var(--color-border, #2d2d3d);
+  border-radius: 0.25rem;
+  color: var(--color-text-secondary, #9ca3af);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.encrypted-lock-btn:hover {
+  background: var(--color-bg-tertiary, #1a1a2e);
+  color: var(--color-text-primary, #f3f4f6);
+}
+
+.encrypted-body {
+  color: var(--color-text-primary, #f3f4f6);
+  line-height: 1.7;
+}
+
+.encrypted-body p {
+  white-space: pre-wrap;
+}

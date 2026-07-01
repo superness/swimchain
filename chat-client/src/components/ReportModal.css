@@ -1,0 +1,199 @@
+.report-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.report-modal {
+  background: var(--background-secondary, #2f3136);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.report-modal h3 {
+  margin: 0 0 16px 0;
+  color: var(--text-normal, #dcddde);
+  font-size: 1.25rem;
+}
+
+.report-modal p {
+  color: var(--text-muted, #72767d);
+  font-size: 0.875rem;
+  margin-bottom: 16px;
+}
+
+.report-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.reason-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--background-tertiary, #202225);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.reason-option:hover {
+  background: var(--background-modifier-hover, rgba(79, 84, 92, 0.16));
+}
+
+.reason-option.selected {
+  border-color: var(--brand-experiment, #5865f2);
+  background: rgba(88, 101, 242, 0.1);
+}
+
+.reason-option input[type="radio"] {
+  accent-color: var(--brand-experiment, #5865f2);
+}
+
+.reason-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reason-title {
+  color: var(--text-normal, #dcddde);
+  font-weight: 500;
+}
+
+.reason-desc {
+  color: var(--text-muted, #72767d);
+  font-size: 0.75rem;
+}
+
+.report-modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.report-modal-actions button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.report-cancel {
+  background: transparent;
+  border: 1px solid var(--background-modifier-accent, #4f545c);
+  color: var(--text-muted, #72767d);
+}
+
+.report-cancel:hover {
+  background: var(--background-modifier-hover, rgba(79, 84, 92, 0.16));
+  color: var(--text-normal, #dcddde);
+}
+
+.report-submit {
+  background: var(--status-danger, #ed4245);
+  border: none;
+  color: white;
+}
+
+.report-submit:hover:not(:disabled) {
+  background: #c73e41;
+}
+
+.report-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Mining progress */
+.report-mining {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.report-mining p {
+  margin-bottom: 12px;
+  color: var(--text-normal, #dcddde);
+}
+
+.mining-progress {
+  height: 4px;
+  background: var(--background-tertiary, #202225);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.mining-progress-bar {
+  height: 100%;
+  background: var(--brand-experiment, #5865f2);
+  animation: mining-pulse 1s ease-in-out infinite;
+}
+
+@keyframes mining-pulse {
+  0%, 100% { width: 30%; margin-left: 0; }
+  50% { width: 50%; margin-left: 50%; transform: translateX(-100%); }
+}
+
+/* Success/Error states */
+.report-success {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.report-success-icon {
+  font-size: 3rem;
+  margin-bottom: 12px;
+  color: var(--status-positive, #3ba55d);
+}
+
+.report-success h4 {
+  color: var(--status-positive, #3ba55d);
+  margin: 0 0 8px 0;
+}
+
+.report-error {
+  background: rgba(237, 66, 69, 0.1);
+  border: 1px solid var(--status-danger, #ed4245);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 16px;
+  color: var(--status-danger, #ed4245);
+  font-size: 0.875rem;
+}
+
+/* Report button styling */
+.report-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-muted, #72767d);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.report-btn:hover {
+  background: rgba(237, 66, 69, 0.1);
+  border-color: rgba(237, 66, 69, 0.3);
+  color: var(--status-danger, #ed4245);
+}

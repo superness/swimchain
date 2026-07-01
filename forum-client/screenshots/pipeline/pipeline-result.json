@@ -1,0 +1,2011 @@
+{
+  "timestamp": "2026-02-04T20:16:15.053Z",
+  "duration": 94964,
+  "totalFeatures": 14,
+  "passed": 8,
+  "failed": 3,
+  "skipped": 3,
+  "errors": 0,
+  "reports": [
+    {
+      "featureId": "identity-no-identity",
+      "featureName": "Identity - No Identity State",
+      "category": "identity",
+      "timestamp": "2026-02-04T20:14:40.091Z",
+      "duration": 4312,
+      "status": "fail",
+      "node": "genesis",
+      "url": "http://localhost:5173/identity",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "identity-no-identity-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-no-identity-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".identity-page",
+          "filename": "identity-no-identity-_identity-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-no-identity-_identity-page.png",
+          "width": 600,
+          "height": 914.1875,
+          "captured": true
+        },
+        {
+          "selector": ".identity-management",
+          "filename": "identity-no-identity-_identity-management.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-no-identity-_identity-management.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .identity-management"
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5173/identity",
+        "identityLoaded": true,
+        "identityAddress": "Addresscs1qz0...2kj7",
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [
+          ".generate-btn",
+          ".import-btn"
+        ],
+        "checkResults": [
+          {
+            "check": {
+              "type": "text-absent",
+              "text": "cs1q"
+            },
+            "passed": false,
+            "actualValue": "found",
+            "message": "Text \"cs1q\" unexpectedly found on page"
+          },
+          {
+            "check": {
+              "type": "element-visible",
+              "selector": "[data-testid='generate-identity']"
+            },
+            "passed": false,
+            "actualValue": "not visible",
+            "message": "Element \"[data-testid='generate-identity']\" is NOT visible"
+          }
+        ],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/identity\n**Node**: Disconnected\n**Identity**: Addresscs1qz0...2kj7\n**Missing Elements**: .generate-btn, .import-btn\n**Functional Checks**: 0/2 passed"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19736"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "identity-with-identity",
+      "featureName": "Identity - With Identity Loaded",
+      "category": "identity",
+      "timestamp": "2026-02-04T20:14:44.405Z",
+      "duration": 4304,
+      "status": "pass",
+      "node": "genesis",
+      "url": "http://localhost:5173/identity",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "identity-with-identity-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-with-identity-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".identity-page",
+          "filename": "identity-with-identity-_identity-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-with-identity-_identity-page.png",
+          "width": 600,
+          "height": 914.1875,
+          "captured": true
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5173/identity",
+        "identityLoaded": true,
+        "identityAddress": "Addresscs1qz0...2kj7",
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [
+          {
+            "selector": ".identity-address",
+            "found": true,
+            "visible": true,
+            "text": "Addresscs1qz0...2kj7",
+            "attributes": {
+              "class": "identity-address"
+            }
+          }
+        ],
+        "elementsMissing": [
+          ".public-key"
+        ],
+        "checkResults": [
+          {
+            "check": {
+              "type": "text-present",
+              "text": "cs1q"
+            },
+            "passed": true,
+            "actualValue": "found",
+            "message": "Text \"cs1q\" found on page"
+          },
+          {
+            "check": {
+              "type": "element-visible",
+              "selector": ".identity-address"
+            },
+            "passed": true,
+            "actualValue": "visible",
+            "message": "Element \".identity-address\" is visible"
+          }
+        ],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/identity\n**Node**: Disconnected\n**Identity**: Addresscs1qz0...2kj7\n**Elements Found**: 1 of 2 expected\n**Missing Elements**: .public-key\n**Functional Checks**: 2/2 passed"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19736"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+          "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "identity-sponsored",
+      "featureName": "Identity - Sponsored Status",
+      "category": "identity",
+      "timestamp": "2026-02-04T20:14:48.709Z",
+      "duration": 4549,
+      "status": "pass",
+      "node": "genesis",
+      "url": "http://localhost:5173/identity",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "identity-sponsored-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-sponsored-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".identity-page",
+          "filename": "identity-sponsored-_identity-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-sponsored-_identity-page.png",
+          "width": 600,
+          "height": 914.1875,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-status",
+          "filename": "identity-sponsored-_sponsorship-status.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-sponsored-_sponsorship-status.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .sponsorship-status"
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5173/identity",
+        "identityLoaded": true,
+        "identityAddress": "Addresscs1qz0...2kj7",
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [],
+        "checkResults": [
+          {
+            "check": {
+              "type": "text-absent",
+              "text": "not sponsored"
+            },
+            "passed": true,
+            "actualValue": "not found",
+            "message": "Text \"not sponsored\" correctly absent from page"
+          }
+        ],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/identity\n**Node**: Disconnected\n**Identity**: Addresscs1qz0...2kj7\n**Functional Checks**: 1/1 passed"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19736"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+          "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+        },
+        {
+          "precondition": "is-sponsored",
+          "met": true,
+          "message": "Identity is sponsored"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "identity-not-sponsored",
+      "featureName": "Identity - Not Sponsored Status",
+      "category": "identity",
+      "timestamp": "2026-02-04T20:14:53.259Z",
+      "duration": 323,
+      "status": "skip",
+      "node": "alpha",
+      "url": "",
+      "screenshots": [],
+      "functionalState": {
+        "pageTitle": "",
+        "currentUrl": "",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": null,
+        "elementsFound": [],
+        "elementsMissing": [],
+        "checkResults": [],
+        "description": "Preconditions not met - feature skipped"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19746"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+          "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+        },
+        {
+          "precondition": "not-sponsored",
+          "met": false,
+          "message": "Identity is sponsored (but should not be)"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-find",
+      "featureName": "Sponsorship - Find a Sponsor Tab",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:14:53.768Z",
+      "duration": 9208,
+      "status": "pass",
+      "node": "alpha",
+      "url": "http://localhost:5174/sponsorship",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "sponsorship-find-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-page",
+          "filename": "sponsorship-find-_sponsorship-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-_sponsorship-page.png",
+          "width": 800,
+          "height": 1449.140625,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-offer-list",
+          "filename": "sponsorship-find-_sponsorship-offer-list.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-_sponsorship-offer-list.png",
+          "width": 800,
+          "height": 1009.21875,
+          "captured": true
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5174/sponsorship",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [
+          {
+            "selector": ".sponsorship-tab",
+            "found": true,
+            "visible": true,
+            "text": "Find a Sponsor",
+            "attributes": {
+              "type": "button",
+              "class": "sponsorship-tab active"
+            }
+          }
+        ],
+        "elementsMissing": [],
+        "checkResults": [],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5174/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Elements Found**: 1 of 1 expected"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19746"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+          "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-offers-empty",
+      "featureName": "Sponsorship - No Offers Available",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:15:02.976Z",
+      "duration": 4815,
+      "status": "fail",
+      "node": "alpha",
+      "url": "http://localhost:5174/sponsorship",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "sponsorship-offers-empty-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-offers-empty-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-page",
+          "filename": "sponsorship-offers-empty-_sponsorship-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-offers-empty-_sponsorship-page.png",
+          "width": 800,
+          "height": 1449.140625,
+          "captured": true
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5174/sponsorship",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [],
+        "checkResults": [
+          {
+            "check": {
+              "type": "text-present",
+              "text": "No sponsorship offers"
+            },
+            "passed": false,
+            "actualValue": "not found",
+            "message": "Text \"No sponsorship offers\" NOT found on page"
+          }
+        ],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5174/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Functional Checks**: 0/1 passed"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19746"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+          "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+        },
+        {
+          "precondition": "no-offers",
+          "met": true,
+          "message": "No offers (as required)"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-offers-available",
+      "featureName": "Sponsorship - Offers Available",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:15:07.792Z",
+      "duration": 323,
+      "status": "skip",
+      "node": "alpha",
+      "url": "",
+      "screenshots": [],
+      "functionalState": {
+        "pageTitle": "",
+        "currentUrl": "",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": null,
+        "elementsFound": [],
+        "elementsMissing": [],
+        "checkResults": [],
+        "description": "Preconditions not met - feature skipped"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19746"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+          "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+        },
+        {
+          "precondition": "has-offers",
+          "message": "No offers available"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-my-offers",
+      "featureName": "Sponsorship - My Offers Tab",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:15:08.279Z",
+      "duration": 9055,
+      "status": "pass",
+      "node": "genesis",
+      "url": "http://localhost:5173/sponsorship",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "sponsorship-my-offers-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-page",
+          "filename": "sponsorship-my-offers-_sponsorship-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-_sponsorship-page.png",
+          "width": 800,
+          "height": 528.53125,
+          "captured": true
+        },
+        {
+          "selector": ".my-offers-tab",
+          "filename": "sponsorship-my-offers-_my-offers-tab.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-_my-offers-tab.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .my-offers-tab"
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5173/sponsorship",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [
+          ".create-offer-btn"
+        ],
+        "checkResults": [],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .create-offer-btn"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19736"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+          "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+        },
+        {
+          "precondition": "is-sponsored",
+          "met": true,
+          "message": "Identity is sponsored"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-my-offers-with-offers",
+      "featureName": "Sponsorship - My Offers With Existing Offers",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:15:17.334Z",
+      "duration": 8945,
+      "status": "fail",
+      "node": "genesis",
+      "url": "http://localhost:5173/sponsorship",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "sponsorship-my-offers-with-offers-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-with-offers-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-page",
+          "filename": "sponsorship-my-offers-with-offers-_sponsorship-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-with-offers-_sponsorship-page.png",
+          "width": 800,
+          "height": 528.53125,
+          "captured": true
+        },
+        {
+          "selector": ".offer-card",
+          "filename": "sponsorship-my-offers-with-offers-_offer-card.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-with-offers-_offer-card.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .offer-card"
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5173/sponsorship",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [
+          ".offer-card"
+        ],
+        "checkResults": [
+          {
+            "check": {
+              "type": "element-count-gt",
+              "selector": ".offer-card",
+              "count": 0
+            },
+            "passed": false,
+            "actualValue": 0,
+            "message": "Only found 0 elements matching \".offer-card\" (expected > 0)"
+          }
+        ],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .offer-card\n**Functional Checks**: 0/1 passed"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19736"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+          "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+        },
+        {
+          "precondition": "is-sponsored",
+          "met": true,
+          "message": "Identity is sponsored"
+        },
+        {
+          "precondition": "has-created-offers",
+          "met": true,
+          "message": "Precondition 'has-created-offers' assumed met"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-create-modal",
+      "featureName": "Sponsorship - Create Offer Modal",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:15:26.279Z",
+      "duration": 14937,
+      "status": "pass",
+      "node": "genesis",
+      "url": "http://localhost:5173/sponsorship",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "sponsorship-create-modal-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-create-modal-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".modal",
+          "filename": "sponsorship-create-modal-_modal.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-create-modal-_modal.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .modal"
+        },
+        {
+          "selector": ".create-offer-modal",
+          "filename": "sponsorship-create-modal-_create-offer-modal.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-create-modal-_create-offer-modal.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .create-offer-modal"
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5173/sponsorship",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [
+          ".modal",
+          "input[type='number']"
+        ],
+        "checkResults": [],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .modal, input[type='number']"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19736"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+          "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+        },
+        {
+          "precondition": "is-sponsored",
+          "met": true,
+          "message": "Identity is sponsored"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-claim-modal",
+      "featureName": "Sponsorship - Claim Offer Modal",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:15:41.216Z",
+      "duration": 306,
+      "status": "skip",
+      "node": "alpha",
+      "url": "",
+      "screenshots": [],
+      "functionalState": {
+        "pageTitle": "",
+        "currentUrl": "",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": null,
+        "elementsFound": [],
+        "elementsMissing": [],
+        "checkResults": [],
+        "description": "Preconditions not met - feature skipped"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19746"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+          "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+        },
+        {
+          "precondition": "has-offers",
+          "message": "No offers available"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-pending-claims",
+      "featureName": "Sponsorship - View Pending Claims",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:15:41.685Z",
+      "duration": 15080,
+      "status": "pass",
+      "node": "genesis",
+      "url": "http://localhost:5173/sponsorship",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "sponsorship-pending-claims-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-pending-claims-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-page",
+          "filename": "sponsorship-pending-claims-_sponsorship-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-pending-claims-_sponsorship-page.png",
+          "width": 800,
+          "height": 528.53125,
+          "captured": true
+        },
+        {
+          "selector": ".claims-list",
+          "filename": "sponsorship-pending-claims-_claims-list.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-pending-claims-_claims-list.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .claims-list"
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5173/sponsorship",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [
+          ".claim-item",
+          ".approve-btn",
+          ".reject-btn"
+        ],
+        "checkResults": [],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .claim-item, .approve-btn, .reject-btn"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19736"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+          "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+        },
+        {
+          "precondition": "is-sponsored",
+          "met": true,
+          "message": "Identity is sponsored"
+        },
+        {
+          "precondition": "has-pending-claims",
+          "met": true,
+          "message": "Precondition 'has-pending-claims' assumed met"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-status-active",
+      "featureName": "Sponsorship - Status Active",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:15:56.765Z",
+      "duration": 9178,
+      "status": "pass",
+      "node": "alpha",
+      "url": "http://localhost:5174/sponsorship",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "sponsorship-status-active-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-active-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-page",
+          "filename": "sponsorship-status-active-_sponsorship-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-active-_sponsorship-page.png",
+          "width": 800,
+          "height": 1449.140625,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-status",
+          "filename": "sponsorship-status-active-_sponsorship-status.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-active-_sponsorship-status.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .sponsorship-status"
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5174/sponsorship",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [
+          ".sponsor-address",
+          ".status-active"
+        ],
+        "checkResults": [
+          {
+            "check": {
+              "type": "text-present",
+              "text": "Active"
+            },
+            "passed": true,
+            "actualValue": "found",
+            "message": "Text \"Active\" found on page"
+          }
+        ],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5174/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .sponsor-address, .status-active\n**Functional Checks**: 1/1 passed"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19746"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+          "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+        },
+        {
+          "precondition": "is-sponsored",
+          "met": true,
+          "message": "Identity is sponsored"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    },
+    {
+      "featureId": "sponsorship-status-pending",
+      "featureName": "Sponsorship - Status Pending",
+      "category": "sponsorship",
+      "timestamp": "2026-02-04T20:16:05.943Z",
+      "duration": 9102,
+      "status": "pass",
+      "node": "alpha",
+      "url": "http://localhost:5174/sponsorship",
+      "screenshots": [
+        {
+          "selector": "fullpage",
+          "filename": "sponsorship-status-pending-fullpage.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-pending-fullpage.png",
+          "width": 1280,
+          "height": 0,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-page",
+          "filename": "sponsorship-status-pending-_sponsorship-page.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-pending-_sponsorship-page.png",
+          "width": 800,
+          "height": 1449.140625,
+          "captured": true
+        },
+        {
+          "selector": ".sponsorship-status",
+          "filename": "sponsorship-status-pending-_sponsorship-status.png",
+          "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-pending-_sponsorship-status.png",
+          "width": 0,
+          "height": 0,
+          "captured": false,
+          "error": "Element not found: .sponsorship-status"
+        }
+      ],
+      "functionalState": {
+        "pageTitle": "Swimchain Forum",
+        "currentUrl": "http://localhost:5174/sponsorship",
+        "identityLoaded": false,
+        "identityAddress": null,
+        "isSponsored": null,
+        "nodeConnected": false,
+        "peerCount": 0,
+        "elementsFound": [],
+        "elementsMissing": [],
+        "checkResults": [
+          {
+            "check": {
+              "type": "text-present",
+              "text": "Pending"
+            },
+            "passed": true,
+            "actualValue": "found",
+            "message": "Text \"Pending\" found on page"
+          }
+        ],
+        "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5174/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Functional Checks**: 1/1 passed"
+      },
+      "preconditionResults": [
+        {
+          "precondition": "node-reachable",
+          "met": true,
+          "message": "Node RPC reachable at port 19746"
+        },
+        {
+          "precondition": "node-identity",
+          "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+          "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+        },
+        {
+          "precondition": "has-pending-claim",
+          "met": true,
+          "message": "Precondition 'has-pending-claim' assumed met"
+        }
+      ],
+      "errors": [],
+      "warnings": []
+    }
+  ],
+  "summary": [
+    {
+      "category": "identity",
+      "name": "Identity Management",
+      "description": "Identity creation, display, and management features",
+      "total": 4,
+      "passed": 2,
+      "failed": 1,
+      "skipped": 1,
+      "errors": 0,
+      "features": [
+        {
+          "featureId": "identity-no-identity",
+          "featureName": "Identity - No Identity State",
+          "category": "identity",
+          "timestamp": "2026-02-04T20:14:40.091Z",
+          "duration": 4312,
+          "status": "fail",
+          "node": "genesis",
+          "url": "http://localhost:5173/identity",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "identity-no-identity-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-no-identity-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".identity-page",
+              "filename": "identity-no-identity-_identity-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-no-identity-_identity-page.png",
+              "width": 600,
+              "height": 914.1875,
+              "captured": true
+            },
+            {
+              "selector": ".identity-management",
+              "filename": "identity-no-identity-_identity-management.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-no-identity-_identity-management.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .identity-management"
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5173/identity",
+            "identityLoaded": true,
+            "identityAddress": "Addresscs1qz0...2kj7",
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [
+              ".generate-btn",
+              ".import-btn"
+            ],
+            "checkResults": [
+              {
+                "check": {
+                  "type": "text-absent",
+                  "text": "cs1q"
+                },
+                "passed": false,
+                "actualValue": "found",
+                "message": "Text \"cs1q\" unexpectedly found on page"
+              },
+              {
+                "check": {
+                  "type": "element-visible",
+                  "selector": "[data-testid='generate-identity']"
+                },
+                "passed": false,
+                "actualValue": "not visible",
+                "message": "Element \"[data-testid='generate-identity']\" is NOT visible"
+              }
+            ],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/identity\n**Node**: Disconnected\n**Identity**: Addresscs1qz0...2kj7\n**Missing Elements**: .generate-btn, .import-btn\n**Functional Checks**: 0/2 passed"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19736"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "identity-with-identity",
+          "featureName": "Identity - With Identity Loaded",
+          "category": "identity",
+          "timestamp": "2026-02-04T20:14:44.405Z",
+          "duration": 4304,
+          "status": "pass",
+          "node": "genesis",
+          "url": "http://localhost:5173/identity",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "identity-with-identity-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-with-identity-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".identity-page",
+              "filename": "identity-with-identity-_identity-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-with-identity-_identity-page.png",
+              "width": 600,
+              "height": 914.1875,
+              "captured": true
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5173/identity",
+            "identityLoaded": true,
+            "identityAddress": "Addresscs1qz0...2kj7",
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [
+              {
+                "selector": ".identity-address",
+                "found": true,
+                "visible": true,
+                "text": "Addresscs1qz0...2kj7",
+                "attributes": {
+                  "class": "identity-address"
+                }
+              }
+            ],
+            "elementsMissing": [
+              ".public-key"
+            ],
+            "checkResults": [
+              {
+                "check": {
+                  "type": "text-present",
+                  "text": "cs1q"
+                },
+                "passed": true,
+                "actualValue": "found",
+                "message": "Text \"cs1q\" found on page"
+              },
+              {
+                "check": {
+                  "type": "element-visible",
+                  "selector": ".identity-address"
+                },
+                "passed": true,
+                "actualValue": "visible",
+                "message": "Element \".identity-address\" is visible"
+              }
+            ],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/identity\n**Node**: Disconnected\n**Identity**: Addresscs1qz0...2kj7\n**Elements Found**: 1 of 2 expected\n**Missing Elements**: .public-key\n**Functional Checks**: 2/2 passed"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19736"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+              "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "identity-sponsored",
+          "featureName": "Identity - Sponsored Status",
+          "category": "identity",
+          "timestamp": "2026-02-04T20:14:48.709Z",
+          "duration": 4549,
+          "status": "pass",
+          "node": "genesis",
+          "url": "http://localhost:5173/identity",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "identity-sponsored-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-sponsored-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".identity-page",
+              "filename": "identity-sponsored-_identity-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-sponsored-_identity-page.png",
+              "width": 600,
+              "height": 914.1875,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-status",
+              "filename": "identity-sponsored-_sponsorship-status.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/identity/identity-sponsored-_sponsorship-status.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .sponsorship-status"
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5173/identity",
+            "identityLoaded": true,
+            "identityAddress": "Addresscs1qz0...2kj7",
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [],
+            "checkResults": [
+              {
+                "check": {
+                  "type": "text-absent",
+                  "text": "not sponsored"
+                },
+                "passed": true,
+                "actualValue": "not found",
+                "message": "Text \"not sponsored\" correctly absent from page"
+              }
+            ],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/identity\n**Node**: Disconnected\n**Identity**: Addresscs1qz0...2kj7\n**Functional Checks**: 1/1 passed"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19736"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+              "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+            },
+            {
+              "precondition": "is-sponsored",
+              "met": true,
+              "message": "Identity is sponsored"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "identity-not-sponsored",
+          "featureName": "Identity - Not Sponsored Status",
+          "category": "identity",
+          "timestamp": "2026-02-04T20:14:53.259Z",
+          "duration": 323,
+          "status": "skip",
+          "node": "alpha",
+          "url": "",
+          "screenshots": [],
+          "functionalState": {
+            "pageTitle": "",
+            "currentUrl": "",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": null,
+            "elementsFound": [],
+            "elementsMissing": [],
+            "checkResults": [],
+            "description": "Preconditions not met - feature skipped"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19746"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+              "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+            },
+            {
+              "precondition": "not-sponsored",
+              "met": false,
+              "message": "Identity is sponsored (but should not be)"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        }
+      ]
+    },
+    {
+      "category": "sponsorship",
+      "name": "Sponsorship System",
+      "description": "Sponsorship offers, claims, and status",
+      "total": 10,
+      "passed": 6,
+      "failed": 2,
+      "skipped": 2,
+      "errors": 0,
+      "features": [
+        {
+          "featureId": "sponsorship-find",
+          "featureName": "Sponsorship - Find a Sponsor Tab",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:14:53.768Z",
+          "duration": 9208,
+          "status": "pass",
+          "node": "alpha",
+          "url": "http://localhost:5174/sponsorship",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "sponsorship-find-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-page",
+              "filename": "sponsorship-find-_sponsorship-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-_sponsorship-page.png",
+              "width": 800,
+              "height": 1449.140625,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-offer-list",
+              "filename": "sponsorship-find-_sponsorship-offer-list.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-find-_sponsorship-offer-list.png",
+              "width": 800,
+              "height": 1009.21875,
+              "captured": true
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5174/sponsorship",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [
+              {
+                "selector": ".sponsorship-tab",
+                "found": true,
+                "visible": true,
+                "text": "Find a Sponsor",
+                "attributes": {
+                  "type": "button",
+                  "class": "sponsorship-tab active"
+                }
+              }
+            ],
+            "elementsMissing": [],
+            "checkResults": [],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5174/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Elements Found**: 1 of 1 expected"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19746"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+              "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-offers-empty",
+          "featureName": "Sponsorship - No Offers Available",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:15:02.976Z",
+          "duration": 4815,
+          "status": "fail",
+          "node": "alpha",
+          "url": "http://localhost:5174/sponsorship",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "sponsorship-offers-empty-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-offers-empty-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-page",
+              "filename": "sponsorship-offers-empty-_sponsorship-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-offers-empty-_sponsorship-page.png",
+              "width": 800,
+              "height": 1449.140625,
+              "captured": true
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5174/sponsorship",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [],
+            "checkResults": [
+              {
+                "check": {
+                  "type": "text-present",
+                  "text": "No sponsorship offers"
+                },
+                "passed": false,
+                "actualValue": "not found",
+                "message": "Text \"No sponsorship offers\" NOT found on page"
+              }
+            ],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5174/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Functional Checks**: 0/1 passed"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19746"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+              "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+            },
+            {
+              "precondition": "no-offers",
+              "met": true,
+              "message": "No offers (as required)"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-offers-available",
+          "featureName": "Sponsorship - Offers Available",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:15:07.792Z",
+          "duration": 323,
+          "status": "skip",
+          "node": "alpha",
+          "url": "",
+          "screenshots": [],
+          "functionalState": {
+            "pageTitle": "",
+            "currentUrl": "",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": null,
+            "elementsFound": [],
+            "elementsMissing": [],
+            "checkResults": [],
+            "description": "Preconditions not met - feature skipped"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19746"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+              "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+            },
+            {
+              "precondition": "has-offers",
+              "message": "No offers available"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-my-offers",
+          "featureName": "Sponsorship - My Offers Tab",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:15:08.279Z",
+          "duration": 9055,
+          "status": "pass",
+          "node": "genesis",
+          "url": "http://localhost:5173/sponsorship",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "sponsorship-my-offers-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-page",
+              "filename": "sponsorship-my-offers-_sponsorship-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-_sponsorship-page.png",
+              "width": 800,
+              "height": 528.53125,
+              "captured": true
+            },
+            {
+              "selector": ".my-offers-tab",
+              "filename": "sponsorship-my-offers-_my-offers-tab.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-_my-offers-tab.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .my-offers-tab"
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5173/sponsorship",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [
+              ".create-offer-btn"
+            ],
+            "checkResults": [],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .create-offer-btn"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19736"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+              "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+            },
+            {
+              "precondition": "is-sponsored",
+              "met": true,
+              "message": "Identity is sponsored"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-my-offers-with-offers",
+          "featureName": "Sponsorship - My Offers With Existing Offers",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:15:17.334Z",
+          "duration": 8945,
+          "status": "fail",
+          "node": "genesis",
+          "url": "http://localhost:5173/sponsorship",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "sponsorship-my-offers-with-offers-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-with-offers-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-page",
+              "filename": "sponsorship-my-offers-with-offers-_sponsorship-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-with-offers-_sponsorship-page.png",
+              "width": 800,
+              "height": 528.53125,
+              "captured": true
+            },
+            {
+              "selector": ".offer-card",
+              "filename": "sponsorship-my-offers-with-offers-_offer-card.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-my-offers-with-offers-_offer-card.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .offer-card"
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5173/sponsorship",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [
+              ".offer-card"
+            ],
+            "checkResults": [
+              {
+                "check": {
+                  "type": "element-count-gt",
+                  "selector": ".offer-card",
+                  "count": 0
+                },
+                "passed": false,
+                "actualValue": 0,
+                "message": "Only found 0 elements matching \".offer-card\" (expected > 0)"
+              }
+            ],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .offer-card\n**Functional Checks**: 0/1 passed"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19736"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+              "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+            },
+            {
+              "precondition": "is-sponsored",
+              "met": true,
+              "message": "Identity is sponsored"
+            },
+            {
+              "precondition": "has-created-offers",
+              "met": true,
+              "message": "Precondition 'has-created-offers' assumed met"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-create-modal",
+          "featureName": "Sponsorship - Create Offer Modal",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:15:26.279Z",
+          "duration": 14937,
+          "status": "pass",
+          "node": "genesis",
+          "url": "http://localhost:5173/sponsorship",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "sponsorship-create-modal-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-create-modal-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".modal",
+              "filename": "sponsorship-create-modal-_modal.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-create-modal-_modal.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .modal"
+            },
+            {
+              "selector": ".create-offer-modal",
+              "filename": "sponsorship-create-modal-_create-offer-modal.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-create-modal-_create-offer-modal.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .create-offer-modal"
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5173/sponsorship",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [
+              ".modal",
+              "input[type='number']"
+            ],
+            "checkResults": [],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .modal, input[type='number']"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19736"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+              "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+            },
+            {
+              "precondition": "is-sponsored",
+              "met": true,
+              "message": "Identity is sponsored"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-claim-modal",
+          "featureName": "Sponsorship - Claim Offer Modal",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:15:41.216Z",
+          "duration": 306,
+          "status": "skip",
+          "node": "alpha",
+          "url": "",
+          "screenshots": [],
+          "functionalState": {
+            "pageTitle": "",
+            "currentUrl": "",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": null,
+            "elementsFound": [],
+            "elementsMissing": [],
+            "checkResults": [],
+            "description": "Preconditions not met - feature skipped"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19746"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+              "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+            },
+            {
+              "precondition": "has-offers",
+              "message": "No offers available"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-pending-claims",
+          "featureName": "Sponsorship - View Pending Claims",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:15:41.685Z",
+          "duration": 15080,
+          "status": "pass",
+          "node": "genesis",
+          "url": "http://localhost:5173/sponsorship",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "sponsorship-pending-claims-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-pending-claims-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-page",
+              "filename": "sponsorship-pending-claims-_sponsorship-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-pending-claims-_sponsorship-page.png",
+              "width": 800,
+              "height": 528.53125,
+              "captured": true
+            },
+            {
+              "selector": ".claims-list",
+              "filename": "sponsorship-pending-claims-_claims-list.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-pending-claims-_claims-list.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .claims-list"
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5173/sponsorship",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [
+              ".claim-item",
+              ".approve-btn",
+              ".reject-btn"
+            ],
+            "checkResults": [],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5173/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .claim-item, .approve-btn, .reject-btn"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19736"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7",
+              "message": "Identity found: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7"
+            },
+            {
+              "precondition": "is-sponsored",
+              "met": true,
+              "message": "Identity is sponsored"
+            },
+            {
+              "precondition": "has-pending-claims",
+              "met": true,
+              "message": "Precondition 'has-pending-claims' assumed met"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-status-active",
+          "featureName": "Sponsorship - Status Active",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:15:56.765Z",
+          "duration": 9178,
+          "status": "pass",
+          "node": "alpha",
+          "url": "http://localhost:5174/sponsorship",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "sponsorship-status-active-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-active-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-page",
+              "filename": "sponsorship-status-active-_sponsorship-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-active-_sponsorship-page.png",
+              "width": 800,
+              "height": 1449.140625,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-status",
+              "filename": "sponsorship-status-active-_sponsorship-status.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-active-_sponsorship-status.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .sponsorship-status"
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5174/sponsorship",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [
+              ".sponsor-address",
+              ".status-active"
+            ],
+            "checkResults": [
+              {
+                "check": {
+                  "type": "text-present",
+                  "text": "Active"
+                },
+                "passed": true,
+                "actualValue": "found",
+                "message": "Text \"Active\" found on page"
+              }
+            ],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5174/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Missing Elements**: .sponsor-address, .status-active\n**Functional Checks**: 1/1 passed"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19746"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+              "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+            },
+            {
+              "precondition": "is-sponsored",
+              "met": true,
+              "message": "Identity is sponsored"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        },
+        {
+          "featureId": "sponsorship-status-pending",
+          "featureName": "Sponsorship - Status Pending",
+          "category": "sponsorship",
+          "timestamp": "2026-02-04T20:16:05.943Z",
+          "duration": 9102,
+          "status": "pass",
+          "node": "alpha",
+          "url": "http://localhost:5174/sponsorship",
+          "screenshots": [
+            {
+              "selector": "fullpage",
+              "filename": "sponsorship-status-pending-fullpage.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-pending-fullpage.png",
+              "width": 1280,
+              "height": 0,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-page",
+              "filename": "sponsorship-status-pending-_sponsorship-page.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-pending-_sponsorship-page.png",
+              "width": 800,
+              "height": 1449.140625,
+              "captured": true
+            },
+            {
+              "selector": ".sponsorship-status",
+              "filename": "sponsorship-status-pending-_sponsorship-status.png",
+              "filepath": "/mnt/c/github/swimchain/forum-client/screenshots/pipeline/sponsorship/sponsorship-status-pending-_sponsorship-status.png",
+              "width": 0,
+              "height": 0,
+              "captured": false,
+              "error": "Element not found: .sponsorship-status"
+            }
+          ],
+          "functionalState": {
+            "pageTitle": "Swimchain Forum",
+            "currentUrl": "http://localhost:5174/sponsorship",
+            "identityLoaded": false,
+            "identityAddress": null,
+            "isSponsored": null,
+            "nodeConnected": false,
+            "peerCount": 0,
+            "elementsFound": [],
+            "elementsMissing": [],
+            "checkResults": [
+              {
+                "check": {
+                  "type": "text-present",
+                  "text": "Pending"
+                },
+                "passed": true,
+                "actualValue": "found",
+                "message": "Text \"Pending\" found on page"
+              }
+            ],
+            "description": "**Page**: Swimchain Forum\n**URL**: http://localhost:5174/sponsorship\n**Node**: Disconnected\n**Identity**: Not loaded\n**Functional Checks**: 1/1 passed"
+          },
+          "preconditionResults": [
+            {
+              "precondition": "node-reachable",
+              "met": true,
+              "message": "Node RPC reachable at port 19746"
+            },
+            {
+              "precondition": "node-identity",
+              "met": "cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud",
+              "message": "Identity found: cs1qrnr904l8dqxyv3ljv62gu70tvc0s3tkzcwe82uersqu760q2hshspvyqud"
+            },
+            {
+              "precondition": "has-pending-claim",
+              "met": true,
+              "message": "Precondition 'has-pending-claim' assumed met"
+            }
+          ],
+          "errors": [],
+          "warnings": []
+        }
+      ]
+    }
+  ]
+}

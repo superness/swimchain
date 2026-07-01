@@ -1,0 +1,34 @@
+.address-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.address-display__text {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.875rem;
+  color: #a0aec0;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.address-display__copy {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  color: #718096;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.address-display:hover .address-display__copy {
+  opacity: 1;
+}
+
+.address-display__copy:hover {
+  color: #e2e8f0;
+}

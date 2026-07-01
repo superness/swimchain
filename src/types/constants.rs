@@ -517,6 +517,17 @@ pub const MSG_BRANCH_ANNOUNCE: u8 = 0x7E;
 /// Sent to peers to indicate which branches this node serves.
 pub const MSG_BRANCH_INVENTORY: u8 = 0x7F;
 
+// === Space Name Resolution (Bug #4) ===
+// Lightweight, view-driven protocol that lets a node ask peers for a single
+// space's display name when it only has the chain-skeleton commitment.
+// Avoids bulk content sync just to populate UI placeholders.
+
+/// GET_SPACE_META message type - request a single space's display metadata
+pub const MSG_GET_SPACE_META: u8 = 0xC0;
+
+/// SPACE_META message type - response carrying space name, creator, timestamp
+pub const MSG_SPACE_META: u8 = 0xC1;
+
 // === Branch Subscription Limits ===
 
 /// Maximum branches a node can subscribe to

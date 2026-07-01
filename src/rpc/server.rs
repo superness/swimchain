@@ -448,6 +448,17 @@ async fn handle_request(
         "get_sponsorship_info",
         "list_sponsorship_offers",
         "sign_message",
+        // Read-only content methods - public data, no auth needed
+        "list_spaces",
+        "list_threads",
+        "list_posts_for_space",
+        "get_space",
+        "get_thread",
+        "get_replies",
+        "get_content",
+        "get_identity_level",
+        "get_identity_name",
+        "get_user_profile",
         // Sponsorship actions - these contain verifiable signatures in params
         "create_sponsorship_offer",
         "cancel_sponsorship_offer",

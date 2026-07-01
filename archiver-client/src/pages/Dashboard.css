@@ -63,6 +63,22 @@
   margin-bottom: var(--spacing-xl);
 }
 
+.status-section--offline {
+  position: relative;
+  opacity: 0.6;
+}
+
+.status-offline-badge {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 6px 12px;
+  background: #4a2020;
+  color: #f0a0a0;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
 /* Controls Section */
 .controls-section {
   display: flex;

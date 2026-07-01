@@ -9,12 +9,15 @@ import { Link } from 'react-router-dom';
 import type { ArchiverConfig } from '../types';
 import { getDefaultConfig } from '../types';
 import { STORAGE_KEYS, MIN_STORAGE_BUDGET_GB, MAX_STORAGE_BUDGET_GB } from '../types/constants';
+import { useBlocklist } from '../hooks/useBlocklist';
 import './Settings.css';
 
 export function Settings(): JSX.Element {
   const [config, setConfig] = useState<ArchiverConfig>(getDefaultConfig());
   const [saved, setSaved] = useState(false);
   const [spaceInput, setSpaceInput] = useState('');
+  const [blockInput, setBlockInput] = useState('');
+  const { getBlocked, block, unblock } = useBlocklist();
 
   // Load config on mount
   useEffect(() => {
@@ -245,6 +248,64 @@ export function Settings(): JSX.Element {
                   Automatically contribute PoW to at-risk content.
                 </span>
               </label>
+            </div>
+          </section>
+
+          {/* Blocked Authors */}
+          <section className="settings-section">
+            <h2>Blocked Authors</h2>
+            <p className="section-description">
+              Content from blocked authors will be excluded from at-risk monitoring and auto-engagement.
+            </p>
+
+            <div className="space-list">
+              {getBlocked('user').length === 0 ? (
+                <p className="empty-spaces">No blocked authors.</p>
+              ) : (
+                getBlocked('user').map((item) => (
+                  <div key={item.id} className="space-tag">
+                    <span>{item.id.length > 20 ? `${item.id.slice(0, 10)}...${item.id.slice(-6)}` : item.id}</span>
+                    <button
+                      type="button"
+                      className="remove-space"
+                      onClick={() => unblock(item.id, 'user')}
+                      aria-label={`Unblock ${item.id}`}
+                    >
+                      {'\u00D7'}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="add-space-group">
+              <input
+                type="text"
+                placeholder="Author address (e.g., cs1...)"
+                value={blockInput}
+                onChange={(e) => setBlockInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (blockInput.trim()) {
+                      block(blockInput.trim(), 'user');
+                      setBlockInput('');
+                    }
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  if (blockInput.trim()) {
+                    block(blockInput.trim(), 'user');
+                    setBlockInput('');
+                  }
+                }}
+              >
+                Block Author
+              </button>
             </div>
           </section>
 

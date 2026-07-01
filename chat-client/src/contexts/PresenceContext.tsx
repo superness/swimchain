@@ -13,7 +13,7 @@ import {
 } from 'react';
 import type { PresenceState, PresenceStatus } from '../types';
 import { PRESENCE_HEARTBEAT_MS, PRESENCE_AWAY_THRESHOLD_MS } from '../types';
-import { currentUser, mockPresenceStates } from '../mocks/data';
+import { useIdentityContext } from '@swimchain/frontend';
 
 interface PresenceContextValue {
   presenceMap: Map<string, PresenceState>;
@@ -31,14 +31,13 @@ interface PresenceProviderProps {
 }
 
 export function PresenceProvider({ children }: PresenceProviderProps): JSX.Element {
-  // Initialize with mock data
-  const [presenceMap, setPresenceMap] = useState<Map<string, PresenceState>>(() => {
-    const map = new Map<string, PresenceState>();
-    for (const state of mockPresenceStates) {
-      map.set(state.userId, state);
-    }
-    return map;
-  });
+  const { identity } = useIdentityContext();
+  const currentUserId = identity?.publicKey ?? '';
+
+  // Initialize empty — no mock users
+  const [presenceMap, setPresenceMap] = useState<Map<string, PresenceState>>(
+    () => new Map()
+  );
 
   const lastActivityRef = useRef<number>(Date.now());
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -47,20 +46,22 @@ export function PresenceProvider({ children }: PresenceProviderProps): JSX.Eleme
   const handleActivity = useCallback(() => {
     lastActivityRef.current = Date.now();
 
+    if (!currentUserId) return;
+
     // Update own presence to online
     setPresenceMap((prev) => {
       const next = new Map(prev);
-      const currentState = next.get(currentUser.address);
+      const currentState = next.get(currentUserId);
       if (currentState?.status !== 'online') {
-        next.set(currentUser.address, {
-          userId: currentUser.address,
+        next.set(currentUserId, {
+          userId: currentUserId,
           status: 'online',
           lastSeen: Math.floor(Date.now() / 1000),
         });
       }
       return next;
     });
-  }, []);
+  }, [currentUserId]);
 
   // Set up activity listeners
   useEffect(() => {
@@ -78,6 +79,8 @@ export function PresenceProvider({ children }: PresenceProviderProps): JSX.Eleme
 
   // Heartbeat to maintain presence and check for away
   useEffect(() => {
+    if (!currentUserId) return;
+
     const checkPresence = () => {
       const now = Date.now();
       const timeSinceActivity = now - lastActivityRef.current;
@@ -87,8 +90,8 @@ export function PresenceProvider({ children }: PresenceProviderProps): JSX.Eleme
         const newStatus: PresenceStatus =
           timeSinceActivity > PRESENCE_AWAY_THRESHOLD_MS ? 'away' : 'online';
 
-        next.set(currentUser.address, {
-          userId: currentUser.address,
+        next.set(currentUserId, {
+          userId: currentUserId,
           status: newStatus,
           lastSeen: Math.floor(now / 1000),
         });
@@ -107,19 +110,21 @@ export function PresenceProvider({ children }: PresenceProviderProps): JSX.Eleme
         clearInterval(heartbeatIntervalRef.current);
       }
     };
-  }, [handleActivity]);
+  }, [handleActivity, currentUserId]);
 
   const setOwnPresence = useCallback((status: PresenceStatus) => {
+    if (!currentUserId) return;
+
     setPresenceMap((prev) => {
       const next = new Map(prev);
-      next.set(currentUser.address, {
-        userId: currentUser.address,
+      next.set(currentUserId, {
+        userId: currentUserId,
         status,
         lastSeen: Math.floor(Date.now() / 1000),
       });
       return next;
     });
-  }, []);
+  }, [currentUserId]);
 
   const getPresence = useCallback(
     (userId: string): PresenceState | undefined => {

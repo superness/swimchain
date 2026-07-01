@@ -1,0 +1,258 @@
+/**
+ * ChatMessageInput - Discord-style message input
+ */
+
+.chat-message-input {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--bg-elevated);
+  border-radius: 8px;
+  padding: 0 16px;
+  min-height: 44px;
+}
+
+/* Input row with attach button, textarea, send button */
+.input-row {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+}
+
+.chat-message-input.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Icon buttons */
+.input-icon-btn {
+  width: 32px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.input-icon-btn:hover {
+  color: var(--text-normal);
+}
+
+.input-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.attach-btn {
+  margin-right: 4px;
+}
+
+/* Input wrapper */
+.input-wrapper {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 0;
+}
+
+.message-textarea {
+  width: 100%;
+  min-height: 24px;
+  max-height: 200px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--text-normal);
+  font-size: 16px;
+  line-height: 1.375;
+  resize: none;
+  outline: none;
+  font-family: inherit;
+}
+
+.message-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.message-textarea:disabled {
+  cursor: not-allowed;
+}
+
+/* Send button */
+.send-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--brand-primary);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  cursor: pointer;
+  margin-left: 8px;
+  margin-bottom: 6px;
+  transition: background-color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.send-btn:hover:not(:disabled) {
+  background-color: var(--brand-hover);
+}
+
+.send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Send spinner */
+.send-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Attach button */
+.attach-btn {
+  width: 32px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--transition-fast);
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.attach-btn:hover {
+  color: var(--text-normal);
+}
+
+.attach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Attachment previews */
+.attachment-previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 0 8px 0;
+  border-bottom: 1px solid var(--bg-modifier-accent);
+  margin-bottom: 4px;
+}
+
+.attachment-preview {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+}
+
+.attachment-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.attachment-preview:hover .attachment-remove {
+  opacity: 1;
+}
+
+.attachment-remove:hover {
+  background: var(--status-danger, #ed4245);
+}
+
+/* Attachment error */
+.attachment-error {
+  padding: 8px 0;
+  color: var(--status-danger, #ed4245);
+  font-size: 12px;
+}
+
+/* ==========================================
+   Mobile Responsive Styles
+   ========================================== */
+
+@media (max-width: 768px) {
+  .chat-message-input {
+    padding: 0 12px;
+  }
+
+  .input-icon-btn,
+  .attach-btn {
+    width: 40px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .send-btn {
+    width: 40px;
+    height: 40px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .attachment-preview {
+    width: 72px;
+    height: 72px;
+  }
+}
+
+@media (max-width: 480px) {
+  .chat-message-input {
+    padding: 0 8px;
+    min-height: 48px;
+  }
+
+  .message-textarea {
+    font-size: 15px;
+  }
+
+  .attachment-previews {
+    padding: 8px 0 6px 0;
+  }
+
+  .attachment-preview {
+    width: 64px;
+    height: 64px;
+  }
+}

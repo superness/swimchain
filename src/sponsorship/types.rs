@@ -1509,21 +1509,27 @@ impl PublicSponsorshipOffer {
         msg
     }
 
-    /// Legacy signature message for existing offers (used in gossip protocol)
+    /// Signature message for verification (must match what client signed)
     ///
-    /// Format: sponsor(32) + offer_id(16) + created_at(8 BE) + expires_at(8 BE) +
-    ///         max_sponsees(1) + offer_type(1) + requirements_hash(32)
+    /// Reconstructs the same message format used during creation:
+    /// Format: "swimchain-sponsor-offer:" prefix + sponsor(32) + slots(1) + offer_type(1) +
+    ///         expires_days(4 BE) + min_pow(1) + app_required(1) + timestamp(8 BE)
+    ///
+    /// Note: expires_days is computed from (expires_at - created_at) / 86400
     #[must_use]
     pub fn signature_message(&self) -> Vec<u8> {
-        let mut msg = Vec::with_capacity(98);
-        msg.extend_from_slice(self.sponsor.as_bytes());
-        msg.extend_from_slice(&self.offer_id);
-        msg.extend_from_slice(&self.created_at.to_be_bytes());
-        msg.extend_from_slice(&self.expires_at.to_be_bytes());
-        msg.push(self.max_sponsees);
-        msg.push(self.offer_type as u8);
-        msg.extend_from_slice(&self.requirements.hash());
-        msg
+        // Compute expires_days from the stored timestamps
+        let expires_days = ((self.expires_at - self.created_at) / 86400) as u32;
+
+        Self::signature_message_for_creation(
+            self.sponsor.as_bytes(),
+            self.max_sponsees,
+            &self.offer_type,
+            expires_days,
+            self.requirements.min_pow_difficulty,
+            self.requirements.application_required,
+            self.created_at, // created_at is used as timestamp during creation
+        )
     }
 
     /// Check if offer has expired

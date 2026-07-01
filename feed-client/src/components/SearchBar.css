@@ -1,0 +1,126 @@
+/**
+ * SearchBar styles
+ */
+
+.search-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  padding: 0 var(--spacing-sm);
+  height: 36px;
+  min-width: 200px;
+  max-width: 400px;
+  transition: all var(--transition-fast);
+}
+
+.search-bar:hover {
+  border-color: var(--color-border-hover);
+}
+
+.search-bar--focused {
+  border-color: var(--color-accent-primary);
+  box-shadow: 0 0 0 2px var(--color-accent-primary-alpha);
+  background: var(--color-bg-secondary);
+}
+
+.search-bar__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+  margin-right: var(--spacing-xs);
+}
+
+.search-bar--focused .search-bar__icon {
+  color: var(--color-accent-primary);
+}
+
+.search-bar__input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  min-width: 0;
+  padding: var(--spacing-xs) 0;
+}
+
+.search-bar__input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.search-bar__input:focus {
+  outline: none;
+}
+
+.search-bar__clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: var(--color-bg-quaternary);
+  border-radius: var(--radius-full);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: var(--spacing-xs);
+  transition: all var(--transition-fast);
+}
+
+.search-bar__clear:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+}
+
+.search-bar__shortcut {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--spacing-sm);
+  flex-shrink: 0;
+}
+
+.search-bar__shortcut kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+/* Hide shortcut when focused (user already knows) */
+.search-bar--focused .search-bar__shortcut {
+  display: none;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .search-bar {
+    min-width: 150px;
+  }
+
+  .search-bar__shortcut {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .search-bar {
+    min-width: 100px;
+    max-width: 180px;
+  }
+}

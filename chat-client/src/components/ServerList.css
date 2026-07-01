@@ -1,0 +1,188 @@
+/**
+ * ServerList - Discord-style server sidebar
+ */
+
+.server-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 72px;
+  min-width: 72px;
+  background-color: var(--bg-tertiary);
+  padding: 12px 0;
+  gap: 8px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.server-list::-webkit-scrollbar {
+  display: none;
+}
+
+.server-icon-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0 12px;
+}
+
+/* Pill indicator on left side */
+.server-pill {
+  position: absolute;
+  left: 0;
+  width: 4px;
+  height: 0;
+  background-color: var(--text-normal);
+  border-radius: 0 4px 4px 0;
+  transition: height var(--transition-normal);
+}
+
+.server-pill.unread {
+  height: 8px;
+}
+
+.server-pill.active {
+  height: 40px;
+}
+
+.server-icon {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-radius var(--transition-normal), background-color var(--transition-normal);
+  overflow: hidden;
+  border: none;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-normal);
+}
+
+.server-icon:hover {
+  border-radius: 16px;
+  background-color: var(--brand-primary);
+}
+
+.server-icon.active {
+  border-radius: 16px;
+  background-color: var(--brand-primary);
+}
+
+.server-icon-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.server-icon-initials {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 500;
+  color: white;
+  text-transform: uppercase;
+  transition: background-color var(--transition-normal);
+}
+
+.server-icon:hover .server-icon-initials,
+.server-icon.active .server-icon-initials {
+  background-color: var(--brand-primary) !important;
+}
+
+/* Unread badge */
+.server-unread-badge {
+  position: absolute;
+  bottom: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background-color: var(--status-danger);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 4px var(--bg-tertiary);
+}
+
+/* Notification ping */
+.server-notification-ping {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  background-color: var(--status-danger);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px var(--bg-tertiary);
+}
+
+/* Separator */
+.server-separator {
+  width: 32px;
+  height: 2px;
+  background-color: var(--bg-modifier-accent);
+  border-radius: 1px;
+  margin: 4px 0;
+}
+
+/* Server list items container */
+.server-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+/* Home button */
+.home-button {
+  background-color: var(--bg-primary);
+  color: var(--text-muted);
+}
+
+.home-button:hover,
+.home-button.active {
+  color: white;
+  background-color: var(--brand-primary);
+}
+
+/* Add server button */
+.add-server {
+  background-color: var(--bg-primary);
+  color: var(--status-positive);
+}
+
+.add-server:hover {
+  background-color: var(--status-positive);
+  color: white;
+}
+
+/* Explore servers button */
+.explore-servers {
+  background-color: var(--bg-primary);
+  color: var(--status-positive);
+}
+
+.explore-servers:hover {
+  background-color: var(--status-positive);
+  color: white;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .server-list {
+    background-color: var(--bg-tertiary);
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3);
+  }
+}

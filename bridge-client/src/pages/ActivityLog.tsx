@@ -5,6 +5,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { getBridgeEngine } from '../services/BridgeEngine';
+import { ContentStatus } from '../components/ContentStatus';
 import type { ActivityLogEntry } from '../types';
 import './ActivityLog.css';
 
@@ -55,6 +56,7 @@ export function ActivityLog(): JSX.Element {
             <option value="error">Errors</option>
             <option value="connection">Connections</option>
             <option value="rate_limited">Rate Limited</option>
+            <option value="spam_blocked">Spam Blocked</option>
           </select>
         </div>
       </header>
@@ -70,6 +72,7 @@ export function ActivityLog(): JSX.Element {
               <tr>
                 <th scope="col">Time</th>
                 <th scope="col">Type</th>
+                <th scope="col">Decay</th>
                 <th scope="col">Direction</th>
                 <th scope="col">Description</th>
               </tr>
@@ -82,6 +85,11 @@ export function ActivityLog(): JSX.Element {
                     <span className={`type-badge type-${entry.type}`}>
                       {entry.type.replace('_', ' ')}
                     </span>
+                  </td>
+                  <td className="col-decay">
+                    {entry.type === 'message_bridged' && (
+                      <ContentStatus createdAt={typeof entry.timestamp === 'string' ? new Date(entry.timestamp) : entry.timestamp} />
+                    )}
                   </td>
                   <td className="col-direction">
                     {entry.direction && (

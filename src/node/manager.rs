@@ -31,6 +31,7 @@ use crate::sync::subscription::BranchSubscriptionManager;
 use crate::discovery::peer_branches::PeerBranchTracker;
 use crate::transport::{ConnectionDirection, LocalNodeInfo, PeerInfo, TcpTransport};
 use crate::types::network::{MessageEnvelope, MessageType};
+use crate::cli::search_index::SearchIndex;
 use crate::rpc::{RpcMethods, RpcServer, RpcServerConfig, NodeRef};
 use crate::VERSION;
 
@@ -100,6 +101,7 @@ pub struct NodeManager {
     engagement_graph: Option<Arc<EngagementGraphStore>>,
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
     peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
+    search_index: Option<Arc<RwLock<SearchIndex>>>,
 
     // Runtime state
     state: Arc<RwLock<NodeState>>,
@@ -136,6 +138,7 @@ impl NodeManager {
             height: 0,
             user_agent: format!("swimchain/{}", VERSION),
             relay: true,
+            public_key: *keypair.public_key.as_bytes(),
         };
 
         Ok(Self {
@@ -164,6 +167,7 @@ impl NodeManager {
             engagement_graph: None,
             branch_subscription_manager: None,
             peer_branch_tracker: None,
+            search_index: None,
             state: Arc::new(RwLock::new(NodeState::Stopped)),
             sync_state: Arc::new(tokio::sync::RwLock::new(SyncState::Idle)),
             metrics: RwLock::new(NodeMetrics::new()),
@@ -203,9 +207,13 @@ impl NodeManager {
         &self.config
     }
 
-    /// Get the node ID (public key bytes)
+    /// Get this node's session-level identifier.
+    ///
+    /// Per SPEC_06 §128 + §154: `node_id = SHA-256(public_key)`. This is the
+    /// value peers see in our VERSION handshake (`PeerInfo.node_id`).
     pub fn node_id(&self) -> [u8; 32] {
-        *self.keypair.public_key.as_bytes()
+        use sha2::{Digest, Sha256};
+        Sha256::digest(self.keypair.public_key.as_bytes()).into()
     }
 
     // ========== State Transitions ==========
@@ -343,6 +351,17 @@ impl NodeManager {
             }
             Err(e) => {
                 warn!("Failed to open content store: {}. Reaction sync may be unavailable.", e);
+            }
+        }
+
+        // 3.1b. Initialize search index for full-text search
+        match SearchIndex::open_or_create(&self.config.data_dir) {
+            Ok(index) => {
+                info!("[SEARCH] Opened search index with {} documents", index.doc_count());
+                self.search_index = Some(Arc::new(RwLock::new(index)));
+            }
+            Err(e) => {
+                warn!("[SEARCH] Failed to open search index: {}. Search functionality will be limited.", e);
             }
         }
 
@@ -692,6 +711,10 @@ impl NodeManager {
         if let Some(ref offer_store) = self.offer_store {
             router_builder = router_builder.offer_store(offer_store.clone());
         }
+        // Pass search index to router for indexing network-synced content
+        if let Some(ref search_index) = self.search_index {
+            router_builder = router_builder.search_index(search_index.clone());
+        }
 
         let router = Arc::new(router_builder.build());
         self.router = Some(router.clone());
@@ -749,6 +772,7 @@ impl NodeManager {
                 self.peer_branch_tracker.clone(),
                 self.node_id(),
                 self.sponsorship_store.clone(),
+                self.offer_store.clone(),
             );
             info!("[CONTENT-SYNC] Started background tasks with message routing, DHT, decay, block formation, and branch-selective sync");
         } else if let (Some(ref cm), Some(ref transport)) = (&self.connection_manager, &self.transport) {
@@ -934,13 +958,20 @@ impl NodeManager {
                     };
 
                     if let Some(transport) = &self.transport {
-                        match transport.connect(addr).await {
-                            Ok(conn) => {
+                        // Use 5-second timeout for DNS peer connections to avoid blocking
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            transport.connect(addr)
+                        ).await {
+                            Ok(Ok(conn)) => {
                                 info!("[BOOTSTRAP] Connected to DNS peer {}", addr);
                                 self.integrate_outbound_connection(conn).await;
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 debug!("[BOOTSTRAP] Failed to connect to DNS peer {}: {}", addr, e);
+                            }
+                            Err(_) => {
+                                debug!("[BOOTSTRAP] Timeout connecting to DNS peer {}", addr);
                             }
                         }
                     }
@@ -1327,9 +1358,11 @@ impl NodeManager {
             membership_store: self.membership_store.clone(),
             sponsorship_store: self.sponsorship_store.clone(),
             offer_store: self.offer_store.clone(),
+            branch_subscription_manager: self.branch_subscription_manager.clone(),
             keypair: self.keypair.clone(),
             shutdown_tx: rpc_shutdown_tx,
             identity_name: Arc::new(tokio::sync::RwLock::new(self.config.identity_name.clone())),
+            search_index: self.search_index.clone(),
         });
 
         // Create RPC methods

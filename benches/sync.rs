@@ -17,7 +17,9 @@ fn generate_valid_header_chain(count: usize) -> Vec<RootBlock> {
     let base_timestamp = 1_000_000u64;
     let difficulty = 30u64;
 
+    let mut cumulative = 0u64;
     for i in 0..count {
+        cumulative += difficulty;
         let header = RootBlock {
             version: RootBlock::CURRENT_VERSION,
             prev_root_hash: prev_hash,
@@ -26,8 +28,10 @@ fn generate_valid_header_chain(count: usize) -> Vec<RootBlock> {
             space_block_hashes: vec![],
             space_block_count: 0,
             total_pow: difficulty, // Exactly meets difficulty
+            cumulative_pow: cumulative,
             difficulty_target: difficulty,
             height: i as u64,
+            block_creator: [0u8; 32],
         };
         prev_hash = header.hash();
         headers.push(header);
@@ -80,8 +84,10 @@ fn bench_header_hash(c: &mut Criterion) {
         space_block_hashes: vec![[3u8; 32]; 10],
         space_block_count: 10,
         total_pow: 100,
+        cumulative_pow: 100,
         difficulty_target: 30,
         height: 1000,
+        block_creator: [0u8; 32],
     };
 
     c.bench_function("header_hash", |b| b.iter(|| black_box(&header).hash()));
@@ -96,8 +102,10 @@ fn bench_meets_difficulty(c: &mut Criterion) {
         space_block_hashes: vec![],
         space_block_count: 0,
         total_pow: 100,
+        cumulative_pow: 100,
         difficulty_target: 30,
         height: 1000,
+        block_creator: [0u8; 32],
     };
 
     c.bench_function("meets_difficulty", |b| {

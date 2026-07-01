@@ -3,6 +3,7 @@
  */
 
 import type { SponsorshipOfferSummary } from '../lib/rpc';
+import { useDisplayName } from '../hooks/useDisplayName';
 import './SponsorshipOfferCard.css';
 
 interface SponsorshipOfferCardProps {
@@ -26,11 +27,6 @@ function formatTimeRemaining(expiresAt: number): string {
   return `in ${Math.floor(diff / 60)}m`;
 }
 
-function formatAddress(pubkey: string): string {
-  if (pubkey.length <= 16) return pubkey;
-  return `${pubkey.substring(0, 8)}...${pubkey.substring(pubkey.length - 4)}`;
-}
-
 export function SponsorshipOfferCard({
   offer,
   onClaim,
@@ -47,11 +43,14 @@ export function SponsorshipOfferCard({
     ? 'Open (full sponsorship)'
     : 'Conditional';
 
+  // Resolve sponsor display name
+  const { displayName: sponsorName, loading: nameLoading } = useDisplayName(offer.sponsor_pubkey);
+
   return (
     <div className={`offer-card ${isExpired ? 'offer-card-expired' : ''}`}>
       <div className="offer-card-header">
-        <span className="offer-card-sponsor">
-          Sponsor: {formatAddress(offer.sponsor_pubkey)}
+        <span className="offer-card-sponsor" title={offer.sponsor_pubkey}>
+          Sponsor: {nameLoading ? '...' : sponsorName}
         </span>
         <span className={`offer-card-type offer-card-type-${offer.offer_type}`}>
           {typeLabel}

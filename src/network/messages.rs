@@ -93,6 +93,9 @@ pub struct VersionPayload {
     pub start_height: u32,
     /// Whether the node wants to receive gossip
     pub relay: bool,
+    /// Sender's Ed25519 public key (SPEC_06 §128). Receiver computes
+    /// `node_id = SHA-256(public_key)`.
+    pub public_key: [u8; 32],
 }
 
 impl Default for VersionPayload {
@@ -107,6 +110,7 @@ impl Default for VersionPayload {
             user_agent: String::new(),
             start_height: 0,
             relay: true,
+            public_key: [0u8; 32],
         }
     }
 }
@@ -2039,6 +2043,147 @@ impl BranchInventoryPayload {
         }
 
         Some(Self { branches })
+    }
+}
+
+// ============================================================================
+// Space Name Resolution (Bug #4) — see docs/SPACE_NAME_RESOLUTION.md
+// ============================================================================
+
+/// Request the display metadata for a single space.
+///
+/// Wire format: just the 16-byte space_id (truncated SHA-256 commitment).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetSpaceMetaPayload {
+    pub space_id: [u8; 16],
+}
+
+impl GetSpaceMetaPayload {
+    pub fn new(space_id: [u8; 16]) -> Self {
+        Self { space_id }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.space_id.to_vec()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 16 {
+            return None;
+        }
+        let mut space_id = [0u8; 16];
+        space_id.copy_from_slice(&bytes[..16]);
+        Some(Self { space_id })
+    }
+}
+
+/// Reply carrying a single space's display metadata.
+///
+/// Wire format:
+/// - space_id: 16 bytes
+/// - creator_pubkey: 32 bytes
+/// - timestamp: 8 bytes LE
+/// - name_len: 1 byte, name_bytes (max 255 bytes, valid UTF-8)
+/// - desc_flag: 1 byte (0 = none, 1 = present)
+/// - if desc_flag==1: desc_len 1 byte + desc_bytes
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceMetaPayload {
+    pub space_id: [u8; 16],
+    pub creator_pubkey: [u8; 32],
+    pub timestamp: u64,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+impl SpaceMetaPayload {
+    pub fn new(
+        space_id: [u8; 16],
+        creator_pubkey: [u8; 32],
+        timestamp: u64,
+        name: String,
+        description: Option<String>,
+    ) -> Self {
+        Self {
+            space_id,
+            creator_pubkey,
+            timestamp,
+            name,
+            description,
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let name_bytes = self.name.as_bytes();
+        let name_len = name_bytes.len().min(255) as u8;
+        let mut buf = Vec::with_capacity(16 + 32 + 8 + 1 + name_len as usize + 2);
+        buf.extend_from_slice(&self.space_id);
+        buf.extend_from_slice(&self.creator_pubkey);
+        buf.extend_from_slice(&self.timestamp.to_le_bytes());
+        buf.push(name_len);
+        buf.extend_from_slice(&name_bytes[..name_len as usize]);
+        match &self.description {
+            Some(d) => {
+                let d_bytes = d.as_bytes();
+                let d_len = d_bytes.len().min(255) as u8;
+                buf.push(1);
+                buf.push(d_len);
+                buf.extend_from_slice(&d_bytes[..d_len as usize]);
+            }
+            None => buf.push(0),
+        }
+        buf
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 16 + 32 + 8 + 1 + 1 {
+            return None;
+        }
+        let mut offset = 0;
+
+        let mut space_id = [0u8; 16];
+        space_id.copy_from_slice(&bytes[offset..offset + 16]);
+        offset += 16;
+
+        let mut creator_pubkey = [0u8; 32];
+        creator_pubkey.copy_from_slice(&bytes[offset..offset + 32]);
+        offset += 32;
+
+        let mut ts_bytes = [0u8; 8];
+        ts_bytes.copy_from_slice(&bytes[offset..offset + 8]);
+        let timestamp = u64::from_le_bytes(ts_bytes);
+        offset += 8;
+
+        let name_len = bytes[offset] as usize;
+        offset += 1;
+        if bytes.len() < offset + name_len + 1 {
+            return None;
+        }
+        let name = String::from_utf8(bytes[offset..offset + name_len].to_vec()).ok()?;
+        offset += name_len;
+
+        let desc_flag = bytes[offset];
+        offset += 1;
+        let description = if desc_flag == 1 {
+            if bytes.len() < offset + 1 {
+                return None;
+            }
+            let d_len = bytes[offset] as usize;
+            offset += 1;
+            if bytes.len() < offset + d_len {
+                return None;
+            }
+            Some(String::from_utf8(bytes[offset..offset + d_len].to_vec()).ok()?)
+        } else {
+            None
+        };
+
+        Some(Self {
+            space_id,
+            creator_pubkey,
+            timestamp,
+            name,
+            description,
+        })
     }
 }
 

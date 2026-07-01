@@ -25,6 +25,7 @@ use crate::blocks::BlockBuilder;
 use crate::content::decay_integration::DecayIntegration;
 use crate::dht::{DhtManager, DhtMessage, NodeId as DhtNodeId};
 use crate::network::messages::{GetBlocksPayload, PingPongPayload};
+use crate::sponsorship::offer_store::OfferStore;
 use crate::sync::ChainSyncer;
 use crate::sync::subscription::BranchSubscriptionManager;
 use crate::discovery::peer_branches::PeerBranchTracker;
@@ -80,6 +81,10 @@ pub const DHT_DISCOVERY_INTERVAL_SECS: u64 = 60;
 /// Branch-selective sync interval - sync subscribed branches (45 seconds)
 /// Per BRANCH_SELECTIVE_SYNC.md §4: Nodes sync only branches they subscribe to
 pub const BRANCH_SYNC_INTERVAL_SECS: u64 = 45;
+
+/// Sponsorship offer sync interval - sync offers from peers (2 minutes)
+/// Per SPEC_11 §5.1: Query peers for available sponsorship offers during initial sync
+pub const SPONSORSHIP_OFFER_SYNC_INTERVAL_SECS: u64 = 120;
 
 // ============================================================================
 // Helper functions
@@ -647,6 +652,94 @@ impl BackgroundTaskRunner {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        });
+
+        self.handles.push(handle);
+    }
+
+    /// Spawn the sponsorship offer sync task (SPEC_11 §5.1)
+    ///
+    /// Queries connected peers for sponsorship offers every 2 minutes.
+    /// This ensures new nodes receive existing offers that were created
+    /// before they joined the network (offers only propagate via TTL-3
+    /// gossip when first created).
+    ///
+    /// The task:
+    /// 1. Sends SPONSORSHIP_OFFER_QUERY to up to 3 random peers
+    /// 2. Peers respond with SPONSORSHIP_OFFER_LIST containing active offers
+    /// 3. The router's handle_sponsorship_offer_list stores new offers
+    pub fn spawn_sponsorship_offer_sync(
+        &mut self,
+        connection_pool: Arc<PeerConnectionPool>,
+        offer_store: Arc<OfferStore>,
+    ) {
+        let mut shutdown = self.shutdown_rx.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(SPONSORSHIP_OFFER_SYNC_INTERVAL_SECS));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            // Do initial sync after a short delay to allow connections to establish
+            let mut initial_sync_done = false;
+
+            info!(
+                "[SPONSORSHIP-SYNC] Started ({}s interval)",
+                SPONSORSHIP_OFFER_SYNC_INTERVAL_SECS
+            );
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    _ = shutdown.changed() => {
+                        info!("[SPONSORSHIP-SYNC] Received shutdown signal");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        let peer_ids = connection_pool.peer_ids().await;
+                        if peer_ids.is_empty() {
+                            debug!("[SPONSORSHIP-SYNC] No peers connected, skipping");
+                            continue;
+                        }
+
+                        // Check how many offers we already have
+                        let current_offer_count = offer_store.total_offer_count();
+
+                        // On initial sync (first tick with peers), query more aggressively
+                        let query_count = if !initial_sync_done && current_offer_count == 0 {
+                            initial_sync_done = true;
+                            peer_ids.len().min(5) // Query up to 5 peers on first sync
+                        } else {
+                            peer_ids.len().min(2) // Regular sync: query 2 peers
+                        };
+
+                        // Build SPONSORSHIP_OFFER_QUERY message (empty payload - just requests all offers)
+                        let envelope = MessageEnvelope::new_fork_agnostic(
+                            MessageType::SponsorshipOfferQuery,
+                            Vec::new(), // Empty payload
+                        );
+
+                        let mut sent = 0;
+                        for peer_id in peer_ids.iter().take(query_count) {
+                            if let Ok(()) = connection_pool.send_to(peer_id, &envelope).await {
+                                debug!(
+                                    "[SPONSORSHIP-SYNC] Sent SPONSORSHIP_OFFER_QUERY to peer {}",
+                                    hex::encode(&peer_id[..8])
+                                );
+                                sent += 1;
+                            }
+                        }
+
+                        if sent > 0 {
+                            info!(
+                                "[SPONSORSHIP-SYNC] Queried {} peers for offers (have {} offers)",
+                                sent,
+                                current_offer_count
+                            );
                         }
                     }
                 }
@@ -2042,6 +2135,7 @@ impl BackgroundTaskRunner {
     /// * `branch_subscription_manager` - BranchSubscriptionManager for selective sync (optional)
     /// * `peer_branch_tracker` - PeerBranchTracker for tracking peer branches (optional)
     /// * `node_identity` - Node's identity for leader election in block formation
+    /// * `offer_store` - OfferStore for sponsorship offer sync (optional)
     pub fn spawn_all_with_routing(
         &mut self,
         transport: Arc<TcpTransport>,
@@ -2059,6 +2153,7 @@ impl BackgroundTaskRunner {
         peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
         node_identity: [u8; 32],
         sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
+        offer_store: Option<Arc<OfferStore>>,
     ) {
         // Spawn the accept loop with routing - this enables full message propagation
         // If seed_idle_timeout is set, connections will be closed after that duration of inactivity
@@ -2118,7 +2213,13 @@ impl BackgroundTaskRunner {
 
         self.spawn_peer_maintenance(connection_manager.clone());
 
-        self.spawn_keepalive(connection_manager, connection_pool, chain_store.clone());
+        self.spawn_keepalive(connection_manager, connection_pool.clone(), chain_store.clone());
+
+        // Sponsorship offer sync - queries peers for offers during initial sync (SPEC_11 §5.1)
+        // This ensures new nodes receive existing offers that were created before they joined
+        if let Some(os) = offer_store {
+            self.spawn_sponsorship_offer_sync(connection_pool, os);
+        }
 
         // These have no dependencies for now - always start as placeholders
         self.spawn_availability_announcer();

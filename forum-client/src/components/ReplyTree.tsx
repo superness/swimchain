@@ -6,8 +6,10 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import type { Reply as ReplyType, EmojiCount } from '../types';
 import { AddressDisplay } from './AddressDisplay';
+import { BlockButton } from './BlockButton';
 import { ReplyComposer } from './ReplyComposer';
 import { ReportModal, SpamBadge } from './ReportModal';
+import { useBlocklist } from '../hooks/useBlocklist';
 import { formatRelativeTime } from '../utils/time';
 import { useReactions, usePoolContribution } from '../hooks/useRpc';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
@@ -32,6 +34,11 @@ export function ReplyTree({
   focusedReplyId,
   onReplySuccess,
 }: ReplyTreeProps): JSX.Element {
+  const { filterBlocked } = useBlocklist();
+
+  // Filter out blocked replies and replies from blocked authors
+  const visibleReplies = filterBlocked(replies, 'reply', { alsoFilterByAuthor: true });
+
   return (
     <ul
       className="reply-tree"
@@ -39,7 +46,7 @@ export function ReplyTree({
       role={depth === 0 ? 'list' : undefined}
       aria-label={depth === 0 ? 'Replies' : undefined}
     >
-      {replies.map((reply) => (
+      {visibleReplies.map((reply) => (
         <ReplyNode
           key={reply.id}
           reply={reply}
@@ -147,8 +154,9 @@ function ReplyNode({
 
     try {
       const pubKeyHex = Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('');
-      const signFn = (message: Uint8Array): Uint8Array => {
-        const sig = sign(message);
+      // Use async signing - returns Uint8Array or null
+      const signFn = async (message: Uint8Array): Promise<Uint8Array> => {
+        const sig = await sign(message);
         if (!sig) throw new Error('Failed to sign');
         return sig;
       };
@@ -295,6 +303,14 @@ function ReplyNode({
               </>
             )}
           </button>
+
+          {/* Block button */}
+          <BlockButton
+            id={reply.id}
+            type="reply"
+            authorId={reply.author}
+            variant="icon"
+          />
 
           {/* Report button */}
           <button

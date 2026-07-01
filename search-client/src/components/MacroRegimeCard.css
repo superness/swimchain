@@ -1,0 +1,192 @@
+/**
+ * MacroRegimeCard Styles
+ *
+ * Visually distinct from signal/result cards:
+ * - Purple left border accent (vs cyan/green for signal cards)
+ * - Muted purple-tinted background
+ * - Coral/orange for bearish values
+ * - Uses the same CSS custom property theming system as the rest of the app
+ */
+
+.macro-regime-card {
+  background: linear-gradient(135deg, var(--color-bg-secondary, #1a1a2e), var(--color-bg-tertiary, #16213e));
+  border: 1px solid var(--color-border, #2a2a4a);
+  border-left: 3px solid #a78bfa; /* Purple accent — distinct from signal-card cyan/green */
+  border-radius: var(--radius-lg, 12px);
+  padding: var(--spacing-lg, 16px);
+  transition: border-color var(--transition-fast, 0.15s ease);
+}
+
+.macro-regime-card:hover {
+  border-color: #a78bfa;
+}
+
+/* ─── Header disclaimer row ─── */
+.macro-regime-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-sm, 8px);
+}
+
+.macro-regime-card__disclaimer {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--color-text-tertiary, #9ca3af);
+  letter-spacing: 0.3px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+/* ─── Stale badge ─── */
+.macro-regime-card__stale-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  border-radius: var(--radius-sm, 4px);
+  background: rgba(244, 67, 54, 0.15);
+  color: #f44336;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* ─── Regime label ─── */
+.macro-regime-card__regime {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--color-text-primary, #e6edf3);
+  line-height: 1.2;
+  margin-bottom: var(--spacing-md, 12px);
+  letter-spacing: -0.02em;
+}
+
+/* ─── Stats grid ─── */
+.macro-regime-card__stats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm, 8px);
+  margin-bottom: var(--spacing-md, 12px);
+}
+
+.macro-regime-card__stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border, #2a2a4a);
+}
+
+.macro-regime-card__stat:last-of-type {
+  border-bottom: none;
+}
+
+.macro-regime-card__stat-label {
+  font-size: 12px;
+  color: var(--color-text-secondary, #8b949e);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.macro-regime-card__stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.macro-regime-card__stat-value.stat-positive {
+  color: var(--color-success, #4caf50);
+}
+
+.macro-regime-card__stat-value.stat-negative {
+  color: var(--color-error, #f44336);
+}
+
+.macro-regime-card__stat-sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--color-text-tertiary, #9ca3af);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* ─── VRP badge pill ─── */
+.macro-regime-card__vrp-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  border-radius: var(--radius-full, 20px);
+  text-transform: uppercase;
+}
+
+.macro-regime-card__vrp-badge.vrp-bullish {
+  background: rgba(76, 175, 80, 0.15);
+  color: var(--color-success, #4caf50);
+}
+
+.macro-regime-card__vrp-badge.vrp-bearish {
+  background: rgba(244, 67, 54, 0.15);
+  color: var(--color-error, #f44336);
+}
+
+.macro-regime-card__vrp-badge.vrp-neutral {
+  background: rgba(255, 152, 0, 0.15);
+  color: var(--color-warning, #ff9800);
+}
+
+/* ─── Next event + countdown ─── */
+.macro-regime-card__event {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+  flex-wrap: wrap;
+  margin-top: var(--spacing-sm, 8px);
+  padding-top: var(--spacing-sm, 8px);
+  border-top: 1px dashed var(--color-border, #2a2a4a);
+}
+
+.macro-regime-card__event-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-tertiary, #9ca3af);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.macro-regime-card__event-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary, #e6edf3);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.macro-regime-card__countdown {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  border-radius: var(--radius-sm, 4px);
+  background: rgba(139, 92, 246, 0.12);
+  color: #a78bfa;
+  white-space: nowrap;
+}
+
+.macro-regime-card__countdown.countdown-past {
+  background: rgba(244, 67, 54, 0.12);
+  color: var(--color-error, #f44336);
+}

@@ -1,0 +1,454 @@
+/**
+ * Desktop App - Node wrapper that embeds client UIs
+ *
+ * Architecture:
+ * - Manages node lifecycle (identity, start/stop)
+ * - Shows NodeStatusBar at top
+ * - Embeds selected client (forum, reddit, chat) in iframe
+ * - Passes RPC config to client via postMessage
+ */
+
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { NodeStatusBar } from "./components/NodeStatusBar";
+import { ClientFrame } from "./components/ClientFrame";
+
+interface NodeStatus {
+  running: boolean;
+  rpc_port: number;
+  peer_count: number;
+  network: string;
+}
+
+interface IdentityInfo {
+  exists: boolean;
+  name: string | null;
+  address: string | null;
+}
+
+type AppStage = "checking" | "onboarding" | "unlock" | "starting" | "ready" | "error";
+type ClientType = "forum" | "chat" | "feed" | "search";
+
+// Logger that writes to file via Tauri command
+const log = (level: string, message: string, data?: unknown) => {
+  const logLine = data ? `${message} ${JSON.stringify(data)}` : message;
+  // Fire and forget - don't await
+  invoke("write_client_log", { client: "desktop-app", level, message: logLine }).catch(() => {});
+};
+
+// Screenshot utility - takes a screenshot and saves it with a label
+const takeScreenshot = async (label: string): Promise<string | null> => {
+  try {
+    const path = await invoke<string>("take_screenshot", { label });
+    log("info", `Screenshot saved: ${path}`);
+    return path;
+  } catch (e) {
+    log("error", `Failed to take screenshot: ${e}`);
+    return null;
+  }
+};
+
+// Expose screenshot function globally for debugging
+(window as unknown as { takeScreenshot: typeof takeScreenshot }).takeScreenshot = takeScreenshot;
+
+function App() {
+  log("info", "===== App COMPONENT RENDERING =====");
+
+  const [stage, setStage] = useState<AppStage>("checking");
+  const [error, setError] = useState<string | null>(null);
+  const [nodeStatus, setNodeStatus] = useState<NodeStatus | null>(null);
+  const [identity, setIdentity] = useState<IdentityInfo | null>(null);
+  const [rpcEndpoint, setRpcEndpoint] = useState<string | null>(null);
+  const [rpcAuth, setRpcAuth] = useState<string | null>(null);
+  const [selectedClient, setSelectedClient] = useState<ClientType>("forum");
+
+  // Onboarding form state
+  const [displayName, setDisplayName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isCreating, setIsCreating] = useState(false);
+  const [isUnlocking, setIsUnlocking] = useState(false);
+
+  // Check identity on startup
+  useEffect(() => {
+    const checkIdentity = async () => {
+      log("info", "===== CHECKING IDENTITY ON STARTUP =====");
+      try {
+        const info = await invoke<IdentityInfo>("check_identity");
+        log("info", "Identity check result:", info);
+        setIdentity(info);
+
+        if (info.exists) {
+          log("info", "IDENTITY EXISTS - showing unlock screen");
+          setStage("unlock");
+        } else {
+          log("info", "NO IDENTITY - showing onboarding screen");
+          setStage("onboarding");
+        }
+      } catch (e) {
+        log("error", "FAILED to check identity:", e);
+        setError(String(e));
+        setStage("error");
+      }
+    };
+
+    checkIdentity();
+  }, []);
+
+  const startNode = async (pwd: string) => {
+    log("info", "===== STARTING NODE =====");
+    try {
+      log("info", "Calling invoke(start_node)...");
+      await invoke("start_node", { password: pwd });
+      log("info", "start_node succeeded, waiting 1 second...");
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      log("info", "Getting RPC endpoint...");
+      const endpoint = await invoke<string>("get_rpc_endpoint");
+      log("info", "RPC endpoint:", endpoint);
+
+      log("info", "Getting RPC auth...");
+      const auth = await invoke<string>("get_rpc_auth");
+      log("info", "RPC auth obtained (length):", auth?.length);
+
+      setRpcEndpoint(endpoint);
+      setRpcAuth(auth);
+      log("info", "===== NODE READY - setting stage to ready =====");
+      setStage("ready");
+    } catch (e) {
+      log("error", "===== FAILED TO START NODE =====", e);
+      setError(String(e));
+      setStage("error");
+    }
+  };
+
+  const handleUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    log("info", "===== USER CLICKED UNLOCK BUTTON =====");
+    setIsUnlocking(true);
+    setError(null);
+
+    try {
+      log("info", "Setting stage to 'starting'...");
+      setStage("starting");
+      await startNode(password);
+      log("info", "Unlock complete!");
+    } catch (err) {
+      log("error", "Unlock FAILED:", err);
+      setError(String(err));
+      setStage("unlock");
+    } finally {
+      setIsUnlocking(false);
+    }
+  };
+
+  const handleCreateIdentity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    log("info", "===== USER CLICKED CREATE IDENTITY BUTTON =====");
+
+    if (password !== confirmPassword) {
+      log("error", "Passwords don't match");
+      setError("Passwords don't match");
+      return;
+    }
+
+    if (password.length < 8) {
+      log("error", "Password too short");
+      setError("Password must be at least 8 characters");
+      return;
+    }
+
+    if (displayName.length < 1) {
+      log("error", "No display name");
+      setError("Please enter a display name");
+      return;
+    }
+
+    setIsCreating(true);
+    setError(null);
+
+    try {
+      log("info", "Calling create_identity with displayName:", displayName);
+      const info = await invoke<IdentityInfo>("create_identity", {
+        name: displayName,
+        password: password,
+      });
+      log("info", "create_identity result:", info);
+
+      if (info.exists) {
+        log("info", "Identity created successfully!");
+        setIdentity(info);
+        setStage("starting");
+        await startNode(password);
+      } else {
+        log("error", "create_identity returned exists=false");
+        setError("Failed to create identity");
+      }
+    } catch (e) {
+      log("error", "===== FAILED TO CREATE IDENTITY =====", e);
+      setError(String(e));
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  // Log stage changes and take screenshot
+  useEffect(() => {
+    log("info", "===== STAGE CHANGED =====", { stage, hasRpcEndpoint: !!rpcEndpoint, hasRpcAuth: !!rpcAuth });
+    // Auto-screenshot on stage changes for debugging
+    takeScreenshot(`stage-${stage}`);
+  }, [stage, rpcEndpoint, rpcAuth]);
+
+  // Keyboard shortcut for manual screenshot (F9 or Ctrl+Shift+P)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      log("debug", "Key pressed:", { key: e.key, ctrl: e.ctrlKey, shift: e.shiftKey });
+      // F9 as simple trigger (F12 is devtools)
+      if (e.key === 'F9') {
+        e.preventDefault();
+        log("info", "F9 pressed - taking screenshot");
+        takeScreenshot('manual-f9');
+      }
+      // Ctrl+Shift+P as backup (P for picture)
+      if (e.ctrlKey && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
+        e.preventDefault();
+        log("info", "Ctrl+Shift+P pressed - taking screenshot");
+        takeScreenshot('manual');
+      }
+    };
+    // Capture phase to catch before iframe
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, []);
+
+  // Poll node status when ready
+  useEffect(() => {
+    if (stage !== "ready") return;
+
+    log("info", "Stage is ready, starting node status polling");
+
+    const pollStatus = async () => {
+      try {
+        const status = await invoke<NodeStatus>("get_node_status");
+        setNodeStatus(status);
+      } catch (e) {
+        log("error", "Failed to get node status:", e);
+      }
+    };
+
+    pollStatus();
+    const interval = setInterval(pollStatus, 5000);
+    return () => clearInterval(interval);
+  }, [stage]);
+
+  // Wave SVG logo component
+  const WaveLogo = ({ size = 64 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 100 100" className="logo-svg" role="img" aria-label="Swimchain logo">
+      <title>Swimchain</title>
+      <defs>
+        <linearGradient id="waveGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#3b82f6" />
+          <stop offset="100%" stopColor="#60a5fa" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M10,50 Q25,30 40,50 T70,50 T100,50 M10,60 Q25,40 40,60 T70,60 T100,60 M10,70 Q25,50 40,70 T70,70 T100,70"
+        fill="none"
+        stroke="url(#waveGradient)"
+        strokeWidth="6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+
+  // Checking stage
+  if (stage === "checking") {
+    return (
+      <div className="app loading">
+        <div className="loading-spinner">
+          <div className="logo"><WaveLogo /></div>
+          <h2>Swimchain</h2>
+          <p>Checking setup...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error stage
+  if (stage === "error") {
+    return (
+      <div className="app loading">
+        <div className="loading-spinner error">
+          <div className="logo error-icon">!</div>
+          <h2>Something went wrong</h2>
+          <p className="error-message">{error}</p>
+          <button onClick={() => window.location.reload()} className="btn btn-primary">
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Unlock stage
+  if (stage === "unlock") {
+    return (
+      <div className="app onboarding">
+        <div className="onboarding-container">
+          <div className="logo"><WaveLogo size={80} /></div>
+          <h1>Welcome back</h1>
+          <p className="subtitle">Enter your password to unlock your identity and start your node.</p>
+
+          {identity?.address && (
+            <div className="identity-preview">
+              <code>{identity.address}</code>
+            </div>
+          )}
+
+          <form onSubmit={handleUnlock} className="onboarding-form">
+            <div className="form-group">
+              <label htmlFor="unlockPassword">Password</label>
+              <input
+                type="password"
+                id="unlockPassword"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                disabled={isUnlocking}
+                autoFocus
+              />
+            </div>
+
+            {error && <div className="form-error">{error}</div>}
+
+            <button
+              type="submit"
+              className="btn btn-primary btn-large"
+              disabled={isUnlocking || password.length === 0}
+            >
+              {isUnlocking ? "Unlocking..." : "Unlock & Connect"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // Onboarding stage
+  if (stage === "onboarding") {
+    return (
+      <div className="app onboarding">
+        <div className="onboarding-container">
+          <div className="logo"><WaveLogo size={80} /></div>
+          <h1>Welcome to Swimchain</h1>
+          <p className="subtitle">A truly decentralized social network - no servers, no ads, no algorithms.</p>
+
+          <form onSubmit={handleCreateIdentity} className="onboarding-form">
+            <div className="form-group">
+              <label htmlFor="displayName">Display Name</label>
+              <input
+                type="text"
+                id="displayName"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="How others will see you"
+                disabled={isCreating}
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="password">Password</label>
+              <input
+                type="password"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Protects your identity"
+                disabled={isCreating}
+              />
+              <small>Used to encrypt your private key locally</small>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="confirmPassword">Confirm Password</label>
+              <input
+                type="password"
+                id="confirmPassword"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Re-enter password"
+                disabled={isCreating}
+              />
+            </div>
+
+            {error && <div className="form-error">{error}</div>}
+
+            <div className="identity-warning">
+              <strong>Important:</strong> Your password cannot be recovered. If you forget it, you will permanently lose access to your identity, content, and reputation. Please use a strong password and store it safely.
+            </div>
+
+            <button type="submit" className="btn btn-primary btn-large" disabled={isCreating}>
+              {isCreating ? "Creating Identity..." : "Create Identity & Join"}
+            </button>
+          </form>
+
+          <div className="onboarding-info">
+            <h3>What happens next?</h3>
+            <ul>
+              <li>Your identity is created locally on your machine</li>
+              <li>A local node starts and connects to the network</li>
+              <li>You can browse and post in decentralized spaces</li>
+            </ul>
+            <p className="notice">There are no accounts, no servers, no company. You own your data.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Starting stage
+  if (stage === "starting") {
+    return (
+      <div className="app loading">
+        <div className="loading-spinner">
+          <div className="logo"><WaveLogo /></div>
+          <h2>Starting your node...</h2>
+          <p>Connecting to the Swimchain network</p>
+          <div className="progress-bar">
+            <div className="progress-bar-fill"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Ready stage - show NodeStatusBar + embedded client
+  if (!rpcEndpoint || !rpcAuth) {
+    return (
+      <div className="app loading">
+        <div className="loading-spinner">
+          <h2>Waiting for node connection...</h2>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app ready">
+      <NodeStatusBar
+        status={nodeStatus}
+        identity={identity}
+        selectedClient={selectedClient}
+        onClientChange={setSelectedClient}
+        onScreenshot={() => takeScreenshot('manual-btn')}
+      />
+      <ClientFrame
+        client={selectedClient}
+        rpcEndpoint={rpcEndpoint}
+        rpcAuth={rpcAuth}
+      />
+    </div>
+  );
+}
+
+export default App;

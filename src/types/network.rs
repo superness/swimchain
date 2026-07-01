@@ -303,6 +303,12 @@ pub enum MessageType {
     /// Send inventory of branches this peer serves
     BranchInventory = 0xA4,
 
+    // Space Name Resolution (Bug #4)
+    /// Request a single space's display metadata
+    GetSpaceMeta = 0xC0,
+    /// Reply carrying space name, creator pubkey, timestamp
+    SpaceMeta = 0xC1,
+
     // Blocklist Gossip (SPEC_12 §4.6)
     /// Blocklist update (new blocked content)
     BlocklistUpdate = 0xB0,
@@ -395,6 +401,8 @@ impl TryFrom<u8> for MessageType {
             0xA2 => Ok(MessageType::UnsubscribeBranch),
             0xA3 => Ok(MessageType::BranchAnnounce),
             0xA4 => Ok(MessageType::BranchInventory),
+            0xC0 => Ok(MessageType::GetSpaceMeta),
+            0xC1 => Ok(MessageType::SpaceMeta),
             // Blocklist gossip (SPEC_12 §4.6)
             0xB0 => Ok(MessageType::BlocklistUpdate),
             0xB1 => Ok(MessageType::BlocklistSync),

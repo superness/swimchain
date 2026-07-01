@@ -8,6 +8,7 @@ import type { ChatPreferences } from '../types';
 import { DEFAULT_CHAT_PREFERENCES } from '../types';
 import { BlocklistManager } from '../components/BlocklistManager';
 import { DebugPanel } from '../components/DebugPanel';
+import { useRpc } from '../hooks/useRpc';
 import './SettingsPage.css';
 
 const STORAGE_KEY = 'swimchain-chat-preferences';
@@ -27,6 +28,47 @@ export function SettingsPage(): JSX.Element {
 
   const [saved, setSaved] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
+
+  // Display name management
+  const { rpc, connected } = useRpc();
+  const [displayName, setDisplayName] = useState('');
+  const [displayNameLoading, setDisplayNameLoading] = useState(false);
+  const [displayNameSaving, setDisplayNameSaving] = useState(false);
+  const [displayNameStatus, setDisplayNameStatus] = useState<string | null>(null);
+
+  // Fetch current display name on mount
+  useEffect(() => {
+    if (!rpc || !connected) return;
+    setDisplayNameLoading(true);
+    rpc.call('get_identity_name', {})
+      .then((result: unknown) => {
+        const r = result as { identity_name?: string | null };
+        setDisplayName(r.identity_name ?? '');
+      })
+      .catch(() => { /* RPC may not be available */ })
+      .finally(() => setDisplayNameLoading(false));
+  }, [rpc, connected]);
+
+  const handleSaveDisplayName = useCallback(async () => {
+    if (!rpc || !connected) return;
+    setDisplayNameSaving(true);
+    setDisplayNameStatus(null);
+    try {
+      const result = await rpc.call('set_identity_name', {
+        name: displayName.trim() || null,
+      }) as { success?: boolean };
+      if (result.success) {
+        setDisplayNameStatus('Display name saved');
+        setTimeout(() => setDisplayNameStatus(null), 2000);
+      } else {
+        setDisplayNameStatus('Failed to save');
+      }
+    } catch {
+      setDisplayNameStatus('Failed to save');
+    } finally {
+      setDisplayNameSaving(false);
+    }
+  }, [rpc, connected, displayName]);
 
   // Save preferences when they change
   useEffect(() => {
@@ -49,7 +91,7 @@ export function SettingsPage(): JSX.Element {
   return (
     <div className="settings-page">
       <header className="settings-page__header">
-        <Link to="/" className="settings-page__back">
+        <Link to="/channels/@me" className="settings-page__back">
           <svg
             width="20"
             height="20"
@@ -61,7 +103,7 @@ export function SettingsPage(): JSX.Element {
             <line x1="19" y1="12" x2="5" y2="12" />
             <polyline points="12 19 5 12 12 5" />
           </svg>
-          Back
+          Back to Chat
         </Link>
         <h1 className="settings-page__title">Settings</h1>
         {saved && (
@@ -70,6 +112,35 @@ export function SettingsPage(): JSX.Element {
       </header>
 
       <div className="settings-page__content">
+        <section className="settings-page__section">
+          <h2 className="settings-page__section-title">Display Name</h2>
+          <p className="settings-page__option-desc" style={{ marginBottom: '12px' }}>
+            Set a display name that appears alongside your messages
+          </p>
+          <div className="settings-page__display-name-row">
+            <input
+              type="text"
+              className="settings-page__display-name-input"
+              placeholder={displayNameLoading ? 'Loading...' : 'Enter display name'}
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              maxLength={64}
+              disabled={displayNameLoading || displayNameSaving}
+            />
+            <button
+              type="button"
+              className="settings-page__display-name-save"
+              onClick={handleSaveDisplayName}
+              disabled={displayNameLoading || displayNameSaving}
+            >
+              {displayNameSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {displayNameStatus && (
+            <p className="settings-page__display-name-status">{displayNameStatus}</p>
+          )}
+        </section>
+
         <section className="settings-page__section">
           <h2 className="settings-page__section-title">Chat Preferences</h2>
 

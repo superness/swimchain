@@ -1,0 +1,347 @@
+/**
+ * ChannelSidebar - Discord-style channel list
+ */
+
+.channel-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 240px;
+  min-width: 240px;
+  background-color: var(--bg-secondary);
+  height: 100%;
+}
+
+/* Server header */
+.server-header {
+  height: 48px;
+  min-height: 48px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2), 0 1.5px 0 rgba(0, 0, 0, 0.05), 0 2px 0 rgba(0, 0, 0, 0.05);
+  z-index: 1;
+}
+
+.server-header-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-normal);
+  transition: background-color var(--transition-fast);
+  border-radius: 4px;
+}
+
+.server-header-button:hover {
+  background-color: var(--bg-modifier-hover);
+}
+
+.server-name {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 0;
+}
+
+/* Channel list */
+.channel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+
+/* Channel category */
+.channel-category {
+  margin-top: 16px;
+}
+
+.channel-category:first-child {
+  margin-top: 8px;
+}
+
+.category-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+  height: 24px;
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  transition: color var(--transition-fast);
+}
+
+.category-header:hover {
+  color: var(--text-normal);
+}
+
+.category-arrow {
+  transition: transform var(--transition-fast);
+}
+
+.category-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+.category-name {
+  flex: 1;
+  text-align: left;
+}
+
+.category-channels {
+  margin-top: 4px;
+}
+
+/* Channel item */
+.channel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.channel-item:hover {
+  background-color: var(--bg-modifier-hover);
+  color: var(--text-normal);
+}
+
+.channel-item.active {
+  background-color: var(--bg-modifier-selected);
+  color: var(--text-normal);
+}
+
+.channel-item.unread {
+  color: var(--text-normal);
+}
+
+.channel-item.unread::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 4px;
+  height: 8px;
+  background-color: var(--text-normal);
+  border-radius: 0 4px 4px 0;
+}
+
+.channel-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.channel-item:hover .channel-icon,
+.channel-item.active .channel-icon {
+  color: var(--text-normal);
+}
+
+.channel-name {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.channel-unread {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  background-color: var(--status-danger);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* No channels state */
+.no-channels {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.no-channels p {
+  margin: 0 0 12px;
+}
+
+.create-channel-btn {
+  padding: 8px 16px;
+  background-color: var(--brand-primary);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+
+.create-channel-btn:hover {
+  background-color: var(--brand-hover);
+}
+
+/* User area */
+.user-area {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  height: 52px;
+  min-height: 52px;
+  background-color: var(--bg-secondary-alt);
+}
+
+.user-avatar {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  margin-right: 8px;
+}
+
+.avatar-placeholder {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, var(--brand-primary), var(--brand-hover));
+  border-radius: 50%;
+}
+
+.user-status {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 3px solid var(--bg-secondary-alt);
+}
+
+.user-status.online {
+  background-color: var(--status-positive);
+}
+
+.user-status.idle {
+  background-color: var(--status-warning);
+}
+
+.user-status.dnd {
+  background-color: var(--status-danger);
+}
+
+.user-status.offline {
+  background-color: var(--status-offline);
+}
+
+.user-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.username {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--text-normal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-tag {
+  display: block;
+  font-size: 12px;
+  line-height: 13px;
+  color: var(--text-muted);
+}
+
+.user-controls {
+  display: flex;
+  gap: 2px;
+}
+
+.user-control-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.user-control-btn:hover {
+  background-color: var(--bg-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* Accessibility: Visually hidden but screen-reader accessible */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .channel-sidebar {
+    width: 280px;
+    min-width: 280px;
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .channel-name {
+    font-size: 15px;
+  }
+
+  .channel-item {
+    height: 40px;
+    min-height: 44px; /* Touch target */
+  }
+
+  .user-control-btn {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 480px) {
+  .channel-sidebar {
+    width: calc(100vw - 72px);
+    max-width: 280px;
+  }
+}

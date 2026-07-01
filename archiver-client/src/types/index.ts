@@ -3,6 +3,21 @@
  */
 
 /**
+ * Stored identity data (persisted in localStorage)
+ */
+export interface StoredIdentity {
+  address: string;         // cs1... bech32m address
+  publicKey: string;       // Hex-encoded public key (64 hex chars = 32 bytes)
+  seed: string;            // Hex-encoded seed/private key (64 hex chars = 32 bytes)
+  createdAt: number;       // UNIX timestamp of creation
+  powSolution?: {          // Optional stored PoW solution
+    nonce: string;
+    timestamp: string;
+    difficulty: number;
+  };
+}
+
+/**
  * Space ID type (bech32m format: sp1...)
  */
 export type SpaceId = string;
@@ -92,6 +107,8 @@ export interface AtRiskContent {
   poolStatus: PoolStatus;
   /** Urgency classification */
   urgency: UrgencyLevel;
+  /** Whether this content is spam-flagged (SPEC_12 accelerated decay) */
+  spamFlagged?: boolean;
 }
 
 /**

@@ -24,7 +24,7 @@ ReactDOM.createRoot(rootElement).render(
     <ErrorBoundary>
       <SwimchainProvider
         fallback={<LoadingScreen />}
-        onLoad={() => console.log('Swimchain WASM loaded successfully')}
+        onLoad={() => {}}
         onError={(err) => console.error('WASM initialization failed:', err)}
       >
         <RpcProvider>

@@ -81,20 +81,7 @@ export function Dashboard(): JSX.Element {
 
   return (
     <div className="bridge-dashboard">
-      <header className="dashboard-header">
-        <div className="header-title">
-          <h1>Swimchain Bridge</h1>
-          <p className="header-subtitle">Matrix/IRC Integration</p>
-        </div>
-        <nav className="header-nav">
-          <Link to="/matrix" className="nav-link">Matrix</Link>
-          <Link to="/irc" className="nav-link">IRC</Link>
-          <Link to="/activity" className="nav-link">Activity</Link>
-          <Link to="/settings" className="nav-link">Settings</Link>
-        </nav>
-      </header>
-
-      <main id="main-content" className="dashboard-main">
+      <div className="dashboard-main">
         {/* Connection Controls */}
         <section className="controls-section">
           <div className="connection-controls">
@@ -186,7 +173,7 @@ export function Dashboard(): JSX.Element {
             )}
           </div>
         </section>
-      </main>
+      </div>
     </div>
   );
 }

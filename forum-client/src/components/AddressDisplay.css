@@ -83,3 +83,14 @@
 .address-display:focus-within .address-dm-button {
   opacity: 1;
 }
+
+.display-name-loading {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}

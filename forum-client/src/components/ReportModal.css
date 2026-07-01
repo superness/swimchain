@@ -1,0 +1,230 @@
+.report-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.report-modal {
+  background: var(--bg-secondary, #1a1a2e);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.report-modal h3 {
+  margin: 0 0 16px 0;
+  color: var(--text-primary, #fff);
+  font-size: 1.25rem;
+}
+
+.report-modal p {
+  color: var(--text-secondary, #aaa);
+  font-size: 0.875rem;
+  margin-bottom: 16px;
+}
+
+.report-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.reason-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-tertiary, #252542);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.reason-option:hover {
+  background: var(--bg-hover, #2d2d4a);
+}
+
+.reason-option.selected {
+  border-color: var(--accent-color, #6366f1);
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.reason-option input[type="radio"] {
+  accent-color: var(--accent-color, #6366f1);
+}
+
+.reason-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reason-title {
+  color: var(--text-primary, #fff);
+  font-weight: 500;
+}
+
+.reason-desc {
+  color: var(--text-secondary, #aaa);
+  font-size: 0.75rem;
+}
+
+.report-modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.report-modal-actions button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.report-cancel {
+  background: transparent;
+  border: 1px solid var(--border-color, #444);
+  color: var(--text-secondary, #aaa);
+}
+
+.report-cancel:hover {
+  background: var(--bg-hover, #2d2d4a);
+  color: var(--text-primary, #fff);
+}
+
+.report-submit {
+  background: var(--danger-color, #ef4444);
+  border: none;
+  color: white;
+}
+
+.report-submit:hover:not(:disabled) {
+  background: var(--danger-hover, #dc2626);
+}
+
+.report-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Mining progress */
+.report-mining {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.report-mining p {
+  margin-bottom: 12px;
+  color: var(--text-primary, #fff);
+}
+
+.mining-progress {
+  height: 4px;
+  background: var(--bg-tertiary, #252542);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.mining-progress-bar {
+  height: 100%;
+  background: var(--accent-color, #6366f1);
+  animation: mining-pulse 1s ease-in-out infinite;
+}
+
+@keyframes mining-pulse {
+  0%, 100% { width: 30%; margin-left: 0; }
+  50% { width: 50%; margin-left: 50%; transform: translateX(-100%); }
+}
+
+.mining-stats {
+  font-size: 0.75rem;
+  color: var(--text-secondary, #aaa);
+}
+
+/* Success/Error states */
+.report-success {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.report-success-icon {
+  font-size: 3rem;
+  margin-bottom: 12px;
+}
+
+.report-success h4 {
+  color: var(--success-color, #22c55e);
+  margin: 0 0 8px 0;
+}
+
+.report-error {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid var(--danger-color, #ef4444);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 16px;
+  color: var(--danger-color, #ef4444);
+  font-size: 0.875rem;
+}
+
+/* Spam indicator badge */
+.spam-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: var(--danger-color, #ef4444);
+}
+
+.spam-badge.flagged {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: var(--danger-color, #ef4444);
+}
+
+/* Report button styling */
+.report-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-secondary, #aaa);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.report-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--danger-color, #ef4444);
+}
+
+.defend-btn {
+  color: var(--success-color, #22c55e);
+}
+
+.defend-btn:hover {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.3);
+}

@@ -141,6 +141,19 @@ export class ContentMonitor {
         const urgency = this.classifyUrgency(heat);
         const estimatedDecayTime = this.estimateDecayTime(new Date(item.last_engagement));
 
+        // Fetch pool details for contributor count
+        let contributorCount = 0;
+        if (this.rpcClient && item.has_pool) {
+          try {
+            const pool = await this.rpcClient.getPoolForContent(item.content_id);
+            if (pool) {
+              contributorCount = pool.contributor_count;
+            }
+          } catch {
+            // Fall back to 0 if pool lookup fails
+          }
+        }
+
         atRiskContent.push({
           postHash: item.content_id,
           spaceId,
@@ -152,10 +165,32 @@ export class ContentMonitor {
           poolStatus: {
             currentSeconds: Math.round((item.pool_progress ?? 0) * 60),
             requiredSeconds: POOL_REQUIRED_POW_SECS,
-            contributorCount: 0, // Not tracked in simple response
+            contributorCount,
           },
           urgency,
         });
+      }
+    }
+
+    // Check spam status and mark flagged content (SPEC_12)
+    if (this.rpcClient && atRiskContent.length > 0) {
+      try {
+        const contentIds = atRiskContent.map((c) => c.postHash);
+        const spamFlaggedIds = await this.rpcClient.getSpamFlaggedIds(contentIds);
+
+        if (spamFlaggedIds.size > 0) {
+          console.log(
+            `[ContentMonitor] ${spamFlaggedIds.size} items spam-flagged, excluding from engagement`
+          );
+        }
+
+        for (const item of atRiskContent) {
+          if (spamFlaggedIds.has(item.postHash)) {
+            item.spamFlagged = true;
+          }
+        }
+      } catch (error) {
+        console.warn('[ContentMonitor] Failed to check spam status, proceeding without filter:', error);
       }
     }
 

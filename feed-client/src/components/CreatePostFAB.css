@@ -1,0 +1,76 @@
+/**
+ * CreatePostFAB styles - Floating Action Button for creating posts
+ */
+
+.create-fab {
+  position: fixed;
+  bottom: var(--spacing-xl);
+  right: var(--spacing-xl);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: linear-gradient(135deg, var(--color-accent-primary), var(--color-accent-secondary));
+  color: white;
+  font-weight: 600;
+  font-size: var(--font-size-base);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-lg), 0 4px 20px rgba(0, 212, 255, 0.3);
+  text-decoration: none;
+  z-index: var(--z-sticky);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.create-fab:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: var(--shadow-lg), 0 8px 30px rgba(0, 212, 255, 0.4);
+  text-decoration: none;
+  color: white;
+}
+
+.create-fab:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.create-fab:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 2px;
+}
+
+.create-fab__icon {
+  font-size: var(--font-size-xl);
+  font-weight: 300;
+  line-height: 1;
+}
+
+.create-fab__label {
+  /* Hide on mobile, show on desktop */
+}
+
+/* Mobile - compact button */
+@media (max-width: 600px) {
+  .create-fab {
+    bottom: calc(var(--spacing-xl) + 60px); /* Account for mobile nav */
+    right: var(--spacing-md);
+    padding: var(--spacing-md);
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    justify-content: center;
+  }
+
+  .create-fab__icon {
+    font-size: 1.5rem;
+  }
+
+  .create-fab__label {
+    display: none;
+  }
+}
+
+/* Large screens - extended button */
+@media (min-width: 1200px) {
+  .create-fab {
+    right: calc(50% - 600px + var(--spacing-xl));
+  }
+}

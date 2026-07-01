@@ -1,0 +1,224 @@
+/**
+ * Invite Modal Styles
+ */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.modal-content {
+  background: var(--color-bg-primary, #ffffff);
+  border-radius: 0.75rem;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
+  max-width: 28rem;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+}
+
+.modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0.25rem;
+  color: var(--color-text-tertiary, #6b7280);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modal-close:hover {
+  background: var(--color-bg-secondary, #f3f4f6);
+  color: var(--color-text-primary, #111827);
+}
+
+.invite-form {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.invite-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.invite-form .form-group label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary, #6b7280);
+}
+
+.invite-form .form-input,
+.invite-form .form-textarea {
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  color: var(--color-text-primary, #111827);
+  background: var(--color-bg-secondary, #f9fafb);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 0.375rem;
+  transition: border-color 0.15s ease;
+}
+
+.invite-form .form-input:focus,
+.invite-form .form-textarea:focus {
+  outline: none;
+  border-color: var(--color-accent-primary, #6366f1);
+}
+
+.invite-form .form-input:disabled,
+.invite-form .form-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.invite-form .form-input::placeholder,
+.invite-form .form-textarea::placeholder {
+  color: var(--color-text-tertiary, #9ca3af);
+}
+
+.invite-form .form-textarea {
+  resize: vertical;
+  min-height: 4rem;
+  font-family: inherit;
+}
+
+.invite-form .form-hint {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary, #6b7280);
+}
+
+.invite-error {
+  padding: 0.75rem;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--color-error, #dc2626);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+}
+
+.invite-success {
+  padding: 0.75rem;
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--color-success, #16a34a);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  text-align: center;
+  font-weight: 500;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.modal-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.modal-actions .btn-primary {
+  background: var(--color-accent-primary, #6366f1);
+  color: white;
+  border: none;
+}
+
+.modal-actions .btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-hover, #4f46e5);
+}
+
+.modal-actions .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-actions .btn-ghost {
+  background: transparent;
+  color: var(--color-text-secondary, #4b5563);
+  border: 1px solid var(--color-border, #e5e7eb);
+}
+
+.modal-actions .btn-ghost:hover:not(:disabled) {
+  background: var(--color-bg-secondary, #f3f4f6);
+}
+
+.modal-actions .btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .modal-content {
+    background: var(--color-bg-primary, #1f2937);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .modal-header {
+    border-bottom-color: var(--color-border, #374151);
+  }
+
+  .modal-header h2 {
+    color: var(--color-text-primary, #f3f4f6);
+  }
+
+  .modal-close:hover {
+    background: var(--color-bg-secondary, #374151);
+  }
+
+  .invite-form .form-input,
+  .invite-form .form-textarea {
+    background: var(--color-bg-secondary, #111827);
+    border-color: var(--color-border, #374151);
+    color: var(--color-text-primary, #f3f4f6);
+  }
+
+  .modal-actions .btn-ghost {
+    color: var(--color-text-secondary, #9ca3af);
+    border-color: var(--color-border, #374151);
+  }
+
+  .modal-actions .btn-ghost:hover:not(:disabled) {
+    background: var(--color-bg-tertiary, #374151);
+  }
+}

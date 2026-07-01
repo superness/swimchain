@@ -4,7 +4,7 @@
  * Main dashboard showing at-risk content, status, and quick actions.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useContentMonitor } from '../hooks/useContentMonitor';
 import { useArchiveStorage } from '../hooks/useArchiveStorage';
@@ -12,6 +12,7 @@ import { StatusCard } from '../components/StatusCard';
 import { AtRiskList } from '../components/AtRiskList';
 import { BudgetMeter } from '../components/BudgetMeter';
 import { useRpc } from '../hooks/useRpc';
+import { useBlocklist } from '../hooks/useBlocklist';
 import { STORAGE_KEYS } from '../types/constants';
 import type { ArchiverConfig } from '../types';
 import { getDefaultConfig } from '../types';
@@ -69,12 +70,17 @@ export function Dashboard(): JSX.Element {
     formatBytes,
   } = useArchiveStorage();
 
+  const { isUserBlocked } = useBlocklist();
   const [selectedSpace, setSelectedSpace] = useState<string>('all');
 
-  const filteredContent =
-    selectedSpace === 'all'
-      ? atRiskContent
-      : atRiskContent.filter((c) => c.spaceId === selectedSpace);
+  // Filter by selected space AND exclude blocked authors
+  const filteredContent = useMemo(() => {
+    return atRiskContent.filter((c) => {
+      if (isUserBlocked(c.author)) return false;
+      if (selectedSpace !== 'all' && c.spaceId !== selectedSpace) return false;
+      return true;
+    });
+  }, [atRiskContent, selectedSpace, isUserBlocked]);
 
   // Connection status message
   const connectionStatus = connecting
@@ -112,8 +118,27 @@ export function Dashboard(): JSX.Element {
       </header>
 
       <main className="dashboard-main">
+        {/* Identity requirement notice */}
+        {connected && (
+          <div
+            className="connection-banner"
+            role="note"
+            style={{ background: '#1a3a4a', color: '#7ec8e3', marginBottom: '12px' }}
+          >
+            Auto-engage requires a node identity for PoW mining. Ensure your Swimchain node has an identity registered via the CLI (<code>sw identity create</code>).
+          </div>
+        )}
+
         {/* Status Cards Row */}
-        <section className="status-section" aria-label="Status Overview">
+        <section
+          className={`status-section${!connected && !connecting ? ' status-section--offline' : ''}`}
+          aria-label="Status Overview"
+        >
+          {!connected && !connecting && (
+            <div className="status-offline-badge" role="status">
+              Offline — metrics may be stale
+            </div>
+          )}
           <StatusCard
             label="Spaces Monitored"
             value={targetSpaces.length}

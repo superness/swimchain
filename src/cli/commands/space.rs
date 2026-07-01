@@ -396,18 +396,20 @@ fn create(config: &mut CliConfig, name: &str, no_pow: bool) -> Result<()> {
     Ok(())
 }
 
-/// Join a space
+/// Join a space.
+///
+/// Per VISION.md, content propagation is engagement-driven, not interest-driven.
+/// `space join` is just a local marker that the user is interested. It does NOT
+/// trigger any active content pull — that happens when the user actually views
+/// content in the space (lazy fetch via list_space_content / request_content).
 fn join(config: &mut CliConfig, space_id: &str) -> Result<()> {
-    // Validate space ID format
     let _ = validate_space_id(space_id)?;
 
-    // Check if already following
     if config.followed_spaces.contains(&space_id.to_string()) {
         println!("Already following space: {space_id}");
         return Ok(());
     }
 
-    // Add to followed spaces
     config.followed_spaces.push(space_id.to_string());
     config.save()?;
 
@@ -415,9 +417,8 @@ fn join(config: &mut CliConfig, space_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Leave a space
+/// Leave a space (local marker only).
 fn leave(config: &mut CliConfig, space_id: &str) -> Result<()> {
-    // Validate space ID format
     let _ = validate_space_id(space_id)?;
 
     // Check if following
