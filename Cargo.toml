@@ -1,0 +1,192 @@
+[workspace]
+members = [".", "swimchain-wasm"]
+exclude = ["desktop-app/src-tauri", "tools/dns-seeder"]
+
+[package]
+name = "swimchain"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Decentralized social media protocol"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/swimchain/swimchain"
+homepage = "https://swimchain.io"
+
+[lib]
+name = "swimchain"
+path = "src/lib.rs"
+
+[[bin]]
+name = "swimchain"
+path = "src/main.rs"
+
+[[bin]]
+name = "sw"
+path = "src/bin/cs.rs"
+
+[dependencies]
+# Async runtime (ROADMAP Appendix B)
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+
+# Cryptography - Ed25519 per SPEC_01
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+
+# Hashing - Blake3 for PoW (SPEC_03), SHA-256 for content hashing (SPEC_01)
+blake3 = "1.5"
+sha2 = "0.10"
+
+# Address encoding - Bech32m per SPEC_01 Section 3.3
+bech32 = "0.11"
+
+# Serialization
+bincode = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# Random number generation - CSPRNG for key generation per SPEC_01
+rand = "0.8"
+
+# Error handling
+thiserror = "1.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+fern = "0.7"
+chrono = "0.4"
+
+# Async trait support (for sync module)
+async-trait = "0.1"
+
+# Futures utilities (for DHT lookups)
+futures = "0.3"
+
+# Key encryption (SPEC_01 - encrypted key storage)
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+zeroize = { version = "1.8", features = ["derive"] }
+base64 = "0.22"
+
+# LRU cache (H-BLOCK-1 - bounded seen_actions)
+lru = "0.12"
+
+# Rate limiting (H-RPC-1 - async-native rate limiting)
+governor = "0.6"
+
+# Storage layer (Milestone 1.6 - SPEC_07)
+sled = "0.34.7"
+serde_json = { version = "1.0", features = ["raw_value"] }
+directories = "5.0"
+hex = "0.4"
+serde-big-array = "0.5"
+
+# RPC server (JSON-RPC over HTTP)
+hyper = { version = "1.5", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+http-body-util = "0.1"
+
+# WebSocket support (H-RPC-2 - Real-time events)
+tokio-tungstenite = "0.24"
+
+# TLS support (H-RPC-3 - Secure remote connections)
+rustls = "0.23"
+tokio-rustls = "0.26"
+rustls-pemfile = "2.1"
+
+# mDNS discovery (M-DHT-3 - LAN peer discovery)
+mdns = "3.0"
+
+# Parallel computation (M-IDENTITY-1 - Multi-threaded PoW mining)
+rayon = "1.10"
+
+# CLI enhancements (Milestone 5.1)
+indicatif = "0.17"
+atty = "0.2"
+console = "0.15"
+rpassword = "7.3"
+toml = "0.8"
+regex = "1.10"
+ctrlc = "3.4"
+
+# Search indexing (Milestone 6.5)
+tantivy = "0.22"
+
+# CLI completion and man pages (Milestone 6.5)
+clap_complete = "4.5"
+clap_mangen = "0.2"
+
+[features]
+default = []
+test-vectors = []
+cli-testing = []  # For reduced PoW difficulty in tests
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+env_logger = "0.11"
+assert_cmd = "2.0"
+predicates = "3.1"
+rand_distr = "0.4"
+tempfile = "3.10"
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[[bench]]
+name = "decay_simulation"
+harness = false
+
+[[bench]]
+name = "storage_benchmarks"
+harness = false
+
+[[bench]]
+name = "branching"
+harness = false
+
+[[bench]]
+name = "sync"
+harness = false
+
+[[bench]]
+name = "chunking"
+harness = false
+
+[[bench]]
+name = "cache_benchmark"
+harness = false
+
+# Mobile simulation benchmarks (Milestone 4.3)
+[[bench]]
+name = "mobile_pow"
+harness = false
+
+[[bench]]
+name = "mobile_sync"
+harness = false
+
+[[bench]]
+name = "mobile_storage"
+harness = false
+
+[[bench]]
+name = "multi_node"
+harness = false
+
+# CLI tools (Milestone 6.5)
+[[example]]
+name = "generate-man-pages"
+path = "scripts/generate-man-pages.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[lints.rust]
+# Note: unsafe_code allowed for PrivateKey zeroing in src/types/identity.rs
+unsafe_code = "warn"
+
+[lints.clippy]
+pedantic = "warn"

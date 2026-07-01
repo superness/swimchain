@@ -1,0 +1,47 @@
+.mining-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.mining-progress__bar-container {
+  height: 4px;
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.mining-progress__bar {
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    var(--color-accent-primary),
+    var(--color-accent-secondary)
+  );
+  border-radius: var(--radius-full);
+  transition: width 100ms linear;
+}
+
+.mining-progress__info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--font-size-xs);
+}
+
+.mining-progress__time {
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.mining-progress__tip {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.mining-progress__cancel {
+  align-self: flex-end;
+}

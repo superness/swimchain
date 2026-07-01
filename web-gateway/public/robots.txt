@@ -1,0 +1,14 @@
+# ChainSocial Web Gateway - robots.txt
+# Allow all crawlers to index public content
+
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://gateway.chainsocial.network/sitemap.xml
+
+# Crawl-delay for politeness (optional, not all bots respect this)
+Crawl-delay: 1
+
+# Allow search engines to discover all public content
+# All content on this gateway is read-only and public

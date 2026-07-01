@@ -1,0 +1,133 @@
+.wiki-sidebar {
+  width: 250px;
+  min-width: 250px;
+  background: var(--bg-secondary, #1e1e2e);
+  border-right: 1px solid var(--border, #333);
+  padding: 16px 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wiki-sidebar-collapsed {
+  display: none;
+}
+
+.sidebar-hamburger {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  width: 36px;
+  height: 36px;
+  padding: 6px;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: var(--bg-secondary, #1e1e2e);
+  cursor: pointer;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+}
+
+.hamburger-line {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--text-secondary, #a0a0a0);
+  border-radius: 1px;
+  transition: background 0.15s;
+}
+
+.sidebar-hamburger:hover .hamburger-line {
+  background: var(--text-primary, #e0e0e0);
+}
+
+.sidebar-section {
+  padding: 0 12px;
+}
+
+.sidebar-heading {
+  font-size: 0.7em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary, #666);
+  margin: 12px 0 6px;
+  padding: 0 8px;
+}
+
+.sidebar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--text-secondary, #a0a0a0);
+  text-decoration: none;
+  font-size: 0.85em;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-link:hover {
+  background: var(--bg-hover, #2a2a3e);
+  color: var(--text-primary, #e0e0e0);
+}
+
+.sidebar-link-active {
+  background: var(--bg-active, #333355);
+  color: var(--text-primary, #e0e0e0);
+}
+
+.namespace-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.namespace-count {
+  font-size: 0.8em;
+  color: var(--text-tertiary, #666);
+  background: var(--bg-primary, #121218);
+  padding: 1px 6px;
+  border-radius: 8px;
+  min-width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.sidebar-loading,
+.sidebar-empty {
+  padding: 8px;
+  font-size: 0.8em;
+  color: var(--text-tertiary, #666);
+  font-style: italic;
+}
+
+@media (max-width: 768px) {
+  .sidebar-hamburger {
+    display: flex;
+  }
+
+  .wiki-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 99;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .wiki-sidebar-collapsed {
+    display: none;
+  }
+}

@@ -1,0 +1,234 @@
+
+🏊 SWIMCHAIN NETWORK SIMULATION 🏊
+═══════════════════════════════════════════════════════════════════════════
+
+SCENARIO 1: SMALL COMMUNITY
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║            SWIMCHAIN NETWORK SIMULATION                                  ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║  Users:   1000    Days:  60    Posts/day:   500    Cache:  350 MB       ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+Day   7:   3360 posts, 85.2% available, median storage: 996.92 KB
+Day  14:   6720 posts, 84.3% available, median storage: 3.67 MB
+Day  21:  10080 posts, 84.8% available, median storage: 6.06 MB
+Day  28:  13440 posts, 84.9% available, median storage: 8.79 MB
+Day  35:  16800 posts, 85.6% available, median storage: 12.13 MB
+Day  42:  20160 posts, 85.1% available, median storage: 14.39 MB
+Day  49:  23520 posts, 86.1% available, median storage: 16.96 MB
+Day  56:  26880 posts, 86.5% available, median storage: 19.96 MB
+
+────────────────────────────────────────────────────────────────────────────
+                           FINAL RESULTS
+────────────────────────────────────────────────────────────────────────────
+
+CHAIN LAYER (synced by everyone):
+  Records:               28800
+  Chain size:          6.51 MB
+
+CONTENT LAYER:
+  Total blobs:           28800
+  Total size:         29.57 GB
+  Per-blob avg:        1.03 MB
+
+USER STORAGE:
+  Chain (all users):   6.51 MB
+  Own content avg:    29.57 MB
+  Cache used avg:     80.48 MB
+  ─────────────────────────────
+  Total avg:         116.56 MB
+
+  Median user:        27.97 MB
+  95th percentile:   455.61 MB
+  Max user:          527.79 MB
+
+CONTENT AVAILABILITY:
+  Available now:     23864 (82.9%)
+  Unavailable:        4936 (17.1%)
+
+AVAILABILITY BY AGE:
+  Day  0:   378/  480 available ( 78.8%)
+  Day  1:   366/  480 available ( 76.2%)
+  Day  2:   377/  480 available ( 78.5%)
+  Day  3:   387/  480 available ( 80.6%)
+  Day  4:   379/  480 available ( 79.0%)
+  Day  5:   388/  480 available ( 80.8%)
+  Day  6:   387/  480 available ( 80.6%)
+  Day  7:   382/  480 available ( 79.6%)
+  Day  8:   388/  480 available ( 80.8%)
+  Day  9:   403/  480 available ( 84.0%)
+
+
+SCENARIO 2: MEDIUM COMMUNITY
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║            SWIMCHAIN NETWORK SIMULATION                                  ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║  Users:  10000    Days:  60    Posts/day:  5000    Cache:  350 MB       ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+Day   7:  34944 posts, 84.7% available, median storage: 932.15 KB
+Day  14:  69888 posts, 85.6% available, median storage: 3.89 MB
+Day  21: 104832 posts, 83.7% available, median storage: 6.50 MB
+Day  28: 139776 posts, 84.3% available, median storage: 9.39 MB
+Day  35: 174720 posts, 83.9% available, median storage: 12.15 MB
+Day  42: 209664 posts, 84.5% available, median storage: 15.08 MB
+Day  49: 244608 posts, 83.7% available, median storage: 17.61 MB
+Day  56: 279552 posts, 82.7% available, median storage: 20.02 MB
+
+────────────────────────────────────────────────────────────────────────────
+                           FINAL RESULTS
+────────────────────────────────────────────────────────────────────────────
+
+CHAIN LAYER (synced by everyone):
+  Records:              299520
+  Chain size:         67.69 MB
+
+CONTENT LAYER:
+  Total blobs:          299520
+  Total size:        308.44 GB
+  Per-blob avg:        1.03 MB
+
+USER STORAGE:
+  Chain (all users):  67.69 MB
+  Own content avg:    30.84 MB
+  Cache used avg:     38.58 MB
+  ─────────────────────────────
+  Total avg:         137.11 MB
+
+  Median user:        89.19 MB
+  95th percentile:   516.06 MB
+  Max user:          612.16 MB
+
+CONTENT AVAILABILITY:
+  Available now:    250723 (83.7%)
+  Unavailable:       48797 (16.3%)
+
+AVAILABILITY BY AGE:
+  Day  0:  4050/ 4992 available ( 81.1%)
+  Day  1:  3990/ 4992 available ( 79.9%)
+  Day  2:  4073/ 4992 available ( 81.6%)
+  Day  3:  4032/ 4992 available ( 80.8%)
+  Day  4:  4122/ 4992 available ( 82.6%)
+  Day  5:  4117/ 4992 available ( 82.5%)
+  Day  6:  4113/ 4992 available ( 82.4%)
+  Day  7:  4138/ 4992 available ( 82.9%)
+  Day  8:  4133/ 4992 available ( 82.8%)
+  Day  9:  4114/ 4992 available ( 82.4%)
+
+
+SCENARIO 3: MOBILE USERS (100MB cache)
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║            SWIMCHAIN NETWORK SIMULATION                                  ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║  Users:   5000    Days:  60    Posts/day:  2500    Cache:  100 MB       ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+Day   7:  17472 posts, 80.4% available, median storage: 807.62 KB
+Day  14:  34944 posts, 80.5% available, median storage: 3.97 MB
+Day  21:  52416 posts, 78.9% available, median storage: 6.64 MB
+Day  28:  69888 posts, 79.1% available, median storage: 9.63 MB
+Day  35:  87360 posts, 79.3% available, median storage: 12.74 MB
+Day  42: 104832 posts, 80.3% available, median storage: 15.54 MB
+Day  49: 122304 posts, 80.6% available, median storage: 18.16 MB
+Day  56: 139776 posts, 79.4% available, median storage: 20.64 MB
+
+────────────────────────────────────────────────────────────────────────────
+                           FINAL RESULTS
+────────────────────────────────────────────────────────────────────────────
+
+CHAIN LAYER (synced by everyone):
+  Records:              149760
+  Chain size:         33.85 MB
+
+CONTENT LAYER:
+  Total blobs:          149760
+  Total size:        154.16 GB
+  Per-blob avg:        1.03 MB
+
+USER STORAGE:
+  Chain (all users):  33.85 MB
+  Own content avg:    30.83 MB
+  Cache used avg:          0 B
+  ─────────────────────────────
+  Total avg:          64.68 MB
+
+  Median user:        56.24 MB
+  95th percentile:   124.80 MB
+  Max user:          191.38 MB
+
+CONTENT AVAILABILITY:
+  Available now:    121519 (81.1%)
+  Unavailable:       28241 (18.9%)
+
+AVAILABILITY BY AGE:
+  Day  0:  2057/ 2496 available ( 82.4%)
+  Day  1:  2036/ 2496 available ( 81.6%)
+  Day  2:  2052/ 2496 available ( 82.2%)
+  Day  3:  2060/ 2496 available ( 82.5%)
+  Day  4:  2013/ 2496 available ( 80.6%)
+  Day  5:  2039/ 2496 available ( 81.7%)
+  Day  6:  2014/ 2496 available ( 80.7%)
+  Day  7:  2062/ 2496 available ( 82.6%)
+  Day  8:  1991/ 2496 available ( 79.8%)
+  Day  9:  2054/ 2496 available ( 82.3%)
+
+
+SCENARIO 4: LOW ENGAGEMENT
+
+╔══════════════════════════════════════════════════════════════════════════╗
+║            SWIMCHAIN NETWORK SIMULATION                                  ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║  Users:   5000    Days:  60    Posts/day:  1000    Cache:  350 MB       ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+Day   7:   6888 posts, 77.7% available, median storage: 2.00 KB
+Day  14:  13776 posts, 80.3% available, median storage: 6.00 KB
+Day  21:  20664 posts, 80.0% available, median storage: 1.52 MB
+Day  28:  27552 posts, 80.3% available, median storage: 2.83 MB
+Day  35:  34440 posts, 79.5% available, median storage: 3.69 MB
+Day  42:  41328 posts, 79.6% available, median storage: 4.48 MB
+Day  49:  48216 posts, 80.6% available, median storage: 5.77 MB
+Day  56:  55104 posts, 80.4% available, median storage: 7.00 MB
+
+────────────────────────────────────────────────────────────────────────────
+                           FINAL RESULTS
+────────────────────────────────────────────────────────────────────────────
+
+CHAIN LAYER (synced by everyone):
+  Records:               59040
+  Chain size:         13.34 MB
+
+CONTENT LAYER:
+  Total blobs:           59040
+  Total size:         60.45 GB
+  Per-blob avg:        1.02 MB
+
+USER STORAGE:
+  Chain (all users):  13.34 MB
+  Own content avg:    12.09 MB
+  Cache used avg:          0 B
+  ─────────────────────────────
+  Total avg:          25.43 MB
+
+  Median user:        20.99 MB
+  95th percentile:    53.27 MB
+  Max user:           94.91 MB
+
+CONTENT AVAILABILITY:
+  Available now:     47173 (79.9%)
+  Unavailable:       11867 (20.1%)
+
+AVAILABILITY BY AGE:
+  Day  0:   793/  984 available ( 80.6%)
+  Day  1:   781/  984 available ( 79.4%)
+  Day  2:   789/  984 available ( 80.2%)
+  Day  3:   774/  984 available ( 78.7%)
+  Day  4:   795/  984 available ( 80.8%)
+  Day  5:   794/  984 available ( 80.7%)
+  Day  6:   767/  984 available ( 77.9%)
+  Day  7:   776/  984 available ( 78.9%)
+  Day  8:   777/  984 available ( 79.0%)
+  Day  9:   771/  984 available ( 78.4%)

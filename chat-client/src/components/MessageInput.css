@@ -1,0 +1,87 @@
+.message-input {
+  padding: var(--spacing-md);
+  background: var(--color-bg-primary);
+  border-top: 1px solid var(--color-border);
+}
+
+.message-input__container {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-lg);
+}
+
+.message-input__attach {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.message-input__attach:hover {
+  color: var(--color-text-secondary);
+}
+
+.message-input__textarea {
+  flex: 1;
+  min-height: 24px;
+  max-height: 200px;
+  padding: var(--spacing-xs) 0;
+  background: transparent;
+  border: none;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  resize: none;
+  overflow-y: auto;
+}
+
+.message-input__textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.message-input__textarea::placeholder {
+  color: var(--color-text-muted);
+}
+
+.message-input__send {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.message-input__send-label {
+  font-size: var(--font-size-xs);
+}
+
+.message-input__send.btn-ghost {
+  color: var(--color-text-muted);
+}
+
+.message-input__send.btn-ghost:hover:not(:disabled) {
+  color: var(--color-text-secondary);
+}
+
+.message-input__sent {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md);
+  color: var(--color-accent-success);
+  font-weight: 500;
+}
+
+.message-input__sent-icon {
+  font-size: var(--font-size-lg);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .message-input__send-label {
+    display: none;
+  }
+}

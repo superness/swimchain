@@ -1,0 +1,27 @@
+.address-display {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.address-display__text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  background: none;
+}
+
+.address-display__copy {
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  color: var(--color-text-muted);
+  padding: 2px;
+}
+
+.address-display:hover .address-display__copy {
+  opacity: 1;
+}
+
+.address-display__copy:hover {
+  color: var(--color-text-primary);
+}

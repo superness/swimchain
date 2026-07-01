@@ -1,0 +1,108 @@
+/* Heat/Decay Visualization Styles
+ * From CLIENT_DESIGN.md Section 2.1
+ *
+ * These styles apply CSS decay visualization to content
+ * based on survival probability. The classes are applied
+ * dynamically based on heat state.
+ */
+
+/* Full heat (80-100%): Bright, vibrant, no degradation */
+.content-heat-100 {
+  opacity: 1.0;
+  filter: none;
+}
+
+/* High heat (60-80%): Slightly reduced vibrancy */
+.content-heat-80 {
+  opacity: 0.95;
+  filter: saturate(0.9);
+}
+
+/* Warm (40-60%): Noticeably muted */
+.content-heat-60 {
+  opacity: 0.85;
+  filter: saturate(0.8);
+}
+
+/* Cooling (20-40%): Clear visual degradation */
+.content-heat-40 {
+  opacity: 0.70;
+  filter: saturate(0.6) grayscale(0.2);
+}
+
+/* Fading (5-20%): Heavy degradation, needs engagement */
+.content-heat-20 {
+  opacity: 0.55;
+  filter: saturate(0.4) grayscale(0.4);
+}
+
+/* Nearly decayed (0-5%): Very faded, almost gone */
+.content-heat-5 {
+  opacity: 0.40;
+  filter: saturate(0.2) grayscale(0.6);
+}
+
+/* Decayed: Content is gone, show placeholder or hide */
+.content-decayed {
+  display: none;
+}
+
+/* Optional: Show placeholder for decayed content */
+.content-decayed-placeholder {
+  opacity: 0.3;
+  filter: grayscale(1);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Heat indicator color classes */
+.heat-full {
+  color: var(--color-heat-full, #ef4444);
+}
+
+.heat-warm {
+  color: var(--color-heat-warm, #f97316);
+}
+
+.heat-cooling {
+  color: var(--color-heat-cooling, #eab308);
+}
+
+.heat-fading {
+  color: var(--color-heat-fading, #94a3b8);
+}
+
+.heat-decayed {
+  color: var(--color-heat-decayed, #3f3f46);
+}
+
+/* Heat bar animations */
+@keyframes pulse-heat {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.heat-fading .heat-indicator {
+  animation: pulse-heat 2s ease-in-out infinite;
+}
+
+/* Heat state borders for cards */
+.card.heat-full {
+  border-left: 3px solid var(--color-heat-full);
+}
+
+.card.heat-warm {
+  border-left: 3px solid var(--color-heat-warm);
+}
+
+.card.heat-cooling {
+  border-left: 3px solid var(--color-heat-cooling);
+}
+
+.card.heat-fading {
+  border-left: 3px solid var(--color-heat-fading);
+}

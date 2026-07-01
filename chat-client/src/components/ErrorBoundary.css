@@ -1,0 +1,28 @@
+.error-boundary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--color-bg-primary);
+  padding: var(--spacing-lg);
+}
+
+.error-boundary__content {
+  text-align: center;
+  max-width: 400px;
+}
+
+.error-boundary__title {
+  color: var(--color-accent-error);
+  font-size: var(--font-size-xl);
+  margin-bottom: var(--spacing-md);
+}
+
+.error-boundary__message {
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-lg);
+}
+
+.error-boundary__retry {
+  min-width: 120px;
+}

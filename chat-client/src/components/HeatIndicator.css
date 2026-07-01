@@ -1,0 +1,51 @@
+.heat-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+}
+
+.heat-indicator--sm {
+  font-size: var(--font-size-xs);
+}
+
+.heat-indicator--sm .heat-indicator__icon {
+  font-size: 10px;
+}
+
+.heat-indicator--md {
+  font-size: var(--font-size-sm);
+}
+
+.heat-indicator--md .heat-indicator__icon {
+  font-size: 12px;
+}
+
+.heat-indicator__icon {
+  line-height: 1;
+}
+
+.heat-indicator__value {
+  line-height: 1;
+}
+
+.heat-indicator--full .heat-indicator__value {
+  color: var(--heat-full);
+}
+
+.heat-indicator--warm .heat-indicator__value {
+  color: var(--heat-warm);
+}
+
+.heat-indicator--cooling .heat-indicator__value {
+  color: var(--heat-cooling);
+}
+
+.heat-indicator--fading .heat-indicator__value {
+  color: var(--heat-fading);
+}
+
+.heat-indicator--decayed .heat-indicator__value {
+  color: var(--heat-decayed);
+}

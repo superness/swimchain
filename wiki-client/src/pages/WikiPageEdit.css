@@ -1,0 +1,144 @@
+/**
+ * WikiPageEdit styles
+ */
+
+.wiki-page-edit {
+  max-width: 100%;
+}
+
+/* Title input for new pages */
+.wiki-editor__title {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--wiki-border);
+  border-radius: 2px;
+  font-size: 1.1rem;
+  font-family: var(--wiki-font-ui);
+}
+
+.wiki-editor__title:focus {
+  outline: none;
+  border-color: var(--wiki-accent);
+}
+
+.wiki-editor__title:disabled {
+  background: var(--wiki-bg-secondary);
+  opacity: 0.7;
+}
+
+/* Field group for tags */
+.wiki-editor__field {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wiki-editor__field label {
+  font-size: 0.875rem;
+  color: var(--wiki-text-secondary);
+  white-space: nowrap;
+}
+
+.wiki-editor__field input {
+  flex: 1;
+  padding: 0.375rem 0.75rem;
+  border: 1px solid var(--wiki-border);
+  border-radius: 2px;
+  font-size: 0.875rem;
+}
+
+/* Mining progress */
+.wiki-editor__mining {
+  background: var(--wiki-bg-secondary);
+  border: 1px solid var(--wiki-border-light);
+  border-radius: 2px;
+  padding: 1rem;
+}
+
+.wiki-editor__mining-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.wiki-editor__mining-label {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.wiki-editor__mining-stats {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.8rem;
+  color: var(--wiki-text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.wiki-editor__mining-bar {
+  width: 100%;
+  height: 4px;
+  background: var(--wiki-border-light);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.wiki-editor__mining-bar-fill {
+  width: 30%;
+  height: 100%;
+  background: var(--wiki-accent);
+  border-radius: 2px;
+  animation: wiki-mining-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes wiki-mining-pulse {
+  0%, 100% { width: 20%; opacity: 0.6; }
+  50% { width: 80%; opacity: 1; }
+}
+
+/* Status messages */
+.wiki-editor__status {
+  padding: 0.75rem;
+  border-radius: 2px;
+  font-size: 0.875rem;
+}
+
+.wiki-editor__status--cancelled {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  color: #856404;
+}
+
+.wiki-editor__status--error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: var(--wiki-danger);
+}
+
+/* Hints */
+.wiki-editor__hint {
+  font-size: 0.8rem;
+  color: var(--wiki-text-muted);
+  margin-top: 0.25rem;
+}
+
+.wiki-editor__hint--warn {
+  color: var(--wiki-warning);
+}
+
+.wiki-editor__hint a {
+  color: var(--wiki-link);
+}
+
+/* Disabled states */
+.wiki-editor__textarea:disabled,
+.wiki-editor__summary input:disabled,
+.wiki-editor__field input:disabled {
+  background: var(--wiki-bg-secondary);
+  opacity: 0.7;
+}
+
+.wiki-editor__toolbar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

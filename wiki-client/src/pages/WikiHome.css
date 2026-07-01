@@ -1,0 +1,51 @@
+/**
+ * WikiHome page styles
+ */
+
+.wiki-home__intro {
+  font-family: var(--wiki-font-content);
+  font-size: 15px;
+  line-height: 1.65;
+  margin-bottom: 1.5rem;
+  color: var(--wiki-text-secondary);
+}
+
+.wiki-home__search {
+  margin-bottom: 2rem;
+}
+
+.wiki-home__section {
+  margin-bottom: 2rem;
+}
+
+.wiki-home__heading {
+  font-size: 1.25rem;
+  font-weight: 400;
+  border-bottom: 1px solid var(--wiki-border-light);
+  padding-bottom: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.wiki-home__error {
+  padding: 0.75rem;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 2px;
+  color: var(--wiki-danger);
+  font-size: 0.875rem;
+}
+
+.wiki-home__links {
+  margin-top: 2rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Namespace card hover enhancement */
+.wiki-ns-card {
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.wiki-ns-card:hover {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}

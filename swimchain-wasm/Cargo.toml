@@ -1,0 +1,54 @@
+[package]
+name = "swimchain-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Swimchain WASM bindings for browser clients"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/swimchain/swimchain"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# WASM bindings
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+# Random number generation with JS backend for browser
+getrandom = { version = "0.2", features = ["js"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+
+# Cryptography - Ed25519 per SPEC_01 (minimal features for WASM)
+ed25519-dalek = { version = "2.1", default-features = false, features = ["rand_core"] }
+
+# Hashing - SHA-256 for identity PoW (minimal features for WASM)
+sha2 = { version = "0.10", default-features = false }
+
+# Address encoding - Bech32m per SPEC_01 Section 3.3
+bech32 = "0.11"
+
+# Serialization for JS interop
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+# Better panic messages in browser console
+console_error_panic_hook = "0.1"
+
+# Hex encoding for content IDs
+hex = "0.4"
+
+# Secure memory zeroing for sensitive data (seeds, keys)
+zeroize = { version = "1.8", features = ["derive"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+# Optimize for size (smaller WASM bundle)
+opt-level = "z"
+# Link-time optimization for smaller binary
+lto = true
+# Abort on panic (no unwinding, smaller binary)
+panic = "abort"
+# Single codegen unit for better optimization
+codegen-units = 1

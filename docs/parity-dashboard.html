@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swimchain Frontend Parity Dashboard</title>
+<style>
+  :root {
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --seq-250: #86b6ef; --seq-350: #5598e7; --seq-450: #2a78d6; --seq-550: #1c5cab; --seq-650: #104281;
+    --status-good: #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
+    --status-critical: #d03b3b;
+    --good-text: #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --baseline: #383835;
+      --border: rgba(255,255,255,0.10);
+      --seq-250: #86b6ef; --seq-350: #5598e7; --seq-450: #3987e5; --seq-550: #1c5cab; --seq-650: #184f95;
+      --good-text: #0ca30c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--page); color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px; line-height: 1.45;
+  }
+  main { max-width: 1240px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .sub { color: var(--text-secondary); margin-bottom: 20px; }
+  .sub .live-state { color: var(--muted); }
+  section {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px; margin-bottom: 20px;
+  }
+
+  /* KPI row */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile { padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; }
+  .tile .v { font-size: 32px; font-weight: 650; }
+  .tile .l { color: var(--text-secondary); font-size: 12px; margin-top: 2px; }
+  .tile .d { font-size: 12px; margin-top: 4px; color: var(--muted); }
+  .tile .d.bad { color: var(--status-critical); }
+  .tile .d.ok { color: var(--good-text); }
+
+  /* Completeness bars */
+  .bars { display: grid; grid-template-columns: 130px 1fr 48px; gap: 6px 10px; align-items: center; }
+  .bars .name { color: var(--text-secondary); text-align: right; font-size: 13px; }
+  .track { position: relative; height: 14px; background: transparent; border-left: 2px solid var(--baseline); }
+  .bar {
+    height: 14px; border-radius: 0 4px 4px 0; background: var(--seq-450);
+    position: relative; cursor: default; transition: opacity .12s;
+  }
+  .bar:hover { opacity: .85; }
+  .bar .tip {
+    display: none; position: absolute; left: 100%; top: -34px; margin-left: 8px; z-index: 2;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 10px; white-space: nowrap; font-size: 12px; color: var(--text-primary);
+    box-shadow: 0 2px 8px rgba(0,0,0,.12);
+  }
+  .bar:hover .tip { display: block; }
+  .bars .val { font-variant-numeric: tabular-nums; color: var(--text-primary); font-size: 13px; }
+  .gridnote { color: var(--muted); font-size: 12px; margin-top: 10px; }
+
+  /* Parity matrix */
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { padding: 6px 8px; text-align: center; border-bottom: 1px solid var(--grid); }
+  th { color: var(--text-secondary); font-weight: 600; }
+  td.domain, th.domain { text-align: left; white-space: nowrap; color: var(--text-primary); }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11.5px; padding: 1px 7px; border-radius: 10px; white-space: nowrap;
+    border: 1px solid var(--border);
+  }
+  .chip.ok       { color: var(--good-text); }
+  .chip.ok .dot       { background: var(--status-good); }
+  .chip.partial  { color: var(--text-secondary); }
+  .chip.partial .dot  { background: var(--status-warning); }
+  .chip.missing  { color: var(--muted); }
+  .chip.missing .dot  { background: var(--muted); }
+  .chip.broken   { color: var(--status-critical); font-weight: 600; }
+  .chip.broken .dot   { background: var(--status-critical); }
+  .chip.na       { color: var(--muted); border-color: transparent; }
+  .chip.na .dot       { background: transparent; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+  /* DAG */
+  .phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .phase { border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .phase h3 { margin: 0 0 2px; font-size: 13.5px; }
+  .phase .ph-sub { color: var(--muted); font-size: 11.5px; margin-bottom: 10px; }
+  .lane {
+    border: 1px solid var(--grid); border-radius: 6px;
+    padding: 8px 10px; margin-bottom: 8px;
+  }
+  .lane .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .lane .id { font-weight: 650; font-size: 12px; }
+  .lane .size { color: var(--muted); font-size: 11px; }
+  .lane .title { font-size: 12.5px; color: var(--text-primary); margin: 2px 0 4px; }
+  .lane .meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .dep { font-size: 10.5px; color: var(--text-secondary); border: 1px dashed var(--baseline); border-radius: 8px; padding: 0 6px; }
+  .state { font-size: 10.5px; border-radius: 8px; padding: 0 7px; border: 1px solid var(--border); }
+  .state.open    { color: var(--text-secondary); }
+  .state.claimed { color: var(--seq-550); border-color: var(--seq-350); }
+  .state.done    { color: var(--good-text); border-color: var(--status-good); }
+  .lane.done { opacity: .55; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 0 24px; }
+</style>
+</head>
+<body data-palette="#2a78d6,#1baf7a,#eda100,#008300,#4a3aa7,#e34948,#e87ba4,#eb6834">
+<main>
+  <h1>Swimchain Frontend Parity</h1>
+  <div class="sub">
+    Snapshot 2026-07-01 · source: <code>docs/STATE_OF_SWIMCHAIN.md</code> ·
+    <span class="live-state" id="board-state">checking Overmind board&hellip;</span>
+  </div>
+
+  <section>
+    <h2>Program at a glance</h2>
+    <div class="kpis">
+      <div class="tile"><div class="v">74</div><div class="l">node RPC methods</div><div class="d ok">backend healthy</div></div>
+      <div class="tile"><div class="v">13</div><div class="l">client apps</div><div class="d">0 production-ready</div></div>
+      <div class="tile"><div class="v">5</div><div class="l">broken core paths</div><div class="d bad">forum ×3 · archiver · mobile</div></div>
+      <div class="tile"><div class="v">4</div><div class="l">parallel SDK stacks</div><div class="d bad">root cause of drift</div></div>
+      <div class="tile"><div class="v">0</div><div class="l">clients on WS events</div><div class="d">real-time unused</div></div>
+      <div class="tile"><div class="v" id="kpi-lanes">24</div><div class="l">work lanes</div><div class="d" id="kpi-lanes-done">0 done</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Client completeness (estimated distance from shippable, %)</h2>
+    <div class="bars" id="bars"></div>
+    <div class="gridnote">Judgment scores from the 2026-07-01 audit, not checkbox counts. desktop-app is scored as packaged-app readiness. Hover a bar for the verdict.</div>
+  </section>
+
+  <section>
+    <h2>Feature parity matrix</h2>
+    <table id="matrix"></table>
+    <div class="gridnote">
+      <span class="chip ok"><span class="dot"></span>ok</span>
+      <span class="chip partial"><span class="dot"></span>partial</span>
+      <span class="chip missing"><span class="dot"></span>missing</span>
+      <span class="chip broken"><span class="dot"></span>broken</span>
+      <span class="chip na">&mdash; n/a by design</span>
+      &nbsp; "broken" = calls a nonexistent API or fabricates results.
+    </div>
+  </section>
+
+  <section>
+    <h2>Work DAG</h2>
+    <div class="phases" id="phases"></div>
+    <div class="gridnote">Dashed chips = blocked-by dependencies. States update live from the Overmind board (:9200) when it is up; otherwise this static snapshot renders.</div>
+  </section>
+
+  <footer>swimchain · generated 2026-07-01 · refresh by re-running the parity audit</footer>
+</main>
+
+<script>
+// ---------- data ----------
+const CLIENTS = [
+  { name: "forum-client",   pct: 85, note: "most complete; 3 phantom RPC calls break private-send & profile" },
+  { name: "feed-client",    pct: 85, note: "solid; user-feed & discovery unwired" },
+  { name: "search-client",  pct: 75, note: "clean scoped search; no moderation path" },
+  { name: "bridge-client",  pct: 75, note: "real Matrix/IRC + signed posts; IRC proxy missing from repo" },
+  { name: "analytics-client",pct: 70, note: "real read-only telemetry; proxy metrics; 0 tests" },
+  { name: "wiki-client",    pct: 70, note: "functional prototype; UNTRACKED IN GIT" },
+  { name: "chat-client",    pct: 65, note: "live path real; dead legacy stack ships; big parity gaps" },
+  { name: "desktop-app",    pct: 60, note: "alpha shell; node lifecycle works; chat iframe not wired" },
+  { name: "mobile-client",  pct: 55, note: "read path real; write path is fake crypto end-to-end" },
+  { name: "archiver-client",pct: 50, note: "detection real; rescue mines PoW then discards it (no-op)" },
+  { name: "web-gateway",    pct: 40, note: "polished SSR shell over 100% mock data" },
+  { name: "reddit-client",  pct: 0,  note: "dead husk - recommend delete" },
+];
+
+// ok | partial | missing | broken | na
+const DOMAINS = [
+  ["Identity",            {forum:"ok",feed:"ok",chat:"partial",search:"partial",wiki:"ok",analytics:"na",archiver:"ok",bridge:"ok",gateway:"na",mobile:"broken"}],
+  ["Content create + PoW",{forum:"ok",feed:"ok",chat:"ok",search:"na",wiki:"partial",analytics:"na",archiver:"na",bridge:"ok",gateway:"na",mobile:"broken"}],
+  ["Display + decay",     {forum:"ok",feed:"ok",chat:"partial",search:"ok",wiki:"ok",analytics:"ok",archiver:"ok",bridge:"ok",gateway:"broken",mobile:"ok"}],
+  ["Media",               {forum:"ok",feed:"ok",chat:"ok",search:"na",wiki:"missing",analytics:"na",archiver:"na",bridge:"missing",gateway:"na",mobile:"missing"}],
+  ["Engagement",          {forum:"ok",feed:"ok",chat:"ok",search:"na",wiki:"missing",analytics:"na",archiver:"broken",bridge:"na",gateway:"na",mobile:"broken"}],
+  ["Sponsorship",         {forum:"ok",feed:"ok",chat:"missing",search:"partial",wiki:"missing",analytics:"partial",archiver:"missing",bridge:"missing",gateway:"missing",mobile:"missing"}],
+  ["Private spaces E2E",  {forum:"ok",feed:"ok",chat:"partial",search:"na",wiki:"missing",analytics:"na",archiver:"na",bridge:"partial",gateway:"na",mobile:"missing"}],
+  ["Private send",        {forum:"broken",feed:"ok",chat:"ok",search:"na",wiki:"na",analytics:"na",archiver:"na",bridge:"na",gateway:"na",mobile:"missing"}],
+  ["Invites / members",   {forum:"ok",feed:"ok",chat:"partial",search:"na",wiki:"missing",analytics:"na",archiver:"na",bridge:"na",gateway:"na",mobile:"missing"}],
+  ["DMs",                 {forum:"ok",feed:"partial",chat:"missing",search:"na",wiki:"na",analytics:"na",archiver:"na",bridge:"na",gateway:"na",mobile:"missing"}],
+  ["Report / attestation",{forum:"ok",feed:"ok",chat:"partial",search:"missing",wiki:"missing",analytics:"missing",archiver:"ok",bridge:"ok",gateway:"na",mobile:"missing"}],
+  ["Search",              {forum:"ok",feed:"ok",chat:"broken",search:"ok",wiki:"ok",analytics:"na",archiver:"na",bridge:"na",gateway:"broken",mobile:"ok"}],
+  ["Real-time (WS)",      {forum:"missing",feed:"missing",chat:"missing",search:"missing",wiki:"missing",analytics:"missing",archiver:"missing",bridge:"missing",gateway:"missing",mobile:"missing"}],
+  ["Profile",             {forum:"broken",feed:"ok",chat:"partial",search:"na",wiki:"missing",analytics:"na",archiver:"na",bridge:"na",gateway:"broken",mobile:"partial"}],
+];
+const COLS = ["forum","feed","chat","search","wiki","analytics","archiver","bridge","gateway","mobile"];
+
+const LANES = [
+  // phase, id, title, size, deps
+  ["Phase 0 - Foundations","F1","Commit wiki-client + swimchain-frontend to git; delete reddit-client husk","S",[]],
+  ["Phase 0 - Foundations","F2","Backend enablers: contribute_to_pool, private-space broadcasts, blocklist RPC, prune phantom allowlist","L",[]],
+  ["Phase 0 - Foundations","F3","SDK unification on @swimchain/frontend: absorb swimchain-react utils, parent-RPC handshake, rename chainsocial_wasm","L",[]],
+  ["Phase 1 - Fix broken","B1","forum: replace 3 phantom RPC calls (private send, profile save, avatar) with real methods + PoW","M",[]],
+  ["Phase 1 - Fix broken","B2","forum: wire leave-space; delete dead mocks; wire keyboard engagement","S",[]],
+  ["Phase 1 - Fix broken","B3","chat: delete dead SpaceChatPage stack + fake hooks","M",[]],
+  ["Phase 1 - Fix broken","B4","feed: wire followed-user posts via get_user_posts; remove fabricated local-space fallback","M",[]],
+  ["Phase 1 - Fix broken","B5","search: delete MacroRegimeCard; fix dead footer routes; unify deep-link target","S",[]],
+  ["Phase 1 - Fix broken","B6","archiver: submit mined PoW via submit_engagement; authoritative pool status","L",[]],
+  ["Phase 1 - Fix broken","B7","bridge: ship IRC WS proxy; queue msgs during mining; thread inbound replies","M",[]],
+  ["Phase 1 - Fix broken","B8","web-gateway: real read-only RPC data layer; delete MOCK_*; live lunr index + sitemap","L",[]],
+  ["Phase 1 - Fix broken","B9","mobile: real Ed25519 signing + real Argon2id (both platforms) + identity gen","L",[]],
+  ["Phase 1 - Fix broken","B10","desktop: chat parent-RPC handshake; strip debug; prune binaries; real Bech32m","M",["F3"]],
+  ["Phase 2 - Parity","P1","chat: accept-invite UI + private-channel list + members/kick","M",["F2"]],
+  ["Phase 2 - Parity","P2","chat: DMs, sponsorship, decay indicators, server-side search","L",["B3"]],
+  ["Phase 2 - Parity","P3","feed: user discovery + DM inbox UI","M",["B4"]],
+  ["Phase 2 - Parity","P4","search: report/attestation parity","M",[]],
+  ["Phase 2 - Parity","P5","wiki: real revision model; verify write PoW; moderation","M",["F1"]],
+  ["Phase 2 - Parity","P6","real-time: WS events in shared SDK; wire chat + feed","L",["F3"]],
+  ["Phase 2 - Parity","P7","analytics: real engagement metric; on-chain attestation","M",["F2"]],
+  ["Phase 2 - Parity","P8","desktop: network selection; unified identity across iframes; bundle wiki","L",["B10"]],
+  ["Phase 3 - Harden","Q1","tests: analytics/archiver/bridge units + SDK crypto tests","M",["F3"]],
+  ["Phase 3 - Harden","Q2","e2e write-path validation of every client vs regtest node","M",["B1","B4","B6","B8","B9"]],
+  ["Phase 3 - Harden","Q3","CHECKPOINT: cross-client re-audit + desktop release candidate","M",["P1","P2","P3","P4","P5","P6","P7","P8","Q1","Q2"]],
+];
+
+// ---------- render bars ----------
+const barsEl = document.getElementById("bars");
+CLIENTS.forEach(c => {
+  const name = document.createElement("div"); name.className = "name"; name.textContent = c.name;
+  const track = document.createElement("div"); track.className = "track";
+  const bar = document.createElement("div"); bar.className = "bar"; bar.style.width = c.pct + "%";
+  const tip = document.createElement("div"); tip.className = "tip"; tip.textContent = c.name + " - " + c.note;
+  bar.appendChild(tip); track.appendChild(bar);
+  const val = document.createElement("div"); val.className = "val"; val.textContent = c.pct + "%";
+  barsEl.append(name, track, val);
+});
+
+// ---------- render matrix ----------
+const CHIP = {
+  ok:      '<span class="chip ok"><span class="dot"></span>ok</span>',
+  partial: '<span class="chip partial"><span class="dot"></span>partial</span>',
+  missing: '<span class="chip missing"><span class="dot"></span>missing</span>',
+  broken:  '<span class="chip broken"><span class="dot"></span>broken</span>',
+  na:      '<span class="chip na">&mdash;</span>',
+};
+const mx = document.getElementById("matrix");
+mx.innerHTML = "<tr><th class='domain'>Domain</th>" + COLS.map(c => "<th>" + c + "</th>").join("") + "</tr>" +
+  DOMAINS.map(([d, row]) =>
+    "<tr><td class='domain'>" + d + "</td>" + COLS.map(c => "<td>" + CHIP[row[c]] + "</td>").join("") + "</tr>"
+  ).join("");
+
+// ---------- render DAG ----------
+const SIZE_LABEL = { S: "small", M: "medium", L: "large" };
+function renderLanes(stateById) {
+  const phasesEl = document.getElementById("phases");
+  phasesEl.innerHTML = "";
+  const byPhase = {};
+  LANES.forEach(l => { (byPhase[l[0]] = byPhase[l[0]] || []).push(l); });
+  let done = 0;
+  Object.entries(byPhase).forEach(([phase, lanes]) => {
+    const ph = document.createElement("div"); ph.className = "phase";
+    const doneCt = lanes.filter(l => (stateById[l[1]] || "open") === "done").length;
+    ph.innerHTML = "<h3>" + phase + "</h3><div class='ph-sub'>" + lanes.length + " lanes - " + doneCt + " done</div>";
+    lanes.forEach(([, id, title, size, deps]) => {
+      const st = stateById[id] || "open";
+      if (st === "done") done++;
+      const el = document.createElement("div");
+      el.className = "lane" + (st === "done" ? " done" : "");
+      el.innerHTML =
+        "<div class='top'><span class='id'>" + id + "</span><span class='size'>" + SIZE_LABEL[size] + "</span></div>" +
+        "<div class='title'>" + title + "</div>" +
+        "<div class='meta'><span class='state " + st + "'>" + st + "</span>" +
+        deps.map(d => "<span class='dep'>needs " + d + "</span>").join("") + "</div>";
+      ph.appendChild(el);
+    });
+    phasesEl.appendChild(ph);
+  });
+  document.getElementById("kpi-lanes").textContent = LANES.length;
+  document.getElementById("kpi-lanes-done").textContent = done + " done";
+}
+renderLanes({});
+
+// ---------- live board merge ----------
+(async () => {
+  const el = document.getElementById("board-state");
+  try {
+    const r = await fetch("http://localhost:9200/board", { signal: AbortSignal.timeout(3000) });
+    const items = (await r.json()).board || [];
+    const stateById = {};
+    items.forEach(it => {
+      const m = /^SWIM-([FBPQ]\d+):/.exec(it.title || "");
+      if (m) stateById[m[1]] = it.state;
+    });
+    renderLanes(stateById);
+    el.textContent = "Overmind board: live (" + Object.keys(stateById).length + " lanes tracked)";
+  } catch (e) {
+    el.textContent = "Overmind board: offline - showing static snapshot";
+  }
+})();
+</script>
+</body>
+</html>

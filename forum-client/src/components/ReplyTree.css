@@ -1,0 +1,370 @@
+.reply-tree {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.reply-item {
+  position: relative;
+  padding-left: calc(var(--depth) * 24px);
+  margin-bottom: var(--spacing-md);
+}
+
+.reply-item:last-child {
+  margin-bottom: 0;
+}
+
+/* Nested indent lines */
+.reply-item::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--depth) * 24px - 12px);
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--color-border);
+  display: var(--depth, 0) > 0 ? block : none;
+}
+
+.reply-item:first-child::before {
+  top: 20px;
+}
+
+.reply-item:last-child::before {
+  height: 20px;
+}
+
+.reply {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-md);
+  transition: border-color var(--transition-fast);
+}
+
+.reply:hover {
+  border-color: var(--color-border-strong);
+}
+
+.reply-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-sm);
+}
+
+.reply-author {
+  font-weight: 500;
+}
+
+.reply-time {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+}
+
+.reply-status {
+  margin-left: auto;
+}
+
+.reply-content {
+  margin-bottom: var(--spacing-md);
+}
+
+.reply-content p {
+  color: var(--color-text-primary);
+  line-height: 1.6;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* Loading state for content being fetched from network */
+.reply-content-loading {
+  opacity: 0.7;
+}
+
+.reply-loading-text {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.reply-loading-spinner {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.reply-actions {
+  display: flex;
+  gap: var(--spacing-md);
+}
+
+.reply-action {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.reply-action:hover {
+  color: var(--color-accent-primary);
+  background: var(--color-bg-tertiary);
+}
+
+.expand-button {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-sm);
+  margin-left: calc(var(--depth) * 24px + var(--spacing-md));
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-accent-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.expand-button:hover {
+  background: var(--color-bg-elevated);
+  border-color: var(--color-accent-primary);
+}
+
+.collapse-button {
+  position: absolute;
+  left: calc(var(--depth) * 24px + 24px - 12px);
+  top: 40px;
+  bottom: 0;
+  width: 24px;
+  display: flex;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+}
+
+.collapse-button:hover .collapse-line {
+  background: var(--color-accent-primary);
+  width: 3px;
+}
+
+.collapse-line {
+  width: 2px;
+  height: 100%;
+  background: var(--color-border);
+  border-radius: var(--radius-full);
+  transition: all var(--transition-fast);
+}
+
+/* Apply depth-based indentation */
+.reply-item[style*="--depth: 1"] { padding-left: 24px; }
+.reply-item[style*="--depth: 2"] { padding-left: 48px; }
+.reply-item[style*="--depth: 3"] { padding-left: 72px; }
+.reply-item[style*="--depth: 4"] { padding-left: 96px; }
+.reply-item[style*="--depth: 5"] { padding-left: 120px; }
+.reply-item[style*="--depth: 6"] { padding-left: 144px; }
+.reply-item[style*="--depth: 7"] { padding-left: 168px; }
+.reply-item[style*="--depth: 8"] { padding-left: 192px; }
+.reply-item[style*="--depth: 9"] { padding-left: 216px; }
+
+/* Reaction button styling */
+.reply-react {
+  border-radius: var(--radius-full);
+  padding: var(--spacing-xs) var(--spacing-md);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all var(--transition-fast);
+}
+
+.reply-react:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.1);
+  border-color: rgba(255, 107, 107, 0.3);
+  color: #ff6b6b;
+}
+
+.reply-react.reacting {
+  background: rgba(255, 107, 107, 0.15);
+  color: #ff6b6b;
+}
+
+.react-heart {
+  font-size: 1rem;
+}
+
+.reply-react.reacting .react-heart {
+  animation: heart-pulse 0.6s infinite;
+}
+
+@keyframes heart-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+}
+
+.react-status {
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+}
+
+.react-label {
+  font-size: var(--font-size-sm);
+}
+
+/* Emoji reaction counts in reply actions */
+.reply-emoji-counts {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.reply-emoji-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  font-size: var(--font-size-xs);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+}
+
+/* React button container */
+.reply-react-container {
+  position: relative;
+}
+
+.reply-react-btn {
+  border-radius: var(--radius-full);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  transition: all var(--transition-fast);
+}
+
+.reply-react-btn:hover:not(:disabled) {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+}
+
+.reply-react-btn:disabled {
+  opacity: 0.6;
+}
+
+/* Emoji picker dropdown */
+.reply-emoji-picker {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+  padding: 4px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  margin-bottom: 4px;
+}
+
+.reply-emoji-option {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-fast);
+}
+
+.reply-emoji-option:hover {
+  background: var(--color-bg-tertiary);
+}
+
+/* Error message */
+.reply-react-error {
+  font-size: var(--font-size-xs);
+  color: var(--color-error);
+}
+
+/* Focused reply highlight (when navigating to specific reply URL) */
+.reply-focused > .reply {
+  border-color: var(--color-accent-primary);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  animation: focus-pulse 2s ease-out;
+}
+
+@keyframes focus-pulse {
+  0% {
+    box-shadow: 0 0 0 6px rgba(99, 102, 241, 0.4);
+  }
+  100% {
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  }
+}
+
+/* Continue thread link (shown at depth limit) */
+.continue-thread-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-sm);
+  margin-left: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-accent-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  transition: all var(--transition-fast);
+}
+
+.continue-thread-link:hover {
+  background: var(--color-bg-elevated);
+  border-color: var(--color-accent-primary);
+  transform: translateX(4px);
+}
+
+.continue-thread-link svg {
+  transition: transform var(--transition-fast);
+}
+
+.continue-thread-link:hover svg {
+  transform: translateX(2px);
+}
+
+/* Copy link button */
+.reply-link-btn {
+  margin-left: auto;
+}
+
+.reply-link-btn.copied {
+  color: var(--color-success);
+}
+
+/* Max depth clamping for very deep threads */
+@media (max-width: 768px) {
+  .reply-item {
+    padding-left: calc(min(var(--depth), 3) * 16px);
+  }
+
+  .reply-emoji-picker {
+    right: 0;
+    left: auto;
+  }
+}

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Swimchain - Forum Client</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo">
+                    <span class="logo-icon">🏊</span>
+                    <span class="logo-text">SWIMCHAIN</span>
+                </div>
+            </div>
+            <div class="header-center">
+                <div class="search-box">
+                    <input type="text" placeholder="Search lanes, strokes, swimmers..." id="searchInput">
+                    <button class="search-btn">🔍</button>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="sync-status" id="syncStatus">
+                    <span class="sync-icon">⚡</span>
+                    <span class="sync-text">23 peers</span>
+                </div>
+                <div class="identity" id="identity">
+                    <span class="identity-short">cs1q9x7...2k4m</span>
+                    <div class="identity-menu" id="identityMenu">
+                        <div class="identity-full">cs1q9x7yf8z3k4n5m6p7q8r9s0t1u2v3w4x5y6z7a8b2k4m</div>
+                        <button class="menu-item">Export Identity</button>
+                        <button class="menu-item">Settings</button>
+                        <button class="menu-item">Switch Fork</button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title">YOUR LANES</h3>
+                    <ul class="space-list" id="spaceList">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title">DISCOVER</h3>
+                    <ul class="space-list discover-list">
+                        <li class="space-item discover">
+                            <span class="space-icon">🔥</span>
+                            <span class="space-name">Hot Lanes</span>
+                        </li>
+                        <li class="space-item discover">
+                            <span class="space-icon">🆕</span>
+                            <span class="space-name">New Lanes</span>
+                        </li>
+                        <li class="space-item discover">
+                            <span class="space-icon">📊</span>
+                            <span class="space-name">All Lanes</span>
+                        </li>
+                    </ul>
+                </div>
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title">POOL STATUS</h3>
+                    <div class="node-status">
+                        <div class="status-row">
+                            <span>Pool</span>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: 100%"></div>
+                            </div>
+                            <span>synced</span>
+                        </div>
+                        <div class="status-row">
+                            <span>Storage</span>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: 82%"></div>
+                            </div>
+                            <span>412MB</span>
+                        </div>
+                        <div class="status-row">
+                            <span>Lanes</span>
+                            <span class="status-value">12</span>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Content Area -->
+            <main class="content">
+                <!-- Breadcrumb -->
+                <div class="breadcrumb" id="breadcrumb">
+                    <span class="breadcrumb-item" data-view="spaces">Lanes</span>
+                    <span class="breadcrumb-separator">›</span>
+                    <span class="breadcrumb-item active" id="currentSpace">rust-lang</span>
+                </div>
+
+                <!-- Lane View -->
+                <div class="view" id="spaceView">
+                    <div class="space-header">
+                        <div class="space-info">
+                            <h1 class="space-title">🦀 rust-lang</h1>
+                            <p class="space-description">Discussion about the Rust programming language</p>
+                            <div class="space-stats">
+                                <span>892 strokes</span>
+                                <span>•</span>
+                                <span>1,234 swimmers active</span>
+                                <span>•</span>
+                                <span>42 new today</span>
+                            </div>
+                        </div>
+                        <button class="new-post-btn" id="newPostBtn">
+                            <span>+ New Stroke</span>
+                        </button>
+                    </div>
+
+                    <div class="thread-list" id="threadList">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <!-- Thread View (hidden by default) -->
+                <div class="view hidden" id="threadView">
+                    <div class="thread-container" id="threadContainer">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- New Stroke Modal -->
+        <div class="modal hidden" id="newPostModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>New Stroke in rust-lang</h2>
+                    <button class="modal-close" id="closeModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="text" class="post-title-input" id="postTitle" placeholder="Stroke title...">
+                    <textarea class="post-content-input" id="postContent" placeholder="What's on your mind?"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <div class="pow-status" id="powStatus">
+                        <span class="pow-label">Ready to swim</span>
+                        <span class="pow-time">~30s swim required</span>
+                    </div>
+                    <button class="submit-btn" id="submitPost">Swim</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Swimming Overlay -->
+        <div class="pow-overlay hidden" id="powOverlay">
+            <div class="pow-modal">
+                <h2>🏊 Swimming...</h2>
+                <p class="pow-message">Every stroke takes effort. This prevents spam without central moderation.</p>
+                <div class="pow-progress">
+                    <div class="pow-bar">
+                        <div class="pow-fill" id="powFill"></div>
+                    </div>
+                    <span class="pow-time-remaining" id="powTimeRemaining">30s remaining</span>
+                </div>
+                <div class="pow-tip" id="powTip">
+                    💡 Tip: Swimming is intentional. Take a moment to review your stroke.
+                </div>
+                <button class="cancel-btn" id="cancelPow">Stop Swimming</button>
+            </div>
+        </div>
+
+        <!-- Buoyancy Modal -->
+        <div class="modal hidden" id="engageModal">
+            <div class="modal-content engage-modal">
+                <div class="modal-header">
+                    <h2>Keep Content Afloat</h2>
+                    <button class="modal-close" id="closeEngageModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p class="engage-description">Swim to keep this content buoyant. Without effort, it drifts away.</p>
+                    <div class="pool-status">
+                        <div class="pool-bar">
+                            <div class="pool-fill" id="engagePoolFill" style="width: 75%"></div>
+                        </div>
+                        <span class="pool-text" id="engagePoolText">45s / 60s buoyancy</span>
+                    </div>
+                    <div class="engage-options">
+                        <button class="engage-btn" data-seconds="5">+5s 🏊</button>
+                        <button class="engage-btn" data-seconds="10">+10s 🏊</button>
+                        <button class="engage-btn" data-seconds="15">+15s 🏊</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pool Indicator -->
+        <div class="fork-indicator">
+            <span class="fork-chain">swimchain-main</span>
+            <span class="fork-status">origin pool</span>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

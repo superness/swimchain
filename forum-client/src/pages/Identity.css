@@ -1,0 +1,319 @@
+.identity-page {
+  max-width: 600px;
+}
+
+.identity-page h1 {
+  font-size: var(--font-size-2xl);
+  margin-bottom: var(--spacing-lg);
+}
+
+.identity-section h2 {
+  font-size: var(--font-size-xl);
+  margin-bottom: var(--spacing-md);
+}
+
+.section-description {
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-lg);
+  line-height: 1.6;
+}
+
+.identity-actions {
+  margin-top: var(--spacing-lg);
+}
+
+.identity-info {
+  margin-top: var(--spacing-xl);
+}
+
+.identity-info h3 {
+  font-size: var(--font-size-lg);
+  margin-bottom: var(--spacing-md);
+}
+
+.identity-info p {
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-sm);
+  line-height: 1.6;
+}
+
+.identity-info ul {
+  color: var(--color-text-secondary);
+  margin: 0;
+  padding-left: var(--spacing-lg);
+}
+
+.identity-info li {
+  margin-bottom: var(--spacing-sm);
+  line-height: 1.6;
+}
+
+.btn-large {
+  padding: var(--spacing-md) var(--spacing-xl);
+  font-size: var(--font-size-lg);
+}
+
+.keypair-generated {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  text-align: center;
+}
+
+.keypair-generated p {
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-md);
+}
+
+.keypair-generated .btn {
+  margin-top: var(--spacing-md);
+}
+
+.mining-section {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-xl);
+}
+
+.mining-complete {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-success);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-xl);
+  text-align: center;
+}
+
+.success-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  color: var(--color-success);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  margin-bottom: var(--spacing-md);
+}
+
+.mining-stats {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+  margin: var(--spacing-md) 0;
+}
+
+.mining-cancelled,
+.mining-error {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  text-align: center;
+}
+
+.mining-error {
+  border-color: var(--color-error);
+}
+
+.error-message {
+  color: var(--color-error);
+}
+
+.error-box {
+  background: rgba(244, 67, 54, 0.1);
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  color: var(--color-error);
+  margin-top: var(--spacing-md);
+}
+
+/* Node identity card */
+.node-identity-card {
+  margin-bottom: var(--spacing-lg);
+}
+
+.identity-address,
+.identity-pubkey {
+  margin-bottom: var(--spacing-md);
+}
+
+.identity-address label,
+.identity-pubkey label {
+  display: block;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--spacing-xs);
+}
+
+/* Public key display with copy button */
+.pubkey-display-wrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+}
+
+.pubkey-display {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-accent-primary);
+  word-break: break-all;
+  flex: 1;
+}
+
+.pubkey-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.pubkey-copy-btn:hover {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+}
+
+.pubkey-copy-btn.copied {
+  color: var(--color-success);
+}
+
+/* Display name section */
+.display-name-section {
+  margin-bottom: var(--spacing-lg);
+}
+
+.display-name-section h3 {
+  font-size: var(--font-size-lg);
+  margin-bottom: var(--spacing-md);
+}
+
+.display-name-view {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.current-name {
+  flex: 1;
+  margin: 0;
+}
+
+.name-value {
+  font-weight: 500;
+}
+
+.no-name {
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}
+
+.display-name-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.display-name-input {
+  width: 100%;
+}
+
+.char-count {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+
+.display-name-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.display-name-info {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  margin-top: var(--spacing-sm);
+}
+
+/* Import section */
+.import-section {
+  margin-top: var(--spacing-lg);
+}
+
+.import-section h3 {
+  font-size: var(--font-size-lg);
+  margin-bottom: var(--spacing-md);
+}
+
+.import-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.import-description {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.import-input {
+  width: 100%;
+  font-family: var(--font-mono);
+}
+
+.import-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+/* Loading state */
+.identity-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xl);
+}
+
+.loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-accent-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Upgrade notice */
+.identity-upgrade-notice {
+  margin-bottom: var(--spacing-xl);
+}
+
+.notice-card.warning {
+  background: rgba(255, 152, 0, 0.1);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+}
+
+.notice-card.warning h2 {
+  color: var(--color-warning);
+  margin-bottom: var(--spacing-sm);
+}

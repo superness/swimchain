@@ -1,0 +1,85 @@
+.address-display {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.address-display.with-avatar {
+  gap: var(--spacing-sm);
+}
+
+.address-avatar {
+  flex-shrink: 0;
+}
+
+.address-profile-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  text-decoration: none;
+  color: inherit;
+  transition: opacity var(--transition-fast);
+}
+
+.address-profile-link:hover {
+  opacity: 0.8;
+}
+
+.address-profile-link:hover .display-name {
+  text-decoration: underline;
+}
+
+.display-name {
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.address-text {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-elevated);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+}
+
+.address-secondary {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  background: transparent;
+  padding: 0;
+  margin-left: var(--spacing-xs);
+}
+
+.address-copy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+}
+
+.address-copy:hover,
+.address-copy:focus {
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated);
+}
+
+/* Ensure focus outline is visible */
+.address-copy:focus-visible {
+  outline: 2px solid var(--color-accent-primary);
+  outline-offset: 2px;
+}
+
+.address-dm-button {
+  margin-left: var(--spacing-xs);
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.address-display:hover .address-dm-button,
+.address-display:focus-within .address-dm-button {
+  opacity: 1;
+}

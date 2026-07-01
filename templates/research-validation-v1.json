@@ -1,0 +1,88 @@
+{
+  "id": "research-validation-v1",
+  "name": "Research Spike Validation",
+  "description": "Validate research documents for evidence quality, gap analysis, and actionable recommendations",
+  "version": "1.0.0",
+  "category": "validation",
+  "estimatedDuration": "30-45 minutes",
+
+  "stages": [
+    {
+      "id": "evidence_extraction",
+      "name": "Evidence Extraction",
+      "type": "analysis",
+      "agent": "whitepaper_researcher",
+      "description": "Extract and categorize all claims and their supporting evidence",
+      "prompt": "Analyze the research document. Extract: 1) All factual claims made, 2) The evidence supporting each claim (citation, data, reasoning), 3) Unsupported claims (assertions without evidence), 4) The strength of each piece of evidence (strong/moderate/weak/none). Create a structured evidence inventory."
+    },
+    {
+      "id": "evidence_quality",
+      "name": "Evidence Quality Review",
+      "type": "adversarial",
+      "agent": "skeptic_reviewer",
+      "description": "Challenge the quality and validity of evidence",
+      "inputs": ["evidence_extraction"],
+      "prompt": "Critically review the evidence: 1) Are citations accurate and from credible sources? 2) Is data being misrepresented or cherry-picked? 3) Are there logical fallacies in the reasoning? 4) Could alternative interpretations of the evidence exist? 5) What evidence is missing that should be present? Be harsh but fair."
+    },
+    {
+      "id": "gap_analysis",
+      "name": "Research Gap Analysis",
+      "type": "analysis",
+      "agent": "prior_art_analyst",
+      "description": "Identify what the research should have covered but didn't",
+      "inputs": ["evidence_extraction"],
+      "prompt": "Identify gaps in the research: 1) What related work was not cited? 2) What alternative approaches were not considered? 3) What failure modes were not analyzed? 4) What edge cases were not addressed? 5) What real-world examples could inform this? Provide specific recommendations for filling each gap."
+    },
+    {
+      "id": "actionability_review",
+      "name": "Actionability Review",
+      "type": "analysis",
+      "agent": "protocol_formalizer",
+      "description": "Assess whether research findings can be turned into specification",
+      "inputs": ["evidence_extraction"],
+      "prompt": "Assess actionability: 1) Are the recommendations specific enough to implement? 2) Are the proposed parameters justified? 3) Are there testable hypotheses? 4) What decisions remain ambiguous? 5) What additional research is needed before spec can be written? Rate overall actionability: HIGH (can spec now) / MEDIUM (needs some clarification) / LOW (needs more research)."
+    },
+    {
+      "id": "synthesis",
+      "name": "Research Validation Synthesis",
+      "type": "synthesis",
+      "agent": "synthesis_panel",
+      "description": "Synthesize all reviews into a validation report",
+      "inputs": ["evidence_quality", "gap_analysis", "actionability_review"],
+      "prompt": "Synthesize all reviews into a research validation report. Include: 1) Overall evidence quality score (1-5), 2) Key gaps that must be filled, 3) Actionability assessment, 4) Specific revisions needed, 5) Recommendation: PUBLISH (research is solid) / REVISE (needs specific changes) / EXTEND (needs more research) / REJECT (fundamentally flawed).",
+      "decisions": [
+        {"choice": "PUBLISH", "description": "Research is solid and can inform specification"},
+        {"choice": "REVISE", "description": "Research needs specific changes listed"},
+        {"choice": "EXTEND", "description": "Research needs additional investigation"},
+        {"choice": "REJECT", "description": "Research is fundamentally flawed"}
+      ]
+    }
+  ],
+
+  "flow": {
+    "type": "parallel-then-synthesis",
+    "description": "Extract evidence, review in parallel, synthesize",
+    "connections": [
+      {"from": "evidence_extraction", "to": "evidence_quality"},
+      {"from": "evidence_extraction", "to": "gap_analysis"},
+      {"from": "evidence_extraction", "to": "actionability_review"},
+      {"from": "evidence_quality", "to": "synthesis"},
+      {"from": "gap_analysis", "to": "synthesis"},
+      {"from": "actionability_review", "to": "synthesis"},
+      {"from": "synthesis", "to": null, "condition": "PUBLISH"},
+      {"from": "synthesis", "to": null, "condition": "REVISE"},
+      {"from": "synthesis", "to": null, "condition": "EXTEND"},
+      {"from": "synthesis", "to": null, "condition": "REJECT"}
+    ]
+  },
+
+  "inputs": {
+    "required": ["Target research document path"],
+    "optional": ["Related research for context"]
+  },
+
+  "outputs": {
+    "primary": "research_validation_report.md",
+    "secondary": ["evidence_inventory.md", "gap_analysis.md"]
+  }
+}

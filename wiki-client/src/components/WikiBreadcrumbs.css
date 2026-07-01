@@ -1,0 +1,8 @@
+/**
+ * WikiBreadcrumbs - Extends base .wiki-breadcrumbs from wiki.css
+ */
+
+.wiki-breadcrumbs [aria-current="page"] {
+  color: var(--wiki-text);
+  font-weight: 600;
+}

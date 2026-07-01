@@ -1,0 +1,15 @@
+/**
+ * TableOfContents - Additional styles beyond wiki.css base .wiki-toc
+ * Sticky positioning and nested list indentation.
+ */
+
+.wiki-toc {
+  position: sticky;
+  top: calc(var(--wiki-header-height, 48px) + 1rem);
+  align-self: flex-start;
+}
+
+.wiki-toc__list .wiki-toc__list {
+  margin-left: 1rem;
+  margin-top: 0.125rem;
+}

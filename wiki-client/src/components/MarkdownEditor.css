@@ -1,0 +1,121 @@
+.markdown-editor {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-primary, #121218);
+}
+
+.markdown-editor-toolbar {
+  display: flex;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--bg-secondary, #1e1e2e);
+  border-bottom: 1px solid var(--border, #333);
+  flex-wrap: wrap;
+}
+
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-secondary, #a0a0a0);
+  cursor: pointer;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 0.85em;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.toolbar-btn:hover {
+  background: var(--bg-hover, #2a2a3e);
+  color: var(--text-primary, #e0e0e0);
+  border-color: var(--border, #333);
+}
+
+.toolbar-bold {
+  font-weight: 700;
+}
+
+.toolbar-italic {
+  font-style: italic;
+}
+
+.markdown-editor-panes {
+  display: flex;
+  min-height: 400px;
+}
+
+.editor-pane,
+.preview-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.editor-pane {
+  border-right: 1px solid var(--border, #333);
+}
+
+.pane-header {
+  padding: 6px 12px;
+  font-size: 0.75em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #a0a0a0);
+  background: var(--bg-secondary, #1e1e2e);
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.editor-textarea {
+  flex: 1;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 12px;
+  font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.9em;
+  line-height: 1.6;
+  color: var(--text-primary, #e0e0e0);
+  background: var(--bg-primary, #121218);
+  tab-size: 2;
+}
+
+.editor-textarea::placeholder {
+  color: var(--text-tertiary, #555);
+}
+
+.preview-content {
+  flex: 1;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.preview-placeholder {
+  color: var(--text-tertiary, #555);
+  font-style: italic;
+}
+
+@media (max-width: 768px) {
+  .markdown-editor-panes {
+    flex-direction: column;
+  }
+
+  .editor-pane {
+    border-right: none;
+    border-bottom: 1px solid var(--border, #333);
+  }
+
+  .editor-pane,
+  .preview-pane {
+    min-height: 250px;
+  }
+}

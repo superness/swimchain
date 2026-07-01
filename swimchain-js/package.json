@@ -1,0 +1,61 @@
+{
+  "name": "@swimchain/core",
+  "version": "0.1.0",
+  "description": "Swimchain core library - WASM bindings and TypeScript utilities",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./wasm": {
+      "types": "./pkg/swimchain_wasm.d.ts",
+      "import": "./pkg/swimchain_wasm.js"
+    }
+  },
+  "files": [
+    "dist",
+    "pkg",
+    "src"
+  ],
+  "scripts": {
+    "build:wasm": "cd ../swimchain-wasm && wasm-pack build --target web --release --out-dir ../swimchain-js/pkg",
+    "build:ts": "tsc",
+    "build": "npm run build:wasm && npm run build:ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "swimchain",
+    "decentralized",
+    "social",
+    "wasm",
+    "ed25519",
+    "bech32"
+  ],
+  "author": "Swimchain Contributors",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/swimchain/swimchain"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0",
+    "happy-dom": "^12.10.0",
+    "eslint": "^8.55.0",
+    "@typescript-eslint/eslint-plugin": "^6.14.0",
+    "@typescript-eslint/parser": "^6.14.0"
+  },
+  "peerDependencies": {},
+  "sideEffects": false
+}

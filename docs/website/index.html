@@ -1,0 +1,1506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Swimchain - The Social Network That Can't Sell You Out</title>
+    <meta name="description" content="No ads. No algorithm. No company. A social network where your presence actually matters.">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <a href="#" class="nav-logo">Swimchain</a>
+            <div class="nav-links">
+                <a href="#how-it-works">How It Works</a>
+                <a href="#interfaces">Interfaces</a>
+                <a href="#swimmer-levels">Levels</a>
+                <a href="#sponsorship">Sponsorship</a>
+                <a href="#tradeoffs">Tradeoffs</a>
+                <a href="#faq">FAQ</a>
+                <a href="https://github.com/adminwizardtech/swimchain" class="nav-btn" target="_blank">GitHub</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-bg">
+            <div class="water-ripple"></div>
+            <div class="water-ripple ripple-2"></div>
+            <div class="water-ripple ripple-3"></div>
+        </div>
+        <div class="container hero-content">
+            <h1 class="hero-title">The social network that can't sell you out.</h1>
+            <p class="hero-subtitle">
+                No company runs this. No algorithm decides what you see.
+                No one's collecting your data. Just people talking.
+            </p>
+            <div class="hero-cta">
+                <a href="#how-it-works" class="btn btn-primary">Learn How It Works</a>
+                <a href="#waiting-demo" class="btn btn-secondary">Try The Demo</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Problem Section -->
+    <section class="problem">
+        <div class="container">
+            <h2 class="section-title">You know something's wrong.</h2>
+            <div class="problem-grid">
+                <div class="problem-card">
+                    <span class="problem-icon">&#8987;</span>
+                    <p>You open the app. Two hours disappear.</p>
+                </div>
+                <div class="problem-card">
+                    <span class="problem-icon">&#128545;</span>
+                    <p>The feed shows things designed to make you angry.</p>
+                </div>
+                <div class="problem-card">
+                    <span class="problem-icon">&#128065;</span>
+                    <p>Ads for things you mentioned in private.</p>
+                </div>
+                <div class="problem-card">
+                    <span class="problem-icon">&#128274;</span>
+                    <p>Your community's great - until the platform changes the rules.</p>
+                </div>
+                <div class="problem-card">
+                    <span class="problem-icon">&#128176;</span>
+                    <p>You created all that content. They own all of it.</p>
+                </div>
+            </div>
+            <p class="problem-conclusion">
+                This isn't social media. It's a slot machine wearing a friendship mask.
+            </p>
+        </div>
+    </section>
+
+    <!-- Transition Section -->
+    <section class="transition">
+        <div class="container">
+            <h2 class="section-title">What if it didn't have to be this way?</h2>
+            <div class="transition-items">
+                <p>What if posting took a few seconds of thought?</p>
+                <p>What if old drama actually faded away?</p>
+                <p>What if there was no company to sell you out?</p>
+                <p>What if you could take your community and leave?</p>
+            </div>
+            <p class="transition-answer">That's Swimchain.</p>
+        </div>
+    </section>
+
+    <!-- How It Works Section -->
+    <section id="how-it-works" class="how-it-works">
+        <div class="container">
+            <h2 class="section-title">How It Works</h2>
+            <p class="section-subtitle">Three simple concepts. No jargon.</p>
+
+            <div class="concept-grid">
+                <!-- Concept 1: Posting Takes Effort -->
+                <div class="concept-card">
+                    <div class="concept-icon swim-icon">&#127946;</div>
+                    <h3>Posting Takes Effort</h3>
+                    <p class="concept-subtitle">(Swimming)</p>
+                    <p>When you post, your device does a bit of computational work. About 30 seconds of waiting. Every post is a stroke - effort that moves conversation forward.</p>
+                    <div class="concept-why">
+                        <h4>Why?</h4>
+                        <ul>
+                            <li>Stops spam (bots can't post thousands of times)</li>
+                            <li>Makes you think before posting</li>
+                            <li>Makes advertising economically stupid</li>
+                        </ul>
+                    </div>
+                    <p class="concept-metaphor">Think of it as a cover charge - low enough that anyone serious can get in, but high enough to make spam pointless.</p>
+                </div>
+
+                <!-- Concept 2: Content Fades -->
+                <div class="concept-card">
+                    <div class="concept-icon drift-icon">&#127754;</div>
+                    <h3>Content Fades</h3>
+                    <p class="concept-subtitle">(Drifting)</p>
+                    <p>Posts don't last forever. Without engagement, they drift away.</p>
+                    <div class="concept-why">
+                        <h4>This means:</h4>
+                        <ul>
+                            <li>No one moderates what's "appropriate" - time does</li>
+                            <li>Embarrassing old posts fade naturally</li>
+                            <li>Storage stays small (your phone can hold everything)</li>
+                            <li>Popular content survives</li>
+                            <li>Ignored content disappears</li>
+                            <li>Your embarrassing hot take from 3 AM? Gone in a week if no one cared.</li>
+                        </ul>
+                    </div>
+                    <div class="adaptive-decay">
+                        <h4>Smart Decay:</h4>
+                        <p>Decay adjusts automatically. Busy spaces decay faster to stay manageable. Quiet spaces let content live longer. Half-life ranges from 1 to 30 days based on activity.</p>
+                    </div>
+                    <p class="concept-metaphor">Think of it like footprints in sand. The good ones get preserved. The rest wash away.</p>
+                </div>
+
+                <!-- Concept 3: You Can Leave -->
+                <div class="concept-card">
+                    <div class="concept-icon fork-icon">&#128256;</div>
+                    <h3>You Can Leave</h3>
+                    <p class="concept-subtitle">(Forking)</p>
+                    <p>If a community gets captured or goes wrong, you can fork away.</p>
+                    <div class="concept-why">
+                        <h4>This means:</h4>
+                        <ul>
+                            <li>Take your community with you</li>
+                            <li>No one can trap you</li>
+                        </ul>
+                    </div>
+                    <p class="concept-metaphor">Like if any subreddit could become its own independent site.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Interactive Demo: The Waiting Demo -->
+    <section id="waiting-demo" class="demo-section">
+        <div class="container">
+            <h2 class="section-title">Experience the Friction</h2>
+            <p class="section-subtitle">Try posting something. Feel the difference.</p>
+
+            <div class="demo-container" id="posting-demo">
+                <div class="demo-state demo-input-state">
+                    <label for="demo-post">Type something you'd post on social media:</label>
+                    <textarea id="demo-post" placeholder="Just saw the most amazing sunset..."></textarea>
+                    <button id="demo-submit" class="btn btn-primary">Post to Swimchain</button>
+                </div>
+
+                <div class="demo-state demo-waiting-state" style="display: none;">
+                    <div class="waiting-icon">&#127946;</div>
+                    <p class="waiting-text">Swimming...</p>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <p class="progress-percent" id="progress-percent">0%</p>
+
+                    <div class="reflection-box">
+                        <p>While you wait, ask yourself:</p>
+                        <ul>
+                            <li>Do I still want to say this?</li>
+                            <li>Is this thoughtful or impulsive?</li>
+                            <li>Would I say this in person?</li>
+                        </ul>
+                    </div>
+
+                    <button id="demo-cancel" class="btn btn-ghost">Cancel - I changed my mind</button>
+                </div>
+
+                <div class="demo-state demo-success-state" style="display: none;">
+                    <div class="success-icon">&#10003;</div>
+                    <p class="success-text">Posted!</p>
+                    <div class="insight-box">
+                        <p><strong>You just experienced intentional friction.</strong></p>
+                        <p>On Twitter, that would have been instant.</p>
+                        <p>On Swimchain, you had 30 seconds to reconsider.</p>
+                        <p class="insight-highlight">Most doomscrolling sessions start with an impulse post. We interrupt that cycle.</p>
+                    </div>
+                    <button id="demo-reset" class="btn btn-primary">Try Again</button>
+                </div>
+
+                <div class="demo-state demo-cancelled-state" style="display: none;">
+                    <div class="cancelled-icon">&#10006;</div>
+                    <p class="cancelled-text">Cancelled</p>
+                    <div class="insight-box">
+                        <p><strong>That cooling-off period worked.</strong></p>
+                        <p>On Twitter, that post would already be public.</p>
+                        <p>On Swimchain, you got a second chance to reconsider.</p>
+                    </div>
+                    <button id="demo-reset-cancelled" class="btn btn-primary">Try Again</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Decay Visualization -->
+    <section class="demo-section decay-section">
+        <div class="container">
+            <h2 class="section-title">What Happens to Posts</h2>
+            <p class="section-subtitle">Watch as content fades - and revives with engagement</p>
+
+            <div class="decay-demo">
+                <div class="decay-timeline" id="decay-timeline">
+                    <div class="decay-post" data-day="1">
+                        <div class="decay-bar" style="width: 100%"></div>
+                        <span class="decay-content">"Check out this cool thing!"</span>
+                        <span class="decay-day">Day 1 - Posted</span>
+                    </div>
+                    <div class="decay-post" data-day="5">
+                        <div class="decay-bar" style="width: 85%"></div>
+                        <span class="decay-content">"Check out this cool thing!"</span>
+                        <span class="decay-day">Day 5 - Fading</span>
+                    </div>
+                    <div class="decay-post" data-day="12">
+                        <div class="decay-bar" style="width: 55%"></div>
+                        <span class="decay-content">"Check out this cool thing!"</span>
+                        <span class="decay-day">Day 12 - Getting quieter</span>
+                    </div>
+                    <div class="decay-post" data-day="20">
+                        <div class="decay-bar" style="width: 30%"></div>
+                        <span class="decay-content decay-faded">"Check out this coo..."</span>
+                        <span class="decay-day">Day 20 - Almost gone</span>
+                    </div>
+                    <div class="decay-post" data-day="30">
+                        <div class="decay-bar" style="width: 0%"></div>
+                        <span class="decay-content decay-gone">(drifted away)</span>
+                        <span class="decay-day">Day 30 - Gone</span>
+                    </div>
+                </div>
+
+                <div class="revival-demo">
+                    <h3>But look what happens when someone swims upstream:</h3>
+                    <div class="revival-animation">
+                        <div class="revival-before">
+                            <div class="decay-bar" style="width: 30%"></div>
+                            <span>"Check out this cool thing!"</span>
+                            <span class="decay-day">Day 20 - Drifting downstream</span>
+                        </div>
+                        <div class="revival-action">
+                            <span class="reply-icon">&#128172;</span>
+                            <span>Someone swims upstream: "This is great!"</span>
+                        </div>
+                        <div class="revival-after">
+                            <div class="decay-bar revived" style="width: 100%"></div>
+                            <span>"Check out this cool thing!"</span>
+                            <span class="decay-day">Day 20 - Pulled back upstream! Timer reset.</span>
+                        </div>
+                    </div>
+                    <p class="upstream-note">Engagement fights the current - swimming upstream keeps content from drifting away.</p>
+                </div>
+
+                <p class="decay-insight">Content lives because people care, not because a server stores it forever.</p>
+
+                <div class="pooled-engagement">
+                    <h3>Pooled Engagement: You're Not Alone</h3>
+                    <p>Keeping content alive isn't a solo effort. Multiple people can contribute to preserving what matters.</p>
+                    <div class="pooled-example">
+                        <div class="pool-bar">
+                            <div class="pool-fill" style="width: 60%"></div>
+                            <span class="pool-label">60s PoW needed to persist</span>
+                        </div>
+                        <ul class="pool-contributors">
+                            <li>@alice contributed 20s</li>
+                            <li>@bob contributed 25s</li>
+                            <li>@carol contributed 15s</li>
+                        </ul>
+                        <p class="pool-result">Together, they kept this content alive for another cycle.</p>
+                    </div>
+                    <p class="pooled-insight">The same content that one person struggles to maintain, a community keeps afloat effortlessly.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Interface Showcase -->
+    <section id="interfaces" class="interfaces-section">
+        <div class="container">
+            <h2 class="section-title">One Protocol. Your Choice.</h2>
+            <p class="section-subtitle">Same content. Same identity. Pick your favorite experience.</p>
+
+            <div class="interface-tabs">
+                <button class="interface-tab active" data-interface="forum">Forum</button>
+                <button class="interface-tab" data-interface="microblog">Microblog</button>
+                <button class="interface-tab" data-interface="chat">Chat</button>
+                <button class="interface-tab" data-interface="search">Search</button>
+                <button class="interface-tab" data-interface="cli">CLI</button>
+            </div>
+
+            <div class="interface-displays">
+                <!-- Forum Interface -->
+                <div class="interface-display active" id="interface-forum">
+                    <div class="interface-mockup forum-mockup">
+                        <div class="mockup-header">
+                            <span class="mockup-path">tech-projects / Show: My weekend project</span>
+                        </div>
+                        <div class="mockup-meta">
+                            Posted by cs1q7x... <span class="meta-sep">&#8226;</span> 2 hours ago <span class="meta-sep">&#8226;</span> <span class="heat">&#128293; 85% heat</span>
+                        </div>
+                        <div class="mockup-content">
+                            Check out what I built this weekend - a solar-powered weather station that reports to my home dashboard!
+                        </div>
+                        <div class="mockup-replies">
+                            <div class="reply reply-level-1">
+                                <span class="reply-author">@mike:</span> This is awesome! What sensor did you use?
+                                <div class="reply reply-level-2">
+                                    <span class="reply-author">@cs1q7x:</span> DHT22 for temp/humidity, works great
+                                </div>
+                            </div>
+                            <div class="reply reply-level-1">
+                                <span class="reply-author">@sarah:</span> Been wanting to build something similar
+                            </div>
+                        </div>
+                    </div>
+                    <p class="interface-tagline">Communities are lanes - stay in your lane, swim with people who share your interests. <span class="interface-for">For people who love Reddit's nested comments.</span></p>
+                </div>
+
+                <!-- Microblog Interface -->
+                <div class="interface-display" id="interface-microblog">
+                    <div class="interface-mockup microblog-mockup">
+                        <div class="tweet-card">
+                            <div class="tweet-header">
+                                <span class="tweet-author">cs1q7x...</span>
+                                <span class="tweet-time">2h ago</span>
+                                <span class="tweet-heat">&#128293;85</span>
+                            </div>
+                            <div class="tweet-content">
+                                Check out what I built this weekend - a solar-powered weather station that reports to my home dashboard!
+                            </div>
+                            <div class="tweet-actions">
+                                <span>&#128172; 3 replies</span>
+                                <span>&#128260; 5 reposts</span>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="interface-tagline">Thoughts, updates, quick takes. <span class="interface-for">For people who want Twitter without the algorithm.</span></p>
+                </div>
+
+                <!-- Chat Interface -->
+                <div class="interface-display" id="interface-chat">
+                    <div class="interface-mockup chat-mockup">
+                        <div class="chat-header">#tech-projects</div>
+                        <div class="chat-messages">
+                            <div class="chat-message">
+                                <span class="chat-author">cs1q7x</span>
+                                <span class="chat-time">[2:34 PM]:</span>
+                                Check out what I built this weekend - a solar-powered weather station!
+                            </div>
+                            <div class="chat-message">
+                                <span class="chat-author">mike</span>
+                                <span class="chat-time">[2:36 PM]:</span>
+                                This is awesome! What sensor?
+                            </div>
+                            <div class="chat-message">
+                                <span class="chat-author">cs1q7x</span>
+                                <span class="chat-time">[2:37 PM]:</span>
+                                DHT22 for temp/humidity
+                            </div>
+                            <div class="chat-message">
+                                <span class="chat-author">sarah</span>
+                                <span class="chat-time">[2:40 PM]:</span>
+                                Been wanting to build one too
+                            </div>
+                        </div>
+                    </div>
+                    <p class="interface-tagline">Real-time community vibes. <span class="interface-for">For people who miss Discord but hate Discord.</span></p>
+                </div>
+
+                <!-- Search Interface -->
+                <div class="interface-display" id="interface-search">
+                    <div class="interface-mockup search-mockup">
+                        <div class="search-bar">
+                            <span class="search-icon">&#128269;</span>
+                            <span class="search-query">"weather station"</span>
+                        </div>
+                        <div class="search-result">
+                            <div class="result-title">tech-projects / My weekend project</div>
+                            <div class="result-meta">85% heat <span class="meta-sep">&#8226;</span> 2h ago</div>
+                            <div class="result-snippet">"Check out what I built this weekend - a solar-powered weather station that reports to my home dashboard!"</div>
+                            <div class="result-actions">
+                                <a href="#">Read on Swimchain &#8594;</a>
+                                <a href="#">Download Client &#8594;</a>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="interface-tagline">Find and read without committing. <span class="interface-for">For people who just want to browse first.</span></p>
+                </div>
+
+                <!-- CLI Interface -->
+                <div class="interface-display" id="interface-cli">
+                    <div class="interface-mockup cli-mockup">
+                        <pre class="cli-content"><span class="cli-prompt">$</span> cs post view sha256:7f3a2b...
+
+<span class="cli-label">Space:</span>   tech-projects
+<span class="cli-label">Author:</span>  cs1q7xyrjz8vk3mz9p6w4r5t2y1u0i8o7a6s5d4f3g
+<span class="cli-label">Posted:</span>  2024-12-26T14:34:22Z
+<span class="cli-label">Heat:</span>    85%
+<span class="cli-label">Replies:</span> 3
+
+Check out what I built this weekend - a solar-powered
+weather station that reports to my home dashboard!
+
+<span class="cli-prompt">$</span> <span class="cli-cursor">_</span></pre>
+                    </div>
+                    <p class="interface-tagline">Script it, automate it, own it. <span class="interface-for">For people who live in the terminal.</span></p>
+                </div>
+            </div>
+
+            <div class="interface-insight">
+                <p>Like email clients for email. Like browsers for the web.</p>
+                <p><strong>Many apps, one pool.</strong></p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Get Started Section -->
+    <section id="get-started" class="get-started-section">
+        <div class="container">
+            <h2 class="section-title">Get Started</h2>
+            <p class="section-subtitle">Every app is a full node. That's the point.</p>
+
+            <!-- Architecture Explainer -->
+            <div class="architecture-box">
+                <h3>How It Works</h3>
+                <div class="architecture-diagram">
+                    <div class="arch-layer">
+                        <div class="arch-item client">
+                            <span class="arch-icon">&#128187;</span>
+                            <span class="arch-label">Forum Client</span>
+                        </div>
+                        <div class="arch-item client">
+                            <span class="arch-icon">&#128241;</span>
+                            <span class="arch-label">Mobile App</span>
+                        </div>
+                        <div class="arch-item client">
+                            <span class="arch-icon">&#128483;</span>
+                            <span class="arch-label">Chat Client</span>
+                        </div>
+                        <div class="arch-item client">
+                            <span class="arch-icon">&#62;</span>
+                            <span class="arch-label">CLI</span>
+                        </div>
+                    </div>
+                    <div class="arch-arrow">&#8595;</div>
+                    <div class="arch-layer single">
+                        <div class="arch-item core">
+                            <span class="arch-icon">&#9881;</span>
+                            <span class="arch-label">Swimchain Core (Rust + WASM)</span>
+                        </div>
+                    </div>
+                    <div class="arch-arrow">&#8595;</div>
+                    <div class="arch-layer single">
+                        <div class="arch-item network">
+                            <span class="arch-icon">&#128279;</span>
+                            <span class="arch-label">P2P Network (You + Everyone Else)</span>
+                        </div>
+                    </div>
+                </div>
+                <p class="architecture-note">Every client runs the full protocol. Different UX, same network, no servers.</p>
+            </div>
+
+            <!-- Client Options -->
+            <div class="clients-grid">
+                <div class="client-card">
+                    <div class="client-header">
+                        <span class="client-icon">&#128187;</span>
+                        <h4>Desktop Clients</h4>
+                        <span class="client-status ready">Built</span>
+                    </div>
+                    <p>Forum-style, Reddit-style, or Discord-style interfaces. All full nodes.</p>
+                    <ul class="client-features">
+                        <li>Forum Client - nested threads, space navigation</li>
+                        <li>Reddit Client - card-based browsing, quick engage</li>
+                        <li>Chat Client - real-time, typing indicators, presence</li>
+                    </ul>
+                    <p class="client-tech">React + TypeScript + WASM</p>
+                </div>
+
+                <div class="client-card">
+                    <div class="client-header">
+                        <span class="client-icon">&#128241;</span>
+                        <h4>Mobile App</h4>
+                        <span class="client-status ready">Built</span>
+                    </div>
+                    <p>Full node on your phone. Yes, really. Decay keeps storage bounded.</p>
+                    <ul class="client-features">
+                        <li>Native Argon2id (Swift/Kotlin) for efficient PoW</li>
+                        <li>WiFi-preferred sync to save cellular data</li>
+                        <li>Storage profiles: 1GB, 5GB, or 10GB</li>
+                        <li>Offline queue for posts when disconnected</li>
+                    </ul>
+                    <p class="client-tech">React Native + Native modules</p>
+                </div>
+
+                <div class="client-card">
+                    <div class="client-header">
+                        <span class="client-icon">&#62;_</span>
+                        <h4>CLI</h4>
+                        <span class="client-status ready">Built</span>
+                    </div>
+                    <p>The <code>cs</code> command. Script it, automate it, pipe it.</p>
+                    <ul class="client-features">
+                        <li>Identity management with encrypted keys</li>
+                        <li>Post, reply, engage, search</li>
+                        <li>JSON output for scripting</li>
+                        <li>Tab completion (bash/zsh/fish)</li>
+                    </ul>
+                    <p class="client-tech">Rust binary</p>
+                </div>
+
+                <div class="client-card">
+                    <div class="client-header">
+                        <span class="client-icon">&#128269;</span>
+                        <h4>Web Gateway</h4>
+                        <span class="client-status ready">Built</span>
+                    </div>
+                    <p>Read-only web interface. Browse before committing to a full node.</p>
+                    <ul class="client-features">
+                        <li>Full-text search with transparent ranking</li>
+                        <li>No login required to browse</li>
+                        <li>SEO-friendly for discoverability</li>
+                        <li>"Download client" prompts for participation</li>
+                    </ul>
+                    <p class="client-tech">Next.js + Server-side rendering</p>
+                </div>
+
+                <div class="client-card">
+                    <div class="client-header">
+                        <span class="client-icon">&#128736;</span>
+                        <h4>Specialized Clients</h4>
+                        <span class="client-status ready">Built</span>
+                    </div>
+                    <p>For specific use cases beyond normal browsing.</p>
+                    <ul class="client-features">
+                        <li>Bridge Client - connect to Matrix/IRC</li>
+                        <li>Archiver Client - preserve at-risk content</li>
+                        <li>Analytics Client - space health monitoring</li>
+                    </ul>
+                    <p class="client-tech">React + specialized APIs</p>
+                </div>
+
+                <div class="client-card">
+                    <div class="client-header">
+                        <span class="client-icon">&#128640;</span>
+                        <h4>Build Your Own</h4>
+                        <span class="client-status">Open</span>
+                    </div>
+                    <p>Use the libraries. Build whatever UX you want.</p>
+                    <ul class="client-features">
+                        <li><code>@swimchain/core</code> - WASM bindings</li>
+                        <li><code>@swimchain/react</code> - React hooks</li>
+                        <li>Full protocol docs available</li>
+                    </ul>
+                    <p class="client-tech">npm packages + Rust crate</p>
+                </div>
+            </div>
+
+            <!-- Current Status -->
+            <div class="status-box">
+                <h3>&#9888; Current Status: Pre-Alpha (Testnet Ready)</h3>
+                <p>The protocol is fully implemented and tested (1000+ tests). All 10 development phases complete. <strong>Ready for local testing and testnet.</strong></p>
+                <div class="status-details">
+                    <div class="status-item done">
+                        <span class="status-check">&#10004;</span>
+                        <span>Core protocol (identity, decay, PoW, sync, gossip)</span>
+                    </div>
+                    <div class="status-item done">
+                        <span class="status-check">&#10004;</span>
+                        <span>Client implementations (6 different interfaces)</span>
+                    </div>
+                    <div class="status-item done">
+                        <span class="status-check">&#10004;</span>
+                        <span>WASM library for browser clients</span>
+                    </div>
+                    <div class="status-item done">
+                        <span class="status-check">&#10004;</span>
+                        <span>Mobile viability proven (difficulty 8-10 = 26-102s)</span>
+                    </div>
+                    <div class="status-item done">
+                        <span class="status-check">&#10004;</span>
+                        <span>Social Layer (swimmer levels, hosting rewards)</span>
+                    </div>
+                    <div class="status-item done">
+                        <span class="status-check">&#10004;</span>
+                        <span>Node operations (connection management, background tasks)</span>
+                    </div>
+                    <div class="status-item done">
+                        <span class="status-check">&#10004;</span>
+                        <span>Sponsorship system (invite trees, consequence propagation)</span>
+                    </div>
+                    <div class="status-item done">
+                        <span class="status-check">&#10004;</span>
+                        <span>Anti-abuse mechanisms (attestation, reputation, blocklist)</span>
+                    </div>
+                    <div class="status-item ready">
+                        <span class="status-check">&#9989;</span>
+                        <span>Run locally now! See <a href="https://github.com/adminwizardtech/swimchain/blob/main/GETTING_STARTED.md">Getting Started Guide</a></span>
+                    </div>
+                    <div class="status-item pending">
+                        <span class="status-check">&#9711;</span>
+                        <span>Public testnet launch</span>
+                    </div>
+                    <div class="status-item pending">
+                        <span class="status-check">&#9711;</span>
+                        <span>Packaged binaries for download</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Build From Source -->
+            <div class="build-section">
+                <h3>Build From Source</h3>
+                <p>For developers who want to run it now:</p>
+
+                <div class="build-steps">
+                    <div class="build-step">
+                        <span class="step-num">1</span>
+                        <div class="step-content">
+                            <h4>Clone the repository</h4>
+                            <pre><code>git clone https://github.com/adminwizardtech/swimchain.git
+cd swimchain</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="build-step">
+                        <span class="step-num">2</span>
+                        <div class="step-content">
+                            <h4>Build the CLI</h4>
+                            <pre><code>cargo build --release
+# Binary at target/release/cs</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="build-step">
+                        <span class="step-num">3</span>
+                        <div class="step-content">
+                            <h4>Create your identity</h4>
+                            <pre><code>./target/release/cs identity create
+# Wait ~30 seconds for PoW
+# Your address: cs1q7x...</code></pre>
+                        </div>
+                    </div>
+
+                    <div class="build-step">
+                        <span class="step-num">4</span>
+                        <div class="step-content">
+                            <h4>Run a client (optional)</h4>
+                            <pre><code># Forum client
+cd forum-client && npm install && npm run dev
+
+# Or chat client
+cd chat-client && npm install && npm run dev</code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="build-note"><strong>Note:</strong> Without a live network, you'll be running in local mode. See the <a href="https://github.com/adminwizardtech/swimchain/tree/main/docs" target="_blank">documentation</a> for testnet information when available.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- No-Server Reality Check -->
+    <section class="demo-section server-section">
+        <div class="container">
+            <h2 class="section-title">Where Does Your Post Live?</h2>
+
+            <div class="server-comparison">
+                <div class="server-panel traditional">
+                    <h3>Traditional Social Media</h3>
+                    <div class="server-diagram">
+                        <div class="diagram-flow">
+                            <span class="diagram-node user">You</span>
+                            <span class="diagram-arrow">&#8594;</span>
+                            <span class="diagram-node server">Company's Server</span>
+                            <span class="diagram-arrow">&#8594;</span>
+                            <span class="diagram-node users">Everyone else</span>
+                        </div>
+                        <ul class="server-facts bad-facts">
+                            <li>&#10060; They store it forever</li>
+                            <li>&#10060; They analyze it for ads</li>
+                            <li>&#10060; They can delete it anytime</li>
+                            <li>&#10060; They can lock you out</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <div class="server-panel swimchain">
+                    <h3>Swimchain</h3>
+                    <div class="server-diagram">
+                        <div class="diagram-mesh">
+                            <div class="mesh-center">You</div>
+                            <div class="mesh-peer peer-1">Peer</div>
+                            <div class="mesh-peer peer-2">Peer</div>
+                            <div class="mesh-peer peer-3">Peer</div>
+                            <div class="mesh-peer peer-4">Peer</div>
+                            <div class="mesh-peer peer-5">Peer</div>
+                            <div class="mesh-peer peer-6">Peer</div>
+                        </div>
+                        <ul class="server-facts good-facts">
+                            <li>&#10004; Your post goes directly to other people's devices</li>
+                            <li>&#10004; There IS no central server</li>
+                            <li>&#10004; Nothing to subpoena</li>
+                            <li>&#10004; Nothing to hack</li>
+                            <li>&#10004; Nothing to take down</li>
+                            <li>&#10004; <strong>View-to-Host:</strong> You only help distribute content you've actually viewed. You consent to what you store.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="server-insight">
+                <p><strong>If Swimchain's developers disappeared tomorrow, the network keeps running.</strong></p>
+                <p class="server-challenge">Try doing that with Twitter.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Advertising Impossibility -->
+    <section class="demo-section ads-section">
+        <div class="container">
+            <h2 class="section-title">Why Swimchain Can't Have Ads</h2>
+            <p class="section-subtitle">(not "won't" - literally <em>can't</em>)</p>
+
+            <div class="ads-breakdown">
+                <h3>What advertisers need:</h3>
+                <table class="ads-table">
+                    <tr>
+                        <td class="need-col">&#10060; Guaranteed visibility</td>
+                        <td class="why-col">&#8594; No feed to inject into</td>
+                    </tr>
+                    <tr>
+                        <td class="need-col">&#10060; Targeting by demographics</td>
+                        <td class="why-col">&#8594; No data collection</td>
+                    </tr>
+                    <tr>
+                        <td class="need-col">&#10060; Metrics to prove ROI</td>
+                        <td class="why-col">&#8594; No tracking</td>
+                    </tr>
+                    <tr>
+                        <td class="need-col">&#10060; Someone to pay</td>
+                        <td class="why-col">&#8594; No company</td>
+                    </tr>
+                    <tr>
+                        <td class="need-col">&#10060; Way to skip the line</td>
+                        <td class="why-col">&#8594; Everyone waits 30s</td>
+                    </tr>
+                </table>
+            </div>
+
+            <div class="advertiser-dialogue">
+                <div class="dialogue-bubble advertiser">
+                    <span class="speaker">Advertiser:</span>
+                    "I want to promote my product!"
+                </div>
+                <div class="dialogue-bubble swimchain-reply">
+                    <span class="speaker">Swimchain:</span>
+                    "Sure. You'll wait 30 seconds like everyone else, hope someone navigates to your space, get no metrics proving anyone saw it, and watch it fade if nobody cares."
+                    <p class="dialogue-punchline">That's not advertising. That's just posting.</p>
+                </div>
+            </div>
+
+            <p class="ads-insight">
+                <strong>The protocol makes ads pointless.</strong> We didn't ban them. There's just no way to make them work.
+            </p>
+
+            <!-- Attack Scenario -->
+            <div class="attack-scenario">
+                <h3>"But what if they just spam anyway?"</h3>
+
+                <p class="attack-setup">Let's walk through a determined spammer's attack:</p>
+
+                <div class="attack-timeline">
+                    <div class="attack-step">
+                        <span class="step-number">1</span>
+                        <div class="step-content">
+                            <strong>Spammer floods a space with promotional content</strong>
+                            <p>Cost: ~30 seconds of CPU per post. They have resources. They flood anyway.</p>
+                        </div>
+                    </div>
+
+                    <div class="attack-step">
+                        <span class="step-number">2</span>
+                        <div class="step-content">
+                            <strong>They farm engagement to keep content alive</strong>
+                            <p>Content decays without engagement, so they create fake accounts and engage with themselves. Cost: 60 seconds of CPU per month per post to keep it from fading.</p>
+                        </div>
+                    </div>
+
+                    <div class="attack-step step-problem">
+                        <span class="step-number">3</span>
+                        <div class="step-content">
+                            <strong>Now what?</strong>
+                            <p>They've spent compute keeping spam alive. But here's where the protocol breaks their plan:</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="defense-box">
+                    <h4>Defense Layer 1: You don't sync what you don't view</h4>
+                    <p>Content blobs only download when you choose to view them. The spammer's promotional images? They're sitting on <em>their</em> storage, not yours. Unless you navigate to that content and view it, you never host it, never download it, never even know it exists.</p>
+                    <p class="defense-punchline">Their spam, their bandwidth. Not yours.</p>
+                </div>
+
+                <div class="defense-box">
+                    <h4>Defense Layer 2: Spaces fracture under load</h4>
+                    <p>As a space grows, it splits into branches based on content hashes. You only sync the branches containing conversations you care about. The spammer's content ends up in a branch nobody navigates to.</p>
+                    <p class="defense-detail">They're shouting into a room that got subdivided. And you're not in their subdivision.</p>
+                </div>
+
+                <div class="defense-box">
+                    <h4>Defense Layer 3: Nobody has to host their stuff</h4>
+                    <p>Remember: you only serve content you've viewed. If nobody looks at spam, nobody hosts spam. The spammer has to keep their own computers running 24/7 to serve their own content. The moment they turn off, their content becomes unavailable.</p>
+                </div>
+
+                <div class="attack-outcome">
+                    <strong>The spammer's position:</strong>
+                    <ul>
+                        <li>Paid CPU for every post</li>
+                        <li>Paying ongoing CPU to keep it alive</li>
+                        <li>Hosting it themselves (nobody else will)</li>
+                        <li>In a branch nobody syncs</li>
+                        <li>With zero metrics proving anyone saw anything</li>
+                    </ul>
+                    <p class="outcome-verdict">At some point, even determined spammers do the math.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Identity Key Experience -->
+    <section class="demo-section identity-section">
+        <div class="container">
+            <h2 class="section-title">Your Identity on Swimchain</h2>
+
+            <div class="identity-display">
+                <p class="identity-label">This is a Swimchain address:</p>
+                <code class="identity-address">cs1q7xyrjz8vk3mz9p6w4r5t2y1u0i8o7a6s5d4f3g2h1j0k</code>
+                <p class="identity-emphasis">This IS your identity. Not "linked to" - <strong>IS</strong>.</p>
+            </div>
+
+            <div class="identity-comparison">
+                <div class="identity-no">
+                    <h4>NO:</h4>
+                    <ul>
+                        <li>Email address</li>
+                        <li>Phone number</li>
+                        <li>Password</li>
+                        <li>Recovery option</li>
+                    </ul>
+                </div>
+                <div class="identity-yes">
+                    <h4>YES:</h4>
+                    <ul>
+                        <li>A cryptographic key generated on your device</li>
+                        <li>Never sent anywhere</li>
+                        <li>Yours forever (or until you lose it)</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="identity-warning">
+                <h4>&#9888; IMPORTANT:</h4>
+                <p><strong>Lose your key &#8594; Lose your identity.</strong></p>
+                <p>There is no "forgot password."<br>
+                There is no recovery.<br>
+                There is no one to call.</p>
+                <p class="warning-reason">This is the cost of no one else controlling it.</p>
+            </div>
+
+            <div class="identity-tradeoff">
+                <p>We're honest about this tradeoff:</p>
+                <ul>
+                    <li>&#10004; No one can lock you out</li>
+                    <li>&#10004; No one can impersonate you</li>
+                    <li>&#10060; No one can recover you</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <!-- Swimmer Levels -->
+    <section id="swimmer-levels" class="demo-section levels-section">
+        <div class="container">
+            <h2 class="section-title">How Swimchain Recognizes Contribution</h2>
+            <p class="section-subtitle">Most platforms reward posting. We reward <strong>hosting</strong>.</p>
+
+            <div class="levels-progression">
+                <div class="level-item">
+                    <span class="level-emoji">&#127946;</span>
+                    <span class="level-name">New Swimmer</span>
+                    <span class="level-desc">Just joined, no hosting history</span>
+                    <span class="level-benefits">Can post, join spaces</span>
+                </div>
+                <div class="level-arrow">&#8595;</div>
+                <div class="level-item">
+                    <span class="level-emoji">&#127946;&#8205;&#9794;&#65039;</span>
+                    <span class="level-name">Regular</span>
+                    <span class="level-desc">7+ days, any bandwidth served</span>
+                    <span class="level-benefits">10% faster posts</span>
+                </div>
+                <div class="level-arrow">&#8595;</div>
+                <div class="level-item">
+                    <span class="level-emoji">&#127946;&#8205;&#9792;&#65039;</span>
+                    <span class="level-name">Resident</span>
+                    <span class="level-desc">30+ days, 10GB+ served, 50%+ uptime</span>
+                    <span class="level-benefits">20% faster posts, can sponsor newcomers, can post images</span>
+                </div>
+                <div class="level-arrow">&#8595;</div>
+                <div class="level-item">
+                    <span class="level-emoji">&#128733;</span>
+                    <span class="level-name">Lifeguard</span>
+                    <span class="level-desc">50GB+/month served, 70%+ uptime</span>
+                    <span class="level-benefits">30% faster posts, can counter-attest spam flags, content lives 1.5x longer</span>
+                </div>
+                <div class="level-arrow">&#8595;</div>
+                <div class="level-item">
+                    <span class="level-emoji">&#9875;</span>
+                    <span class="level-name">Anchor</span>
+                    <span class="level-desc">200GB+/month served, 90%+ uptime</span>
+                    <span class="level-benefits">40% faster posts, create spaces, content lives 1.75x longer</span>
+                </div>
+                <div class="level-arrow">&#8595;</div>
+                <div class="level-item">
+                    <span class="level-emoji">&#127963;</span>
+                    <span class="level-name">Pool Keeper</span>
+                    <span class="level-desc">500GB+/month served, 95%+ uptime</span>
+                    <span class="level-benefits">50% faster posts, network backbone, content lives 2x longer</span>
+                </div>
+            </div>
+
+            <div class="levels-benefits-box">
+                <h3>The Trade: Give Bandwidth, Get Speed</h3>
+                <p>This isn't a gift - it's a fair exchange. You serve the network, the network serves you back.</p>
+                <ul class="benefits-list">
+                    <li><strong>Faster Posts:</strong> Up to 50% PoW reduction (15 seconds instead of 30)</li>
+                    <li><strong>Longer Content:</strong> Up to 2x decay extension (your posts live longer)</li>
+                    <li><strong>More Trust:</strong> Higher levels can sponsor newcomers and moderate spam</li>
+                </ul>
+            </div>
+
+            <div class="levels-clarification">
+                <div class="clarification-box not-box">
+                    <h4>What this ISN'T:</h4>
+                    <ul>
+                        <li>A token</li>
+                        <li>Something you can buy</li>
+                        <li>Transferable</li>
+                        <li>Rewards for posting</li>
+                    </ul>
+                </div>
+                <div class="clarification-box is-box">
+                    <h4>What this IS:</h4>
+                    <ul>
+                        <li>Recognition for hosting work</li>
+                        <li>Earned status (not purchased)</li>
+                        <li>Non-transferable (tied to your identity)</li>
+                        <li>Verified by peer attestation</li>
+                    </ul>
+                </div>
+            </div>
+
+            <p class="levels-insight">
+                An active poster with no hosting stays at Regular forever.<br>
+                <strong>A silent node serving 500GB/month is a Pool Keeper.</strong><br>
+                The network needs HOSTING. That's what we reward.<br>
+                <em>Treading water - the ongoing effort to stay present and keep content afloat.</em>
+            </p>
+        </div>
+    </section>
+
+    <!-- Sponsorship Section -->
+    <section id="sponsorship" class="demo-section sponsorship-section">
+        <div class="container">
+            <h2 class="section-title">How New Swimmers Join</h2>
+            <p class="section-subtitle">Someone has to vouch for you. That's the point.</p>
+
+            <div class="sponsorship-explainer">
+                <div class="sponsor-flow">
+                    <div class="sponsor-step">
+                        <span class="sponsor-icon">&#127946;</span>
+                        <h4>You want to join</h4>
+                        <p>Create your identity (30 seconds of PoW)</p>
+                    </div>
+                    <div class="sponsor-arrow">&#8594;</div>
+                    <div class="sponsor-step">
+                        <span class="sponsor-icon">&#127946;&#8205;&#9792;&#65039;</span>
+                        <h4>Find a sponsor</h4>
+                        <p>A Resident+ member vouches for you</p>
+                    </div>
+                    <div class="sponsor-arrow">&#8594;</div>
+                    <div class="sponsor-step">
+                        <span class="sponsor-icon">&#127754;</span>
+                        <h4>Start swimming</h4>
+                        <p>You're in. Now earn your own stripes.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sponsorship-why">
+                <h3>Why Sponsorship?</h3>
+                <p>Every identity needs someone to vouch for it. This creates accountability chains:</p>
+                <ul class="sponsor-benefits">
+                    <li><strong>Sybil Resistance:</strong> Can't create thousands of bots - each needs a real sponsor</li>
+                    <li><strong>Accountability:</strong> If your sponsee spams, your reputation takes a hit too</li>
+                    <li><strong>Natural Growth:</strong> Networks grow through real social connections, not bot farms</li>
+                    <li><strong>No KYC:</strong> Pseudonymous but accountable - the sponsor knows you're real</li>
+                </ul>
+            </div>
+
+            <div class="sponsorship-consequence">
+                <h4>The Consequence Chain</h4>
+                <p>If someone you sponsor misbehaves:</p>
+                <ul class="consequence-list">
+                    <li>Their sponsor (you) gets 100% of the consequence</li>
+                    <li>Your sponsor gets 50% of the consequence</li>
+                    <li>Beyond 2 hops: negligible</li>
+                </ul>
+                <p class="consequence-insight">This makes sponsors careful. No one vouches for strangers lightly.</p>
+            </div>
+
+            <div class="sponsorship-onramp">
+                <h3>Don't Know Anyone?</h3>
+                <p>Residents and above can post <strong>public sponsorship offers</strong>:</p>
+                <ul class="onramp-list">
+                    <li>Browse available offers in community directories</li>
+                    <li>Some require higher PoW, some require applications</li>
+                    <li>All require the sponsor to approve you (no automated claiming)</li>
+                    <li>Probationary sponsorships let sponsors take chances with reduced risk</li>
+                </ul>
+                <p class="onramp-honest">It's not instant. It's not easy. That's intentional - friction filters for commitment.</p>
+            </div>
+
+            <div class="sponsorship-genesis">
+                <h4>The Bootstrapping Problem</h4>
+                <p>100 genesis identities were created at launch. They're the roots of the sponsorship forest - no special powers, just the starting points. Everyone else grows from there.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Community Moderation Section -->
+    <section class="demo-section attestation-section">
+        <div class="container">
+            <h2 class="section-title">Community Moderation Without Moderators</h2>
+            <p class="section-subtitle">Spam fades fast. Mistakes can be fixed. No one has the "delete" button.</p>
+
+            <div class="attestation-flow">
+                <div class="attest-scenario">
+                    <h3>When spam appears:</h3>
+                    <div class="attest-steps">
+                        <div class="attest-step">
+                            <span class="step-num">1</span>
+                            <p>3 Residents from different sponsor trees attest "this is spam"</p>
+                        </div>
+                        <div class="attest-arrow">&#8595;</div>
+                        <div class="attest-step">
+                            <span class="step-num">2</span>
+                            <p>Content switches to accelerated decay (4-hour half-life)</p>
+                        </div>
+                        <div class="attest-arrow">&#8595;</div>
+                        <div class="attest-step">
+                            <span class="step-num">3</span>
+                            <p>Spam fades away quickly, but isn't deleted instantly</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="attest-scenario counter-scenario">
+                    <h3>When it's a mistake:</h3>
+                    <div class="attest-steps">
+                        <div class="attest-step">
+                            <span class="step-num">1</span>
+                            <p>5 Lifeguards counter-attest "this isn't spam"</p>
+                        </div>
+                        <div class="attest-arrow">&#8595;</div>
+                        <div class="attest-step">
+                            <span class="step-num">2</span>
+                            <p>Flag is cancelled, content returns to normal decay</p>
+                        </div>
+                        <div class="attest-arrow">&#8595;</div>
+                        <div class="attest-step">
+                            <span class="step-num">3</span>
+                            <p>Reputation bonus for successful counter-attesters</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="attest-principles">
+                <div class="principle">
+                    <h4>The Judges Are Judged</h4>
+                    <p>Every attestation is public and permanent. Abuse the system, and your pattern becomes visible. Bad-faith attesters damage their own reputation.</p>
+                </div>
+                <div class="principle">
+                    <h4>Acceleration, Not Removal</h4>
+                    <p>Content is pushed toward its natural death, not executed. There's always a window for counter-action, archiving, or forking away.</p>
+                </div>
+                <div class="principle">
+                    <h4>Fork As Exit</h4>
+                    <p>If attestation becomes oppressive, fork the network. Take your community and make new rules. The ultimate check on any abuse mechanism.</p>
+                </div>
+            </div>
+
+            <div class="attest-requirements">
+                <h3>Who Can Attest?</h3>
+                <table class="attest-table">
+                    <tr>
+                        <th>Action</th>
+                        <th>Requirement</th>
+                        <th>Daily Limit</th>
+                    </tr>
+                    <tr>
+                        <td>Flag spam</td>
+                        <td>Resident+ (30 days, 10GB served)</td>
+                        <td>10 attestations</td>
+                    </tr>
+                    <tr>
+                        <td>Counter-attest</td>
+                        <td>Lifeguard+ (50GB/mo, 70% uptime)</td>
+                        <td>Unlimited</td>
+                    </tr>
+                    <tr>
+                        <td>Flag illegal content</td>
+                        <td>Resident+</td>
+                        <td>Rare (hash-based)</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- Honest Tradeoffs Section -->
+    <section id="tradeoffs" class="tradeoffs-section">
+        <div class="container">
+            <h2 class="section-title">Honest Tradeoffs</h2>
+            <p class="section-subtitle">This is what you get. This is what it costs.</p>
+
+            <div class="tradeoffs-table">
+                <div class="tradeoff-row header-row">
+                    <span class="gain-header">What You Gain</span>
+                    <span class="cost-header">What It Costs</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">No ads, ever</span>
+                    <span class="cost">Posts take ~30 seconds</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">No algorithm</span>
+                    <span class="cost">You choose what to see</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">No company controlling you</span>
+                    <span class="cost">No company to complain to</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">Content fades naturally</span>
+                    <span class="cost">Your masterpiece might fade too (if no one engages)</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">Can take community and leave</span>
+                    <span class="cost">Need to convince them to come with you</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">Pseudonymous identity</span>
+                    <span class="cost">Lose your key = lose identity</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">No bots or Sybil attacks</span>
+                    <span class="cost">Someone must sponsor you to join</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">Community-driven moderation</span>
+                    <span class="cost">No central "report" button</span>
+                </div>
+                <div class="tradeoff-row">
+                    <span class="gain">Hosting = faster posting</span>
+                    <span class="cost">You contribute bandwidth to benefit</span>
+                </div>
+            </div>
+
+            <div class="tradeoffs-statement">
+                <p><strong>Swimchain trades convenience for freedom.</strong></p>
+                <p>We're not trying to be easier than Instagram. We're trying to be impossible to corrupt.</p>
+                <p class="tradeoffs-honest">If frictionless posting matters more to you than independence, that's valid. This isn't for everyone.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Platform Comparison -->
+    <section class="comparison-section">
+        <div class="container">
+            <h2 class="section-title">The Comparison That Matters</h2>
+
+            <div class="comparison-grid">
+                <div class="comparison-col instagram-col">
+                    <h3>Instagram</h3>
+                    <ul>
+                        <li>Open app</li>
+                        <li>&#8595;</li>
+                        <li>See algorithmic feed</li>
+                        <li>&#8595;</li>
+                        <li>See ads every 4 posts</li>
+                        <li>&#8595;</li>
+                        <li>Tap to post instantly</li>
+                        <li>&#8595;</li>
+                        <li>Post lives forever</li>
+                        <li>&#8595;</li>
+                        <li>Platform owns your data</li>
+                        <li>&#8595;</li>
+                        <li>Can be locked out anytime</li>
+                        <li>&#8595;</li>
+                        <li>No way to leave with friends</li>
+                    </ul>
+                </div>
+                <div class="comparison-col swimchain-col">
+                    <h3>Swimchain</h3>
+                    <ul>
+                        <li>Open app</li>
+                        <li>&#8595;</li>
+                        <li>Navigate to a space</li>
+                        <li>&#8595;</li>
+                        <li>See no ads ever</li>
+                        <li>&#8595;</li>
+                        <li>Wait 30 seconds</li>
+                        <li>&#8595;</li>
+                        <li>Post fades without love</li>
+                        <li>&#8595;</li>
+                        <li>You own your keys</li>
+                        <li>&#8595;</li>
+                        <li>Cannot be locked out</li>
+                        <li>&#8595;</li>
+                        <li>Fork and take everyone</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="comparison-metrics">
+                <div class="metric">
+                    <span class="metric-icon">&#8987;</span>
+                    <span class="metric-label">Time to get addicted:</span>
+                    <span class="metric-insta">~15 minutes</span>
+                    <span class="metric-swim">(much harder)</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-icon">&#128176;</span>
+                    <span class="metric-label">How you pay:</span>
+                    <span class="metric-insta">Attention + data</span>
+                    <span class="metric-swim">30 seconds of waiting</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-icon">&#128682;</span>
+                    <span class="metric-label">Can you leave?</span>
+                    <span class="metric-insta">Not really</span>
+                    <span class="metric-swim">Yes, with your people</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Who Is This For Section -->
+    <section id="audience-section" class="audience-section">
+        <div class="container">
+            <h2 class="section-title">Who Is This For?</h2>
+
+            <div class="audience-grid">
+                <div class="audience-box love-box">
+                    <h3>Who Will Love This:</h3>
+                    <ul>
+                        <li><strong>The Privacy-Conscious</strong><br>People who already use Signal, VPNs, or privacy browsers</li>
+                        <li><strong>The Burned</strong><br>People who watched their community get destroyed by a platform decision</li>
+                        <li><strong>The Thoughtful</strong><br>People who want to slow down their social media consumption</li>
+                        <li><strong>The Community Builders</strong><br>People who want to own their space, not rent it</li>
+                        <li><strong>The Skeptics</strong><br>People who see through "decentralization theater"</li>
+                    </ul>
+                </div>
+
+                <div class="audience-box avoid-box">
+                    <h3>Who Should Probably Stay Away:</h3>
+                    <ul>
+                        <li><strong>The Scrollers</strong><br>If you love infinite feed, we can't give you that</li>
+                        <li><strong>The Influencers</strong><br>No follower counts, no virality metrics, no clout</li>
+                        <li><strong>The Casual</strong><br>If you just want to check in occasionally, the friction will annoy you</li>
+                        <li><strong>The Instant</strong><br>If waiting 30 seconds is unbearable, this isn't for you</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="audience-statement">
+                <p>This works because people who are here want to be here.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ Section -->
+    <section id="faq" class="faq-section">
+        <div class="container">
+            <h2 class="section-title">Wait, But...</h2>
+
+            <div class="faq-grid">
+                <div class="faq-item">
+                    <h3 class="faq-question">Who runs the servers?</h3>
+                    <div class="faq-answer">
+                        <p><strong>Nobody. There are no servers.</strong></p>
+                        <p>Your app connects directly to other people's apps. Like BitTorrent for conversation.</p>
+                        <p>If every developer quit tomorrow, the network keeps running - because it's just people's phones talking to each other.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <h3 class="faq-question">Isn't this just crypto stuff?</h3>
+                    <div class="faq-answer">
+                        <p><strong>No.</strong> No tokens, no coins, nothing to buy or trade. We use some blockchain-like tech for timestamps, but this is a place to talk, not an investment vehicle.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <h3 class="faq-question">What if I don't know anyone to sponsor me?</h3>
+                    <div class="faq-answer">
+                        <p>Residents and higher can post <strong>public sponsorship offers</strong> for newcomers:</p>
+                        <ul>
+                            <li>Browse community directories for open offers</li>
+                            <li>Some require higher PoW commitment, some just an application</li>
+                            <li>Probationary sponsorships let sponsors take chances on unknowns</li>
+                        </ul>
+                        <p>Yes, it takes effort. That's the point. The friction filters for people who actually want to participate, not drive-by accounts.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <h3 class="faq-question">What about illegal content/harassment?</h3>
+                    <div class="faq-answer">
+                        <p><strong>Illegal content</strong> (CSAM, terrorism) is blocked at the protocol level using industry-standard hash databases. Nodes refuse to store or serve matching hashes.</p>
+                        <p><strong>Spam and harassment</strong> uses community attestation:</p>
+                        <ul>
+                            <li>3 Residents from different sponsor trees can flag content as spam</li>
+                            <li>Flagged content decays 6x faster (4-hour half-life instead of days)</li>
+                            <li>5 Lifeguards can counter-attest to cancel false positives</li>
+                            <li>Attesters are visible and accountable - "the judges are judged"</li>
+                        </ul>
+                        <p><strong>The honest truth:</strong> This is acceleration, not removal. Spam fades fast but doesn't vanish instantly. False positives can be rescued. It's not perfect - but it's transparent and auditable, unlike platform moderation decisions made in a black box.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <h3 class="faq-question">Why would I want posts to disappear?</h3>
+                    <div class="faq-answer">
+                        <p><strong>Because permanence is a bug, not a feature.</strong></p>
+                        <ul>
+                            <li>That tweet you regret? Gone.</li>
+                            <li>That argument from 2018? Gone.</li>
+                            <li>Your embarrassing hot take? Gone.</li>
+                        </ul>
+                        <p>Content persists when people care about it. If no one's engaging, why keep it around?</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <h3 class="faq-question">This sounds hard to use.</h3>
+                    <div class="faq-answer">
+                        <p>If you've ever used a forum, you can use this. The main difference is waiting 30 seconds when you post. That's it. The apps handle everything else - syncing, storage, connecting to peers. You just navigate to spaces and talk to people.</p>
+                        <p>Honestly, the hardest part is unlearning the habits from algorithmic feeds. There's no infinite scroll. You actually have to decide what you want to look at. Some people find that refreshing. Others find it annoying. We can't tell you which you'll be.</p>
+                    </div>
+                </div>
+
+                <div class="faq-item">
+                    <h3 class="faq-question">Which interface should I use?</h3>
+                    <div class="faq-answer">
+                        <ul>
+                            <li><strong>New to this?</strong> Start with the Forum client - it's the most complete.</li>
+                            <li><strong>Want it fast?</strong> Microblog is lightweight and quick.</li>
+                            <li><strong>Got a community?</strong> Chat gives real-time vibes.</li>
+                            <li><strong>Just curious?</strong> Search lets you browse without committing.</li>
+                            <li><strong>Developer?</strong> CLI + API - you know what to do.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Technical Section -->
+    <section id="technical" class="technical-section">
+        <div class="container">
+            <h2 class="section-title">Under The Hood</h2>
+            <p class="section-subtitle">For engineers, researchers, and the deeply curious</p>
+
+            <div class="technical-grid">
+                <div class="technical-card whitepaper-card">
+                    <div class="technical-icon">📄</div>
+                    <h3>Academic Whitepaper</h3>
+                    <p>The full technical specification. Formal definitions, security proofs, threat models, and empirical benchmarks from 994+ tests.</p>
+                    <ul class="technical-highlights">
+                        <li>Engagement-weighted decay mechanics</li>
+                        <li>Pooled proof-of-work system</li>
+                        <li>Fork-with-continuity governance</li>
+                        <li>Social Layer contribution tracking</li>
+                    </ul>
+                    <a href="https://github.com/adminwizardtech/swimchain/blob/main/docs/whitepaper-v2.3.md" class="btn btn-secondary" target="_blank">Read Whitepaper (v2.3)</a>
+                </div>
+
+                <div class="technical-card">
+                    <div class="technical-icon">📐</div>
+                    <h3>Protocol Specs</h3>
+                    <p>Twelve specification documents covering identity, content, decay, PoW, spaces, network sync, content distribution, social layer, attestation, sponsorship, and anti-abuse.</p>
+                    <ul class="technical-highlights">
+                        <li>SPEC_09: Social Layer (Swimmer levels, hosting contribution)</li>
+                        <li>SPEC_11: Sponsorship & Access Control (invite trees)</li>
+                        <li>SPEC_12: Anti-Abuse (community attestation)</li>
+                    </ul>
+                    <a href="https://github.com/adminwizardtech/swimchain/tree/main/specs" class="btn btn-outline" target="_blank">View Specs</a>
+                </div>
+
+                <div class="technical-card">
+                    <div class="technical-icon">🔧</div>
+                    <h3>Implementation</h3>
+                    <p>Rust reference implementation with WASM bindings, React hooks, and multiple client interfaces.</p>
+                    <a href="https://github.com/adminwizardtech/swimchain/tree/main/src" class="btn btn-outline" target="_blank">Browse Code</a>
+                </div>
+
+                <div class="technical-card">
+                    <div class="technical-icon">📊</div>
+                    <h3>Benchmarks</h3>
+                    <p>Mobile viability analysis, sync timing, storage measurements. Real numbers, not marketing.</p>
+                    <a href="https://github.com/adminwizardtech/swimchain/tree/main/docs/benchmarks" class="btn btn-outline" target="_blank">See Data</a>
+                </div>
+            </div>
+
+            <div class="technical-honest">
+                <p><strong>What you'll find in the whitepaper:</strong> We don't just tell you what the protocol does. We tell you what it <em>can't</em> do, where we're uncertain, and what claims remain unproven.</p>
+                <p class="technical-quote">"Empirically demonstrated: spam resistance, storage boundedness, mobile viability. Hypotheses requiring validation: PoW deliberation effects, decay health effects, fork governance dynamics."</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta-section">
+        <div class="container">
+            <h2 class="section-title">Ready to Dive In?</h2>
+            <p class="cta-text">This isn't for everyone. And that's the point.</p>
+            <div class="cta-buttons">
+                <a href="https://github.com/adminwizardtech/swimchain" class="btn btn-primary" target="_blank">View on GitHub</a>
+                <a href="#how-it-works" class="btn btn-secondary">Learn More</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container footer-content">
+            <div class="footer-brand">
+                <span class="footer-logo">Swimchain</span>
+                <p>The social network that can't sell you out.</p>
+            </div>
+            <div class="footer-links">
+                <div class="footer-col">
+                    <h4>Learn</h4>
+                    <a href="#how-it-works">How It Works</a>
+                    <a href="#tradeoffs">Tradeoffs</a>
+                    <a href="#faq">FAQ</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Build</h4>
+                    <a href="https://github.com/adminwizardtech/swimchain" target="_blank">GitHub</a>
+                    <a href="https://github.com/adminwizardtech/swimchain/tree/main/specs" target="_blank">Protocol Specs</a>
+                    <a href="https://github.com/adminwizardtech/swimchain/tree/main/docs" target="_blank">Documentation</a>
+                    <a href="https://github.com/adminwizardtech/swimchain/blob/main/docs/whitepaper-v2.3.md" target="_blank">Whitepaper</a>
+                </div>
+                <div class="footer-col">
+                    <h4>Philosophy</h4>
+                    <a href="#tradeoffs">Our Tradeoffs</a>
+                    <a href="#audience-section">Who This Is For</a>
+                </div>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            <p>No company. No investors. Just protocol.</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

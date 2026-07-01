@@ -1,0 +1,61 @@
+/**
+ * RevisionDiff styles - Header and stats above the wiki-diff base.
+ */
+
+.revision-diff__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  background: var(--wiki-bg-secondary);
+  border: 1px solid var(--wiki-border-light);
+  border-bottom: none;
+  border-radius: 2px 2px 0 0;
+  font-size: 0.8rem;
+}
+
+.revision-diff__author {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.revision-diff__label {
+  font-weight: 600;
+  color: var(--wiki-text-muted);
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+}
+
+.revision-diff__name {
+  color: var(--wiki-link);
+}
+
+.revision-diff__stats {
+  display: flex;
+  gap: 0.5rem;
+  font-family: var(--wiki-font-mono);
+  font-size: 0.8rem;
+}
+
+.revision-diff__stat--added {
+  color: #155724;
+}
+
+.revision-diff__stat--removed {
+  color: #721c24;
+}
+
+.wiki-diff__prefix {
+  width: 1rem;
+  text-align: center;
+  flex-shrink: 0;
+  user-select: none;
+  font-family: var(--wiki-font-mono);
+}
+
+.wiki-diff__text {
+  flex: 1;
+  min-width: 0;
+}

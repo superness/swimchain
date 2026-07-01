@@ -1,0 +1,332 @@
+.sponsorship-page {
+  max-width: 800px;
+}
+
+.sponsorship-page h1 {
+  font-size: var(--font-size-2xl, 1.5em);
+  margin-bottom: var(--spacing-lg, 24px);
+}
+
+/* Tabs */
+.sponsorship-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 2px solid var(--color-border, #ddd);
+  margin-bottom: var(--spacing-lg, 24px);
+}
+
+.sponsorship-tab {
+  padding: 10px 20px;
+  font-size: 0.95em;
+  font-weight: 500;
+  color: var(--color-text-secondary, #666);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.sponsorship-tab:hover {
+  color: var(--color-text, #333);
+}
+
+.sponsorship-tab.active {
+  color: var(--color-primary, #2563eb);
+  border-bottom-color: var(--color-primary, #2563eb);
+}
+
+.sponsorship-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  font-size: 0.75em;
+  font-weight: 600;
+  background: var(--color-primary, #2563eb);
+  color: #fff;
+  border-radius: 10px;
+}
+
+/* Tab content */
+.sponsorship-tab-content {
+  min-height: 200px;
+}
+
+/* Find tab */
+.sponsorship-find-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.sponsorship-find-desc,
+.sponsorship-my-offers-desc {
+  color: var(--color-text-secondary, #666);
+  font-size: 0.9em;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.sponsorship-pending-notice {
+  background: var(--color-info-bg, #d1ecf1);
+  color: var(--color-info-text, #0c5460);
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  margin-bottom: 16px;
+}
+
+.sponsorship-pending-notice code {
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+/* How it works */
+.sponsorship-how-it-works {
+  background: var(--color-bg-secondary, #f5f5f5);
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+
+.sponsorship-how-it-works h3 {
+  font-size: 1em;
+  margin: 0 0 10px 0;
+}
+
+.sponsorship-steps {
+  margin: 0 0 12px 0;
+  padding-left: 20px;
+  font-size: 0.9em;
+  line-height: 1.7;
+  color: var(--color-text-secondary, #555);
+}
+
+.sponsorship-pubkey-share {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--color-border, #ddd);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+.sponsorship-pubkey-label {
+  font-size: 0.85em;
+  color: var(--color-text-secondary, #666);
+  white-space: nowrap;
+}
+
+.sponsorship-pubkey-code {
+  font-family: monospace;
+  font-size: 0.8em;
+  word-break: break-all;
+  flex: 1;
+  min-width: 0;
+}
+
+/* My Offers tab */
+.sponsorship-my-offers-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  gap: 16px;
+}
+
+.sponsorship-my-offers-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Shared states */
+.sponsorship-error {
+  background: var(--color-error-bg, #f8d7da);
+  color: var(--color-error, #dc3545);
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  margin-bottom: 16px;
+}
+
+.sponsorship-loading {
+  color: var(--color-text-secondary, #666);
+  font-size: 0.9em;
+  padding: 24px 0;
+  text-align: center;
+}
+
+.sponsorship-empty {
+  color: var(--color-text-secondary, #888);
+  font-size: 0.9em;
+  padding: 32px 0;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.sponsorship-empty strong {
+  display: block;
+  color: var(--color-text, #333);
+  font-size: 1.1em;
+  margin-bottom: 8px;
+}
+
+.sponsorship-empty p {
+  margin: 0;
+  max-width: 400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.sponsorship-offer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.sponsorship-load-more {
+  display: block;
+  margin: 16px auto 0;
+}
+
+/* Detail view */
+.sponsorship-back {
+  margin-bottom: 16px;
+}
+
+.sponsorship-detail h2 {
+  font-size: 1.2em;
+  margin-bottom: 16px;
+}
+
+.sponsorship-detail-info {
+  background: var(--color-bg-secondary, #f5f5f5);
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 20px;
+}
+
+.sponsorship-detail-row {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 0.9em;
+}
+
+.sponsorship-detail-label {
+  color: var(--color-text-secondary, #666);
+  min-width: 80px;
+}
+
+.sponsorship-detail-row code {
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+/* Claims */
+.sponsorship-claims-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sponsorship-claim-card {
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--color-surface, #fff);
+}
+
+.sponsorship-claim-info {
+  margin-bottom: 12px;
+}
+
+.sponsorship-claim-row {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 0.9em;
+}
+
+.sponsorship-claim-label {
+  color: var(--color-text-secondary, #666);
+  min-width: 90px;
+}
+
+.sponsorship-claim-pubkey {
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+.sponsorship-claim-application {
+  margin-top: 8px;
+}
+
+.sponsorship-claim-text {
+  margin: 4px 0 0 0;
+  font-size: 0.9em;
+  line-height: 1.4;
+  background: var(--color-bg-secondary, #f5f5f5);
+  border-radius: 4px;
+  padding: 8px 12px;
+  white-space: pre-wrap;
+}
+
+.sponsorship-claim-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  .sponsorship-detail-info {
+    background: var(--color-bg-secondary, #2a2a2a);
+    border-color: var(--color-border, #444);
+  }
+
+  .sponsorship-claim-card {
+    border-color: var(--color-border, #444);
+    background: var(--color-surface, #1e1e1e);
+  }
+
+  .sponsorship-claim-text {
+    background: var(--color-bg-secondary, #2a2a2a);
+  }
+
+  .sponsorship-pending-notice {
+    background: #0a3d5c;
+    color: #b8daff;
+  }
+
+  .sponsorship-how-it-works {
+    background: var(--color-bg-secondary, #2a2a2a);
+    border-color: var(--color-border, #444);
+  }
+
+  .sponsorship-empty strong {
+    color: var(--color-text, #e0e0e0);
+  }
+}
+
+@media (max-width: 600px) {
+  .sponsorship-tabs {
+    overflow-x: auto;
+  }
+
+  .sponsorship-find-header,
+  .sponsorship-my-offers-header {
+    flex-direction: column;
+  }
+}

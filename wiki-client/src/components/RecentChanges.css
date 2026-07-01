@@ -1,0 +1,8 @@
+/**
+ * RecentChanges styles - Extends base .wiki-recent-change from wiki.css.
+ * Adds alternating row colors.
+ */
+
+.wiki-recent-change--alt {
+  background: var(--wiki-bg-secondary);
+}

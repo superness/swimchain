@@ -1,0 +1,107 @@
+.offer-card {
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 12px;
+  background: var(--color-surface, #fff);
+}
+
+.offer-card-expired {
+  opacity: 0.6;
+}
+
+.offer-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.offer-card-sponsor {
+  font-family: monospace;
+  font-size: 0.9em;
+  color: var(--color-text-secondary, #666);
+}
+
+.offer-card-type {
+  font-size: 0.85em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.offer-card-type-probationary {
+  background: var(--color-warning-bg, #fff3cd);
+  color: var(--color-warning, #856404);
+}
+
+.offer-card-type-open {
+  background: var(--color-success-bg, #d4edda);
+  color: var(--color-success, #155724);
+}
+
+.offer-card-type-conditional {
+  background: var(--color-info-bg, #d1ecf1);
+  color: var(--color-info, #0c5460);
+}
+
+.offer-card-details {
+  margin-bottom: 12px;
+}
+
+.offer-card-row {
+  display: flex;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 0.9em;
+}
+
+.offer-card-label {
+  color: var(--color-text-secondary, #666);
+  min-width: 100px;
+}
+
+.offer-card-value {
+  color: var(--color-text, #333);
+}
+
+.offer-card-pending {
+  color: var(--color-primary, #2563eb);
+  font-weight: 600;
+}
+
+.offer-card-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.offer-card-expired-label,
+.offer-card-full-label {
+  font-size: 0.85em;
+  color: var(--color-text-secondary, #999);
+  font-style: italic;
+}
+
+.btn-danger {
+  color: var(--color-error, #dc3545);
+}
+
+@media (prefers-color-scheme: dark) {
+  .offer-card {
+    border-color: var(--color-border, #444);
+    background: var(--color-surface, #1e1e1e);
+  }
+
+  .offer-card-sponsor {
+    color: var(--color-text-secondary, #aaa);
+  }
+
+  .offer-card-label {
+    color: var(--color-text-secondary, #aaa);
+  }
+
+  .offer-card-value {
+    color: var(--color-text, #eee);
+  }
+}

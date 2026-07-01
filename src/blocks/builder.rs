@@ -1,0 +1,1600 @@
+//! Block Builder for accumulating actions and forming blocks (SPEC_08 §6)
+//!
+//! The BlockBuilder accumulates actions and forms blocks when conditions are met:
+//! - Content blocks: formed per thread when actions accumulate
+//! - Space blocks: formed per space when content blocks accumulate
+//! - Root blocks: formed when total PoW reaches ~30 seconds
+//!
+//! # Usage
+//!
+//! ```ignore
+//! let mut builder = BlockBuilder::new(30); // 30s difficulty target
+//!
+//! // Add actions for a thread
+//! builder.add_action(thread_id, space_id, action);
+//!
+//! // Check if ready to form root block
+//! if builder.should_form_root() {
+//!     let (root, spaces, contents) = builder.build_root_block(timestamp);
+//! }
+//! ```
+
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::time::Instant;
+
+use lru::LruCache;
+
+use crate::crypto::sha256;
+use super::action::Action;
+use super::branch_path::BranchPath;
+use super::content_block::{ContentBlock, SpaceCreationMetadata};
+use super::root_block::RootBlock;
+use super::space_block::SpaceBlock;
+
+/// Thread identifier
+pub type ThreadId = [u8; 32];
+/// Space identifier
+pub type SpaceId = [u8; 32];
+
+/// Timestamp quantization window in seconds.
+/// Blocks within the same window will have the same timestamp,
+/// ensuring deterministic block hashes across nodes.
+pub const TIMESTAMP_QUANTUM_SECS: u64 = 10;
+
+/// Lazy block formation wait time in milliseconds.
+/// When threshold is crossed, wait this long for someone else's block
+/// before forming our own. This reduces churn by letting nodes that
+/// already formed a block propagate it before we duplicate the work.
+pub const LAZY_BLOCK_WAIT_MS: u64 = 30_000; // 30 seconds
+
+/// Maximum capacity of seen_actions LRU cache.
+/// At 32 bytes per hash, 100,000 entries = ~3.2MB.
+/// This bounds memory growth from ~46MB/day to a fixed ~3.2MB.
+pub const SEEN_ACTIONS_CAPACITY: usize = 100_000;
+
+/// Maximum total actions allowed in the mempool (H-BLOCK-2).
+/// At ~1KB per action, 10,000 entries = ~10MB.
+/// Prevents memory exhaustion attacks from flooding the mempool.
+pub const MAX_MEMPOOL_ACTIONS: usize = 10_000;
+
+/// Maximum actions per space in the mempool (H-BLOCK-2).
+/// Prevents a single space from monopolizing the mempool.
+/// Set to 20% of total capacity.
+pub const MAX_ACTIONS_PER_SPACE: usize = 2_000;
+
+/// Pending thread with accumulated actions
+#[derive(Debug, Clone)]
+struct PendingThread {
+    /// Thread root ID
+    thread_id: ThreadId,
+    /// Space this thread belongs to
+    space_id: SpaceId,
+    /// Accumulated actions
+    actions: Vec<Action>,
+    /// Branch path for this thread
+    branch_path: BranchPath,
+    /// Previous content block hash (for chaining)
+    prev_content_hash: Option<[u8; 32]>,
+    /// Optional space metadata (for CreateSpace actions)
+    space_metadata: Option<SpaceCreationMetadata>,
+}
+
+impl PendingThread {
+    fn new(thread_id: ThreadId, space_id: SpaceId, branch_path: BranchPath) -> Self {
+        Self {
+            thread_id,
+            space_id,
+            actions: Vec::new(),
+            branch_path,
+            prev_content_hash: None,
+            space_metadata: None,
+        }
+    }
+
+    fn total_pow(&self) -> u64 {
+        self.actions.iter().map(|a| a.pow_work).sum()
+    }
+}
+
+/// Block builder for accumulating actions and forming blocks
+pub struct BlockBuilder {
+    /// Pending actions per thread
+    threads: HashMap<ThreadId, PendingThread>,
+    /// Difficulty target (seconds of PoW for root block)
+    difficulty_target: u64,
+    /// Current chain height
+    current_height: u64,
+    /// Previous root block hash
+    prev_root_hash: [u8; 32],
+    /// Previous root block's cumulative PoW (for fork resolution)
+    prev_cumulative_pow: u64,
+    /// Previous space block hashes per space
+    prev_space_hashes: HashMap<SpaceId, [u8; 32]>,
+    /// Seen action hashes for deduplication (mempool gossip).
+    /// Uses LRU cache to bound memory growth (H-BLOCK-1).
+    seen_actions: LruCache<[u8; 32], ()>,
+    /// When we started waiting for someone else's block (lazy formation)
+    waiting_since: Option<Instant>,
+    /// Action hash -> (thread_id, index) for Replace-In-Mempool lookups
+    action_locations: HashMap<[u8; 32], (ThreadId, usize)>,
+    /// Per-space action counts for enforcing MAX_ACTIONS_PER_SPACE (H-BLOCK-2)
+    space_action_counts: HashMap<SpaceId, usize>,
+    /// Total action count for enforcing MAX_MEMPOOL_ACTIONS (H-BLOCK-2)
+    total_action_count: usize,
+}
+
+impl BlockBuilder {
+    /// Create a new block builder
+    ///
+    /// # Arguments
+    /// * `difficulty_target` - Target PoW in seconds for root block formation
+    pub fn new(difficulty_target: u64) -> Self {
+        Self {
+            threads: HashMap::new(),
+            difficulty_target,
+            current_height: 0,
+            prev_root_hash: [0u8; 32],
+            prev_cumulative_pow: 0,
+            prev_space_hashes: HashMap::new(),
+            seen_actions: LruCache::new(NonZeroUsize::new(SEEN_ACTIONS_CAPACITY).unwrap()),
+            waiting_since: None,
+            action_locations: HashMap::new(),
+            space_action_counts: HashMap::new(),
+            total_action_count: 0,
+        }
+    }
+
+    /// Create builder starting from an existing chain state
+    pub fn from_chain_state(
+        difficulty_target: u64,
+        height: u64,
+        prev_root_hash: [u8; 32],
+        prev_cumulative_pow: u64,
+    ) -> Self {
+        Self {
+            threads: HashMap::new(),
+            difficulty_target,
+            current_height: height,
+            prev_root_hash,
+            prev_cumulative_pow,
+            prev_space_hashes: HashMap::new(),
+            seen_actions: LruCache::new(NonZeroUsize::new(SEEN_ACTIONS_CAPACITY).unwrap()),
+            waiting_since: None,
+            action_locations: HashMap::new(),
+            space_action_counts: HashMap::new(),
+            total_action_count: 0,
+        }
+    }
+
+    /// Update chain tip (for syncing to a new best chain)
+    pub fn sync_to_chain_tip(&mut self, height: u64, tip_hash: [u8; 32], cumulative_pow: u64) {
+        self.current_height = height;
+        self.prev_root_hash = tip_hash;
+        self.prev_cumulative_pow = cumulative_pow;
+    }
+
+    /// Compute a unique hash for an action (for deduplication)
+    ///
+    /// Hash is computed from: actor || timestamp || action_type || content_hash
+    #[must_use]
+    pub fn action_hash(action: &Action) -> [u8; 32] {
+        let mut data = Vec::with_capacity(73); // 32 + 8 + 1 + 32
+        data.extend_from_slice(&action.actor);
+        data.extend_from_slice(&action.timestamp.to_be_bytes());
+        data.push(action.action_type as u8);
+        if let Some(hash) = &action.content_hash {
+            data.extend_from_slice(hash);
+        } else {
+            data.extend_from_slice(&[0u8; 32]);
+        }
+        sha256(&data)
+    }
+
+    /// Evict the action with lowest PoW work from a specific space (H-BLOCK-2)
+    ///
+    /// Returns the evicted action's PoW work value, or None if the space is empty.
+    /// This is called when a space exceeds MAX_ACTIONS_PER_SPACE.
+    fn evict_lowest_pow_from_space(&mut self, space_id: &SpaceId) -> Option<u64> {
+        // Find the thread and action index with lowest PoW in this space
+        let mut lowest: Option<(ThreadId, usize, u64, [u8; 32])> = None;
+
+        for thread in self.threads.values() {
+            if thread.space_id != *space_id {
+                continue;
+            }
+            for (idx, action) in thread.actions.iter().enumerate() {
+                // Skip already-invalidated actions (pow_work == 0 from RIM)
+                if action.pow_work == 0 {
+                    continue;
+                }
+                let dominated = lowest
+                    .as_ref()
+                    .map(|(_, _, pow, _)| action.pow_work < *pow)
+                    .unwrap_or(true);
+                if dominated {
+                    let hash = Self::action_hash(action);
+                    lowest = Some((thread.thread_id, idx, action.pow_work, hash));
+                }
+            }
+        }
+
+        let (thread_id, action_idx, evicted_pow, action_hash) = lowest?;
+
+        // Mark the action as evicted (set pow_work to 0, will be filtered in block building)
+        if let Some(thread) = self.threads.get_mut(&thread_id) {
+            if action_idx < thread.actions.len() {
+                thread.actions[action_idx].pow_work = 0;
+                thread.actions[action_idx].content_hash = None;
+            }
+        }
+
+        // Remove from tracking structures
+        self.seen_actions.pop(&action_hash);
+        self.action_locations.remove(&action_hash);
+
+        // Decrement counts
+        if let Some(count) = self.space_action_counts.get_mut(space_id) {
+            *count = count.saturating_sub(1);
+        }
+        self.total_action_count = self.total_action_count.saturating_sub(1);
+
+        log::info!(
+            "[MEMPOOL] Evicted lowest-PoW action (pow={}) from space {} (space at capacity)",
+            evicted_pow,
+            hex::encode(&space_id[..8])
+        );
+
+        Some(evicted_pow)
+    }
+
+    /// Evict the action with lowest PoW work from the entire mempool (H-BLOCK-2)
+    ///
+    /// Returns the evicted action's PoW work value, or None if the mempool is empty.
+    /// This is called when total mempool exceeds MAX_MEMPOOL_ACTIONS.
+    fn evict_lowest_pow_global(&mut self) -> Option<u64> {
+        // Find the action with lowest PoW across all threads
+        let mut lowest: Option<(ThreadId, SpaceId, usize, u64, [u8; 32])> = None;
+
+        for thread in self.threads.values() {
+            for (idx, action) in thread.actions.iter().enumerate() {
+                // Skip already-invalidated actions (pow_work == 0 from RIM)
+                if action.pow_work == 0 {
+                    continue;
+                }
+                let dominated = lowest
+                    .as_ref()
+                    .map(|(_, _, _, pow, _)| action.pow_work < *pow)
+                    .unwrap_or(true);
+                if dominated {
+                    let hash = Self::action_hash(action);
+                    lowest = Some((thread.thread_id, thread.space_id, idx, action.pow_work, hash));
+                }
+            }
+        }
+
+        let (thread_id, space_id, action_idx, evicted_pow, action_hash) = lowest?;
+
+        // Mark the action as evicted (set pow_work to 0, will be filtered in block building)
+        if let Some(thread) = self.threads.get_mut(&thread_id) {
+            if action_idx < thread.actions.len() {
+                thread.actions[action_idx].pow_work = 0;
+                thread.actions[action_idx].content_hash = None;
+            }
+        }
+
+        // Remove from tracking structures
+        self.seen_actions.pop(&action_hash);
+        self.action_locations.remove(&action_hash);
+
+        // Decrement counts
+        if let Some(count) = self.space_action_counts.get_mut(&space_id) {
+            *count = count.saturating_sub(1);
+        }
+        self.total_action_count = self.total_action_count.saturating_sub(1);
+
+        log::info!(
+            "[MEMPOOL] Evicted lowest-PoW action (pow={}) globally (mempool at capacity)",
+            evicted_pow
+        );
+
+        Some(evicted_pow)
+    }
+
+    /// Add an action for a thread
+    ///
+    /// Returns true if the action was added, false if it was a duplicate or
+    /// replacement failed validation.
+    ///
+    /// # Replace-In-Mempool (RIM)
+    ///
+    /// If `action.replaces_pending` is set, this action will replace the
+    /// specified pending action if:
+    /// - The target action exists in the mempool
+    /// - Both actions are from the same author
+    ///
+    /// This enables coalescing create+edit into a single on-chain action,
+    /// reducing chain bloat when users quickly edit their content.
+    ///
+    /// # Arguments
+    /// * `thread_id` - Thread identifier (content hash of thread root)
+    /// * `space_id` - Space this thread belongs to
+    /// * `action` - The action to add
+    /// * `branch_path` - Branch path for tree placement
+    pub fn add_action(
+        &mut self,
+        thread_id: ThreadId,
+        space_id: SpaceId,
+        action: Action,
+        branch_path: BranchPath,
+    ) -> bool {
+        // Check for duplicate using action hash
+        let hash = Self::action_hash(&action);
+        if self.seen_actions.contains(&hash) {
+            return false; // Already have this action
+        }
+
+        // Handle Replace-In-Mempool (RIM)
+        if let Some(replaces_hash) = action.replaces_pending {
+            return self.replace_action(thread_id, space_id, action, branch_path, replaces_hash);
+        }
+
+        let incoming_pow = action.pow_work;
+
+        // H-BLOCK-2: Enforce per-space limit
+        let space_count = self.space_action_counts.get(&space_id).copied().unwrap_or(0);
+        if space_count >= MAX_ACTIONS_PER_SPACE {
+            // Evict lowest PoW action from this space
+            if let Some(evicted_pow) = self.evict_lowest_pow_from_space(&space_id) {
+                // Only accept if incoming action has higher PoW than evicted
+                if incoming_pow <= evicted_pow {
+                    log::debug!(
+                        "[MEMPOOL] Rejected action (pow={}) - lower than evicted (pow={}) for space {}",
+                        incoming_pow,
+                        evicted_pow,
+                        hex::encode(&space_id[..8])
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // H-BLOCK-2: Enforce global mempool limit
+        if self.total_action_count >= MAX_MEMPOOL_ACTIONS {
+            // Evict lowest PoW action globally
+            if let Some(evicted_pow) = self.evict_lowest_pow_global() {
+                // Only accept if incoming action has higher PoW than evicted
+                if incoming_pow <= evicted_pow {
+                    log::debug!(
+                        "[MEMPOOL] Rejected action (pow={}) - lower than evicted (pow={})",
+                        incoming_pow,
+                        evicted_pow
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // Normal add path
+        self.seen_actions.put(hash, ());
+
+        let thread = self
+            .threads
+            .entry(thread_id)
+            .or_insert_with(|| PendingThread::new(thread_id, space_id, branch_path));
+
+        let action_index = thread.actions.len();
+        thread.actions.push(action);
+
+        // Track location for potential future replacement
+        self.action_locations.insert(hash, (thread_id, action_index));
+
+        // Update counts (H-BLOCK-2)
+        *self.space_action_counts.entry(space_id).or_insert(0) += 1;
+        self.total_action_count += 1;
+
+        true
+    }
+
+    /// Replace a pending action with a new one (RIM - Replace-In-Mempool)
+    ///
+    /// # Arguments
+    /// * `thread_id` - Thread identifier for the new action
+    /// * `space_id` - Space this thread belongs to
+    /// * `new_action` - The replacement action
+    /// * `branch_path` - Branch path for tree placement
+    /// * `replaces_hash` - Hash of the action to replace
+    fn replace_action(
+        &mut self,
+        thread_id: ThreadId,
+        space_id: SpaceId,
+        new_action: Action,
+        branch_path: BranchPath,
+        replaces_hash: [u8; 32],
+    ) -> bool {
+        // Find the action to replace
+        let (old_thread_id, old_index) = match self.action_locations.get(&replaces_hash) {
+            Some(&loc) => loc,
+            None => {
+                // Target action not found in mempool - reject replacement
+                log::warn!(
+                    "[RIM] Replace target not found: {}",
+                    hex::encode(&replaces_hash[..8])
+                );
+                return false;
+            }
+        };
+
+        // Get the old action to verify authorship
+        let old_action = match self.threads.get(&old_thread_id) {
+            Some(thread) => match thread.actions.get(old_index) {
+                Some(action) => action.clone(),
+                None => {
+                    log::warn!("[RIM] Old action index out of bounds");
+                    return false;
+                }
+            },
+            None => {
+                log::warn!("[RIM] Old thread not found");
+                return false;
+            }
+        };
+
+        // Verify same author
+        if old_action.actor != new_action.actor {
+            log::warn!(
+                "[RIM] Author mismatch: old={} new={}",
+                hex::encode(&old_action.actor[..8]),
+                hex::encode(&new_action.actor[..8])
+            );
+            return false;
+        }
+
+        // Remove old action from tracking
+        self.seen_actions.pop(&replaces_hash);
+        self.action_locations.remove(&replaces_hash);
+
+        // Mark old action slot as replaced (set to dummy action that will be filtered)
+        // Note: We don't actually remove from the vec to preserve indices, we mark as replaced
+        if let Some(thread) = self.threads.get_mut(&old_thread_id) {
+            if old_index < thread.actions.len() {
+                // Create a marker action with zero pow_work (will be filtered in block building)
+                thread.actions[old_index].pow_work = 0;
+                thread.actions[old_index].content_hash = None;
+            }
+        }
+
+        // Add the new action
+        let new_hash = Self::action_hash(&new_action);
+        self.seen_actions.put(new_hash, ());
+
+        let thread = self
+            .threads
+            .entry(thread_id)
+            .or_insert_with(|| PendingThread::new(thread_id, space_id, branch_path));
+
+        let new_index = thread.actions.len();
+        thread.actions.push(new_action);
+        self.action_locations.insert(new_hash, (thread_id, new_index));
+
+        log::info!(
+            "[RIM] Replaced action {} with {} (same author)",
+            hex::encode(&replaces_hash[..8]),
+            hex::encode(&new_hash[..8])
+        );
+        true
+    }
+
+    /// Add a CreateSpace action with metadata
+    ///
+    /// This is used for space creation to include the space name and description
+    /// in the block so other nodes can register the space when syncing.
+    ///
+    /// Returns true if the action was added, false if it was a duplicate.
+    ///
+    /// # Arguments
+    /// * `thread_id` - Thread identifier (space_id for CreateSpace)
+    /// * `space_id` - Space identifier
+    /// * `action` - The CreateSpace action
+    /// * `branch_path` - Branch path for tree placement
+    /// * `metadata` - Space name and description
+    pub fn add_create_space_action(
+        &mut self,
+        thread_id: ThreadId,
+        space_id: SpaceId,
+        action: Action,
+        branch_path: BranchPath,
+        metadata: SpaceCreationMetadata,
+    ) -> bool {
+        // Check for duplicate using action hash
+        let hash = Self::action_hash(&action);
+        if self.seen_actions.contains(&hash) {
+            return false; // Already have this action
+        }
+
+        let incoming_pow = action.pow_work;
+
+        // H-BLOCK-2: Enforce per-space limit
+        let space_count = self.space_action_counts.get(&space_id).copied().unwrap_or(0);
+        if space_count >= MAX_ACTIONS_PER_SPACE {
+            if let Some(evicted_pow) = self.evict_lowest_pow_from_space(&space_id) {
+                if incoming_pow <= evicted_pow {
+                    return false;
+                }
+            }
+        }
+
+        // H-BLOCK-2: Enforce global mempool limit
+        if self.total_action_count >= MAX_MEMPOOL_ACTIONS {
+            if let Some(evicted_pow) = self.evict_lowest_pow_global() {
+                if incoming_pow <= evicted_pow {
+                    return false;
+                }
+            }
+        }
+
+        self.seen_actions.put(hash, ());
+
+        let thread = self
+            .threads
+            .entry(thread_id)
+            .or_insert_with(|| PendingThread::new(thread_id, space_id, branch_path));
+
+        thread.actions.push(action);
+        thread.space_metadata = Some(metadata);
+
+        // Update counts (H-BLOCK-2)
+        *self.space_action_counts.entry(space_id).or_insert(0) += 1;
+        self.total_action_count += 1;
+
+        true
+    }
+
+    /// Get total accumulated PoW across all pending actions
+    #[must_use]
+    pub fn total_pow(&self) -> u64 {
+        self.threads.values().map(|t| t.total_pow()).sum()
+    }
+
+    /// Check if threshold is met (without lazy waiting logic)
+    #[must_use]
+    pub fn is_threshold_met(&self) -> bool {
+        self.total_pow() >= self.difficulty_target
+    }
+
+    /// Check if we should form a root block (with lazy waiting)
+    ///
+    /// Lazy block formation: when threshold is met, wait for someone else's
+    /// block first. Only form if no block arrives within LAZY_BLOCK_WAIT_MS.
+    /// This reduces churn by avoiding duplicate block formation.
+    pub fn should_form_root(&mut self) -> bool {
+        if !self.is_threshold_met() {
+            // Threshold not met - reset waiting state
+            self.waiting_since = None;
+            return false;
+        }
+
+        // Threshold is met - check lazy waiting
+        match self.waiting_since {
+            None => {
+                // Start waiting for someone else's block
+                self.waiting_since = Some(Instant::now());
+                log::info!(
+                    "[BLOCK-BUILDER] Threshold met (pow={}), waiting {}s for network block",
+                    self.total_pow(),
+                    LAZY_BLOCK_WAIT_MS / 1000
+                );
+                false
+            }
+            Some(started) => {
+                let elapsed = started.elapsed().as_millis() as u64;
+                if elapsed >= LAZY_BLOCK_WAIT_MS {
+                    log::info!(
+                        "[BLOCK-BUILDER] Wait expired after {}s, forming block ourselves",
+                        elapsed / 1000
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    /// Reset waiting state (call when we receive a block from the network)
+    pub fn reset_waiting(&mut self) {
+        self.waiting_since = None;
+    }
+
+    /// Get the expected next block height
+    #[must_use]
+    pub fn next_height(&self) -> u64 {
+        self.current_height + 1
+    }
+
+    /// Get pending action count
+    #[must_use]
+    pub fn pending_action_count(&self) -> usize {
+        self.threads.values().map(|t| t.actions.len()).sum()
+    }
+
+    /// Get pending thread count
+    #[must_use]
+    pub fn pending_thread_count(&self) -> usize {
+        self.threads.len()
+    }
+
+    /// Get the difficulty threshold (PoW required for block formation)
+    #[must_use]
+    pub fn difficulty_threshold(&self) -> u64 {
+        self.difficulty_target
+    }
+
+    /// Get seconds spent waiting for block formation (0 if not waiting)
+    #[must_use]
+    pub fn waiting_seconds(&self) -> u64 {
+        self.waiting_since
+            .map(|started| started.elapsed().as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Build all pending blocks
+    ///
+    /// Creates content blocks, space blocks, and a root block from
+    /// all accumulated actions.
+    ///
+    /// # Arguments
+    /// * `timestamp` - Block creation timestamp (UNIX seconds)
+    /// * `block_creator` - Identity of the node creating this block
+    ///
+    /// # Returns
+    /// (RootBlock, Vec<SpaceBlock>, Vec<ContentBlock>)
+    pub fn build_root_block(
+        &mut self,
+        timestamp: u64,
+        block_creator: [u8; 32],
+        sponsorship_store: Option<&crate::sponsorship::SponsorshipStore>,
+    ) -> (RootBlock, Vec<SpaceBlock>, Vec<ContentBlock>) {
+        // DETERMINISTIC: Quantize timestamp to 10-second windows
+        // This ensures nodes forming blocks at nearly the same time
+        // will produce identical block hashes
+        let quantized_timestamp = (timestamp / TIMESTAMP_QUANTUM_SECS) * TIMESTAMP_QUANTUM_SECS;
+
+        // Group threads by space, collecting into Vec for deterministic ordering
+        let mut space_threads: HashMap<SpaceId, Vec<PendingThread>> = HashMap::new();
+        for thread in self.threads.drain().map(|(_, t)| t) {
+            space_threads
+                .entry(thread.space_id)
+                .or_default()
+                .push(thread);
+        }
+
+        // DEPENDENCY CHECK: Ensure CreateSpace actions have required Sponsor actions
+        // Collect all Sponsor actions in this batch
+        let mut identities_sponsored_in_batch: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        for threads in space_threads.values() {
+            for thread in threads {
+                for action in &thread.actions {
+                    if action.action_type == crate::blocks::ActionType::Sponsor {
+                        if let Some(sponsee_bytes) = action.content_hash {
+                            identities_sponsored_in_batch.insert(sponsee_bytes);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Filter out CreateSpace actions that would fail validation
+        // A CreateSpace is valid ONLY if the creator is:
+        // 1. Already sponsored on-chain (in sponsorship_store), OR
+        // 2. Being sponsored in this block (Sponsor action in this batch)
+        let mut removed_actions = Vec::new();
+        for threads in space_threads.values_mut() {
+            for thread in threads {
+                let original_count = thread.actions.len();
+                thread.actions.retain(|action| {
+                    if action.action_type == crate::blocks::ActionType::CreateSpace {
+                        let creator_bytes = action.actor;
+
+                        // Check if sponsored in this batch
+                        let sponsored_in_batch = identities_sponsored_in_batch.contains(&creator_bytes);
+
+                        // Check if sponsored on-chain
+                        let sponsored_on_chain = if let Some(store) = sponsorship_store {
+                            let creator_pk = crate::types::identity::PublicKey::from_bytes(creator_bytes);
+                            store.exists(&creator_pk).unwrap_or(false)
+                        } else {
+                            false // No store = can't verify, exclude to be safe
+                        };
+
+                        if !sponsored_on_chain && !sponsored_in_batch {
+                            log::warn!(
+                                "[BLOCK_BUILDER] Excluding CreateSpace by {} from block: \
+                                creator not sponsored on-chain and no Sponsor action in batch",
+                                hex::encode(&creator_bytes[..8])
+                            );
+                            removed_actions.push(action.clone());
+                            return false; // Exclude from block
+                        }
+                    }
+                    true // Keep action
+                });
+
+                if thread.actions.len() < original_count {
+                    log::info!(
+                        "[BLOCK_BUILDER] Removed {} invalid actions from thread {}",
+                        original_count - thread.actions.len(),
+                        hex::encode(&thread.thread_id[..8])
+                    );
+                }
+            }
+        }
+
+        // Re-add removed actions back to mempool for next block
+        for action in removed_actions {
+            // Re-hash and track the action
+            let hash = Self::action_hash(&action);
+            self.seen_actions.put(hash, ());
+            // Note: We can't easily re-add to threads here without knowing thread_id/space_id
+            // These actions will need to be re-submitted via RPC
+        }
+
+        // DETERMINISTIC: Sort spaces by ID for consistent block formation
+        // This ensures same mempool produces same block hash across all nodes
+        let mut sorted_spaces: Vec<_> = space_threads.into_iter().collect();
+        sorted_spaces.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Build content blocks per thread
+        let mut all_content_blocks = Vec::new();
+        let mut content_blocks_by_space: Vec<(SpaceId, Vec<ContentBlock>)> = Vec::new();
+
+        for (space_id, mut threads) in sorted_spaces {
+            // DETERMINISTIC: Sort threads by ID within each space
+            threads.sort_by(|a, b| a.thread_id.cmp(&b.thread_id));
+
+            let mut space_content_blocks = Vec::new();
+            for mut thread in threads {
+                if thread.actions.is_empty() {
+                    continue;
+                }
+
+                // DETERMINISTIC: Sort actions by their hash within each thread
+                thread.actions.sort_by(|a, b| {
+                    let hash_a = Self::action_hash(a);
+                    let hash_b = Self::action_hash(b);
+                    hash_a.cmp(&hash_b)
+                });
+
+                // Use new_with_space_metadata if space metadata is present (CreateSpace actions)
+                let content_block_result = if let Some(metadata) = thread.space_metadata {
+                    ContentBlock::new_with_space_metadata(
+                        thread.thread_id,
+                        thread.space_id,
+                        thread.actions,
+                        thread.prev_content_hash,
+                        quantized_timestamp,
+                        thread.branch_path,
+                        metadata,
+                    )
+                } else {
+                    ContentBlock::new(
+                        thread.thread_id,
+                        thread.space_id,
+                        thread.actions,
+                        thread.prev_content_hash,
+                        quantized_timestamp,
+                        thread.branch_path,
+                    )
+                };
+
+                if let Ok(content_block) = content_block_result {
+                    all_content_blocks.push(content_block.clone());
+                    space_content_blocks.push(content_block);
+                }
+            }
+
+            // Only add space if it has content blocks
+            if !space_content_blocks.is_empty() {
+                content_blocks_by_space.push((space_id, space_content_blocks));
+            }
+        }
+
+        // Build space blocks (already sorted by space_id from above)
+        let mut space_blocks = Vec::new();
+        for (space_id, content_blocks) in content_blocks_by_space {
+            let prev_space_hash = self.prev_space_hashes.get(&space_id).copied();
+            let space_block = SpaceBlock::from_content_blocks(
+                space_id,
+                &content_blocks,
+                prev_space_hash,
+                quantized_timestamp,
+            );
+            // Update prev space hash for next round
+            self.prev_space_hashes.insert(space_id, space_block.hash());
+            space_blocks.push(space_block);
+        }
+
+        // Build root block
+        let root_block = RootBlock::from_space_blocks(
+            &space_blocks,
+            self.prev_root_hash,
+            self.prev_cumulative_pow,
+            quantized_timestamp,
+            self.difficulty_target,
+            self.current_height + 1,
+            block_creator,
+        );
+
+        // Update state
+        self.prev_root_hash = root_block.hash();
+        self.prev_cumulative_pow = root_block.cumulative_pow;
+        self.current_height += 1;
+        // Reset waiting timer - we just formed a block
+        self.waiting_since = None;
+        // NOTE: Do NOT clear seen_actions here! Actions that have been included in a block
+        // should never be re-added to the mempool. If we clear this, the same action can
+        // arrive via gossip from another peer and get included in multiple blocks.
+
+        // H-BLOCK-2: Clear action counts since threads were drained
+        self.space_action_counts.clear();
+        self.total_action_count = 0;
+        self.action_locations.clear();
+
+        (root_block, space_blocks, all_content_blocks)
+    }
+
+    /// Build content block for a specific thread without forming full chain
+    ///
+    /// Useful for incremental building or testing
+    pub fn build_content_block(
+        &mut self,
+        thread_id: &ThreadId,
+        timestamp: u64,
+    ) -> Option<ContentBlock> {
+        let thread = self.threads.remove(thread_id)?;
+
+        if thread.actions.is_empty() {
+            return None;
+        }
+
+        ContentBlock::new(
+            thread.thread_id,
+            thread.space_id,
+            thread.actions,
+            thread.prev_content_hash,
+            timestamp,
+            thread.branch_path,
+        )
+        .ok()
+    }
+
+    /// Clear all pending actions
+    pub fn clear(&mut self) {
+        self.threads.clear();
+        self.seen_actions.clear();
+        self.action_locations.clear();
+        self.space_action_counts.clear();
+        self.total_action_count = 0;
+    }
+
+    /// Get difficulty target
+    #[must_use]
+    pub fn difficulty_target(&self) -> u64 {
+        self.difficulty_target
+    }
+
+    /// Set difficulty target
+    pub fn set_difficulty_target(&mut self, target: u64) {
+        self.difficulty_target = target;
+    }
+
+    /// Get current chain height
+    #[must_use]
+    pub fn current_height(&self) -> u64 {
+        self.current_height
+    }
+
+    /// Sync chain state from external source (e.g., when receiving blocks from peers)
+    ///
+    /// This ensures the builder builds on top of the latest chain tip,
+    /// not just locally-built blocks.
+    pub fn sync_chain_state(&mut self, height: u64, prev_root_hash: [u8; 32], cumulative_pow: u64) {
+        if height > self.current_height {
+            self.current_height = height;
+            self.prev_root_hash = prev_root_hash;
+            self.prev_cumulative_pow = cumulative_pow;
+        }
+    }
+
+    /// Set previous content block hash for a thread
+    pub fn set_prev_content_hash(&mut self, thread_id: ThreadId, hash: [u8; 32]) {
+        if let Some(thread) = self.threads.get_mut(&thread_id) {
+            thread.prev_content_hash = Some(hash);
+        }
+    }
+
+    /// Get pending PoW for a specific space
+    #[must_use]
+    pub fn space_pow(&self, space_id: &SpaceId) -> u64 {
+        self.threads
+            .values()
+            .filter(|t| t.space_id == *space_id)
+            .map(|t| t.total_pow())
+            .sum()
+    }
+
+    /// Find a content hash in pending actions
+    ///
+    /// Searches all pending threads for an action with the given content_hash.
+    /// Returns the space_id if found, None otherwise.
+    ///
+    /// This is used to allow replies to content that hasn't been finalized
+    /// to the blockchain yet (still in the block builder's accumulator).
+    #[must_use]
+    pub fn find_pending_content(&self, content_hash: &[u8; 32]) -> Option<SpaceId> {
+        for thread in self.threads.values() {
+            for action in &thread.actions {
+                if let Some(hash) = &action.content_hash {
+                    if hash == content_hash {
+                        return Some(thread.space_id);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if an action is already in the mempool
+    #[must_use]
+    pub fn has_action(&self, action_hash: &[u8; 32]) -> bool {
+        self.seen_actions.contains(action_hash)
+    }
+
+    /// Remove an action from the mempool by its hash
+    ///
+    /// Called when receiving a block that contains this action.
+    /// Returns true if the action was removed, false if it wasn't found.
+    pub fn remove_action(&mut self, action_hash: &[u8; 32]) -> bool {
+        self.seen_actions.pop(action_hash).is_some()
+    }
+
+    /// Clear finalized actions from mempool when receiving a block
+    ///
+    /// This properly removes actions from both seen_actions (dedup set)
+    /// AND from the threads (actual pending actions that contribute to PoW).
+    ///
+    /// Returns the number of actions removed.
+    pub fn clear_finalized_actions(&mut self, actions: &[Action]) -> usize {
+        let mut removed = 0;
+
+        // Build set of dedup hashes for matching
+        // IMPORTANT: Use action_hash (actor, timestamp, type, content_hash) NOT full hash!
+        // Different nodes may have the same logical action with different pow_nonce/signature,
+        // so we must match on the canonical identity fields, not the full serialization.
+        let finalized_hashes: std::collections::HashSet<[u8; 32]> =
+            actions.iter().map(Self::action_hash).collect();
+
+        // Remove finalized actions from seen_actions and action_locations so they don't bloat memory.
+        // The router's handle_action_announce checks is_action_finalized() in the
+        // chain_store DB before adding, so finalized actions won't be re-added.
+        for hash in &finalized_hashes {
+            self.seen_actions.pop(hash);
+            self.action_locations.remove(hash);
+        }
+
+        // Remove from threads (actual pending actions) and track per-space removals
+        // Iterate through all threads and filter out finalized actions
+        let mut empty_threads = Vec::new();
+        let mut space_removals: HashMap<SpaceId, usize> = HashMap::new();
+
+        for (thread_id, thread) in self.threads.iter_mut() {
+            let before = thread.actions.len();
+            thread.actions.retain(|action| {
+                let hash = Self::action_hash(action);
+                !finalized_hashes.contains(&hash)
+            });
+            let after = thread.actions.len();
+            let removed_from_thread = before - after;
+            removed += removed_from_thread;
+
+            // Track per-space removals (H-BLOCK-2)
+            if removed_from_thread > 0 {
+                *space_removals.entry(thread.space_id).or_insert(0) += removed_from_thread;
+            }
+
+            // Mark empty threads for removal
+            if thread.actions.is_empty() {
+                empty_threads.push(*thread_id);
+            }
+        }
+
+        // Update per-space counts (H-BLOCK-2)
+        for (space_id, count) in space_removals {
+            if let Some(space_count) = self.space_action_counts.get_mut(&space_id) {
+                *space_count = space_count.saturating_sub(count);
+                if *space_count == 0 {
+                    self.space_action_counts.remove(&space_id);
+                }
+            }
+        }
+
+        // Update total count (H-BLOCK-2)
+        self.total_action_count = self.total_action_count.saturating_sub(removed);
+
+        // Remove empty threads
+        for thread_id in empty_threads {
+            self.threads.remove(&thread_id);
+        }
+
+        removed
+    }
+
+    /// Get all pending actions with their thread and space IDs
+    ///
+    /// Returns a vector of (thread_id, space_id, action) tuples for gossip.
+    #[must_use]
+    pub fn get_pending_actions(&self) -> Vec<(ThreadId, SpaceId, Action)> {
+        let mut result = Vec::new();
+        for thread in self.threads.values() {
+            for action in &thread.actions {
+                result.push((thread.thread_id, thread.space_id, action.clone()));
+            }
+        }
+        result
+    }
+
+    /// Get all pending action hashes
+    ///
+    /// Returns a vector of action hashes for mempool INV messages.
+    #[must_use]
+    pub fn get_pending_action_hashes(&self) -> Vec<[u8; 32]> {
+        let mut result = Vec::new();
+        for thread in self.threads.values() {
+            for action in &thread.actions {
+                result.push(Self::action_hash(action));
+            }
+        }
+        result
+    }
+
+    /// Get a pending action by its hash
+    ///
+    /// Returns (thread_id, space_id, action) if found.
+    /// Used for responding to GETDATA requests for mempool actions.
+    #[must_use]
+    pub fn get_pending_action_by_hash(&self, hash: &[u8; 32]) -> Option<(ThreadId, SpaceId, Action)> {
+        for thread in self.threads.values() {
+            for action in &thread.actions {
+                if &Self::action_hash(action) == hash {
+                    return Some((thread.thread_id, thread.space_id, action.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Get seen action count (for debugging/stats)
+    #[must_use]
+    pub fn seen_action_count(&self) -> usize {
+        self.seen_actions.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blocks::action::ActionType;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Counter to generate unique timestamps for test actions
+    static TEST_ACTION_COUNTER: AtomicU64 = AtomicU64::new(1000);
+
+    fn make_test_action(pow_work: u64) -> Action {
+        // Use incrementing timestamp to ensure unique action hashes
+        let timestamp = TEST_ACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+        Action {
+            action_type: ActionType::Post,
+            actor: [1u8; 32],
+            timestamp,
+            content_hash: Some([2u8; 32]),
+            parent_id: None,
+            pow_nonce: 42,
+            pow_work,
+            pow_target: [3u8; 32],
+            signature: [4u8; 64],
+            emoji: None,
+            media_refs: vec![],
+            display_name: None,
+            replaces_pending: None,
+        }
+    }
+
+    #[test]
+    fn test_builder_creation() {
+        let builder = BlockBuilder::new(30);
+        assert_eq!(builder.difficulty_target(), 30);
+        assert_eq!(builder.pending_action_count(), 0);
+        assert_eq!(builder.pending_thread_count(), 0);
+    }
+
+    #[test]
+    fn test_add_action() {
+        let mut builder = BlockBuilder::new(30);
+        let action = make_test_action(10);
+
+        builder.add_action([1u8; 32], [2u8; 32], action, BranchPath::root());
+
+        assert_eq!(builder.pending_action_count(), 1);
+        assert_eq!(builder.pending_thread_count(), 1);
+        assert_eq!(builder.total_pow(), 10);
+    }
+
+    #[test]
+    fn test_add_multiple_actions_same_thread() {
+        let mut builder = BlockBuilder::new(30);
+
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(10),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(15),
+            BranchPath::root(),
+        );
+
+        assert_eq!(builder.pending_action_count(), 2);
+        assert_eq!(builder.pending_thread_count(), 1);
+        assert_eq!(builder.total_pow(), 25);
+    }
+
+    #[test]
+    fn test_add_actions_different_threads() {
+        let mut builder = BlockBuilder::new(30);
+
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(10),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [3u8; 32],
+            [2u8; 32],
+            make_test_action(20),
+            BranchPath::root(),
+        );
+
+        assert_eq!(builder.pending_action_count(), 2);
+        assert_eq!(builder.pending_thread_count(), 2);
+        assert_eq!(builder.total_pow(), 30);
+    }
+
+    #[test]
+    fn test_should_form_root_below_threshold() {
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(29),
+            BranchPath::root(),
+        );
+
+        assert!(!builder.should_form_root());
+    }
+
+    #[test]
+    fn test_should_form_root_at_threshold() {
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+
+        assert!(builder.should_form_root());
+    }
+
+    #[test]
+    fn test_should_form_root_above_threshold() {
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(35),
+            BranchPath::root(),
+        );
+
+        assert!(builder.should_form_root());
+    }
+
+    #[test]
+    fn test_build_root_block() {
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [3u8; 32],
+            [2u8; 32],
+            make_test_action(20),
+            BranchPath::root(),
+        );
+
+        let (root, spaces, contents) = builder.build_root_block(1000, [0u8; 32], None);
+
+        assert_eq!(root.total_pow, 50);
+        assert_eq!(root.height, 1);
+        assert_eq!(spaces.len(), 1); // Both threads in same space
+        assert_eq!(contents.len(), 2); // Two threads = two content blocks
+
+        // Builder should be cleared
+        assert_eq!(builder.pending_action_count(), 0);
+        assert_eq!(builder.current_height(), 1);
+    }
+
+    #[test]
+    fn test_build_multiple_spaces() {
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [10u8; 32],
+            make_test_action(20),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [2u8; 32],
+            [20u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+
+        let (root, spaces, contents) = builder.build_root_block(1000, [0u8; 32], None);
+
+        assert_eq!(root.total_pow, 50);
+        assert_eq!(spaces.len(), 2); // Two different spaces
+        assert_eq!(contents.len(), 2);
+    }
+
+    #[test]
+    fn test_chain_continuity() {
+        let mut builder = BlockBuilder::new(30);
+
+        // First block
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+        let (root1, _, _) = builder.build_root_block(1000, [0u8; 32], None);
+
+        // Second block
+        builder.add_action(
+            [3u8; 32],
+            [2u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+        let (root2, _, _) = builder.build_root_block(1030, [0u8; 32], None);
+
+        assert_eq!(root2.prev_root_hash, root1.hash());
+        assert_eq!(root2.height, 2);
+    }
+
+    #[test]
+    fn test_space_pow() {
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [10u8; 32],
+            make_test_action(20),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [2u8; 32],
+            [10u8; 32],
+            make_test_action(15),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [3u8; 32],
+            [20u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+
+        assert_eq!(builder.space_pow(&[10u8; 32]), 35);
+        assert_eq!(builder.space_pow(&[20u8; 32]), 30);
+        assert_eq!(builder.space_pow(&[30u8; 32]), 0);
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+
+        builder.clear();
+
+        assert_eq!(builder.pending_action_count(), 0);
+        assert_eq!(builder.pending_thread_count(), 0);
+        assert_eq!(builder.total_pow(), 0);
+    }
+
+    #[test]
+    fn test_from_chain_state() {
+        let builder = BlockBuilder::from_chain_state(30, 100, [5u8; 32], 500);
+
+        assert_eq!(builder.difficulty_target(), 30);
+        assert_eq!(builder.current_height(), 100);
+    }
+
+    #[test]
+    fn test_build_content_block() {
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(20),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(10),
+            BranchPath::root(),
+        );
+
+        let content_block = builder.build_content_block(&[1u8; 32], 1000);
+
+        assert!(content_block.is_some());
+        let cb = content_block.unwrap();
+        assert_eq!(cb.total_pow, 30);
+        assert_eq!(cb.action_count(), 2);
+
+        // Thread should be removed
+        assert_eq!(builder.pending_thread_count(), 0);
+    }
+
+    #[test]
+    fn test_build_content_block_nonexistent() {
+        let mut builder = BlockBuilder::new(30);
+
+        let content_block = builder.build_content_block(&[1u8; 32], 1000);
+
+        assert!(content_block.is_none());
+    }
+
+    // ============================================================================
+    // Replace-In-Mempool (RIM) Tests
+    // ============================================================================
+
+    #[test]
+    fn test_rim_replace_same_author() {
+        let mut builder = BlockBuilder::new(30);
+
+        // Add initial action
+        let action1 = make_test_action(20);
+        let action1_hash = BlockBuilder::action_hash(&action1);
+        builder.add_action([1u8; 32], [2u8; 32], action1, BranchPath::root());
+
+        assert_eq!(builder.pending_action_count(), 1);
+        assert_eq!(builder.total_pow(), 20);
+
+        // Create replacement action with same author
+        let mut action2 = make_test_action(25);
+        action2.content_hash = Some([99u8; 32]); // Different content
+        action2.replaces_pending = Some(action1_hash);
+
+        let replaced = builder.add_action([1u8; 32], [2u8; 32], action2, BranchPath::root());
+
+        assert!(replaced, "Replacement should succeed for same author");
+        // Note: pending_action_count may be 2 because old action is marked but not removed
+        // The total_pow should reflect the new action
+    }
+
+    #[test]
+    fn test_rim_reject_different_author() {
+        let mut builder = BlockBuilder::new(30);
+
+        // Add initial action from author [1u8; 32]
+        let action1 = make_test_action(20);
+        let action1_hash = BlockBuilder::action_hash(&action1);
+        builder.add_action([1u8; 32], [2u8; 32], action1, BranchPath::root());
+
+        assert_eq!(builder.pending_action_count(), 1);
+
+        // Try to replace with different author - should fail
+        let mut action2 = Action {
+            actor: [99u8; 32], // Different author
+            ..make_test_action(25)
+        };
+        action2.replaces_pending = Some(action1_hash);
+
+        let replaced = builder.add_action([1u8; 32], [2u8; 32], action2, BranchPath::root());
+
+        assert!(!replaced, "Replacement should fail for different author");
+        assert_eq!(builder.pending_action_count(), 1); // Still only original action
+    }
+
+    #[test]
+    fn test_rim_reject_nonexistent_target() {
+        let mut builder = BlockBuilder::new(30);
+
+        // Try to replace non-existent action
+        let mut action = make_test_action(20);
+        action.replaces_pending = Some([0xab; 32]); // Non-existent hash
+
+        let replaced = builder.add_action([1u8; 32], [2u8; 32], action, BranchPath::root());
+
+        assert!(!replaced, "Replacement should fail for non-existent target");
+        assert_eq!(builder.pending_action_count(), 0);
+    }
+
+    #[test]
+    fn test_rim_updates_seen_actions() {
+        let mut builder = BlockBuilder::new(30);
+
+        // Add initial action
+        let action1 = make_test_action(20);
+        let action1_hash = BlockBuilder::action_hash(&action1);
+        builder.add_action([1u8; 32], [2u8; 32], action1.clone(), BranchPath::root());
+
+        // Verify original is tracked
+        assert!(builder.seen_actions.contains(&action1_hash));
+
+        // Create replacement
+        let mut action2 = make_test_action(25);
+        action2.content_hash = Some([99u8; 32]);
+        action2.replaces_pending = Some(action1_hash);
+        let action2_hash = BlockBuilder::action_hash(&action2);
+
+        builder.add_action([1u8; 32], [2u8; 32], action2, BranchPath::root());
+
+        // After replacement: old hash should be removed, new hash should be present
+        assert!(!builder.seen_actions.contains(&action1_hash), "Old action hash should be removed");
+        assert!(builder.seen_actions.contains(&action2_hash), "New action hash should be tracked");
+    }
+
+    // ============================================================================
+    // Mempool Size Limits Tests (H-BLOCK-2)
+    // ============================================================================
+
+    fn make_test_action_with_pow(pow_work: u64, unique_id: u64) -> Action {
+        Action {
+            action_type: ActionType::Post,
+            actor: [1u8; 32],
+            timestamp: unique_id, // Use unique_id as timestamp for unique hashes
+            content_hash: Some([2u8; 32]),
+            parent_id: None,
+            pow_nonce: 42,
+            pow_work,
+            pow_target: [3u8; 32],
+            signature: [4u8; 64],
+            emoji: None,
+            media_refs: vec![],
+            display_name: None,
+            replaces_pending: None,
+        }
+    }
+
+    #[test]
+    fn test_action_count_tracking() {
+        let mut builder = BlockBuilder::new(30);
+
+        // Add actions and verify counts are tracked
+        builder.add_action([1u8; 32], [10u8; 32], make_test_action(10), BranchPath::root());
+        assert_eq!(builder.total_action_count, 1);
+        assert_eq!(builder.space_action_counts.get(&[10u8; 32]), Some(&1));
+
+        builder.add_action([2u8; 32], [10u8; 32], make_test_action(15), BranchPath::root());
+        assert_eq!(builder.total_action_count, 2);
+        assert_eq!(builder.space_action_counts.get(&[10u8; 32]), Some(&2));
+
+        // Different space
+        builder.add_action([3u8; 32], [20u8; 32], make_test_action(20), BranchPath::root());
+        assert_eq!(builder.total_action_count, 3);
+        assert_eq!(builder.space_action_counts.get(&[20u8; 32]), Some(&1));
+    }
+
+    #[test]
+    fn test_evict_lowest_pow_from_space() {
+        let mut builder = BlockBuilder::new(30);
+        let space_id = [10u8; 32];
+
+        // Add actions with different PoW values
+        builder.add_action([1u8; 32], space_id, make_test_action_with_pow(100, 1), BranchPath::root());
+        builder.add_action([2u8; 32], space_id, make_test_action_with_pow(50, 2), BranchPath::root());
+        builder.add_action([3u8; 32], space_id, make_test_action_with_pow(200, 3), BranchPath::root());
+
+        assert_eq!(builder.total_action_count, 3);
+
+        // Evict lowest PoW (should be 50)
+        let evicted_pow = builder.evict_lowest_pow_from_space(&space_id);
+        assert_eq!(evicted_pow, Some(50));
+        assert_eq!(builder.total_action_count, 2);
+        assert_eq!(builder.space_action_counts.get(&space_id), Some(&2));
+    }
+
+    #[test]
+    fn test_evict_lowest_pow_global() {
+        let mut builder = BlockBuilder::new(30);
+
+        // Add actions in different spaces
+        builder.add_action([1u8; 32], [10u8; 32], make_test_action_with_pow(100, 1), BranchPath::root());
+        builder.add_action([2u8; 32], [20u8; 32], make_test_action_with_pow(25, 2), BranchPath::root()); // Lowest
+        builder.add_action([3u8; 32], [30u8; 32], make_test_action_with_pow(200, 3), BranchPath::root());
+
+        assert_eq!(builder.total_action_count, 3);
+
+        // Evict lowest PoW globally (should be 25)
+        let evicted_pow = builder.evict_lowest_pow_global();
+        assert_eq!(evicted_pow, Some(25));
+        assert_eq!(builder.total_action_count, 2);
+        assert_eq!(builder.space_action_counts.get(&[20u8; 32]), Some(&0));
+    }
+
+    #[test]
+    fn test_counts_cleared_on_build_root_block() {
+        let mut builder = BlockBuilder::new(30);
+
+        builder.add_action([1u8; 32], [10u8; 32], make_test_action(30), BranchPath::root());
+        builder.add_action([2u8; 32], [20u8; 32], make_test_action(20), BranchPath::root());
+
+        assert_eq!(builder.total_action_count, 2);
+        assert!(!builder.space_action_counts.is_empty());
+
+        // Build root block - counts should be cleared
+        let (_root, _spaces, _contents) = builder.build_root_block(1000, [0u8; 32], None);
+
+        assert_eq!(builder.total_action_count, 0);
+        assert!(builder.space_action_counts.is_empty());
+    }
+
+    #[test]
+    fn test_counts_updated_on_clear_finalized_actions() {
+        let mut builder = BlockBuilder::new(30);
+
+        let action1 = make_test_action_with_pow(10, 100);
+        let action2 = make_test_action_with_pow(20, 101);
+
+        builder.add_action([1u8; 32], [10u8; 32], action1.clone(), BranchPath::root());
+        builder.add_action([2u8; 32], [10u8; 32], action2.clone(), BranchPath::root());
+
+        assert_eq!(builder.total_action_count, 2);
+        assert_eq!(builder.space_action_counts.get(&[10u8; 32]), Some(&2));
+
+        // Clear one finalized action
+        let removed = builder.clear_finalized_actions(&[action1]);
+        assert_eq!(removed, 1);
+        assert_eq!(builder.total_action_count, 1);
+        assert_eq!(builder.space_action_counts.get(&[10u8; 32]), Some(&1));
+    }
+
+    #[test]
+    fn test_counts_cleared_on_clear() {
+        let mut builder = BlockBuilder::new(30);
+
+        builder.add_action([1u8; 32], [10u8; 32], make_test_action(10), BranchPath::root());
+        builder.add_action([2u8; 32], [20u8; 32], make_test_action(20), BranchPath::root());
+
+        assert_eq!(builder.total_action_count, 2);
+
+        builder.clear();
+
+        assert_eq!(builder.total_action_count, 0);
+        assert!(builder.space_action_counts.is_empty());
+    }
+}

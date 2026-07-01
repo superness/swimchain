@@ -1,0 +1,126 @@
+.claim-offer-modal {
+  max-width: 520px;
+  width: 90%;
+}
+
+.claim-offer-info {
+  margin-bottom: 16px;
+}
+
+.claim-offer-row {
+  display: flex;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.claim-label {
+  color: var(--color-text-secondary, #666);
+  min-width: 80px;
+}
+
+.claim-value {
+  color: var(--color-text, #333);
+}
+
+.claim-mono {
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+.claim-application {
+  margin-bottom: 16px;
+}
+
+.claim-application-label {
+  display: block;
+  font-size: 0.9em;
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: var(--color-text, #333);
+}
+
+.claim-application-input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.9em;
+  background: var(--color-bg, #fff);
+  color: var(--color-text, #333);
+}
+
+.claim-application-input:focus {
+  outline: none;
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
+.claim-char-count {
+  display: block;
+  text-align: right;
+  font-size: 0.8em;
+  color: var(--color-text-secondary, #999);
+  margin-top: 4px;
+}
+
+.claim-error {
+  background: var(--color-error-bg, #f8d7da);
+  color: var(--color-error, #dc3545);
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  margin-bottom: 12px;
+}
+
+.claim-mining-progress {
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--color-bg-secondary, #f5f5f5);
+  border-radius: 6px;
+}
+
+.claim-mining-label {
+  font-size: 0.9em;
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: var(--color-text, #333);
+}
+
+.claim-mining-bar {
+  height: 6px;
+  background: var(--color-border, #ddd);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.claim-mining-bar-fill {
+  height: 100%;
+  background: var(--color-primary, #2563eb);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.claim-mining-attempts {
+  font-size: 0.8em;
+  color: var(--color-text-secondary, #999);
+  text-align: right;
+}
+
+.claim-disclaimer {
+  font-size: 0.85em;
+  color: var(--color-text-secondary, #888);
+  border-top: 1px solid var(--color-border, #eee);
+  padding-top: 12px;
+  margin-bottom: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .claim-application-input {
+    background: var(--color-bg, #1e1e1e);
+    border-color: var(--color-border, #444);
+    color: var(--color-text, #eee);
+  }
+}

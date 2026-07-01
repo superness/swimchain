@@ -1,0 +1,105 @@
+/* Revision History - Wikipedia-inspired diff and history view */
+
+.rev-page__error {
+  padding: 1rem;
+  background: #fff3f3;
+  border: 1px solid var(--wiki-danger);
+  border-radius: 2px;
+  color: var(--wiki-danger);
+  margin-bottom: 1rem;
+}
+
+.rev-page__error p {
+  margin-bottom: 0.5rem;
+}
+
+/* Compare bar */
+
+.rev-page__compare-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.rev-page__compare-hint {
+  font-size: 0.8rem;
+  color: var(--wiki-text-muted);
+}
+
+/* Radio buttons for compare */
+
+.rev-page__radio {
+  cursor: pointer;
+  accent-color: var(--wiki-accent);
+}
+
+/* Diff stats */
+
+.rev-diff {
+  margin-top: 1rem;
+}
+
+.rev-diff__stats {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.rev-diff__stat--added {
+  color: #155724;
+  font-weight: 600;
+}
+
+.rev-diff__stat--removed {
+  color: #721c24;
+  font-weight: 600;
+}
+
+/* Diff prefix character (+ / -) */
+
+.wiki-diff__prefix {
+  width: 1rem;
+  flex-shrink: 0;
+  font-weight: 600;
+  user-select: none;
+}
+
+/* Revision view */
+
+.rev-page__view {
+  margin-top: 1rem;
+}
+
+.rev-page__view-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.rev-page__view-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.875rem;
+  color: var(--wiki-text-secondary);
+  flex-wrap: wrap;
+}
+
+.rev-page__view-summary {
+  font-style: italic;
+  color: var(--wiki-text-muted);
+}
+
+.rev-page__diff-view {
+  margin-top: 1rem;
+}
+
+.rev-page__diff-label {
+  font-size: 0.875rem;
+  color: var(--wiki-text-secondary);
+}

@@ -1,0 +1,88 @@
+.create-offer-modal {
+  max-width: 520px;
+  width: 90%;
+}
+
+.create-offer-field {
+  margin-bottom: 16px;
+}
+
+.create-offer-label {
+  display: block;
+  font-size: 0.9em;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--color-text, #333);
+}
+
+.create-offer-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 0.9em;
+  background: var(--color-bg, #fff);
+  color: var(--color-text, #333);
+}
+
+.create-offer-input:focus {
+  outline: none;
+  border-color: var(--color-primary, #2563eb);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
+.create-offer-hint {
+  display: block;
+  font-size: 0.8em;
+  color: var(--color-text-secondary, #999);
+  margin-top: 4px;
+}
+
+.create-offer-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.create-offer-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.create-offer-radio input[type="radio"] {
+  margin-top: 4px;
+}
+
+.create-offer-radio-text {
+  font-size: 0.9em;
+  color: var(--color-text, #333);
+}
+
+.create-offer-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.9em;
+  color: var(--color-text, #333);
+}
+
+.create-offer-error {
+  background: var(--color-error-bg, #f8d7da);
+  color: var(--color-error, #dc3545);
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  margin-bottom: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .create-offer-input {
+    background: var(--color-bg, #1e1e1e);
+    border-color: var(--color-border, #444);
+    color: var(--color-text, #eee);
+  }
+}

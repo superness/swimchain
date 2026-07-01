@@ -1,0 +1,19 @@
+[package]
+name = "swimchain-simulations"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "network_sim"
+path = "network_simulation.rs"
+
+[[bin]]
+name = "extended_sim"
+path = "extended_scenarios.rs"
+
+[[bin]]
+name = "quick_sim"
+path = "quick_scenarios.rs"
+
+[dependencies]
+rand = "0.8"

@@ -1,0 +1,343 @@
+{
+  "id": "whitepaper-generator-v1",
+  "name": "Whitepaper Generator",
+  "description": "Collaborative adversarial whitepaper development with research, critique, and iteration",
+  "version": "1.0.0",
+  "category": "academic",
+  "estimatedDuration": "2-4 hours",
+  "notes": "Agents challenge each other. Multiple rounds of critique before proceeding.",
+
+  "stages": [
+    {
+      "id": "research_foundation",
+      "name": "Research Foundation",
+      "type": "research",
+      "agent": "whitepaper_researcher",
+      "description": "Study existing protocol whitepapers, gather academic citations, establish foundation",
+      "prompt": "Research existing protocol whitepapers (Bitcoin, Ethereum, Filecoin, etc.) and academic literature on decentralized systems. Identify: 1) Common whitepaper structures that work, 2) Academic citations for social media problems (Zuboff, platform studies), 3) Prior art in decentralized social (Mastodon, Nostr, Bluesky, SSB). Output a research foundation document."
+    },
+    {
+      "id": "research_challenge",
+      "name": "Research Challenge",
+      "type": "adversarial",
+      "agent": "skeptic_reviewer",
+      "description": "Challenge the research foundation - are sources credible? Gaps in literature?",
+      "inputs": ["research_foundation"],
+      "prompt": "Review the research foundation critically. Challenge: 1) Are these citations credible and relevant? 2) What important prior art is missing? 3) Are the structural patterns from other whitepapers appropriate for our project? 4) What claims need more evidence? Push back hard - this is the foundation everything builds on."
+    },
+    {
+      "id": "research_defense",
+      "name": "Research Defense",
+      "type": "response",
+      "agent": "whitepaper_researcher",
+      "description": "Respond to challenges, strengthen research, address gaps",
+      "inputs": ["research_foundation", "research_challenge"],
+      "prompt": "Address each challenge from the skeptic. For valid criticisms: add missing sources, strengthen weak claims. For invalid criticisms: explain why the challenge is misguided. Update the research foundation document. Be honest about remaining gaps.",
+      "decisions": [
+        {"choice": "RESEARCH_SOLID", "description": "Research foundation is now defensible"},
+        {"choice": "NEEDS_MORE_RESEARCH", "description": "Still has significant gaps, need another round"}
+      ]
+    },
+
+    {
+      "id": "problem_statement",
+      "name": "Problem Statement",
+      "type": "writing",
+      "agent": "problem_definer",
+      "description": "Rigorously define the problem we're solving with evidence",
+      "inputs": ["research_foundation"],
+      "prompt": "Using the research foundation, write a rigorous problem statement section. Must include: 1) The extraction problem (with Zuboff citation), 2) Why centralization enables abuse, 3) Why existing solutions fail (specific, not vague), 4) What success would look like (measurable criteria). This is NOT marketing - it's academic problem definition."
+    },
+    {
+      "id": "problem_challenge",
+      "name": "Problem Challenge",
+      "type": "adversarial",
+      "agent": "devils_advocate",
+      "description": "Challenge the problem statement - is the problem real? Overstated? Solvable?",
+      "inputs": ["problem_statement"],
+      "prompt": "Attack the problem statement: 1) Is this problem actually as bad as claimed? (devil's advocate) 2) Are the cited sources being misrepresented? 3) Is this a real problem or just tech-libertarian ideology? 4) Why should mainstream users care? 5) Are existing solutions really that bad? Be the skeptic who thinks 'social media is fine, you're overreacting.'"
+    },
+    {
+      "id": "problem_defense",
+      "name": "Problem Defense",
+      "type": "response",
+      "agent": "problem_definer",
+      "description": "Defend problem statement, acknowledge valid criticism, strengthen claims",
+      "inputs": ["problem_statement", "problem_challenge"],
+      "prompt": "Respond to each challenge. Where criticism is valid: modify claims, add nuance, acknowledge limitations. Where criticism is wrong: provide evidence and reasoning. Update the problem statement. The goal is a problem statement that survives adversarial scrutiny.",
+      "decisions": [
+        {"choice": "PROBLEM_DEFINED", "description": "Problem statement is defensible"},
+        {"choice": "PROBLEM_OVERSTATED", "description": "Need to significantly revise claims"},
+        {"choice": "PROBLEM_REFRAME", "description": "Need to reframe the problem entirely"}
+      ]
+    },
+
+    {
+      "id": "prior_art_analysis",
+      "name": "Prior Art Analysis",
+      "type": "writing",
+      "agent": "prior_art_analyst",
+      "description": "Survey existing solutions and identify our contribution gap",
+      "inputs": ["research_foundation", "problem_statement"],
+      "prompt": "Write the Related Work / Prior Art section. Cover: 1) Bitcoin (PoW, decentralization model), 2) BitTorrent (content distribution), 3) Mastodon/ActivityPub (federated social), 4) Nostr (client-relay model), 5) Bluesky/AT Protocol (DID, federation), 6) SSB (local-first). For each: what they do well, where they fall short for our goals. Be FAIR - don't strawman. Then identify the specific gap Swimchain fills."
+    },
+    {
+      "id": "prior_art_challenge",
+      "name": "Prior Art Challenge",
+      "type": "adversarial",
+      "agent": "prior_art_defender",
+      "description": "Defend the prior art - argue that existing solutions ARE good enough",
+      "inputs": ["prior_art_analysis"],
+      "prompt": "You are a defender of existing solutions. Argue: 1) Mastodon IS decentralized enough - mega-instances are user choice, 2) Nostr DOES solve the problem - relays can be anyone, 3) Bluesky WILL decentralize eventually - give them time, 4) The 'gaps' identified are not real gaps. Push back on the claim that we need ANOTHER solution. Why not just improve existing ones?"
+    },
+    {
+      "id": "prior_art_response",
+      "name": "Prior Art Response",
+      "type": "response",
+      "agent": "prior_art_analyst",
+      "description": "Respond to defense of prior art, clarify our unique contribution",
+      "inputs": ["prior_art_analysis", "prior_art_challenge"],
+      "prompt": "Address each defense of prior art. Acknowledge where they're right. But clearly articulate: what SPECIFIC thing does Swimchain do that none of these can? Not 'we're more decentralized' - what concrete capability or property? If the defender is right and existing solutions are fine, why are we building this?",
+      "decisions": [
+        {"choice": "GAP_CLEAR", "description": "Our unique contribution is clearly articulated"},
+        {"choice": "GAP_UNCLEAR", "description": "Need to better define what makes us different"},
+        {"choice": "NO_GAP", "description": "Defender is right - we may not need to exist"}
+      ]
+    },
+
+    {
+      "id": "protocol_specification",
+      "name": "Protocol Specification",
+      "type": "writing",
+      "agent": "protocol_formalizer",
+      "description": "Formalize our protocol specs into whitepaper language",
+      "inputs": ["research_foundation"],
+      "prompt": "Transform our technical specs (SPEC_01 through SPEC_09) into whitepaper format. Structure: 1) System Model (assumptions, scope), 2) Threat Model (who we defend against), 3) Identity System, 4) Content & Decay, 5) Proof of Work, 6) Recursive Blocks, 7) Network Protocol, 8) Content Distribution, 9) Social Layer. Use formal language where appropriate. Include the key constants and parameters.",
+      "contextFiles": [
+        "specs/SPEC_01_IDENTITY.md",
+        "specs/SPEC_02_CONTENT_DECAY.md",
+        "specs/SPEC_03_PROOF_OF_WORK.md",
+        "specs/SPEC_06_NETWORK_SYNC.md",
+        "specs/SPEC_07_CONTENT_DISTRIBUTION.md",
+        "specs/SPEC_08_RECURSIVE_BLOCKS.md",
+        "specs/SPEC_09_SOCIAL_LAYER.md"
+      ]
+    },
+    {
+      "id": "security_attack",
+      "name": "Security Attack",
+      "type": "adversarial",
+      "agent": "security_adversary",
+      "description": "Attack the protocol - find vulnerabilities, attack vectors, failure modes",
+      "inputs": ["protocol_specification"],
+      "prompt": "You are a malicious actor trying to break Swimchain. Identify: 1) Sybil attack vectors (can I create many identities?), 2) Spam attacks (can I flood the network despite PoW?), 3) Censorship attacks (can I suppress content?), 4) Eclipse attacks (can I isolate nodes?), 5) Storage attacks (can I bloat the chain?), 6) Economic attacks (can I make the system unusable?). For each attack: describe it, estimate cost/effort, assess damage potential."
+    },
+    {
+      "id": "security_defense",
+      "name": "Security Defense",
+      "type": "response",
+      "agent": "protocol_formalizer",
+      "description": "Defend against attacks, acknowledge vulnerabilities, propose mitigations",
+      "inputs": ["protocol_specification", "security_attack"],
+      "prompt": "For each attack identified: 1) Does our design prevent it? How? 2) If not fully prevented, what's the mitigation? 3) What's the residual risk? Be HONEST - if an attack works, say so. Add a Security Properties section documenting what we do and don't guarantee. This becomes the security analysis section.",
+      "decisions": [
+        {"choice": "SECURITY_ACCEPTABLE", "description": "Attacks are mitigated or acknowledged"},
+        {"choice": "CRITICAL_VULNERABILITY", "description": "Found attack that breaks core guarantees"},
+        {"choice": "NEEDS_DESIGN_CHANGE", "description": "Protocol needs modification to address attack"}
+      ]
+    },
+
+    {
+      "id": "performance_analysis",
+      "name": "Performance Analysis",
+      "type": "analysis",
+      "agent": "performance_analyst",
+      "description": "Analyze performance characteristics with real data from our benchmarks",
+      "inputs": ["protocol_specification"],
+      "prompt": "Write the performance analysis section using our actual benchmark data. Cover: 1) Storage requirements (chain size projections), 2) Bandwidth requirements (sync, gossip), 3) PoW timing on various devices, 4) Scalability characteristics. Use REAL numbers from our benchmarks, not hypotheticals. Be honest about mobile limitations and what we learned.",
+      "contextFiles": [
+        "docs/mobile-viability.md",
+        "docs/benchmarks/mobile.md",
+        "docs/benchmarks/pow.md",
+        "docs/benchmarks/cache.md",
+        "docs/benchmarks/sync.md"
+      ]
+    },
+
+    {
+      "id": "social_analysis",
+      "name": "Social/Behavioral Analysis",
+      "type": "analysis",
+      "agent": "social_scientist",
+      "description": "Analyze social and behavioral implications of the design",
+      "inputs": ["protocol_specification", "problem_statement"],
+      "prompt": "Analyze Swimchain from a social science perspective: 1) Does friction actually reduce impulsive behavior? (cite behavioral research), 2) Does decay actually enable organic moderation? (what could go wrong?), 3) Does fork-ability reduce conflict or fragment communities? 4) Who does this design favor and who does it exclude? 5) What emergent behaviors might we not anticipate? Be critical of our assumptions."
+    },
+
+    {
+      "id": "analysis_synthesis",
+      "name": "Analysis Synthesis",
+      "type": "synthesis",
+      "agent": "synthesis_panel",
+      "description": "Synthesize security, performance, and social analyses into coherent section",
+      "inputs": ["security_defense", "performance_analysis", "social_analysis"],
+      "prompt": "Combine the three analyses into a coherent Analysis section. Identify: 1) Where do the analyses agree? 2) Where do they conflict? 3) What are the key tradeoffs? 4) What are the known limitations? Create a unified narrative that's honest about what we know and don't know."
+    },
+
+    {
+      "id": "external_critique",
+      "name": "External Critique",
+      "type": "adversarial",
+      "agent": "external_critic_panel",
+      "description": "Panel of external critics attack the entire paper",
+      "inputs": ["problem_statement", "prior_art_analysis", "protocol_specification", "analysis_synthesis"],
+      "prompt": "You are a panel of critics: 1) A cryptographer who thinks our PoW is naive, 2) A distributed systems expert who doubts our sync, 3) A social scientist who thinks friction is paternalistic, 4) A privacy advocate worried about metadata, 5) A usability expert who thinks this is too hard, 6) A lawyer worried about CSAM liability. Each raises their strongest objection. Be harsh but fair."
+    },
+    {
+      "id": "critique_response",
+      "name": "Critique Response",
+      "type": "response",
+      "agent": "whitepaper_author",
+      "description": "Author responds to all critiques, revises paper, documents limitations",
+      "inputs": ["external_critique", "problem_statement", "prior_art_analysis", "protocol_specification", "analysis_synthesis"],
+      "prompt": "Address each critic's objection: 1) If valid: revise the relevant section, 2) If partially valid: acknowledge and add nuance, 3) If invalid: explain why. Create a Limitations section that honestly documents unresolved concerns. Create a Future Work section for things we plan to address. Update all sections based on critiques.",
+      "decisions": [
+        {"choice": "PAPER_DEFENSIBLE", "description": "Paper addresses critiques satisfactorily"},
+        {"choice": "MAJOR_REVISIONS", "description": "Need significant changes based on critiques"},
+        {"choice": "FUNDAMENTAL_ISSUES", "description": "Critiques reveal fundamental problems"}
+      ]
+    },
+
+    {
+      "id": "academic_editing",
+      "name": "Academic Editing",
+      "type": "editing",
+      "agent": "academic_editor",
+      "description": "Polish into proper academic format with citations",
+      "inputs": ["critique_response"],
+      "prompt": "Edit the complete paper for academic standards: 1) Proper citation format (numbered references), 2) Consistent terminology throughout, 3) Academic tone where needed, accessible language elsewhere, 4) Proper section numbering and cross-references, 5) Abstract (150-250 words, standalone summary), 6) Conclusion that summarizes contributions. Do NOT add fluff - keep it tight like the Bitcoin whitepaper."
+    },
+    {
+      "id": "peer_review",
+      "name": "Peer Review",
+      "type": "adversarial",
+      "agent": "peer_reviewer",
+      "description": "Final peer review - would this be accepted at a conference?",
+      "inputs": ["academic_editing"],
+      "prompt": "Review as if this were submitted to a peer-reviewed venue. Score 1-5 on: 1) Novelty (is this a real contribution?), 2) Technical soundness (are claims supported?), 3) Presentation (is it well-written?), 4) Significance (does this matter?). Provide: Accept / Revise / Reject recommendation with justification. List specific changes required for acceptance."
+    },
+    {
+      "id": "final_revision",
+      "name": "Final Revision",
+      "type": "editing",
+      "agent": "whitepaper_author",
+      "description": "Address peer review feedback, produce final version",
+      "inputs": ["academic_editing", "peer_review"],
+      "prompt": "Address all peer review feedback. Make final revisions. Produce the publication-ready whitepaper. If peer review recommended 'Reject', explain why we disagree or acknowledge the fatal flaw.",
+      "decisions": [
+        {"choice": "PUBLICATION_READY", "description": "Whitepaper is ready for publication"},
+        {"choice": "NEEDS_REVISION", "description": "Send back for another round"},
+        {"choice": "NOT_PUBLISHABLE", "description": "Fundamental issues prevent publication"}
+      ]
+    }
+  ],
+
+  "flow": {
+    "type": "adversarial-iterative",
+    "description": "Agents challenge each other, multiple rounds allowed, quality gates at each phase",
+    "connections": [
+      {"from": "research_foundation", "to": "research_challenge"},
+      {"from": "research_challenge", "to": "research_defense"},
+      {"from": "research_defense", "to": "problem_statement", "condition": "RESEARCH_SOLID"},
+      {"from": "research_defense", "to": "research_foundation", "condition": "NEEDS_MORE_RESEARCH"},
+
+      {"from": "problem_statement", "to": "problem_challenge"},
+      {"from": "problem_challenge", "to": "problem_defense"},
+      {"from": "problem_defense", "to": "prior_art_analysis", "condition": "PROBLEM_DEFINED"},
+      {"from": "problem_defense", "to": "problem_statement", "condition": "PROBLEM_OVERSTATED"},
+      {"from": "problem_defense", "to": "problem_statement", "condition": "PROBLEM_REFRAME"},
+
+      {"from": "prior_art_analysis", "to": "prior_art_challenge"},
+      {"from": "prior_art_challenge", "to": "prior_art_response"},
+      {"from": "prior_art_response", "to": "protocol_specification", "condition": "GAP_CLEAR"},
+      {"from": "prior_art_response", "to": "prior_art_analysis", "condition": "GAP_UNCLEAR"},
+
+      {"from": "protocol_specification", "to": "security_attack"},
+      {"from": "security_attack", "to": "security_defense"},
+      {"from": "security_defense", "to": "performance_analysis", "condition": "SECURITY_ACCEPTABLE"},
+      {"from": "security_defense", "to": "protocol_specification", "condition": "NEEDS_DESIGN_CHANGE"},
+
+      {"from": "performance_analysis", "to": "social_analysis"},
+      {"from": "social_analysis", "to": "analysis_synthesis"},
+
+      {"from": "analysis_synthesis", "to": "external_critique"},
+      {"from": "external_critique", "to": "critique_response"},
+      {"from": "critique_response", "to": "academic_editing", "condition": "PAPER_DEFENSIBLE"},
+      {"from": "critique_response", "to": "prior_art_analysis", "condition": "MAJOR_REVISIONS"},
+
+      {"from": "academic_editing", "to": "peer_review"},
+      {"from": "peer_review", "to": "final_revision"},
+      {"from": "final_revision", "to": null, "condition": "PUBLICATION_READY"},
+      {"from": "final_revision", "to": "academic_editing", "condition": "NEEDS_REVISION"}
+    ],
+    "maxIterations": {
+      "research_phase": 2,
+      "problem_phase": 2,
+      "prior_art_phase": 2,
+      "security_phase": 3,
+      "critique_phase": 2,
+      "final_phase": 2
+    }
+  },
+
+  "agents_required": [
+    "whitepaper_researcher",
+    "skeptic_reviewer",
+    "problem_definer",
+    "devils_advocate",
+    "prior_art_analyst",
+    "prior_art_defender",
+    "protocol_formalizer",
+    "security_adversary",
+    "performance_analyst",
+    "social_scientist",
+    "synthesis_panel",
+    "external_critic_panel",
+    "whitepaper_author",
+    "academic_editor",
+    "peer_reviewer"
+  ],
+
+  "inputs": {
+    "required": [
+      "VISION.md",
+      "MARKETING.md",
+      "specs/SPEC_01_IDENTITY.md",
+      "specs/SPEC_02_CONTENT_DECAY.md",
+      "specs/SPEC_03_PROOF_OF_WORK.md",
+      "specs/SPEC_06_NETWORK_SYNC.md",
+      "specs/SPEC_07_CONTENT_DISTRIBUTION.md",
+      "specs/SPEC_08_RECURSIVE_BLOCKS.md",
+      "specs/SPEC_09_SOCIAL_LAYER.md"
+    ],
+    "optional": [
+      "docs/mobile-viability.md",
+      "docs/benchmarks/*"
+    ]
+  },
+
+  "outputs": {
+    "primary": "WHITEPAPER.md",
+    "secondary": [
+      "whitepaper_critique_log.md",
+      "whitepaper_revision_history.md"
+    ]
+  },
+
+  "success_criteria": {
+    "peer_review_score": ">=3.5 average across all dimensions",
+    "all_critical_attacks_addressed": true,
+    "limitations_documented": true,
+    "citations_verified": true
+  }
+}

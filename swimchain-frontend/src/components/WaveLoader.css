@@ -1,0 +1,327 @@
+/**
+ * WaveLoader - Water wave animation styles
+ */
+
+/* CSS Variables */
+.wave-loader {
+  --wave-color: #00d4ff;
+  --wave-color-light: rgba(0, 212, 255, 0.3);
+  --wave-color-medium: rgba(0, 212, 255, 0.5);
+  --wave-bg: rgba(15, 15, 26, 0.95);
+}
+
+/* Container */
+.wave-loader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+}
+
+.wave-loader__overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--wave-bg);
+  z-index: 9999;
+}
+
+.wave-loader__container {
+  position: relative;
+  overflow: hidden;
+  border-radius: 50%;
+  background: linear-gradient(180deg, transparent 50%, var(--wave-color-light) 100%);
+}
+
+/* Size variants */
+.wave-loader--small .wave-loader__container {
+  width: 48px;
+  height: 48px;
+}
+
+.wave-loader--medium .wave-loader__container {
+  width: 80px;
+  height: 80px;
+}
+
+.wave-loader--large .wave-loader__container {
+  width: 120px;
+  height: 120px;
+}
+
+/* Waves */
+.wave-loader__waves {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 100%;
+}
+
+.wave-loader__wave {
+  position: absolute;
+  bottom: 0;
+  left: -50%;
+  width: 200%;
+  height: 100%;
+  background: var(--wave-color);
+  border-radius: 40%;
+  animation: wave-rotate 3s linear infinite;
+}
+
+.wave-loader__wave--1 {
+  opacity: 0.7;
+  animation-duration: 3s;
+  bottom: 15%;
+}
+
+.wave-loader__wave--2 {
+  opacity: 0.5;
+  animation-duration: 3.5s;
+  animation-direction: reverse;
+  bottom: 20%;
+}
+
+.wave-loader__wave--3 {
+  opacity: 0.3;
+  animation-duration: 4s;
+  bottom: 25%;
+}
+
+@keyframes wave-rotate {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Water drops */
+.wave-loader__drops {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.wave-loader__drop {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: var(--wave-color);
+  border-radius: 50%;
+  opacity: 0;
+  animation: drop-rise 2s ease-out infinite;
+}
+
+.wave-loader--small .wave-loader__drop {
+  width: 2px;
+  height: 2px;
+}
+
+.wave-loader--large .wave-loader__drop {
+  width: 6px;
+  height: 6px;
+}
+
+.wave-loader__drop--1 {
+  left: 30%;
+  animation-delay: 0s;
+}
+
+.wave-loader__drop--2 {
+  left: 50%;
+  animation-delay: 0.6s;
+}
+
+.wave-loader__drop--3 {
+  left: 70%;
+  animation-delay: 1.2s;
+}
+
+@keyframes drop-rise {
+  0% {
+    bottom: 30%;
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  20% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  80% {
+    opacity: 0.4;
+  }
+  100% {
+    bottom: 90%;
+    opacity: 0;
+    transform: scale(0.3);
+  }
+}
+
+/* Text */
+.wave-loader__text {
+  font-size: 0.875rem;
+  color: var(--wave-color);
+  letter-spacing: 0.05em;
+  animation: text-pulse 2s ease-in-out infinite;
+}
+
+.wave-loader--small .wave-loader__text {
+  font-size: 0.75rem;
+}
+
+.wave-loader--large .wave-loader__text {
+  font-size: 1rem;
+}
+
+@keyframes text-pulse {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ========================================
+   Page Transition
+   ======================================== */
+
+.page-transition {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  pointer-events: none;
+}
+
+.page-transition__wave {
+  position: absolute;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.page-transition__path {
+  fill: var(--wave-color, #00d4ff);
+}
+
+/* Up direction (wave rises from bottom) */
+.page-transition--up .page-transition__wave {
+  bottom: 0;
+  transform: translateY(100%);
+}
+
+.page-transition--up.page-transition--active .page-transition__wave {
+  animation: wave-rise 0.6s ease-in-out forwards;
+}
+
+@keyframes wave-rise {
+  0% {
+    transform: translateY(100%);
+  }
+  50% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-100%);
+  }
+}
+
+/* Down direction (wave falls from top) */
+.page-transition--down .page-transition__wave {
+  top: 0;
+  transform: translateY(-100%) rotate(180deg);
+}
+
+.page-transition--down.page-transition--active .page-transition__wave {
+  animation: wave-fall 0.6s ease-in-out forwards;
+}
+
+@keyframes wave-fall {
+  0% {
+    transform: translateY(-100%) rotate(180deg);
+  }
+  50% {
+    transform: translateY(0) rotate(180deg);
+  }
+  100% {
+    transform: translateY(100%) rotate(180deg);
+  }
+}
+
+/* ========================================
+   Ripple Effect (for buttons/clicks)
+   ======================================== */
+
+.wave-ripple {
+  position: absolute;
+  border-radius: 50%;
+  background: var(--wave-color-light);
+  transform: scale(0);
+  animation: ripple-expand 0.6s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes ripple-expand {
+  to {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
+
+/* ========================================
+   Skeleton Loading with Wave
+   ======================================== */
+
+.wave-skeleton {
+  position: relative;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.wave-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--wave-color-light),
+    transparent
+  );
+  animation: skeleton-wave 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-wave {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* ========================================
+   Reduced Motion Support (WCAG 2.2.2)
+   ======================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .wave-loader__wave,
+  .wave-loader__drop,
+  .wave-loader__text,
+  .wave-ripple,
+  .wave-skeleton::after {
+    animation: none;
+  }
+
+  .page-transition--up.page-transition--active .page-transition__wave,
+  .page-transition--down.page-transition--active .page-transition__wave {
+    animation: none;
+  }
+}

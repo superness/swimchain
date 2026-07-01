@@ -1,0 +1,30 @@
+.typing-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  min-height: 24px;
+}
+
+.typing-indicator__dots {
+  display: flex;
+  gap: 3px;
+}
+
+.typing-indicator__dots .typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-muted);
+}
+
+.typing-indicator__text {
+  color: var(--color-text-secondary);
+}
+
+.typing-indicator__user {
+  font-weight: 500;
+  color: var(--color-text-primary);
+}

@@ -1,0 +1,105 @@
+{
+  "id": "spec-validation-v1",
+  "name": "Specification Validation",
+  "description": "Adversarial review of protocol specifications for consistency, completeness, and attack resistance",
+  "version": "1.0.0",
+  "category": "validation",
+  "estimatedDuration": "30-60 minutes",
+
+  "stages": [
+    {
+      "id": "spec_analysis",
+      "name": "Specification Analysis",
+      "type": "analysis",
+      "agent": "protocol_formalizer",
+      "description": "Analyze spec structure, extract claims, identify dependencies",
+      "prompt": "Analyze the provided specification document. Extract: 1) All normative claims (MUST, SHOULD, MAY), 2) All constants and parameters, 3) Dependencies on other specs, 4) Assumed external systems, 5) Success criteria. Create a structured analysis document."
+    },
+    {
+      "id": "internal_consistency",
+      "name": "Internal Consistency Check",
+      "type": "adversarial",
+      "agent": "skeptic_reviewer",
+      "description": "Check for internal contradictions and logical inconsistencies",
+      "inputs": ["spec_analysis"],
+      "prompt": "Review the specification for internal consistency: 1) Do any claims contradict each other? 2) Are all parameters used consistently? 3) Are there circular dependencies? 4) Are there undefined terms? 5) Are there ambiguous requirements? List every inconsistency found."
+    },
+    {
+      "id": "external_consistency",
+      "name": "External Consistency Check",
+      "type": "adversarial",
+      "agent": "prior_art_analyst",
+      "description": "Check for conflicts with existing specifications",
+      "inputs": ["spec_analysis"],
+      "prompt": "Review the specification against existing Swimchain specs (SPEC_01 through SPEC_10). Check: 1) Does this conflict with any existing spec? 2) Does it duplicate functionality? 3) Does it integrate properly with identity, content, PoW, social layer? 4) Are there missing integration points? List every conflict or gap.",
+      "contextFiles": [
+        "specs/SPEC_01_IDENTITY.md",
+        "specs/SPEC_02_CONTENT_DECAY.md",
+        "specs/SPEC_03_PROOF_OF_WORK.md",
+        "specs/SPEC_09_SOCIAL_LAYER.md"
+      ]
+    },
+    {
+      "id": "attack_analysis",
+      "name": "Attack Vector Analysis",
+      "type": "adversarial",
+      "agent": "security_adversary",
+      "description": "Identify attack vectors enabled or not addressed by this spec",
+      "inputs": ["spec_analysis"],
+      "prompt": "You are an attacker. Analyze this specification for vulnerabilities: 1) What attacks does it enable? 2) What attacks does it fail to prevent? 3) Can it be gamed or exploited? 4) What are the economic attack vectors? 5) What's the cost to attack vs. the damage caused? For each attack: describe it, estimate feasibility, rate severity (low/medium/high/critical)."
+    },
+    {
+      "id": "implementation_feasibility",
+      "name": "Implementation Feasibility",
+      "type": "analysis",
+      "agent": "performance_analyst",
+      "description": "Assess whether this spec is implementable with reasonable resources",
+      "inputs": ["spec_analysis"],
+      "prompt": "Assess implementation feasibility: 1) What are the computational requirements? 2) What are the storage requirements? 3) What are the network requirements? 4) Can this work on mobile? 5) Are there any cryptographic primitives that are hard to implement? 6) What's the estimated development effort? Be specific about constraints and risks."
+    },
+    {
+      "id": "synthesis",
+      "name": "Validation Synthesis",
+      "type": "synthesis",
+      "agent": "synthesis_panel",
+      "description": "Synthesize all reviews into a validation report",
+      "inputs": ["internal_consistency", "external_consistency", "attack_analysis", "implementation_feasibility"],
+      "prompt": "Synthesize all reviews into a final validation report. For each issue found: 1) Categorize as BLOCKER, MAJOR, MINOR, SUGGESTION. 2) Provide specific remediation. 3) Assess overall spec quality. Rate: APPROVED / APPROVED_WITH_CHANGES / NEEDS_MAJOR_REVISION / REJECTED. Include all specific changes required.",
+      "decisions": [
+        {"choice": "APPROVED", "description": "Spec is ready for implementation"},
+        {"choice": "APPROVED_WITH_CHANGES", "description": "Spec needs minor changes but is fundamentally sound"},
+        {"choice": "NEEDS_MAJOR_REVISION", "description": "Spec has significant issues requiring rework"},
+        {"choice": "REJECTED", "description": "Spec has fundamental flaws, needs complete redesign"}
+      ]
+    }
+  ],
+
+  "flow": {
+    "type": "parallel-then-synthesis",
+    "description": "Run analysis first, then reviews in parallel, then synthesize",
+    "connections": [
+      {"from": "spec_analysis", "to": "internal_consistency"},
+      {"from": "spec_analysis", "to": "external_consistency"},
+      {"from": "spec_analysis", "to": "attack_analysis"},
+      {"from": "spec_analysis", "to": "implementation_feasibility"},
+      {"from": "internal_consistency", "to": "synthesis"},
+      {"from": "external_consistency", "to": "synthesis"},
+      {"from": "attack_analysis", "to": "synthesis"},
+      {"from": "implementation_feasibility", "to": "synthesis"},
+      {"from": "synthesis", "to": null, "condition": "APPROVED"},
+      {"from": "synthesis", "to": null, "condition": "APPROVED_WITH_CHANGES"},
+      {"from": "synthesis", "to": null, "condition": "NEEDS_MAJOR_REVISION"},
+      {"from": "synthesis", "to": null, "condition": "REJECTED"}
+    ]
+  },
+
+  "inputs": {
+    "required": ["Target specification file path"],
+    "optional": ["Related spec files for context"]
+  },
+
+  "outputs": {
+    "primary": "validation_report.md",
+    "secondary": ["attack_vectors.md", "consistency_issues.md"]
+  }
+}

@@ -1,0 +1,11662 @@
+//! RPC method implementations
+//!
+//! Provides the method dispatch table and implementations for all RPC methods.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Instant;
+
+use log::{debug, info, warn};
+use serde_json::{json, Value};
+use tokio::sync::{broadcast, RwLock};
+
+use crate::blocklist::BlocklistStore;
+use crate::blocks::{Action, BranchPath};
+use crate::content::decay_integration::DecayIntegration;
+use crate::content::retrieval::ContentRetrievalManager;
+use crate::crypto::action_pow::{
+    ActionType, ForkPoWConfig, PoWChallenge, PoWSolution, verify_pow, compute_pow,
+};
+use crate::identity::KeyPair;
+use crate::node::connection_manager::ConnectionManager;
+use crate::node::peer_connections::PeerConnectionPool;
+use crate::node::router::MessageRouter;
+use crate::node::state::NodeState;
+use crate::storage::blob::{BlobStore, ContentBlobHash};
+use crate::storage::chain::ChainStore;
+use crate::storage::membership::MembershipStore;
+use crate::storage::AggregationCache;
+use crate::sync::SyncState;
+use crate::types::content::{ContentId, Reaction, ReactionType};
+use crate::types::identity::IdentityId;
+use crate::spam_attestation::{
+    SpamAttestation, SpamAttestationStore, SpamReason, CounterAttestation,
+    aggregate_attestations, find_sponsor_tree_root, StoredSpamAttestation,
+    SPAM_ATTESTATION_POW_DIFFICULTY,
+};
+use crate::crypto::signature::{sign as ed25519_sign, verify as ed25519_verify};
+use crate::crypto::{leading_zeros, pow_hash};
+use crate::dht::ProviderRecord;
+use crate::types::identity::{PublicKey, Signature};
+use crate::VERSION;
+
+use super::error::RpcErrorCode;
+use super::types::*;
+
+// Space ID constants - using 16 bytes (128 bits) for space identification
+const SPACE_HRP: &str = "sp";
+
+/// Decode a bech32m space ID (sp1...) to 16 bytes
+fn decode_space_id(space_id: &str) -> Result<[u8; 16], String> {
+    use bech32::{Bech32m, Hrp};
+
+    if !space_id.starts_with("sp1") {
+        return Err(format!("Space ID must start with 'sp1', got: {}", space_id));
+    }
+
+    let hrp = Hrp::parse(SPACE_HRP).map_err(|e| format!("Invalid HRP: {}", e))?;
+    let (decoded_hrp, data) = bech32::decode(space_id)
+        .map_err(|e| format!("Invalid bech32m encoding: {}", e))?;
+
+    if decoded_hrp != hrp {
+        return Err(format!("Expected HRP '{}', got '{}'", SPACE_HRP, decoded_hrp));
+    }
+
+    // Skip version byte (first byte), get the 16-byte space ID
+    if data.len() < 17 {
+        return Err(format!("Space ID data too short: {} bytes", data.len()));
+    }
+
+    let mut space_bytes = [0u8; 16];
+    space_bytes.copy_from_slice(&data[1..17]);
+    Ok(space_bytes)
+}
+
+/// Encode 16 bytes as a bech32m space ID (sp1...)
+fn encode_space_id(bytes: &[u8; 16]) -> String {
+    use bech32::{Bech32m, Hrp};
+
+    let hrp = Hrp::parse(SPACE_HRP).expect("valid HRP");
+    let mut data = Vec::with_capacity(17);
+    data.push(0); // version byte
+    data.extend_from_slice(bytes);
+    bech32::encode::<Bech32m>(hrp, &data).expect("valid encoding")
+}
+
+/// Load space names from config.toml in the data directory
+fn load_space_names(data_dir: &std::path::Path) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+
+    let config_path = data_dir.join("config.toml");
+    if !config_path.exists() {
+        return HashMap::new();
+    }
+
+    // Parse the config file
+    match std::fs::read_to_string(&config_path) {
+        Ok(contents) => {
+            // Parse TOML to get space_names table
+            match toml::from_str::<toml::Value>(&contents) {
+                Ok(value) => {
+                    if let Some(space_names) = value.get("space_names") {
+                        if let Some(table) = space_names.as_table() {
+                            return table.iter()
+                                .filter_map(|(k, v)| {
+                                    v.as_str().map(|s| (k.clone(), s.to_string()))
+                                })
+                                .collect();
+                        }
+                    }
+                    HashMap::new()
+                }
+                Err(_) => HashMap::new(),
+            }
+        }
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Verify PoW for an RPC submission
+///
+/// This validates that the client did the required computational work before
+/// allowing content submission. This is the core anti-spam mechanism.
+fn verify_pow_submission(
+    action_type: ActionType,
+    content: &[u8],
+    author_id: &str,
+    pow_nonce: u64,
+    pow_difficulty: u8,
+    pow_nonce_space: &str,
+    pow_hash: &str,
+    timestamp: u64,
+    network: &str,
+) -> Result<(), (RpcErrorCode, String)> {
+    // Parse author_id (32-byte hex)
+    let author_bytes: [u8; 32] = hex::decode(author_id)
+        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid author_id hex: {}", e)))?
+        .try_into()
+        .map_err(|_| (RpcErrorCode::InvalidParams, "author_id must be 32 bytes".to_string()))?;
+
+    // Parse nonce_space (8-byte hex)
+    let nonce_space_bytes: [u8; 8] = hex::decode(pow_nonce_space)
+        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid pow_nonce_space hex: {}", e)))?
+        .try_into()
+        .map_err(|_| (RpcErrorCode::InvalidParams, "pow_nonce_space must be 8 bytes".to_string()))?;
+
+    // Parse hash (32-byte hex)
+    let hash_bytes: [u8; 32] = hex::decode(pow_hash)
+        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid pow_hash hex: {}", e)))?
+        .try_into()
+        .map_err(|_| (RpcErrorCode::InvalidParams, "pow_hash must be 32 bytes".to_string()))?;
+
+    // Compute content hash for verification
+    let content_hash = crate::crypto::sha256(content);
+
+    // Build the challenge
+    let challenge = PoWChallenge {
+        action_type,
+        content_hash,
+        author_id: author_bytes,
+        timestamp,
+        difficulty: pow_difficulty,
+        nonce_space: nonce_space_bytes,
+    };
+
+    // Build the solution
+    let solution = PoWSolution {
+        challenge,
+        nonce: pow_nonce,
+        hash: hash_bytes,
+    };
+
+    // Get PoW config based on network
+    let config = match network {
+        "testnet" => ForkPoWConfig::testnet(),
+        "regtest" => ForkPoWConfig::test(),
+        _ => ForkPoWConfig::production(),
+    };
+
+    // Determine network mode for difficulty adjustment
+    let network_mode = match network {
+        "testnet" => crate::network::NetworkMode::Testnet,
+        "regtest" => crate::network::NetworkMode::Regtest,
+        _ => crate::network::NetworkMode::Mainnet,
+    };
+
+    // Get network-adjusted minimum difficulty for action type
+    // Testnet and regtest have reduced difficulty requirements
+    let base_difficulty = config.get_difficulty(action_type);
+    let min_difficulty = network_mode.adjusted_difficulty(base_difficulty);
+    if pow_difficulty < min_difficulty {
+        return Err((
+            RpcErrorCode::PowInvalid,
+            format!(
+                "Difficulty {} too low for {:?} on {} (minimum {})",
+                pow_difficulty, action_type, network, min_difficulty
+            ),
+        ));
+    }
+
+    // Verify the PoW
+    let current_time = crate::crypto::current_timestamp();
+    verify_pow(&solution, &config, current_time).map_err(|e| {
+        (RpcErrorCode::PowInvalid, format!("PoW verification failed: {}", e))
+    })?;
+
+    info!("[RPC] PoW verified for {:?}: difficulty={}, nonce={}", action_type, pow_difficulty, pow_nonce);
+    Ok(())
+}
+
+/// Verify PoW submission with raw bytes for content_hash and author_id
+/// Used for engagement where frontend passes raw 32-byte content hash directly
+fn verify_pow_submission_raw(
+    action_type: ActionType,
+    content_hash: &[u8; 32],
+    author_id: &[u8; 32],
+    pow_nonce: u64,
+    pow_difficulty: u8,
+    pow_nonce_space: &str,
+    pow_hash: &str,
+    timestamp: u64,
+    network: &str,
+) -> Result<(), (RpcErrorCode, String)> {
+    // Parse nonce_space (8-byte hex)
+    let nonce_space_bytes: [u8; 8] = hex::decode(pow_nonce_space)
+        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid pow_nonce_space hex: {}", e)))?
+        .try_into()
+        .map_err(|_| (RpcErrorCode::InvalidParams, "pow_nonce_space must be 8 bytes".to_string()))?;
+
+    // Parse hash (32-byte hex)
+    let hash_bytes: [u8; 32] = hex::decode(pow_hash)
+        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid pow_hash hex: {}", e)))?
+        .try_into()
+        .map_err(|_| (RpcErrorCode::InvalidParams, "pow_hash must be 32 bytes".to_string()))?;
+
+    // Build the challenge (use content_hash directly, no SHA256)
+    let challenge = PoWChallenge {
+        action_type,
+        content_hash: *content_hash,
+        author_id: *author_id,
+        timestamp,
+        difficulty: pow_difficulty,
+        nonce_space: nonce_space_bytes,
+    };
+
+    // Build the solution
+    let solution = PoWSolution {
+        challenge,
+        nonce: pow_nonce,
+        hash: hash_bytes,
+    };
+
+    // Get PoW config based on network
+    let config = match network {
+        "testnet" => ForkPoWConfig::testnet(),
+        "regtest" => ForkPoWConfig::test(),
+        _ => ForkPoWConfig::production(),
+    };
+
+    // Determine network mode for difficulty adjustment
+    let network_mode = match network {
+        "testnet" => crate::network::NetworkMode::Testnet,
+        "regtest" => crate::network::NetworkMode::Regtest,
+        _ => crate::network::NetworkMode::Mainnet,
+    };
+
+    // Get network-adjusted minimum difficulty for action type
+    let base_difficulty = config.get_difficulty(action_type);
+    let min_difficulty = network_mode.adjusted_difficulty(base_difficulty);
+    if pow_difficulty < min_difficulty {
+        return Err((
+            RpcErrorCode::PowInvalid,
+            format!(
+                "Difficulty {} too low for {:?} on {} (minimum {})",
+                pow_difficulty, action_type, network, min_difficulty
+            ),
+        ));
+    }
+
+    // Verify the PoW
+    let current_time = crate::crypto::current_timestamp();
+    verify_pow(&solution, &config, current_time).map_err(|e| {
+        (RpcErrorCode::PowInvalid, format!("PoW verification failed: {}", e))
+    })?;
+
+    info!("[RPC] PoW verified for {:?}: difficulty={}, nonce={}", action_type, pow_difficulty, pow_nonce);
+    Ok(())
+}
+
+/// Node reference for RPC methods
+pub struct NodeRef {
+    /// Node state
+    pub state: Arc<RwLock<NodeState>>,
+    /// Start time for uptime calculation
+    pub start_time: Instant,
+    /// Network mode (mainnet, testnet, regtest)
+    pub network: String,
+    /// Node ID (hex)
+    pub node_id: String,
+    /// P2P port
+    pub p2p_port: u16,
+    /// RPC port
+    pub rpc_port: u16,
+    /// Connection manager
+    pub connection_manager: Option<Arc<ConnectionManager>>,
+    /// Connection pool
+    pub connection_pool: Option<Arc<PeerConnectionPool>>,
+    /// Message router
+    pub router: Option<Arc<MessageRouter>>,
+    /// Sync state accessor
+    pub sync_state: Arc<RwLock<SyncState>>,
+    /// Data directory (contains config.toml, chain, content, etc.)
+    pub data_dir: std::path::PathBuf,
+    /// Content store path
+    pub content_store_path: std::path::PathBuf,
+    /// Sync blob store path
+    pub sync_blob_path: std::path::PathBuf,
+    /// Shared content store (opened once at startup)
+    pub content_store: Option<Arc<crate::storage::content::PersistentContentStore>>,
+    /// Decay integration for content lifecycle management
+    pub decay_integration: Option<Arc<DecayIntegration>>,
+    /// Block builder for block-based content propagation (SPEC_08)
+    pub block_builder: Option<Arc<std::sync::RwLock<crate::blocks::BlockBuilder>>>,
+    /// Content retrieval manager for view-to-host content fetching
+    pub content_retrieval: Option<Arc<ContentRetrievalManager>>,
+    /// Blocklist store for CSAM/illegal content filtering
+    /// Uses RwLock to allow network gossip handlers to store updates (C-BLOCKLIST-2)
+    pub blocklist: Option<Arc<std::sync::RwLock<BlocklistStore>>>,
+    /// Fork registry for fork mechanics
+    pub fork_registry: Option<Arc<crate::fork::ForkRegistry>>,
+    /// Chain store for blockchain data (blocks, actions)
+    pub chain_store: Option<Arc<ChainStore>>,
+    /// Transport for establishing new connections
+    pub transport: Option<Arc<crate::transport::TcpTransport>>,
+    /// DHT manager for content discovery (SPEC_06 §3.8)
+    pub dht: Option<Arc<crate::dht::DhtManager>>,
+    /// Aggregation cache for fast reply counts and space stats
+    pub aggregation_cache: Option<Arc<AggregationCache>>,
+    /// Spam attestation store for community flagging (SPEC_12 §3)
+    pub spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    /// Membership store for private spaces (DMs, group chats)
+    pub membership_store: Option<Arc<MembershipStore>>,
+    /// Sponsorship store for identity chain enforcement
+    pub sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
+    /// Offer store for public sponsorship offer lifecycle
+    pub offer_store: Option<Arc<crate::sponsorship::offer_store::OfferStore>>,
+    /// Node's identity keypair for signing
+    pub keypair: KeyPair,
+    /// Shutdown sender (for stop method)
+    pub shutdown_tx: broadcast::Sender<()>,
+    /// Display name for this node's identity (passed with actions)
+    pub identity_name: Arc<RwLock<Option<String>>>,
+}
+
+/// RPC method dispatcher
+pub struct RpcMethods {
+    node: Arc<NodeRef>,
+}
+
+impl RpcMethods {
+    /// Create new method dispatcher with node reference
+    pub fn new(node: Arc<NodeRef>) -> Self {
+        Self { node }
+    }
+
+    /// Get the network mode (mainnet, testnet, regtest)
+    pub fn network(&self) -> &str {
+        &self.node.network
+    }
+
+    /// Check if identity is sponsored and can perform actions.
+    ///
+    /// Enforces the sponsorship chain requirement for network integrity.
+    /// Returns Ok(()) if allowed, Err with response if denied.
+    ///
+    /// Behavior by network mode:
+    /// - Regtest: Always allowed (for testing)
+    /// - Testnet/Mainnet: Requires valid sponsorship chain
+    fn check_identity_sponsored(&self, author_id: &str, id: &Value) -> Result<(), RpcResponse> {
+        use crate::types::identity::PublicKey;
+
+        // Regtest mode allows all identities (for local testing)
+        if self.node.network == "regtest" {
+            return Ok(());
+        }
+
+        // Parse author_id
+        let author_bytes: [u8; 32] = match hex::decode(author_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return Err(RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid author_id: must be 32-byte hex",
+                    id.clone(),
+                ));
+            }
+        };
+
+        let pubkey = PublicKey::from_bytes(author_bytes);
+
+        // Check sponsorship store
+        let sponsorship_store = match &self.node.sponsorship_store {
+            Some(store) => store,
+            None => {
+                // If sponsorship store not initialized, reject action
+                // This prevents Sybil attacks during node startup window
+                warn!("[SPONSORSHIP] Store not initialized, rejecting action");
+                return Err(RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Node is still initializing. Please try again in a few seconds.",
+                    id.clone(),
+                ));
+            }
+        };
+
+        match sponsorship_store.can_identity_act(&pubkey) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                // Check mempool for pending Sponsor action (SPEC_11 §3.11)
+                // This allows newly sponsored identities to act before the block is formed
+                if let Some(ref block_builder) = self.node.block_builder {
+                    if let Ok(builder) = block_builder.read() {
+                        use crate::blocks::action::ActionType;
+                        let pending_actions = builder.get_pending_actions();
+                        for (_thread_id, _space_id, action) in pending_actions {
+                            if action.action_type == ActionType::Sponsor {
+                                if let Some(sponsee_bytes) = action.content_hash {
+                                    if sponsee_bytes == author_bytes {
+                                        log::debug!(
+                                            "[SPONSORSHIP] Found pending sponsorship in mempool for {}",
+                                            author_id
+                                        );
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                info!("[SPONSORSHIP] Rejected action from unsponsored identity: {}", author_id);
+                Err(RpcResponse::error(
+                    RpcErrorCode::IdentityNotSponsored,
+                    "Identity is not sponsored. You must be sponsored by an existing member to post.",
+                    id.clone(),
+                ))
+            }
+            Err(e) => {
+                warn!("[SPONSORSHIP] Error checking sponsorship: {}", e);
+                Err(RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to verify sponsorship: {}", e),
+                    id.clone(),
+                ))
+            }
+        }
+    }
+
+    /// Check if mempool PoW threshold is met and form a block if so.
+    ///
+    /// This should be called after adding actions to the mempool via RPC.
+    /// When cumulative PoW meets/exceeds the difficulty target, we form
+    /// and broadcast a block immediately - but only if this node is eligible
+    /// based on deterministic leader election.
+    async fn try_form_block_if_threshold_met(&self) {
+        use crate::blocks::leader::{BlockEligibility, DIFFICULTY_ADJUSTMENT_WINDOW};
+
+        let block_builder = match &self.node.block_builder {
+            Some(bb) => bb,
+            None => return,
+        };
+
+        // Get node identity for leader election
+        let node_identity: [u8; 32] = match hex::decode(&self.node.node_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                warn!("[BLOCKS] Invalid node_id, cannot check leader eligibility");
+                return;
+            }
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Lazy block formation: check if we should form, or wait for network
+        let (root, space_blocks, content_blocks) = {
+            let mut bb_write = match block_builder.write() {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!("[BLOCKS] Failed to acquire write lock for block formation: {}", e);
+                    return;
+                }
+            };
+
+            // Check if chain already has a block at expected height
+            // (someone else formed it - no need for us to form)
+            if let Some(ref chain_store) = self.node.chain_store {
+                let expected_height = bb_write.next_height();
+                if let Ok(Some(_)) = chain_store.get_root_hash_at_height(expected_height) {
+                    // Block already exists - reset waiting and sync our state
+                    bb_write.reset_waiting();
+                    debug!(
+                        "[BLOCKS] Block already exists at height {}, skipping formation",
+                        expected_height
+                    );
+                    return;
+                }
+
+                // === Leader Election Check ===
+                // Get previous block for eligibility calculation
+                if let Ok(Some(prev_block)) = chain_store.get_best_tip_block() {
+                    // Get recent block timestamps for difficulty adjustment
+                    let recent_timestamps: Vec<u64> = {
+                        let tip_height = prev_block.height;
+                        let start_height = tip_height.saturating_sub(DIFFICULTY_ADJUSTMENT_WINDOW as u64);
+                        let mut timestamps = Vec::new();
+                        for h in start_height..=tip_height {
+                            if let Ok(Some(hash)) = chain_store.get_root_hash_at_height(h) {
+                                if let Ok(Some(block)) = chain_store.get_root_block(&hash) {
+                                    timestamps.push(block.timestamp);
+                                }
+                            }
+                        }
+                        timestamps
+                    };
+
+                    // Create eligibility checker (global, not per-space since root blocks span all spaces)
+                    let eligibility = BlockEligibility::new(
+                        &prev_block.hash(),
+                        prev_block.timestamp,
+                        &[0u8; 16], // Global eligibility (not per-space)
+                        &recent_timestamps,
+                    );
+
+                    if !eligibility.is_eligible(&node_identity, now) {
+                        let eligible_pct = eligibility.eligible_percentage_at(now);
+                        debug!(
+                            "[BLOCKS] Not eligible to form block yet (current: {:.4}% of identities eligible)",
+                            eligible_pct
+                        );
+                        return;
+                    }
+
+                    info!(
+                        "[BLOCKS] Leader election passed! Node {} is eligible to form block",
+                        &self.node.node_id[..16]
+                    );
+                }
+                // If no previous block, we're forming genesis - always eligible
+            }
+
+            // Check if ready to form (lazy waiting: waits for network block first)
+            if !bb_write.should_form_root() {
+                return;
+            }
+
+            bb_write.build_root_block(now, node_identity, self.node.sponsorship_store.as_ref().map(|s| s.as_ref()))
+        };
+
+        let root_hash = root.hash();
+        info!(
+            "[BLOCKS] PoW threshold met! Formed block (height={}, pow={}, {} spaces, {} threads)",
+            root.height(),
+            root.total_pow,
+            space_blocks.len(),
+            content_blocks.len()
+        );
+
+        // Store blocks in ChainStore
+        if let Some(ref store) = self.node.chain_store {
+            // Store content blocks first (referenced by space blocks)
+            for content_block in &content_blocks {
+                if let Err(e) = store.put_content_block(content_block) {
+                    warn!("[BLOCKS] Failed to store content block: {}", e);
+                }
+            }
+
+            // Store space blocks (referenced by root block)
+            for space_block in &space_blocks {
+                if let Err(e) = store.put_space_block(space_block) {
+                    warn!("[BLOCKS] Failed to store space block: {}", e);
+                }
+            }
+
+            // Store root block and update canonical chain tip
+            match store.put_root_block_with_fork_resolution(&root) {
+                Ok((hash, is_canonical)) => {
+                    if is_canonical {
+                        info!(
+                            "[BLOCKS] Stored root block {} as NEW CANONICAL TIP (height={}, cumulative_pow={})",
+                            hex::encode(&hash[..8]),
+                            root.height(),
+                            root.cumulative_pow
+                        );
+                    } else {
+                        info!(
+                            "[BLOCKS] Stored root block {} (height={}, not canonical)",
+                            hex::encode(&hash[..8]),
+                            root.height()
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!("[BLOCKS] Failed to store root block: {}", e);
+                }
+            }
+        }
+
+        // Announce block to peers
+        if let Some(ref connection_pool) = self.node.connection_pool {
+            use crate::network::messages::BlockAnnouncePayload;
+            use crate::types::network::{MessageEnvelope, MessageType};
+
+            let announce = BlockAnnouncePayload::new(
+                root_hash,
+                root.height(),
+                root.total_pow,
+                space_blocks.len() as u32,
+                root.timestamp,
+            );
+
+            let envelope = MessageEnvelope::new_fork_agnostic(
+                MessageType::BlockAnnounce,
+                announce.to_bytes().to_vec(),
+            );
+
+            let sent = connection_pool.broadcast(&envelope).await;
+            info!(
+                "[BLOCKS] Announced block {} (height={}) to {} peers",
+                hex::encode(&root_hash[..8]),
+                root.height(),
+                sent
+            );
+        }
+    }
+
+    /// Dispatch a method call
+    pub async fn dispatch(&self, method: &str, params: Value, id: Value) -> RpcResponse {
+        debug!("RPC method: {} params: {}", method, params);
+
+        match method {
+            // Node status
+            "get_info" => self.get_info(id).await,
+            "get_peers" => self.get_peers(id).await,
+            "get_sync_status" => self.get_sync_status(id).await,
+            "get_chain_stats" => self.get_chain_stats(id).await,
+            "get_block" => self.get_block(params, id).await,
+            "get_content_block" => self.get_content_block(params, id).await,
+            "stop" => self.stop(id).await,
+
+            // Peer management
+            "add_peer" => self.add_peer(params, id).await,
+            "remove_peer" => self.remove_peer(params, id).await,
+
+            // Content submission
+            "submit_post" => self.submit_post(params, id).await,
+            "submit_reply" => self.submit_reply(params, id).await,
+            "submit_edit" => self.submit_edit(params, id).await,
+            "upload_media" => self.upload_media(params, id).await,
+            "get_media" => self.get_media(params, id).await,
+            "submit_engagement" => self.submit_engagement(params, id).await,
+
+            // Content query
+            "get_content" => self.get_content(params, id).await,
+            "list_spaces" => self.list_spaces(params, id).await,
+            "create_space" => self.create_space(params, id).await,
+            "list_space_content" => self.list_space_content(params, id).await,
+            "list_space_posts" => self.list_space_posts(params, id).await,
+            "get_user_posts" => self.get_user_posts(params, id).await,
+            "request_content" => self.request_content(params, id).await,
+            "get_replies" => self.get_replies(params, id).await,
+
+            // Identity methods
+            "get_identity_info" => self.get_identity_info(id).await,
+            "sign_message" => self.sign_message(params, id).await,
+            "get_identity_level" => self.get_identity_level(params, id).await,
+            "get_identity_name" => self.get_identity_name(id).await,
+            "set_identity_name" => self.set_identity_name(params, id).await,
+            "get_user_profile" => self.get_user_profile(params, id).await,
+
+            // Reaction methods (reactions come from PoW engagement via submit_engagement)
+            "get_reactions" => self.get_reactions(params, id).await,
+            "get_user_reactions" => self.get_user_reactions(params, id).await,
+            "get_chain_engagements" => self.get_chain_engagements(params, id).await,
+            "rebuild_reactions" => self.rebuild_reactions(id).await,
+
+            // Engagement pool methods
+            "create_pool" => self.create_pool(params, id).await,
+            "contribute_to_pool" => self.contribute_to_pool(params, id).await,
+            "get_pool_info" => self.get_pool_info(params, id).await,
+            "get_pool_for_content" => self.get_pool_for_content(params, id).await,
+
+            // Fork methods
+            "create_fork" => self.create_fork(params, id).await,
+            "switch_fork" => self.switch_fork(params, id).await,
+            "list_forks" => self.list_forks(id).await,
+            "get_fork_info" => self.get_fork_info(params, id).await,
+            "get_active_fork" => self.get_active_fork(id).await,
+
+            // Debug methods
+            "dht_status" => self.dht_status(id).await,
+            "content_providers" => self.content_providers(params, id).await,
+
+            // Verification methods
+            "verify_action_finalized" => self.verify_action_finalized(params, id).await,
+
+            // Spam attestation methods (SPEC_12 §3)
+            "submit_spam_attestation" => self.submit_spam_attestation(params, id).await,
+            "submit_counter_attestation" => self.submit_counter_attestation(params, id).await,
+            "get_spam_status" => self.get_spam_status(params, id).await,
+
+            // Private space methods (DMs, group chats)
+            "create_private_space" => self.create_private_space(params, id).await,
+            "invite_to_space" => self.invite_to_space(params, id).await,
+            "accept_invite" => self.accept_invite(params, id).await,
+            "decline_invite" => self.decline_invite(params, id).await,
+            "leave_space" => self.leave_space(params, id).await,
+            "kick_member" => self.kick_member(params, id).await,
+            "get_my_invites" => self.get_my_invites(params, id).await,
+            "get_space_members" => self.get_space_members(params, id).await,
+            "get_my_private_spaces" => self.get_my_private_spaces(params, id).await,
+            "get_pending_dm_requests" => self.get_pending_dm_requests(params, id).await,
+            "request_dm" => self.request_dm(params, id).await,
+            "accept_dm" => self.accept_dm(params, id).await,
+            "decline_dm" => self.decline_dm(params, id).await,
+
+            // Search methods
+            "search" => self.search(params, id).await,
+            "search_suggest" => self.search_suggest(params, id).await,
+            "trending_searches" => self.trending_searches(params, id).await,
+
+            // Sponsorship methods
+            "register_genesis_identity" => self.register_genesis_identity(params, id).await,
+            "register_sponsored_identity" => self.register_sponsored_identity(params, id).await,
+            "get_sponsorship_info" => self.get_sponsorship_info(params, id).await,
+
+            // Sponsorship offer lifecycle methods
+            "list_sponsorship_offers" => self.list_sponsorship_offers(params, id).await,
+            "get_sponsorship_offer" => self.get_sponsorship_offer(params, id).await,
+            "create_sponsorship_offer" => self.create_sponsorship_offer(params, id).await,
+            "claim_sponsorship_offer" => self.claim_sponsorship_offer(params, id).await,
+            "approve_sponsorship_claim" => self.approve_sponsorship_claim(params, id).await,
+            "reject_sponsorship_claim" => self.reject_sponsorship_claim(params, id).await,
+            "cancel_sponsorship_offer" => self.cancel_sponsorship_offer(params, id).await,
+            "list_my_sponsorship_offers" => self.list_my_sponsorship_offers(params, id).await,
+            "get_my_claim_status" => self.get_my_claim_status(params, id).await,
+
+            // Unknown method
+            _ => {
+                warn!("Unknown RPC method: {}", method);
+                RpcResponse::error(
+                    RpcErrorCode::MethodNotFound,
+                    &format!("Method not found: {}", method),
+                    id,
+                )
+            }
+        }
+    }
+
+    // ========================================================================
+    // Node Status Methods
+    // ========================================================================
+
+    async fn get_info(&self, id: Value) -> RpcResponse {
+        let state = *self.node.state.read().await;
+        let uptime = self.node.start_time.elapsed().as_secs();
+        let peer_count = self.node.connection_manager
+            .as_ref()
+            .map(|cm| cm.connection_count())
+            .unwrap_or(0);
+
+        // Get actual chain height from chain store
+        let block_height = self.node.chain_store
+            .as_ref()
+            .and_then(|cs| cs.get_latest_height().ok().flatten())
+            .unwrap_or(0);
+
+        let result = GetInfoResult {
+            version: VERSION.to_string(),
+            network: self.node.network.clone(),
+            uptime_seconds: uptime,
+            peer_count,
+            block_height,
+            node_id: self.node.node_id.clone(),
+            rpc_port: self.node.rpc_port,
+            p2p_port: self.node.p2p_port,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    async fn get_peers(&self, id: Value) -> RpcResponse {
+        let peers: Vec<PeerInfoResult> = self.node.connection_manager
+            .as_ref()
+            .map(|cm| {
+                cm.get_connections()
+                    .into_iter()
+                    .map(|handle| PeerInfoResult {
+                        peer_id: hex::encode(handle.peer_id),
+                        address: handle.remote_addr.to_string(),
+                        direction: format!("{:?}", handle.direction),
+                        connected_seconds: handle.connected_at.elapsed().as_secs(),
+                        user_agent: String::new(), // Not tracked in handle currently
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        RpcResponse::success(serde_json::to_value(peers).unwrap(), id)
+    }
+
+    async fn get_sync_status(&self, id: Value) -> RpcResponse {
+        let sync_state = *self.node.sync_state.read().await;
+
+        // Get peer count
+        let peer_count = self.node.connection_manager
+            .as_ref()
+            .map(|cm| cm.get_connections().len() as u64)
+            .unwrap_or(0);
+
+        // Calculate chain sync percentage
+        let (state, chain_percent) = match sync_state {
+            SyncState::Idle => {
+                if peer_count == 0 {
+                    ("offline".to_string(), 0)
+                } else {
+                    ("synced".to_string(), 100)
+                }
+            }
+            SyncState::SyncingHeaders { current, target } |
+            SyncState::SyncingBlocks { current, target } => {
+                let pct = if target > 0 { (current as f64 / target as f64 * 100.0) as u8 } else { 0 };
+                ("syncing".to_string(), pct.min(99)) // Cap at 99% while syncing
+            }
+            SyncState::Continuous => ("synced".to_string(), 100),
+            SyncState::Error => ("behind".to_string(), 0),
+        };
+
+        // Calculate storage usage
+        let storage_mb = self.calculate_storage_mb().await;
+
+        // Get storage target from config (default 500MB)
+        let storage_target_mb = 500u64;
+
+        // Get actual chain height and tip hash from chain store
+        let (chain_height, tip_hash) = match &self.node.chain_store {
+            Some(cs) => {
+                let height = cs.get_latest_height().ok().flatten().unwrap_or(0);
+                let hash = if height > 0 {
+                    cs.get_root_hash_at_height(height)
+                        .ok()
+                        .flatten()
+                        .map(|h| hex::encode(&h[..8])) // First 8 bytes (16 hex chars) for display
+                } else {
+                    None
+                };
+                (height, hash)
+            }
+            None => (0, None),
+        };
+
+        // Last block time - get from the chain tip
+        let last_block_time: Option<u64> = match &self.node.chain_store {
+            Some(cs) => cs.get_best_tip_block().ok().flatten().map(|b| b.timestamp),
+            None => None,
+        };
+
+        // Get mempool/block builder status
+        let (mempool_pow, mempool_threshold, mempool_actions, mempool_waiting_secs) =
+            if let Some(ref bb) = self.node.block_builder {
+                if let Ok(bb_read) = bb.read() {
+                    let pow = bb_read.total_pow();
+                    let threshold = bb_read.difficulty_threshold();
+                    let actions = bb_read.pending_action_count() as u64;
+                    let waiting = bb_read.waiting_seconds();
+                    (pow, threshold, actions, waiting)
+                } else {
+                    (0, 0, 0, 0)
+                }
+            } else {
+                (0, 0, 0, 0)
+            };
+
+        // Compute leader election status
+        let (node_identity, leader_distance, leader_threshold, leader_eligible, leader_eta_secs) = {
+            // Parse node_id from hex string
+            let node_id: [u8; 32] = match hex::decode(&self.node.node_id) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => [0u8; 32], // Fallback if node_id is invalid
+            };
+            let node_identity_hex = self.node.node_id[..16].to_string(); // First 16 hex chars
+
+            // Get tip hash and timestamp for seed computation
+            // We can use just the hash as seed even if block data is corrupt
+            if let Some(ref cs) = self.node.chain_store {
+                // Try to get tip hash - this works even if block data is corrupt
+                let tip_hash_opt = cs.get_best_tip().ok().flatten()
+                    .or_else(|| {
+                        // Fallback: get hash at latest height
+                        cs.get_latest_height().ok().flatten()
+                            .and_then(|h| cs.get_root_hash_at_height(h).ok().flatten())
+                    });
+
+                // Try to get timestamp from tip block if possible, fallback to current time
+                let tip_timestamp = cs.get_best_tip_block()
+                    .ok()
+                    .flatten()
+                    .map(|b| b.timestamp)
+                    .unwrap_or_else(|| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0)
+                    });
+
+                if let Some(tip_hash) = tip_hash_opt {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+
+                    // Get recent timestamps for difficulty calculation (if blocks available)
+                    // If blocks are corrupt, use empty timestamps (less accurate difficulty, but still works)
+                    let recent_timestamps = {
+                        let tip_height = cs.get_latest_height().ok().flatten().unwrap_or(0);
+                        let start_height = tip_height.saturating_sub(10);
+                        let mut timestamps = Vec::new();
+                        for h in start_height..=tip_height {
+                            if let Ok(Some(hash)) = cs.get_root_hash_at_height(h) {
+                                if let Ok(Some(block)) = cs.get_root_block(&hash) {
+                                    timestamps.push(block.timestamp);
+                                }
+                            }
+                        }
+                        timestamps
+                    };
+
+                    // Create eligibility checker (use global space for now)
+                    // Use tip_hash directly and tip_timestamp for seed
+                    let eligibility = crate::blocks::leader::BlockEligibility::new(
+                        &tip_hash,
+                        tip_timestamp,
+                        &[0u8; 16], // Global space
+                        &recent_timestamps,
+                    );
+
+                    // Get distance and threshold (first 8 bytes as u64 for display)
+                    let distance_bytes = eligibility.distance(&node_id);
+                    let threshold_bytes = eligibility.threshold_at(now);
+
+                    // Convert first 8 bytes to u64 for display
+                    let distance_u64 = u64::from_be_bytes([
+                        distance_bytes[0], distance_bytes[1], distance_bytes[2], distance_bytes[3],
+                        distance_bytes[4], distance_bytes[5], distance_bytes[6], distance_bytes[7],
+                    ]);
+                    let threshold_u64 = u64::from_be_bytes([
+                        threshold_bytes[0], threshold_bytes[1], threshold_bytes[2], threshold_bytes[3],
+                        threshold_bytes[4], threshold_bytes[5], threshold_bytes[6], threshold_bytes[7],
+                    ]);
+
+                    let is_eligible = eligibility.is_eligible(&node_id, now);
+
+                    // Calculate ETA using when_eligible
+                    let eta_secs = if is_eligible {
+                        0
+                    } else {
+                        match eligibility.when_eligible(&node_id, now) {
+                            Some(eligible_time) => eligible_time.saturating_sub(now),
+                            None => 0, // Already eligible
+                        }
+                    };
+
+                    (
+                        Some(node_identity_hex),
+                        Some(distance_u64),
+                        Some(threshold_u64),
+                        Some(is_eligible),
+                        Some(eta_secs),
+                    )
+                } else {
+                    (Some(node_identity_hex), None, None, None, None)
+                }
+            } else {
+                (Some(node_identity_hex), None, None, None, None)
+            }
+        };
+
+        let result = GetSyncStatusResult {
+            state,
+            chain_percent,
+            peer_count,
+            chain_height,
+            tip_hash,
+            storage_mb,
+            storage_target_mb,
+            last_block_time,
+            mempool_pow,
+            mempool_threshold,
+            mempool_actions,
+            mempool_waiting_secs,
+            node_identity,
+            leader_distance,
+            leader_threshold,
+            leader_eligible,
+            leader_eta_secs,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    async fn get_chain_stats(&self, id: Value) -> RpcResponse {
+        use super::error::RpcErrorCode;
+
+        let chain_store = match &self.node.chain_store {
+            Some(cs) => cs,
+            None => {
+                return RpcResponse::error(RpcErrorCode::InternalError, "Chain store not available", id);
+            }
+        };
+
+        // Get latest height
+        let latest_height = chain_store.get_latest_height().ok().flatten();
+
+        // Use the built-in count methods which are more efficient
+        let root_blocks = chain_store.root_block_count().unwrap_or(0);
+        let space_blocks = chain_store.space_block_count().unwrap_or(0);
+        let content_blocks = chain_store.content_block_count().unwrap_or(0);
+        let total_storage_bytes = chain_store.total_bytes();
+
+        // Get registered spaces count by iterating
+        let registered_spaces = chain_store.list_spaces().filter(|r| r.is_ok()).count() as u64;
+
+        let result = super::types::GetChainStatsResult {
+            latest_height,
+            root_blocks,
+            space_blocks,
+            content_blocks,
+            registered_spaces,
+            total_storage_bytes,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    async fn get_block(&self, params: Value, id: Value) -> RpcResponse {
+        use super::error::RpcErrorCode;
+        use super::types::{GetBlockParams, GetBlockResult, SpaceBlockInfo};
+
+        let params: GetBlockParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, &format!("Invalid params: {}", e), id);
+            }
+        };
+
+        let chain_store = match &self.node.chain_store {
+            Some(cs) => cs,
+            None => {
+                return RpcResponse::error(RpcErrorCode::InternalError, "Chain store not available", id);
+            }
+        };
+
+        // Get root block hash at this height
+        let root_hash = match chain_store.get_root_hash_at_height(params.height) {
+            Ok(Some(hash)) => hash,
+            Ok(None) => {
+                return RpcResponse::error(RpcErrorCode::ContentNotFound, &format!("No block at height {}", params.height), id);
+            }
+            Err(e) => {
+                return RpcResponse::error(RpcErrorCode::StorageError, &format!("Storage error: {}", e), id);
+            }
+        };
+
+        // Get the root block
+        let root_block = match chain_store.get_root_block(&root_hash) {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                return RpcResponse::error(RpcErrorCode::ContentNotFound, "Root block not found", id);
+            }
+            Err(e) => {
+                return RpcResponse::error(RpcErrorCode::StorageError, &format!("Storage error: {}", e), id);
+            }
+        };
+
+        // Collect space block info
+        let mut space_blocks = Vec::new();
+        for space_hash in &root_block.space_block_hashes {
+            if let Ok(Some(space_block)) = chain_store.get_space_block(space_hash) {
+                let content_hashes: Vec<String> = space_block.content_block_hashes
+                    .iter()
+                    .map(hex::encode)
+                    .collect();
+
+                space_blocks.push(SpaceBlockInfo {
+                    hash: hex::encode(space_hash),
+                    space_id: hex::encode(space_block.space_id),
+                    content_block_count: space_block.content_block_count,
+                    content_hashes,
+                });
+            }
+        }
+
+        let result = GetBlockResult {
+            height: root_block.height,
+            hash: hex::encode(root_hash),
+            prev_hash: hex::encode(root_block.prev_root_hash),
+            timestamp: root_block.timestamp,
+            total_pow: root_block.total_pow,
+            space_blocks,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Get content block by hash
+    async fn get_content_block(&self, params: Value, id: Value) -> RpcResponse {
+        use super::error::RpcErrorCode;
+        use super::types::{GetContentBlockParams, GetContentBlockResult, ActionInfo};
+        use crate::blocks::action::ActionType;
+
+        let params: GetContentBlockParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, &format!("Invalid params: {}", e), id);
+            }
+        };
+
+        // Parse the hash
+        let hash_bytes = match hex::decode(&params.hash) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            Ok(_) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Hash must be 32 bytes (64 hex chars)", id);
+            }
+            Err(e) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, &format!("Invalid hex: {}", e), id);
+            }
+        };
+
+        let chain_store = match &self.node.chain_store {
+            Some(cs) => cs,
+            None => {
+                return RpcResponse::error(RpcErrorCode::InternalError, "Chain store not available", id);
+            }
+        };
+
+        // Get the content block
+        let content_block = match chain_store.get_content_block(&hash_bytes) {
+            Ok(Some(block)) => block,
+            Ok(None) => {
+                return RpcResponse::error(RpcErrorCode::ContentNotFound, "Content block not found", id);
+            }
+            Err(e) => {
+                return RpcResponse::error(RpcErrorCode::StorageError, &format!("Storage error: {}", e), id);
+            }
+        };
+
+        // Convert space ID to bech32
+        let space_id_bech32 = {
+            use bech32::{Bech32m, Hrp};
+            let hrp = Hrp::parse("sp").expect("valid HRP");
+            let mut data = Vec::with_capacity(17);
+            data.push(0); // version byte
+            data.extend_from_slice(&content_block.space_id[..16]);
+            bech32::encode::<Bech32m>(hrp, &data).unwrap_or_else(|_| hex::encode(&content_block.space_id[..16]))
+        };
+
+        // Convert actions to ActionInfo
+        let actions: Vec<ActionInfo> = content_block.actions.iter().map(|action| {
+            // Convert actor to bech32 address
+            let actor_address = {
+                use bech32::{Bech32m, Hrp};
+                let hrp = Hrp::parse("cs").expect("valid HRP");
+                let mut data = Vec::with_capacity(33);
+                data.push(1); // version byte
+                data.extend_from_slice(&action.actor);
+                bech32::encode::<Bech32m>(hrp, &data).unwrap_or_else(|_| hex::encode(action.actor))
+            };
+
+            let action_type_str = match action.action_type {
+                ActionType::CreateSpace => "CreateSpace",
+                ActionType::Post => "Post",
+                ActionType::Reply => "Reply",
+                ActionType::Engage => "Engage",
+                ActionType::Edit => "Edit",
+                // Private space actions
+                ActionType::Invite => "Invite",
+                ActionType::Leave => "Leave",
+                ActionType::Kick => "Kick",
+                ActionType::RevokeInvite => "RevokeInvite",
+                ActionType::KeyRotation => "KeyRotation",
+                ActionType::DMRequest => "DMRequest",
+                ActionType::AcceptDM => "AcceptDM",
+                ActionType::DeclineDM => "DeclineDM",
+                // Sponsorship actions
+                ActionType::Sponsor => "Sponsor",
+                ActionType::GenesisRegister => "GenesisRegister",
+            };
+
+            ActionInfo {
+                action_type: action_type_str.to_string(),
+                actor: hex::encode(action.actor),
+                actor_address,
+                timestamp: action.timestamp,
+                content_id: action.content_hash.map(|h| format!("sha256:{}", hex::encode(h))),
+                parent_id: action.parent_id.map(|h| format!("sha256:{}", hex::encode(h))),
+                pow_work: action.pow_work,
+                emoji: action.emoji,
+            }
+        }).collect();
+
+        let result = GetContentBlockResult {
+            hash: params.hash,
+            thread_root_id: format!("sha256:{}", hex::encode(content_block.thread_root_id)),
+            space_id: space_id_bech32,
+            timestamp: content_block.timestamp,
+            total_pow: content_block.total_pow,
+            action_count: actions.len(),
+            actions,
+            merkle_root: hex::encode(content_block.merkle_root),
+            prev_content_hash: content_block.prev_content_hash.map(hex::encode),
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Calculate storage usage in MB from data directory
+    async fn calculate_storage_mb(&self) -> u64 {
+        use std::fs;
+
+        let data_dir = &self.node.data_dir;
+
+        fn dir_size(path: &std::path::Path) -> u64 {
+            let mut size = 0u64;
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        size += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    } else if path.is_dir() {
+                        size += dir_size(&path);
+                    }
+                }
+            }
+            size
+        }
+
+        let total_bytes = dir_size(data_dir);
+        total_bytes / (1024 * 1024) // Convert to MB
+    }
+
+    async fn stop(&self, id: Value) -> RpcResponse {
+        // Send shutdown signal
+        let _ = self.node.shutdown_tx.send(());
+
+        RpcResponse::success(json!({"stopping": true}), id)
+    }
+
+    // ========================================================================
+    // Peer Management Methods
+    // ========================================================================
+
+    async fn add_peer(&self, params: Value, id: Value) -> RpcResponse {
+        let params: AddPeerParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let addr: SocketAddr = match params.address.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid address: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Get transport for establishing connection
+        let transport = match &self.node.transport {
+            Some(t) => t.clone(),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Transport not available",
+                    id,
+                );
+            }
+        };
+
+        // Connect to peer
+        let conn = match transport.connect(addr).await {
+            Ok(c) => c,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to connect to {}: {:?}", addr, e),
+                    id,
+                );
+            }
+        };
+
+        info!("[RPC] Connected to peer {}", addr);
+
+        // Get peer info from handshake
+        let peer_info = conn.peer_info().cloned();
+        let remote_addr = conn.remote_addr();
+
+        let peer_id = match peer_info {
+            Some(info) => info.node_id,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Peer handshake failed - no peer info",
+                    id,
+                );
+            }
+        };
+
+        // Register with ConnectionManager
+        if let Some(ref cm) = self.node.connection_manager {
+            if let Err(e) = cm.add_connection(
+                peer_id,
+                remote_addr,
+                crate::transport::ConnectionDirection::Outbound,
+            ) {
+                warn!("[RPC] Failed to register outbound connection: {}", e);
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to register connection: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Add to connection pool and spawn message read loop
+        if let (Some(ref pool), Some(ref router), Some(ref cm)) = (
+            &self.node.connection_pool,
+            &self.node.router,
+            &self.node.connection_manager,
+        ) {
+            let established = conn.is_established();
+            let stream = conn.into_stream();
+            let peer_conn = pool.add(stream, peer_id, established).await;
+
+            // Spawn message read loop for this outbound connection
+            let router_clone = router.clone();
+            let pool_clone = pool.clone();
+            let cm_clone = cm.clone();
+
+            tokio::spawn(async move {
+                crate::node::tasks::BackgroundTaskRunner::message_read_loop(
+                    peer_conn,
+                    peer_id,
+                    router_clone,
+                    pool_clone,
+                    cm_clone,
+                )
+                .await;
+            });
+
+            info!(
+                "[RPC] Outbound connection to {} ({}) fully integrated",
+                remote_addr,
+                hex::encode(&peer_id[..8])
+            );
+
+            RpcResponse::success(
+                json!({
+                    "added": true,
+                    "address": addr.to_string(),
+                    "peer_id": hex::encode(&peer_id[..16])
+                }),
+                id,
+            )
+        } else {
+            RpcResponse::error(
+                RpcErrorCode::InternalError,
+                "Connection pool or router not available",
+                id,
+            )
+        }
+    }
+
+    async fn remove_peer(&self, params: Value, id: Value) -> RpcResponse {
+        let params: RemovePeerParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let peer_id = match hex::decode(&params.peer_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid peer ID (must be 32-byte hex)",
+                    id,
+                );
+            }
+        };
+
+        // Remove from connection manager
+        if let Some(ref cm) = self.node.connection_manager {
+            use crate::node::connection_event::DisconnectReason;
+            if cm.remove_connection(&peer_id, DisconnectReason::Normal).is_some() {
+                return RpcResponse::success(json!({"removed": true}), id);
+            }
+        }
+
+        RpcResponse::error(RpcErrorCode::PeerNotFound, "Peer not found", id)
+    }
+
+    // ========================================================================
+    // Content Submission Methods
+    // ========================================================================
+
+    async fn submit_post(&self, params: Value, id: Value) -> RpcResponse {
+        let params: SubmitPostParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate space ID format
+        if !params.space_id.starts_with("sp1") {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid space ID format (must start with sp1)",
+                id,
+            );
+        }
+
+        // SPONSORSHIP CHECK: Verify identity is sponsored before allowing action
+        if let Err(response) = self.check_identity_sponsored(&params.author_id, &id) {
+            return response;
+        }
+
+        // Validate signature
+        let signature_bytes = match hex::decode(&params.signature) {
+            Ok(bytes) if bytes.len() == 64 => bytes,
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid signature (must be 64-byte hex)",
+                    id,
+                );
+            }
+        };
+
+        // Create content hash from post body
+        let post_content = format!("{}\n\n{}", params.title, params.body);
+        let content_hash = crate::crypto::sha256(post_content.as_bytes());
+        let content_id = format!("sha256:{}", hex::encode(content_hash));
+
+        // BLOCKLIST CHECK: Reject content that matches blocklist entries
+        // This is the first line of defense against CSAM and illegal content
+        if let Some(ref blocklist) = self.node.blocklist {
+            let store = blocklist.read().unwrap();
+            if store.is_blocked(&content_hash) {
+                warn!(
+                    "[BLOCKLIST] Rejected POST from {} - content matches blocklist",
+                    hex::encode(&content_hash[..8])
+                );
+                return RpcResponse::error(
+                    RpcErrorCode::ContentBlocked,
+                    "This content matches the signature of known harmful material. If you believe this is an error, please contact support.",
+                    id,
+                );
+            }
+        }
+
+        // Validate PoW - this is the core anti-spam mechanism
+        if let Err((code, msg)) = verify_pow_submission(
+            ActionType::Post,
+            post_content.as_bytes(),
+            &params.author_id,
+            params.pow_nonce,
+            params.pow_difficulty,
+            &params.pow_nonce_space,
+            &params.pow_hash,
+            params.timestamp,
+            &self.node.network,
+        ) {
+            return RpcResponse::error(code, &msg, id);
+        }
+
+        // Store in sync blob store
+        if let Ok(blob_store) = BlobStore::new(&self.node.sync_blob_path) {
+            let _ = blob_store.put(post_content.as_bytes());
+        }
+
+        // Parse author_id for BlockBuilder action
+        let author_bytes: [u8; 32] = hex::decode(&params.author_id)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or([0u8; 32]);
+
+        // Parse space_id from bech32m format (sp1...) to 16-byte identifier
+        // Then pad to 32 bytes for internal SpaceId type
+        let space_id_16: [u8; 16] = match decode_space_id(&params.space_id) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid space_id: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate space exists on-chain before allowing posts
+        if let Some(ref chain_store) = self.node.chain_store {
+            match chain_store.space_exists(&space_id_16) {
+                Ok(true) => {
+                    // Space exists, proceed
+                }
+                Ok(false) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::SpaceNotFound,
+                        &format!("Space {} does not exist. Create it first with 'space create'.", params.space_id),
+                        id,
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to check space existence: {}", e);
+                    // On error, fail closed - require space to be verifiable
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        &format!("Failed to verify space existence: {}", e),
+                        id,
+                    );
+                }
+            }
+        }
+
+        // Convert 16-byte space_id to 32-byte internal format (padded with zeros)
+        let mut space_id_bytes: [u8; 32] = [0u8; 32];
+        space_id_bytes[..16].copy_from_slice(&space_id_16);
+
+        // Add action to BlockBuilder for block-based propagation (SPEC_08)
+        if let Some(ref block_builder) = self.node.block_builder {
+            // Create signature bytes
+            let mut signature_bytes_arr = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    signature_bytes_arr.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            // Estimate PoW work (inversely proportional to difficulty)
+            let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
+
+            // Convert params media_refs to ActionMediaRef
+            let action_media_refs: Vec<crate::blocks::action::ActionMediaRef> = params.media_refs.iter()
+                .filter_map(|mr| {
+                    let hash_bytes = hex::decode(&mr.media_hash).ok()?;
+                    if hash_bytes.len() != 32 {
+                        return None;
+                    }
+                    let mut hash_arr = [0u8; 32];
+                    hash_arr.copy_from_slice(&hash_bytes);
+
+                    let media_type = match mr.media_type.as_str() {
+                        "image/jpeg" => crate::blocks::action::ActionMediaRef::TYPE_JPEG,
+                        "image/png" => crate::blocks::action::ActionMediaRef::TYPE_PNG,
+                        "image/gif" => crate::blocks::action::ActionMediaRef::TYPE_GIF,
+                        "image/webp" => crate::blocks::action::ActionMediaRef::TYPE_WEBP,
+                        _ => return None,
+                    };
+
+                    Some(crate::blocks::action::ActionMediaRef::new(hash_arr, media_type, mr.size_bytes))
+                })
+                .take(crate::blocks::action::MAX_MEDIA_REFS)
+                .collect();
+
+            // Parse replaces_pending if provided (for Replace-In-Mempool)
+            let replaces_pending: Option<[u8; 32]> = params.replaces_pending.as_ref().and_then(|hex_str| {
+                hex::decode(hex_str).ok().and_then(|bytes| {
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                })
+            });
+
+            let action = Action {
+                action_type: crate::blocks::ActionType::Post,
+                actor: author_bytes,
+                timestamp: params.timestamp,
+                content_hash: Some(content_hash),
+                parent_id: None,
+                pow_nonce: params.pow_nonce,
+                pow_work,
+                pow_target: crate::crypto::sha256(&params.pow_hash.as_bytes()),
+                signature: signature_bytes_arr,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: action_media_refs,
+                replaces_pending,
+            };
+
+            // Thread ID is the content hash for a new post
+            let thread_id = content_hash;
+
+            // Add to block builder
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    let added = builder.add_action(thread_id, space_id_bytes, action.clone(), BranchPath::root());
+                    if added {
+                        info!("[BLOCKS] Added POST action to block builder, total_pow={}", builder.total_pow());
+                    }
+                    added
+                }
+                Err(e) => {
+                    warn!("[BLOCKS] Failed to acquire block builder lock for POST: {:?}", e);
+                    false
+                }
+            };
+
+            // Broadcast action to peers (mempool gossip)
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    // Broadcast to all peers
+                    let peers = pool.peer_ids().await;
+                    for peer_id in peers {
+                        if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                            debug!("[MEMPOOL] Failed to broadcast POST action to peer {}: {}",
+                                   hex::encode(&peer_id[..8]), e);
+                        }
+                    }
+                    info!("[MEMPOOL] Broadcast POST action to peers (thread={})", hex::encode(&thread_id[..8]));
+
+                    // Check if PoW threshold met - form block immediately if so
+                    self.try_form_block_if_threshold_met().await;
+                }
+            }
+        } else {
+            warn!("[BLOCKS] No block_builder available for POST action");
+        }
+
+        // Create and store ContentItem in content store (so get_content and list work)
+        if let Some(ref content_store) = self.node.content_store {
+            use crate::types::content::{ContentItem, ContentType, ContentId, SpaceId, MediaRef, MediaType, ContentHash};
+            use crate::types::identity::{IdentityId, Signature};
+
+            // Create Signature from bytes
+            let mut sig_arr = [0u8; 64];
+            sig_arr.copy_from_slice(&signature_bytes);
+            let signature = Signature::from_bytes(sig_arr);
+
+            // Parse media_refs from params
+            let media_refs: Vec<MediaRef> = params.media_refs.iter().filter_map(|mr| {
+                // Parse media hash (hex string to ContentHash)
+                let hash_bytes = hex::decode(&mr.media_hash).ok()?;
+                if hash_bytes.len() != 32 {
+                    return None;
+                }
+                let mut hash_arr = [0u8; 32];
+                hash_arr.copy_from_slice(&hash_bytes);
+                let media_hash = ContentHash::from_bytes(hash_arr);
+
+                // Parse media type
+                let media_type = match mr.media_type.as_str() {
+                    "image/jpeg" => MediaType::ImageJpeg,
+                    "image/png" => MediaType::ImagePng,
+                    "image/gif" => MediaType::ImageGif,
+                    "image/webp" => MediaType::ImageWebp,
+                    _ => return None,
+                };
+
+                Some(MediaRef {
+                    media_hash,
+                    media_type,
+                    size_bytes: mr.size_bytes,
+                    inline_preview: None, // Could add thumbnail later
+                })
+            }).collect();
+
+            let now = params.timestamp;
+            let content_item = ContentItem {
+                content_id: ContentId::from_bytes(content_hash),
+                content_type: ContentType::Post,
+                author_id: IdentityId::from_bytes(author_bytes),
+                space_id: SpaceId::from_bytes(space_id_bytes),
+                parent_id: None,
+                created_at: now,
+                last_engagement: now,
+                body_inline: Some(post_content.clone()),
+                content_hash: None,
+                content_size: Some(post_content.len() as u32),
+                content_type_mime: Some("text/plain".to_string()),
+                media_refs,
+                pin_state: None,
+                engagement_count: 0,
+                signature,
+                pow_nonce: params.pow_nonce,
+                pow_difficulty: params.pow_difficulty,
+                preservation_pow: None,
+                display_name: self.node.identity_name.read().await.clone(),
+            };
+
+            match content_store.put(&content_item) {
+                Ok(()) => {
+                    if let Err(e) = content_store.flush() {
+                        warn!("Failed to flush content store after post: {}", e);
+                    }
+                    info!("[POST] Stored ContentItem for post {}", &content_id[..24]);
+                }
+                Err(e) if e.to_string().contains("already exists") => {
+                    debug!("Post already exists in content store: {}", content_id);
+                }
+                Err(e) => {
+                    warn!("Failed to store post ContentItem: {}", e);
+                }
+            }
+        }
+
+        // Register content for decay tracking
+        if let Some(ref decay) = self.node.decay_integration {
+            use crate::content::decay_integration::DecayMetadata;
+            let metadata = DecayMetadata {
+                blob_hash: content_hash,
+                content_id: content_hash,
+                author_id: author_bytes,
+                space_id: space_id_bytes,
+                content_type: 0, // Post
+                parent_id: None,
+                created_at: params.timestamp * 1000,
+                last_engagement: params.timestamp * 1000,
+                engagement_count: 0,
+                content_size: post_content.len() as u64,
+                is_pinned: false,
+            };
+            if let Err(e) = decay.register(metadata) {
+                warn!("[DECAY] Failed to register post for decay: {}", e);
+            } else {
+                info!("[DECAY] Registered post {} for decay tracking", &content_id[..24]);
+            }
+        }
+
+        // Broadcast via DHT + I_HAVE
+        let mut recipients = 0;
+
+        // Step 1: Record in local DHT store
+        if let Some(ref dht) = self.node.dht {
+            dht.add_local_content(content_hash).await;
+        }
+
+        // Step 2: Broadcast DHT_STORE and I_HAVE to connected peers
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::types::network::{MessageEnvelope, MessageType};
+            use crate::dht::{DhtMessage, NodeId as DhtNodeId, constants::MSG_DHT_STORE};
+
+            // Create signed DHT_STORE message for network-wide discoverability (Kademlia STORE)
+            let node_id_bytes: [u8; 32] = hex::decode(&self.node.node_id)
+                .unwrap_or_default()
+                .try_into()
+                .unwrap_or([0u8; 32]);
+            let node_id = DhtNodeId::from_bytes(node_id_bytes);
+            let local_addr = std::net::SocketAddr::from(([0, 0, 0, 0], self.node.p2p_port));
+            let public_key = self.node.keypair.public_key.0;
+
+            // Sign the provider claim
+            let signing_msg = ProviderRecord::signing_message(&content_hash, &node_id, &local_addr);
+            let signature = ed25519_sign(&self.node.keypair.private_key, &signing_msg);
+
+            let dht_store_msg = DhtMessage::Store {
+                content_hash,
+                ttl: 0,
+                public_key,
+                signature: signature.0,
+            };
+            let dht_store_bytes = dht_store_msg.to_bytes();
+            let mut dht_payload = vec![MSG_DHT_STORE];
+            dht_payload.extend_from_slice(&dht_store_bytes);
+
+            let dht_envelope = MessageEnvelope::new_fork_agnostic(
+                MessageType::DhtStore,
+                dht_payload,
+            );
+            let dht_sent = pool.broadcast(&dht_envelope).await;
+            debug!("[POST] Sent DHT_STORE for {} to {} peers", &content_id[..24], dht_sent);
+
+            // Send I_HAVE for immediate availability
+            let i_have = MessageEnvelope::new_fork_agnostic(
+                MessageType::IHave,
+                content_hash.to_vec(),
+            );
+            recipients = pool.broadcast(&i_have).await;
+            info!("[POST] Sent I_HAVE for {} to {} peers", &content_id[..24], recipients);
+        }
+
+        let result = SubmitPostResult {
+            content_id,
+            broadcast: recipients > 0,
+            recipients,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Upload media (images) for attachment to posts
+    async fn upload_media(&self, params: Value, id: Value) -> RpcResponse {
+        use super::types::{UploadMediaParams, UploadMediaResult};
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+        let params: UploadMediaParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate media type
+        let _media_type_code = match params.media_type.as_str() {
+            "image/jpeg" => 0x01u8,
+            "image/png" => 0x02u8,
+            "image/gif" => 0x03u8,
+            "image/webp" => 0x04u8,
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid media_type: must be image/jpeg, image/png, image/gif, or image/webp",
+                    id,
+                );
+            }
+        };
+
+        // Decode base64 data
+        let media_bytes = match BASE64.decode(&params.data) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid base64 data: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate size (max 1MB per media - protocol enforced)
+        use crate::types::constants::MAX_MEDIA_SIZE;
+        if media_bytes.len() > MAX_MEDIA_SIZE {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!("Media too large: {} bytes (max {} bytes)", media_bytes.len(), MAX_MEDIA_SIZE),
+                id,
+            );
+        }
+
+        // Hash the media
+        let media_hash = crate::crypto::sha256(&media_bytes);
+        let media_hash_hex = hex::encode(media_hash);
+
+        // BLOCKLIST CHECK: Reject media that matches blocklist
+        if let Some(ref blocklist) = self.node.blocklist {
+            let store = blocklist.read().unwrap();
+            if store.is_blocked(&media_hash) {
+                warn!(
+                    "[BLOCKLIST] Rejected MEDIA from {} - matches blocklist",
+                    hex::encode(&media_hash[..8])
+                );
+                return RpcResponse::error(
+                    RpcErrorCode::ContentBlocked,
+                    "This media matches the signature of known harmful material. If you believe this is an error, please contact support.",
+                    id,
+                );
+            }
+        }
+
+        // Store in blob store
+        if let Ok(blob_store) = BlobStore::new(&self.node.sync_blob_path) {
+            if let Err(e) = blob_store.put(&media_bytes) {
+                warn!("[MEDIA] Failed to store media: {}", e);
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Failed to store media",
+                    id,
+                );
+            }
+        }
+
+        info!(
+            "[MEDIA] Uploaded {} bytes ({}) hash={}",
+            media_bytes.len(),
+            params.media_type,
+            &media_hash_hex[..16]
+        );
+
+        let result = UploadMediaResult {
+            media_hash: media_hash_hex,
+            size_bytes: media_bytes.len() as u32,
+            success: true,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Get media blob by hash
+    async fn get_media(&self, params: Value, id: Value) -> RpcResponse {
+        use super::types::{GetMediaParams, GetMediaResult};
+        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+        let params: GetMediaParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse media hash
+        let hash_bytes = match hex::decode(&params.media_hash) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            Ok(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "media_hash must be 32 bytes (64 hex chars)",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid media_hash hex: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Retrieve from blob store
+        let blob_hash = ContentBlobHash::from_bytes(hash_bytes);
+        let blob_store = match BlobStore::new(&self.node.sync_blob_path) {
+            Ok(bs) => bs,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to open blob store: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let media_bytes = match blob_store.get(&blob_hash) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    "Media not found",
+                    id,
+                );
+            }
+        };
+
+        // Detect media type from magic bytes
+        let media_type = if media_bytes.len() >= 3 && media_bytes[0..3] == [0xFF, 0xD8, 0xFF] {
+            "image/jpeg"
+        } else if media_bytes.len() >= 8 && media_bytes[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+            "image/png"
+        } else if media_bytes.len() >= 4 && media_bytes[0..4] == [0x47, 0x49, 0x46, 0x38] {
+            "image/gif"
+        } else if media_bytes.len() >= 4 && media_bytes[0..4] == [0x52, 0x49, 0x46, 0x46] {
+            // RIFF header - check for WEBP
+            if media_bytes.len() >= 12 && media_bytes[8..12] == [0x57, 0x45, 0x42, 0x50] {
+                "image/webp"
+            } else {
+                "application/octet-stream"
+            }
+        } else {
+            "application/octet-stream"
+        };
+
+        let result = GetMediaResult {
+            media_hash: params.media_hash,
+            media_type: media_type.to_string(),
+            data: BASE64.encode(&media_bytes),
+            size_bytes: media_bytes.len() as u32,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    async fn submit_reply(&self, params: Value, id: Value) -> RpcResponse {
+        let params: SubmitReplyParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate parent content ID
+        if !params.parent_id.starts_with("sha256:") {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidContentId,
+                "Invalid parent content ID format",
+                id,
+            );
+        }
+
+        // SPONSORSHIP CHECK: Verify identity is sponsored before allowing action
+        if let Err(response) = self.check_identity_sponsored(&params.author_id, &id) {
+            return response;
+        }
+
+        // Create content hash
+        let content_hash = crate::crypto::sha256(params.body.as_bytes());
+        let content_id = format!("sha256:{}", hex::encode(content_hash));
+
+        // BLOCKLIST CHECK: Reject content that matches blocklist entries
+        if let Some(ref blocklist) = self.node.blocklist {
+            let store = blocklist.read().unwrap();
+            if store.is_blocked(&content_hash) {
+                warn!(
+                    "[BLOCKLIST] Rejected REPLY from {} - content matches blocklist",
+                    hex::encode(&content_hash[..8])
+                );
+                return RpcResponse::error(
+                    RpcErrorCode::ContentBlocked,
+                    "This content matches the signature of known harmful material. If you believe this is an error, please contact support.",
+                    id,
+                );
+            }
+        }
+
+        // Validate PoW for reply
+        if let Err((code, msg)) = verify_pow_submission(
+            ActionType::Reply,
+            params.body.as_bytes(),
+            &params.author_id,
+            params.pow_nonce,
+            params.pow_difficulty,
+            &params.pow_nonce_space,
+            &params.pow_hash,
+            params.timestamp,
+            &self.node.network,
+        ) {
+            return RpcResponse::error(code, &msg, id);
+        }
+
+        // Store in sync blob store
+        if let Ok(blob_store) = BlobStore::new(&self.node.sync_blob_path) {
+            let _ = blob_store.put(params.body.as_bytes());
+        }
+
+        // Record engagement on parent content (resets decay timer)
+        let mut parent_hash_bytes = [0u8; 32];
+        if let Some(ref decay) = self.node.decay_integration {
+            // Parse parent content ID to get the blob hash
+            let parent_hex = &params.parent_id[7..]; // Skip "sha256:"
+            if let Ok(parent_bytes) = hex::decode(parent_hex) {
+                if parent_bytes.len() == 32 {
+                    parent_hash_bytes.copy_from_slice(&parent_bytes);
+                    let parent_hash = ContentBlobHash::from_bytes(parent_hash_bytes);
+                    if let Err(e) = decay.on_engagement(&parent_hash) {
+                        debug!("Failed to record engagement for parent: {}", e);
+                    } else {
+                        debug!("Recorded engagement for parent {}", &parent_hex[..16]);
+                    }
+                }
+            }
+        }
+
+        // Parse author_id for BlockBuilder action
+        let author_bytes: [u8; 32] = hex::decode(&params.author_id)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+            .unwrap_or([0u8; 32]);
+
+        // Look up parent content to get its space_id (replies inherit parent's space)
+        // We check both the blockchain AND the BlockBuilder's pending actions.
+        // This allows replies to content that was just submitted but hasn't been
+        // finalized to a block yet (within the 30-second block formation window).
+        let space_id_bytes = {
+            let mut found_space_id: Option<[u8; 32]> = None;
+            let mut found_in_pending = false;
+
+            // First check blockchain (chain_store) using indexed lookup - O(1) instead of O(n)
+            if let Some(ref chain_store) = self.node.chain_store {
+                if let Ok(Some(metadata)) = chain_store.get_content_metadata(&parent_hash_bytes) {
+                    // Found parent in index! Expand 16-byte space_id to 32-byte format
+                    let mut space_id_32 = [0u8; 32];
+                    space_id_32[..16].copy_from_slice(&metadata.space_id);
+                    found_space_id = Some(space_id_32);
+                    debug!("[REPLY] Found parent {} in blockchain index, space_id: {:?}",
+                           hex::encode(&parent_hash_bytes[..8]),
+                           hex::encode(&metadata.space_id[..8]));
+                }
+            }
+
+            // If not found in blockchain index, check content_store (synced from network)
+            if found_space_id.is_none() {
+                if let Some(ref content_store) = self.node.content_store {
+                    let content_id = ContentId::from_bytes(parent_hash_bytes);
+                    if let Ok(Some(item)) = content_store.get(&content_id) {
+                        let mut space_id_32 = [0u8; 32];
+                        space_id_32[..].copy_from_slice(item.space_id.as_bytes());
+                        found_space_id = Some(space_id_32);
+                        debug!("[REPLY] Found parent {} in content_store, space_id: {:?}",
+                               hex::encode(&parent_hash_bytes[..8]),
+                               hex::encode(&space_id_32[..8]));
+                    }
+                }
+            }
+
+            // If not found in blockchain, check BlockBuilder's pending actions
+            // This handles the case where a post was just submitted but hasn't
+            // been finalized to a block yet (within the block formation interval)
+            if found_space_id.is_none() {
+                if let Some(ref block_builder) = self.node.block_builder {
+                    if let Ok(builder) = block_builder.read() {
+                        if let Some(space_id) = builder.find_pending_content(&parent_hash_bytes) {
+                            found_space_id = Some(space_id);
+                            found_in_pending = true;
+                            debug!("[REPLY] Found parent {} in pending BlockBuilder actions, space_id: {:?}",
+                                   hex::encode(&parent_hash_bytes[..8]),
+                                   hex::encode(&space_id[..8]));
+                        }
+                    }
+                }
+            }
+
+            match found_space_id {
+                Some(space_id) => {
+                    // Verify the space exists in registry (defensive check)
+                    // Skip this check for pending content since the space may also be pending
+                    if !found_in_pending {
+                        let space_id_16: [u8; 16] = space_id[..16].try_into().unwrap_or([0u8; 16]);
+                        if let Some(ref chain_store) = self.node.chain_store {
+                            match chain_store.space_exists(&space_id_16) {
+                                Ok(false) => {
+                                    warn!("[REPLY REJECTED] Parent's space not found in registry. \
+                                           This indicates blockchain corruption.");
+                                    return RpcResponse::error(
+                                        RpcErrorCode::SpaceNotFound,
+                                        "Parent content references unregistered space. This may indicate data corruption.",
+                                        id,
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!("Failed to verify space existence: {}", e);
+                                }
+                                Ok(true) => {} // All good
+                            }
+                        }
+                    }
+                    space_id
+                }
+                None => {
+                    // Parent not found in blockchain or pending actions - REJECT the reply
+                    warn!("[REPLY REJECTED] Parent content {} not found in blockchain or pending actions. \
+                           Orphan replies are not allowed.",
+                          &params.parent_id);
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidContentId,
+                        &format!("Parent content not found in blockchain: {}. \
+                                  The parent post must exist before you can reply to it.",
+                                 &params.parent_id),
+                        id,
+                    );
+                }
+            }
+        };
+
+        // Add action to BlockBuilder for block-based propagation (SPEC_08)
+        if let Some(ref block_builder) = self.node.block_builder {
+            // Create signature bytes
+            let mut signature_bytes_arr = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    signature_bytes_arr.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            // Estimate PoW work (inversely proportional to difficulty)
+            let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
+
+            // Parse replaces_pending if provided (for Replace-In-Mempool)
+            let replaces_pending: Option<[u8; 32]> = params.replaces_pending.as_ref().and_then(|hex_str| {
+                hex::decode(hex_str).ok().and_then(|bytes| {
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                })
+            });
+
+            let action = Action {
+                action_type: crate::blocks::ActionType::Reply,
+                actor: author_bytes,
+                timestamp: params.timestamp,
+                content_hash: Some(content_hash),
+                parent_id: Some(parent_hash_bytes),
+                pow_nonce: params.pow_nonce,
+                pow_work,
+                pow_target: crate::crypto::sha256(&params.pow_hash.as_bytes()),
+                signature: signature_bytes_arr,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![], // Replies don't support media attachments yet
+                replaces_pending,
+            };
+
+            // Thread ID is the parent post's hash (replies belong to parent thread)
+            let thread_id = parent_hash_bytes;
+
+            // Add to block builder
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    let added = builder.add_action(thread_id, space_id_bytes, action.clone(), BranchPath::root());
+                    if added {
+                        info!("[BLOCKS] Added REPLY action to block builder, total_pow={}", builder.total_pow());
+                    }
+                    added
+                }
+                Err(e) => {
+                    warn!("[BLOCKS] Failed to acquire block builder lock for REPLY: {:?}", e);
+                    false
+                }
+            };
+
+            // Broadcast action to peers (mempool gossip)
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    let peers = pool.peer_ids().await;
+                    for peer_id in peers {
+                        if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                            debug!("[MEMPOOL] Failed to broadcast REPLY action to peer {}: {}",
+                                   hex::encode(&peer_id[..8]), e);
+                        }
+                    }
+                    info!("[MEMPOOL] Broadcast REPLY action to peers (thread={})", hex::encode(&thread_id[..8]));
+
+                    // Check if PoW threshold met - form block immediately if so
+                    self.try_form_block_if_threshold_met().await;
+                }
+            }
+        } else {
+            warn!("[BLOCKS] No block_builder available for REPLY action");
+        }
+
+        // Create and store ContentItem in content store (so get_replies works)
+        if let Some(ref content_store) = self.node.content_store {
+            use crate::types::content::{ContentItem, ContentType, ContentId, SpaceId};
+            use crate::types::identity::{IdentityId, Signature};
+
+            // Create Signature from bytes
+            let mut sig_arr = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    sig_arr.copy_from_slice(&sig_bytes);
+                }
+            }
+            let signature = Signature::from_bytes(sig_arr);
+
+            let now = params.timestamp;
+            let content_item = ContentItem {
+                content_id: ContentId::from_bytes(content_hash),
+                content_type: ContentType::Reply,
+                author_id: IdentityId::from_bytes(author_bytes),
+                space_id: SpaceId::from_bytes(space_id_bytes),
+                parent_id: Some(ContentId::from_bytes(parent_hash_bytes)),
+                created_at: now,
+                last_engagement: now,
+                body_inline: Some(params.body.clone()),
+                content_hash: None,
+                content_size: Some(params.body.len() as u32),
+                content_type_mime: Some("text/plain".to_string()),
+                media_refs: vec![],
+                pin_state: None,
+                engagement_count: 0,
+                signature,
+                pow_nonce: params.pow_nonce,
+                pow_difficulty: params.pow_difficulty,
+                preservation_pow: None,
+                display_name: self.node.identity_name.read().await.clone(),
+            };
+
+            match content_store.put(&content_item) {
+                Ok(()) => {
+                    if let Err(e) = content_store.flush() {
+                        warn!("Failed to flush content store after reply: {}", e);
+                    }
+                    info!("[REPLY] Stored ContentItem for reply {} with parent {}",
+                          &content_id[..24], &params.parent_id[..24]);
+
+                    // Update aggregation cache to increment parent's reply count
+                    if let Some(ref agg_cache) = self.node.aggregation_cache {
+                        let parent_content_id = ContentId::from_bytes(parent_hash_bytes);
+                        if let Err(e) = agg_cache.increment_reply_count(&parent_content_id) {
+                            warn!("[REPLY] Failed to increment reply count for parent: {}", e);
+                        } else {
+                            debug!("[REPLY] Incremented reply count for parent {}", &params.parent_id[..24]);
+                        }
+                    }
+                }
+                Err(e) if e.to_string().contains("already exists") => {
+                    debug!("Reply already exists in content store: {}", content_id);
+                }
+                Err(e) => {
+                    warn!("Failed to store reply ContentItem: {}", e);
+                }
+            }
+        }
+
+        // Register reply for decay tracking
+        if let Some(ref decay) = self.node.decay_integration {
+            use crate::content::decay_integration::DecayMetadata;
+            let metadata = DecayMetadata {
+                blob_hash: content_hash,
+                content_id: content_hash,
+                author_id: author_bytes,
+                space_id: space_id_bytes,
+                content_type: 1, // Reply
+                parent_id: Some(parent_hash_bytes),
+                created_at: params.timestamp * 1000,
+                last_engagement: params.timestamp * 1000,
+                engagement_count: 0,
+                content_size: params.body.len() as u64,
+                is_pinned: false,
+            };
+            if let Err(e) = decay.register(metadata) {
+                warn!("[DECAY] Failed to register reply for decay: {}", e);
+            } else {
+                info!("[DECAY] Registered reply {} for decay tracking", &content_id[..24]);
+            }
+        }
+
+        // Broadcast via DHT + I_HAVE
+        let mut recipients = 0;
+
+        // Step 1: Record in local DHT store
+        if let Some(ref dht) = self.node.dht {
+            dht.add_local_content(content_hash).await;
+        }
+
+        // Step 2: Broadcast DHT_STORE and I_HAVE to connected peers
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::types::network::{MessageEnvelope, MessageType};
+            use crate::dht::{DhtMessage, NodeId as DhtNodeId, constants::MSG_DHT_STORE};
+
+            // Create signed DHT_STORE message for network-wide discoverability (Kademlia STORE)
+            let node_id_bytes: [u8; 32] = hex::decode(&self.node.node_id)
+                .unwrap_or_default()
+                .try_into()
+                .unwrap_or([0u8; 32]);
+            let node_id = DhtNodeId::from_bytes(node_id_bytes);
+            let local_addr = std::net::SocketAddr::from(([0, 0, 0, 0], self.node.p2p_port));
+            let public_key = self.node.keypair.public_key.0;
+
+            // Sign the provider claim
+            let signing_msg = ProviderRecord::signing_message(&content_hash, &node_id, &local_addr);
+            let signature = ed25519_sign(&self.node.keypair.private_key, &signing_msg);
+
+            let dht_store_msg = DhtMessage::Store {
+                content_hash,
+                ttl: 0,
+                public_key,
+                signature: signature.0,
+            };
+            let dht_store_bytes = dht_store_msg.to_bytes();
+            let mut dht_payload = vec![MSG_DHT_STORE];
+            dht_payload.extend_from_slice(&dht_store_bytes);
+
+            let dht_envelope = MessageEnvelope::new_fork_agnostic(
+                MessageType::DhtStore,
+                dht_payload,
+            );
+            let dht_sent = pool.broadcast(&dht_envelope).await;
+            debug!("[REPLY] Sent DHT_STORE for {} to {} peers", &content_id[..24], dht_sent);
+
+            // Send I_HAVE for immediate availability
+            let i_have = MessageEnvelope::new_fork_agnostic(
+                MessageType::IHave,
+                content_hash.to_vec(),
+            );
+            recipients = pool.broadcast(&i_have).await;
+            info!("[REPLY] Sent I_HAVE for {} to {} peers", &content_id[..24], recipients);
+        }
+
+        let result = SubmitPostResult {
+            content_id,
+            broadcast: recipients > 0,
+            recipients,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Submit an edit to existing content (only original author can edit)
+    async fn submit_edit(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::rpc::types::SubmitEditParams;
+
+        let params: SubmitEditParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate original content ID format
+        if !params.original_content_id.starts_with("sha256:") {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidContentId,
+                "Invalid original content ID format (must start with sha256:)",
+                id,
+            );
+        }
+
+        // Parse original content ID
+        let original_hex = &params.original_content_id[7..];
+        let original_hash: [u8; 32] = match hex::decode(original_hex)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+        {
+            Some(bytes) => bytes,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidContentId,
+                    "Invalid original content hash",
+                    id,
+                );
+            }
+        };
+
+        // Parse author ID
+        let author_bytes: [u8; 32] = match hex::decode(&params.author_id)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+        {
+            Some(bytes) => bytes,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid author_id (must be 32-byte hex)",
+                    id,
+                );
+            }
+        };
+
+        // Look up original content and verify authorship
+        let (space_id_bytes, thread_id, original_author) = {
+            let mut found_space_id: Option<[u8; 32]> = None;
+            let mut found_thread_id: Option<[u8; 32]> = None;
+            let mut found_author: Option<[u8; 32]> = None;
+
+            // Check content store
+            if let Some(ref content_store) = self.node.content_store {
+                use crate::types::content::ContentId;
+                let content_id = ContentId::from_bytes(original_hash);
+                if let Ok(Some(item)) = content_store.get(&content_id) {
+                    let mut space_id_32 = [0u8; 32];
+                    space_id_32[..].copy_from_slice(item.space_id.as_bytes());
+                    found_space_id = Some(space_id_32);
+                    found_author = Some(*item.author_id.as_bytes());
+                    // Thread ID is the original content ID for posts, or parent_id for replies
+                    found_thread_id = item.parent_id
+                        .map(|p| *p.as_bytes())
+                        .or(Some(original_hash));
+                }
+            }
+
+            // Check blockchain index
+            if found_author.is_none() {
+                if let Some(ref chain_store) = self.node.chain_store {
+                    if let Ok(Some(metadata)) = chain_store.get_content_metadata(&original_hash) {
+                        let mut space_id_32 = [0u8; 32];
+                        space_id_32[..16].copy_from_slice(&metadata.space_id);
+                        found_space_id = Some(space_id_32);
+                        found_author = Some(metadata.author);
+                        // parent_hash is zero for posts, so use original_hash as thread_id if zero
+                        let is_zero = metadata.parent_hash.iter().all(|&b| b == 0);
+                        found_thread_id = if is_zero {
+                            Some(original_hash)
+                        } else {
+                            Some(metadata.parent_hash)
+                        };
+                    }
+                }
+            }
+
+            match (found_space_id, found_thread_id, found_author) {
+                (Some(space_id), Some(thread_id), Some(author)) => (space_id, thread_id, author),
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidContentId,
+                        "Original content not found",
+                        id,
+                    );
+                }
+            }
+        };
+
+        // Verify the editor is the original author
+        if author_bytes != original_author {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Only the original author can edit this content",
+                id,
+            );
+        }
+
+        // Create new content hash
+        let edit_content = if let Some(ref title) = params.title {
+            format!("{}\n\n{}", title, params.body)
+        } else {
+            params.body.clone()
+        };
+        let new_content_hash = crate::crypto::sha256(edit_content.as_bytes());
+        let content_id = format!("sha256:{}", hex::encode(new_content_hash));
+
+        // BLOCKLIST CHECK
+        if let Some(ref blocklist) = self.node.blocklist {
+            let store = blocklist.read().unwrap();
+            if store.is_blocked(&new_content_hash) {
+                return RpcResponse::error(
+                    RpcErrorCode::ContentBlocked,
+                    "This content matches the signature of known harmful material. If you believe this is an error, please contact support.",
+                    id,
+                );
+            }
+        }
+
+        // Validate PoW
+        if let Err((code, msg)) = verify_pow_submission(
+            ActionType::Edit,
+            edit_content.as_bytes(),
+            &params.author_id,
+            params.pow_nonce,
+            params.pow_difficulty,
+            &params.pow_nonce_space,
+            &params.pow_hash,
+            params.timestamp,
+            &self.node.network,
+        ) {
+            return RpcResponse::error(code, &msg, id);
+        }
+
+        // Store in sync blob store
+        if let Ok(blob_store) = BlobStore::new(&self.node.sync_blob_path) {
+            let _ = blob_store.put(edit_content.as_bytes());
+        }
+
+        // Create signature bytes
+        let mut signature_bytes_arr = [0u8; 64];
+        if let Ok(sig_bytes) = hex::decode(&params.signature) {
+            if sig_bytes.len() == 64 {
+                signature_bytes_arr.copy_from_slice(&sig_bytes);
+            }
+        }
+
+        // Estimate PoW work
+        let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
+
+        // Parse replaces_pending if provided (for Replace-In-Mempool)
+        // This is the key use case: coalescing create+edit into a single on-chain action
+        let replaces_pending: Option<[u8; 32]> = params.replaces_pending.as_ref().and_then(|hex_str| {
+            hex::decode(hex_str).ok().and_then(|bytes| {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    Some(arr)
+                } else {
+                    None
+                }
+            })
+        });
+
+        // Create Edit action
+        let action = Action {
+            action_type: crate::blocks::ActionType::Edit,
+            actor: author_bytes,
+            timestamp: params.timestamp,
+            content_hash: Some(new_content_hash),
+            parent_id: Some(original_hash),
+            pow_nonce: params.pow_nonce,
+            pow_work,
+            pow_target: crate::crypto::sha256(params.pow_hash.as_bytes()),
+            signature: signature_bytes_arr,
+            emoji: None,
+            display_name: self.node.identity_name.read().await.clone(),
+            media_refs: vec![],
+            replaces_pending,
+        };
+
+        // Add to block builder
+        if let Some(ref block_builder) = self.node.block_builder {
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    let added = builder.add_action(thread_id, space_id_bytes, action.clone(), BranchPath::root());
+                    if added {
+                        info!("[BLOCKS] Added EDIT action to block builder, total_pow={}", builder.total_pow());
+                    }
+                    added
+                }
+                Err(e) => {
+                    warn!("[BLOCKS] Failed to acquire block builder lock for EDIT: {:?}", e);
+                    false
+                }
+            };
+
+            // Broadcast action to peers
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    let peers = pool.peer_ids().await;
+                    for peer_id in peers {
+                        if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                            debug!("[MEMPOOL] Failed to broadcast EDIT action to peer {}: {}",
+                                   hex::encode(&peer_id[..8]), e);
+                        }
+                    }
+                    info!("[MEMPOOL] Broadcast EDIT action (original={}, new={})",
+                          hex::encode(&original_hash[..8]), hex::encode(&new_content_hash[..8]));
+
+                    self.try_form_block_if_threshold_met().await;
+                }
+            }
+        }
+
+        // Store the edit relationship in content store
+        if let Some(ref content_store) = self.node.content_store {
+            use crate::types::content::{ContentItem, ContentType, ContentId, SpaceId};
+            use crate::types::identity::{IdentityId, Signature};
+
+            let mut sig_arr = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    sig_arr.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            let content_item = ContentItem {
+                content_id: ContentId::from_bytes(new_content_hash),
+                content_type: ContentType::Edit,
+                author_id: IdentityId::from_bytes(author_bytes),
+                space_id: SpaceId::from_bytes(space_id_bytes),
+                parent_id: Some(ContentId::from_bytes(original_hash)),
+                created_at: params.timestamp,
+                last_engagement: params.timestamp,
+                body_inline: Some(edit_content.clone()),
+                content_hash: None,
+                content_size: Some(edit_content.len() as u32),
+                content_type_mime: Some("text/plain".to_string()),
+                media_refs: vec![],
+                pin_state: None,
+                engagement_count: 0,
+                signature: Signature::from_bytes(sig_arr),
+                pow_nonce: params.pow_nonce,
+                pow_difficulty: params.pow_difficulty,
+                preservation_pow: None,
+                display_name: self.node.identity_name.read().await.clone(),
+            };
+
+            if let Err(e) = content_store.put(&content_item) {
+                warn!("Failed to store edit ContentItem: {}", e);
+            } else {
+                info!("[EDIT] Stored edit for content {} -> {}",
+                      hex::encode(&original_hash[..8]), hex::encode(&new_content_hash[..8]));
+            }
+        }
+
+        let result = SubmitPostResult {
+            content_id,
+            broadcast: true,
+            recipients: 0,
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    async fn submit_engagement(&self, params: Value, id: Value) -> RpcResponse {
+        let params: SubmitEngagementParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate content ID
+        if !params.content_id.starts_with("sha256:") {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidContentId,
+                "Invalid content ID format",
+                id,
+            );
+        }
+
+        // SPONSORSHIP CHECK: Verify identity is sponsored before allowing engagement
+        if let Err(response) = self.check_identity_sponsored(&params.author_id, &id) {
+            return response;
+        }
+
+        // Parse content ID
+        let content_hex = &params.content_id[7..]; // Skip "sha256:"
+        let content_bytes: [u8; 32] = match hex::decode(content_hex)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+        {
+            Some(bytes) => bytes,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidContentId,
+                    "Invalid content hash",
+                    id,
+                );
+            }
+        };
+
+        // Parse author ID
+        let author_bytes: [u8; 32] = match hex::decode(&params.author_id)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+        {
+            Some(bytes) => bytes,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid author_id format",
+                    id,
+                );
+            }
+        };
+
+        // Validate PoW for engagement (uses raw content hash bytes for PoW)
+        // Note: We pass the raw content_bytes directly since the frontend uses
+        // the raw hash bytes, not SHA256(hash_string)
+        if let Err((code, msg)) = verify_pow_submission_raw(
+            ActionType::Engage,
+            &content_bytes,
+            &author_bytes,
+            params.pow_nonce,
+            params.pow_difficulty,
+            &params.pow_nonce_space,
+            &params.pow_hash,
+            params.timestamp,
+            &self.node.network,
+        ) {
+            return RpcResponse::error(code, &msg, id);
+        }
+
+        // Parse signature for reaction storage
+        let signature_bytes: [u8; 64] = match hex::decode(&params.signature)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+        {
+            Some(bytes) => bytes,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid signature format",
+                    id,
+                );
+            }
+        };
+
+        // Verify Ed25519 signature (C-ENGAGE-1: Critical security fix)
+        // Message format matches frontend: "engage:{contentId}:{nonce}:{timestamp}[:emoji]"
+        let signing_message = if let Some(emoji) = params.emoji {
+            format!(
+                "engage:{}:{}:{}:{}",
+                params.content_id, params.pow_nonce, params.timestamp, emoji
+            )
+        } else {
+            format!(
+                "engage:{}:{}:{}",
+                params.content_id, params.pow_nonce, params.timestamp
+            )
+        };
+        let pubkey = PublicKey(author_bytes);
+        let sig = Signature(signature_bytes);
+        if !ed25519_verify(&pubkey, signing_message.as_bytes(), &sig) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid signature: engagement signature verification failed",
+                id,
+            );
+        }
+
+        // Note: Reactions are NOT stored immediately here. They go to mempool via BlockBuilder
+        // and get stored when the block is formed/processed. This prevents double-counting
+        // in get_reactions (which counts both content_store and mempool).
+        let reaction_stored = false;
+        info!("[ENGAGE] Processing emoji: {:?} - will be stored when block is formed",
+              params.emoji);
+
+        // Record engagement to reset decay timer
+        let mut engagement_recorded = false;
+        if let Some(ref decay) = self.node.decay_integration {
+            let content_hash = ContentBlobHash::from_bytes(content_bytes);
+            match decay.on_engagement(&content_hash) {
+                Ok(true) => {
+                    engagement_recorded = true;
+                    debug!("Recorded engagement for content {}", &content_hex[..16]);
+                }
+                Ok(false) => {
+                    debug!("Content {} not registered for decay", &content_hex[..16]);
+                }
+                Err(e) => {
+                    debug!("Failed to record engagement: {}", e);
+                }
+            }
+        }
+
+        // Update content's last_engagement timestamp
+        if let Some(ref content_store) = self.node.content_store {
+            let content_id = ContentId::from_bytes(content_bytes);
+            let _ = content_store.update_last_engagement(&content_id, params.timestamp * 1000);
+        }
+
+        // Add ENGAGE action to BlockBuilder for network propagation
+        if let Some(ref block_builder) = self.node.block_builder {
+            // Look up content to get space_id and thread context
+            if let Some(ref content_store) = self.node.content_store {
+                let content_id = ContentId::from_bytes(content_bytes);
+                match content_store.get(&content_id) {
+                    Ok(Some(content)) => {
+                        let space_id_bytes = *content.space_id.as_bytes();
+
+                        // Thread ID: for replies, use parent_id; for posts, use content_id itself
+                        let thread_id = content.parent_id
+                            .map(|p| *p.as_bytes())
+                            .unwrap_or(content_bytes);
+
+                        // Estimate PoW work (inversely proportional to difficulty)
+                        let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
+
+                        let action = Action {
+                            action_type: crate::blocks::ActionType::Engage,
+                            actor: author_bytes,
+                            timestamp: params.timestamp,
+                            content_hash: Some(content_bytes), // Target content
+                            parent_id: None,
+                            pow_nonce: params.pow_nonce,
+                            pow_work,
+                            pow_target: crate::crypto::sha256(&params.pow_hash.as_bytes()),
+                            signature: signature_bytes,
+                            emoji: params.emoji,
+                            display_name: None,
+                            media_refs: vec![], // ENGAGE actions don't have media
+                            replaces_pending: None,
+                        };
+
+                        let added = if let Ok(mut builder) = block_builder.write() {
+                            let added = builder.add_action(thread_id, space_id_bytes, action.clone(), BranchPath::root());
+                            if added {
+                                info!("[BLOCKS] Added ENGAGE action to block builder, total_pow={}, emoji={:?}",
+                                      builder.total_pow(), params.emoji);
+                            }
+                            added
+                        } else {
+                            false
+                        };
+
+                        // Broadcast action to peers (mempool gossip)
+                        if added {
+                            if let Some(ref pool) = self.node.connection_pool {
+                                use crate::network::messages::ActionAnnouncePayload;
+                                use crate::types::network::{MessageEnvelope, MessageType};
+
+                                let action_data = action.serialize();
+                                let payload = ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
+                                let envelope = MessageEnvelope::new_fork_agnostic(
+                                    MessageType::ActionAnnounce,
+                                    payload.to_bytes().to_vec(),
+                                );
+
+                                let peers = pool.peer_ids().await;
+                                for peer_id in peers {
+                                    if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                                        debug!("[MEMPOOL] Failed to broadcast ENGAGE action to peer {}: {}",
+                                               hex::encode(&peer_id[..8]), e);
+                                    }
+                                }
+                                info!("[MEMPOOL] Broadcast ENGAGE action to peers (thread={})", hex::encode(&thread_id[..8]));
+
+                                // Check if PoW threshold met - form block immediately if so
+                                self.try_form_block_if_threshold_met().await;
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        warn!("[BLOCKS] Cannot add ENGAGE to block builder: content not found in content_store");
+                    }
+                    Err(e) => {
+                        warn!("[BLOCKS] Cannot add ENGAGE to block builder: content_store error: {}", e);
+                    }
+                }
+            } else {
+                warn!("[BLOCKS] Cannot add ENGAGE to block builder: content_store not available");
+            }
+        } else {
+            warn!("[BLOCKS] No block_builder available for ENGAGE action");
+        }
+
+        RpcResponse::success(json!({
+            "engaged": engagement_recorded,
+            "reaction_stored": reaction_stored,
+            "content_id": params.content_id,
+            "emoji": params.emoji
+        }), id)
+    }
+
+    // ========================================================================
+    // Content Query Methods
+    // ========================================================================
+
+    async fn get_content(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetContentParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate and parse content ID
+        let content_hash = if params.content_id.starts_with("sha256:") {
+            match hex::decode(&params.content_id[7..]) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidContentId,
+                        "Invalid content hash",
+                        id,
+                    );
+                }
+            }
+        } else {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidContentId,
+                "Content ID must start with sha256:",
+                id,
+            );
+        };
+
+        // Use shared content store
+        let content_store = match &self.node.content_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    "Content store not available",
+                    id,
+                );
+            }
+        };
+
+        let content_id_typed = crate::types::content::ContentId::from_bytes(content_hash);
+        let blob_hash = ContentBlobHash::from_bytes(content_hash);
+
+        // First, try PersistentContentStore (for full ContentItem metadata)
+        if let Ok(Some(item)) = content_store.get(&content_id_typed) {
+            // Get decay state from DecayIntegration (the source of truth)
+            let (decay_state_str, seconds_until_decay_starts, seconds_until_pruned,
+                 survival_probability, is_protected, time_since_engagement) =
+                if let Some(ref decay) = self.node.decay_integration {
+                    if let Ok(Some(decay_state)) = decay.get_decay_state(&blob_hash) {
+                        let state_str = if decay_state.is_protected {
+                            "protected"
+                        } else if decay_state.survival_probability >= 0.5 {
+                            "active"
+                        } else if decay_state.survival_probability >= 0.0625 {
+                            "stale"
+                        } else {
+                            "decayed"
+                        };
+
+                        // Calculate seconds until decay starts (floor protection remaining)
+                        let floor_remaining = if decay_state.is_protected {
+                            // Floor is 48 hours from last engagement
+                            Some(crate::types::constants::DECAY_FLOOR_SECS
+                                .saturating_sub(decay_state.time_since_engagement))
+                        } else {
+                            None
+                        };
+
+                        // Calculate seconds until pruned (when survival < 6.25%)
+                        // survival = 0.5^(t/half_life), solve for t when survival = 0.0625
+                        // 0.0625 = 0.5^(t/half_life) => t = 4 * half_life
+                        // Total time from last engagement: floor + 4*half_life
+                        let seconds_until_pruned = if decay_state.is_protected {
+                            // From now: floor_remaining + 4*half_life
+                            let half_life = crate::types::constants::HALF_LIFE_SECS;
+                            Some(crate::types::constants::DECAY_FLOOR_SECS
+                                .saturating_sub(decay_state.time_since_engagement) + 4 * half_life)
+                        } else if !decay_state.is_decayed {
+                            // Already past floor, calculate remaining time
+                            // effective_time = time_since_engagement - floor
+                            // survival = 0.5^(effective_time/half_life)
+                            // We need to reach survival = 0.0625, so 4 half-lives total
+                            let half_life = crate::types::constants::HALF_LIFE_SECS;
+                            let effective_time = decay_state.time_since_engagement
+                                .saturating_sub(crate::types::constants::DECAY_FLOOR_SECS);
+                            let total_time_needed = 4 * half_life; // 4 half-lives = 28 days
+                            Some(total_time_needed.saturating_sub(effective_time))
+                        } else {
+                            Some(0) // Already decayed
+                        };
+
+                        (state_str.to_string(), floor_remaining, seconds_until_pruned,
+                         decay_state.survival_probability, decay_state.is_protected,
+                         decay_state.time_since_engagement)
+                    } else {
+                        // No decay metadata, calculate from ContentItem directly
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+                        let time_since = (now_ms - item.last_engagement) / 1000;
+                        let is_prot = time_since < crate::types::constants::DECAY_FLOOR_SECS;
+                        let floor_rem = if is_prot {
+                            Some(crate::types::constants::DECAY_FLOOR_SECS - time_since)
+                        } else {
+                            None
+                        };
+                        ("active".to_string(), floor_rem, None, 1.0, is_prot, time_since)
+                    }
+                } else {
+                    // No decay integration available
+                    ("active".to_string(), None, None, 1.0, false, 0)
+                };
+
+            // Parse title from body (format is "Title\n\nBody")
+            let body_text = item.body_inline.as_deref().unwrap_or("");
+            let (title, body) = if let Some(idx) = body_text.find("\n\n") {
+                let (t, b) = body_text.split_at(idx);
+                (Some(t.to_string()), b.trim_start_matches("\n\n").to_string())
+            } else {
+                (None, body_text.to_string())
+            };
+
+            // Convert media_refs to MediaRefResult
+            let media_refs: Vec<MediaRefResult> = item.media_refs.iter().map(|mr| {
+                let media_type_str = match mr.media_type {
+                    crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                    crate::types::content::MediaType::ImagePng => "image/png",
+                    crate::types::content::MediaType::ImageGif => "image/gif",
+                    crate::types::content::MediaType::ImageWebp => "image/webp",
+                };
+                MediaRefResult {
+                    media_hash: hex::encode(mr.media_hash.as_bytes()),
+                    media_type: media_type_str.to_string(),
+                    size_bytes: mr.size_bytes,
+                }
+            }).collect();
+
+            // Calculate reply count from chain + mempool
+            let reply_count = {
+                let mut count = 0u64;
+
+                // Count ALL replies recursively from chain index
+                if let Some(ref chain_store) = self.node.chain_store {
+                    count += chain_store.count_all_replies(&content_hash)
+                        .map(|c| c as u64)
+                        .unwrap_or(0);
+                }
+
+                // Count pending replies from mempool (recursive)
+                if let Some(ref block_builder) = self.node.block_builder {
+                    if let Ok(bb) = block_builder.read() {
+                        let pending = bb.get_pending_actions();
+                        let mut target_parents: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                        target_parents.insert(content_hash);
+
+                        loop {
+                            let mut found_new = false;
+                            for (_thread_id, _space_id, action) in &pending {
+                                if action.action_type == crate::blocks::action::ActionType::Reply {
+                                    if let (Some(parent_id), Some(reply_hash)) = (action.parent_id, action.content_hash) {
+                                        if target_parents.contains(&parent_id) && !target_parents.contains(&reply_hash) {
+                                            count += 1;
+                                            target_parents.insert(reply_hash);
+                                            found_new = true;
+                                        }
+                                    }
+                                }
+                            }
+                            if !found_new {
+                                break;
+                            }
+                        }
+                    }
+                }
+                count
+            };
+
+            // Normalize timestamps to milliseconds
+            // Some content was stored with seconds (from network sync), some with ms (from RPC)
+            // If timestamp < 10 billion, it's likely seconds; convert to ms
+            let created_at_ms = if item.created_at < 10_000_000_000 {
+                item.created_at * 1000
+            } else {
+                item.created_at
+            };
+            let last_engagement_ms = if item.last_engagement < 10_000_000_000 {
+                item.last_engagement * 1000
+            } else {
+                item.last_engagement
+            };
+
+            let result = GetContentResult {
+                content_id: params.content_id,
+                content_type: format!("{:?}", item.content_type),
+                author_id: crate::crypto::address::encode_address(&item.author_id),
+                space_id: hex::encode(item.space_id.as_bytes()),
+                parent_id: item.parent_id.map(|p: ContentId| format!("sha256:{}", hex::encode(p.as_bytes()))),
+                created_at: created_at_ms,
+                last_engagement: last_engagement_ms,
+                body: Some(body),
+                title,
+                engagement_count: item.engagement_count as u64,
+                decay_state: decay_state_str,
+                seconds_until_decay_starts,
+                seconds_until_pruned,
+                survival_probability,
+                is_protected,
+                time_since_engagement,
+                media_refs,
+                reply_count,
+                display_name: item.display_name.clone(),
+            };
+            return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+        }
+
+        // Second, try BlobStore directly (for raw content bytes)
+        // This handles the case where content was posted but not yet in ContentItem form
+        if let Ok(blob_store) = BlobStore::new(&self.node.sync_blob_path) {
+            if let Ok(content_bytes) = blob_store.get(&blob_hash) {
+                let body_str = String::from_utf8_lossy(&content_bytes);
+
+                // Try to find metadata from ChainStore
+                let mut author_id = String::new();
+                let mut space_id = String::new();
+                let mut created_at = 0u64;
+                let mut content_type = "Post".to_string();
+                let mut parent_id_opt: Option<String> = None;
+                let mut found_media_refs: Vec<crate::blocks::action::ActionMediaRef> = vec![];
+
+                if let Some(ref chain_store) = self.node.chain_store {
+                    // Search for this content in content blocks
+                    for result in chain_store.iter_content_blocks() {
+                        if let Ok(content_block) = result {
+                            for action in &content_block.actions {
+                                if let Some(action_hash) = action.content_hash {
+                                    if action_hash == content_hash {
+                                        // Found the action that created this content
+                                        author_id = crate::crypto::address::encode_address(
+                                            &crate::types::identity::IdentityId(action.actor)
+                                        );
+                                        space_id = format!("sp1{}", hex::encode(&content_block.space_id[..16]));
+                                        created_at = action.timestamp;
+                                        content_type = match action.action_type {
+                                            crate::blocks::ActionType::Post => "Post".to_string(),
+                                            crate::blocks::ActionType::Reply => "Reply".to_string(),
+                                            _ => "Unknown".to_string(),
+                                        };
+                                        if let Some(parent) = action.parent_id {
+                                            parent_id_opt = Some(format!("sha256:{}", hex::encode(parent)));
+                                        }
+                                        // Extract media_refs from the action
+                                        found_media_refs = action.media_refs.clone();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Parse title from body (first line if formatted as "Title\n\nBody")
+                let (title, body) = if let Some(idx) = body_str.find("\n\n") {
+                    let (t, b) = body_str.split_at(idx);
+                    (Some(t.to_string()), b.trim_start_matches("\n\n").to_string())
+                } else {
+                    (None, body_str.to_string())
+                };
+
+                // BACKFILL: Store ContentItem in content_store so future get_children works
+                // This handles content that was created before content_store was used
+                if !author_id.is_empty() && !space_id.is_empty() && created_at > 0 {
+                    use crate::types::content::{ContentItem, ContentType as CT, ContentId, SpaceId, MediaRef, MediaType, ContentHash};
+                    use crate::types::identity::{IdentityId, Signature};
+
+                    // Parse author public key from address
+                    let author_bytes = crate::crypto::address::decode_address_to_pubkey(&author_id)
+                        .map(|pk| {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(pk.as_bytes());
+                            arr
+                        })
+                        .unwrap_or([0u8; 32]);
+
+                    // Parse space_id (skip "sp1" prefix and decode hex)
+                    let space_bytes: [u8; 32] = if space_id.starts_with("sp1") {
+                        hex::decode(&space_id[3..])
+                            .ok()
+                            .and_then(|v| {
+                                if v.len() >= 16 {
+                                    let mut arr = [0u8; 32];
+                                    arr[..v.len().min(32)].copy_from_slice(&v[..v.len().min(32)]);
+                                    Some(arr)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(content_hash)
+                    } else {
+                        content_hash
+                    };
+
+                    // Parse parent_id if present
+                    let parent_bytes: Option<[u8; 32]> = parent_id_opt.as_ref().and_then(|p| {
+                        if p.starts_with("sha256:") {
+                            hex::decode(&p[7..]).ok().and_then(|v| {
+                                if v.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&v);
+                                    Some(arr)
+                                } else {
+                                    None
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    });
+
+                    let ct = if content_type == "Reply" { CT::Reply } else { CT::Post };
+
+                    // Convert ActionMediaRef to MediaRef for ContentItem
+                    let backfill_media_refs: Vec<MediaRef> = found_media_refs.iter().map(|amr| {
+                        let media_type = match amr.media_type {
+                            crate::blocks::action::ActionMediaRef::TYPE_JPEG => MediaType::ImageJpeg,
+                            crate::blocks::action::ActionMediaRef::TYPE_PNG => MediaType::ImagePng,
+                            crate::blocks::action::ActionMediaRef::TYPE_GIF => MediaType::ImageGif,
+                            crate::blocks::action::ActionMediaRef::TYPE_WEBP => MediaType::ImageWebp,
+                            _ => MediaType::ImageJpeg, // Default fallback
+                        };
+                        MediaRef {
+                            media_hash: ContentHash::from_bytes(amr.media_hash),
+                            media_type,
+                            size_bytes: amr.size_bytes,
+                            inline_preview: None, // Preview not stored in action
+                        }
+                    }).collect();
+
+                    let content_item = ContentItem {
+                        content_id: ContentId::from_bytes(content_hash),
+                        content_type: ct,
+                        author_id: IdentityId::from_bytes(author_bytes),
+                        space_id: SpaceId::from_bytes(space_bytes),
+                        parent_id: parent_bytes.map(ContentId::from_bytes),
+                        created_at,
+                        last_engagement: created_at,
+                        body_inline: Some(body_str.to_string()),
+                        content_hash: None,
+                        content_size: Some(content_bytes.len() as u32),
+                        content_type_mime: Some("text/plain".to_string()),
+                        media_refs: backfill_media_refs,
+                        pin_state: None,
+                        engagement_count: 0,
+                        signature: Signature::from_bytes([0u8; 64]),
+                        pow_nonce: 0,
+                        pow_difficulty: 0,
+                        preservation_pow: None,
+                        display_name: None,
+                    };
+
+                    // Try to store in content_store (ignore errors, this is best-effort backfill)
+                    match content_store.put(&content_item) {
+                        Ok(()) => {
+                            info!("[BACKFILL] Stored ContentItem for {} ({})", &params.content_id[..24], content_type);
+                            let _ = content_store.flush();
+                        }
+                        Err(e) if e.to_string().contains("already exists") => {
+                            // Already backfilled, that's fine
+                        }
+                        Err(e) => {
+                            debug!("Backfill failed for {}: {}", &params.content_id[..24], e);
+                        }
+                    }
+                }
+
+                // Get decay state from DecayIntegration for blob-only content
+                let (decay_state_str, seconds_until_decay_starts, seconds_until_pruned,
+                     survival_probability, is_protected, time_since_engagement) =
+                    if let Some(ref decay) = self.node.decay_integration {
+                        if let Ok(Some(decay_state)) = decay.get_decay_state(&blob_hash) {
+                            let state_str = if decay_state.is_protected {
+                                "protected"
+                            } else if decay_state.survival_probability >= 0.5 {
+                                "active"
+                            } else if decay_state.survival_probability >= 0.0625 {
+                                "stale"
+                            } else {
+                                "decayed"
+                            };
+                            let floor_remaining = if decay_state.is_protected {
+                                Some(crate::types::constants::DECAY_FLOOR_SECS
+                                    .saturating_sub(decay_state.time_since_engagement))
+                            } else {
+                                None
+                            };
+                            let half_life = crate::types::constants::HALF_LIFE_SECS;
+                            let seconds_until_pruned = if decay_state.is_protected {
+                                Some(crate::types::constants::DECAY_FLOOR_SECS
+                                    .saturating_sub(decay_state.time_since_engagement) + 4 * half_life)
+                            } else if !decay_state.is_decayed {
+                                let effective_time = decay_state.time_since_engagement
+                                    .saturating_sub(crate::types::constants::DECAY_FLOOR_SECS);
+                                Some((4 * half_life).saturating_sub(effective_time))
+                            } else {
+                                Some(0)
+                            };
+                            (state_str.to_string(), floor_remaining, seconds_until_pruned,
+                             decay_state.survival_probability, decay_state.is_protected,
+                             decay_state.time_since_engagement)
+                        } else {
+                            ("active".to_string(), Some(crate::types::constants::DECAY_FLOOR_SECS), None, 1.0, true, 0)
+                        }
+                    } else {
+                        ("active".to_string(), None, None, 1.0, false, 0)
+                    };
+
+                // Calculate reply count from chain + mempool
+                let reply_count = {
+                    let mut count = 0u64;
+
+                    // Count ALL replies recursively from chain index
+                    if let Some(ref chain_store) = self.node.chain_store {
+                        count += chain_store.count_all_replies(&content_hash)
+                            .map(|c| c as u64)
+                            .unwrap_or(0);
+                    }
+
+                    // Count pending replies from mempool (recursive)
+                    if let Some(ref block_builder) = self.node.block_builder {
+                        if let Ok(bb) = block_builder.read() {
+                            let pending = bb.get_pending_actions();
+                            let mut target_parents: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                            target_parents.insert(content_hash);
+
+                            loop {
+                                let mut found_new = false;
+                                for (_thread_id, _space_id, action) in &pending {
+                                    if action.action_type == crate::blocks::action::ActionType::Reply {
+                                        if let (Some(parent_id), Some(reply_hash)) = (action.parent_id, action.content_hash) {
+                                            if target_parents.contains(&parent_id) && !target_parents.contains(&reply_hash) {
+                                                count += 1;
+                                                target_parents.insert(reply_hash);
+                                                found_new = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                if !found_new {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    count
+                };
+
+                // Normalize timestamps to milliseconds
+                let created_at_ms = if created_at < 10_000_000_000 {
+                    created_at * 1000
+                } else {
+                    created_at
+                };
+
+                // Convert ActionMediaRef to MediaRefResult for response
+                let response_media_refs: Vec<MediaRefResult> = found_media_refs.iter().map(|amr| {
+                    let media_type_str = match amr.media_type {
+                        crate::blocks::action::ActionMediaRef::TYPE_JPEG => "image/jpeg",
+                        crate::blocks::action::ActionMediaRef::TYPE_PNG => "image/png",
+                        crate::blocks::action::ActionMediaRef::TYPE_GIF => "image/gif",
+                        crate::blocks::action::ActionMediaRef::TYPE_WEBP => "image/webp",
+                        _ => "image/jpeg", // Default fallback
+                    };
+                    MediaRefResult {
+                        media_hash: hex::encode(amr.media_hash),
+                        media_type: media_type_str.to_string(),
+                        size_bytes: amr.size_bytes,
+                    }
+                }).collect();
+
+                let result = GetContentResult {
+                    content_id: params.content_id,
+                    content_type,
+                    author_id,
+                    space_id,
+                    parent_id: parent_id_opt,
+                    created_at: created_at_ms,
+                    last_engagement: created_at_ms,
+                    body: Some(body),
+                    title,
+                    engagement_count: 0,
+                    decay_state: decay_state_str,
+                    seconds_until_decay_starts,
+                    seconds_until_pruned,
+                    survival_probability,
+                    is_protected,
+                    time_since_engagement,
+                    media_refs: response_media_refs,
+                    reply_count,
+                    display_name: None, // TODO: extract from action if available
+                };
+                return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+            }
+        }
+
+        // Content not found in either store
+        RpcResponse::error(RpcErrorCode::ContentNotFound, "Content not found", id)
+    }
+
+    /// Search across spaces and content
+    async fn search(&self, params: Value, id: Value) -> RpcResponse {
+        let start_time = std::time::Instant::now();
+
+        // Parse params manually to avoid derive issues
+        let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let types = params.get("types").and_then(|v| v.as_array());
+        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+        let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+
+        let query_lower = query.to_lowercase();
+        let search_terms: Vec<&str> = query_lower.split_whitespace().collect();
+
+        if search_terms.is_empty() {
+            return RpcResponse::success(serde_json::json!({
+                "results": [],
+                "total": 0,
+                "took_ms": 0
+            }), id);
+        }
+
+        let mut results: Vec<serde_json::Value> = Vec::new();
+
+        // Check if we should search spaces
+        let search_spaces = types.map(|t| t.iter().any(|x| x.as_str() == Some("space"))).unwrap_or(true);
+        if search_spaces {
+            if let Some(ref chain_store) = self.node.chain_store {
+                for result in chain_store.list_spaces() {
+                    if let Ok(space_info) = result {
+                        let name_lower = space_info.name.to_lowercase();
+                        let desc_lower = space_info.description.as_ref().map(|d| d.to_lowercase()).unwrap_or_default();
+
+                        let matches = search_terms.iter().any(|term| {
+                            name_lower.contains(term) || desc_lower.contains(term)
+                        });
+
+                        if matches {
+                            results.push(serde_json::json!({
+                                "id": hex::encode(&space_info.space_id),
+                                "type": "space",
+                                "score": 1.0,
+                                "highlights": { "name": space_info.name },
+                                "data": {
+                                    "spaceId": hex::encode(&space_info.space_id),
+                                    "name": space_info.name,
+                                    "description": space_info.description,
+                                    "threadCount": 0,
+                                    "memberCount": 0,
+                                    "lastActivity": space_info.created_at,
+                                    "isActive": true
+                                }
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check if we should search threads
+        let search_threads = types.map(|t| t.iter().any(|x| x.as_str() == Some("thread"))).unwrap_or(true);
+        if search_threads {
+            if let Some(ref content_store) = self.node.content_store {
+                let mut count = 0;
+                for result in content_store.iter_content() {
+                    if count >= 500 { break; }
+                    count += 1;
+                    let item = match result {
+                        Ok(i) => i,
+                        Err(_) => continue,
+                    };
+                    let body_lower = item.body_inline.as_ref().map(|b| b.to_lowercase()).unwrap_or_default();
+
+                    let matches = search_terms.iter().any(|term| body_lower.contains(term));
+
+                    if matches && item.parent_id.is_none() {
+                        let content_id_str = hex::encode(item.content_id.as_bytes());
+                        let body_preview = item.body_inline.as_ref().map(|b| {
+                            if b.len() > 200 { format!("{}...", &b[..200]) } else { b.clone() }
+                        }).unwrap_or_default();
+
+                        results.push(serde_json::json!({
+                            "id": content_id_str,
+                            "type": "thread",
+                            "score": 0.8,
+                            "highlights": { "content": body_preview },
+                            "data": {
+                                "contentId": content_id_str,
+                                "spaceId": hex::encode(item.space_id.as_bytes()),
+                                "authorId": hex::encode(item.author_id.as_bytes()),
+                                "title": "",
+                                "body": body_preview,
+                                "createdAt": item.created_at,
+                                "lastEngagement": item.last_engagement,
+                                "replyCount": 0,
+                                "reactionCount": 0,
+                                "hasMedia": false
+                            }
+                        }));
+                    }
+                }
+            }
+        }
+
+        let total = results.len();
+        let took_ms = start_time.elapsed().as_millis() as u64;
+
+        let paginated: Vec<_> = results.into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect();
+
+        RpcResponse::success(serde_json::json!({
+            "results": paginated,
+            "total": total,
+            "took_ms": took_ms
+        }), id)
+    }
+
+    /// Get autocomplete suggestions for search prefix
+    async fn search_suggest(&self, params: Value, id: Value) -> RpcResponse {
+        let prefix = params.get("prefix").and_then(|v| v.as_str()).unwrap_or("");
+        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
+
+        if prefix.len() < 2 {
+            return RpcResponse::success(serde_json::json!([]), id);
+        }
+
+        let prefix_lower = prefix.to_lowercase();
+        let mut suggestions: Vec<String> = Vec::new();
+
+        // Collect space names that match the prefix
+        if let Some(ref chain_store) = self.node.chain_store {
+            for result in chain_store.list_spaces() {
+                if let Ok(space_info) = result {
+                    let name_lower = space_info.name.to_lowercase();
+                    if name_lower.starts_with(&prefix_lower) || name_lower.contains(&prefix_lower) {
+                        suggestions.push(space_info.name.clone());
+                        if suggestions.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also suggest content-based terms from recent threads
+        if suggestions.len() < limit {
+            if let Some(ref content_store) = self.node.content_store {
+                let mut seen_terms: std::collections::HashSet<String> = suggestions.iter().cloned().collect();
+                let mut count = 0;
+                for result in content_store.iter_content() {
+                    if count >= 100 { break; }
+                    count += 1;
+                    if let Ok(item) = result {
+                        if item.parent_id.is_some() { continue; } // Skip replies
+                        if let Some(body) = &item.body_inline {
+                            // Extract words that start with the prefix
+                            for word in body.split_whitespace() {
+                                let word_clean = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+                                if word_clean.len() >= 3 && word_clean.starts_with(&prefix_lower) && !seen_terms.contains(&word_clean) {
+                                    suggestions.push(word_clean.clone());
+                                    seen_terms.insert(word_clean);
+                                    if suggestions.len() >= limit {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if suggestions.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Sort by relevance (exact prefix match first, then by length)
+        suggestions.sort_by(|a, b| {
+            let a_starts = a.to_lowercase().starts_with(&prefix_lower);
+            let b_starts = b.to_lowercase().starts_with(&prefix_lower);
+            match (a_starts, b_starts) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.len().cmp(&b.len()),
+            }
+        });
+
+        suggestions.truncate(limit);
+        RpcResponse::success(serde_json::json!(suggestions), id)
+    }
+
+    /// Get trending/popular search terms
+    async fn trending_searches(&self, params: Value, id: Value) -> RpcResponse {
+        let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+
+        // Collect popular space names and recent thread topics as "trending"
+        let mut trending: Vec<(String, u64)> = Vec::new();
+
+        // Get space names with activity counts
+        if let Some(ref chain_store) = self.node.chain_store {
+            for result in chain_store.list_spaces() {
+                if let Ok(space_info) = result {
+                    // Use created_at as a proxy for activity (newer = more trending)
+                    trending.push((space_info.name.clone(), space_info.created_at));
+                }
+            }
+        }
+
+        // Get recent thread keywords
+        if let Some(ref content_store) = self.node.content_store {
+            let mut keyword_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+            let mut count = 0;
+            for result in content_store.iter_content() {
+                if count >= 200 { break; }
+                count += 1;
+                if let Ok(item) = result {
+                    if item.parent_id.is_some() { continue; } // Skip replies
+                    if let Some(body) = &item.body_inline {
+                        // Extract significant words (4+ chars, not common)
+                        for word in body.split_whitespace().take(20) {
+                            let word_clean = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+                            if word_clean.len() >= 4 && !is_common_word(&word_clean) {
+                                *keyword_counts.entry(word_clean).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Add top keywords as trending
+            let mut keyword_vec: Vec<_> = keyword_counts.into_iter().collect();
+            keyword_vec.sort_by(|a, b| b.1.cmp(&a.1));
+            for (word, count) in keyword_vec.into_iter().take(limit) {
+                trending.push((word, count));
+            }
+        }
+
+        // Sort by activity/count and take top results
+        trending.sort_by(|a, b| b.1.cmp(&a.1));
+        let result: Vec<String> = trending.into_iter()
+            .map(|(name, _)| name)
+            .take(limit)
+            .collect();
+
+        RpcResponse::success(serde_json::json!(result), id)
+    }
+
+    /// List all known spaces from blockchain data
+    async fn list_spaces(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ListSpacesParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        use std::collections::HashMap;
+        let mut space_stats: HashMap<[u8; 16], (String, Option<String>, u64, u64, u64)> = HashMap::new();
+        // space_id_16 -> (name, description, creator_timestamp, post_count, last_activity)
+
+        // Source 0: Space blocks in the chain (spaces are on-chain, no content fetch needed)
+        if let Some(ref chain_store) = self.node.chain_store {
+            let mut root_block_count = 0u64;
+            let mut space_block_count = 0u64;
+            for result in chain_store.iter_root_blocks() {
+                match result {
+                    Ok(root_block) => {
+                        root_block_count += 1;
+                        info!("[LIST_SPACES] Found root block at height {} with {} space_block_hashes",
+                              root_block.height, root_block.space_block_hashes.len());
+                        // Iterate over space block hashes and fetch each space block
+                        for space_block_hash in &root_block.space_block_hashes {
+                            match chain_store.get_space_block(space_block_hash) {
+                                Ok(Some(space_block)) => {
+                                    space_block_count += 1;
+                                    // Extract first 16 bytes of space_id
+                                    let mut space_16: [u8; 16] = [0u8; 16];
+                                    space_16.copy_from_slice(&space_block.space_id[..16]);
+
+                                    info!("[LIST_SPACES] Found space {} in block {}",
+                                          hex::encode(&space_16[..4]), root_block.height);
+
+                                    // Add space if not already present
+                                    // Note: post_count starts at 0, will be populated by Source 2 (content blocks)
+                                    space_stats.entry(space_16).or_insert((
+                                        format!("Space {}", hex::encode(&space_16[..4])), // Default name
+                                        None, // No description yet
+                                        root_block.timestamp, // Use block timestamp as created_at
+                                        0, // post_count - will be calculated from content blocks
+                                        root_block.timestamp, // last_activity from block
+                                    ));
+                                }
+                                Ok(None) => {
+                                    warn!("[LIST_SPACES] Space block {} not found in store", hex::encode(space_block_hash));
+                                }
+                                Err(e) => {
+                                    warn!("[LIST_SPACES] Error fetching space block {}: {}", hex::encode(space_block_hash), e);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[LIST_SPACES] Error iterating root blocks: {}", e);
+                    }
+                }
+            }
+            info!("[LIST_SPACES] Scanned {} root blocks, found {} space blocks", root_block_count, space_block_count);
+        } else {
+            warn!("[LIST_SPACES] No chain_store available!");
+        }
+
+        // Source 1: Space Registry (has names/descriptions from content blocks)
+        if let Some(ref chain_store) = self.node.chain_store {
+            for result in chain_store.list_spaces() {
+                if let Ok(space_info) = result {
+                    let entry = space_stats.entry(space_info.space_id).or_insert((
+                        space_info.name.clone(),
+                        space_info.description.clone(),
+                        space_info.created_at,
+                        0, // post_count (will be filled later)
+                        0, // last_activity (will be filled later)
+                    ));
+                    // Update with registry info (better names/descriptions)
+                    entry.0 = space_info.name;
+                    entry.1 = space_info.description;
+                    entry.2 = space_info.created_at;
+                }
+            }
+        }
+
+        // Source 2: Content blocks (to get post counts and last activity)
+        if let Some(ref chain_store) = self.node.chain_store {
+            for result in chain_store.iter_content_blocks() {
+                if let Ok(content_block) = result {
+                    // Extract first 16 bytes of space_id
+                    let mut space_16: [u8; 16] = [0u8; 16];
+                    space_16.copy_from_slice(&content_block.space_id[..16]);
+
+                    if let Some(entry) = space_stats.get_mut(&space_16) {
+                        // Only count for registered spaces
+                        for action in &content_block.actions {
+                            entry.3 += 1; // post_count
+                            if action.timestamp > entry.4 {
+                                entry.4 = action.timestamp; // last_activity
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Source 3: ContentStore (pending content not yet in blocks)
+        if let Some(ref content_store) = self.node.content_store {
+            for result in content_store.iter_content() {
+                if let Ok(item) = result {
+                    let space_id = item.space_id.as_bytes();
+                    let mut space_16: [u8; 16] = [0u8; 16];
+                    space_16.copy_from_slice(&space_id[..16]);
+
+                    if let Some(entry) = space_stats.get_mut(&space_16) {
+                        // Only count for registered spaces
+                        entry.3 += 1; // post_count
+                        if item.created_at > entry.4 {
+                            entry.4 = item.created_at; // last_activity
+                        }
+                    }
+                }
+            }
+        }
+
+        // Source 4: Mempool (pending CreateSpace actions not yet in blocks)
+        if let Some(ref block_builder) = self.node.block_builder {
+            if let Ok(builder) = block_builder.read() {
+                use crate::blocks::action::ActionType;
+                let pending_actions = builder.get_pending_actions();
+                for (_thread_id, space_id, action) in pending_actions {
+                    if action.action_type == ActionType::CreateSpace {
+                        // Extract first 16 bytes of space_id
+                        let mut space_16: [u8; 16] = [0u8; 16];
+                        space_16.copy_from_slice(&space_id[..16]);
+
+                        // Add space from mempool if not already in chain
+                        space_stats.entry(space_16).or_insert((
+                            format!("Space {}", hex::encode(&space_16[..4])), // Default name
+                            None, // No description yet
+                            action.timestamp, // created_at from action
+                            0, // post_count
+                            action.timestamp, // last_activity
+                        ));
+                        log::debug!("[LIST_SPACES] Found pending CreateSpace in mempool for space {}", hex::encode(&space_16[..4]));
+                    }
+                }
+            }
+        }
+
+        let total = space_stats.len();
+
+        // Load space names from config.toml (user-defined names take precedence)
+        let config_names = load_space_names(&self.node.data_dir);
+
+        // Convert to result, using indexed post counts
+        let chain_store_ref = self.node.chain_store.as_ref();
+        let mut spaces: Vec<SpaceSummary> = space_stats
+            .into_iter()
+            .map(|(space_id_16, (name, _description, _created_at, _post_count, last_activity))| {
+                let space_id_str = encode_space_id(&space_id_16);
+                // Use config name if available, otherwise use on-chain/default name
+                let final_name = config_names.get(&space_id_str).cloned().unwrap_or(name);
+                // Get accurate post count from indexed storage
+                let actual_post_count = chain_store_ref
+                    .and_then(|cs| cs.count_posts_for_space(&space_id_16).ok())
+                    .unwrap_or(0) as u64;
+                SpaceSummary {
+                    space_id: space_id_str,
+                    post_count: actual_post_count,
+                    last_activity: if last_activity > 0 { Some(last_activity) } else { None },
+                    name: Some(final_name),
+                }
+            })
+            .collect();
+
+        // Sort by last activity (most recent first), then by name
+        spaces.sort_by(|a, b| {
+            match (b.last_activity, a.last_activity) {
+                (Some(b_time), Some(a_time)) => b_time.cmp(&a_time),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.name.cmp(&b.name),
+            }
+        });
+
+        // Apply pagination
+        let spaces: Vec<_> = spaces.into_iter().skip(params.offset).take(params.limit).collect();
+
+        let result = ListSpacesResult { spaces, total };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Create a new space
+    ///
+    /// Validates the PoW, then generates a space ID and saves to config.
+    async fn create_space(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::types::identity::PublicKey;
+
+        let params: CreateSpaceParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse creator public key
+        let creator_bytes = match hex::decode(&params.creator_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid creator_id: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let _pubkey = PublicKey::from_bytes(creator_bytes);
+
+        // SPONSORSHIP CHECK: Verify identity is sponsored before allowing space creation
+        if let Err(response) = self.check_identity_sponsored(&params.creator_id, &id) {
+            return response;
+        }
+
+        // Level-based restrictions removed - anyone can create spaces (PoW-gated)
+
+        // Verify PoW
+        let pow_nonce_space = match hex::decode(&params.pow_nonce_space) {
+            Ok(bytes) if bytes.len() == 8 => {
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid pow_nonce_space: must be 8-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let pow_hash = match hex::decode(&params.pow_hash) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid pow_hash: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Reconstruct challenge from provided values (do NOT generate new challenge!)
+        // The CLI sends the exact challenge parameters used during PoW mining.
+        // We must use those same values to verify the hash.
+        let content_hash = crate::crypto::sha256(params.name.as_bytes());
+        let challenge = PoWChallenge {
+            action_type: ActionType::SpaceCreation,
+            content_hash,
+            author_id: creator_bytes,
+            timestamp: params.timestamp,
+            difficulty: params.pow_difficulty,
+            nonce_space: pow_nonce_space,
+        };
+
+        let solution = PoWSolution {
+            challenge: challenge.clone(),
+            nonce: params.pow_nonce,
+            hash: pow_hash,
+        };
+
+        // Get PoW config based on network mode
+        let pow_config = match self.node.network.as_str() {
+            "regtest" => ForkPoWConfig::test(),
+            "testnet" => ForkPoWConfig::testnet(),
+            _ => ForkPoWConfig::production(),
+        };
+
+        // Get current time for timestamp validation
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if let Err(e) = verify_pow(&solution, &pow_config, current_time) {
+            return RpcResponse::error(
+                RpcErrorCode::PowInvalid,
+                &format!("PoW verification failed: {}", e),
+                id,
+            );
+        }
+
+        // Generate space ID from PoW hash (first 16 bytes)
+        let mut space_id_bytes: [u8; 16] = [0u8; 16];
+        space_id_bytes.copy_from_slice(&pow_hash[..16]);
+        let space_id = encode_space_id(&space_id_bytes);
+
+        // Check if space already exists on-chain
+        if let Some(ref chain_store) = self.node.chain_store {
+            match chain_store.space_exists(&space_id_bytes) {
+                Ok(true) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Space {} already exists", space_id),
+                        id,
+                    );
+                }
+                Err(e) => {
+                    warn!("Failed to check space existence: {}", e);
+                }
+                Ok(false) => {} // Good, doesn't exist yet
+            }
+        }
+
+        // Register space on-chain
+        let space_info = crate::storage::SpaceInfo {
+            space_id: space_id_bytes,
+            name: params.name.clone(),
+            description: params.description.clone(),
+            creator: creator_bytes,
+            created_at: current_time,
+            pow_work: 1u64 << params.pow_difficulty.min(63),
+            // Private space fields (defaults for public spaces)
+            is_private: false,
+            encrypted_name: None,
+            creator_encrypted_key: None,
+            key_version: 0,
+        };
+
+        if let Some(ref chain_store) = self.node.chain_store {
+            if let Err(e) = chain_store.register_space(&space_info) {
+                warn!("Failed to register space on-chain: {}", e);
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    &format!("Failed to register space: {}", e),
+                    id,
+                );
+            }
+            info!("[CREATE_SPACE] Registered space {} on-chain", space_id);
+        }
+
+        // Create CreateSpace action for block propagation (SPEC_08)
+        if let Some(ref block_builder) = self.node.block_builder {
+            // Create signature bytes
+            let mut signature_bytes_arr = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    signature_bytes_arr.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            // Convert 16-byte space_id to 32-byte format for Action
+            let mut space_id_32: [u8; 32] = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&space_id_bytes);
+
+            let pow_work = 1u64 << params.pow_difficulty.min(63);
+
+            let action = crate::blocks::Action::new_create_space(
+                creator_bytes,
+                current_time,
+                space_id_32,
+                params.pow_nonce,
+                pow_work,
+                pow_hash,
+                signature_bytes_arr,
+            );
+
+            // Add to block builder using space_id as thread_id (each space is its own "thread")
+            use crate::blocks::branch_path::BranchPath;
+            use crate::blocks::content_block::SpaceCreationMetadata;
+
+            let action_clone = action.clone();
+
+            // Scope the lock to avoid holding it across await
+            {
+                let mut builder = block_builder.write().unwrap();
+                // Space creation uses the space_id as the thread_id and a root-level branch path
+                let branch_path = BranchPath::root();
+                // Include space metadata so other nodes can register the space when syncing
+                let metadata = SpaceCreationMetadata {
+                    name: params.name.clone(),
+                    description: params.description.clone(),
+                };
+                builder.add_create_space_action(space_id_32, space_id_32, action, branch_path, metadata);
+                debug!("[CREATE_SPACE] Added CreateSpace action with metadata to block builder");
+            } // Lock released here
+
+            // Broadcast action to peers (mempool gossip)
+            if let Some(ref pool) = self.node.connection_pool {
+                use crate::network::messages::ActionAnnouncePayload;
+                use crate::types::network::{MessageEnvelope, MessageType};
+
+                let action_data = action_clone.serialize();
+                let payload = ActionAnnouncePayload::new(space_id_32, space_id_32, action_data);
+                let envelope = MessageEnvelope::new_fork_agnostic(
+                    MessageType::ActionAnnounce,
+                    payload.to_bytes().to_vec(),
+                );
+
+                // Broadcast to all peers
+                let peers = pool.peer_ids().await;
+                for peer_id in peers {
+                    if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                        debug!("[MEMPOOL] Failed to broadcast CREATE_SPACE action to peer {}: {}",
+                               hex::encode(&peer_id[..8]), e);
+                    }
+                }
+                info!("[MEMPOOL] Broadcast CREATE_SPACE action to peers (space={})", space_id);
+
+                // Check if PoW threshold met - form block immediately if so
+                self.try_form_block_if_threshold_met().await;
+            }
+        }
+
+        // Also save space to local config for convenience
+        let config_path = self.node.data_dir.join("config.toml");
+        let mut config_content = std::fs::read_to_string(&config_path).unwrap_or_default();
+
+        // Add to followed_spaces if not present
+        if !config_content.contains(&format!("\"{}\"", space_id)) {
+            // Simple append - add to followed_spaces array
+            if config_content.contains("followed_spaces = [") {
+                // Insert before the closing bracket
+                config_content = config_content.replace(
+                    "followed_spaces = [",
+                    &format!("followed_spaces = [\n  \"{}\",", space_id),
+                );
+            } else {
+                // Add new section
+                config_content.push_str(&format!("\nfollowed_spaces = [\n  \"{}\"\n]\n", space_id));
+            }
+        }
+
+        // Add to space_names table
+        if config_content.contains("[space_names]") {
+            // Insert after the section header
+            let insert_pos = config_content.find("[space_names]").unwrap() + "[space_names]".len();
+            let (before, after) = config_content.split_at(insert_pos);
+            config_content = format!("{}\n\"{}\" = \"{}\"{}", before, space_id, params.name, after);
+        } else {
+            // Add new section
+            config_content.push_str(&format!(
+                "\n[space_names]\n\"{}\" = \"{}\"\n",
+                space_id, params.name
+            ));
+        }
+
+        // Write config (non-fatal if this fails, since on-chain is the source of truth)
+        if let Err(e) = std::fs::write(&config_path, &config_content) {
+            warn!("Failed to save space to local config (non-fatal): {}", e);
+        }
+
+        info!("[CREATE_SPACE] Created space {} ({})", space_id, params.name);
+
+        let result = CreateSpaceResult {
+            space_id,
+            name: params.name,
+            success: true,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    async fn list_space_content(&self, params: Value, id: Value) -> RpcResponse {
+        let start_time = Instant::now();
+
+        let params: ListSpaceContentParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Decode bech32m space ID to 16 bytes
+        let space_id_16: [u8; 16] = match decode_space_id(&params.space_id) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid space ID format: {}", e),
+                    id,
+                );
+            }
+        };
+
+        debug!("[LIST_SPACE_CONTENT] Looking for space: {} (bytes: {:?})",
+            params.space_id, &space_id_16);
+
+        // Use indexed lookup for fast content retrieval
+        let mut items: Vec<ContentSummary> = Vec::new();
+        let mut total = 0usize;
+
+        // Create BlobStore ONCE outside the loop for performance
+        let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
+
+        // When filtering by content_type, we need to fetch more items because
+        // we filter AFTER fetching. Use a larger limit to ensure we find enough matching items.
+        let fetch_limit = if params.content_type.is_some() {
+            std::cmp::max(params.limit * 20, 1000) // Fetch 20x more when filtering
+        } else {
+            params.limit
+        };
+
+        if let Some(ref chain_store) = self.node.chain_store {
+            // Use the new indexed method (O(log n) instead of O(n) full table scan)
+            match chain_store.get_content_for_space(&space_id_16, fetch_limit, params.offset) {
+                Ok(indexed_content) => {
+                    // Get total count for pagination (this is still O(n) but can be cached)
+                    total = chain_store.count_content_in_space(&space_id_16).unwrap_or(0);
+
+                    for (content_hash, metadata) in indexed_content {
+                        let content_id = format!("sha256:{}", hex::encode(&content_hash));
+                        let actor_id = crate::types::identity::IdentityId(metadata.author);
+                        let author_id = crate::crypto::address::encode_address(&actor_id);
+                        let content_type = match metadata.content_type {
+                            0 => "Post",
+                            1 => "Reply",
+                            _ => "Engage",
+                        };
+
+                        // Get parent_id for replies
+                        let parent_id = if metadata.parent_hash == [0u8; 32] {
+                            None
+                        } else {
+                            Some(format!("sha256:{}", hex::encode(&metadata.parent_hash)))
+                        };
+
+                        // Try to get body from content_store first (has body_inline for replies),
+                        // then fall back to BlobStore (for posts)
+                        let (title, body_preview, body) = {
+                            let mut text_opt: Option<String> = None;
+
+                            // First try content_store (same approach as get_replies)
+                            if let Some(ref cs) = self.node.content_store {
+                                let cid = crate::types::content::ContentId::from_bytes(content_hash);
+                                if let Ok(Some(item)) = cs.get(&cid) {
+                                    if let Some(ref body_inline) = item.body_inline {
+                                        if !body_inline.is_empty() {
+                                            text_opt = Some(body_inline.clone());
+                                        }
+                                    }
+                                }
+                                // If no body_inline, try get_body_by_hash
+                                if text_opt.is_none() {
+                                    if let Ok(Some(body_str)) = cs.get_body_by_hash(&content_hash) {
+                                        if !body_str.is_empty() {
+                                            text_opt = Some(body_str);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Fall back to BlobStore (for posts stored there)
+                            if text_opt.is_none() {
+                                if let Some(ref bs) = blob_store {
+                                    let blob_hash = ContentBlobHash::from_bytes(content_hash);
+                                    if let Ok(bytes) = bs.get(&blob_hash) {
+                                        if let Ok(text) = String::from_utf8(bytes) {
+                                            text_opt = Some(text);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Parse title/body from text
+                            if let Some(text) = text_opt {
+                                let (parsed_title, parsed_body) = if let Some(idx) = text.find("\n\n") {
+                                    (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                } else {
+                                    (None, text.clone())
+                                };
+                                let preview = if parsed_body.chars().count() > 200 {
+                                    format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                                } else {
+                                    parsed_body.clone()
+                                };
+                                (parsed_title, Some(preview), Some(text))
+                            } else {
+                                (None, None, None)
+                            }
+                        };
+
+                        // Get accurate decay from DecayIntegration
+                        let content_id_bytes = ContentId::from_bytes(content_hash);
+                        let content_blob_hash = ContentBlobHash::from_bytes(content_hash);
+                        let (decay_state, survival_probability, is_protected, seconds_until_decay_starts, seconds_until_pruned, last_engagement_ms) =
+                            if let Some(ref decay) = self.node.decay_integration {
+                                if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
+                                    let state_str = if ds.is_decayed { "decayed" }
+                                        else if ds.survival_probability < 0.25 { "stale" }
+                                        else if ds.is_protected { "protected" }
+                                        else { "active" };
+
+                                    // Calculate seconds until floor ends (floor = 48h from creation)
+                                    let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
+                                        Some((48 * 3600u64).saturating_sub(ds.age_seconds))
+                                    } else {
+                                        None
+                                    };
+
+                                    // Calculate seconds until pruned (decay < 6.25%)
+                                    let pruned_secs = if ds.is_decayed {
+                                        None
+                                    } else {
+                                        let threshold = 0.0625;
+                                        if ds.survival_probability > threshold {
+                                            let half_life = 7.0 * 24.0 * 3600.0; // 7 days
+                                            let time_to_threshold = half_life * (ds.survival_probability / threshold).log2();
+                                            Some(time_to_threshold as u64)
+                                        } else {
+                                            None
+                                        }
+                                    };
+
+                                    // Calculate last_engagement from time_since_engagement
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64;
+                                    let last_engagement_ms = now_ms.saturating_sub(ds.time_since_engagement * 1000);
+
+                                    (state_str.to_string(), ds.survival_probability, ds.is_protected, floor_secs, pruned_secs, last_engagement_ms)
+                                } else {
+                                    // Not in decay integration yet, use creation time
+                                    let created_at_ms = metadata.timestamp * 1000;
+                                    ("protected".to_string(), 1.0, true, Some(48 * 3600), Some(28 * 24 * 3600), created_at_ms)
+                                }
+                            } else {
+                                // No decay integration, fallback
+                                let created_at_ms = metadata.timestamp * 1000;
+                                ("active".to_string(), 1.0, false, None, None, created_at_ms)
+                            };
+
+                        // Get reply count from chain (confirmed) + mempool (pending)
+                        let reply_count = {
+                            let mut count = 0u64;
+
+                            // Count ALL replies recursively (including nested replies)
+                            count += chain_store.count_all_replies(&content_hash)
+                                .map(|c| c as u64)
+                                .unwrap_or(0);
+
+                            // Count pending replies from mempool (recursive)
+                            if let Some(ref block_builder) = self.node.block_builder {
+                                if let Ok(bb) = block_builder.read() {
+                                    let pending = bb.get_pending_actions();
+                                    // Build a set of all content hashes we're counting for (root + all replies)
+                                    let mut target_parents: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                                    target_parents.insert(content_hash);
+
+                                    // Multiple passes to find nested replies
+                                    loop {
+                                        let mut found_new = false;
+                                        for (_thread_id, _space_id, action) in &pending {
+                                            if action.action_type == crate::blocks::action::ActionType::Reply {
+                                                if let (Some(parent_id), Some(reply_hash)) = (action.parent_id, action.content_hash) {
+                                                    if target_parents.contains(&parent_id) && !target_parents.contains(&reply_hash) {
+                                                        count += 1;
+                                                        target_parents.insert(reply_hash);
+                                                        found_new = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if !found_new {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            count
+                        };
+
+                        // Pool system removed - engagements are now stored directly
+                        let (pool_progress, has_pool, pool_status) = (0.0, false, "none".to_string());
+
+                        // Get media_refs from content_store if available
+                        let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) = self.node.content_store {
+                            if let Ok(Some(item)) = content_store.get(&content_id_bytes) {
+                                item.media_refs.iter().map(|mr| {
+                                    let media_type_str = match mr.media_type {
+                                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                                        crate::types::content::MediaType::ImagePng => "image/png",
+                                        crate::types::content::MediaType::ImageGif => "image/gif",
+                                        crate::types::content::MediaType::ImageWebp => "image/webp",
+                                    };
+                                    MediaRefResult {
+                                        media_hash: hex::encode(mr.media_hash.as_bytes()),
+                                        media_type: media_type_str.to_string(),
+                                        size_bytes: mr.size_bytes,
+                                    }
+                                }).collect()
+                            } else {
+                                vec![]
+                            }
+                        } else {
+                            vec![]
+                        };
+
+                        let created_at_ms = metadata.timestamp * 1000;
+
+                        items.push(ContentSummary {
+                            content_id,
+                            content_type: content_type.to_string(),
+                            author_id,
+                            space_id: params.space_id.clone(),
+                            parent_id,
+                            created_at: created_at_ms,
+                            last_engagement: last_engagement_ms,
+                            title,
+                            body,
+                            body_preview,
+                            engagement_count: 0,
+                            reply_count,
+                            decay_state,
+                            seconds_until_decay: seconds_until_pruned,
+                            survival_probability,
+                            is_protected,
+                            seconds_until_decay_starts,
+                            seconds_until_pruned,
+                            pool_progress,
+                            has_pool,
+                            pool_status,
+                            pending: false,
+                            media_refs,
+                        });
+                    }
+
+                    debug!("[LIST_SPACE_CONTENT] Indexed lookup returned {} items in {:?}",
+                        items.len(), start_time.elapsed());
+                }
+                Err(e) => {
+                    warn!("[LIST_SPACE_CONTENT] Index lookup failed, falling back to full scan: {}", e);
+                    // Fall back to full scan if index fails (shouldn't happen normally)
+                }
+            }
+        }
+
+        // Add pending content from BlockBuilder mempool (Posts, Replies, Engages)
+        if let Some(ref block_builder) = self.node.block_builder {
+            if let Ok(bb_read) = block_builder.read() {
+                let pending_actions = bb_read.get_pending_actions();
+                for (_thread_id, pending_space_id, action) in pending_actions {
+                    // Check if this action is for the requested space
+                    if pending_space_id[..16] != space_id_16 {
+                        continue;
+                    }
+
+                    let content_hash = match action.content_hash {
+                        Some(h) => h,
+                        None => continue,
+                    };
+                    let content_id = format!("sha256:{}", hex::encode(&content_hash));
+
+                    // Skip if we already have this content on chain
+                    if items.iter().any(|i| i.content_id == content_id) {
+                        continue;
+                    }
+
+                    // Determine content type
+                    let (content_type_str, parent_id) = match action.action_type {
+                        crate::blocks::action::ActionType::Post => ("Post".to_string(), None),
+                        crate::blocks::action::ActionType::Reply => {
+                            let parent = action.parent_id.map(|p| format!("sha256:{}", hex::encode(&p)));
+                            ("Reply".to_string(), parent)
+                        },
+                        crate::blocks::action::ActionType::Engage => {
+                            let parent = action.parent_id.map(|p| format!("sha256:{}", hex::encode(&p)));
+                            ("Engage".to_string(), parent)
+                        },
+                        _ => continue, // Skip other action types
+                    };
+
+                    let actor_id = crate::types::identity::IdentityId(action.actor);
+                    let author_id = crate::crypto::address::encode_address(&actor_id);
+
+                    // Get body: try content_store first (for replies), then BlobStore (for posts)
+                    let (title, body_preview, body) = {
+                        let mut text_opt: Option<String> = None;
+
+                        // First try content_store (has body_inline for replies)
+                        if let Some(ref cs) = self.node.content_store {
+                            let cid = crate::types::content::ContentId::from_bytes(content_hash);
+                            if let Ok(Some(item)) = cs.get(&cid) {
+                                if let Some(ref body_inline) = item.body_inline {
+                                    if !body_inline.is_empty() {
+                                        text_opt = Some(body_inline.clone());
+                                    }
+                                }
+                            }
+                            if text_opt.is_none() {
+                                if let Ok(Some(body_str)) = cs.get_body_by_hash(&content_hash) {
+                                    if !body_str.is_empty() {
+                                        text_opt = Some(body_str);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Fall back to BlobStore (for posts)
+                        if text_opt.is_none() {
+                            if let Some(ref bs) = blob_store {
+                                let blob_hash = ContentBlobHash::from_bytes(content_hash);
+                                if let Ok(bytes) = bs.get(&blob_hash) {
+                                    if let Ok(text) = String::from_utf8(bytes) {
+                                        text_opt = Some(text);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Parse title/body from text
+                        if let Some(text) = text_opt {
+                            let (parsed_title, parsed_body) = if action.action_type == crate::blocks::action::ActionType::Post {
+                                // Post: first line may be title
+                                if let Some(idx) = text.find("\n\n") {
+                                    (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                } else {
+                                    (None, text.clone())
+                                }
+                            } else {
+                                // Reply/Engage: no title
+                                (None, text.clone())
+                            };
+                            let preview = if parsed_body.chars().count() > 200 {
+                                format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                            } else {
+                                parsed_body.clone()
+                            };
+                            (parsed_title, Some(preview), Some(text))
+                        } else {
+                            (None, None, None)
+                        }
+                    };
+
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+
+                    // Get media_refs from action if available
+                    let media_refs: Vec<MediaRefResult> = action.media_refs.iter().map(|amr| {
+                        let media_type_str = match amr.media_type {
+                            crate::blocks::action::ActionMediaRef::TYPE_JPEG => "image/jpeg",
+                            crate::blocks::action::ActionMediaRef::TYPE_PNG => "image/png",
+                            crate::blocks::action::ActionMediaRef::TYPE_GIF => "image/gif",
+                            crate::blocks::action::ActionMediaRef::TYPE_WEBP => "image/webp",
+                            _ => "image/jpeg",
+                        };
+                        MediaRefResult {
+                            media_hash: hex::encode(&amr.media_hash),
+                            media_type: media_type_str.to_string(),
+                            size_bytes: amr.size_bytes,
+                        }
+                    }).collect();
+
+                    items.push(ContentSummary {
+                        content_id,
+                        content_type: content_type_str,
+                        author_id,
+                        space_id: params.space_id.clone(),
+                        parent_id,
+                        created_at: now_ms,
+                        last_engagement: now_ms,
+                        title,
+                        body,
+                        body_preview,
+                        engagement_count: 0,
+                        reply_count: 0,
+                        decay_state: "pending".to_string(),
+                        seconds_until_decay: None,
+                        survival_probability: 1.0,
+                        is_protected: true,
+                        seconds_until_decay_starts: None,
+                        seconds_until_pruned: None,
+                        pool_progress: 0.0,
+                        has_pool: false,
+                        pool_status: "none".to_string(),
+                        pending: true,
+                        media_refs,
+                    });
+                }
+            }
+        }
+
+        // NOTE: We deliberately do NOT fallback to ContentStore here.
+        // ContentStore can have stale/orphan content from previous runs that was never
+        // committed to the blockchain. Agents and clients should only see authoritative
+        // blockchain data. If the chain_store is empty, return empty results.
+        //
+        // REMOVED: ContentStore fallback that caused orphan content to appear in listings
+        if items.is_empty() && false {  // Disabled fallback
+            if let Some(ref content_store) = self.node.content_store {
+                for result in content_store.iter_content() {
+                    if let Ok(item) = result {
+                        // Check if space matches (compare first 16 bytes)
+                        let item_space: [u8; 16] = item.space_id.as_bytes()[..16].try_into().unwrap();
+                        if item_space == space_id_16 {
+                            total += 1;
+
+                            // Skip if before offset
+                            if total <= params.offset {
+                                continue;
+                            }
+
+                            // Stop if at limit
+                            if items.len() >= params.limit {
+                                continue;
+                            }
+
+                            // Create summary
+                            let content_id = format!("sha256:{}", hex::encode(item.content_id.as_bytes()));
+                            let author_id = crate::crypto::address::encode_address(&item.author_id);
+
+                            // Parse title from body (format is "Title\n\nBody")
+                            let body_text = item.body_inline.as_deref().unwrap_or("");
+                            let (title, body) = if let Some(idx) = body_text.find("\n\n") {
+                                let (t, b) = body_text.split_at(idx);
+                                (Some(t.to_string()), b.trim_start_matches("\n\n").to_string())
+                            } else {
+                                (None, body_text.to_string())
+                            };
+
+                            let body_preview = if body.len() > 200 {
+                                Some(format!("{}...", &body[..200]))
+                            } else {
+                                Some(body.clone())
+                            };
+
+                            // Get accurate decay from DecayIntegration
+                            let content_blob_hash = ContentBlobHash::from_bytes(*item.content_id.as_bytes());
+                            let (decay_state, survival_probability, is_protected, seconds_until_decay_starts, seconds_until_pruned, last_engagement_ms) =
+                                if let Some(ref decay) = self.node.decay_integration {
+                                    if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
+                                        let state_str = if ds.is_decayed { "decayed" }
+                                            else if ds.survival_probability < 0.25 { "stale" }
+                                            else if ds.is_protected { "protected" }
+                                            else { "active" };
+
+                                        let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
+                                            Some((48 * 3600u64).saturating_sub(ds.age_seconds))
+                                        } else {
+                                            None
+                                        };
+
+                                        let pruned_secs = if ds.is_decayed {
+                                            None
+                                        } else {
+                                            let threshold = 0.0625;
+                                            if ds.survival_probability > threshold {
+                                                let half_life = 7.0 * 24.0 * 3600.0;
+                                                let time_to_threshold = half_life * (ds.survival_probability / threshold).log2();
+                                                Some(time_to_threshold as u64)
+                                            } else {
+                                                None
+                                            }
+                                        };
+
+                                        // Calculate last_engagement from time_since_engagement
+                                        let now_ms = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis() as u64;
+                                        let last_engagement_ms = now_ms.saturating_sub(ds.time_since_engagement * 1000);
+
+                                        (state_str.to_string(), ds.survival_probability, ds.is_protected, floor_secs, pruned_secs, last_engagement_ms)
+                                    } else {
+                                        ("protected".to_string(), 1.0, true, Some(48 * 3600), Some(28 * 24 * 3600), item.last_engagement)
+                                    }
+                                } else {
+                                    ("active".to_string(), 1.0, false, None, None, item.last_engagement)
+                                };
+
+                            // Get reply count
+                            let reply_count = content_store.get_children(&item.content_id)
+                                .map(|children| children.len() as u64)
+                                .unwrap_or(0);
+
+                            // Pool system removed - engagements are now stored directly
+                            let _content_hash = item.content_id.as_bytes();
+                            let (pool_progress, has_pool, pool_status) = (0.0, false, "none".to_string());
+
+                            // Convert media_refs
+                            let media_refs: Vec<MediaRefResult> = item.media_refs.iter().map(|mr| {
+                                let media_type_str = match mr.media_type {
+                                    crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                                    crate::types::content::MediaType::ImagePng => "image/png",
+                                    crate::types::content::MediaType::ImageGif => "image/gif",
+                                    crate::types::content::MediaType::ImageWebp => "image/webp",
+                                };
+                                MediaRefResult {
+                                    media_hash: hex::encode(mr.media_hash.as_bytes()),
+                                    media_type: media_type_str.to_string(),
+                                    size_bytes: mr.size_bytes,
+                                }
+                            }).collect();
+
+                            items.push(ContentSummary {
+                                content_id,
+                                content_type: format!("{:?}", item.content_type),
+                                author_id,
+                                space_id: params.space_id.clone(),
+                                parent_id: item.parent_id.map(|p| format!("sha256:{}", hex::encode(p.as_bytes()))),
+                                created_at: item.created_at,
+                                last_engagement: last_engagement_ms,
+                                title,
+                                body: Some(body),
+                                body_preview,
+                                engagement_count: item.engagement_count as u64,
+                                reply_count,
+                                decay_state,
+                                seconds_until_decay: seconds_until_pruned,
+                                survival_probability,
+                                is_protected,
+                                seconds_until_decay_starts,
+                                seconds_until_pruned,
+                                pool_progress,
+                                has_pool,
+                                pool_status,
+                                pending: false,
+                                media_refs,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by created_at (most recent first) for "recent" sort
+        items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        // Apply content_type filter if specified
+        if let Some(ref filter_type) = params.content_type {
+            let filter_type_lower = filter_type.to_lowercase();
+            items.retain(|item| item.content_type.to_lowercase() == filter_type_lower);
+            // Update total to reflect filtered count
+            total = items.len();
+            // Apply the original limit after filtering
+            items.truncate(params.limit);
+        }
+
+        // Log how many items have bodies vs missing
+        let with_body = items.iter().filter(|i| i.body.is_some()).count();
+        let missing_body = items.iter().filter(|i| i.body.is_none()).count();
+        let posts = items.iter().filter(|i| i.content_type == "Post").count();
+        let replies = items.iter().filter(|i| i.content_type == "Reply").count();
+        let engages = items.iter().filter(|i| i.content_type == "Engage").count();
+        info!("[LIST_SPACE_CONTENT] Returning {} items ({} with body, {} missing body, total={}, filter={:?}): {} posts, {} replies, {} engages",
+            items.len(), with_body, missing_body, total, params.content_type, posts, replies, engages);
+
+        let result = ListSpaceContentResult { items, total };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// List only Posts (top-level threads) in a space
+    ///
+    /// This is the efficient method for fetching threads - it filters at the
+    /// database level before pagination, so you get exactly `limit` posts.
+    ///
+    /// Use this instead of `list_space_content` when you only need threads.
+    async fn list_space_posts(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ListSpaceContentParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Decode bech32m space ID to 16 bytes
+        let space_id_16: [u8; 16] = match decode_space_id(&params.space_id) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid space ID format: {}", e),
+                    id,
+                );
+            }
+        };
+
+        debug!("[LIST_SPACE_POSTS] Looking for posts in space: {}", params.space_id);
+
+        let mut items: Vec<ContentSummary> = Vec::new();
+        let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
+
+        if let Some(ref chain_store) = self.node.chain_store {
+            // Use the new indexed method that filters for Posts at the DB level
+            match chain_store.get_posts_for_space(&space_id_16, params.limit, params.offset) {
+                Ok(posts) => {
+                    for (content_hash, metadata) in posts {
+                        let content_id = format!("sha256:{}", hex::encode(&content_hash));
+                        let actor_id = crate::types::identity::IdentityId(metadata.author);
+                        let author_id = crate::crypto::address::encode_address(&actor_id);
+
+                        // Get body from BlobStore
+                        let (title, body_preview, body) = if let Some(ref bs) = blob_store {
+                            let blob_hash = ContentBlobHash::from_bytes(content_hash);
+                            if let Ok(bytes) = bs.get(&blob_hash) {
+                                if let Ok(text) = String::from_utf8(bytes.clone()) {
+                                    let (parsed_title, parsed_body) = if let Some(idx) = text.find("\n\n") {
+                                        (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                    } else {
+                                        (None, text.clone())
+                                    };
+                                    let preview = if parsed_body.chars().count() > 200 {
+                                        format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                                    } else {
+                                        parsed_body.clone()
+                                    };
+                                    (parsed_title, Some(preview), Some(text))
+                                } else {
+                                    (None, None, None)
+                                }
+                            } else {
+                                (None, None, None)
+                            }
+                        } else {
+                            (None, None, None)
+                        };
+
+                        // Get decay info
+                        let content_id_bytes = ContentId::from_bytes(content_hash);
+                        let content_blob_hash = ContentBlobHash::from_bytes(content_hash);
+                        let (decay_state, survival_probability, is_protected, seconds_until_decay_starts, seconds_until_pruned, last_engagement_ms) =
+                            if let Some(ref decay) = self.node.decay_integration {
+                                if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
+                                    let state_str = if ds.is_decayed { "decayed" }
+                                        else if ds.survival_probability < 0.25 { "stale" }
+                                        else if ds.is_protected { "protected" }
+                                        else { "active" };
+
+                                    let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
+                                        Some((48 * 3600u64).saturating_sub(ds.age_seconds))
+                                    } else {
+                                        None
+                                    };
+
+                                    let pruned_secs = if ds.is_decayed {
+                                        None
+                                    } else {
+                                        let threshold = 0.0625;
+                                        if ds.survival_probability > threshold {
+                                            let half_life = 7.0 * 24.0 * 3600.0;
+                                            let time_to_threshold = half_life * (ds.survival_probability / threshold).log2();
+                                            Some(time_to_threshold as u64)
+                                        } else {
+                                            None
+                                        }
+                                    };
+
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64;
+                                    let last_engagement_ms = now_ms.saturating_sub(ds.time_since_engagement * 1000);
+
+                                    (state_str.to_string(), ds.survival_probability, ds.is_protected, floor_secs, pruned_secs, last_engagement_ms)
+                                } else {
+                                    let created_at_ms = metadata.timestamp * 1000;
+                                    ("protected".to_string(), 1.0, true, Some(48 * 3600), Some(28 * 24 * 3600), created_at_ms)
+                                }
+                            } else {
+                                let created_at_ms = metadata.timestamp * 1000;
+                                ("active".to_string(), 1.0, false, None, None, created_at_ms)
+                            };
+
+                        // Get reply count from chain (confirmed) + mempool (pending)
+                        let reply_count = {
+                            let mut count = 0u64;
+
+                            // Count ALL replies recursively (including nested replies)
+                            count += chain_store.count_all_replies(&content_hash)
+                                .map(|c| c as u64)
+                                .unwrap_or(0);
+
+                            // Count pending replies from mempool (recursive)
+                            if let Some(ref block_builder) = self.node.block_builder {
+                                if let Ok(bb) = block_builder.read() {
+                                    let pending = bb.get_pending_actions();
+                                    // Build a set of all content hashes we're counting for (root + all replies)
+                                    let mut target_parents: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                                    target_parents.insert(content_hash);
+
+                                    // Multiple passes to find nested replies
+                                    loop {
+                                        let mut found_new = false;
+                                        for (_thread_id, _space_id, action) in &pending {
+                                            if action.action_type == crate::blocks::action::ActionType::Reply {
+                                                if let (Some(parent_id), Some(reply_hash)) = (action.parent_id, action.content_hash) {
+                                                    if target_parents.contains(&parent_id) && !target_parents.contains(&reply_hash) {
+                                                        count += 1;
+                                                        target_parents.insert(reply_hash);
+                                                        found_new = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if !found_new {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            count
+                        };
+
+                        // Get media_refs from content_store if available
+                        let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) = self.node.content_store {
+                            if let Ok(Some(item)) = content_store.get(&content_id_bytes) {
+                                item.media_refs.iter().map(|mr| {
+                                    let media_type_str = match mr.media_type {
+                                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                                        crate::types::content::MediaType::ImagePng => "image/png",
+                                        crate::types::content::MediaType::ImageGif => "image/gif",
+                                        crate::types::content::MediaType::ImageWebp => "image/webp",
+                                    };
+                                    MediaRefResult {
+                                        media_hash: hex::encode(mr.media_hash.as_bytes()),
+                                        media_type: media_type_str.to_string(),
+                                        size_bytes: mr.size_bytes,
+                                    }
+                                }).collect()
+                            } else {
+                                vec![]
+                            }
+                        } else {
+                            vec![]
+                        };
+
+                        let created_at_ms = metadata.timestamp * 1000;
+
+                        items.push(ContentSummary {
+                            content_id,
+                            content_type: "Post".to_string(),
+                            author_id,
+                            space_id: params.space_id.clone(),
+                            parent_id: None,
+                            created_at: created_at_ms,
+                            last_engagement: last_engagement_ms,
+                            title,
+                            body,
+                            body_preview,
+                            engagement_count: 0,
+                            reply_count,
+                            decay_state,
+                            seconds_until_decay: seconds_until_pruned,
+                            survival_probability,
+                            is_protected,
+                            seconds_until_decay_starts,
+                            seconds_until_pruned,
+                            pool_progress: 0.0,
+                            has_pool: false,
+                            pool_status: "none".to_string(),
+                            pending: false,
+                            media_refs,
+                        });
+                    }
+                }
+                Err(e) => {
+                    warn!("[LIST_SPACE_POSTS] Error fetching posts: {}", e);
+                }
+            }
+        }
+
+        // Add pending posts from BlockBuilder mempool
+        if let Some(ref block_builder) = self.node.block_builder {
+            if let Ok(bb_read) = block_builder.read() {
+                let pending_actions = bb_read.get_pending_actions();
+                for (_thread_id, pending_space_id, action) in pending_actions {
+                    // Check if this action is for the requested space and is a Post
+                    if pending_space_id[..16] == space_id_16 {
+                        if action.action_type == crate::blocks::action::ActionType::Post {
+                                let content_hash = action.content_hash.unwrap_or([0u8; 32]);
+                                let content_id = format!("sha256:{}", hex::encode(&content_hash));
+
+                                // Skip if we already have this content on chain
+                                if items.iter().any(|i| i.content_id == content_id) {
+                                    continue;
+                                }
+
+                                let actor_id = crate::types::identity::IdentityId(action.actor);
+                                let author_id = crate::crypto::address::encode_address(&actor_id);
+
+                                // Get body from BlobStore if available
+                                let (title, body_preview, body) = if let Some(ref bs) = blob_store {
+                                    let blob_hash = ContentBlobHash::from_bytes(content_hash);
+                                    if let Ok(bytes) = bs.get(&blob_hash) {
+                                        if let Ok(text) = String::from_utf8(bytes.clone()) {
+                                            let (parsed_title, parsed_body) = if let Some(idx) = text.find("\n\n") {
+                                                (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                            } else {
+                                                (None, text.clone())
+                                            };
+                                            let preview = if parsed_body.chars().count() > 200 {
+                                                format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                                            } else {
+                                                parsed_body.clone()
+                                            };
+                                            (parsed_title, Some(preview), Some(text))
+                                        } else {
+                                            (None, None, None)
+                                        }
+                                    } else {
+                                        (None, None, None)
+                                    }
+                                } else {
+                                    (None, None, None)
+                                };
+
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as u64;
+
+                                // Get media_refs from content_store if available
+                                let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) = self.node.content_store {
+                                    if let Ok(Some(item)) = content_store.get(&ContentId::from_bytes(content_hash)) {
+                                        item.media_refs.iter().map(|mr| {
+                                            let media_type_str = match mr.media_type {
+                                                crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                                                crate::types::content::MediaType::ImagePng => "image/png",
+                                                crate::types::content::MediaType::ImageGif => "image/gif",
+                                                crate::types::content::MediaType::ImageWebp => "image/webp",
+                                            };
+                                            MediaRefResult {
+                                                media_hash: hex::encode(mr.media_hash.as_bytes()),
+                                                media_type: media_type_str.to_string(),
+                                                size_bytes: mr.size_bytes,
+                                            }
+                                        }).collect()
+                                    } else {
+                                        vec![]
+                                    }
+                                } else {
+                                    vec![]
+                                };
+
+                                items.push(ContentSummary {
+                                    content_id,
+                                    content_type: "Post".to_string(),
+                                    author_id,
+                                    space_id: params.space_id.clone(),
+                                    parent_id: None,
+                                    created_at: now_ms,
+                                    last_engagement: now_ms,
+                                    title,
+                                    body,
+                                    body_preview,
+                                    engagement_count: 0,
+                                    reply_count: 0,
+                                    decay_state: "pending".to_string(),
+                                    seconds_until_decay: None,
+                                    survival_probability: 1.0,
+                                    is_protected: true,
+                                    seconds_until_decay_starts: None,
+                                    seconds_until_pruned: None,
+                                    pool_progress: 0.0,
+                                    has_pool: false,
+                                    pool_status: "none".to_string(),
+                                    pending: true,
+                                    media_refs,
+                                });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Get total count for pagination (includes pending)
+        let total = if let Some(ref chain_store) = self.node.chain_store {
+            chain_store.count_posts_for_space(&space_id_16).unwrap_or(items.len())
+        } else {
+            items.len()
+        };
+
+        // Count items with/without body for debugging
+        let with_body = items.iter().filter(|i| i.body.is_some()).count();
+        let missing_body = items.iter().filter(|i| i.body.is_none()).count();
+
+        info!("[LIST_SPACE_POSTS] Returning {} posts ({} with body, {} missing) (total: {}) for space {}",
+            items.len(), with_body, missing_body, total, params.space_id);
+
+        let result = ListSpaceContentResult { items: items.clone(), total };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Get posts by a specific user (for feed-style clients)
+    ///
+    /// Returns posts (and optionally replies) by a specific author,
+    /// ordered by timestamp (newest first).
+    async fn get_user_posts(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetUserPostsParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse user_id (32-byte hex)
+        let author_bytes: [u8; 32] = match hex::decode(&params.user_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            Ok(bytes) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("user_id must be 32 bytes, got {}", bytes.len()),
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid user_id hex: {}", e),
+                    id,
+                );
+            }
+        };
+
+        debug!("[GET_USER_POSTS] Looking for content by user: {}", &params.user_id[..16]);
+
+        let mut items: Vec<ContentSummary> = Vec::new();
+        let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
+
+        if let Some(ref chain_store) = self.node.chain_store {
+            // Use the new author index method
+            let content_type_filter = if params.include_replies { None } else { Some(0) };
+            match chain_store.get_content_by_author(&author_bytes, params.limit, params.offset, content_type_filter) {
+                Ok(results) => {
+                    for (content_hash, metadata) in results {
+                        let content_id = format!("sha256:{}", hex::encode(&content_hash));
+                        let actor_id = crate::types::identity::IdentityId(metadata.author);
+                        let author_id = crate::crypto::address::encode_address(&actor_id);
+                        let space_id_bech32 = encode_space_id(&metadata.space_id);
+
+                        // Get body from content_store first (for replies), then BlobStore (for posts)
+                        let (title, body_preview, body) = {
+                            let mut text_opt: Option<String> = None;
+
+                            // First try content_store (has body_inline for replies)
+                            if let Some(ref cs) = self.node.content_store {
+                                let cid = crate::types::content::ContentId::from_bytes(content_hash);
+                                if let Ok(Some(item)) = cs.get(&cid) {
+                                    if let Some(ref body_inline) = item.body_inline {
+                                        if !body_inline.is_empty() {
+                                            text_opt = Some(body_inline.clone());
+                                        }
+                                    }
+                                }
+                                // If no body_inline, try get_body_by_hash
+                                if text_opt.is_none() {
+                                    if let Ok(Some(body_str)) = cs.get_body_by_hash(&content_hash) {
+                                        if !body_str.is_empty() {
+                                            text_opt = Some(body_str);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Fall back to BlobStore (for posts stored there)
+                            if text_opt.is_none() {
+                                if let Some(ref bs) = blob_store {
+                                    let blob_hash = ContentBlobHash::from_bytes(content_hash);
+                                    if let Ok(bytes) = bs.get(&blob_hash) {
+                                        if let Ok(text) = String::from_utf8(bytes) {
+                                            text_opt = Some(text);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Parse title/body from text
+                            if let Some(text) = text_opt {
+                                let (parsed_title, parsed_body) = if metadata.content_type == 0 {
+                                    // Post: first line is title
+                                    if let Some(idx) = text.find("\n\n") {
+                                        (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                    } else {
+                                        (None, text.clone())
+                                    }
+                                } else {
+                                    // Reply: no title
+                                    (None, text.clone())
+                                };
+                                let preview = if parsed_body.chars().count() > 200 {
+                                    format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                                } else {
+                                    parsed_body.clone()
+                                };
+                                (parsed_title, Some(preview), Some(text))
+                            } else {
+                                (None, None, None)
+                            }
+                        };
+
+                        // Get decay info
+                        let content_blob_hash = ContentBlobHash::from_bytes(content_hash);
+                        let (decay_state, survival_probability, is_protected, seconds_until_decay_starts, seconds_until_pruned, last_engagement_ms) =
+                            if let Some(ref decay) = self.node.decay_integration {
+                                if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
+                                    let state_str = if ds.is_decayed { "decayed" }
+                                        else if ds.survival_probability < 0.25 { "stale" }
+                                        else if ds.is_protected { "protected" }
+                                        else { "active" };
+
+                                    let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
+                                        Some((48 * 3600u64).saturating_sub(ds.age_seconds))
+                                    } else {
+                                        None
+                                    };
+
+                                    let pruned_secs = if ds.is_decayed {
+                                        None
+                                    } else {
+                                        let threshold = 0.0625;
+                                        if ds.survival_probability > threshold {
+                                            let half_life = 7.0 * 24.0 * 3600.0;
+                                            let time_to_threshold = half_life * (ds.survival_probability / threshold).log2();
+                                            Some(time_to_threshold as u64)
+                                        } else {
+                                            None
+                                        }
+                                    };
+
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as u64;
+                                    let last_engagement_ms = now_ms.saturating_sub(ds.time_since_engagement * 1000);
+
+                                    (state_str.to_string(), ds.survival_probability, ds.is_protected, floor_secs, pruned_secs, last_engagement_ms)
+                                } else {
+                                    let created_at_ms = metadata.timestamp * 1000;
+                                    ("protected".to_string(), 1.0, true, Some(48 * 3600), Some(28 * 24 * 3600), created_at_ms)
+                                }
+                            } else {
+                                let created_at_ms = metadata.timestamp * 1000;
+                                ("active".to_string(), 1.0, false, None, None, created_at_ms)
+                            };
+
+                        // Get reply count
+                        let reply_count = chain_store.count_all_replies(&content_hash)
+                            .map(|c| c as u64)
+                            .unwrap_or(0);
+
+                        // Get media_refs from content_store if available
+                        let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) = self.node.content_store {
+                            if let Ok(Some(content)) = content_store.get(&crate::types::ContentId::from_bytes(content_hash)) {
+                                content.media_refs.iter().map(|mr| {
+                                    let media_type_str = match mr.media_type {
+                                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                                        crate::types::content::MediaType::ImagePng => "image/png",
+                                        crate::types::content::MediaType::ImageGif => "image/gif",
+                                        crate::types::content::MediaType::ImageWebp => "image/webp",
+                                    };
+                                    MediaRefResult {
+                                        media_hash: hex::encode(&mr.media_hash),
+                                        media_type: media_type_str.to_string(),
+                                        size_bytes: mr.size_bytes,
+                                    }
+                                }).collect()
+                            } else {
+                                Vec::new()
+                            }
+                        } else {
+                            Vec::new()
+                        };
+
+                        let content_type_str = match metadata.content_type {
+                            0 => "post",
+                            1 => "reply",
+                            _ => "unknown",
+                        };
+
+                        let parent_id = if metadata.parent_hash != [0u8; 32] {
+                            Some(format!("sha256:{}", hex::encode(&metadata.parent_hash)))
+                        } else {
+                            None
+                        };
+
+                        items.push(ContentSummary {
+                            content_id,
+                            content_type: content_type_str.to_string(),
+                            author_id,
+                            space_id: space_id_bech32,
+                            parent_id,
+                            created_at: metadata.timestamp * 1000,
+                            last_engagement: last_engagement_ms,
+                            title,
+                            body,
+                            body_preview,
+                            engagement_count: 0,
+                            reply_count,
+                            decay_state,
+                            seconds_until_decay: seconds_until_pruned,
+                            survival_probability,
+                            is_protected,
+                            seconds_until_decay_starts,
+                            seconds_until_pruned,
+                            pool_progress: 0.0,
+                            has_pool: false,
+                            pool_status: "empty".to_string(),
+                            pending: false,
+                            media_refs,
+                        });
+                    }
+                }
+                Err(e) => {
+                    warn!("[GET_USER_POSTS] Failed to query author index: {}", e);
+                }
+            }
+        }
+
+        // Add pending content from BlockBuilder mempool (Posts/Replies by this author)
+        if let Some(ref block_builder) = self.node.block_builder {
+            if let Ok(bb_read) = block_builder.read() {
+                let pending_actions = bb_read.get_pending_actions();
+                for (_thread_id, space_id, action) in pending_actions {
+                    // Check if this action is by the requested author
+                    if action.actor != author_bytes {
+                        continue;
+                    }
+
+                    // Only include Post and Reply actions (not Engage, CreateSpace, etc.)
+                    let content_type_str = match action.action_type {
+                        crate::blocks::action::ActionType::Post => {
+                            if params.include_replies {
+                                "post"
+                            } else {
+                                // Filter matches - include posts
+                                "post"
+                            }
+                        },
+                        crate::blocks::action::ActionType::Reply => {
+                            if params.include_replies {
+                                "reply"
+                            } else {
+                                // Filter doesn't match - skip replies
+                                continue;
+                            }
+                        },
+                        _ => continue, // Skip other action types
+                    };
+
+                    let content_hash = match action.content_hash {
+                        Some(h) => h,
+                        None => continue,
+                    };
+                    let content_id = format!("sha256:{}", hex::encode(&content_hash));
+
+                    // Skip if already have this content on chain
+                    if items.iter().any(|i| i.content_id == content_id) {
+                        continue;
+                    }
+
+                    let actor_id = crate::types::identity::IdentityId(action.actor);
+                    let author_id = crate::crypto::address::encode_address(&actor_id);
+                    let space_id_16: [u8; 16] = {
+                        let mut arr = [0u8; 16];
+                        arr.copy_from_slice(&space_id[..16]);
+                        arr
+                    };
+                    let space_id_bech32 = encode_space_id(&space_id_16);
+
+                    // Get body from content_store
+                    let (title, body_preview, body) = if let Some(ref cs) = self.node.content_store {
+                        let cid = crate::types::content::ContentId::from_bytes(content_hash);
+                        let text_opt = if let Ok(Some(item)) = cs.get(&cid) {
+                            item.body_inline.or_else(|| cs.get_body_by_hash(&content_hash).ok().flatten())
+                        } else {
+                            cs.get_body_by_hash(&content_hash).ok().flatten()
+                        };
+
+                        if let Some(text) = text_opt {
+                            let (parsed_title, parsed_body) = if content_type_str == "post" {
+                                if let Some(idx) = text.find("\n\n") {
+                                    (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                } else {
+                                    (None, text.clone())
+                                }
+                            } else {
+                                (None, text.clone())
+                            };
+                            let preview = if parsed_body.chars().count() > 200 {
+                                format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                            } else {
+                                parsed_body.clone()
+                            };
+                            (parsed_title, Some(preview), Some(text))
+                        } else {
+                            (None, None, None)
+                        }
+                    } else {
+                        (None, None, None)
+                    };
+
+                    let parent_id = action.parent_id.map(|p| format!("sha256:{}", hex::encode(&p)));
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+
+                    items.push(ContentSummary {
+                        content_id,
+                        content_type: content_type_str.to_string(),
+                        author_id,
+                        space_id: space_id_bech32,
+                        parent_id,
+                        created_at: now_ms,
+                        last_engagement: now_ms,
+                        title,
+                        body,
+                        body_preview,
+                        engagement_count: 0,
+                        reply_count: 0,
+                        decay_state: "protected".to_string(),
+                        seconds_until_decay: None,
+                        survival_probability: 1.0,
+                        is_protected: true,
+                        seconds_until_decay_starts: Some(48 * 3600),
+                        seconds_until_pruned: Some(28 * 24 * 3600),
+                        pool_progress: 0.0,
+                        has_pool: false,
+                        pool_status: "none".to_string(),
+                        pending: true,
+                        media_refs: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        // Get counts
+        let (total_posts, total_content) = if let Some(ref chain_store) = self.node.chain_store {
+            let posts = chain_store.count_posts_by_author(&author_bytes).unwrap_or(0);
+            let total = chain_store.count_content_by_author(&author_bytes).unwrap_or(0);
+            (posts, total)
+        } else {
+            (items.len(), items.len())
+        };
+
+        info!("[GET_USER_POSTS] Returning {} items (total_posts: {}, total_content: {}) for user {}",
+            items.len(), total_posts, total_content, &params.user_id[..16]);
+
+        let result = GetUserPostsResult {
+            user_id: params.user_id,
+            items,
+            total_posts,
+            total_content,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Request content from the network (VIEW-TO-HOST)
+    ///
+    /// This is the ONLY way content should be fetched from peers.
+    /// Unlike automatic push behavior, this requires explicit user intent.
+    ///
+    /// Flow:
+    /// 1. Check if we already have it locally
+    /// 2. Check if any peers announced having it (from I_HAVE)
+    /// 3. If known peers exist, send GET to them
+    /// 4. If no known peers, broadcast WHO_HAS query
+    async fn request_content(&self, params: Value, id: Value) -> RpcResponse {
+        let params: RequestContentParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate and parse content ID
+        if !params.content_id.starts_with("sha256:") {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidContentId,
+                "Invalid content ID format - must start with sha256:",
+                id,
+            );
+        }
+
+        let content_hash_hex = &params.content_id[7..];
+        let content_hash: [u8; 32] = match hex::decode(content_hash_hex) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidContentId,
+                    "Invalid content hash - must be 32 bytes hex",
+                    id,
+                );
+            }
+        };
+
+        let blob_hash = ContentBlobHash::from_bytes(content_hash);
+
+        // Check content retrieval manager
+        let content_mgr = match &self.node.content_retrieval {
+            Some(mgr) => mgr,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Content retrieval not available - node may not be fully started",
+                    id,
+                );
+            }
+        };
+
+        // Step 1: Check if we already have it locally
+        if content_mgr.has_content(&blob_hash) {
+            return RpcResponse::success(
+                json!({
+                    "status": "found_locally",
+                    "content_id": params.content_id,
+                    "message": "Content already available locally"
+                }),
+                id,
+            );
+        }
+
+        // Step 2a: Query DHT for content providers (SPEC_06 §3.8)
+        // First check local DHT cache, then broadcast DHT_FIND_VALUE to network
+        if let Some(ref dht) = self.node.dht {
+            // Check local cache first
+            let local_providers = dht.get_local_providers(&content_hash).await;
+            if !local_providers.is_empty() {
+                info!(
+                    "Found {} DHT providers in local cache for content {}",
+                    local_providers.len(),
+                    hex::encode(&content_hash[..8])
+                );
+
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let get_envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::Get,
+                        content_hash.to_vec(),
+                    );
+
+                    let sent = pool.broadcast(&get_envelope).await;
+
+                    if sent > 0 {
+                        return RpcResponse::success(
+                            json!({
+                                "status": "requested",
+                                "content_id": params.content_id,
+                                "dht_providers": local_providers.len(),
+                                "recipients": sent,
+                                "message": "GET request sent via DHT provider lookup (local cache)"
+                            }),
+                            id,
+                        );
+                    }
+                }
+            }
+
+            // No local providers - broadcast DHT_FIND_VALUE to network
+            // This is the actual Kademlia FIND_VALUE operation
+            if let Some(ref pool) = self.node.connection_pool {
+                use crate::types::network::{MessageEnvelope, MessageType};
+                use crate::dht::{DhtMessage, constants::MSG_DHT_FIND_VALUE};
+
+                let dht_find_msg = DhtMessage::FindValue { content_hash };
+                let dht_find_bytes = dht_find_msg.to_bytes();
+                let mut dht_payload = vec![MSG_DHT_FIND_VALUE];
+                dht_payload.extend_from_slice(&dht_find_bytes);
+
+                let dht_envelope = MessageEnvelope::new_fork_agnostic(
+                    MessageType::DhtFindValue,
+                    dht_payload,
+                );
+                let dht_sent = pool.broadcast(&dht_envelope).await;
+                info!(
+                    "[DHT] Sent FIND_VALUE for {} to {} peers",
+                    hex::encode(&content_hash[..8]),
+                    dht_sent
+                );
+
+                // Note: DHT responses are async - the PROVIDERS message will be
+                // handled by the router and will populate the local provider store.
+                // For now, we continue to WHO_HAS as a fallback.
+            }
+        }
+
+        // Step 2b: Check if any peers have announced having this content (fallback)
+        let known_peers = content_mgr.get_peers_with_content(&blob_hash);
+
+        if !known_peers.is_empty() {
+            // We know peers that have it - send GET request
+            // Pick the first peer (could be random or based on latency)
+            let target_peer = &known_peers[0];
+
+            info!(
+                "Requesting content {} from known peer {} (view-to-host fetch)",
+                hex::encode(&content_hash[..8]),
+                hex::encode(&target_peer[..8])
+            );
+
+            // Send GET message via connection pool
+            if let Some(ref pool) = self.node.connection_pool {
+                use crate::types::network::{MessageEnvelope, MessageType};
+
+                // Create GET envelope with content hash as payload
+                let get_envelope = MessageEnvelope::new_fork_agnostic(
+                    MessageType::Get,
+                    content_hash.to_vec(),
+                );
+
+                // Broadcast GET (ideally we'd unicast to the specific peer)
+                let sent = pool.broadcast(&get_envelope).await;
+
+                if sent > 0 {
+                    return RpcResponse::success(
+                        json!({
+                            "status": "requested",
+                            "content_id": params.content_id,
+                            "known_peers": known_peers.len(),
+                            "recipients": sent,
+                            "message": "GET request sent to network"
+                        }),
+                        id,
+                    );
+                } else {
+                    return RpcResponse::error(
+                        RpcErrorCode::NetworkError,
+                        "No peers available to send GET request",
+                        id,
+                    );
+                }
+            }
+        }
+
+        // Step 3: No known peers - broadcast WHO_HAS query
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::types::network::{MessageEnvelope, MessageType};
+
+            // Mark content as wanted so when we receive I_HAVE, we auto-fetch it
+            content_mgr.mark_wanted(&blob_hash);
+
+            let who_has_payload = content_mgr.create_who_has_query(&blob_hash);
+
+            info!(
+                "Broadcasting WHO_HAS query for {} (view-to-host discovery, marked as wanted)",
+                hex::encode(&content_hash[..8])
+            );
+
+            // Build WHO_HAS message envelope
+            let who_has_envelope = MessageEnvelope::new_fork_agnostic(
+                MessageType::WhoHas,
+                who_has_payload.hash.to_vec(),
+            );
+
+            let sent = pool.broadcast(&who_has_envelope).await;
+
+            if sent > 0 {
+                RpcResponse::success(
+                    json!({
+                        "status": "discovering",
+                        "content_id": params.content_id,
+                        "recipients": sent,
+                        "message": "WHO_HAS query broadcast - waiting for peer responses"
+                    }),
+                    id,
+                )
+            } else {
+                RpcResponse::error(
+                    RpcErrorCode::NetworkError,
+                    "No peers available for WHO_HAS broadcast",
+                    id,
+                )
+            }
+        } else {
+            RpcResponse::error(
+                RpcErrorCode::SubsystemUnavailable,
+                "Connection pool not available - node may not be fully started",
+                id,
+            )
+        }
+    }
+
+    // ========================================================================
+    // Level/Contribution Methods
+    // ========================================================================
+    // Identity Methods
+    // ========================================================================
+
+    /// Get the node's identity information
+    /// Returns public key and address of the node's loaded identity
+    async fn get_identity_info(&self, id: Value) -> RpcResponse {
+        use super::types::GetIdentityInfoResult;
+
+        let keypair = &self.node.keypair;
+        let public_key = hex::encode(keypair.public_key.as_bytes());
+        let identity_id = crate::types::identity::IdentityId(*keypair.public_key.as_bytes());
+        let address = crate::crypto::address::encode_address(&identity_id);
+
+        let result = GetIdentityInfoResult {
+            has_identity: true,
+            public_key: Some(public_key),
+            address: Some(address),
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Sign a message with the node's identity
+    /// Used by clients to sign content submissions using the node's keypair
+    async fn sign_message(&self, params: Value, id: Value) -> RpcResponse {
+        #[derive(Debug, serde::Deserialize)]
+        struct SignMessageParams {
+            /// Hex-encoded message to sign
+            message: String,
+        }
+
+        let params: SignMessageParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Decode the message from hex
+        let message_bytes = match hex::decode(&params.message) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid message hex: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Sign with node's keypair
+        let signature = crate::identity::sign(&self.node.keypair.private_key, &message_bytes);
+        let signature_hex = hex::encode(signature.as_bytes());
+
+        RpcResponse::success(json!({
+            "signature": signature_hex,
+            "public_key": hex::encode(self.node.keypair.public_key.as_bytes()),
+        }), id)
+    }
+
+    async fn get_identity_level(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetIdentityLevelParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse identity ID from hex
+        let identity_bytes = match hex::decode(&params.identity_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid identity ID: expected 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Check if this is a genesis identity
+        use crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list;
+        use crate::types::identity::PublicKey;
+        let pubkey = PublicKey::from_bytes(identity_bytes);
+        let is_genesis = is_in_hardcoded_genesis_list(&pubkey);
+
+        // DEPRECATED: Level system removed - return placeholder values with deprecation warning
+        log::warn!("get_identity_level is deprecated and will be removed in a future release");
+        let (level, level_name, streak_days, bandwidth_served, contribution_score) =
+            (0u8, "N/A".to_string(), 0, 0, 0);
+
+        let result = GetIdentityLevelResult {
+            identity_id: params.identity_id,
+            level,
+            level_name,
+            is_genesis,
+            streak_days,
+            bandwidth_served,
+            contribution_score,
+            deprecated_warning: Some("DEPRECATED: get_identity_level is deprecated. Level system removed. Only is_genesis is accurate. This method will be removed in a future release.".to_string()),
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Get the current display name for this node's identity
+    async fn get_identity_name(&self, id: Value) -> RpcResponse {
+        let name = self.node.identity_name.read().await.clone();
+        RpcResponse::success(json!({
+            "identity_name": name,
+        }), id)
+    }
+
+    /// Set the display name for this node's identity
+    /// This updates both the in-memory value and the config file
+    async fn set_identity_name(&self, params: Value, id: Value) -> RpcResponse {
+        #[derive(Debug, serde::Deserialize)]
+        struct SetIdentityNameParams {
+            /// The new display name (max 64 UTF-8 bytes per SPEC_01 §3.5, or null to clear)
+            name: Option<String>,
+        }
+
+        let params: SetIdentityNameParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate name length (max 64 UTF-8 bytes per SPEC_01 §3.5)
+        if let Some(ref name) = params.name {
+            if name.len() > 64 {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Display name must be 64 bytes or less",
+                    id,
+                );
+            }
+            if name.trim().is_empty() {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Display name cannot be empty or whitespace only",
+                    id,
+                );
+            }
+        }
+
+        // Update in-memory value
+        {
+            let mut identity_name = self.node.identity_name.write().await;
+            *identity_name = params.name.clone();
+        }
+
+        // Update config.toml file
+        let config_path = self.node.data_dir.join("config.toml");
+        if config_path.exists() {
+            // Read existing config
+            match std::fs::read_to_string(&config_path) {
+                Ok(content) => {
+                    let mut new_content = String::new();
+                    let mut found_identity_name = false;
+
+                    for line in content.lines() {
+                        if line.starts_with("identity_name") {
+                            found_identity_name = true;
+                            if let Some(ref name) = params.name {
+                                new_content.push_str(&format!("identity_name = \"{}\"\n", name));
+                            }
+                            // If name is None, we skip this line (remove from config)
+                        } else {
+                            new_content.push_str(line);
+                            new_content.push('\n');
+                        }
+                    }
+
+                    // If identity_name wasn't in the file and we have a new name, add it
+                    if !found_identity_name {
+                        if let Some(ref name) = params.name {
+                            new_content.push_str(&format!("\nidentity_name = \"{}\"\n", name));
+                        }
+                    }
+
+                    if let Err(e) = std::fs::write(&config_path, new_content) {
+                        warn!("Failed to update config.toml: {}", e);
+                        // Don't fail - in-memory update still worked
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to read config.toml: {}", e);
+                }
+            }
+        } else {
+            // Create new config file with just the identity_name
+            if let Some(ref name) = params.name {
+                if let Err(e) = std::fs::write(&config_path, format!("identity_name = \"{}\"\n", name)) {
+                    warn!("Failed to create config.toml: {}", e);
+                }
+            }
+        }
+
+        RpcResponse::success(json!({
+            "success": true,
+            "identity_name": params.name,
+        }), id)
+    }
+
+    /// Get a user's profile information
+    ///
+    /// User profiles are stored as content in a special "profile space"
+    /// where the space ID is deterministically derived from the user's public key.
+    ///
+    /// Params:
+    /// - user_id: User's public key (hex string)
+    ///
+    /// Returns profile info or null if no profile exists.
+    async fn get_user_profile(&self, params: Value, id: Value) -> RpcResponse {
+        let user_id = match params.get("user_id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing user_id parameter",
+                    id,
+                );
+            }
+        };
+
+        // Validate user_id is valid hex
+        if user_id.len() != 64 || hex::decode(user_id).is_err() {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid user_id: must be 32-byte hex (64 characters)",
+                id,
+            );
+        }
+
+        // Calculate profile space ID (first 16 bytes of SHA256("profile:v1:<user_id_lowercase>"))
+        let preimage = format!("profile:v1:{}", user_id.to_lowercase());
+        let profile_space_hash = crate::crypto::sha256(preimage.as_bytes());
+        let profile_space_id: [u8; 16] = {
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(&profile_space_hash[..16]);
+            arr
+        };
+
+        // Look up content in the profile space
+        let content_store = match &self.node.content_store {
+            Some(store) => store,
+            None => {
+                // No content store means no profiles
+                return RpcResponse::success(serde_json::Value::Null, id);
+            }
+        };
+
+        // Find profile info post in the space (content starting with [PROFILE_INFO] or [PROFILE_INFO_PRIVATE])
+        let profile_info_marker = "[PROFILE_INFO]";
+        let profile_info_private_marker = "[PROFILE_INFO_PRIVATE]";
+
+        let mut display_name: Option<String> = None;
+        let mut bio: Option<String> = None;
+        let mut website: Option<String> = None;
+        let mut avatar_url: Option<String> = None;
+        let mut updated_at: Option<u64> = None;
+
+        // Iterate through content in the profile space
+        for result in content_store.iter_content() {
+            let item = match result {
+                Ok(i) => i,
+                Err(_) => continue,
+            };
+
+            // Check if this content is in the profile space
+            if item.space_id.as_bytes()[..16] != profile_space_id {
+                continue;
+            }
+
+            // Check for profile info marker
+            if let Some(body) = &item.body_inline {
+                if body.starts_with(profile_info_marker) {
+                    // Parse JSON after the marker
+                    let json_str = &body[profile_info_marker.len()..];
+                    if let Ok(info) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        display_name = info.get("displayName").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        bio = info.get("bio").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        website = info.get("website").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        updated_at = info.get("updatedAt").and_then(|v| v.as_u64());
+                        // Profile found
+                        break;
+                    }
+                } else if body.starts_with(profile_info_private_marker) {
+                    // Private profile - extract public display name if available
+                    let json_str = &body[profile_info_private_marker.len()..];
+                    if let Ok(meta) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        display_name = meta.get("publicDisplayName").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        updated_at = meta.get("updatedAt").and_then(|v| v.as_u64());
+                        // Private profiles don't expose other fields
+                        break;
+                    }
+                }
+            }
+        }
+
+        // If no profile found, return null
+        if display_name.is_none() && bio.is_none() && website.is_none() {
+            return RpcResponse::success(serde_json::Value::Null, id);
+        }
+
+        // Return profile info
+        RpcResponse::success(json!({
+            "display_name": display_name,
+            "bio": bio,
+            "website": website,
+            "avatar_url": avatar_url,
+            "updated_at": updated_at,
+        }), id)
+    }
+
+    // ========================================================================
+    // Engagement Pool Methods (SPEC_03 §7)
+    // ========================================================================
+
+    /// Create a new engagement pool for content (DEPRECATED)
+    /// Use submit_engagement with emoji param instead
+    async fn create_pool(&self, _params: Value, id: Value) -> RpcResponse {
+        RpcResponse::error(
+            RpcErrorCode::MethodNotFound,
+            "Pool system deprecated. Use submit_engagement with emoji param for reactions.",
+            id,
+        )
+    }
+
+    /// Contribute PoW to an engagement pool (DEPRECATED)
+    /// Use submit_engagement with emoji param instead
+    async fn contribute_to_pool(&self, _params: Value, id: Value) -> RpcResponse {
+        RpcResponse::error(
+            RpcErrorCode::MethodNotFound,
+            "Pool system deprecated. Use submit_engagement with emoji param for reactions.",
+            id,
+        )
+    }
+
+    /// Get information about an engagement pool (DEPRECATED)
+    async fn get_pool_info(&self, _params: Value, id: Value) -> RpcResponse {
+        RpcResponse::error(
+            RpcErrorCode::MethodNotFound,
+            "Pool system deprecated. Use get_reactions to get reaction counts.",
+            id,
+        )
+    }
+
+    /// Get pool info for a content item (DEPRECATED)
+    async fn get_pool_for_content(&self, _params: Value, id: Value) -> RpcResponse {
+        RpcResponse::error(
+            RpcErrorCode::MethodNotFound,
+            "Pool system deprecated. Use get_reactions to get reaction counts.",
+            id,
+        )
+    }
+
+    // NOTE: Pool methods (create_pool, contribute_to_pool, get_pool_info, get_pool_for_content)
+    // have been deprecated. Use submit_engagement with emoji param for reactions.
+    // Reactions are now stored directly and don't require pooled PoW.
+
+    // === Reply Methods ===
+
+    /// Get replies to a content item
+    ///
+    /// # Parameters
+    /// - content_id: The parent content ID (sha256:...)
+    ///
+    /// # Returns
+    /// - parent_id: The parent content ID
+    /// - replies: Array of direct replies
+    /// - total_count: Total number of replies
+    async fn get_replies(&self, params: Value, id: Value) -> RpcResponse {
+        use super::types::{GetRepliesParams, GetRepliesResult, ReplyInfo};
+
+        let params: GetRepliesParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate content ID format
+        if !params.content_id.starts_with("sha256:") {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidContentId,
+                "Invalid content ID format (must start with sha256:)",
+                id,
+            );
+        }
+
+        // Parse content ID
+        let content_id_str = params.content_id.clone();
+        let content_hex = &content_id_str[7..]; // Skip "sha256:"
+        let content_bytes: [u8; 32] = match hex::decode(content_hex) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidContentId,
+                    "Invalid content ID hash",
+                    id,
+                );
+            }
+        };
+
+        // Use chain store's replies_by_parent_index for efficient lookup
+        // This is populated during block sync, unlike content_store.children_tree
+        let chain_store = match &self.node.chain_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    "Chain store not available",
+                    id,
+                );
+            }
+        };
+        let content_store = &self.node.content_store;
+
+        // Get params with defaults
+        let limit = params.limit.unwrap_or(1000) as usize;
+        let _offset = params.offset.unwrap_or(0) as usize;
+        let depth_limit = params.depth_limit.unwrap_or(5) as u32; // Default 5 levels
+
+        // Fetch replies with depth tracking
+        // (reply_hash, parent_hash, depth)
+        let mut all_replies: Vec<ReplyInfo> = Vec::new();
+        let mut to_process: Vec<([u8; 32], [u8; 32], u32)> = Vec::new();
+
+        // Start with direct replies to the root content (depth 0)
+        match chain_store.get_replies_for_content(&content_bytes, limit, 0) {
+            Ok(direct_replies) => {
+                for (reply_hash, _) in direct_replies {
+                    to_process.push((reply_hash, content_bytes, 0));
+                }
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    &format!("Failed to get replies: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Process replies breadth-first with depth limit
+        while let Some((reply_hash, parent_hash, depth)) = to_process.pop() {
+            // Get metadata for this reply
+            let metadata = match chain_store.get_content_metadata(&reply_hash) {
+                Ok(Some(m)) => m,
+                Ok(None) => continue,
+                Err(_) => continue,
+            };
+
+            // Get body and display_name from content store
+            let (body, display_name) = if let Some(store) = content_store {
+                let content_id = crate::types::content::ContentId::from_bytes(reply_hash);
+                if let Ok(Some(item)) = store.get(&content_id) {
+                    (item.body_inline.unwrap_or_default(), item.display_name)
+                } else {
+                    (store.get_body_by_hash(&reply_hash).unwrap_or(None).unwrap_or_default(), None)
+                }
+            } else {
+                (String::new(), None)
+            };
+
+            // Count children (we always count, even if not fetching them)
+            let child_count = chain_store
+                .get_replies_for_content(&reply_hash, 1000, 0)
+                .map(|c| c.len() as u32)
+                .unwrap_or(0);
+
+            all_replies.push(ReplyInfo {
+                content_id: format!("sha256:{}", hex::encode(&reply_hash)),
+                author_id: hex::encode(&metadata.author),
+                body,
+                parent_id: format!("sha256:{}", hex::encode(&parent_hash)),
+                created_at: metadata.timestamp * 1000,
+                last_engagement: metadata.timestamp * 1000,
+                depth,
+                child_count,
+                display_name,
+            });
+
+            // Check for limit
+            if all_replies.len() >= limit {
+                break;
+            }
+
+            // Only fetch children if within depth limit
+            if depth < depth_limit {
+                if let Ok(children) = chain_store.get_replies_for_content(&reply_hash, 100, 0) {
+                    for (child_hash, _) in children {
+                        to_process.push((child_hash, reply_hash, depth + 1));
+                    }
+                }
+            }
+        }
+
+        // Add pending replies from BlockBuilder mempool
+        // Use multi-pass approach to handle nested pending replies (reply to reply in mempool)
+        if let Some(ref block_builder) = self.node.block_builder {
+            if let Ok(bb_read) = block_builder.read() {
+                let pending_actions = bb_read.get_pending_actions();
+
+                // Collect all pending Reply actions with their metadata
+                let mut pending_replies: Vec<(crate::blocks::action::Action, [u8; 32], [u8; 32])> = Vec::new();
+                for (_thread_id, _pending_space_id, action) in pending_actions {
+                    if action.action_type == crate::blocks::action::ActionType::Reply {
+                        if let (Some(content_hash), Some(parent_id)) = (action.content_hash, action.parent_id) {
+                            pending_replies.push((action.clone(), content_hash, parent_id));
+                        }
+                    }
+                }
+
+                // Build set of known reply hashes (from chain + already added)
+                let mut known_hashes: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                known_hashes.insert(content_bytes); // Root content
+                for r in &all_replies {
+                    if let Ok(bytes) = hex::decode(&r.content_id[7..]) {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            known_hashes.insert(arr);
+                        }
+                    }
+                }
+
+                // Multi-pass: keep adding pending replies until no new ones found
+                // This handles chains like A -> B -> C where B and C are both pending
+                let mut added_any = true;
+                let max_passes = 10; // Prevent infinite loops
+                let mut pass = 0;
+
+                while added_any && pass < max_passes {
+                    added_any = false;
+                    pass += 1;
+
+                    for (action, reply_hash, parent_id) in &pending_replies {
+                        // Skip if already known
+                        if known_hashes.contains(reply_hash) {
+                            continue;
+                        }
+
+                        // Check if parent is known (chain reply OR another pending reply we've added)
+                        if !known_hashes.contains(parent_id) {
+                            continue;
+                        }
+
+                        // Calculate depth by walking parent chain
+                        let mut depth = 0u32;
+                        let mut current_parent = *parent_id;
+                        while current_parent != content_bytes && depth < depth_limit {
+                            depth += 1;
+                            // Find parent in all_replies
+                            let parent_hex = format!("sha256:{}", hex::encode(&current_parent));
+                            if let Some(parent_reply) = all_replies.iter().find(|r| r.content_id == parent_hex) {
+                                if let Ok(bytes) = hex::decode(&parent_reply.parent_id[7..]) {
+                                    if bytes.len() == 32 {
+                                        current_parent.copy_from_slice(&bytes);
+                                        continue;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+
+                        let reply_id = format!("sha256:{}", hex::encode(reply_hash));
+                        let actor_id = crate::types::identity::IdentityId(action.actor);
+                        let author_id = crate::crypto::address::encode_address(&actor_id);
+
+                        // Get body from ContentStore
+                        let body = if let Some(ref store) = content_store {
+                            store.get_body_by_hash(reply_hash)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+
+                        all_replies.push(ReplyInfo {
+                            content_id: reply_id,
+                            author_id,
+                            body,
+                            parent_id: format!("sha256:{}", hex::encode(parent_id)),
+                            created_at: now_ms,
+                            last_engagement: now_ms,
+                            depth,
+                            child_count: 0,
+                            display_name: action.display_name.clone(),
+                        });
+
+                        known_hashes.insert(*reply_hash);
+                        added_any = true;
+                    }
+                }
+
+                if pass > 1 {
+                    debug!("[REPLIES] Multi-pass pending reply resolution took {} passes", pass);
+                }
+            }
+        }
+
+        let total_count = all_replies.len() as u64;
+
+        let result = GetRepliesResult {
+            parent_id: params.content_id,
+            replies: all_replies,
+            total_count,
+        };
+
+        info!("[REPLIES] Found {} replies (depth_limit={}) for content {}", total_count, depth_limit, &content_hex[..16]);
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    // === Fork Methods ===
+
+    /// Create a new fork from current chain state
+    ///
+    /// # Parameters
+    /// - name: Fork name (required, max 64 chars)
+    /// - description: Fork description (optional)
+    /// - excluded_ids: Array of hex-encoded identity public keys to exclude
+    /// - content_mode: "all" | "none" | "selective" (default: "all")
+    /// - pow_multiplier: PoW difficulty adjustment (default: 1.0)
+    /// - decay_multiplier: Decay rate adjustment (default: 1.0)
+    /// - secret_key: Hex-encoded secret key for signing (required)
+    async fn create_fork(&self, params: Value, id: Value) -> RpcResponse {
+        let fork_registry = match &self.node.fork_registry {
+            Some(registry) => registry,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Fork registry not available",
+                    id,
+                );
+            }
+        };
+
+        // Parse parameters
+        let name = params.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let description = params.get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let secret_key_hex = match params.get("secret_key").and_then(|v| v.as_str()) {
+            Some(sk) => sk,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "secret_key is required",
+                    id,
+                );
+            }
+        };
+
+        // Parse secret key
+        let secret_key_bytes: [u8; 32] = match hex::decode(secret_key_hex) {
+            Ok(bytes) if bytes.len() == 32 => bytes.try_into().unwrap(),
+            Ok(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "secret_key must be 32 bytes",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid secret_key hex: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Create identity from secret key
+        let identity = match crate::fork::Identity::from_secret_key(&secret_key_bytes) {
+            Ok(id) => id,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid identity: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Build fork config
+        let mut config_builder = crate::fork::ForkConfig::builder()
+            .name(name)
+            .description(description);
+
+        // Parse excluded IDs
+        if let Some(excluded) = params.get("excluded_ids").and_then(|v| v.as_array()) {
+            for exc in excluded {
+                if let Some(hex_id) = exc.as_str() {
+                    if let Ok(bytes) = hex::decode(hex_id) {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            config_builder = config_builder.exclude_identity(arr);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Parse content mode
+        if let Some(mode) = params.get("content_mode").and_then(|v| v.as_str()) {
+            let selector = match mode {
+                "all" => crate::fork::ContentSelector::All,
+                "none" => crate::fork::ContentSelector::None,
+                "selective" => crate::fork::ContentSelector::Selective {
+                    space_filter: None,
+                    time_filter: None,
+                    identity_filter: None,
+                },
+                _ => crate::fork::ContentSelector::All,
+            };
+            config_builder = config_builder.content_mode(selector);
+        }
+
+        // Parse multipliers
+        if let Some(pow_mult) = params.get("pow_multiplier").and_then(|v| v.as_f64()) {
+            config_builder = config_builder.pow_multiplier(pow_mult);
+        }
+
+        if let Some(decay_mult) = params.get("decay_multiplier").and_then(|v| v.as_f64()) {
+            config_builder = config_builder.decay_multiplier(decay_mult);
+        }
+
+        let config = config_builder.build();
+
+        // Create the fork
+        match fork_registry.create_fork(config, &identity) {
+            Ok(result) => {
+                info!("[RPC] Created fork: {:?} name={}", result.fork_id, result.genesis.name);
+
+                let response = json!({
+                    "fork_id": hex::encode(result.fork_id.as_bytes()),
+                    "name": result.genesis.name,
+                    "parent_fork": hex::encode(result.genesis.parent_fork.as_bytes()),
+                    "parent_height": result.genesis.parent_height,
+                    "inherited_content_count": result.inherited_content_count,
+                    "excluded_count": result.excluded_count,
+                    "timestamp": result.genesis.timestamp,
+                });
+
+                RpcResponse::success(response, id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to create fork: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+
+    /// Switch to a different fork
+    ///
+    /// # Parameters
+    /// - fork_id: Hex-encoded fork ID (or "main" for main chain)
+    async fn switch_fork(&self, params: Value, id: Value) -> RpcResponse {
+        let fork_registry = match &self.node.fork_registry {
+            Some(registry) => registry,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Fork registry not available",
+                    id,
+                );
+            }
+        };
+
+        let fork_id_str = match params.get("fork_id").and_then(|v| v.as_str()) {
+            Some(id) => id,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "fork_id is required",
+                    id,
+                );
+            }
+        };
+
+        // Parse fork ID
+        let fork_id = if fork_id_str == "main" || fork_id_str.chars().all(|c| c == '0') {
+            crate::types::block::ForkId::main_chain()
+        } else {
+            match hex::decode(fork_id_str) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    crate::types::block::ForkId::from_bytes(arr)
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid fork_id format",
+                        id,
+                    );
+                }
+            }
+        };
+
+        match fork_registry.switch_fork(fork_id) {
+            Ok(()) => {
+                info!("[RPC] Switched to fork: {:?}", fork_id);
+                RpcResponse::success(json!({
+                    "success": true,
+                    "active_fork": hex::encode(fork_id.as_bytes()),
+                }), id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    &format!("Failed to switch fork: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+
+    /// List all known forks
+    async fn list_forks(&self, id: Value) -> RpcResponse {
+        let fork_registry = match &self.node.fork_registry {
+            Some(registry) => registry,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Fork registry not available",
+                    id,
+                );
+            }
+        };
+
+        match fork_registry.list_forks() {
+            Ok(forks) => {
+                let active = fork_registry.active_fork();
+                let fork_list: Vec<_> = forks
+                    .iter()
+                    .map(|f| {
+                        let info = fork_registry.get_fork_info(f).ok();
+                        json!({
+                            "fork_id": hex::encode(f.as_bytes()),
+                            "name": info.as_ref().map(|i| i.name.clone()).unwrap_or_default(),
+                            "is_active": *f == active,
+                        })
+                    })
+                    .collect();
+
+                // Add main chain
+                let mut all_forks = vec![json!({
+                    "fork_id": hex::encode([0u8; 32]),
+                    "name": "main",
+                    "is_active": active == crate::types::block::ForkId::main_chain(),
+                })];
+                all_forks.extend(fork_list);
+
+                RpcResponse::success(json!({
+                    "forks": all_forks,
+                    "count": all_forks.len(),
+                }), id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to list forks: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+
+    /// Get detailed information about a fork
+    ///
+    /// # Parameters
+    /// - fork_id: Hex-encoded fork ID (or "main" for main chain)
+    async fn get_fork_info(&self, params: Value, id: Value) -> RpcResponse {
+        let fork_registry = match &self.node.fork_registry {
+            Some(registry) => registry,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Fork registry not available",
+                    id,
+                );
+            }
+        };
+
+        let fork_id_str = match params.get("fork_id").and_then(|v| v.as_str()) {
+            Some(id) => id,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "fork_id is required",
+                    id,
+                );
+            }
+        };
+
+        // Parse fork ID
+        let fork_id = if fork_id_str == "main" || fork_id_str.chars().all(|c| c == '0') {
+            crate::types::block::ForkId::main_chain()
+        } else {
+            match hex::decode(fork_id_str) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    crate::types::block::ForkId::from_bytes(arr)
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid fork_id format",
+                        id,
+                    );
+                }
+            }
+        };
+
+        match fork_registry.get_fork_info(&fork_id) {
+            Ok(info) => {
+                let is_active = fork_registry.active_fork() == fork_id;
+                RpcResponse::success(json!({
+                    "fork_id": hex::encode(info.fork_id.as_bytes()),
+                    "name": info.name,
+                    "description": info.description,
+                    "parent_fork": info.parent_fork.map(|p| hex::encode(p.as_bytes())),
+                    "parent_height": info.parent_height,
+                    "creator": hex::encode(info.creator),
+                    "timestamp": info.timestamp,
+                    "excluded_count": info.excluded_count,
+                    "supporter_count": info.supporter_count,
+                    "is_active": is_active,
+                }), id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    &format!("Fork not found: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+
+    /// Get the currently active fork
+    async fn get_active_fork(&self, id: Value) -> RpcResponse {
+        let fork_registry = match &self.node.fork_registry {
+            Some(registry) => registry,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Fork registry not available",
+                    id,
+                );
+            }
+        };
+
+        let active = fork_registry.active_fork();
+        let is_main = active == crate::types::block::ForkId::main_chain();
+
+        let info = fork_registry.get_fork_info(&active).ok();
+
+        RpcResponse::success(json!({
+            "fork_id": hex::encode(active.as_bytes()),
+            "name": if is_main { "main".to_string() } else { info.as_ref().map(|i| i.name.clone()).unwrap_or_default() },
+            "is_main_chain": is_main,
+        }), id)
+    }
+
+    // ========================================================================
+    // Reaction Methods
+    // ========================================================================
+    /// Get reaction counts for content (from pool contributions)
+    async fn get_reactions(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetReactionsParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse content_id
+        let content_id_hex = params.content_id.strip_prefix("sha256:").unwrap_or(&params.content_id);
+        let content_id_bytes: [u8; 32] = match hex::decode(content_id_hex)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+        {
+            Some(bytes) => bytes,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid content_id format",
+                    id,
+                );
+            }
+        };
+
+        // Get reaction counts from content store
+        let content_id = crate::types::content::ContentId::from_bytes(content_id_bytes);
+        let mut reaction_counts = if let Some(ref content_store) = self.node.content_store {
+            match content_store.get_reaction_counts(&content_id) {
+                Ok(counts) => counts,
+                Err(_) => crate::types::content::ReactionCounts::new(),
+            }
+        } else {
+            crate::types::content::ReactionCounts::new()
+        };
+
+        // Add pending engagements from BlockBuilder mempool
+        // These are reactions that haven't been included in a block yet
+        if let Some(ref block_builder) = self.node.block_builder {
+            if let Ok(bb_read) = block_builder.read() {
+                let pending_actions = bb_read.get_pending_actions();
+                for (_thread_id, _pending_space_id, action) in pending_actions {
+                    // Check if this is an Engage action targeting our content
+                    if action.action_type == crate::blocks::action::ActionType::Engage {
+                        if let Some(target_hash) = action.content_hash {
+                            if target_hash == content_id_bytes {
+                                // Add to the appropriate reaction count
+                                if let Some(emoji_code) = action.emoji {
+                                    match emoji_code {
+                                        1 => reaction_counts.heart += 1,
+                                        2 => reaction_counts.thumbs_up += 1,
+                                        3 => reaction_counts.thumbs_down += 1,
+                                        4 => reaction_counts.laugh += 1,
+                                        5 => reaction_counts.thinking += 1,
+                                        6 => reaction_counts.mind_blown += 1,
+                                        7 => reaction_counts.fire += 1,
+                                        8 => reaction_counts.swimming += 1,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Emoji code to emoji string mapping
+        let emoji_info = [
+            (1, "❤️", reaction_counts.heart),
+            (2, "👍", reaction_counts.thumbs_up),
+            (3, "👎", reaction_counts.thumbs_down),
+            (4, "😂", reaction_counts.laugh),
+            (5, "🤔", reaction_counts.thinking),
+            (6, "🤯", reaction_counts.mind_blown),
+            (7, "🔥", reaction_counts.fire),
+            (8, "🏊", reaction_counts.swimming),
+        ];
+
+        // Build response with non-zero reactions
+        let mut total: u32 = 0;
+        let reactions: Vec<Value> = emoji_info
+            .iter()
+            .filter_map(|(code, emoji, count)| {
+                if *count > 0 {
+                    total += count;
+                    Some(json!({
+                        "emoji": emoji,
+                        "reaction_type": code,
+                        "count": count,
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        RpcResponse::success(json!({
+            "content_id": params.content_id,
+            "reactions": reactions,
+            "total": total,
+        }), id)
+    }
+
+    /// Get a user's reactions on content (from content store)
+    async fn get_user_reactions(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetUserReactionsParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse content_id
+        let content_id_hex = params.content_id.strip_prefix("sha256:").unwrap_or(&params.content_id);
+        let content_id_bytes: [u8; 32] = match hex::decode(content_id_hex)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+        {
+            Some(bytes) => bytes,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid content_id format",
+                    id,
+                );
+            }
+        };
+
+        // Parse user_id
+        let user_id_bytes: [u8; 32] = match hex::decode(&params.user_id)
+            .ok()
+            .and_then(|v| v.try_into().ok())
+        {
+            Some(bytes) => bytes,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid user_id format",
+                    id,
+                );
+            }
+        };
+
+        // Get user's emoji reactions from content store
+        let content_id = crate::types::content::ContentId::from_bytes(content_id_bytes);
+        let reactor_id = crate::types::identity::IdentityId::from_bytes(user_id_bytes);
+        let emoji_codes: Vec<u8> = if let Some(ref content_store) = self.node.content_store {
+            match content_store.get_user_reactions(&content_id, &reactor_id) {
+                Ok(reactions) => reactions.iter().map(|r| *r as u8).collect(),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
+        RpcResponse::success(json!({
+            "content_id": params.content_id,
+            "user_id": params.user_id,
+            "reaction_types": emoji_codes,
+        }), id)
+    }
+
+    /// Get all engagement actions from the chain (for debugging sync)
+    async fn get_chain_engagements(&self, params: Value, id: Value) -> RpcResponse {
+        use std::collections::{HashMap, HashSet};
+
+        let params: GetChainEngagementsParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse content filter if provided
+        let filter_bytes: Option<[u8; 32]> = params.content_id.as_ref().and_then(|cid| {
+            let clean = cid.strip_prefix("sha256:").unwrap_or(cid);
+            hex::decode(clean).ok().and_then(|v| v.try_into().ok())
+        });
+
+        let chain_store = match &self.node.chain_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Chain store not available",
+                    id,
+                );
+            }
+        };
+
+        // Collect all Engage actions
+        let mut actions: Vec<EngageActionInfo> = Vec::new();
+        let mut content_stats: HashMap<[u8; 32], (u32, u64, HashSet<[u8; 32]>, HashMap<String, u32>)> = HashMap::new();
+
+        for block_result in chain_store.iter_content_blocks() {
+            let block = match block_result {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let block_hash = hex::encode(block.hash());
+
+            for action in &block.actions {
+                if action.action_type != crate::blocks::ActionType::Engage {
+                    continue;
+                }
+
+                // Get target content (stored in content_hash field for Engage actions)
+                let target = match action.content_hash {
+                    Some(h) => h,
+                    None => continue,
+                };
+
+                // Apply filter if set
+                if let Some(filter) = filter_bytes {
+                    if target != filter {
+                        continue;
+                    }
+                }
+
+                // Build emoji string
+                let emoji_str = action.emoji.map(|e| self.format_emoji(e));
+
+                // Add to actions list
+                actions.push(EngageActionInfo {
+                    content_hash: hex::encode(target),
+                    actor: hex::encode(action.actor),
+                    timestamp: action.timestamp,
+                    pow_work: action.pow_work,
+                    emoji: emoji_str.clone(),
+                    block_hash: block_hash.clone(),
+                });
+
+                // Update aggregated stats
+                let entry = content_stats.entry(target).or_insert_with(|| {
+                    (0, 0, HashSet::new(), HashMap::new())
+                });
+                entry.0 += 1; // total engagements
+                entry.1 += action.pow_work; // total pow work
+                entry.2.insert(action.actor); // unique actors
+
+                // Emoji counts
+                if let Some(emoji) = action.emoji {
+                    let emoji_key = self.format_emoji(emoji);
+                    *entry.3.entry(emoji_key).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Build output
+        let mut stats_list: Vec<ContentEngagementStats> = content_stats
+            .into_iter()
+            .map(|(hash, (count, pow, actors, emojis))| ContentEngagementStats {
+                content_hash: hex::encode(hash),
+                total_engagements: count,
+                total_pow_work: pow,
+                unique_actors: actors.len() as u32,
+                emoji_counts: emojis,
+            })
+            .collect();
+
+        // Sort by total engagements (highest first)
+        stats_list.sort_by(|a, b| b.total_engagements.cmp(&a.total_engagements));
+
+        let total_count = actions.len() as u32;
+
+        let result = GetChainEngagementsResult {
+            total_engage_actions: total_count,
+            content_stats: stats_list,
+            actions: if params.verbose { Some(actions) } else { None },
+        };
+
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Format emoji code to human-readable string
+    fn format_emoji(&self, code: u8) -> String {
+        match code {
+            1 => "❤️ (heart)".to_string(),
+            2 => "👍 (thumbsup)".to_string(),
+            3 => "👎 (thumbsdown)".to_string(),
+            4 => "😂 (laugh)".to_string(),
+            5 => "🤔 (thinking)".to_string(),
+            6 => "🤯 (mindblown)".to_string(),
+            7 => "🔥 (fire)".to_string(),
+            8 => "🏊 (swimming)".to_string(),
+            _ => format!("(unknown: {})", code),
+        }
+    }
+
+    /// Rebuild content_store reactions from chain engage actions
+    /// This migrates reaction data from the blockchain into the content_store
+    /// Clears existing reactions first to remove stale data
+    async fn rebuild_reactions(&self, id: Value) -> RpcResponse {
+        use crate::types::identity::Signature;
+
+        let chain_store = match &self.node.chain_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Chain store not available",
+                    id,
+                );
+            }
+        };
+
+        let content_store = match &self.node.content_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Content store not available",
+                    id,
+                );
+            }
+        };
+
+        // Clear existing reactions first to remove stale data
+        let cleared = match content_store.clear_all_reactions() {
+            Ok(c) => c,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to clear reactions: {}", e),
+                    id,
+                );
+            }
+        };
+        info!("[REBUILD] Cleared {} existing reaction entries", cleared);
+
+        let mut added = 0u32;
+        let mut skipped = 0u32;
+        let mut errors = 0u32;
+
+        // Iterate all content blocks and extract Engage actions
+        for block_result in chain_store.iter_content_blocks() {
+            let block = match block_result {
+                Ok(b) => b,
+                Err(_) => {
+                    errors += 1;
+                    continue;
+                }
+            };
+
+            for action in &block.actions {
+                if action.action_type != crate::blocks::ActionType::Engage {
+                    continue;
+                }
+
+                let emoji = match action.emoji {
+                    Some(e) => e,
+                    None => continue,
+                };
+
+                let reaction_type = match emoji {
+                    1 => ReactionType::Heart,
+                    2 => ReactionType::ThumbsUp,
+                    3 => ReactionType::ThumbsDown,
+                    4 => ReactionType::Laugh,
+                    5 => ReactionType::Thinking,
+                    6 => ReactionType::MindBlown,
+                    7 => ReactionType::Fire,
+                    8 => ReactionType::Swimming,
+                    _ => continue,
+                };
+
+                let target_content = match action.content_hash {
+                    Some(h) => h,
+                    None => continue,
+                };
+
+                let reaction = Reaction {
+                    content_id: ContentId::from_bytes(target_content),
+                    reactor_id: IdentityId::from_bytes(action.actor),
+                    reaction_type,
+                    timestamp: action.timestamp,
+                    signature: Signature::from_bytes([0u8; 64]),
+                };
+
+                match content_store.add_reaction(&reaction) {
+                    Ok(true) => added += 1,
+                    Ok(false) => skipped += 1, // duplicate
+                    Err(_) => errors += 1,
+                }
+            }
+        }
+
+        info!("[REBUILD] Reactions rebuilt: cleared={}, added={}, skipped={}, errors={}", cleared, added, skipped, errors);
+
+        RpcResponse::success(json!({
+            "cleared": cleared,
+            "added": added,
+            "skipped": skipped,
+            "errors": errors,
+            "message": format!("Rebuilt reactions from chain: {} cleared, {} added, {} duplicates skipped, {} errors", cleared, added, skipped, errors)
+        }), id)
+    }
+
+    // ========================================================================
+    // Debug Methods
+    // ========================================================================
+
+    /// Get DHT status and routing table info
+    async fn dht_status(&self, id: Value) -> RpcResponse {
+        let dht = match &self.node.dht {
+            Some(dht) => dht,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "DHT not available",
+                    id,
+                );
+            }
+        };
+
+        let stats = dht.get_stats().await;
+
+        // Get routing table nodes
+        let routing_nodes: Vec<serde_json::Value> = dht.get_routing_table_nodes().await
+            .into_iter()
+            .map(|(node_id, addr)| {
+                json!({
+                    "node_id": hex::encode(&node_id.as_bytes()[..8]),
+                    "address": addr.to_string()
+                })
+            })
+            .collect();
+
+        RpcResponse::success(json!({
+            "local_id": hex::encode(&stats.local_id[..8]),
+            "total_nodes": stats.total_nodes,
+            "non_empty_buckets": stats.non_empty_buckets,
+            "provider_count": stats.provider_count,
+            "routing_table": routing_nodes,
+        }), id)
+    }
+
+    /// Get known providers for a content hash
+    async fn content_providers(&self, params: Value, id: Value) -> RpcResponse {
+        #[derive(serde::Deserialize)]
+        struct Params {
+            content_id: String,
+        }
+
+        let params: Params = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse content ID
+        let content_hash: [u8; 32] = if params.content_id.starts_with("sha256:") {
+            match hex::decode(&params.content_id[7..]) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidContentId,
+                        "Invalid content hash",
+                        id,
+                    );
+                }
+            }
+        } else {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidContentId,
+                "Content ID must start with sha256:",
+                id,
+            );
+        };
+
+        // Check content retrieval for known peers
+        let mut known_peers = Vec::new();
+        if let Some(ref content_mgr) = self.node.content_retrieval {
+            let blob_hash = crate::storage::ContentBlobHash::from_bytes(content_hash);
+            for peer_id in content_mgr.get_peers_with_content(&blob_hash) {
+                known_peers.push(hex::encode(&peer_id[..8]));
+            }
+        }
+
+        // Check DHT for providers
+        let mut dht_providers = Vec::new();
+        if let Some(ref dht) = self.node.dht {
+            for provider in dht.get_local_providers(&content_hash).await {
+                dht_providers.push(json!({
+                    "node_id": hex::encode(&provider.id.as_bytes()[..8]),
+                    "address": provider.addr.to_string()
+                }));
+            }
+        }
+
+        // Check if we have it locally
+        let have_locally = if let Some(ref content_mgr) = self.node.content_retrieval {
+            let blob_hash = crate::storage::ContentBlobHash::from_bytes(content_hash);
+            content_mgr.has_content(&blob_hash)
+        } else {
+            false
+        };
+
+        RpcResponse::success(json!({
+            "content_id": params.content_id,
+            "have_locally": have_locally,
+            "known_peers": known_peers,
+            "dht_providers": dht_providers,
+        }), id)
+    }
+
+    /// Verify that an action with the given content_id is finalized in the blockchain
+    ///
+    /// Searches through all content blocks to find an action with matching content_hash.
+    /// Returns the block height where it was finalized, or null if not found.
+    async fn verify_action_finalized(&self, params: Value, id: Value) -> RpcResponse {
+        #[derive(serde::Deserialize)]
+        struct VerifyParams {
+            content_id: String,
+        }
+
+        let params: VerifyParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse content ID (sha256:hex format)
+        let content_hash: [u8; 32] = if params.content_id.starts_with("sha256:") {
+            match hex::decode(&params.content_id[7..]) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidContentId,
+                        "Invalid content hash",
+                        id,
+                    );
+                }
+            }
+        } else {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidContentId,
+                "Content ID must start with sha256:",
+                id,
+            );
+        };
+
+        let chain_store = match &self.node.chain_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    "Chain store not available",
+                    id,
+                );
+            }
+        };
+
+        // Iterate through all content blocks to find an action with this content_hash
+        // This also gives us the block height information
+        let mut found_height: Option<u64> = None;
+        let mut found_action_type: Option<String> = None;
+        let mut found_actor: Option<String> = None;
+
+        for result in chain_store.iter_content_blocks() {
+            match result {
+                Ok(content_block) => {
+                    for action in &content_block.actions {
+                        if let Some(action_content_hash) = action.content_hash {
+                            if action_content_hash == content_hash {
+                                // Found the action! Now find its block height
+                                // Use the action hash to check finalization status
+                                let action_hash = crate::blocks::builder::BlockBuilder::action_hash(action);
+                                if let Ok(Some(height)) = chain_store.is_action_finalized(&action_hash) {
+                                    found_height = Some(height);
+                                    found_action_type = Some(format!("{:?}", action.action_type));
+                                    found_actor = Some(hex::encode(&action.actor[..8]));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if found_height.is_some() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!("Error reading content block: {}", e);
+                }
+            }
+        }
+
+        RpcResponse::success(json!({
+            "content_id": params.content_id,
+            "finalized": found_height.is_some(),
+            "block_height": found_height,
+            "action_type": found_action_type,
+            "actor": found_actor,
+        }), id)
+    }
+
+    // ========================================================================
+    // Spam Attestation Methods (SPEC_12 §3)
+    // ========================================================================
+
+    /// Submit a spam attestation for content
+    ///
+    /// Required parameters:
+    /// - content_id: Content hash (hex string)
+    /// - attester_id: Attester public key (hex string)
+    /// - reason: Spam reason (advertising, repetitive, off_topic, harassment, illegal_content)
+    /// - signature: Ed25519 signature (hex string)
+    /// - pow_nonce: PoW nonce (optional, defaults to 0)
+    async fn submit_spam_attestation(&self, params: Value, id: Value) -> RpcResponse {
+        let store = match &self.node.spam_attestation_store {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Spam attestation store not available",
+                    id,
+                );
+            }
+        };
+
+        // Parse parameters
+        let content_id = match params.get("content_id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing content_id parameter",
+                    id,
+                );
+            }
+        };
+
+        let attester_id = match params.get("attester_id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing attester_id parameter",
+                    id,
+                );
+            }
+        };
+
+        let reason_str = match params.get("reason").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing reason parameter",
+                    id,
+                );
+            }
+        };
+
+        let signature = match params.get("signature").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing signature parameter",
+                    id,
+                );
+            }
+        };
+
+        let pow_nonce = params.get("pow_nonce")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // Parse content_id
+        let content_hash: [u8; 32] = match hex::decode(content_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid content_id: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse attester_id
+        let attester: [u8; 32] = match hex::decode(attester_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid attester_id: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse reason
+        let reason = match reason_str.to_lowercase().as_str() {
+            "advertising" => SpamReason::Advertising,
+            "repetitive" => SpamReason::Repetitive,
+            "off_topic" | "offtopic" => SpamReason::OffTopic,
+            "harassment" => SpamReason::Harassment,
+            "illegal_content" | "illegalcontent" | "illegal" => SpamReason::IllegalContent,
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid reason: must be one of advertising, repetitive, off_topic, harassment, illegal_content",
+                    id,
+                );
+            }
+        };
+
+        // Parse signature
+        let sig_bytes: [u8; 64] = match hex::decode(signature) {
+            Ok(bytes) if bytes.len() == 64 => {
+                let mut arr = [0u8; 64];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid signature: must be 64-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Get current time
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Check for duplicate
+        if store.has_attestation(&content_hash, &attester).unwrap_or(false) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Attestation already exists for this content from this attester",
+                id,
+            );
+        }
+
+        // Create attestation
+        let attestation = SpamAttestation {
+            content_hash,
+            attester,
+            reason,
+            timestamp,
+            pow_nonce,
+            signature: sig_bytes,
+        };
+
+        // Verify signature (C1: Critical security fix)
+        let signing_message = attestation.signing_message();
+        let pubkey = PublicKey(attester);
+        let sig = Signature(sig_bytes);
+        if !ed25519_verify(&pubkey, &signing_message, &sig) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid signature: signature verification failed",
+                id,
+            );
+        }
+
+        // Verify PoW (C2: Critical security fix)
+        let pow_message = attestation.pow_message();
+        let mut hash_input = Vec::with_capacity(pow_message.len() + 8);
+        hash_input.extend_from_slice(&pow_message);
+        hash_input.extend_from_slice(&pow_nonce.to_le_bytes());
+        let hash = pow_hash(&hash_input);
+        let zeros = leading_zeros(&hash) as u8;
+        if zeros < SPAM_ATTESTATION_POW_DIFFICULTY {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!(
+                    "Insufficient PoW: required {} leading zeros, got {}",
+                    SPAM_ATTESTATION_POW_DIFFICULTY, zeros
+                ),
+                id,
+            );
+        }
+
+        // Look up sponsor tree root for Sybil resistance (H1: Security fix)
+        let sponsor_tree_root = match &self.node.sponsorship_store {
+            Some(sponsorship_store) => {
+                let get_sponsor = |pk: &[u8; 32]| -> Option<[u8; 32]> {
+                    sponsorship_store
+                        .get_sponsor(&PublicKey::from_bytes(*pk))
+                        .ok()
+                        .flatten()
+                        .map(|s| *s.as_bytes())
+                };
+                find_sponsor_tree_root(&attester, get_sponsor).unwrap_or(attester)
+            }
+            // Fallback to self as root if sponsorship store unavailable
+            None => attester,
+        };
+
+        // Store attestation
+        let stored = StoredSpamAttestation {
+            attestation: attestation.clone(),
+            sponsor_tree_root,
+            is_deduplicated: false,
+        };
+
+        if let Err(e) = store.put_attestation(&stored) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to store attestation: {}", e),
+                id,
+            );
+        }
+
+        // Check threshold
+        let attestations = store.get_attestations_for_content(&content_hash).unwrap_or_default();
+        let counter_state = store.get_counter_state(&content_hash).unwrap_or_else(|_| {
+            crate::spam_attestation::CounterAttestationState::empty(content_hash)
+        });
+        let aggregation = aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
+
+        // Increment rate limit
+        store.increment_attestation_count(&attester, timestamp);
+
+        info!(
+            "[RPC] Spam attestation stored for content {} from attester {} (reason: {:?})",
+            hex::encode(&content_hash[..8]),
+            hex::encode(&attester[..8]),
+            reason
+        );
+
+        RpcResponse::success(json!({
+            "success": true,
+            "content_id": content_id,
+            "attester_id": attester_id,
+            "reason": reason_str,
+            "unique_trees": aggregation.count.unique_tree_count,
+            "threshold_reached": aggregation.should_accelerate_decay,
+            "is_cleared": counter_state.is_cleared,
+        }), id)
+    }
+
+    /// Submit a counter-attestation to dispute a spam flag
+    ///
+    /// Required parameters:
+    /// - content_id: Content hash (hex string)
+    /// - counter_attester_id: Counter-attester public key (hex string)
+    /// - signature: Ed25519 signature (hex string)
+    async fn submit_counter_attestation(&self, params: Value, id: Value) -> RpcResponse {
+        let store = match &self.node.spam_attestation_store {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Spam attestation store not available",
+                    id,
+                );
+            }
+        };
+
+        // Parse parameters
+        let content_id = match params.get("content_id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing content_id parameter",
+                    id,
+                );
+            }
+        };
+
+        let counter_attester_id = match params.get("counter_attester_id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing counter_attester_id parameter",
+                    id,
+                );
+            }
+        };
+
+        let signature = match params.get("signature").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing signature parameter",
+                    id,
+                );
+            }
+        };
+
+        // Parse content_id
+        let content_hash: [u8; 32] = match hex::decode(content_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid content_id: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse counter_attester_id
+        let counter_attester: [u8; 32] = match hex::decode(counter_attester_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid counter_attester_id: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse signature
+        let sig_bytes: [u8; 64] = match hex::decode(signature) {
+            Ok(bytes) if bytes.len() == 64 => {
+                let mut arr = [0u8; 64];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid signature: must be 64-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Get current time
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Verify signature (H2: High priority security fix)
+        // Create signing message: "COUNTER_ATTESTATION" || content_hash || timestamp
+        let mut signing_message = Vec::with_capacity(59);
+        signing_message.extend_from_slice(b"COUNTER_ATTESTATION");
+        signing_message.extend_from_slice(&content_hash);
+        signing_message.extend_from_slice(&timestamp.to_le_bytes());
+        let pubkey = PublicKey(counter_attester);
+        let sig = Signature(sig_bytes);
+        if !ed25519_verify(&pubkey, &signing_message, &sig) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid signature: counter-attestation signature verification failed",
+                id,
+            );
+        }
+
+        // Get current counter state
+        let mut state = match store.get_counter_state(&content_hash) {
+            Ok(s) => s,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get counter state: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Check if already cleared
+        if state.is_cleared {
+            return RpcResponse::success(json!({
+                "success": true,
+                "content_id": content_id,
+                "already_cleared": true,
+                "counter_attestations": state.count(),
+            }), id);
+        }
+
+        // Add counter-attestation
+        let threshold_reached = state.add_counter_attester(counter_attester, timestamp);
+
+        // Store updated state
+        if let Err(e) = store.put_counter_state(&state) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to store counter state: {}", e),
+                id,
+            );
+        }
+
+        info!(
+            "[RPC] Counter-attestation stored for content {} from {} ({}/{})",
+            hex::encode(&content_hash[..8]),
+            hex::encode(&counter_attester[..8]),
+            state.count(),
+            crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD
+        );
+
+        RpcResponse::success(json!({
+            "success": true,
+            "content_id": content_id,
+            "counter_attester_id": counter_attester_id,
+            "counter_attestations": state.count(),
+            "threshold_needed": crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD,
+            "is_cleared": state.is_cleared,
+            "just_cleared": threshold_reached,
+        }), id)
+    }
+
+    /// Get spam status for content
+    ///
+    /// Required parameters:
+    /// - content_id: Content hash (hex string)
+    async fn get_spam_status(&self, params: Value, id: Value) -> RpcResponse {
+        let store = match &self.node.spam_attestation_store {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Spam attestation store not available",
+                    id,
+                );
+            }
+        };
+
+        // Parse content_id
+        let content_id = match params.get("content_id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing content_id parameter",
+                    id,
+                );
+            }
+        };
+
+        let content_hash: [u8; 32] = match hex::decode(content_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid content_id: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Get attestations
+        let attestations = store.get_attestations_for_content(&content_hash).unwrap_or_default();
+
+        // Get counter state
+        let counter_state = store.get_counter_state(&content_hash).unwrap_or_else(|_| {
+            crate::spam_attestation::CounterAttestationState::empty(content_hash)
+        });
+
+        // Aggregate
+        let aggregation = aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
+
+        // Build attestation details
+        let attestation_details: Vec<Value> = attestations.iter().map(|a| {
+            json!({
+                "attester": hex::encode(&a.attestation.attester),
+                "reason": a.attestation.reason.name(),
+                "timestamp": a.attestation.timestamp,
+                "sponsor_tree_root": hex::encode(&a.sponsor_tree_root),
+            })
+        }).collect();
+
+        RpcResponse::success(json!({
+            "content_id": content_id,
+            "is_flagged": aggregation.should_accelerate_decay,
+            "is_cleared": counter_state.is_cleared,
+            "unique_tree_count": aggregation.count.unique_tree_count,
+            "total_attestations": attestations.len(),
+            "spam_threshold": crate::spam_attestation::SPAM_ATTESTATION_THRESHOLD,
+            "counter_attestations": counter_state.count(),
+            "counter_threshold": crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD,
+            "cleared_at": counter_state.cleared_at,
+            "attestations": attestation_details,
+        }), id)
+    }
+
+    // ========================================================================
+    // Private Space Methods (DMs, Group Chats)
+    // ========================================================================
+
+    /// Get pending invites for a user
+    async fn get_my_invites(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetMyInvitesParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse user public key
+        let user_pk: [u8; 32] = match hex::decode(&params.user) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid user: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get pending invites
+        let invites = match membership_store.get_user_invites(&user_pk) {
+            Ok(invites) => invites,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get invites: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Convert to RPC response format
+        let invite_infos: Vec<InviteInfo> = invites
+            .into_iter()
+            .map(|inv| InviteInfo {
+                invite_hash: hex::encode(&inv.invite_hash),
+                space_id: hex::encode(&inv.space_id),
+                inviter: hex::encode(&inv.inviter_pk),
+                encrypted_space_key: hex::encode(&inv.encrypted_space_key),
+                created_at: inv.created_at,
+                expires_at: inv.expires_at,
+                message: inv.message.map(|m| hex::encode(&m)),
+            })
+            .collect();
+
+        let result = GetMyInvitesResult { invites: invite_infos };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Get members of a private space
+    async fn get_space_members(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetSpaceMembersParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse space ID (16-byte hex)
+        let space_id: [u8; 16] = match hex::decode(&params.space_id) {
+            Ok(bytes) if bytes.len() == 16 => {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            Ok(bytes) if bytes.len() == 32 => {
+                // Accept 32-byte space_id and take first 16 bytes
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes[..16]);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid space_id: must be 16-byte or 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get space members
+        let members = match membership_store.get_space_members(&space_id) {
+            Ok(members) => members,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get members: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Convert to RPC response format
+        let member_infos: Vec<MemberInfo> = members
+            .into_iter()
+            .map(|m| MemberInfo {
+                member: hex::encode(&m.member_pk),
+                role: match m.role {
+                    crate::storage::membership::MemberRole::Admin => "admin".to_string(),
+                    crate::storage::membership::MemberRole::Moderator => "moderator".to_string(),
+                    crate::storage::membership::MemberRole::Member => "member".to_string(),
+                },
+                joined_at: m.joined_at,
+                invited_by: hex::encode(&m.invited_by),
+            })
+            .collect();
+
+        let result = GetSpaceMembersResult {
+            space_id: params.space_id,
+            members: member_infos.clone(),
+            count: member_infos.len(),
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Get all private spaces a user is a member of
+    async fn get_my_private_spaces(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetMyPrivateSpacesParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse user public key
+        let user_pk: [u8; 32] = match hex::decode(&params.user) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid user: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get user's private spaces
+        let space_ids = match membership_store.get_user_spaces(&user_pk) {
+            Ok(spaces) => spaces,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get spaces: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Build space info for each space
+        let mut spaces: Vec<PrivateSpaceInfo> = Vec::new();
+        for space_id in space_ids {
+            // Get member record for role info
+            let member = membership_store.get_member(&space_id, &user_pk).ok().flatten();
+            let role = member.as_ref().map(|m| match m.role {
+                crate::storage::membership::MemberRole::Admin => "admin".to_string(),
+                crate::storage::membership::MemberRole::Moderator => "moderator".to_string(),
+                crate::storage::membership::MemberRole::Member => "member".to_string(),
+            }).unwrap_or_else(|| "member".to_string());
+            let joined_at = member.as_ref().map(|m| m.joined_at).unwrap_or(0);
+            let key_version = member.as_ref().map(|m| m.key_version).unwrap_or(0);
+
+            // Get member count
+            let member_count = membership_store.member_count(&space_id).unwrap_or(0);
+
+            // Get space info from chain store for encrypted name
+            let encrypted_name = if let Some(ref chain_store) = self.node.chain_store {
+                if let Ok(Some(space_info)) = chain_store.get_space(&space_id) {
+                    space_info.encrypted_name.map(|n| hex::encode(&n))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            spaces.push(PrivateSpaceInfo {
+                space_id: hex::encode(&space_id),
+                space_id_bech32: encode_space_id(&space_id),
+                encrypted_name,
+                role,
+                joined_at,
+                member_count,
+                key_version,
+            });
+        }
+
+        let result = GetMyPrivateSpacesResult { spaces };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Get pending DM requests for a user
+    async fn get_pending_dm_requests(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetPendingDMRequestsParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse user public key
+        let user_pk: [u8; 32] = match hex::decode(&params.user) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid user: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get pending DM requests
+        let requests = match membership_store.get_pending_dm_requests(&user_pk) {
+            Ok(reqs) => reqs,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get DM requests: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Convert to RPC response format
+        let request_infos: Vec<DMRequestInfo> = requests
+            .into_iter()
+            .map(|r| DMRequestInfo {
+                request_hash: hex::encode(&r.request_hash),
+                requester: hex::encode(&r.requester_pk),
+                key_share: hex::encode(&r.requester_key_share),
+                created_at: r.created_at,
+            })
+            .collect();
+
+        let result = GetPendingDMRequestsResult { requests: request_infos };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Send a DM request to another user
+    ///
+    /// Creates a pending DM request that the recipient can accept or decline.
+    /// The requester provides their key share for the DH key exchange.
+    async fn request_dm(&self, params: Value, id: Value) -> RpcResponse {
+        let params: RequestDMParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse requester and recipient public keys
+        let requester_pk: [u8; 32] = match hex::decode(&params.requester) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid requester: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let recipient_pk: [u8; 32] = match hex::decode(&params.recipient) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid recipient: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse key share
+        let key_share = match hex::decode(&params.key_share) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid key_share hex: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate key_share length (must be exactly 32 bytes for X25519)
+        if key_share.len() != 32 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid key_share: must be exactly 32 bytes",
+                id,
+            );
+        }
+
+        // Get membership store
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Check if a DM request already exists
+        match membership_store.dm_request_exists(&requester_pk, &recipient_pk) {
+            Ok(true) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "DM request already exists between these users",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check existing DM request: {}", e),
+                    id,
+                );
+            }
+            _ => {}
+        }
+
+        // Check reverse direction too
+        match membership_store.dm_request_exists(&recipient_pk, &requester_pk) {
+            Ok(true) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "DM request already exists between these users (reverse)",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check existing DM request: {}", e),
+                    id,
+                );
+            }
+            _ => {}
+        }
+
+        // Compute request hash
+        let request_hash = crate::crypto::sha256(&[
+            &requester_pk[..],
+            &recipient_pk[..],
+            &params.timestamp.to_le_bytes(),
+        ].concat());
+
+        // Create the DM request record
+        let record = crate::storage::membership::DMRequestRecord {
+            request_hash,
+            requester_pk,
+            recipient_pk,
+            requester_key_share: key_share,
+            created_at: params.timestamp,
+            status: crate::storage::membership::DMRequestStatus::Pending,
+            space_id: None,
+        };
+
+        // Store the request
+        if let Err(e) = membership_store.add_dm_request(&record) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to store DM request: {}", e),
+                id,
+            );
+        }
+
+        info!(
+            "[DM] Created DM request from {} to {}",
+            &params.requester[..16], &params.recipient[..16]
+        );
+
+        let result = RequestDMResult {
+            request_hash: hex::encode(&request_hash),
+            broadcast: false, // Not broadcast yet - requires gossip implementation
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Accept a DM request from another user
+    ///
+    /// Completes the key exchange and creates the DM space.
+    async fn accept_dm(&self, params: Value, id: Value) -> RpcResponse {
+        let params: AcceptDMParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse requester and acceptor public keys
+        let requester_pk: [u8; 32] = match hex::decode(&params.requester) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid requester: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let acceptor_pk: [u8; 32] = match hex::decode(&params.acceptor) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid acceptor: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Get membership store
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get the pending DM request
+        let request = match membership_store.get_dm_request(&requester_pk, &acceptor_pk) {
+            Ok(Some(req)) => req,
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "No pending DM request found from this user",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get DM request: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Check status
+        if request.status != crate::storage::membership::DMRequestStatus::Pending {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "DM request is not pending",
+                id,
+            );
+        }
+
+        // Generate deterministic DM space ID from sorted public keys
+        let sorted_keys = {
+            let mut keys = [requester_pk, acceptor_pk];
+            keys.sort();
+            keys
+        };
+        let preimage = format!("dm:v1:{}:{}", hex::encode(&sorted_keys[0]), hex::encode(&sorted_keys[1]));
+        let space_hash = crate::crypto::sha256(preimage.as_bytes());
+        let mut space_id = [0u8; 16];
+        space_id.copy_from_slice(&space_hash[..16]);
+
+        // Update request status to accepted
+        if let Err(e) = membership_store.update_dm_request_status(
+            &requester_pk,
+            &acceptor_pk,
+            crate::storage::membership::DMRequestStatus::Accepted,
+            Some(space_id),
+        ) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to update DM request status: {}", e),
+                id,
+            );
+        }
+
+        // Add both users as members of the DM space
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(params.timestamp);
+
+        // Add requester as member
+        let requester_record = crate::storage::membership::MemberRecord {
+            member_pk: requester_pk,
+            role: crate::storage::membership::MemberRole::Admin,
+            joined_at: now,
+            invited_by: [0u8; 32],
+            encrypted_space_key: Vec::new(), // To be set by client
+            key_version: 1,
+        };
+        if let Err(e) = membership_store.add_member(&space_id, &requester_record) {
+            warn!("[DM] Failed to add requester as member: {}", e);
+        }
+
+        // Add acceptor as member
+        let acceptor_record = crate::storage::membership::MemberRecord {
+            member_pk: acceptor_pk,
+            role: crate::storage::membership::MemberRole::Admin,
+            joined_at: now,
+            invited_by: [0u8; 32],
+            encrypted_space_key: Vec::new(),
+            key_version: 1,
+        };
+        if let Err(e) = membership_store.add_member(&space_id, &acceptor_record) {
+            warn!("[DM] Failed to add acceptor as member: {}", e);
+        }
+
+        info!(
+            "[DM] Accepted DM request: space {}",
+            hex::encode(&space_id)
+        );
+
+        let result = AcceptDMResult {
+            space_id: hex::encode(&space_id),
+            broadcast: false,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Decline a DM request from another user
+    async fn decline_dm(&self, params: Value, id: Value) -> RpcResponse {
+        let params: DeclineDMParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse requester and decliner public keys
+        let requester_pk: [u8; 32] = match hex::decode(&params.requester) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid requester: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let decliner_pk: [u8; 32] = match hex::decode(&params.decliner) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid decliner: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Get membership store
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get the pending DM request
+        let request = match membership_store.get_dm_request(&requester_pk, &decliner_pk) {
+            Ok(Some(req)) => req,
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "No pending DM request found from this user",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get DM request: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Check status
+        if request.status != crate::storage::membership::DMRequestStatus::Pending {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "DM request is not pending",
+                id,
+            );
+        }
+
+        // Update request status to declined
+        if let Err(e) = membership_store.update_dm_request_status(
+            &requester_pk,
+            &decliner_pk,
+            crate::storage::membership::DMRequestStatus::Declined,
+            None,
+        ) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to update DM request status: {}", e),
+                id,
+            );
+        }
+
+        info!(
+            "[DM] Declined DM request from {}",
+            &params.requester[..16]
+        );
+
+        let result = DeclineDMResult {
+            success: true,
+            broadcast: false,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Create a new private (encrypted) space
+    async fn create_private_space(&self, params: Value, id: Value) -> RpcResponse {
+        let params: CreatePrivateSpaceParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse creator public key
+        let creator_pk: [u8; 32] = match hex::decode(&params.creator) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid creator: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // SPONSORSHIP CHECK: Verify identity is sponsored before allowing private space creation
+        if let Err(response) = self.check_identity_sponsored(&params.creator, &id) {
+            return response;
+        }
+
+        // Parse encrypted key for creator
+        let creator_encrypted_key: Vec<u8> = match hex::decode(&params.creator_encrypted_key) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid creator_encrypted_key: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Verify PoW for space creation
+        if let Err((code, msg)) = verify_pow_submission(
+            ActionType::SpaceCreation,
+            params.name.as_bytes(),
+            &params.creator,
+            params.pow_nonce,
+            params.pow_difficulty,
+            &params.pow_nonce_space,
+            &params.pow_hash,
+            params.timestamp,
+            &self.node.network,
+        ) {
+            return RpcResponse::error(code, &msg, id);
+        }
+
+        // Generate space_id deterministically from creator + name + timestamp
+        let mut space_id_input = Vec::new();
+        space_id_input.extend_from_slice(&creator_pk);
+        space_id_input.extend_from_slice(params.name.as_bytes());
+        space_id_input.extend_from_slice(&params.timestamp.to_le_bytes());
+        let space_hash = crate::crypto::sha256(&space_id_input);
+        let mut space_id = [0u8; 16];
+        space_id.copy_from_slice(&space_hash[..16]);
+
+        // Create SpaceInfo (stored encrypted on chain)
+        // For private spaces, name is empty string - actual name is in encrypted_name
+        let space_info = crate::storage::chain::SpaceInfo {
+            space_id,
+            name: String::new(), // Private spaces use encrypted_name
+            description: None,
+            creator: creator_pk,
+            created_at: params.timestamp,
+            pow_work: (1u64 << params.pow_difficulty.min(63)) / 1000 + 1,
+            is_private: true,
+            encrypted_name: Some(params.name.as_bytes().to_vec()), // Already encrypted by client
+            creator_encrypted_key: Some(creator_encrypted_key.clone()),
+            key_version: 0,
+        };
+
+        // Register space in chain store
+        if let Some(ref chain_store) = self.node.chain_store {
+            if let Err(e) = chain_store.register_space(&space_info) {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to register space: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Add creator as admin in membership store
+        if let Some(ref membership_store) = self.node.membership_store {
+            let member_record = crate::storage::membership::MemberRecord {
+                member_pk: creator_pk,
+                role: crate::storage::membership::MemberRole::Admin,
+                joined_at: params.timestamp,
+                invited_by: [0u8; 32], // Creator invites themselves
+                encrypted_space_key: creator_encrypted_key,
+                key_version: 0,
+            };
+            if let Err(e) = membership_store.add_member(&space_id, &member_record) {
+                warn!("Failed to add creator to membership store: {}", e);
+            }
+        }
+
+        // Create and broadcast CreateSpace action
+        let mut broadcast = false;
+        if let Some(ref block_builder) = self.node.block_builder {
+            let mut signature_bytes = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    signature_bytes.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
+            let content_hash = crate::crypto::sha256(params.name.as_bytes());
+
+            let action = Action {
+                action_type: crate::blocks::ActionType::CreateSpace,
+                actor: creator_pk,
+                timestamp: params.timestamp,
+                content_hash: Some(content_hash),
+                parent_id: None,
+                pow_nonce: params.pow_nonce,
+                pow_work,
+                pow_target: crate::crypto::sha256(params.pow_hash.as_bytes()),
+                signature: signature_bytes,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            // Thread ID is the space_id (padded to 32 bytes)
+            let mut thread_id = [0u8; 32];
+            thread_id[..16].copy_from_slice(&space_id);
+
+            // Space ID also padded to 32 bytes for action
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&space_id);
+
+            // Add to block builder
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    let added = builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root());
+                    if added {
+                        info!("[BLOCKS] Added CREATE_PRIVATE_SPACE action to block builder");
+                    }
+                    added
+                }
+                Err(e) => {
+                    warn!("[BLOCKS] Failed to acquire block builder lock: {:?}", e);
+                    false
+                }
+            };
+
+            // Broadcast action to peers
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(thread_id, space_id_32, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    let sent = pool.broadcast(&envelope).await;
+                    broadcast = sent > 0;
+                    info!("[PRIVATE] Broadcast CreatePrivateSpace to {} peers", sent);
+                }
+            }
+        }
+
+        let result = CreatePrivateSpaceResult {
+            space_id: hex::encode(&space_id),
+            space_id_bech32: encode_space_id(&space_id),
+            broadcast,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Invite a user to a private space
+    async fn invite_to_space(&self, params: Value, id: Value) -> RpcResponse {
+        let params: InviteToSpaceParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse inviter public key
+        let inviter_pk: [u8; 32] = match hex::decode(&params.inviter) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid inviter: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // SPONSORSHIP CHECK: Verify inviter is sponsored before allowing invite
+        if let Err(response) = self.check_identity_sponsored(&params.inviter, &id) {
+            return response;
+        }
+
+        // Parse invitee public key
+        let invitee_pk: [u8; 32] = match hex::decode(&params.invitee) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid invitee: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse space ID
+        let space_id: [u8; 16] = match hex::decode(&params.space_id) {
+            Ok(bytes) if bytes.len() >= 16 => {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes[..16]);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid space_id: must be at least 16-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse encrypted space key
+        let encrypted_space_key: Vec<u8> = match hex::decode(&params.encrypted_space_key) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid encrypted_space_key: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate encrypted_space_key length (max 1024 bytes to prevent DoS)
+        if encrypted_space_key.len() > 1024 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid encrypted_space_key: exceeds maximum length of 1024 bytes",
+                id,
+            );
+        }
+
+        // Check that inviter is a member with invite permissions
+        if let Some(ref membership_store) = self.node.membership_store {
+            match membership_store.get_member(&space_id, &inviter_pk) {
+                Ok(Some(member)) => {
+                    if member.role == crate::storage::membership::MemberRole::Member {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Only admins and moderators can invite members",
+                            id,
+                        );
+                    }
+                }
+                Ok(None) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Inviter is not a member of this space",
+                        id,
+                    );
+                }
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        &format!("Failed to check membership: {}", e),
+                        id,
+                    );
+                }
+            }
+        }
+
+        // Verify PoW for invite
+        // Note: Using Post difficulty for invites until Invite is added to action_pow
+        if let Err((code, msg)) = verify_pow_submission(
+            ActionType::Post, // TODO: Add ActionType::Invite to action_pow
+            &invitee_pk,
+            &params.inviter,
+            params.pow_nonce,
+            params.pow_difficulty,
+            &params.pow_nonce_space,
+            &params.pow_hash,
+            params.timestamp,
+            &self.node.network,
+        ) {
+            return RpcResponse::error(code, &msg, id);
+        }
+
+        // Create invite hash (deterministic)
+        let mut invite_input = Vec::new();
+        invite_input.extend_from_slice(&space_id);
+        invite_input.extend_from_slice(&inviter_pk);
+        invite_input.extend_from_slice(&invitee_pk);
+        invite_input.extend_from_slice(&params.timestamp.to_le_bytes());
+        let invite_hash = crate::crypto::sha256(&invite_input);
+
+        // Store invite in membership store
+        if let Some(ref membership_store) = self.node.membership_store {
+            let invite_record = crate::storage::membership::InviteRecord {
+                invite_hash,
+                space_id,
+                inviter_pk,
+                invitee_pk,
+                encrypted_space_key: encrypted_space_key.clone(),
+                created_at: params.timestamp,
+                expires_at: params.expires_at,
+                status: crate::storage::membership::InviteStatus::Pending,
+                message: params.message.and_then(|m| hex::decode(&m).ok()),
+            };
+            if let Err(e) = membership_store.add_invite(&invite_record) {
+                warn!("Failed to store invite: {}", e);
+            }
+        }
+
+        // Create and broadcast Invite action
+        let mut broadcast = false;
+        if let Some(ref block_builder) = self.node.block_builder {
+            let mut signature_bytes = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    signature_bytes.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
+
+            let action = Action {
+                action_type: crate::blocks::ActionType::Invite,
+                actor: inviter_pk,
+                timestamp: params.timestamp,
+                content_hash: Some(invite_hash), // Invite hash as content reference
+                parent_id: Some({
+                    let mut parent = [0u8; 32];
+                    parent[..16].copy_from_slice(&space_id);
+                    parent
+                }),
+                pow_nonce: params.pow_nonce,
+                pow_work,
+                pow_target: crate::crypto::sha256(params.pow_hash.as_bytes()),
+                signature: signature_bytes,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            let mut thread_id = [0u8; 32];
+            thread_id.copy_from_slice(&invite_hash);
+
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&space_id);
+
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                }
+                Err(_) => false,
+            };
+
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(thread_id, space_id_32, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    let sent = pool.broadcast(&envelope).await;
+                    broadcast = sent > 0;
+                }
+            }
+        }
+
+        let result = InviteToSpaceResult {
+            invite_hash: hex::encode(&invite_hash),
+            broadcast,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Accept a pending invite to a private space
+    async fn accept_invite(&self, params: Value, id: Value) -> RpcResponse {
+        let params: AcceptInviteParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse acceptor public key
+        let acceptor_pk: [u8; 32] = match hex::decode(&params.acceptor) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid acceptor: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse invite hash
+        let invite_hash: [u8; 32] = match hex::decode(&params.invite_hash) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid invite_hash: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get the invite
+        let invite = match membership_store.get_invite(&invite_hash) {
+            Ok(Some(inv)) => inv,
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invite not found",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get invite: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Verify acceptor is the invitee
+        if invite.invitee_pk != acceptor_pk {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Only the invitee can accept this invite",
+                id,
+            );
+        }
+
+        // Check invite status
+        if invite.status != crate::storage::membership::InviteStatus::Pending {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invite is no longer pending",
+                id,
+            );
+        }
+
+        // Check expiry
+        if let Some(expires_at) = invite.expires_at {
+            if params.timestamp > expires_at {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invite has expired",
+                    id,
+                );
+            }
+        }
+
+        // Update invite status
+        if let Err(e) = membership_store.update_invite_status(
+            &invite_hash,
+            crate::storage::membership::InviteStatus::Accepted,
+        ) {
+            warn!("Failed to update invite status: {}", e);
+        }
+
+        // Add acceptor as member
+        let member_record = crate::storage::membership::MemberRecord {
+            member_pk: acceptor_pk,
+            role: crate::storage::membership::MemberRole::Member,
+            joined_at: params.timestamp,
+            invited_by: invite.inviter_pk,
+            encrypted_space_key: invite.encrypted_space_key,
+            key_version: 0, // Will get current version from space
+        };
+        if let Err(e) = membership_store.add_member(&invite.space_id, &member_record) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to add member: {}", e),
+                id,
+            );
+        }
+
+        // Broadcast accept action (no PoW required for accept)
+        let mut broadcast = false;
+        // Note: Accept actions don't require PoW per the spec
+        // TODO: Create and broadcast AcceptInvite action
+
+        let result = AcceptInviteResult {
+            space_id: hex::encode(&invite.space_id),
+            broadcast,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Decline a pending invite to a private space
+    async fn decline_invite(&self, params: Value, id: Value) -> RpcResponse {
+        let params: DeclineInviteParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse decliner public key
+        let decliner_pk: [u8; 32] = match hex::decode(&params.decliner) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid decliner: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse invite hash
+        let invite_hash: [u8; 32] = match hex::decode(&params.invite_hash) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid invite_hash: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get the invite
+        let invite = match membership_store.get_invite(&invite_hash) {
+            Ok(Some(inv)) => inv,
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invite not found",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get invite: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Verify decliner is the invitee
+        if invite.invitee_pk != decliner_pk {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Only the invitee can decline this invite",
+                id,
+            );
+        }
+
+        // Check invite status
+        if invite.status != crate::storage::membership::InviteStatus::Pending {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invite is no longer pending",
+                id,
+            );
+        }
+
+        // Update invite status to declined
+        if let Err(e) = membership_store.update_invite_status(
+            &invite_hash,
+            crate::storage::membership::InviteStatus::Declined,
+        ) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to update invite status: {}", e),
+                id,
+            );
+        }
+
+        let result = DeclineInviteResult { success: true };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Leave a private space
+    async fn leave_space(&self, params: Value, id: Value) -> RpcResponse {
+        let params: LeaveSpaceParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse member public key
+        let member_pk: [u8; 32] = match hex::decode(&params.member) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid member: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse space ID
+        let space_id: [u8; 16] = match hex::decode(&params.space_id) {
+            Ok(bytes) if bytes.len() >= 16 => {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes[..16]);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid space_id: must be at least 16-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Check that the user is a member
+        match membership_store.get_member(&space_id, &member_pk) {
+            Ok(Some(member)) => {
+                // Admin cannot leave (they must transfer admin first or delete space)
+                if member.role == crate::storage::membership::MemberRole::Admin {
+                    // Check if there are other admins
+                    let members = membership_store.get_space_members(&space_id).unwrap_or_default();
+                    let admin_count = members.iter().filter(|m| m.role == crate::storage::membership::MemberRole::Admin).count();
+                    if admin_count == 1 {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Cannot leave: you are the only admin. Transfer admin role first.",
+                            id,
+                        );
+                    }
+                }
+            }
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "You are not a member of this space",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check membership: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Remove member
+        match membership_store.remove_member(&space_id, &member_pk) {
+            Ok(true) => {}
+            Ok(false) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Failed to remove member",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to remove member: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Broadcast leave action (no PoW required for leave)
+        let mut broadcast = false;
+        // Note: Leave actions don't require PoW per the spec
+        // TODO: Create and broadcast Leave action
+
+        let result = LeaveSpaceResult {
+            success: true,
+            broadcast,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Kick a member from a private space (admin only)
+    ///
+    /// This removes the member and triggers key rotation for security.
+    /// The admin must provide new encrypted keys for all remaining members.
+    async fn kick_member(&self, params: Value, id: Value) -> RpcResponse {
+        let params: KickMemberParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse admin public key
+        let admin_pk: [u8; 32] = match hex::decode(&params.admin) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid admin: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse member to kick
+        let member_pk: [u8; 32] = match hex::decode(&params.member) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid member: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse space ID
+        let space_id: [u8; 16] = match hex::decode(&params.space_id) {
+            Ok(bytes) if bytes.len() >= 16 => {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes[..16]);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid space_id: must be at least 16-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Check that the admin has admin/mod role
+        match membership_store.get_member(&space_id, &admin_pk) {
+            Ok(Some(admin_member)) => {
+                if admin_member.role != crate::storage::membership::MemberRole::Admin
+                    && admin_member.role != crate::storage::membership::MemberRole::Moderator
+                {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "You don't have permission to kick members",
+                        id,
+                    );
+                }
+            }
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "You are not a member of this space",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check membership: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Check that the target is a member (and not admin if kicker is moderator)
+        match membership_store.get_member(&space_id, &member_pk) {
+            Ok(Some(target_member)) => {
+                // Moderators can't kick admins or other moderators
+                let admin_member = membership_store.get_member(&space_id, &admin_pk).ok().flatten();
+                if let Some(admin) = admin_member {
+                    if admin.role == crate::storage::membership::MemberRole::Moderator
+                        && target_member.role != crate::storage::membership::MemberRole::Member
+                    {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Moderators can only kick regular members",
+                            id,
+                        );
+                    }
+                }
+            }
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Target is not a member of this space",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check membership: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Cannot kick yourself
+        if admin_pk == member_pk {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Cannot kick yourself. Use leave_space instead.",
+                id,
+            );
+        }
+
+        // Remove the member
+        match membership_store.remove_member(&space_id, &member_pk) {
+            Ok(false) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Failed to remove member",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to remove member: {}", e),
+                    id,
+                );
+            }
+            _ => {}
+        }
+
+        // Update keys for remaining members (key rotation)
+        let remaining_members = membership_store.get_space_members(&space_id).unwrap_or_default();
+        // Build HashSet for O(1) lookup instead of O(n) linear search per key
+        let remaining_member_pks: std::collections::HashSet<[u8; 32]> = remaining_members
+            .iter()
+            .map(|m| m.member_pk)
+            .collect();
+        let mut keys_updated = 0usize;
+
+        for (member_hex, encrypted_key_hex) in &params.new_encrypted_keys {
+            let member_bytes: [u8; 32] = match hex::decode(member_hex) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => continue,
+            };
+
+            let encrypted_key = match hex::decode(encrypted_key_hex) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+
+            // Verify this member still exists (O(1) lookup via HashSet)
+            if remaining_member_pks.contains(&member_bytes) {
+                if let Ok(true) = membership_store.update_member_key(
+                    &space_id,
+                    &member_bytes,
+                    encrypted_key,
+                    params.key_version,
+                ) {
+                    keys_updated += 1;
+                }
+            }
+        }
+
+        info!(
+            "[KICK] Kicked {} from space {}, rotated {} keys to version {}",
+            &params.member[..16],
+            &params.space_id[..16],
+            keys_updated,
+            params.key_version
+        );
+
+        let result = KickMemberResult {
+            success: true,
+            key_version: params.key_version,
+            broadcast: false, // TODO: Create and broadcast Kick + KeyRotation actions
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    // ========================================================================
+    // Sponsorship Methods
+    // ========================================================================
+
+    /// Register a genesis identity (must be in hardcoded genesis list)
+    async fn register_genesis_identity(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list;
+        use crate::sponsorship::types::{
+            StoredSponsorship, SponsorshipStatus,
+        };
+        use crate::types::identity::PublicKey;
+
+        let params: RegisterGenesisIdentityParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse identity pubkey
+        let identity_bytes: [u8; 32] = match hex::decode(&params.identity_pubkey) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid identity_pubkey: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let pubkey = PublicKey::from_bytes(identity_bytes);
+
+        // Check if identity is in hardcoded genesis list
+        if !is_in_hardcoded_genesis_list(&pubkey) {
+            return RpcResponse::error(
+                RpcErrorCode::PermissionDenied,
+                "Identity is not in the hardcoded genesis list",
+                id,
+            );
+        }
+
+        // Get sponsorship store
+        let sponsorship_store = match &self.node.sponsorship_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Sponsorship store not available",
+                    id,
+                );
+            }
+        };
+
+        // Check if already registered
+        match sponsorship_store.exists(&pubkey) {
+            Ok(true) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Identity is already registered",
+                    id,
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check identity: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Create genesis sponsorship record
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let sponsorship = StoredSponsorship {
+            sponsored_identity: pubkey,
+            sponsor: None, // Genesis has no sponsor
+            creation_timestamp: current_time,
+            status: SponsorshipStatus::Active,
+            penalty_until: None,
+            depth: 0, // Genesis is depth 0
+            probationary: false,
+            probation_expires: None,
+            positive_contribution_score: 0,
+            is_genesis: true,
+            orphaned_at: None,
+        };
+
+        // Store the sponsorship
+        if let Err(e) = sponsorship_store.put(&sponsorship) {
+            return RpcResponse::error(
+                RpcErrorCode::StorageError,
+                &format!("Failed to store genesis sponsorship: {}", e),
+                id,
+            );
+        }
+
+        info!(
+            "[SPONSORSHIP] Registered genesis identity: {} slot {}",
+            params.identity_pubkey, params.slot_number
+        );
+
+        // SPEC_11 Phase 6: Create on-chain GenesisRegister action and add to block builder
+        {
+            use crate::blocks::action::Action;
+            use crate::blocks::BranchPath;
+
+            let action = Action::new_genesis_register(
+                identity_bytes,
+                current_time,
+                [0u8; 64], // No PoW signature for sponsorship actions
+            );
+
+            // System space ID (all zeros) for sponsorship actions
+            let system_space_id = [0u8; 32];
+            let action_hash = action.hash();
+
+            if let Some(ref block_builder) = self.node.block_builder {
+                match block_builder.write() {
+                    Ok(mut builder) => {
+                        let added = builder.add_action(action_hash, system_space_id, action.clone(), BranchPath::root());
+                        if added {
+                            info!("[SPONSORSHIP] Added GenesisRegister action to block builder");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[SPONSORSHIP] Failed to acquire block builder lock for GenesisRegister: {:?}", e);
+                    }
+                }
+
+                // Broadcast to peers
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    let peers = pool.peer_ids().await;
+                    for peer_id in peers {
+                        if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                            log::debug!("[SPONSORSHIP] Failed to broadcast GenesisRegister to peer {}: {}",
+                                       hex::encode(&peer_id[..8]), e);
+                        }
+                    }
+                    info!("[SPONSORSHIP] Broadcast GenesisRegister action to peers");
+                }
+            }
+        }
+
+        let result = RegisterGenesisIdentityResult {
+            success: true,
+            identity_pubkey: params.identity_pubkey,
+            slot_number: params.slot_number,
+            message: "Genesis identity registered successfully".to_string(),
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Register a new sponsored identity
+    ///
+    /// The sponsor must be an existing sponsored identity in good standing.
+    async fn register_sponsored_identity(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::sponsorship::types::{
+            StoredSponsorship, SponsorshipStatus, PROBATION_PERIOD_SECONDS,
+            TIMESTAMP_TOLERANCE_SECONDS,
+        };
+        use crate::types::identity::PublicKey;
+
+        let params: RegisterSponsoredIdentityParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse new identity pubkey
+        let new_identity_bytes: [u8; 32] = match hex::decode(&params.new_identity_pubkey) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid new_identity_pubkey: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+        let new_pubkey = PublicKey::from_bytes(new_identity_bytes);
+
+        // Parse sponsor pubkey
+        let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid sponsor_pubkey: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+        let sponsor_pubkey = PublicKey::from_bytes(sponsor_bytes);
+
+        // Parse sponsor signature
+        let signature_bytes: [u8; 64] = match hex::decode(&params.sponsor_signature) {
+            Ok(bytes) if bytes.len() == 64 => {
+                let mut arr = [0u8; 64];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid sponsor_signature: must be 64-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Verify timestamp is within tolerance
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Timestamp is too far in the future",
+                id,
+            );
+        }
+        if current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Timestamp is too old",
+                id,
+            );
+        }
+
+        // Get sponsorship store
+        let sponsorship_store = match &self.node.sponsorship_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Sponsorship store not available",
+                    id,
+                );
+            }
+        };
+
+        // Check new identity is not already registered
+        match sponsorship_store.exists(&new_pubkey) {
+            Ok(true) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Identity is already registered",
+                    id,
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check identity: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Get sponsor's sponsorship record, or check if they're in genesis list
+        let sponsor_sponsorship = match sponsorship_store.get(&sponsor_pubkey) {
+            Ok(Some(s)) => Some(s),
+            Ok(None) => {
+                // Genesis identities can sponsor even without a store record
+                if crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&sponsor_pubkey) {
+                    None // Genesis identity - no store record needed
+                } else {
+                    return RpcResponse::error(
+                        RpcErrorCode::PermissionDenied,
+                        "Sponsor is not a registered identity",
+                        id,
+                    );
+                }
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get sponsor info: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Check sponsor can sponsor (not revoked/orphaned/under penalty)
+        // Genesis identities (None) can always sponsor
+        if let Some(ref sponsorship) = sponsor_sponsorship {
+            if !sponsorship.can_sponsor_basic(current_time) {
+                return RpcResponse::error(
+                    RpcErrorCode::PermissionDenied,
+                    "Sponsor cannot sponsor new identities (may be under penalty, revoked, or orphaned)",
+                    id,
+                );
+            }
+        }
+
+        // Verify sponsor's signature over (new_identity_pubkey || timestamp)
+        let mut message = Vec::with_capacity(40);
+        message.extend_from_slice(&new_identity_bytes);
+        message.extend_from_slice(&params.timestamp.to_be_bytes());
+
+        // Verify signature using ed25519
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        let verifying_key = match VerifyingKey::from_bytes(&sponsor_bytes) {
+            Ok(k) => k,
+            Err(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid sponsor public key",
+                    id,
+                );
+            }
+        };
+        let signature = Signature::from_bytes(&signature_bytes);
+        if verifying_key.verify(&message, &signature).is_err() {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidSignature,
+                "Invalid sponsor signature",
+                id,
+            );
+        }
+
+        // Calculate depth (genesis identities have depth 0, so children get depth 1)
+        let depth = match &sponsor_sponsorship {
+            Some(s) => s.depth.saturating_add(1),
+            None => 1, // Genesis sponsor - direct children have depth 1
+        };
+
+        // Create sponsorship record
+        let sponsorship = StoredSponsorship {
+            sponsored_identity: new_pubkey,
+            sponsor: Some(sponsor_pubkey),
+            creation_timestamp: current_time,
+            status: SponsorshipStatus::Active,
+            penalty_until: None,
+            depth,
+            probationary: params.probationary,
+            probation_expires: if params.probationary {
+                Some(current_time + PROBATION_PERIOD_SECONDS)
+            } else {
+                None
+            },
+            positive_contribution_score: 0,
+            is_genesis: false,
+            orphaned_at: None,
+        };
+
+        // Store the sponsorship
+        if let Err(e) = sponsorship_store.put(&sponsorship) {
+            return RpcResponse::error(
+                RpcErrorCode::StorageError,
+                &format!("Failed to store sponsorship: {}", e),
+                id,
+            );
+        }
+
+        info!(
+            "[SPONSORSHIP] Registered sponsored identity: {} by {} (depth {})",
+            params.new_identity_pubkey, params.sponsor_pubkey, depth
+        );
+
+        // SPEC_11 Phase 6: Create on-chain Sponsor action and add to block builder
+        {
+            use crate::blocks::action::Action;
+            use crate::blocks::BranchPath;
+
+            // Parse PoW fields from params if provided
+            let pow_target_bytes: [u8; 32] = params.pow_target
+                .as_ref()
+                .and_then(|t| hex::decode(t).ok())
+                .and_then(|b| if b.len() == 32 { let mut a = [0u8; 32]; a.copy_from_slice(&b); Some(a) } else { None })
+                .unwrap_or([0u8; 32]);
+
+            let action = Action::new_sponsor_with_pow(
+                sponsor_bytes,
+                new_identity_bytes,
+                current_time,
+                signature_bytes,
+                params.pow_nonce,
+                params.pow_work,
+                pow_target_bytes,
+            );
+
+            // System space ID (all zeros) for sponsorship actions
+            let system_space_id = [0u8; 32];
+            let action_hash = action.hash();
+
+            if let Some(ref block_builder) = self.node.block_builder {
+                match block_builder.write() {
+                    Ok(mut builder) => {
+                        let added = builder.add_action(action_hash, system_space_id, action.clone(), BranchPath::root());
+                        if added {
+                            info!("[SPONSORSHIP] Added Sponsor action to block builder");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[SPONSORSHIP] Failed to acquire block builder lock for Sponsor: {:?}", e);
+                    }
+                }
+
+                // Broadcast to peers
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    let peers = pool.peer_ids().await;
+                    for peer_id in peers {
+                        if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                            log::debug!("[SPONSORSHIP] Failed to broadcast Sponsor to peer {}: {}",
+                                       hex::encode(&peer_id[..8]), e);
+                        }
+                    }
+                    info!("[SPONSORSHIP] Broadcast Sponsor action to peers");
+                }
+            }
+        }
+
+        let result = RegisterSponsoredIdentityResult {
+            success: true,
+            identity_pubkey: params.new_identity_pubkey,
+            sponsor_pubkey: params.sponsor_pubkey,
+            depth,
+            message: if params.probationary {
+                "Identity registered with probationary sponsorship".to_string()
+            } else {
+                "Identity registered successfully".to_string()
+            },
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Get sponsorship information for an identity
+    async fn get_sponsorship_info(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::types::identity::PublicKey;
+
+        let params: GetSponsorshipInfoParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse identity pubkey
+        let identity_bytes: [u8; 32] = match hex::decode(&params.identity_pubkey) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid identity_pubkey: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+        let pubkey = PublicKey::from_bytes(identity_bytes);
+
+        // Get sponsorship store
+        let sponsorship_store = match &self.node.sponsorship_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Sponsorship store not available",
+                    id,
+                );
+            }
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        match sponsorship_store.get(&pubkey) {
+            Ok(Some(sponsorship)) => {
+                let status_str = match sponsorship.status {
+                    crate::sponsorship::types::SponsorshipStatus::Active => "Active",
+                    crate::sponsorship::types::SponsorshipStatus::Orphaned => "Orphaned",
+                    crate::sponsorship::types::SponsorshipStatus::Restricted => "Restricted",
+                    crate::sponsorship::types::SponsorshipStatus::Revoked => "Revoked",
+                };
+
+                let result = SponsorshipInfo {
+                    is_sponsored: true,
+                    status: Some(status_str.to_string()),
+                    sponsor_pubkey: sponsorship.sponsor.map(|pk| hex::encode(pk.as_bytes())),
+                    depth: sponsorship.depth,
+                    is_genesis: sponsorship.is_genesis,
+                    is_under_penalty: sponsorship.is_under_penalty(current_time),
+                    probationary: sponsorship.probationary,
+                    created_at: Some(sponsorship.creation_timestamp),
+                };
+                RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+            }
+            Ok(None) => {
+                // Check mempool for pending Sponsor action (SPEC_11 §3.11)
+                if let Some(ref block_builder) = self.node.block_builder {
+                    if let Ok(builder) = block_builder.read() {
+                        use crate::blocks::action::ActionType;
+                        let pending_actions = builder.get_pending_actions();
+                        for (_thread_id, _space_id, action) in pending_actions {
+                            if action.action_type == ActionType::Sponsor {
+                                if let Some(sponsee_bytes) = action.content_hash {
+                                    if sponsee_bytes == identity_bytes {
+                                        log::debug!(
+                                            "[SPONSORSHIP] Found pending sponsorship in mempool for {}",
+                                            params.identity_pubkey
+                                        );
+                                        let result = SponsorshipInfo {
+                                            is_sponsored: true,
+                                            status: Some("Pending".to_string()),
+                                            sponsor_pubkey: Some(hex::encode(action.actor)),
+                                            depth: 0, // Unknown until on-chain
+                                            is_genesis: false,
+                                            is_under_penalty: false,
+                                            probationary: false, // Unknown until on-chain
+                                            created_at: Some(action.timestamp),
+                                        };
+                                        return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Check hardcoded genesis list (SPEC_11 §3.9)
+                if crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&pubkey) {
+                    let result = SponsorshipInfo {
+                        is_sponsored: true,
+                        status: Some("Active".to_string()),
+                        sponsor_pubkey: None, // Genesis identities have no sponsor
+                        depth: 0,
+                        is_genesis: true,
+                        is_under_penalty: false,
+                        probationary: false,
+                        created_at: None,
+                    };
+                    return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                }
+
+                // In regtest mode, all identities are considered sponsored for easier testing
+                // This allows creating spaces/content without needing to set up sponsorship chains
+                if self.node.network == "regtest" {
+                    log::debug!(
+                        "[SPONSORSHIP] Regtest mode: auto-sponsoring identity {}",
+                        params.identity_pubkey
+                    );
+                    let result = SponsorshipInfo {
+                        is_sponsored: true,
+                        status: Some("Active".to_string()),
+                        sponsor_pubkey: None, // Auto-sponsored in regtest
+                        depth: 0,
+                        is_genesis: false,
+                        is_under_penalty: false,
+                        probationary: false,
+                        created_at: None,
+                    };
+                    return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                }
+
+                let result = SponsorshipInfo {
+                    is_sponsored: false,
+                    status: None,
+                    sponsor_pubkey: None,
+                    depth: 0,
+                    is_genesis: false,
+                    is_under_penalty: false,
+                    probationary: false,
+                    created_at: None,
+                };
+                RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get sponsorship info: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+
+    // ========================================================================
+    // Sponsorship Offer Lifecycle Methods
+    // ========================================================================
+
+    /// List active sponsorship offers (public, no auth required)
+    async fn list_sponsorship_offers(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ListSponsorshipOffersParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let offer_store = match &self.node.offer_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                );
+            }
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let limit = params.limit.min(100);
+
+        // Optional type filter
+        let offers_result = if let Some(ref type_str) = params.offer_type {
+            let offer_type = match type_str.as_str() {
+                "open" => crate::sponsorship::types::SponsorshipOfferType::Open,
+                "probationary" => crate::sponsorship::types::SponsorshipOfferType::Probationary,
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "offer_type must be 'open' or 'probationary'",
+                        id,
+                    );
+                }
+            };
+            offer_store.filter_by_type(offer_type, current_time)
+                .map(|offers| {
+                    let total = offers.len();
+                    let has_more = total > params.offset + limit;
+                    let page: Vec<_> = offers.into_iter().skip(params.offset).take(limit).collect();
+                    (page, total, has_more)
+                })
+        } else {
+            offer_store.list_active_offers_paginated(current_time, params.offset, limit)
+                .map(|(page, has_more)| {
+                    let total = if has_more { params.offset + page.len() + 1 } else { params.offset + page.len() };
+                    (page, total, has_more)
+                })
+        };
+
+        match offers_result {
+            Ok((offers, total, has_more)) => {
+                let summaries: Vec<SponsorshipOfferSummary> = offers.iter().map(|o| {
+                    let claimed = offer_store.get_claimed_count(&o.offer_id).unwrap_or(0);
+                    let type_str = match o.offer_type {
+                        crate::sponsorship::types::SponsorshipOfferType::Open => "open",
+                        crate::sponsorship::types::SponsorshipOfferType::Probationary => "probationary",
+                        crate::sponsorship::types::SponsorshipOfferType::Conditional => "conditional",
+                    };
+                    SponsorshipOfferSummary {
+                        offer_id: hex::encode(o.offer_id),
+                        sponsor_pubkey: hex::encode(o.sponsor.as_bytes()),
+                        offer_type: type_str.to_string(),
+                        slots_total: o.max_sponsees,
+                        slots_remaining: o.max_sponsees.saturating_sub(claimed),
+                        expires_at: o.expires_at,
+                        created_at: o.created_at,
+                        requirements: SponsorshipOfferRequirements {
+                            min_pow_difficulty: o.requirements.min_pow_difficulty,
+                            application_required: o.requirements.application_required,
+                        },
+                    }
+                }).collect();
+
+                let result = ListSponsorshipOffersResult {
+                    offers: summaries,
+                    total,
+                    has_more,
+                };
+                RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to list offers: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+
+    /// Get a single sponsorship offer with optional pending claims (if caller is sponsor)
+    async fn get_sponsorship_offer(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetSponsorshipOfferParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let offer_store = match &self.node.offer_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                );
+            }
+        };
+
+        let offer_id_bytes: [u8; 16] = match hex::decode(&params.offer_id) {
+            Ok(b) if b.len() == 16 => {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&b);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid offer_id: must be 16-byte hex",
+                    id,
+                );
+            }
+        };
+
+        match offer_store.get_offer(&offer_id_bytes) {
+            Ok(Some(offer)) => {
+                let claimed = offer_store.get_claimed_count(&offer_id_bytes).unwrap_or(0);
+                let type_str = match offer.offer_type {
+                    crate::sponsorship::types::SponsorshipOfferType::Open => "open",
+                    crate::sponsorship::types::SponsorshipOfferType::Probationary => "probationary",
+                    crate::sponsorship::types::SponsorshipOfferType::Conditional => "conditional",
+                };
+
+                // Only show pending claims if caller is the sponsor
+                let pending_claims = if let Some(ref caller) = params.caller_pubkey {
+                    let sponsor_hex = hex::encode(offer.sponsor.as_bytes());
+                    if caller == &sponsor_hex {
+                        offer_store.get_pending_claims(&offer_id_bytes)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|c| PendingClaimDetail {
+                                claimant_pubkey: hex::encode(c.claimant.as_bytes()),
+                                claimed_at: c.claimed_at,
+                                application_text: c.application_text,
+                            })
+                            .collect()
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+
+                let result = GetSponsorshipOfferResult {
+                    offer_id: hex::encode(offer.offer_id),
+                    sponsor_pubkey: hex::encode(offer.sponsor.as_bytes()),
+                    offer_type: type_str.to_string(),
+                    slots_total: offer.max_sponsees,
+                    slots_remaining: offer.max_sponsees.saturating_sub(claimed),
+                    expires_at: offer.expires_at,
+                    created_at: offer.created_at,
+                    requirements: SponsorshipOfferRequirements {
+                        min_pow_difficulty: offer.requirements.min_pow_difficulty,
+                        application_required: offer.requirements.application_required,
+                    },
+                    pending_claims,
+                };
+                RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+            }
+            Ok(None) => {
+                RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get offer: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+
+    /// Create a new sponsorship offer (requires signature auth)
+    async fn create_sponsorship_offer(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::sponsorship::types::{
+            PublicSponsorshipOffer, SponsorshipOfferType, SponsorshipRequirements,
+            TIMESTAMP_TOLERANCE_SECONDS,
+        };
+        use crate::types::identity::{PublicKey, Signature};
+
+        let params: CreateSponsorshipOfferParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Validate slots
+        if params.slots < 1 || params.slots > 10 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "slots must be between 1 and 10",
+                id,
+            );
+        }
+
+        // Validate expires_days
+        if params.expires_days < 1 || params.expires_days > 365 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "expires_days must be between 1 and 365",
+                id,
+            );
+        }
+
+        // Parse offer type
+        let offer_type = match params.offer_type.as_str() {
+            "open" => SponsorshipOfferType::Open,
+            "probationary" => SponsorshipOfferType::Probationary,
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "offer_type must be 'open' or 'probationary'",
+                    id,
+                );
+            }
+        };
+
+        // Parse sponsor pubkey
+        let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
+            Ok(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&b);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid sponsor_pubkey: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse signature
+        let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
+            Ok(b) if b.len() == 64 => {
+                let mut arr = [0u8; 64];
+                arr.copy_from_slice(&b);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid signature: must be 64-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Timestamp validation
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
+            || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
+        {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Timestamp out of tolerance",
+                id,
+            );
+        }
+
+        // Verify sponsor is Active
+        let sponsorship_store = match &self.node.sponsorship_store {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Sponsorship store not available",
+                    id,
+                );
+            }
+        };
+
+        let sponsor_pk = PublicKey::from_bytes(sponsor_bytes);
+        match sponsorship_store.get(&sponsor_pk) {
+            Ok(Some(record)) => {
+                if !record.can_sponsor_basic(current_time) {
+                    return RpcResponse::error(
+                        RpcErrorCode::PermissionDenied,
+                        "Sponsor cannot create offers (not active or under penalty)",
+                        id,
+                    );
+                }
+            }
+            Ok(None) => {
+                // Fall back to checking hardcoded genesis list (SPEC_11 §3.9)
+                // Genesis identities can sponsor without being in the sponsorship store
+                if !crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&sponsor_pk) {
+                    return RpcResponse::error(
+                        RpcErrorCode::PermissionDenied,
+                        "Sponsor is not a registered identity",
+                        id,
+                    );
+                }
+                log::info!(
+                    "[SPONSORSHIP] Sponsor {} is in hardcoded genesis list",
+                    hex::encode(sponsor_bytes)
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check sponsor: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Generate offer_id from hash
+        let expires_at = current_time + (params.expires_days as u64) * 86400;
+        let offer_id: [u8; 16] = {
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(&sponsor_bytes);
+            hasher.update(&current_time.to_be_bytes());
+            hasher.update(&[params.slots]);
+            let hash = hasher.finalize();
+            let mut id_arr = [0u8; 16];
+            id_arr.copy_from_slice(&hash[..16]);
+            id_arr
+        };
+
+        let requirements = SponsorshipRequirements {
+            min_pow_difficulty: params.min_pow_difficulty,
+            required_attester: None,
+            application_required: params.application_required,
+        };
+
+        // Build signature message for verification using client-controlled fields only
+        // Format: "swimchain-sponsor-offer:" || sponsor(32) || slots(1) || offer_type(1) ||
+        //         expires_days(4 BE) || min_pow(1) || app_required(1) || timestamp(8 BE)
+        let sig_msg = PublicSponsorshipOffer::signature_message_for_creation(
+            &sponsor_bytes,
+            params.slots,
+            &offer_type,
+            params.expires_days,
+            params.min_pow_difficulty,
+            params.application_required,
+            params.timestamp,
+        );
+        {
+            use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
+            let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
+                Ok(k) => k,
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid sponsor public key",
+                        id,
+                    );
+                }
+            };
+            let sig = DalekSig::from_bytes(&sig_bytes);
+            if vk.verify(&sig_msg, &sig).is_err() {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidSignature,
+                    "Invalid sponsor signature",
+                    id,
+                );
+            }
+        }
+
+        // Build the offer struct now that signature is verified
+        let offer = PublicSponsorshipOffer {
+            sponsor: sponsor_pk,
+            offer_id,
+            created_at: current_time,
+            expires_at,
+            max_sponsees: params.slots,
+            offer_type,
+            requirements,
+            signature: Signature::from_bytes(sig_bytes),
+        };
+
+        // Store the offer
+        let offer_store = match &self.node.offer_store {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                );
+            }
+        };
+
+        if let Err(e) = offer_store.create_offer(&offer) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to create offer: {}", e),
+                id,
+            );
+        }
+
+        // Broadcast offer to network peers (SPEC_11 §3.11)
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::sponsorship::wire::serialize_offer;
+            use crate::types::network::{MessageEnvelope, MessageType};
+
+            if let Ok(offer_bytes) = serialize_offer(&offer) {
+                let mut payload = offer_bytes;
+                payload.push(3); // TTL = 3 hops
+                let envelope = MessageEnvelope::new(
+                    MessageType::SponsorshipOffer,
+                    [0u8; 32], // fork-agnostic
+                    payload,
+                );
+                let sent = pool.broadcast(&envelope).await;
+                log::debug!(
+                    "[SPONSORSHIP] Broadcast new offer {} to {} peers",
+                    hex::encode(&offer_id[..8]),
+                    sent
+                );
+            }
+        }
+
+        info!(
+            "[SPONSORSHIP] Created offer {} by {} ({} slots, expires in {} days)",
+            hex::encode(offer_id), params.sponsor_pubkey, params.slots, params.expires_days
+        );
+
+        let result = CreateSponsorshipOfferResult {
+            offer_id: hex::encode(offer_id),
+            expires_at,
+            slots: params.slots,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Claim a sponsorship offer (requires signature from claimant)
+    async fn claim_sponsorship_offer(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::sponsorship::types::{SponsorshipClaim, TIMESTAMP_TOLERANCE_SECONDS};
+        use crate::types::identity::{IdentityCreationProof, PublicKey, Signature};
+
+        let params: ClaimSponsorshipOfferParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse offer_id
+        let offer_id_bytes: [u8; 16] = match hex::decode(&params.offer_id) {
+            Ok(b) if b.len() == 16 => {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&b);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid offer_id: must be 16-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse claimant pubkey
+        let claimant_bytes: [u8; 32] = match hex::decode(&params.claimant_pubkey) {
+            Ok(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&b);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid claimant_pubkey: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse signature
+        let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
+            Ok(b) if b.len() == 64 => {
+                let mut arr = [0u8; 64];
+                arr.copy_from_slice(&b);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid signature: must be 64-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Timestamp validation
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
+            || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
+        {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Timestamp out of tolerance",
+                id,
+            );
+        }
+
+        // Validate application text length
+        if let Some(ref text) = params.application_text {
+            if text.len() > 2000 {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Application text must be 2000 characters or less",
+                    id,
+                );
+            }
+        }
+
+        let offer_store = match &self.node.offer_store {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                );
+            }
+        };
+
+        // Check offer exists and is not expired
+        let offer = match offer_store.get_offer(&offer_id_bytes) {
+            Ok(Some(o)) => o,
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Offer not found",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get offer: {}", e),
+                    id,
+                );
+            }
+        };
+
+        if offer.is_expired(current_time) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "This offer has expired",
+                id,
+            );
+        }
+
+        // Check claimant is not already sponsored
+        if let Some(ref sponsorship_store) = self.node.sponsorship_store {
+            let claimant_pk = PublicKey::from_bytes(claimant_bytes);
+            match sponsorship_store.exists(&claimant_pk) {
+                Ok(true) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "You are already sponsored",
+                        id,
+                    );
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        &format!("Failed to check sponsorship: {}", e),
+                        id,
+                    );
+                }
+            }
+        }
+
+        // Check claimant hasn't already claimed this offer
+        let claimant_pk = PublicKey::from_bytes(claimant_bytes);
+        match offer_store.has_claimed(&offer_id_bytes, &claimant_pk) {
+            Ok(true) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "You have already claimed this offer",
+                    id,
+                );
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check existing claim: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Parse PoW fields
+        let pow_hash_bytes: [u8; 32] = params.pow_hash
+            .as_ref()
+            .and_then(|h| hex::decode(h).ok())
+            .and_then(|b| if b.len() == 32 { let mut a = [0u8; 32]; a.copy_from_slice(&b); Some(a) } else { None })
+            .unwrap_or([0u8; 32]);
+
+        let pow_nonce_space_bytes: [u8; 32] = params.pow_nonce_space
+            .as_ref()
+            .and_then(|h| hex::decode(h).ok())
+            .and_then(|b| if b.len() == 32 { let mut a = [0u8; 32]; a.copy_from_slice(&b); Some(a) } else { None })
+            .unwrap_or([0u8; 32]);
+
+        // Validate claimant PoW: sha256(pow_nonce_space || pow_nonce) must have
+        // sufficient leading zero bytes meeting the offer's min_pow_difficulty
+        // (or a minimum of 1 if the offer specifies 0)
+        {
+            use sha2::{Sha256, Digest};
+            let min_difficulty = if offer.requirements.min_pow_difficulty > 0 {
+                offer.requirements.min_pow_difficulty as usize
+            } else {
+                1 // Network minimum: at least 1 leading zero byte
+            };
+
+            let mut pow_input = Vec::with_capacity(40);
+            pow_input.extend_from_slice(&pow_nonce_space_bytes);
+            pow_input.extend_from_slice(&params.pow_nonce.to_le_bytes());
+            let computed_hash = Sha256::digest(&pow_input);
+            let actual_zeros = computed_hash.iter().take_while(|&&b| b == 0).count();
+
+            if actual_zeros < min_difficulty {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!(
+                        "Insufficient proof-of-work: need {} leading zero bytes, got {}",
+                        min_difficulty, actual_zeros
+                    ),
+                    id,
+                );
+            }
+        }
+
+        // Verify claimant signature
+        // Build signature message: offer_id(16) + claimant(32) + claimed_at(8 BE) + pow_hash(32)
+        let mut sig_msg = Vec::with_capacity(88);
+        sig_msg.extend_from_slice(&offer_id_bytes);
+        sig_msg.extend_from_slice(&claimant_bytes);
+        sig_msg.extend_from_slice(&params.timestamp.to_be_bytes());
+        sig_msg.extend_from_slice(&pow_hash_bytes);
+
+        {
+            use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
+            let vk = match VerifyingKey::from_bytes(&claimant_bytes) {
+                Ok(k) => k,
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid claimant public key",
+                        id,
+                    );
+                }
+            };
+            let sig = DalekSig::from_bytes(&sig_bytes);
+            if vk.verify(&sig_msg, &sig).is_err() {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidSignature,
+                    "Invalid claimant signature",
+                    id,
+                );
+            }
+        }
+
+        // Check application text requirement
+        if offer.requirements.application_required && params.application_text.is_none() {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "This offer requires application text",
+                id,
+            );
+        }
+
+        // Create and store the claim
+        let claim = SponsorshipClaim {
+            offer_id: offer_id_bytes,
+            claimant: claimant_pk,
+            claimed_at: current_time,
+            identity_pow_proof: IdentityCreationProof {
+                public_key: claimant_pk,
+                timestamp: params.timestamp,
+                nonce: params.pow_nonce,
+                pow_hash: pow_hash_bytes,
+            },
+            pow_nonce_space: pow_nonce_space_bytes,
+            application_text: params.application_text,
+            attestation_signature: None,
+            claimant_signature: Signature::from_bytes(sig_bytes),
+            sponsor_approval: None,
+        };
+
+        if let Err(e) = offer_store.submit_claim(&claim) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to submit claim: {}", e),
+                id,
+            );
+        }
+
+        // Broadcast claim to network peers so sponsor can see it
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::sponsorship::wire::serialize_claim;
+            use crate::types::network::{MessageEnvelope, MessageType};
+
+            if let Ok(claim_bytes) = serialize_claim(&claim) {
+                let envelope = MessageEnvelope::new(
+                    MessageType::SponsorshipOfferClaim,
+                    [0u8; 32], // fork-agnostic
+                    claim_bytes,
+                );
+                let sent = pool.broadcast(&envelope).await;
+                info!(
+                    "[SPONSORSHIP] Broadcast claim {} to {} peers",
+                    hex::encode(&offer_id_bytes[..8]),
+                    sent
+                );
+            }
+        }
+
+        info!(
+            "[SPONSORSHIP] Claim submitted: {} claims offer {}",
+            params.claimant_pubkey, params.offer_id
+        );
+
+        let result = ClaimSponsorshipOfferResult {
+            offer_id: params.offer_id,
+            status: "pending".to_string(),
+            message: "Claim submitted. The sponsor will review your request.".to_string(),
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Approve a pending sponsorship claim (sponsor only)
+    async fn approve_sponsorship_claim(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::sponsorship::types::{
+            StoredSponsorship, SponsorshipStatus, PROBATION_PERIOD_SECONDS,
+            TIMESTAMP_TOLERANCE_SECONDS, SponsorshipOfferType,
+        };
+        use crate::types::identity::{PublicKey, Signature};
+
+        let params: ApproveSponsorshipClaimParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse IDs
+        let offer_id_bytes: [u8; 16] = match hex::decode(&params.offer_id) {
+            Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid offer_id", id),
+        };
+        let claimant_bytes: [u8; 32] = match hex::decode(&params.claimant_pubkey) {
+            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid claimant_pubkey", id),
+        };
+        let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
+            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor_pubkey", id),
+        };
+        let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
+            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid signature", id),
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
+            || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
+        {
+            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp out of tolerance", id);
+        }
+
+        let offer_store = match &self.node.offer_store {
+            Some(s) => s,
+            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+        };
+        let sponsorship_store = match &self.node.sponsorship_store {
+            Some(s) => s,
+            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Sponsorship store not available", id),
+        };
+
+        // Verify offer exists and sponsor owns it
+        let offer = match offer_store.get_offer(&offer_id_bytes) {
+            Ok(Some(o)) => o,
+            Ok(None) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id),
+            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to get offer: {}", e), id),
+        };
+
+        if offer.sponsor.as_bytes() != &sponsor_bytes {
+            return RpcResponse::error(RpcErrorCode::PermissionDenied, "You are not the sponsor of this offer", id);
+        }
+
+        // Verify claim exists
+        let claimant_pk = PublicKey::from_bytes(claimant_bytes);
+        let _claim = match offer_store.get_claim(&offer_id_bytes, &claimant_pk) {
+            Ok(Some(c)) => c,
+            Ok(None) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Claim not found", id),
+            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to get claim: {}", e), id),
+        };
+
+        // Verify sponsor signature over (claimant(32) || timestamp(8 BE))
+        let mut sig_msg = Vec::with_capacity(40);
+        sig_msg.extend_from_slice(&claimant_bytes);
+        sig_msg.extend_from_slice(&params.timestamp.to_be_bytes());
+        {
+            use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
+            let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
+                Ok(k) => k,
+                Err(_) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor key", id),
+            };
+            let sig = DalekSig::from_bytes(&sig_bytes);
+            if vk.verify(&sig_msg, &sig).is_err() {
+                return RpcResponse::error(RpcErrorCode::InvalidSignature, "Invalid sponsor signature", id);
+            }
+        }
+
+        // Verify sponsor is Active (or in genesis list)
+        let sponsor_pk = PublicKey::from_bytes(sponsor_bytes);
+        let sponsor_record = match sponsorship_store.get(&sponsor_pk) {
+            Ok(Some(r)) => Some(r),
+            Ok(None) => {
+                // Genesis identities can sponsor without a store record
+                if crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&sponsor_pk) {
+                    None  // Genesis identity - no store record needed
+                } else {
+                    return RpcResponse::error(RpcErrorCode::PermissionDenied, "Sponsor not found", id);
+                }
+            }
+            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to check sponsor: {}", e), id),
+        };
+
+        // Genesis identities can always sponsor; others need to pass can_sponsor_basic
+        if let Some(ref record) = sponsor_record {
+            if !record.can_sponsor_basic(current_time) {
+                return RpcResponse::error(RpcErrorCode::PermissionDenied, "Sponsor cannot sponsor at this time", id);
+            }
+        }
+
+        // Genesis identities have depth 0, so children get depth 1
+        let depth = match &sponsor_record {
+            Some(r) => r.depth.saturating_add(1),
+            None => 1,
+        };
+        let probationary = offer.offer_type == SponsorshipOfferType::Probationary;
+
+        // NOTE: Do NOT create StoredSponsorship directly here.
+        // The on-chain Sponsor action (created below) will be processed by
+        // apply_sponsorship_actions_from_block when the block is formed,
+        // which creates the StoredSponsorship on all nodes including this one.
+        // This ensures the chain is the single source of truth.
+
+        // Remove the claim from pending
+        let _ = offer_store.remove_claim(&offer_id_bytes, &claimant_pk);
+        let _ = offer_store.increment_claimed_count(&offer_id_bytes, offer.max_sponsees);
+
+        // Create on-chain Sponsor action
+        {
+            use crate::blocks::action::Action;
+            use crate::blocks::BranchPath;
+
+            // Compute actual pow_work from the claim's PoW proof
+            let pow_work = {
+                use sha2::{Sha256, Digest};
+                let mut pow_input = Vec::with_capacity(40);
+                pow_input.extend_from_slice(&_claim.pow_nonce_space);
+                pow_input.extend_from_slice(&_claim.identity_pow_proof.nonce.to_le_bytes());
+                let pow_hash = Sha256::digest(&pow_input);
+                pow_hash.iter().take_while(|&&b| b == 0).count() as u64
+            };
+
+            let action = Action::new_sponsor_with_pow(
+                sponsor_bytes,
+                claimant_bytes,
+                current_time,
+                sig_bytes,
+                _claim.identity_pow_proof.nonce,
+                pow_work,
+                _claim.pow_nonce_space, // pow_target = the challenge input, not the hash output
+            );
+
+            let system_space_id = [0u8; 32];
+            let action_hash = action.hash();
+
+            if let Some(ref block_builder) = self.node.block_builder {
+                if let Ok(mut builder) = block_builder.write() {
+                    builder.add_action(action_hash, system_space_id, action.clone(), BranchPath::root());
+                }
+            }
+
+            // Broadcast to peers
+            if let Some(ref pool) = self.node.connection_pool {
+                use crate::network::messages::ActionAnnouncePayload;
+                use crate::types::network::{MessageEnvelope, MessageType};
+
+                let action_data = action.serialize();
+                let payload = ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
+                let envelope = MessageEnvelope::new_fork_agnostic(
+                    MessageType::ActionAnnounce,
+                    payload.to_bytes().to_vec(),
+                );
+                let peers = pool.peer_ids().await;
+                for peer_id in peers {
+                    let _ = pool.send_to(&peer_id, &envelope).await;
+                }
+            }
+        }
+
+        info!(
+            "[SPONSORSHIP] Approved claim: {} sponsored by {} (depth={})",
+            params.claimant_pubkey, params.sponsor_pubkey, depth
+        );
+
+        // Generate address
+        let claimant_address = crate::crypto::address::encode_address_from_pubkey(
+            &PublicKey::from_bytes(claimant_bytes),
+        );
+
+        let result = ApproveSponsorshipClaimResult {
+            claimant_pubkey: params.claimant_pubkey,
+            claimant_address,
+            depth,
+            probationary,
+            status: "Active".to_string(),
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Reject a pending sponsorship claim (sponsor only)
+    async fn reject_sponsorship_claim(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::sponsorship::types::TIMESTAMP_TOLERANCE_SECONDS;
+        use crate::types::identity::PublicKey;
+
+        let params: RejectSponsorshipClaimParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let offer_id_bytes: [u8; 16] = match hex::decode(&params.offer_id) {
+            Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid offer_id", id),
+        };
+        let claimant_bytes: [u8; 32] = match hex::decode(&params.claimant_pubkey) {
+            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid claimant_pubkey", id),
+        };
+        let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
+            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor_pubkey", id),
+        };
+        let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
+            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid signature", id),
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
+            || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
+        {
+            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp out of tolerance", id);
+        }
+
+        let offer_store = match &self.node.offer_store {
+            Some(s) => s,
+            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+        };
+
+        // Verify offer exists and sponsor owns it
+        let offer = match offer_store.get_offer(&offer_id_bytes) {
+            Ok(Some(o)) => o,
+            Ok(None) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id),
+            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to get offer: {}", e), id),
+        };
+
+        if offer.sponsor.as_bytes() != &sponsor_bytes {
+            return RpcResponse::error(RpcErrorCode::PermissionDenied, "You are not the sponsor of this offer", id);
+        }
+
+        // Verify signature
+        let mut sig_msg = Vec::with_capacity(40);
+        sig_msg.extend_from_slice(&claimant_bytes);
+        sig_msg.extend_from_slice(&params.timestamp.to_be_bytes());
+        {
+            use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
+            let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
+                Ok(k) => k,
+                Err(_) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor key", id),
+            };
+            let sig = DalekSig::from_bytes(&sig_bytes);
+            if vk.verify(&sig_msg, &sig).is_err() {
+                return RpcResponse::error(RpcErrorCode::InvalidSignature, "Invalid sponsor signature", id);
+            }
+        }
+
+        // Remove the claim
+        let claimant_pk = PublicKey::from_bytes(claimant_bytes);
+        if let Err(e) = offer_store.remove_claim(&offer_id_bytes, &claimant_pk) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to remove claim: {}", e),
+                id,
+            );
+        }
+
+        info!(
+            "[SPONSORSHIP] Rejected claim: {} on offer {}",
+            params.claimant_pubkey, params.offer_id
+        );
+
+        let result = RejectSponsorshipClaimResult {
+            rejected: true,
+            offer_id: params.offer_id,
+            claimant_pubkey: params.claimant_pubkey,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Cancel a sponsorship offer (sponsor only)
+    async fn cancel_sponsorship_offer(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::sponsorship::types::TIMESTAMP_TOLERANCE_SECONDS;
+
+        let params: CancelSponsorshipOfferParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let offer_id_bytes: [u8; 16] = match hex::decode(&params.offer_id) {
+            Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid offer_id", id),
+        };
+        let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
+            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor_pubkey", id),
+        };
+        let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
+            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid signature", id),
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
+            || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
+        {
+            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp out of tolerance", id);
+        }
+
+        let offer_store = match &self.node.offer_store {
+            Some(s) => s,
+            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+        };
+
+        // Verify offer exists and sponsor owns it
+        let offer = match offer_store.get_offer(&offer_id_bytes) {
+            Ok(Some(o)) => o,
+            Ok(None) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id),
+            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to get offer: {}", e), id),
+        };
+
+        if offer.sponsor.as_bytes() != &sponsor_bytes {
+            return RpcResponse::error(RpcErrorCode::PermissionDenied, "You are not the sponsor of this offer", id);
+        }
+
+        // Verify signature over (offer_id(16) || timestamp(8 BE))
+        let mut sig_msg = Vec::with_capacity(24);
+        sig_msg.extend_from_slice(&offer_id_bytes);
+        sig_msg.extend_from_slice(&params.timestamp.to_be_bytes());
+        {
+            use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
+            let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
+                Ok(k) => k,
+                Err(_) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor key", id),
+            };
+            let sig = DalekSig::from_bytes(&sig_bytes);
+            if vk.verify(&sig_msg, &sig).is_err() {
+                return RpcResponse::error(RpcErrorCode::InvalidSignature, "Invalid sponsor signature", id);
+            }
+        }
+
+        // Delete the offer (also removes all claims)
+        if let Err(e) = offer_store.delete_offer(&offer_id_bytes) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to delete offer: {}", e),
+                id,
+            );
+        }
+
+        info!("[SPONSORSHIP] Cancelled offer {}", params.offer_id);
+
+        let result = CancelSponsorshipOfferResult {
+            cancelled: true,
+            offer_id: params.offer_id,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// List sponsor's own offers with claim counts (requires signature auth)
+    async fn list_my_sponsorship_offers(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::sponsorship::types::TIMESTAMP_TOLERANCE_SECONDS;
+
+        let params: ListMySponsorshipOffersParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
+            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor_pubkey", id),
+        };
+
+        let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
+            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid signature", id),
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // Timestamp validation
+        if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
+            || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
+        {
+            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp out of tolerance", id);
+        }
+
+        // Verify sponsor signature: "swimchain-list-offers:" || sponsor(32) || timestamp(8 BE)
+        {
+            use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
+            let prefix = b"swimchain-list-offers:";
+            let mut sig_msg = Vec::with_capacity(prefix.len() + 40);
+            sig_msg.extend_from_slice(prefix);
+            sig_msg.extend_from_slice(&sponsor_bytes);
+            sig_msg.extend_from_slice(&params.timestamp.to_be_bytes());
+
+            let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
+                Ok(k) => k,
+                Err(_) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor key", id),
+            };
+            let sig = DalekSig::from_bytes(&sig_bytes);
+            if vk.verify(&sig_msg, &sig).is_err() {
+                return RpcResponse::error(RpcErrorCode::InvalidSignature, "Invalid sponsor signature", id);
+            }
+        }
+
+        let offer_store = match &self.node.offer_store {
+            Some(s) => s,
+            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+        };
+
+        let sponsor_pk = crate::types::identity::PublicKey::from_bytes(sponsor_bytes);
+        match offer_store.list_by_sponsor(&sponsor_pk) {
+            Ok(offers) => {
+                let summaries: Vec<MySponsorshipOfferSummary> = offers.iter().map(|o| {
+                    let claimed = offer_store.get_claimed_count(&o.offer_id).unwrap_or(0);
+                    let pending_count = offer_store.get_pending_claims(&o.offer_id)
+                        .map(|c| c.len())
+                        .unwrap_or(0);
+                    let type_str = match o.offer_type {
+                        crate::sponsorship::types::SponsorshipOfferType::Open => "open",
+                        crate::sponsorship::types::SponsorshipOfferType::Probationary => "probationary",
+                        crate::sponsorship::types::SponsorshipOfferType::Conditional => "conditional",
+                    };
+                    MySponsorshipOfferSummary {
+                        offer_id: hex::encode(o.offer_id),
+                        offer_type: type_str.to_string(),
+                        slots_total: o.max_sponsees,
+                        slots_claimed: claimed,
+                        slots_pending: pending_count,
+                        expires_at: o.expires_at,
+                        created_at: o.created_at,
+                        is_expired: o.is_expired(current_time),
+                    }
+                }).collect();
+
+                let result = ListMySponsorshipOffersResult { offers: summaries };
+                RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to list offers: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+
+    /// Get status of a user's pending claim
+    async fn get_my_claim_status(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetMyClaimStatusParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let claimant_bytes: [u8; 32] = match hex::decode(&params.claimant_pubkey) {
+            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid claimant_pubkey", id),
+        };
+
+        let offer_store = match &self.node.offer_store {
+            Some(s) => s,
+            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+        };
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let claimant_pk = crate::types::identity::PublicKey::from_bytes(claimant_bytes);
+
+        // Search all active offers for a pending claim from this claimant
+        match offer_store.list_active_offers(current_time) {
+            Ok(offers) => {
+                for o in &offers {
+                    match offer_store.get_claim(&o.offer_id, &claimant_pk) {
+                        Ok(Some(claim)) if claim.is_pending() => {
+                            let result = GetMyClaimStatusResult {
+                                has_pending_claim: true,
+                                offer_id: Some(hex::encode(o.offer_id)),
+                                claimed_at: Some(claim.claimed_at),
+                                offer_expires_at: Some(o.expires_at),
+                                sponsor_pubkey: Some(hex::encode(o.sponsor.as_bytes())),
+                            };
+                            return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                        }
+                        _ => continue,
+                    }
+                }
+
+                // No pending claim found
+                let result = GetMyClaimStatusResult {
+                    has_pending_claim: false,
+                    offer_id: None,
+                    claimed_at: None,
+                    offer_expires_at: None,
+                    sponsor_pubkey: None,
+                };
+                RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+            }
+            Err(e) => {
+                RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to check claim status: {}", e),
+                    id,
+                )
+            }
+        }
+    }
+}
+
+/// Check if a word is a common/stop word that should be excluded from trending
+fn is_common_word(word: &str) -> bool {
+    const COMMON_WORDS: &[&str] = &[
+        "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+        "her", "was", "one", "our", "out", "has", "have", "been", "were", "they",
+        "this", "that", "with", "from", "will", "would", "there", "their", "what",
+        "about", "which", "when", "make", "like", "time", "just", "know", "take",
+        "into", "year", "your", "good", "some", "them", "than", "then", "look",
+        "only", "come", "over", "such", "also", "back", "after", "most", "want",
+        "here", "these", "thing", "think", "more", "very", "should", "could",
+    ];
+    COMMON_WORDS.contains(&word)
+}

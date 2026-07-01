@@ -1,0 +1,79 @@
+.engage-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 60px;
+  min-height: 36px;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  overflow: hidden;
+  transition: all var(--transition-fast);
+}
+
+.engage-button:hover:not(:disabled) {
+  background: var(--color-bg-elevated);
+  border-color: var(--color-accent-primary);
+}
+
+.engage-button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.engage-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.engage-button__progress {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-accent-primary), var(--color-accent-secondary));
+  opacity: 0.3;
+  transition: width 100ms linear;
+}
+
+.engage-button__content {
+  position: relative;
+  z-index: 1;
+}
+
+/* States */
+.engage-button--mining {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-accent-primary);
+}
+
+.engage-button--complete {
+  background: var(--color-success);
+  border-color: var(--color-success);
+  color: white;
+}
+
+.engage-button--error {
+  background: var(--color-error);
+  border-color: var(--color-error);
+  color: white;
+}
+
+/* Screen reader only - visually hidden but accessible */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
