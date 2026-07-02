@@ -471,40 +471,7 @@ async fn handle_request(
         "get_my_pending_claim",
     ];
 
-    // In regtest mode, exempt all read-only methods from auth for easier testing
-    // This allows browser clients to work without complex auth setup
-    let is_regtest = state.methods.network() == "regtest";
-    const REGTEST_ADDITIONAL_EXEMPT: &[&str] = &[
-        // Read-only methods that are useful for testing UI
-        "list_spaces",
-        "list_threads",
-        "get_space",
-        "get_thread",
-        // Write methods also exempt in regtest for E2E testing
-        "create_space",
-        "create_thread",
-        "create_reply",
-        "create_sponsorship_offer",
-        "claim_sponsorship_offer",
-        "approve_sponsorship_claim",
-        "reject_sponsorship_claim",
-        "get_replies",
-        "get_content",
-        "get_identity_level",
-        "get_identity_name",
-        "get_user_profile",
-        "search_content",
-        "search_spaces",
-        "search_threads",
-        "list_reactions",
-        "get_reaction_count",
-        "list_blocklist",
-        "list_private_spaces",
-        "list_dms",
-    ];
-
-    let is_auth_exempt = AUTH_EXEMPT_METHODS.contains(&rpc_req.method.as_str())
-        || (is_regtest && REGTEST_ADDITIONAL_EXEMPT.contains(&rpc_req.method.as_str()));
+    let is_auth_exempt = AUTH_EXEMPT_METHODS.contains(&rpc_req.method.as_str());
 
     // Authenticate the request
     // Try signature auth first (for browser clients), then fall back to cookie/credential auth
