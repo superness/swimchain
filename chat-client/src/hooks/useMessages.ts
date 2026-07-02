@@ -2,16 +2,20 @@
  * useMessages - Hook for managing messages (replies) within a channel (thread)
  *
  * Maps: Message = Reply in Swimchain terminology
- * Provides real-time polling for chat-like experience.
+ * Real-time updates come from the node's WebSocket event stream (content_new /
+ * content_engaged); a slow poll remains as a fallback when the socket is down.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRpc, useReplySubmit } from './useRpc';
 import type { Message } from '../components/MessageItem';
-import { useIdentityContext } from '@swimchain/frontend';
+import { useIdentityContext, useNodeEvents } from '@swimchain/frontend';
 
-/** Poll interval for messages (ms) - more frequent for chat experience */
+/** Poll interval for messages (ms) when WebSocket events are unavailable */
 const MESSAGE_POLL_INTERVAL = 5000;
+
+/** Slow fallback poll interval (ms) while real-time events are connected */
+const MESSAGE_POLL_INTERVAL_REALTIME = 30000;
 
 /**
  * Transform RPC reply to MessageItem Message format
@@ -50,10 +54,20 @@ function replyToMessage(reply: {
 /**
  * Hook to fetch messages (replies) for a channel (thread)
  *
+ * New messages arrive without reload: the hook subscribes to the node's
+ * `content_new` / `content_engaged` WebSocket events (filtered to the active
+ * space when `spaceId` is provided) and refetches on each event. Polling is
+ * kept as a fallback and slows down while the event stream is connected.
+ *
  * @param channelId - The thread content ID
  * @param pollInterval - Optional custom poll interval (default 5000ms)
+ * @param spaceId - Optional space (server) ID used to filter real-time events
  */
-export function useMessages(channelId: string, pollInterval = MESSAGE_POLL_INTERVAL) {
+export function useMessages(
+  channelId: string,
+  pollInterval = MESSAGE_POLL_INTERVAL,
+  spaceId?: string
+) {
   const { rpc, connected, authReady } = useRpc();
   const { identity } = useIdentityContext();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -122,13 +136,28 @@ export function useMessages(channelId: string, pollInterval = MESSAGE_POLL_INTER
     fetchMessages();
   }, [fetchMessages]);
 
-  // Poll for new messages
+  // Real-time: refetch when the node reports new content or engagement in
+  // this space (or anywhere on the node when no spaceId filter is provided).
+  const { connected: eventsConnected } = useNodeEvents({
+    url: connected && rpc ? rpc.getEndpoint() : null,
+    events: ['content_new', 'content_engaged'],
+    spaceId,
+    enabled: !!channelId,
+    onEvent: () => {
+      fetchMessages();
+    },
+  });
+
+  // Poll for new messages (fallback; slows down while events are live)
   useEffect(() => {
     if (!connected || !authReady || !channelId) return;
 
-    const interval = setInterval(fetchMessages, pollInterval);
+    const effectiveInterval = eventsConnected
+      ? Math.max(pollInterval, MESSAGE_POLL_INTERVAL_REALTIME)
+      : pollInterval;
+    const interval = setInterval(fetchMessages, effectiveInterval);
     return () => clearInterval(interval);
-  }, [connected, authReady, channelId, pollInterval, fetchMessages]);
+  }, [connected, authReady, channelId, pollInterval, eventsConnected, fetchMessages]);
 
   return {
     messages,
@@ -209,9 +238,16 @@ export function useSendMessage(channelId: string) {
  * Hook for optimistic message updates
  *
  * Adds pending messages to the list immediately, then confirms when sent.
+ *
+ * @param channelId - The thread content ID
+ * @param spaceId - Optional space (server) ID used to filter real-time events
  */
-export function useOptimisticMessages(channelId: string) {
-  const { messages, loading, error, refetch, currentUserId } = useMessages(channelId);
+export function useOptimisticMessages(channelId: string, spaceId?: string) {
+  const { messages, loading, error, refetch, currentUserId } = useMessages(
+    channelId,
+    undefined,
+    spaceId
+  );
   const [pendingMessages, setPendingMessages] = useState<Message[]>([]);
 
   // Add a pending message (shown with 'sending' status)

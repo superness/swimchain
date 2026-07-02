@@ -55,7 +55,7 @@ export function Chat() {
     confirmPendingMessage,
     failPendingMessage,
     currentUserId,
-  } = useOptimisticMessages(channelId ?? '');
+  } = useOptimisticMessages(channelId ?? '', serverId);
 
   const { sendMessage, sending: _sending } = useSendMessage(channelId ?? '');
 

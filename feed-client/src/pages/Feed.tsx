@@ -11,6 +11,7 @@ import { CreatePostFAB } from '../components/CreatePostFAB';
 import { SearchBar } from '../components/SearchBar';
 import { useFeed } from '../hooks/useFeed';
 import { useFeedPreferences } from '../hooks/useFeedPreferences';
+import { useNewPostsIndicator } from '../hooks/useNewPostsIndicator';
 import './Feed.css';
 
 type SortOrder = 'recent' | 'hot';
@@ -45,6 +46,15 @@ export function Feed(): JSX.Element {
   const handleUnsavePost = useCallback((postId: string) => {
     unsavePost(postId);
   }, [unsavePost]);
+
+  // Real-time "N new posts" indicator (node WebSocket events)
+  const { newPostsCount, clearNewPosts } = useNewPostsIndicator(hasFollows);
+
+  const handleShowNewPosts = useCallback(() => {
+    clearNewPosts();
+    // Refetch in place; never force-scroll the reader
+    refresh();
+  }, [clearNewPosts, refresh]);
 
   // Determine empty state type
   const emptyStateType = !hasFollows ? 'no-follows' : 'no-posts';
@@ -116,6 +126,19 @@ export function Feed(): JSX.Element {
           </div>
         </div>
       </header>
+
+      {/* New posts pill (real-time indicator) */}
+      {newPostsCount > 0 && (
+        <div className="feed-page__new-posts">
+          <button
+            className="feed-page__new-posts-pill"
+            onClick={handleShowNewPosts}
+            type="button"
+          >
+            {newPostsCount === 1 ? '1 new post' : `${newPostsCount} new posts`}
+          </button>
+        </div>
+      )}
 
       {/* Feed content */}
       <main className="feed-page__content">
