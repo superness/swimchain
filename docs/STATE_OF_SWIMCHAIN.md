@@ -18,7 +18,7 @@ Headline numbers:
 | Phantom methods (allowlisted, no handler) | 15 |
 | Client apps | 13 (10 web, 1 mobile, 1 desktop shell, 1 debug tool) |
 | Clients calling nonexistent RPC methods | 1 (forum-client, 3 methods) |
-| Clients with fake/no-op core features | 3 (archiver, web-gateway, mobile write path) |
+| Clients with fake/no-op core features | 2 (archiver, mobile write path) — web-gateway fixed in B8 |
 | Parallel implementations of crypto/RPC stack | 4 |
 | Clients using node WebSocket events | 0 |
 | Unit tests across analytics/archiver/bridge | 0 |
@@ -111,9 +111,9 @@ Legend: ✅ implemented · 🟡 partial · ❌ missing · 💥 broken (calls non
 | DMs | ✅ | 🟡 RPC no UI | ❌ | ▫ | ▫ | ▫ | ▫ | ▫ | ▫ | ❌ |
 | Moderation: report/attestation | ✅ + counter | ✅ + counter | 🟡 report only | ❌ | ❌ | ❌ local block | ✅ checks | ✅ checks | ▫ | ❌ |
 | Moderation: blocklist | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ▫ | ❌ |
-| Search | ✅ | ✅ | 💥 local filter | ✅ full | ✅ | ▫ | ▫ | ▫ | 💥 mock | ✅ |
+| Search | ✅ | ✅ | 💥 local filter | ✅ full | ✅ | ▫ | ▫ | ▫ | ✅ | ✅ |
 | Real-time (WS events) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Profile view/edit | 💥 save broken | ✅ | 🟡 name only | ▫ | ❌ | ▫ | ▫ | ▫ | 💥 mock | 🟡 |
+| Profile view/edit | 💥 save broken | ✅ | 🟡 name only | ▫ | ❌ | ▫ | ▫ | ▫ | ✅ | 🟡 |
 
 ¹ wiki writes need verification that PoW is actually mined before ship.
 
@@ -138,7 +138,7 @@ Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parit
 - **B5** search: delete MacroRegimeCard; fix dead footer routes; unify deep-link target. (S)
 - **B6** archiver: add `submit_engagement` to its RPC client and actually submit mined PoW; replace locally-fabricated pool status with authoritative re-poll. (L) ← *top correctness fix in the fleet*
 - **B7** bridge: ship/document IRC WebSocket proxy; queue (don't drop) messages during mining; thread inbound as replies. (M)
-- **B8** web-gateway: port wiki-client's read-only RPC subset; delete all MOCK_*; feed lunr index + sitemap from live node; real health check. (L)
+- **B8** ✅ web-gateway: port wiki-client's read-only RPC subset; delete all MOCK_*; feed lunr index + sitemap from live node; real health check. (L) **✔ DONE** — PR [#26](https://github.com/superness/swimchain/pull/26) on GitHub
 - **B9** mobile: real Ed25519 signing (replace zero-byte stub); real Argon2id (argon2kt / Argon2Swift); on-device identity generation. (L)
 - **B10** desktop: chat parent-RPC handshake (via F3 SDK); strip debug scaffolding; prune stale binaries; real Bech32m in `check_identity`. (M)
 
