@@ -1,6 +1,9 @@
 /**
  * NativeArgon2Module - Android Native Module for Argon2id PoW
  * Per SPEC_03: 64 MiB memory, 3 iterations, parallelism 2
+ *
+ * Uses argon2kt library for real Argon2id computation.
+ * Replaces the previous SHA-256 placeholder.
  */
 
 package com.swimchainmobile.argon2
@@ -8,7 +11,8 @@ package com.swimchainmobile.argon2
 import android.util.Base64
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
-import java.security.MessageDigest
+import com.lambdapioneer.argon2kt.Argon2Kt
+import com.lambdapioneer.argon2kt.Argon2Mode
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -17,12 +21,12 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
 
     private val executor = Executors.newSingleThreadExecutor()
     private val isCancelled = AtomicBoolean(false)
+    private val argon2Kt = Argon2Kt()
 
     override fun getName(): String = "NativeArgon2"
 
     @ReactMethod
     fun isAvailable(promise: Promise) {
-        // Check if Argon2 library is available
         promise.resolve(true)
     }
 
@@ -81,9 +85,10 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
                 var lastProgressTime = System.currentTimeMillis()
 
                 while (!isCancelled.get()) {
-                    // Compute hash for current nonce
+                    // Build input: challenge + nonce (8 bytes LE)
                     val input = challenge + nonceToBytes(nonce)
-                    val salt = ByteArray(16) // Fixed salt for PoW
+                    // Fixed salt for PoW
+                    val salt = ByteArray(16)
 
                     val hash = computeArgon2id(
                         input = input,
@@ -96,7 +101,6 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
 
                     attempts++
 
-                    // Check if hash meets difficulty target
                     if (meetsTarget(hash, target)) {
                         val elapsedMs = System.currentTimeMillis() - startTime
 
@@ -111,11 +115,12 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
                         return@execute
                     }
 
-                    // Send progress update every 100ms
                     val now = System.currentTimeMillis()
                     if (now - lastProgressTime >= 100) {
                         val elapsedMs = now - startTime
-                        val hashesPerSecond = attempts.toDouble() / (elapsedMs / 1000.0)
+                        val hashesPerSecond = if (elapsedMs > 0) {
+                            attempts.toDouble() / (elapsedMs / 1000.0)
+                        } else 0.0
                         val expectedAttempts = (1L shl difficulty).toDouble()
                         val remainingAttempts = maxOf(0.0, expectedAttempts - attempts)
                         val estimatedRemainingMs = if (hashesPerSecond > 0) {
@@ -150,12 +155,10 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
     // Required for NativeEventEmitter
     @ReactMethod
     fun addListener(eventName: String) {
-        // Required for RN event emitter
     }
 
     @ReactMethod
     fun removeListeners(count: Int) {
-        // Required for RN event emitter
     }
 
     private fun sendProgressEvent(
@@ -176,6 +179,10 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
             .emit("miningProgress", params)
     }
 
+    /**
+     * Compute real Argon2id hash using the argon2kt library.
+     * Per SPEC_03: Argon2id with 64 MiB, 3 iterations, parallelism 2.
+     */
     private fun computeArgon2id(
         input: ByteArray,
         salt: ByteArray,
@@ -184,35 +191,28 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
         parallelism: Int,
         hashLength: Int
     ): ByteArray {
-        // Use Argon2kt library for actual implementation
-        // This is a placeholder using SHA-256 for development
-        // TODO: Integrate com.lambdapioneer.argon2kt:argon2kt:1.3.0
-
-        // Development placeholder
-        val digest = MessageDigest.getInstance("SHA-256")
-        digest.update(input)
-        digest.update(salt)
-        digest.update(memoryKib.toLittleEndianBytes())
-        digest.update(iterations.toLittleEndianBytes())
-
-        val fullHash = digest.digest()
-        return fullHash.copyOf(hashLength)
+        val hash = argon2Kt.hash(
+            mode = Argon2Mode.Argon2id,
+            password = input,
+            salt = salt,
+            memoryCostInKib = memoryKib,
+            iterationCost = iterations,
+            parallelism = parallelism,
+            hashLength = hashLength
+        )
+        return hash.rawHash
     }
 
     private fun calculateTarget(difficulty: Int): ByteArray {
-        // Target with d leading zero bits
         val target = ByteArray(32) { 0xFF.toByte() }
         val fullBytes = difficulty / 8
         val remainingBits = difficulty % 8
-
         for (i in 0 until fullBytes) {
             target[i] = 0x00
         }
-
         if (remainingBits > 0 && fullBytes < 32) {
             target[fullBytes] = (0xFF shr remainingBits).toByte()
         }
-
         return target
     }
 
@@ -228,9 +228,5 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
 
     private fun nonceToBytes(nonce: Long): ByteArray {
         return ByteArray(8) { i -> ((nonce shr (i * 8)) and 0xFF).toByte() }
-    }
-
-    private fun Int.toLittleEndianBytes(): ByteArray {
-        return ByteArray(4) { i -> ((this shr (i * 8)) and 0xFF).toByte() }
     }
 }

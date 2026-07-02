@@ -1,10 +1,14 @@
 /**
  * NativeArgon2 - iOS Native Module for Argon2id PoW
  * Per SPEC_03: 64 MiB memory, 3 iterations, parallelism 2
+ *
+ * Uses Argon2Swift for real Argon2id computation.
+ * Replaces the previous SHA-256 placeholder and fatalError.
  */
 
 import Foundation
 import React
+import Argon2Swift
 
 @objc(NativeArgon2)
 class NativeArgon2: RCTEventEmitter {
@@ -42,7 +46,6 @@ class NativeArgon2: RCTEventEmitter {
   @objc
   func isAvailable(_ resolve: @escaping RCTPromiseResolveBlock,
                    reject: @escaping RCTPromiseRejectBlock) {
-    // Check if Argon2 library is available
     resolve(true)
   }
 
@@ -64,7 +67,6 @@ class NativeArgon2: RCTEventEmitter {
           return
         }
 
-        // Call Argon2id implementation
         let hash = try self.computeArgon2id(
           input: input,
           salt: salt,
@@ -108,9 +110,11 @@ class NativeArgon2: RCTEventEmitter {
         var lastProgressTime = Date()
 
         while !self.isCancelled {
-          // Compute hash for current nonce
-          let input = challenge + self.nonceToData(nonce)
-          let salt = Data(repeating: 0, count: 16) // Fixed salt for PoW
+          // Build input: challenge + nonce (8 bytes LE)
+          var input = challenge
+          input.append(self.nonceToData(nonce))
+          // Fixed salt for PoW (16 bytes)
+          let salt = Data(repeating: 0, count: 16)
 
           let hash = try self.computeArgon2id(
             input: input,
@@ -123,7 +127,6 @@ class NativeArgon2: RCTEventEmitter {
 
           attempts += 1
 
-          // Check if hash meets difficulty target
           if self.meetsTarget(hash: hash, target: target) {
             let elapsedMs = Int(Date().timeIntervalSince(startTime) * 1000)
 
@@ -138,11 +141,12 @@ class NativeArgon2: RCTEventEmitter {
             return
           }
 
-          // Send progress update every 100ms
           let now = Date()
           if now.timeIntervalSince(lastProgressTime) >= 0.1 && self.hasListeners {
             let elapsedMs = Int(now.timeIntervalSince(startTime) * 1000)
-            let hashesPerSecond = Double(attempts) / (Double(elapsedMs) / 1000.0)
+            let hashesPerSecond = elapsedMs > 0
+              ? Double(attempts) / (Double(elapsedMs) / 1000.0)
+              : 0.0
             let expectedAttempts = Double(1 << difficulty)
             let remainingAttempts = max(0, expectedAttempts - Double(attempts))
             let estimatedRemainingMs = hashesPerSecond > 0
@@ -178,71 +182,43 @@ class NativeArgon2: RCTEventEmitter {
 
   // MARK: - Private Helpers
 
+  /**
+   * Compute real Argon2id hash using the Argon2Swift library.
+   * Per SPEC_03: Argon2id with 64 MiB, 3 iterations, parallelism 2.
+   */
   private func computeArgon2id(input: Data, salt: Data,
                                 memoryKib: Int, iterations: Int,
                                 parallelism: Int, hashLength: Int) throws -> Data {
-    // Use Argon2Swift library for actual implementation
-    // This is a placeholder that uses a simplified hash for development
-    // In production, integrate with Argon2Swift pod
-
-    #if DEBUG
-    // Development placeholder using SHA256
-    // TODO: Replace with actual Argon2id implementation
-    var hasher = Data()
-    hasher.append(input)
-    hasher.append(salt)
-    hasher.append(withUnsafeBytes(of: memoryKib.littleEndian) { Data($0) })
-    hasher.append(withUnsafeBytes(of: iterations.littleEndian) { Data($0) })
-
-    // Use CommonCrypto SHA256 as placeholder
-    var hash = [UInt8](repeating: 0, count: hashLength)
-    hasher.withUnsafeBytes { ptr in
-      CC_SHA256(ptr.baseAddress, CC_LONG(hasher.count), &hash)
-    }
-    return Data(hash)
-    #else
-    // Production: Use Argon2Swift
-    // let argon2 = Argon2Swift()
-    // return try argon2.hash(
-    //   password: input,
-    //   salt: salt,
-    //   iterations: iterations,
-    //   memory: memoryKib,
-    //   parallelism: parallelism,
-    //   length: hashLength,
-    //   type: .id
-    // )
-    fatalError("Production Argon2id not yet integrated")
-    #endif
+    let result = try Argon2Swift.hashWithSalt(
+      password: input,
+      salt: salt,
+      iterationCount: iterations,
+      memoryCostKiB: memoryKib,
+      parallelism: parallelism,
+      length: hashLength,
+      type: Argon2Type.id,
+      version: Argon2Version.V13
+    )
+    return result.hashData
   }
 
   private func calculateTarget(difficulty: Int) -> Data {
-    // Target = max_hash / 2^difficulty
-    // For difficulty d, hash must have d leading zero bits
     var target = Data(repeating: 0xFF, count: 32)
     let fullBytes = difficulty / 8
     let remainingBits = difficulty % 8
-
     for i in 0..<fullBytes {
       target[i] = 0x00
     }
-
     if remainingBits > 0 && fullBytes < 32 {
       target[fullBytes] = 0xFF >> remainingBits
     }
-
     return target
   }
 
   private func meetsTarget(hash: Data, target: Data) -> Bool {
-    // Compare hash to target (hash must be less than target)
     for i in 0..<min(hash.count, target.count) {
-      if hash[i] < target[i] {
-        return true
-      }
-      if hash[i] > target[i] {
-        return false
-      }
+      if hash[i] < target[i] { return true }
+      if hash[i] > target[i] { return false }
     }
     return true
   }
@@ -252,6 +228,3 @@ class NativeArgon2: RCTEventEmitter {
     return Data(bytes: &n, count: 8)
   }
 }
-
-// Import CommonCrypto for SHA256 placeholder
-import CommonCrypto
