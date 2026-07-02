@@ -1,12 +1,15 @@
 /**
- * Client-side encryption utilities for encrypted posts/spaces
+ * Client-side encryption utilities for Swimchain
  *
  * Uses Web Crypto API with:
  * - PBKDF2 for key derivation from passphrase
  * - AES-GCM for symmetric encryption
  *
- * Encrypted content format:
- * [ENCRYPTED:v1:<base64(salt:iv:ciphertext)>]<rest of content>
+ * Two encryption modes:
+ * 1. Passphrase-based: [ENCRYPTED:v1:<base64(salt:iv:ciphertext)>]
+ * 2. Space-key-based: [PRIVATE:v1:<base64(iv:ciphertext)>]
+ *
+ * @packageDocumentation
  */
 
 const ENCRYPTION_PREFIX = '[ENCRYPTED:v1:';
@@ -15,8 +18,42 @@ const PBKDF2_ITERATIONS = 100000;
 const SALT_LENGTH = 16;
 const IV_LENGTH = 12;
 
+// =========================================================================
+// PBKDF2 Key Cache (M4 fix: avoid repeated derivation for same passphrase)
+// =========================================================================
+
+interface CachedKey {
+  key: CryptoKey;
+  expiresAt: number;
+}
+
+/** Cache derived keys per passphrase+salt combination (30 second TTL) */
+const keyCache = new Map<string, CachedKey>();
+const KEY_CACHE_TTL_MS = 30000; // 30 seconds
+
 /**
- * Check if content is encrypted
+ * Generate cache key from passphrase and salt
+ */
+function getCacheKey(passphrase: string, salt: Uint8Array): string {
+  // Use passphrase hash + salt hex as cache key
+  const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${passphrase.length}:${passphrase}:${saltHex}`;
+}
+
+/**
+ * Clean up expired cache entries
+ */
+function cleanExpiredKeys(): void {
+  const now = Date.now();
+  for (const [key, entry] of keyCache.entries()) {
+    if (entry.expiresAt < now) {
+      keyCache.delete(key);
+    }
+  }
+}
+
+/**
+ * Check if content is encrypted with passphrase
  */
 export function isEncrypted(content: string): boolean {
   return content.startsWith(ENCRYPTION_PREFIX);
@@ -43,8 +80,23 @@ function extractPayload(content: string): { payload: string; suffix: string } | 
 
 /**
  * Derive an AES-GCM key from a passphrase using PBKDF2
+ *
+ * Uses a short-lived cache (30s TTL) to avoid repeated derivation
+ * when decrypting multiple items with the same passphrase.
  */
 async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
+  // Check cache first
+  const cacheKey = getCacheKey(passphrase, salt);
+  const cached = keyCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.key;
+  }
+
+  // Periodically clean expired entries
+  if (keyCache.size > 50) {
+    cleanExpiredKeys();
+  }
+
   const encoder = new TextEncoder();
   const passphraseKey = await crypto.subtle.importKey(
     'raw',
@@ -54,7 +106,7 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKe
     ['deriveKey']
   );
 
-  return crypto.subtle.deriveKey(
+  const key = await crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
       salt: salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer,
@@ -66,6 +118,14 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKe
     false,
     ['encrypt', 'decrypt']
   );
+
+  // Cache the derived key
+  keyCache.set(cacheKey, {
+    key,
+    expiresAt: Date.now() + KEY_CACHE_TTL_MS,
+  });
+
+  return key;
 }
 
 /**
