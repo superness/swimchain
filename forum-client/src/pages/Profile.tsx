@@ -21,6 +21,8 @@ import {
   getAvatarColor,
 } from '../lib/profile';
 import { bytesToHex } from '../lib/x25519';
+import { usePostPow } from '../hooks/useActionPow';
+import { solutionToRpcParams } from '../lib/action-pow';
 import './Profile.css';
 
 // Validate that a string is a valid hex public key (64 hex chars)
@@ -101,6 +103,9 @@ export function ProfilePage(): JSX.Element {
     reader.readAsDataURL(file);
   }, []);
 
+  const { state: postPowState, minePost, progress: postPowProgress, reset: resetPostPow } = usePostPow();
+  const isMining = postPowState === 'mining';
+
   // Save profile
   const handleSave = useCallback(async () => {
     if (!rpc || !connected || !myPk || !keypair) {
@@ -110,6 +115,7 @@ export function ProfilePage(): JSX.Element {
 
     setSaving(true);
     setSaveError(null);
+    resetPostPow();
 
     try {
       const profileSpaceId = getProfileSpaceId(myPk);
@@ -128,35 +134,75 @@ export function ProfilePage(): JSX.Element {
         const arrayBuffer = await avatarFile.arrayBuffer();
         const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
 
-        // Upload image content
-        const uploadResult = await rpc.call('upload_content', {
-          content: base64,
-          content_type: avatarFile.type,
-          author: myPk,
-        }) as { content_id: string };
+        // Upload image content via upload_media
+        const uploadResult = await rpc.uploadMedia({
+          data: base64,
+          mediaType: avatarFile.type,
+        });
+
+        if (!uploadResult.success) {
+          throw new Error('Failed to upload avatar');
+        }
 
         // Post avatar info
         const avatarBody = encodeAvatarInfo({
-          contentId: uploadResult.content_id,
+          contentId: uploadResult.media_hash,
           format: avatarFile.type.split('/')[1] || 'png',
           updatedAt: Date.now(),
         });
 
-        await rpc.call('post_to_space', {
-          space_id: profileSpaceId,
-          author: myPk,
+        // Mine PoW for avatar info post
+        const publicKeyBytes = new Uint8Array(myPk.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+        const avatarSolution = await minePost(avatarBody, publicKeyBytes, true /* testnet */);
+        const avatarPowParams = solutionToRpcParams(avatarSolution);
+
+        // Sign the avatar post
+        const avatarSignMessage = new TextEncoder().encode(
+          `post:${profileSpaceId}:${avatarBody}:${avatarPowParams.timestamp}`
+        );
+        const avatarSignature = keypair.sign(avatarSignMessage);
+        const avatarSignatureHex = bytesToHex(avatarSignature);
+
+        await rpc.submitPost({
+          spaceId: profileSpaceId,
+          title: '',
           body: avatarBody,
-          timestamp: Date.now(),
+          authorId: myPk,
+          powNonce: avatarPowParams.pow_nonce,
+          powDifficulty: avatarPowParams.pow_difficulty,
+          powNonceSpace: avatarPowParams.pow_nonce_space,
+          powHash: avatarPowParams.pow_hash,
+          signature: avatarSignatureHex,
+          timestamp: avatarPowParams.timestamp,
         });
       }
 
       // Post profile info
       const infoBody = encodeProfileInfo(profileInfo);
-      await rpc.call('post_to_space', {
-        space_id: profileSpaceId,
-        author: myPk,
+
+      // Mine PoW for profile info post
+      const publicKeyBytes = new Uint8Array(myPk.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+      const infoSolution = await minePost(infoBody, publicKeyBytes, true /* testnet */);
+      const infoPowParams = solutionToRpcParams(infoSolution);
+
+      // Sign the profile info post
+      const infoSignMessage = new TextEncoder().encode(
+        `post:${profileSpaceId}:${infoBody}:${infoPowParams.timestamp}`
+      );
+      const infoSignature = keypair.sign(infoSignMessage);
+      const infoSignatureHex = bytesToHex(infoSignature);
+
+      await rpc.submitPost({
+        spaceId: profileSpaceId,
+        title: '',
         body: infoBody,
-        timestamp: Date.now(),
+        authorId: myPk,
+        powNonce: infoPowParams.pow_nonce,
+        powDifficulty: infoPowParams.pow_difficulty,
+        powNonceSpace: infoPowParams.pow_nonce_space,
+        powHash: infoPowParams.pow_hash,
+        signature: infoSignatureHex,
+        timestamp: infoPowParams.timestamp,
       });
 
       // Clear cache and refetch
@@ -172,7 +218,7 @@ export function ProfilePage(): JSX.Element {
     } finally {
       setSaving(false);
     }
-  }, [rpc, connected, myPk, keypair, displayName, bio, website, avatarFile, refetch]);
+  }, [rpc, connected, myPk, keypair, displayName, bio, website, avatarFile, refetch, minePost, resetPostPow]);
 
   // Not logged in
   if (!myPk && !paramUserPk) {
@@ -338,11 +384,16 @@ export function ProfilePage(): JSX.Element {
             {isEditing && (
               <div className="profile-actions">
                 {saveError && <div className="profile-save-error">{saveError}</div>}
+                {isMining && (
+                  <div className="profile-mining">
+                    <span>Mining PoW... {postPowProgress.attempts} attempts ({Math.round(postPowProgress.elapsedMs / 1000)}s)</span>
+                  </div>
+                )}
                 <button
                   type="button"
                   className="btn btn-ghost"
                   onClick={handleCancel}
-                  disabled={saving}
+                  disabled={saving || isMining}
                 >
                   Cancel
                 </button>
@@ -350,9 +401,9 @@ export function ProfilePage(): JSX.Element {
                   type="button"
                   className="btn btn-primary"
                   onClick={handleSave}
-                  disabled={saving}
+                  disabled={saving || isMining}
                 >
-                  {saving ? 'Saving...' : 'Save Profile'}
+                  {isMining ? 'Mining PoW...' : saving ? 'Saving...' : 'Save Profile'}
                 </button>
               </div>
             )}
