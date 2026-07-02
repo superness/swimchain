@@ -128,6 +128,96 @@ export function useBlocklist() {
     });
   }, [isBlocked, isUserBlocked]);
 
+  /**
+   * Submit an on-chain spam attestation via RPC
+   *
+   * Flags specified content as spam with a descriptive reason.
+   * The attestation is submitted to the node and recorded on-chain.
+   */
+  const submitAttestation = useCallback(async (
+    contentId: string,
+    attesterId: string,
+    reason: string,
+    signature: string,
+    powNonce = 0
+  ): Promise<{ success: boolean; message: string }> => {
+    if (!rpc || !connected) {
+      return { success: false, message: 'Not connected to node' };
+    }
+
+    setAttestationPending(contentId);
+    try {
+      const result = await rpc.submitSpamAttestation({
+        content_id: contentId,
+        attester_id: attesterId,
+        reason,
+        signature,
+        pow_nonce: powNonce,
+      });
+      setAttestationResult({ contentId, success: result.success, message: result.message });
+      return result;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Attestation failed';
+      setAttestationResult({ contentId, success: false, message: msg });
+      return { success: false, message: msg };
+    } finally {
+      setAttestationPending(null);
+    }
+  }, [rpc, connected]);
+
+  /**
+   * Submit an on-chain counter-attestation (vouch for content)
+   */
+  const submitCounterAttestation = useCallback(async (
+    contentId: string,
+    attesterId: string,
+    reason: string,
+    signature: string,
+    powNonce = 0
+  ): Promise<{ success: boolean; message: string }> => {
+    if (!rpc || !connected) {
+      return { success: false, message: 'Not connected to node' };
+    }
+
+    setAttestationPending(contentId);
+    try {
+      const result = await rpc.submitCounterAttestation({
+        content_id: contentId,
+        attester_id: attesterId,
+        reason,
+        signature,
+        pow_nonce: powNonce,
+      });
+      setAttestationResult({ contentId, success: result.success, message: result.message });
+      return result;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'Counter-attestation failed';
+      setAttestationResult({ contentId, success: false, message: msg });
+      return { success: false, message: msg };
+    } finally {
+      setAttestationPending(null);
+    }
+  }, [rpc, connected]);
+
+  /**
+   * Check the on-chain spam status of content
+   */
+  const checkSpamStatus = useCallback(async (contentId: string) => {
+    if (!rpc || !connected) return null;
+    try {
+      return await rpc.getSpamStatus(contentId);
+    } catch {
+      return null;
+    }
+  }, [rpc, connected]);
+
+  /**
+   * Clear attestation result notification
+   */
+  const clearAttestationResult = useCallback(() => {
+    setAttestationResult(null);
+  }, []);
+
   return {
     isUserBlocked,
     isSpaceBlocked,
@@ -138,5 +228,12 @@ export function useBlocklist() {
     blocklist,
     clearAll,
     filterBlocked,
+    // On-chain attestation
+    submitAttestation,
+    submitCounterAttestation,
+    checkSpamStatus,
+    attestationPending,
+    attestationResult,
+    clearAttestationResult,
   };
 }
