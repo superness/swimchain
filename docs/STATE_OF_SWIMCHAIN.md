@@ -132,7 +132,7 @@ Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parit
 
 ### Phase 1 — Fix what's broken (parallel lanes)
 - **B1** forum: replace 3 phantom RPC calls with real `submit_post`/`submit_reply`/`upload_media` + PoW (fixes private-space chat send, profile save, avatar). (M)
-- **B2** forum: wire leave-space; delete dead mocks/data.ts; wire keyboard engagement. (S)
+- **[x] B2** forum: wire leave-space; delete dead mocks/data.ts; wire keyboard engagement. (S)
 - **B3** chat: delete dead SpaceChatPage stack + fake hooks (useReactions, useRealTimeUpdates, etc.). (M)
 - **B4** feed: wire followed-user posts via existing `get_user_posts`; remove fabricated local-space fallback. (M)
 - **B5** search: delete MacroRegimeCard; fix dead footer routes; unify deep-link target. (S)
