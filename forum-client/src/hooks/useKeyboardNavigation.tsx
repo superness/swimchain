@@ -94,9 +94,13 @@ export function KeyboardNavigationProvider({
           break;
 
         case 'e':
+          // Engage +5s (TODO: implement engagement)
+          console.log('Engage +5s for', items[selectedIndex]);
+          break;
+
         case 'E':
-          // Keyboard engagement no-op: prevent default, handler placeholder (B2)
-          e.preventDefault();
+          // Engage +15s
+          console.log('Engage +15s for', items[selectedIndex]);
           break;
 
         case '/':

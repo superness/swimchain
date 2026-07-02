@@ -13,6 +13,8 @@ import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
 import { usePrivateSpaceMessages } from '../hooks/usePrivateSpaceMessages';
 import { encryptWithSpaceKey } from '../lib/encryption';
 import { bytesToHex } from '../lib/x25519';
+import { useReplyPow } from '../hooks/useActionPow';
+import { solutionToRpcParams } from '../lib/action-pow';
 import { InviteModal } from './InviteModal';
 import { SpaceSettings } from './SpaceSettings';
 import './ChatView.css';
@@ -46,6 +48,9 @@ export function ChatView(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const { state: miningState, mineReply, cancel: cancelMining, progress: miningProgress } = useReplyPow();
+  const isMining = miningState === 'mining';
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Decrypt space name
@@ -71,7 +76,7 @@ export function ChatView(): JSX.Element {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [backendMessages]);
 
-  // Handle sending a message
+  // Handle sending a message with PoW + submit_reply
   const handleSendMessage = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -84,21 +89,39 @@ export function ChatView(): JSX.Element {
       // Encrypt the message with the space key
       const encryptedContent = await encryptWithSpaceKey(newMessage.trim(), spaceKey);
 
-      // Create timestamp and sign the action
-      const timestamp = Date.now();
       const authorHex = bytesToHex(publicKey);
 
-      // Call RPC to post the message to the private space
-      // The backend will handle this as a post action with encrypted content
-      const result = await rpc.call('post_to_private_space', {
-        space_id: spaceId,
-        author: authorHex,
-        content: encryptedContent,
-        timestamp,
-      }) as { success: boolean; content_id?: string; error?: string };
+      // Mine PoW for the encrypted reply body
+      const publicKeyBytes = new Uint8Array(publicKey.length);
+      publicKeyBytes.set(publicKey);
 
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to post message');
+      const solution = await mineReply(encryptedContent, publicKeyBytes, true /* testnet */);
+
+      // Get PoW params in RPC format
+      const powParams = solutionToRpcParams(solution);
+
+      // Sign the reply message
+      const signMessage = new TextEncoder().encode(
+        `reply:${spaceId}:${encryptedContent}:${powParams.timestamp}`
+      );
+      const signature = keypair.sign(signMessage);
+      const signatureHex = bytesToHex(signature);
+
+      // Submit the reply via submit_reply (with spaceId as parent)
+      const result = await rpc.submitReply({
+        parentId: spaceId,
+        body: encryptedContent,
+        authorId: authorHex,
+        powNonce: powParams.pow_nonce,
+        powDifficulty: powParams.pow_difficulty,
+        powNonceSpace: powParams.pow_nonce_space,
+        powHash: powParams.pow_hash,
+        signature: signatureHex,
+        timestamp: powParams.timestamp,
+      });
+
+      if (!result.content_id) {
+        throw new Error('Failed to post message - no content_id returned');
       }
 
       // Clear input and refresh messages
@@ -115,7 +138,7 @@ export function ChatView(): JSX.Element {
     } finally {
       setSending(false);
     }
-  }, [newMessage, spaceKey, publicKey, spaceId, rpc, connected, keypair, refetchMessages]);
+  }, [newMessage, spaceKey, publicKey, spaceId, rpc, connected, keypair, refetchMessages, mineReply]);
 
   // Format timestamp
   const formatTime = (timestamp: number): string => {
@@ -295,30 +318,48 @@ export function ChatView(): JSX.Element {
       {/* Message composer */}
       <footer className="chat-composer">
         {error && <div className="composer-error">{error}</div>}
-        <form onSubmit={handleSendMessage} className="composer-form">
-          <input
-            type="text"
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            placeholder="Type a message..."
-            className="composer-input"
-            disabled={sending}
-          />
-          <button
-            type="submit"
-            className="btn btn-primary send-button"
-            disabled={sending || !newMessage.trim()}
-          >
-            {sending ? (
-              <span className="sending-indicator">...</span>
-            ) : (
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
-              </svg>
-            )}
-          </button>
-        </form>
+        {isMining ? (
+          <div className="composer-mining">
+            <div className="mining-indicator">
+              <span>Mining PoW... {miningProgress.attempts} attempts</span>
+              <span className="mining-progress">
+                ({Math.round(miningProgress.elapsedMs / 1000)}s)
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={cancelMining}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleSendMessage} className="composer-form">
+            <input
+              type="text"
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              placeholder="Type a message..."
+              className="composer-input"
+              disabled={sending}
+            />
+            <button
+              type="submit"
+              className="btn btn-primary send-button"
+              disabled={sending || !newMessage.trim()}
+            >
+              {sending ? (
+                <span className="sending-indicator">...</span>
+              ) : (
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              )}
+            </button>
+          </form>
+        )}
       </footer>
 
       {/* Invite Modal */}
