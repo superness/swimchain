@@ -231,7 +231,7 @@ function Build-All {
     # Step 6: Build all clients
     if (-not $SkipClients) {
         Write-Step "Step 6: Building clients..."
-        $Clients = @("forum-client", "chat-client", "feed-client", "search-client")
+        $Clients = @("forum-client", "chat-client", "feed-client", "search-client", "wiki-client")
         $ClientsDir = Join-Path $ScriptDir "public\clients"
         New-Item -ItemType Directory -Force -Path $ClientsDir | Out-Null
 

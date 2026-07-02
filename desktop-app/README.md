@@ -99,15 +99,61 @@ cp target/release/sw desktop-app/src-tauri/binaries/
 
 ## Multiple Clients
 
-The node listens on a fixed port (19736 for testnet). If you open multiple windows:
+The node listens on a fixed port per network (see below). If you open multiple windows:
 - First window starts the node
 - Additional windows connect to the existing node
 - All share the same local data
 
+The status bar client selector switches between the bundled clients:
+Forum, Chat, Feed, Search, and Wiki (`desktop-app/scripts/build-clients.js`).
+
 ## Networks
 
-- **Testnet** (default): Port 19736 - For testing
-- **Mainnet**: Port 9100 - Production network
-- **Regtest**: Port 29100 - Local development
+The network is selectable at onboarding/unlock and from the status bar while
+running (switching stops the node). The selection is persisted in
+`<config dir>/swimchain-desktop/settings.json` and used on the next launch.
 
-To change networks, modify `src-tauri/src/main.rs` or add a settings UI.
+RPC port is always the node's default P2P port + 1 (`src/network/mode.rs`):
+
+| Network | P2P port | RPC port | Data dir suffix |
+|---------|----------|----------|-----------------|
+| Mainnet | 9735 | 9736 | (none) |
+| Testnet (default) | 19735 | 19736 | `-testnet` |
+| Regtest | 29735 | 29736 | `-regtest` |
+
+Each network has its own data directory and therefore its own identity - if
+you switch to a network you haven't used before, you'll go through onboarding
+for that network.
+
+## Identity Model
+
+There are two kinds of identity in the desktop bundle:
+
+1. **Node identity** (managed by the shell): created at onboarding, stored
+   encrypted at `<data dir>/identity.enc`, unlocked with your password. It is
+   used for node operations (P2P, block signing) and for clients that support
+   node-managed remote signing via the `sign_message` RPC (forum-client does
+   this). The shell shares only the identity's *public* address and display
+   name with embedded clients - the seed/private key never leaves the node.
+
+2. **Per-client keypairs**: clients that manage their own browser-side
+   keypair (localStorage) keep doing so. They work independently of the node
+   identity.
+
+The shell passes config to each embedded client iframe via `postMessage`:
+
+```js
+{
+  type: 'SWIMCHAIN_RPC_CONFIG',
+  rpcEndpoint: 'http://127.0.0.1:19736',
+  rpcAuth: 'Basic ...',          // cookie auth for the local node RPC
+  nodeAddress: 'cs1...',         // optional: node identity public address
+  nodeDisplayName: 'Alice'       // optional: node identity display name
+}
+```
+
+Clients consume this through `useParentRpcConfig` (shared implementation in
+`swimchain-frontend/src/hooks/useParentRpcConfig.ts`; several clients carry a
+local copy). Clients may use `nodeAddress` to display "node identity: cs1..."
+and prefer node-managed signing where they support it; otherwise they fall
+back to their own keypair.
