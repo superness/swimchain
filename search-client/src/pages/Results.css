@@ -78,10 +78,6 @@
   color: var(--color-text-primary);
 }
 
-.footer-content .separator {
-  color: var(--color-border);
-}
-
 /* Mobile adjustments */
 @media (max-width: 768px) {
   .results-header {
