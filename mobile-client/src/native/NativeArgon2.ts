@@ -1,7 +1,12 @@
 /**
  * Native Argon2id Module Interface
- * Bridges to platform-specific implementations for mobile PoW
+ * Bridges to platform-specific implementations for mobile PoW and password hashing.
+ *
  * Per SPEC_03: Argon2id with 64 MiB, 3 iterations, parallelism 2
+ *
+ * Platform-conditional: Android uses argon2kt, iOS uses Argon2Swift.
+ * Each platform module is compiled only for its target; this TypeScript
+ * layer provides a unified interface.
  */
 
 import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
@@ -33,6 +38,7 @@ export interface PowSolution {
 
 // Native module interface
 interface NativeArgon2Bridge {
+  // Raw Argon2id hashing (PoW/internal use)
   hash(
     input: string, // base64-encoded
     salt: string, // base64-encoded
@@ -42,6 +48,7 @@ interface NativeArgon2Bridge {
     hashLength: number
   ): Promise<string>; // base64-encoded result
 
+  // PoW mining
   mine(
     challenge: string, // base64-encoded
     difficulty: number,
@@ -60,6 +67,10 @@ interface NativeArgon2Bridge {
   cancel(): void;
 
   isAvailable(): Promise<boolean>;
+
+  // Password hashing API (hash + verify)
+  hashPassword(password: string): Promise<string>; // encoded Argon2 hash string
+  verifyPassword(password: string, encodedHash: string): Promise<boolean>;
 }
 
 // Get native module
@@ -112,6 +123,36 @@ export const NativeArgon2 = {
     );
 
     return base64ToUint8Array(resultBase64);
+  },
+
+  /**
+   * Hash a plaintext password with Argon2id.
+   * Generates a random salt and returns a standard Argon2 encoded hash string.
+   * Uses SPEC_03 parameters: 64 MiB, 3 iterations, parallelism 2.
+   *
+   * @param password - Plaintext password to hash
+   * @returns Standard Argon2 encoded hash string ($argon2id$v=19$m=...$salt$hash)
+   */
+  async hashPassword(password: string): Promise<string> {
+    if (!NativeArgon2Module) {
+      throw new Error('NativeArgon2 module not available');
+    }
+    return NativeArgon2Module.hashPassword(password);
+  },
+
+  /**
+   * Verify a password against an Argon2 encoded hash string.
+   * Parses the salt and parameters from the encoded string and re-derives the hash.
+   *
+   * @param password - Plaintext password to verify
+   * @param encodedHash - Standard Argon2 encoded hash string
+   * @returns true if the password matches
+   */
+  async verifyPassword(password: string, encodedHash: string): Promise<boolean> {
+    if (!NativeArgon2Module) {
+      throw new Error('NativeArgon2 module not available');
+    }
+    return NativeArgon2Module.verifyPassword(password, encodedHash);
   },
 
   /**
