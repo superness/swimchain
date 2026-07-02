@@ -1,0 +1,9 @@
+.sponsorship-panel { position: relative; }
+.sponsorship-loading { font-size: 0.7rem; color: var(--color-text-muted, #999); }
+.sponsorship-badge { font-size: 0.7rem; padding: 0.15rem 0.4rem; border-radius: 4px; }
+.sponsorship-badge.sponsored { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+.sponsorship-claim-btn { font-size: 0.65rem; padding: 0.15rem 0.4rem; border: 1px solid var(--color-primary, #5865f2); border-radius: 4px; background: transparent; color: var(--color-primary, #5865f2); cursor: pointer; }
+.sponsorship-claim-btn:hover { background: var(--color-primary, #5865f2); color: white; }
+.sponsorship-offers-dropdown { position: absolute; top: 100%; left: 0; z-index: 10; background: var(--color-bg, #fff); border: 1px solid var(--color-border, #ddd); border-radius: 4px; padding: 0.5rem; min-width: 200px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+.sponsorship-offer-item { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.7rem; padding: 0.25rem 0; }
+.sponsorship-offer-item button { font-size: 0.65rem; padding: 0.15rem 0.4rem; border: none; border-radius: 4px; background: var(--color-success, #3ba55c); color: white; cursor: pointer; }

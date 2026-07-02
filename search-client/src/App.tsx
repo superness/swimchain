@@ -26,18 +26,18 @@ export function App(): JSX.Element {
               {/* Search results with query in URL */}
               <Route path="/search" element={<Results />} />
 
-              {/* Deep links to content (redirect to forum-client) */}
+              {/* Deep links to content (redirect to feed-client) */}
               <Route
                 path="/space/:spaceId"
-                element={<RedirectToForum type="space" />}
+                element={<RedirectToFeed type="space" />}
               />
               <Route
                 path="/thread/:threadId"
-                element={<RedirectToForum type="thread" />}
+                element={<RedirectToFeed type="thread" />}
               />
               <Route
                 path="/user/:userId"
-                element={<RedirectToForum type="user" />}
+                element={<RedirectToFeed type="user" />}
               />
 
               {/* Catch-all redirect to home */}
@@ -51,18 +51,18 @@ export function App(): JSX.Element {
 }
 
 /**
- * Redirect component for deep links to forum-client.
- * Preserves the current path (e.g. /space/:id) and redirects to forum-client.
+ * Redirect component for deep links to feed-client.
+ * Preserves the current path (e.g. /space/:id) and redirects to feed-client.
  */
-interface RedirectToForumProps {
+interface RedirectToFeedProps {
   type: 'space' | 'thread' | 'user';
 }
 
-function RedirectToForum({ type }: RedirectToForumProps) {
-  const forumClientUrl = import.meta.env.VITE_FORUM_CLIENT_URL || 'http://localhost:5173';
+function RedirectToFeed({ type }: RedirectToFeedProps) {
+  const feedClientUrl = import.meta.env.VITE_FEED_CLIENT_URL || 'http://localhost:5179';
   const path = window.location.pathname;
 
-  window.location.href = `${forumClientUrl}${path}`;
+  window.location.href = `${feedClientUrl}${path}`;
 
   const labels = { space: 'space', thread: 'thread', user: 'profile' };
 
@@ -75,7 +75,7 @@ function RedirectToForum({ type }: RedirectToForumProps) {
       padding: '2rem',
       color: 'var(--color-text-secondary)',
     }}>
-      <p>Opening {labels[type]} in forum...</p>
+      <p>Opening {labels[type]} in feed...</p>
     </div>
   );
 }
