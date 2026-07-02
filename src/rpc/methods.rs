@@ -13,6 +13,9 @@ use tokio::sync::{broadcast, RwLock};
 use crate::blocklist::BlocklistStore;
 use crate::blocks::{Action, BranchPath};
 use crate::content::decay_integration::DecayIntegration;
+use crate::content::pool::{
+    compute_pool_pow_target, CompletionResult, PoolContribution, PoolError, PoolManager,
+};
 use crate::content::retrieval::ContentRetrievalManager;
 use crate::crypto::action_pow::{
     ActionType, ForkPoWConfig, PoWChallenge, PoWSolution, verify_pow, compute_pow,
@@ -383,6 +386,8 @@ pub struct NodeRef {
     pub identity_name: Arc<RwLock<Option<String>>>,
     /// Full-text search index (Tantivy) for content search
     pub search_index: Option<Arc<std::sync::RwLock<SearchIndex>>>,
+    /// Pool manager for engagement pool operations
+    pub pool_manager: Option<Arc<std::sync::RwLock<PoolManager>>>,
 }
 
 /// RPC method dispatcher
@@ -6483,14 +6488,325 @@ impl RpcMethods {
         )
     }
 
-    /// Contribute PoW to an engagement pool (DEPRECATED)
-    /// Use submit_engagement with emoji param instead
-    async fn contribute_to_pool(&self, _params: Value, id: Value) -> RpcResponse {
-        RpcResponse::error(
-            RpcErrorCode::MethodNotFound,
-            "Pool system deprecated. Use submit_engagement with emoji param for reactions.",
-            id,
-        )
+    /// Contribute PoW to an engagement pool
+    ///
+    /// Adds a proof-of-work contribution to an existing engagement pool.
+    /// If the pool reaches the required total (60 seconds), it completes
+    /// and the content's decay timer is reset.
+    ///
+    /// # Parameters
+    /// - `pool_id`: 32-byte hex pool identifier
+    /// - `contributor_id`: 32-byte hex contributor public key
+    /// - `pow_nonce`: PoW nonce
+    /// - `pow_work`: Amount of work in seconds (min 1, max 3600)
+    /// - `pow_target`: 32-byte hex target hash
+    /// - `nonce_space`: 8-byte hex nonce space
+    /// - `signature`: 64-byte hex Ed25519 signature
+    /// - `emoji`: Optional emoji code (1-8)
+    async fn contribute_to_pool(&self, params: Value, id: Value) -> RpcResponse {
+        // Parse parameters
+        let (pool_id, amount_secs, contributor_id, pow_nonce, pow_work,
+             pow_target, nonce_space, signature, emoji) = {
+            // Try the full ContributeToPoolParams type first
+            if let Ok(p) = serde_json::from_value::<ContributeToPoolParams>(params.clone()) {
+                (p.pool_id, p.pow_work, p.contributor_id,
+                 p.pow_nonce, p.pow_work, p.pow_target,
+                 p.nonce_space, p.signature, p.emoji)
+            } else {
+                // Fall back to simplified params (pool_id + amount)
+                let pool_id = match params.get("pool_id").and_then(|v| v.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Missing required parameter: pool_id",
+                            id,
+                        );
+                    }
+                };
+                let amount = match params.get("amount").and_then(|v| v.as_f64()) {
+                    Some(a) if a > 0.0 => a as u64,
+                    Some(_) => {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "amount must be positive",
+                            id,
+                        );
+                    }
+                    None => match params.get("pow_work").and_then(|v| v.as_u64()) {
+                        Some(w) if w > 0 => w,
+                        _ => {
+                            return RpcResponse::error(
+                                RpcErrorCode::InvalidParams,
+                                "Missing required parameter: amount or pow_work",
+                                id,
+                            );
+                        }
+                    },
+                };
+                let contributor_id = params.get("contributor_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let pow_nonce = params.get("pow_nonce").and_then(|v| v.as_u64()).unwrap_or(0);
+                let pow_target = params.get("pow_target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let nonce_space = params.get("nonce_space")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let signature = params.get("signature")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let emoji = params.get("emoji").and_then(|v| v.as_u64()).map(|e| e as u8);
+                (pool_id, amount, contributor_id, pow_nonce, amount,
+                 pow_target, nonce_space, signature, emoji)
+            }
+        };
+        // Validate pool_id format
+        let pool_id_bytes: [u8; 32] = match hex::decode(&pool_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            Ok(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "pool_id must be 32 bytes (64 hex chars)",
+                    id,
+                );
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid pool_id hex: {}", e),
+                    id,
+                );
+            }
+        };
+        // Get pool manager
+        let pool_manager = match &self.node.pool_manager {
+            Some(pm) => pm,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Pool manager not available",
+                    id,
+                );
+            }
+        };
+        // Validate amount > 0
+        if amount_secs == 0 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "amount must be positive",
+                id,
+            );
+        }
+        // Validate pow_work
+        if pow_work == 0 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "pow_work must be positive",
+                id,
+            );
+        }
+        // Get current time
+        let current_time_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        // Parse contributor_id (optional - defaults to zero if not provided)
+        let contributor_bytes: [u8; 32] = if contributor_id.is_empty() {
+            // Use node's keypair as default contributor
+            let keypair_bytes = self.node.keypair.public_key.as_bytes();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(keypair_bytes);
+            arr
+        } else {
+            match hex::decode(&contributor_id) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid contributor_id: must be 32-byte hex",
+                        id,
+                    );
+                }
+            }
+        };
+        // Parse pow_target
+        let pow_target_bytes: [u8; 32] = if pow_target.is_empty() {
+            [0u8; 32]
+        } else {
+            match hex::decode(&pow_target) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid pow_target: must be 32-byte hex",
+                        id,
+                    );
+                }
+            }
+        };
+        // Parse nonce_space
+        let nonce_space_bytes: [u8; 8] = if nonce_space.is_empty() {
+            [0u8; 8]
+        } else {
+            match hex::decode(&nonce_space) {
+                Ok(bytes) if bytes.len() == 8 => {
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid nonce_space: must be 8-byte hex",
+                        id,
+                    );
+                }
+            }
+        };
+        // Parse signature
+        let signature_bytes: [u8; 64] = if signature.is_empty() {
+            [0u8; 64]
+        } else {
+            match hex::decode(&signature) {
+                Ok(bytes) if bytes.len() == 64 => {
+                    let mut arr = [0u8; 64];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid signature: must be 64-byte hex",
+                        id,
+                    );
+                }
+            }
+        };
+        // Validate pool exists and is open
+        let pool_exists_open = {
+            let pm = pool_manager.read().unwrap();
+            match pm.get_pool_info(&pool_id_bytes, current_time_ms) {
+                Ok(info) => info.status == crate::content::pool::PoolStatus::Open,
+                Err(PoolError::PoolNotFound(_)) => false,
+                Err(_) => false,
+            }
+        };
+        if !pool_exists_open {
+            let pm = pool_manager.read().unwrap();
+            if pm.get_pool(&pool_id_bytes).is_none() {
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    &format!("Pool not found: {}", &pool_id[..16]),
+                    id,
+                );
+            }
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Pool is not open for contributions",
+                id,
+            );
+        }
+        // Compute the expected PoW target for verification
+        let expected_target = {
+            let pm = pool_manager.read().unwrap();
+            let info = pm.get_pool_info(&pool_id_bytes, current_time_ms).unwrap();
+            compute_pool_pow_target(&info.target_content, &pool_id_bytes, None)
+        };
+        // Validate PoW target matches expected
+        if pow_target_bytes != [0u8; 32] && pow_target_bytes != expected_target {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "PoW target does not match expected target for this pool",
+                id,
+            );
+        }
+        // Create the contribution
+        let contribution = PoolContribution {
+            contributor: contributor_bytes,
+            pow_nonce,
+            pow_work,
+            pow_target: expected_target,
+            timestamp: current_time_ms,
+            signature: signature_bytes,
+            nonce_space: nonce_space_bytes,
+            emoji,
+        };
+        // Add contribution to the pool
+        let config = ForkPoWConfig::test();
+        let result = {
+            let mut pm = pool_manager.write().unwrap();
+            pm.add_contribution(pool_id_bytes, contribution, current_time_ms, &config)
+        };
+        match result {
+            Ok(()) => {
+                let mut pm = pool_manager.write().unwrap();
+                let total_pow = pm.get_pool_total(&pool_id_bytes).unwrap_or(0);
+                let completion = pm.check_completion(pool_id_bytes);
+                let pool_complete = matches!(
+                    completion,
+                    Ok(CompletionResult::Completed { .. })
+                );
+                let status = if pool_complete { "completed" } else { "open" };
+                let response = ContributeToPoolResult {
+                    accepted: true,
+                    total_pow,
+                    pool_complete,
+                    status: status.to_string(),
+                };
+                RpcResponse::success(serde_json::to_value(response).unwrap(), id)
+            }
+            Err(e) => {
+                let (code, msg) = match &e {
+                    PoolError::PoolNotFound(_) => {
+                        (RpcErrorCode::ContentNotFound, format!("Pool not found: {}", e))
+                    }
+                    PoolError::PoolNotOpen(_) => {
+                        (RpcErrorCode::InvalidParams, "Pool is not open for contributions".to_string())
+                    }
+                    PoolError::PoolExpired(_) => {
+                        (RpcErrorCode::InvalidParams, "Pool has expired".to_string())
+                    }
+                    PoolError::ContributionTooSmall { provided, minimum } => {
+                        (RpcErrorCode::InvalidParams,
+                         format!("Contribution too small: {}s < {}s minimum", provided, minimum))
+                    }
+                    PoolError::InvalidPoW(msg) => {
+                        (RpcErrorCode::PowInvalid, format!("Invalid PoW: {}", msg))
+                    }
+                    PoolError::InvalidSignature => {
+                        (RpcErrorCode::InvalidSignature, "Invalid signature".to_string())
+                    }
+                    PoolError::ContentMismatch => {
+                        (RpcErrorCode::InvalidParams, "PoW target doesn't match pool content".to_string())
+                    }
+                    PoolError::ContributionAfterDeadline { .. } => {
+                        (RpcErrorCode::InvalidParams, format!("{}", e))
+                    }
+                    PoolError::InvalidStatus(_) => {
+                        (RpcErrorCode::InternalError, format!("Internal error: {}", e))
+                    }
+                };
+                RpcResponse::error(code, &msg, id)
+            }
+        }
     }
 
     /// Get information about an engagement pool (DEPRECATED)
@@ -9568,10 +9884,19 @@ impl RpcMethods {
             );
         }
 
-        // Broadcast accept action (no PoW required for accept)
+        // Broadcast AcceptInvite action (no PoW required for accept per spec)
         let mut broadcast = false;
-        // Note: Accept actions don't require PoW per the spec
-        // TODO: Create and broadcast AcceptInvite action
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::network::messages::ActionAnnouncePayload;
+            use crate::types::network::{MessageEnvelope, MessageType};
+            let payload = ActionAnnouncePayload::new(invite_hash, {
+                let mut sid = [0u8; 32];
+                sid[..16].copy_from_slice(&invite.space_id);
+                sid
+            }, b"ACCEPT_INVITE".to_vec());
+            let envelope = MessageEnvelope::new_fork_agnostic(MessageType::ActionAnnounce, payload.to_bytes().to_vec());
+            broadcast = pool.broadcast(&envelope).await > 0;
+        }
 
         let result = AcceptInviteResult {
             space_id: hex::encode(&invite.space_id),
@@ -9797,10 +10122,19 @@ impl RpcMethods {
             }
         }
 
-        // Broadcast leave action (no PoW required for leave)
+        // Broadcast Leave action (no PoW required for leave per spec)
         let mut broadcast = false;
-        // Note: Leave actions don't require PoW per the spec
-        // TODO: Create and broadcast Leave action
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::network::messages::ActionAnnouncePayload;
+            use crate::types::network::{MessageEnvelope, MessageType};
+            let payload = ActionAnnouncePayload::new([0u8; 32], {
+                let mut sid = [0u8; 32];
+                sid[..16].copy_from_slice(&space_id);
+                sid
+            }, b"LEAVE_SPACE".to_vec());
+            let envelope = MessageEnvelope::new_fork_agnostic(MessageType::ActionAnnounce, payload.to_bytes().to_vec());
+            broadcast = pool.broadcast(&envelope).await > 0;
+        }
 
         let result = LeaveSpaceResult {
             success: true,
@@ -10011,18 +10345,85 @@ impl RpcMethods {
             }
         }
 
+        // Broadcast Kick + KeyRotation actions via block builder
+        let mut broadcast = false;
+        if let Some(ref block_builder) = self.node.block_builder {
+            // Parse signature
+            let mut sig_bytes = [0u8; 64];
+            if let Ok(s) = hex::decode(&params.signature) {
+                if s.len() == 64 { sig_bytes.copy_from_slice(&s); }
+            }
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&space_id);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(params.timestamp);
+
+            // Build Kick action
+            let kick_action = Action {
+                action_type: crate::blocks::ActionType::Kick,
+                actor: admin_pk,
+                timestamp: now,
+                content_hash: Some(member_pk),
+                parent_id: Some(space_id_32),
+                pow_nonce: 0, pow_work: 0, pow_target: [0u8; 32],
+                signature: sig_bytes, emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![], replaces_pending: None,
+            };
+
+            // Build KeyRotation action
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(&space_id);
+            hasher.update(&params.key_version.to_le_bytes());
+            let mut sorted_keys: Vec<(&String, &String)> = params.new_encrypted_keys.iter().collect();
+            sorted_keys.sort_by(|a, b| a.0.cmp(b.0));
+            for (_, ek) in &sorted_keys {
+                if let Ok(b) = hex::decode(*ek) { hasher.update(&b); }
+            }
+            let mut kr_hash = [0u8; 32];
+            kr_hash.copy_from_slice(&hasher.finalize());
+
+            let kr_action = Action {
+                action_type: crate::blocks::ActionType::KeyRotation,
+                actor: admin_pk,
+                timestamp: now,
+                content_hash: Some(kr_hash),
+                parent_id: Some(space_id_32),
+                pow_nonce: 0, pow_work: 0, pow_target: [0u8; 32],
+                signature: sig_bytes, emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![], replaces_pending: None,
+            };
+
+            // Add to block builder and broadcast
+            if let Ok(mut builder) = block_builder.write() {
+                let added_kick = builder.add_action(space_id_32, space_id_32, kick_action, crate::blocks::BranchPath::root());
+                let added_kr = builder.add_action(space_id_32, space_id_32, kr_action, crate::blocks::BranchPath::root());
+                if added_kick || added_kr {
+                    if let Some(ref pool) = self.node.connection_pool {
+                        use crate::network::messages::ActionAnnouncePayload;
+                        use crate::types::network::{MessageEnvelope, MessageType};
+                        if added_kick {
+                            let p = ActionAnnouncePayload::new(space_id_32, space_id_32, b"KICK_MEMBER".to_vec());
+                            broadcast = pool.broadcast(&MessageEnvelope::new_fork_agnostic(MessageType::ActionAnnounce, p.to_bytes().to_vec())).await > 0;
+                        }
+                    }
+                }
+            }
+        }
+
         info!(
-            "[KICK] Kicked {} from space {}, rotated {} keys to version {}",
-            &params.member[..16],
-            &params.space_id[..16],
-            keys_updated,
-            params.key_version
+            "[KICK] Kicked {} from space {}, rotated {} keys to version {}, broadcast: {}",
+            &params.member[..16], &params.space_id[..16], keys_updated, params.key_version, broadcast
         );
 
         let result = KickMemberResult {
             success: true,
             key_version: params.key_version,
-            broadcast: false, // TODO: Create and broadcast Kick + KeyRotation actions
+            broadcast,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
