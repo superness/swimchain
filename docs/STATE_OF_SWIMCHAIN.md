@@ -131,7 +131,7 @@ Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parit
 - **F3** SDK decision: pick ONE shared package (recommend `@swimchain/frontend` as base — newest, already consumed by 3 clients), absorb `swimchain-react`'s action-pow/encryption/DM utils, add the parent-RPC-config (postMessage) handshake into it, rename `chainsocial_wasm` artifacts. (L) — PR #11 open on GitHub
 
 ### Phase 1 — Fix what's broken (parallel lanes)
-- **B1** forum: replace 3 phantom RPC calls with real `submit_post`/`submit_reply`/`upload_media` + PoW (fixes private-space chat send, profile save, avatar). (M) **✔ DONE** — merged to main (commit 9fbbc1f, PR #3)
+- **B1** forum: replace 3 phantom RPC calls with real `submit_post`/`submit_reply`/`upload_media` + PoW (fixes private-space chat send, profile save, avatar). (M) **✔ DONE** — PR #18: https://github.com/superness/swimchain/pull/18
 - **B2** forum: wire leave-space; delete dead mocks/data.ts; wire keyboard engagement. (S) **✔ DONE** — merged to main (commit 00c75f5, PR #5)
 - **B3** chat: delete dead SpaceChatPage stack + fake hooks (useReactions, useRealTimeUpdates, etc.). (M) — PR #2 open on GitHub
 - **B4** feed: wire followed-user posts via existing `get_user_posts`; remove fabricated local-space fallback. (M) **✔ DONE** — merged to main — PR #7 closed
@@ -165,7 +165,7 @@ F3 (SDK unification) is the highest-leverage item in the program: B10's chat han
 ## Appendix: source audit trails
 
 Per-client detail (file:line evidence for every claim above) lives in the six audit transcripts from 2026-07-01; key anchors:
-- forum phantom RPCs: `ChatView.tsx:93`, `Profile.tsx:132,145,155` **— FIXED in B1 (merged to main)**
+- forum phantom RPCs: `ChatView.tsx:93`, `Profile.tsx:132,145,155` **— FIXED in B1 (PR #18: https://github.com/superness/swimchain/pull/18)**
 - archiver no-op rescue: `AutoEngageEngine.ts:165-259`, `EngageButton.tsx:103` **— FIXED in B6 (merged to main)**
 - mobile fake crypto: `useKeypair.ts` (zero-byte sign), `NativeArgon2Module.kt:187-200`, `NativeArgon2.swift:181-215` — PR #4 open
 - chat dead stack: `SpaceChatPage.tsx` subtree, `useReactions.ts:49-52`, `useRealTimeUpdates.ts:29-67` — PR #2 open
