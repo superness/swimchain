@@ -1092,6 +1092,24 @@ export class SwimchainRpc {
       claimant_pubkey: claimantPubkey,
     });
   }
+
+  /**
+   * Get posts by a specific user
+   * Uses the node's get_user_posts RPC method.
+   * Returns the same ContentResult format as listSpaceContent,
+   * filtered to only include content authored by the given user.
+   */
+  async getUserPosts(params: {
+    userId: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<SpaceContentResult> {
+    return this.call<SpaceContentResult>('get_user_posts', {
+      user_id: params.userId,
+      limit: params.limit ?? 50,
+      offset: params.offset ?? 0,
+    });
+  }
 }
 
 // =========================================================================
