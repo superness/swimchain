@@ -1730,3 +1730,364 @@ export function useInviteToChannel() {
   return { invite, inviting, error };
 }
 
+
+// =========================================================================
+// Private Space Management (invites inbox, membership, kick)
+// =========================================================================
+
+/** A private space (channel) the user is a member of */
+export interface PrivateSpaceInfo {
+  spaceId: string;
+  spaceIdBech32: string;
+  /** Encrypted channel name (hex), decryptable with the channel key */
+  encryptedName?: string;
+  role: 'admin' | 'moderator' | 'member';
+  joinedAt: number;
+  memberCount: number;
+  keyVersion: number;
+}
+
+/** A pending invite to a private space */
+export interface PendingInvite {
+  inviteHash: string;
+  spaceId: string;
+  inviter: string;
+  /** Space key encrypted for the invitee (hex) */
+  encryptedSpaceKey: string;
+  createdAt: number;
+  expiresAt?: number;
+  /** Optional encrypted invite message (hex) */
+  message?: string;
+}
+
+/** A member of a private space */
+export interface SpaceMember {
+  member: string;
+  role: 'admin' | 'moderator' | 'member';
+  joinedAt: number;
+  invitedBy: string;
+}
+
+interface RawPrivateSpace {
+  space_id: string;
+  space_id_bech32: string;
+  encrypted_name?: string | null;
+  role: string;
+  joined_at: number;
+  member_count: number;
+  key_version: number;
+}
+
+interface RawInvite {
+  invite_hash: string;
+  space_id: string;
+  inviter: string;
+  encrypted_space_key: string;
+  created_at: number;
+  expires_at?: number | null;
+  message?: string | null;
+}
+
+interface RawMember {
+  member: string;
+  role: string;
+  joined_at: number;
+  invited_by: string;
+}
+
+function asRole(role: string): 'admin' | 'moderator' | 'member' {
+  return role === 'admin' || role === 'moderator' ? role : 'member';
+}
+
+/**
+ * Hook to list the private spaces (channels) the user is a member of.
+ * Wired to the node's get_my_private_spaces RPC. Polls every 30s.
+ */
+export function usePrivateSpaces(userPublicKey?: string) {
+  const { rpc, connected } = useRpc();
+  const [spaces, setSpaces] = useState<PrivateSpaceInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchSpaces = useCallback(async () => {
+    if (!rpc || !connected || !userPublicKey) return;
+
+    setLoading(true);
+    try {
+      const result = await rpc.call<{ spaces: RawPrivateSpace[] }>(
+        'get_my_private_spaces',
+        { user: userPublicKey }
+      );
+      setSpaces((result.spaces ?? []).map(s => ({
+        spaceId: s.space_id,
+        spaceIdBech32: s.space_id_bech32,
+        encryptedName: s.encrypted_name ?? undefined,
+        role: asRole(s.role),
+        joinedAt: s.joined_at,
+        memberCount: s.member_count,
+        keyVersion: s.key_version,
+      })));
+      setError(null);
+    } catch (err) {
+      console.error('[PrivateSpaces] Fetch failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch private spaces');
+    } finally {
+      setLoading(false);
+    }
+  }, [rpc, connected, userPublicKey]);
+
+  useEffect(() => {
+    fetchSpaces();
+  }, [fetchSpaces]);
+
+  // Poll so newly joined/created channels show up
+  useEffect(() => {
+    if (!connected || !userPublicKey) return;
+    const interval = setInterval(fetchSpaces, 30000);
+    return () => clearInterval(interval);
+  }, [connected, userPublicKey, fetchSpaces]);
+
+  return { spaces, loading, error, refetch: fetchSpaces };
+}
+
+/**
+ * Hook to list pending invites for the user.
+ * Wired to the node's get_my_invites RPC. Polls every 30s.
+ */
+export function useMyInvites(userPublicKey?: string) {
+  const { rpc, connected } = useRpc();
+  const [invites, setInvites] = useState<PendingInvite[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchInvites = useCallback(async () => {
+    if (!rpc || !connected || !userPublicKey) return;
+
+    setLoading(true);
+    try {
+      const result = await rpc.call<{ invites: RawInvite[] }>(
+        'get_my_invites',
+        { user: userPublicKey }
+      );
+      setInvites((result.invites ?? []).map(i => ({
+        inviteHash: i.invite_hash,
+        spaceId: i.space_id,
+        inviter: i.inviter,
+        encryptedSpaceKey: i.encrypted_space_key,
+        createdAt: i.created_at,
+        expiresAt: i.expires_at ?? undefined,
+        message: i.message ?? undefined,
+      })));
+      setError(null);
+    } catch (err) {
+      console.error('[MyInvites] Fetch failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch invites');
+    } finally {
+      setLoading(false);
+    }
+  }, [rpc, connected, userPublicKey]);
+
+  useEffect(() => {
+    fetchInvites();
+  }, [fetchInvites]);
+
+  useEffect(() => {
+    if (!connected || !userPublicKey) return;
+    const interval = setInterval(fetchInvites, 30000);
+    return () => clearInterval(interval);
+  }, [connected, userPublicKey, fetchInvites]);
+
+  return { invites, loading, error, refetch: fetchInvites };
+}
+
+/**
+ * Hook to accept a pending invite (node accept_invite RPC).
+ * No PoW required for accepting per the node handler.
+ */
+export function useAcceptInvite() {
+  const { rpc, connected } = useRpc();
+  const [accepting, setAccepting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const accept = useCallback(async (params: {
+    inviteHash: string;
+    acceptor: string;
+    signature: string;
+    timestamp: number;
+  }): Promise<{ spaceId: string } | null> => {
+    if (!rpc || !connected) {
+      setError('Not connected');
+      return null;
+    }
+
+    setAccepting(true);
+    setError(null);
+
+    try {
+      const result = await rpc.call<{ space_id: string; broadcast: boolean }>(
+        'accept_invite',
+        {
+          invite_hash: params.inviteHash,
+          acceptor: params.acceptor,
+          signature: params.signature,
+          timestamp: params.timestamp,
+        }
+      );
+      return { spaceId: result.space_id };
+    } catch (err) {
+      console.error('[AcceptInvite] Failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to accept invite');
+      return null;
+    } finally {
+      setAccepting(false);
+    }
+  }, [rpc, connected]);
+
+  return { accept, accepting, error };
+}
+
+/**
+ * Hook to decline a pending invite (node decline_invite RPC).
+ */
+export function useDeclineInvite() {
+  const { rpc, connected } = useRpc();
+  const [declining, setDeclining] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const decline = useCallback(async (params: {
+    inviteHash: string;
+    decliner: string;
+    signature: string;
+    timestamp: number;
+  }): Promise<boolean> => {
+    if (!rpc || !connected) {
+      setError('Not connected');
+      return false;
+    }
+
+    setDeclining(true);
+    setError(null);
+
+    try {
+      const result = await rpc.call<{ success: boolean }>(
+        'decline_invite',
+        {
+          invite_hash: params.inviteHash,
+          decliner: params.decliner,
+          signature: params.signature,
+          timestamp: params.timestamp,
+        }
+      );
+      return result.success;
+    } catch (err) {
+      console.error('[DeclineInvite] Failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to decline invite');
+      return false;
+    } finally {
+      setDeclining(false);
+    }
+  }, [rpc, connected]);
+
+  return { decline, declining, error };
+}
+
+/**
+ * Hook to fetch the member list of a private space (node get_space_members RPC).
+ */
+export function useSpaceMembers(spaceId?: string) {
+  const { rpc, connected } = useRpc();
+  const [members, setMembers] = useState<SpaceMember[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchMembers = useCallback(async () => {
+    if (!rpc || !connected || !spaceId) return;
+
+    setLoading(true);
+    try {
+      const result = await rpc.call<{ space_id: string; members: RawMember[]; count: number }>(
+        'get_space_members',
+        { space_id: spaceId }
+      );
+      setMembers((result.members ?? []).map(m => ({
+        member: m.member,
+        role: asRole(m.role),
+        joinedAt: m.joined_at,
+        invitedBy: m.invited_by,
+      })));
+      setError(null);
+    } catch (err) {
+      console.error('[SpaceMembers] Fetch failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to fetch members');
+    } finally {
+      setLoading(false);
+    }
+  }, [rpc, connected, spaceId]);
+
+  useEffect(() => {
+    fetchMembers();
+  }, [fetchMembers]);
+
+  return { members, loading, error, refetch: fetchMembers };
+}
+
+/**
+ * Hook to kick a member from a private space (node kick_member RPC).
+ * Requires admin/moderator role. The caller must provide rotated keys for
+ * all remaining members (key rotation on kick).
+ */
+export function useKickMember() {
+  const { rpc, connected } = useRpc();
+  const [kicking, setKicking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const kick = useCallback(async (params: {
+    spaceId: string;
+    admin: string;
+    member: string;
+    newEncryptedKeys: Record<string, string>;
+    keyVersion: number;
+    powNonce: number;
+    powDifficulty: number;
+    powNonceSpace: string;
+    powHash: string;
+    signature: string;
+    timestamp: number;
+  }): Promise<{ success: boolean; keyVersion: number } | null> => {
+    if (!rpc || !connected) {
+      setError('Not connected');
+      return null;
+    }
+
+    setKicking(true);
+    setError(null);
+
+    try {
+      const result = await rpc.call<{ success: boolean; key_version: number; broadcast: boolean }>(
+        'kick_member',
+        {
+          space_id: params.spaceId,
+          admin: params.admin,
+          member: params.member,
+          new_encrypted_keys: params.newEncryptedKeys,
+          key_version: params.keyVersion,
+          pow_nonce: params.powNonce,
+          pow_difficulty: params.powDifficulty,
+          pow_nonce_space: params.powNonceSpace,
+          pow_hash: params.powHash,
+          signature: params.signature,
+          timestamp: params.timestamp,
+        }
+      );
+      return { success: result.success, keyVersion: result.key_version };
+    } catch (err) {
+      console.error('[KickMember] Failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to kick member');
+      return null;
+    } finally {
+      setKicking(false);
+    }
+  }, [rpc, connected]);
+
+  return { kick, kicking, error };
+}

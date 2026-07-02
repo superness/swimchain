@@ -10,6 +10,7 @@ import { useWikiNamespaces } from '../hooks/useWikiNamespaces';
 import { renderMarkdown } from '../lib/markdown';
 import { parseWikiLinks } from '../lib/wikilinks';
 import { extractTableOfContents } from '../lib/toc';
+import { ReportModal, ReportButton, SpamBadge } from '../components/ReportModal';
 import type { TableOfContentsItem } from '../types/wiki';
 import './WikiPageView.css';
 
@@ -58,6 +59,7 @@ export function WikiPageView(): JSX.Element {
   const { data: page, loading, error } = useWikiPage(pageId ?? null);
   const { data: namespaces } = useWikiNamespaces();
   const [activeTocId] = useState<string | null>(null);
+  const [showReportModal, setShowReportModal] = useState(false);
 
   // Find namespace name
   const namespaceName = useMemo(() => {
@@ -152,8 +154,15 @@ export function WikiPageView(): JSX.Element {
                   {decay.label}: {decay.text} alive
                 </span>
               )}
+              {pageId && <SpamBadge contentId={pageId} />}
+              <ReportButton onReport={() => setShowReportModal(true)} />
             </div>
           </div>
+
+          {/* Report modal (spam attestation, SPEC_12 §3) */}
+          {showReportModal && pageId && (
+            <ReportModal contentId={pageId} onClose={() => setShowReportModal(false)} />
+          )}
 
           {/* Layout: TOC + content */}
           <div className="wiki-page-view__body">

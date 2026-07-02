@@ -450,10 +450,7 @@ async fn handle_request(
         "sign_message",
         // Read-only content methods - public data, no auth needed
         "list_spaces",
-        "list_threads",
         "list_posts_for_space",
-        "get_space",
-        "get_thread",
         "get_replies",
         "get_content",
         "get_identity_level",
@@ -467,8 +464,6 @@ async fn handle_request(
         "reject_sponsorship_claim",
         "list_my_sponsorship_offers",
         "get_sponsorship_offer",        // Alias used by forum-client
-        "get_sponsorship_offer_detail",
-        "get_my_pending_claim",
     ];
 
     // In regtest mode, exempt all read-only methods from auth for easier testing

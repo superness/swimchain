@@ -20,6 +20,8 @@ import {
   type PoWSolution,
 } from '@swimchain/frontend';
 import { renderMarkdown } from '../lib/markdown';
+import { decodeRevisionBody } from '../lib/revision';
+import { ReportModal } from '../components/ReportModal';
 import './Discussion.css';
 
 interface DiscussionReply {
@@ -128,10 +130,12 @@ function ReplyThread({
   reply,
   depth,
   onReply,
+  onReport,
 }: {
   reply: DiscussionReply;
   depth: number;
   onReply: (parentId: string) => void;
+  onReport: (contentId: string) => void;
 }): JSX.Element {
   return (
     <div className={`disc-reply${depth > 0 ? ' disc-reply--nested' : ''}`}>
@@ -149,6 +153,13 @@ function ReplyThread({
         >
           Reply
         </button>
+        <button
+          className="disc-reply__reply-btn"
+          onClick={() => onReport(reply.id)}
+          title="Report this comment"
+        >
+          Report
+        </button>
       </div>
       <div
         className="disc-reply__body"
@@ -162,6 +173,7 @@ function ReplyThread({
               reply={child}
               depth={depth + 1}
               onReply={onReply}
+              onReport={onReport}
             />
           ))}
         </div>
@@ -181,6 +193,7 @@ export function Discussion(): JSX.Element {
   const [replies, setReplies] = useState<DiscussionReply[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reportContentId, setReportContentId] = useState<string | null>(null);
 
   // Reply form state
   const [replyBody, setReplyBody] = useState('');
@@ -208,11 +221,15 @@ export function Discussion(): JSX.Element {
         sort: 'recent',
       });
 
-      // Filter to only replies under this page
-      const pageReplies = result.items.filter(item => {
+      // Filter to only replies under this page, excluding revision replies
+      // (page edits carry the wiki-revision header — they belong in History)
+      const nonRevisionItems = result.items.filter(
+        item => !decodeRevisionBody(item.body ?? item.body_preview ?? '').isRevision
+      );
+      const pageReplies = nonRevisionItems.filter(item => {
         if (item.parent_id === pageId) return true;
         // Also include nested replies whose parent is already in the set
-        const parentIds = new Set(result.items.map(i => i.content_id));
+        const parentIds = new Set(nonRevisionItems.map(i => i.content_id));
         return parentIds.has(item.parent_id ?? '');
       });
 
@@ -253,8 +270,12 @@ export function Discussion(): JSX.Element {
     setMiningProgress(0);
 
     try {
-      // Create PoW challenge for reply
-      const contentBytes = new TextEncoder().encode(`${targetParentId}:${replyBody.trim()}`);
+      // Create PoW challenge for reply.
+      // IMPORTANT: mine over the exact body bytes submitted — the node
+      // re-hashes params.body in verify_pow_submission, so any prefix here
+      // makes the content hash mismatch and every comment gets rejected
+      // with "PoW verification failed".
+      const contentBytes = new TextEncoder().encode(replyBody.trim());
       const authorPubkey = hexToBytes(identity.publicKey);
       const difficulty = TESTNET_DIFFICULTY[ActionType.Reply];
       const challenge = await createChallenge(ActionType.Reply, contentBytes, authorPubkey, difficulty);
@@ -381,9 +402,15 @@ export function Discussion(): JSX.Element {
               reply={reply}
               depth={0}
               onReply={handleReplyTo}
+              onReport={setReportContentId}
             />
           ))}
         </div>
+      )}
+
+      {/* Report modal (spam attestation, SPEC_12 §3) */}
+      {reportContentId && (
+        <ReportModal contentId={reportContentId} onClose={() => setReportContentId(null)} />
       )}
 
       {/* Reply form */}
