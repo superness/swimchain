@@ -41,19 +41,24 @@ function isOriginAllowed(origin: string): boolean {
   return ALLOWED_ORIGINS.some(allowed => origin.startsWith(allowed));
 }
 
+// Dev-mode detection that doesn't require Vite client types
+// (import.meta.env is injected by Vite; absent in other runtimes)
+const IS_DEV: boolean =
+  (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true;
+
 // Set up message listener once
 if (typeof window !== 'undefined') {
   window.addEventListener('message', (event) => {
     // Validate origin before accepting any config
     if (!isOriginAllowed(event.origin)) {
-      if (import.meta.env.DEV) {
+      if (IS_DEV) {
         console.warn('[ParentConfig] Rejected message from untrusted origin:', event.origin);
       }
       return;
     }
 
     if (event.data?.type === 'SWIMCHAIN_RPC_CONFIG') {
-      if (import.meta.env.DEV) {
+      if (IS_DEV) {
         console.log('[ParentConfig] Received RPC config from parent:', {
           origin: event.origin,
           endpoint: event.data.rpcEndpoint,

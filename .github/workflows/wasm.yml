@@ -4,14 +4,14 @@ on:
   push:
     branches: [main]
     paths:
-      - "chainsocial-wasm/**"
-      - "chainsocial-js/**"
+      - "swimchain-wasm/**"
+      - "swimchain-js/**"
       - ".github/workflows/wasm.yml"
   pull_request:
     branches: [main]
     paths:
-      - "chainsocial-wasm/**"
-      - "chainsocial-js/**"
+      - "swimchain-wasm/**"
+      - "swimchain-js/**"
       - ".github/workflows/wasm.yml"
 
 env:
@@ -34,17 +34,17 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: chainsocial-wasm
+          workspaces: swimchain-wasm
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Build WASM
-        run: wasm-pack build chainsocial-wasm --target web --release
+        run: wasm-pack build swimchain-wasm --target web --release
 
       - name: Check bundle size (gzipped)
         run: |
-          WASM_FILE="chainsocial-wasm/pkg/chainsocial_wasm_bg.wasm"
+          WASM_FILE="swimchain-wasm/pkg/swimchain_wasm_bg.wasm"
           if [ ! -f "$WASM_FILE" ]; then
             echo "ERROR: WASM file not found at $WASM_FILE"
             exit 1
@@ -73,7 +73,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wasm-pkg
-          path: chainsocial-wasm/pkg/
+          path: swimchain-wasm/pkg/
           retention-days: 7
 
   test-wasm:
@@ -91,13 +91,13 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: chainsocial-wasm
+          workspaces: swimchain-wasm
 
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Run WASM tests
-        run: wasm-pack test --node chainsocial-wasm
+        run: wasm-pack test --node swimchain-wasm
 
   build-js:
     name: Build JavaScript
@@ -115,18 +115,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: wasm-pkg
-          path: chainsocial-js/pkg/
+          path: swimchain-js/pkg/
 
       - name: Install dependencies
-        working-directory: chainsocial-js
+        working-directory: swimchain-js
         run: npm install
 
       - name: Build TypeScript
-        working-directory: chainsocial-js
+        working-directory: swimchain-js
         run: npm run build:ts
 
       - name: Type check
-        working-directory: chainsocial-js
+        working-directory: swimchain-js
         run: npx tsc --noEmit
 
   build-react:
@@ -145,24 +145,24 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: wasm-pkg
-          path: chainsocial-js/pkg/
+          path: swimchain-js/pkg/
 
       - name: Install JS package dependencies
-        working-directory: chainsocial-js
+        working-directory: swimchain-js
         run: npm install
 
       - name: Build JS package
-        working-directory: chainsocial-js
+        working-directory: swimchain-js
         run: npm run build:ts
 
       - name: Install React package dependencies
-        working-directory: chainsocial-react
+        working-directory: swimchain-react
         run: npm install
 
       - name: Build React package
-        working-directory: chainsocial-react
+        working-directory: swimchain-react
         run: npm run build
 
       - name: Type check
-        working-directory: chainsocial-react
+        working-directory: swimchain-react
         run: npx tsc --noEmit

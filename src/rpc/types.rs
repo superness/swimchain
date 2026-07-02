@@ -1284,6 +1284,59 @@ pub struct KickMemberResult {
     pub broadcast: bool,
 }
 
+/// Blocklist entry info for list_blocklist result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlocklistEntryInfo {
+    /// SHA-256 hash of the blocked content (hex)
+    pub content_hash: String,
+    /// Reason for blocking ("CSAM", "Terrorism", "External List")
+    pub reason: String,
+    /// Unix timestamp when first added
+    pub added_at: u64,
+    /// Public key of node that first reported (hex)
+    pub source_node: String,
+    /// Number of propagation confirmations
+    pub confirmations: u32,
+    /// Number of attestations backing the entry
+    pub attestation_count: u32,
+}
+
+/// list_blocklist result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListBlocklistResult {
+    /// All blocklist entries
+    pub entries: Vec<BlocklistEntryInfo>,
+    /// Total number of entries
+    pub count: u32,
+    /// Merkle root over all entry hashes (hex)
+    pub merkle_root: String,
+}
+
+/// manage_blocklist params
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManageBlocklistParams {
+    /// Action to perform: "add" or "remove"
+    pub action: String,
+    /// SHA-256 hash of the content (32-byte hex)
+    pub content_hash: String,
+    /// Reason for adding: "csam", "terrorism", or "external_list" (default)
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// manage_blocklist result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManageBlocklistResult {
+    /// Whether the operation succeeded
+    pub success: bool,
+    /// The action performed
+    pub action: String,
+    /// The content hash affected (hex)
+    pub content_hash: String,
+    /// Total blocklist entry count after the operation
+    pub count: u32,
+}
+
 /// get_my_invites params
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetMyInvitesParams {

@@ -3,7 +3,7 @@
  * Uses Vite's ?url import to properly bundle the WASM file
  */
 
-// Import the WASM module directly from local copy (renamed from chainsocial_wasm)
+// Import the WASM module directly from local copy
 import init, * as wasm from "./swimchain_wasm.js";
 // Import WASM as URL - Vite will bundle this correctly
 import wasmUrl from "./swimchain_wasm_bg.wasm?url";

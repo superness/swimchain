@@ -102,6 +102,7 @@ pub struct NodeManager {
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
     peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
+    pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
 
     // Runtime state
     state: Arc<RwLock<NodeState>>,
@@ -168,6 +169,7 @@ impl NodeManager {
             branch_subscription_manager: None,
             peer_branch_tracker: None,
             search_index: None,
+            pool_manager: None,
             state: Arc::new(RwLock::new(NodeState::Stopped)),
             sync_state: Arc::new(tokio::sync::RwLock::new(SyncState::Idle)),
             metrics: RwLock::new(NodeMetrics::new()),
@@ -664,6 +666,11 @@ impl NodeManager {
         self.peer_branch_tracker = Some(peer_branch_tracker.clone());
         info!("[BRANCH-SYNC] Branch subscription manager and peer tracker initialized");
 
+        // 4.8. Initialize engagement pool manager (SPEC_03 §7, SPEC_08 §3.3)
+        // Shared between the message router (network gossip) and RPC methods
+        let pool_manager = Arc::new(RwLock::new(crate::content::pool::PoolManager::new()));
+        self.pool_manager = Some(pool_manager.clone());
+
         // 4.8. Initialize message router with all subsystems
         let metrics = Arc::new(NodeMetrics::new());
         let mut router_builder = MessageRouter::builder()
@@ -672,6 +679,7 @@ impl NodeManager {
             .data_dir(self.config.data_dir.clone()) // For multi-hop propagation
             .decay_integration(decay_integration.clone()) // For decay tracking
             .connection_pool(connection_pool.clone()) // For block relay broadcasting
+            .pool_manager(pool_manager) // For engagement pool gossip
             .branch_subscription_manager(branch_subscription_manager) // For branch-selective sync
             .peer_branch_tracker(peer_branch_tracker); // For tracking peer branches
 
@@ -1363,6 +1371,7 @@ impl NodeManager {
             shutdown_tx: rpc_shutdown_tx,
             identity_name: Arc::new(tokio::sync::RwLock::new(self.config.identity_name.clone())),
             search_index: self.search_index.clone(),
+            pool_manager: self.pool_manager.clone(),
         });
 
         // Create RPC methods

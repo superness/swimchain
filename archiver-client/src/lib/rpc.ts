@@ -1,6 +1,7 @@
 /**
- * Swimchain RPC Client - Analytics Client (Read-Only)
- * Simplified version without WASM/signing for read-only analytics
+ * Swimchain RPC Client - Archiver Client
+ * Reads via HTTP/JSON-RPC; signing is delegated to the node's identity
+ * via the localhost-exempt sign_message method (no client-side keys).
  */
 
 // =========================================================================
@@ -151,6 +152,17 @@ export interface SubmitEngagementParams {
   timestamp: number;
   /** Optional emoji type (1-8) */
   emoji?: number;
+}
+
+/**
+ * Response from sign_message JSON-RPC call.
+ * The node signs with its own identity keypair (localhost only).
+ */
+export interface SignMessageResult {
+  /** Ed25519 signature (64-byte hex, 128 hex chars) */
+  signature: string;
+  /** Public key the node signed with (32-byte hex, 64 hex chars) */
+  public_key: string;
 }
 
 /**
@@ -367,6 +379,44 @@ export class SwimchainRpc {
   }
 
   /**
+   * Sign a message with the node's identity keypair via JSON-RPC.
+   *
+   * The node's sign_message method is localhost-exempt from auth so browser
+   * clients can use the node identity. The message is hex-encoded before
+   * sending, as required by the node.
+   *
+   * @param message - UTF-8 message to sign
+   * @returns Signature and the public key that signed it
+   * @throws Error if the RPC call fails or the node returns an error
+   */
+  async signMessage(message: string): Promise<SignMessageResult> {
+    const messageHex = Array.from(new TextEncoder().encode(message))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+
+    const response = await fetchWithTimeout(this.baseUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'sign_message',
+        params: { message: messageHex },
+        id: 1,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`sign_message failed: HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.error) {
+      throw new Error(`sign_message failed: ${data.error.message ?? JSON.stringify(data.error)}`);
+    }
+    return data.result as SignMessageResult;
+  }
+
+  /**
    * Submit engagement PoW for content via JSON-RPC.
    *
    * Sends the solved Argon2id PoW proof to the node, which records
@@ -375,42 +425,42 @@ export class SwimchainRpc {
    *
    * @param params - Engagement parameters including solved PoW and signature
    * @returns Response indicating whether engagement was recorded
+   * @throws Error if the RPC call fails or the node rejects the submission
    */
-  async submitEngagement(params: SubmitEngagementParams): Promise<SubmitEngagementResponse | null> {
-    try {
-      const response = await fetchWithTimeout(this.baseUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          method: 'submit_engagement',
-          params: {
-            content_id: params.content_id,
-            author_id: params.author_id,
-            pow_nonce: params.pow_nonce,
-            pow_difficulty: params.pow_difficulty,
-            pow_nonce_space: params.pow_nonce_space,
-            pow_hash: params.pow_hash,
-            signature: params.signature,
-            timestamp: params.timestamp,
-            emoji: params.emoji,
-          },
-          id: 1,
-        }),
-      });
+  async submitEngagement(params: SubmitEngagementParams): Promise<SubmitEngagementResponse> {
+    const response = await fetchWithTimeout(this.baseUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'submit_engagement',
+        params: {
+          content_id: params.content_id,
+          author_id: params.author_id,
+          pow_nonce: params.pow_nonce,
+          pow_difficulty: params.pow_difficulty,
+          pow_nonce_space: params.pow_nonce_space,
+          pow_hash: params.pow_hash,
+          signature: params.signature,
+          timestamp: params.timestamp,
+          emoji: params.emoji,
+        },
+        id: 1,
+      }),
+    });
 
-      if (!response.ok) return null;
-
-      const data = await response.json();
-      if (data.error) {
-        console.error('[RPC] submit_engagement error:', data.error);
-        return null;
-      }
-      return data.result as SubmitEngagementResponse;
-    } catch (error) {
-      console.error('[RPC] submit_engagement failed:', error);
-      return null;
+    if (!response.ok) {
+      throw new Error(`submit_engagement failed: HTTP ${response.status}`);
     }
+
+    const data = await response.json();
+    if (data.error) {
+      console.error('[RPC] submit_engagement error:', data.error);
+      throw new Error(
+        `submit_engagement rejected: ${data.error.message ?? JSON.stringify(data.error)}`
+      );
+    }
+    return data.result as SubmitEngagementResponse;
   }
 }
 

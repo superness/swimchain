@@ -4,4 +4,5 @@
 export * from './action-pow';
 export * from './encryption';
 export * from './x25519';
+export * from './dm';
 //# sourceMappingURL=index.js.map

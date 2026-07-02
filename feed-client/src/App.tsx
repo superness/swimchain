@@ -14,6 +14,7 @@ import { CreatePrivateSpace } from './pages/CreatePrivateSpace';
 import { SponsorshipPage } from './pages/Sponsorship';
 import { SpaceView } from './pages/SpaceView';
 import { SavedPosts } from './pages/SavedPosts';
+import { DmInbox } from './pages/DmInbox';
 import { IdentityProvider } from './providers/IdentityProvider';
 import { RequireIdentity } from './components/RequireIdentity';
 import { SponsorshipProvider } from './hooks/useSponsorship';
@@ -62,6 +63,13 @@ export function App(): JSX.Element {
               <Route path="/settings" element={
                 <RequireIdentity>
                   <Settings />
+                </RequireIdentity>
+              } />
+
+              {/* DM inbox */}
+              <Route path="/dm" element={
+                <RequireIdentity>
+                  <DmInbox />
                 </RequireIdentity>
               } />
 

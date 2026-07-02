@@ -163,22 +163,6 @@
   background: var(--color-bg-secondary);
 }
 
-.footer-links {
-  display: flex;
-  justify-content: center;
-  gap: var(--spacing-lg);
-  margin-bottom: var(--spacing-sm);
-}
-
-.footer-links a {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-tertiary);
-}
-
-.footer-links a:hover {
-  color: var(--color-text-primary);
-}
-
 .footer-info {
   text-align: center;
 }
