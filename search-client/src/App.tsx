@@ -17,20 +17,25 @@ export function App(): JSX.Element {
         <Route path="/identity" element={<IdentityPage />} />
         <Route path="/" element={<Home />} />
         <Route path="/search" element={<Results />} />
-        <Route path="/space/:spaceId" element={<RedirectToForum type="space" />} />
-        <Route path="/thread/:threadId" element={<RedirectToForum type="thread" />} />
-        <Route path="/user/:userId" element={<RedirectToForum type="user" />} />
+        <Route path="/space/:spaceId" element={<RedirectToApp type="space" />} />
+        <Route path="/post/:postId" element={<RedirectToApp type="post" />} />
+        <Route path="/thread/:threadId" element={<RedirectToApp type="post" />} />
+        <Route path="/user/:userId" element={<RedirectToApp type="user" />} />
+        <Route path="/profile/:userPk" element={<RedirectToApp type="user" />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </MainLayout></BrowserRouter></ToastProvider></IdentityProvider>
   );
 }
 
-interface RedirectToForumProps { type: 'space' | 'thread' | 'user'; }
+interface RedirectToAppProps { type: 'space' | 'post' | 'user'; }
 
-function RedirectToForum({ type }: RedirectToForumProps) {
-  const baseUrl = import.meta.env.VITE_FORUM_CLIENT_URL || 'http://localhost:5173';
-  window.location.href = baseUrl + window.location.pathname;
-  const labels: Record<string, string> = { space: 'space', thread: 'thread', user: 'profile' };
+function RedirectToApp({ type }: RedirectToAppProps) {
+  const targetUrl = import.meta.env.VITE_DEEP_LINK_URL || 'http://localhost:5174';
+  let path = window.location.pathname;
+  if (path.startsWith('/thread/')) path = path.replace('/thread/', '/post/');
+  if (path.startsWith('/user/')) path = path.replace('/user/', '/profile/');
+  window.location.href = targetUrl + path;
+  const labels: Record<string, string> = { space: 'space', post: 'post', user: 'profile' };
   return <div style={{padding:'2rem',textAlign:'center',color:'#666'}}><p>Opening {labels[type]}...</p></div>;
 }
