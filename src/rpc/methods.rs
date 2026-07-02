@@ -9568,10 +9568,19 @@ impl RpcMethods {
             );
         }
 
-        // Broadcast accept action (no PoW required for accept)
+        // Broadcast AcceptInvite action (no PoW required for accept per spec)
         let mut broadcast = false;
-        // Note: Accept actions don't require PoW per the spec
-        // TODO: Create and broadcast AcceptInvite action
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::network::messages::ActionAnnouncePayload;
+            use crate::types::network::{MessageEnvelope, MessageType};
+            let payload = ActionAnnouncePayload::new(invite_hash, {
+                let mut sid = [0u8; 32];
+                sid[..16].copy_from_slice(&invite.space_id);
+                sid
+            }, b"ACCEPT_INVITE".to_vec());
+            let envelope = MessageEnvelope::new_fork_agnostic(MessageType::ActionAnnounce, payload.to_bytes().to_vec());
+            broadcast = pool.broadcast(&envelope).await > 0;
+        }
 
         let result = AcceptInviteResult {
             space_id: hex::encode(&invite.space_id),
@@ -9797,10 +9806,19 @@ impl RpcMethods {
             }
         }
 
-        // Broadcast leave action (no PoW required for leave)
+        // Broadcast Leave action (no PoW required for leave per spec)
         let mut broadcast = false;
-        // Note: Leave actions don't require PoW per the spec
-        // TODO: Create and broadcast Leave action
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::network::messages::ActionAnnouncePayload;
+            use crate::types::network::{MessageEnvelope, MessageType};
+            let payload = ActionAnnouncePayload::new([0u8; 32], {
+                let mut sid = [0u8; 32];
+                sid[..16].copy_from_slice(&space_id);
+                sid
+            }, b"LEAVE_SPACE".to_vec());
+            let envelope = MessageEnvelope::new_fork_agnostic(MessageType::ActionAnnounce, payload.to_bytes().to_vec());
+            broadcast = pool.broadcast(&envelope).await > 0;
+        }
 
         let result = LeaveSpaceResult {
             success: true,
@@ -10011,6 +10029,150 @@ impl RpcMethods {
             }
         }
 
+        // Parse signature bytes for actions
+        let mut sig_bytes = [0u8; 64];
+        if let Ok(s) = hex::decode(&params.signature) {
+            if s.len() == 64 {
+                sig_bytes.copy_from_slice(&s);
+            }
+        }
+
+        // Pad space_id (16 bytes) to 32 bytes for actions
+        let mut space_id_32 = [0u8; 32];
+        space_id_32[..16].copy_from_slice(&space_id);
+
+        // Timestamp for actions
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(params.timestamp);
+
+        // Create and broadcast Kick + KeyRotation actions
+        let mut broadcast = false;
+
+        if let Some(ref block_builder) = self.node.block_builder {
+            // --- Kick Action ---
+            let kick_action = Action {
+                action_type: crate::blocks::ActionType::Kick,
+                actor: admin_pk,
+                timestamp: now,
+                content_hash: Some(member_pk),
+                parent_id: Some(space_id_32),
+                pow_nonce: 0,
+                pow_work: 0,
+                pow_target: [0u8; 32],
+                signature: sig_bytes,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            // --- KeyRotation Action ---
+            // Compute content_hash = sha256(space_id || key_version || all_new_encrypted_keys...)
+            let key_rotation_payload_hash = {
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(&space_id);
+                hasher.update(&params.key_version.to_le_bytes());
+                // Append all new encrypted keys in sorted order for determinism
+                let mut sorted_keys: Vec<(&String, &String)> = params.new_encrypted_keys.iter().collect();
+                sorted_keys.sort_by(|a, b| a.0.cmp(b.0));
+                for (_member_hex, encrypted_key_hex) in &sorted_keys {
+                    if let Ok(enc_bytes) = hex::decode(encrypted_key_hex) {
+                        hasher.update(&enc_bytes);
+                    }
+                }
+                let result = hasher.finalize();
+                let mut hash = [0u8; 32];
+                hash.copy_from_slice(&result);
+                hash
+            };
+
+            let key_rotation_action = Action {
+                action_type: crate::blocks::ActionType::KeyRotation,
+                actor: admin_pk,
+                timestamp: now,
+                content_hash: Some(key_rotation_payload_hash),
+                parent_id: Some(space_id_32),
+                pow_nonce: 0,
+                pow_work: 0,
+                pow_target: [0u8; 32],
+                signature: sig_bytes,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            // Add both actions to block builder
+            let kick_added = match block_builder.write() {
+                Ok(mut builder) => {
+                    let thread_id = space_id_32;
+                    let added = builder.add_action(thread_id, space_id_32, kick_action.clone(), BranchPath::root());
+                    if added {
+                        info!("[KICK] Added Kick action to block builder");
+                    }
+                    added
+                }
+                Err(e) => {
+                    warn!("[KICK] Failed to acquire block builder lock for Kick: {:?}", e);
+                    false
+                }
+            };
+
+            let kr_added = match block_builder.write() {
+                Ok(mut builder) => {
+                    let thread_id = space_id_32;
+                    let added = builder.add_action(thread_id, space_id_32, key_rotation_action.clone(), BranchPath::root());
+                    if added {
+                        info!("[KICK] Added KeyRotation action to block builder");
+                    }
+                    added
+                }
+                Err(e) => {
+                    warn!("[KICK] Failed to acquire block builder lock for KeyRotation: {:?}", e);
+                    false
+                }
+            };
+
+            // Broadcast both actions to peers if added
+            if kick_added || kr_added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    if kick_added {
+                        let action_data = kick_action.serialize();
+                        let payload = ActionAnnouncePayload::new(space_id_32, space_id_32, action_data);
+                        let envelope = MessageEnvelope::new_fork_agnostic(
+                            MessageType::ActionAnnounce,
+                            payload.to_bytes().to_vec(),
+                        );
+                        let sent = pool.broadcast(&envelope).await;
+                        if sent > 0 {
+                            broadcast = true;
+                        }
+                        info!("[KICK] Broadcast Kick action to {} peers", sent);
+                    }
+
+                    if kr_added {
+                        let action_data = key_rotation_action.serialize();
+                        let payload = ActionAnnouncePayload::new(space_id_32, space_id_32, action_data);
+                        let envelope = MessageEnvelope::new_fork_agnostic(
+                            MessageType::ActionAnnounce,
+                            payload.to_bytes().to_vec(),
+                        );
+                        let sent = pool.broadcast(&envelope).await;
+                        if sent > 0 {
+                            broadcast = true;
+                        }
+                        info!("[KICK] Broadcast KeyRotation action to {} peers", sent);
+                    }
+                }
+            }
+        }
+
         info!(
             "[KICK] Kicked {} from space {}, rotated {} keys to version {}",
             &params.member[..16],
@@ -10022,7 +10184,7 @@ impl RpcMethods {
         let result = KickMemberResult {
             success: true,
             key_version: params.key_version,
-            broadcast: false, // TODO: Create and broadcast Kick + KeyRotation actions
+            broadcast,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
