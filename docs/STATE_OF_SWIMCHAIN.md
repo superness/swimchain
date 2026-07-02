@@ -134,7 +134,7 @@ Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parit
 - **B1** forum: replace 3 phantom RPC calls with real `submit_post`/`submit_reply`/`upload_media` + PoW (fixes private-space chat send, profile save, avatar). (M)
 - **B2** forum: wire leave-space; delete dead mocks/data.ts; wire keyboard engagement. (S)
 - **B3** chat: delete dead SpaceChatPage stack + fake hooks (useReactions, useRealTimeUpdates, etc.). (M)
-- **B4** feed: wire followed-user posts via existing `get_user_posts`; remove fabricated local-space fallback. (M)
+- **[x] B4** feed: wire followed-user posts via existing `get_user_posts`; remove fabricated local-space fallback. (M)
 - **B5** search: delete MacroRegimeCard; fix dead footer routes; unify deep-link target. (S)
 - **B6** archiver: add `submit_engagement` to its RPC client and actually submit mined PoW; replace locally-fabricated pool status with authoritative re-poll. (L) ← *top correctness fix in the fleet*
 - **B7** bridge: ship/document IRC WebSocket proxy; queue (don't drop) messages during mining; thread inbound as replies. (M)

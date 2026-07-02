@@ -236,13 +236,26 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
       }
     });
 
-    // TODO: When user posts endpoint is available, fetch from users
-    // For now, we'll only fetch from spaces
-    // const userPromises = users.map(async (user) => { ... });
+    // Fetch posts from followed users via get_user_posts RPC
+    const userPromises = users.map(async (user) => {
+      try {
+        const result = await rpc.getUserPosts({
+          userId: user.id,
+          limit: FETCH_LIMIT_PER_SOURCE,
+        });
+        return result.items.map(item =>
+          mapContentToFeedItem(item, 'user', user.id, user.displayName)
+        );
+      } catch (err) {
+        console.error('[Feed] Failed to fetch user posts for ' + user.id + ':', err);
+        errors.push('User ' + (user.displayName ?? user.id) + ': ' + err);
+        return [];
+      }
+    });
 
-    const spaceResults = await Promise.all(spacePromises);
-    for (const spaceItems of spaceResults) {
-      items.push(...spaceItems);
+    const allResults = await Promise.all([...spacePromises, ...userPromises]);
+    for (const sourceItems of allResults) {
+      items.push(...sourceItems);
     }
 
     if (errors.length > 0 && items.length === 0) {

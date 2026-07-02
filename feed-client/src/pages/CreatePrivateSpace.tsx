@@ -125,20 +125,10 @@ export function CreatePrivateSpace(): JSX.Element {
         );
 
         success('Private space created!');
-        // Navigate to discover or the new space
+        // Navigate to the new space
         navigate(`/space/${result.spaceId}`);
       } else {
-        // Fallback: store locally if RPC fails
-        console.warn('RPC failed, storing locally with generated ID');
-        await storeSpaceKey(
-          spaceId,
-          spaceKey,
-          userPublicKeyHex,
-          0,
-          name
-        );
-        success('Private space created locally!');
-        navigate(`/space/${spaceId}`);
+        throw new Error('RPC returned empty result - private space creation failed');
       }
 
     } catch (err) {

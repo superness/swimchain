@@ -1092,6 +1092,22 @@ export class SwimchainRpc {
       claimant_pubkey: claimantPubkey,
     });
   }
+
+  /**
+   * Get posts by a specific user
+   * Returns content authored by the given user, ordered by recency.
+   */
+  async getUserPosts(params: {
+    userId: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<SpaceContentResult> {
+    return this.call<SpaceContentResult>('get_user_posts', {
+      user_id: params.userId,
+      limit: params.limit ?? 50,
+      offset: params.offset ?? 0,
+    });
+  }
 }
 
 // =========================================================================
