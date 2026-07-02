@@ -56,7 +56,7 @@ export default function SearchRankingDocsPage() {
             <tr>
               <td>Heat (Decay)</td>
               <td>{(RANKING_WEIGHTS.HEAT_DECAY * 100).toFixed(0)}%</td>
-              <td>Content's survival probability based on decay</td>
+              <td>Content&apos;s survival probability based on decay</td>
             </tr>
             <tr>
               <td>Engagement Pool</td>
@@ -121,7 +121,7 @@ export default function SearchRankingDocsPage() {
 
         <h3>Text Relevance (40%)</h3>
         <p>
-          Search should primarily return relevant results. If you search for "rust async",
+          Search should primarily return relevant results. If you search for &quot;rust async&quot;,
           content about Rust async programming should rank higher than unrelated content,
           even if that content has more engagement.
         </p>

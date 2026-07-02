@@ -44,6 +44,18 @@ function createSnippet(body: string | null): string {
 }
 
 /**
+ * Strip a leading title line from body text (bodies often use the
+ * "Title\n\nBody" inline format), so snippets don't repeat the title.
+ */
+function stripTitle(body: string | null, title: string): string | null {
+  if (!body) return body;
+  if (title && body.startsWith(title)) {
+    return body.slice(title.length).replace(/^\n+/, '');
+  }
+  return body;
+}
+
+/**
  * Format address for display (short format).
  * cs1q9x7...2k4m
  */
@@ -76,9 +88,12 @@ export class SearchIndexer {
 
   /**
    * Add or update a document in the index
+   *
+   * @param content - Content from the node
+   * @param spaceName - Optional human-readable space name (defaults to space_id)
    */
-  addDocument(content: ContentResponse): void {
-    const doc = this.contentResponseToDocument(content);
+  addDocument(content: ContentResponse, spaceName?: string): void {
+    const doc = this.contentResponseToDocument(content, spaceName);
     this.documents.set(doc.contentId, doc);
     this.contentResponses.set(doc.contentId, content);
     this.needsRebuild = true;
@@ -163,7 +178,7 @@ export class SearchIndexer {
           spaceName: doc.spaceName,
           authorId: content.item.author_id,
           title: doc.title,
-          body: createSnippet(content.item.body_inline),
+          body: createSnippet(stripTitle(content.item.body_inline, doc.title)),
           createdAt: doc.createdAt,
           lastEngagement: content.item.last_engagement,
           replyCount: doc.replyCount,
@@ -204,7 +219,7 @@ export class SearchIndexer {
         spaceName: doc.spaceName,
         authorId: content.item.author_id,
         title: doc.title,
-        body: createSnippet(content.item.body_inline),
+        body: createSnippet(stripTitle(content.item.body_inline, doc.title)),
         createdAt: doc.createdAt,
         lastEngagement: content.item.last_engagement,
         replyCount: doc.replyCount,
@@ -255,13 +270,13 @@ export class SearchIndexer {
   /**
    * Convert ContentResponse to IndexedDocument
    */
-  private contentResponseToDocument(content: ContentResponse): IndexedDocument {
+  private contentResponseToDocument(content: ContentResponse, spaceName?: string): IndexedDocument {
     const body = content.item.body_inline || '';
     return {
       contentId: content.item.content_id,
       title: extractTitle(content.item.body_inline),
       body,
-      spaceName: content.item.space_id, // TODO: map to human-readable name
+      spaceName: spaceName || content.item.space_id,
       authorAddress: formatAddressShort(content.item.author_id),
       createdAt: content.item.created_at,
       survivalProbability: content.survival_probability,

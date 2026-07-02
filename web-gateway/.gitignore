@@ -1,0 +1,9 @@
+# Next.js build output
+.next/
+out/
+
+# TypeScript incremental build info
+tsconfig.tsbuildinfo
+
+# Local env files
+.env*.local

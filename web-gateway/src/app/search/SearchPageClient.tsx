@@ -34,118 +34,6 @@ function parseFiltersFromParams(sp: URLSearchParams) {
   };
 }
 
-// Mock data for demonstration
-const MOCK_RESULTS: SearchResult[] = [
-  {
-    contentId: 'post-1',
-    spaceId: 'rust-lang',
-    spaceName: 'rust-lang',
-    authorId: 'cs1q9x7yf8z3k4n5m6p7q8r9s0t1u2v3w4x5y6z7a8b2k4m',
-    title: 'Async traits finally stable in Rust 1.75!',
-    body: 'After years of waiting, async traits are now stable in Rust. This is a huge milestone for the ecosystem...',
-    createdAt: Date.now() - 2 * 60 * 60 * 1000, // 2 hours ago
-    lastEngagement: Date.now() - 30 * 60 * 1000,
-    replyCount: 47,
-    survivalProbability: 0.82,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 168,
-    pool: {
-      poolId: 'pool-1',
-      contributedSeconds: 45,
-      requiredSeconds: 60,
-      contributorCount: 12,
-      timeRemainingMs: 900000,
-      progressPercentage: 75,
-    },
-    scoreBreakdown: {
-      textRelevance: 85,
-      heatDecay: 82,
-      engagementPool: 75,
-      recency: 95,
-      totalScore: 84.3,
-      contributions: {
-        textRelevance: 34,
-        heatDecay: 20.5,
-        engagementPool: 15,
-        recency: 14.25,
-      },
-    },
-  },
-  {
-    contentId: 'post-2',
-    spaceId: 'rust-lang',
-    spaceName: 'rust-lang',
-    authorId: 'cs1qab3cd4ef5gh6ij7kl8mn9op0qr1st2uv3wx4yz5ab',
-    title: 'Performance tips for Rust beginners',
-    body: 'Here are some tips I wish I knew when I started with Rust performance optimization...',
-    createdAt: Date.now() - 8 * 60 * 60 * 1000, // 8 hours ago
-    lastEngagement: Date.now() - 2 * 60 * 60 * 1000,
-    replyCount: 23,
-    survivalProbability: 0.71,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 144,
-    pool: {
-      poolId: 'pool-2',
-      contributedSeconds: 30,
-      requiredSeconds: 60,
-      contributorCount: 8,
-      timeRemainingMs: 1800000,
-      progressPercentage: 50,
-    },
-    scoreBreakdown: {
-      textRelevance: 70,
-      heatDecay: 71,
-      engagementPool: 50,
-      recency: 80,
-      totalScore: 69.75,
-      contributions: {
-        textRelevance: 28,
-        heatDecay: 17.75,
-        engagementPool: 10,
-        recency: 12,
-      },
-    },
-  },
-  {
-    contentId: 'post-3',
-    spaceId: 'boston',
-    spaceName: 'boston',
-    authorId: 'cs1qcd5ef6gh7ij8kl9mn0op1qr2st3uv4wx5yz6ab7cd',
-    title: 'Best coffee shops near Kendall Square?',
-    body: 'Just moved to the area. Looking for good spots to work from. Bonus points for outdoor seating!',
-    createdAt: Date.now() - 4 * 60 * 60 * 1000, // 4 hours ago
-    lastEngagement: Date.now() - 1 * 60 * 60 * 1000,
-    replyCount: 12,
-    survivalProbability: 0.67,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 120,
-    pool: {
-      poolId: 'pool-3',
-      contributedSeconds: 20,
-      requiredSeconds: 60,
-      contributorCount: 5,
-      timeRemainingMs: 2400000,
-      progressPercentage: 33,
-    },
-    scoreBreakdown: {
-      textRelevance: 40,
-      heatDecay: 67,
-      engagementPool: 33,
-      recency: 88,
-      totalScore: 52.95,
-      contributions: {
-        textRelevance: 16,
-        heatDecay: 16.75,
-        engagementPool: 6.6,
-        recency: 13.2,
-      },
-    },
-  },
-];
-
 export function SearchPageClient({
   initialQuery,
   initialSpace,
@@ -183,8 +71,10 @@ export function SearchPageClient({
   const [sortBy, setSortBy] = useState<SortOption>(
     (initialSort as SortOption) || 'relevance'
   );
-  const [results, setResults] = useState<SearchResult[]>(MOCK_RESULTS);
+  const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [nodeOffline, setNodeOffline] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showBreakdown, setShowBreakdown] = useState(false);
 
   // Update URL when filters change
@@ -216,50 +106,37 @@ export function SearchPageClient({
     if (parsedFilters) setFilters(parsedFilters);
   }, [searchParams?.toString()]);
 
-  // Perform search
+  // Perform search against live node content via the gateway search API
   const performSearch = useCallback(async (searchQuery: string) => {
     setIsLoading(true);
+    setError(null);
 
-    // In production, this would call the search API
-    // For now, filter mock data
-    await new Promise(resolve => setTimeout(resolve, 300));
+    try {
+      const params = new URLSearchParams();
+      if (searchQuery) params.set('q', searchQuery);
+      if (filters.space) params.set('space', filters.space);
+      if (filters.author) params.set('author', filters.author);
+      if (filters.minHeat) params.set('minHeat', String(filters.minHeat));
+      if (filters.minEngagement) params.set('minEngagement', String(filters.minEngagement));
+      if (filters.timeRange && filters.timeRange !== 'all') params.set('time', filters.timeRange);
+      if (filters.includeDecaying) params.set('decaying', 'true');
+      params.set('sort', sortBy);
+      params.set('pageSize', '50');
 
-    let filtered = [...MOCK_RESULTS];
-
-    if (searchQuery) {
-      const lowerQuery = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        r =>
-          r.title.toLowerCase().includes(lowerQuery) ||
-          r.body.toLowerCase().includes(lowerQuery)
-      );
+      const response = await fetch(`/api/search/query?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`Search request failed (HTTP ${response.status})`);
+      }
+      const data = await response.json();
+      setResults(Array.isArray(data.results) ? data.results : []);
+      setNodeOffline(Boolean(data.nodeOffline));
+    } catch {
+      setResults([]);
+      setNodeOffline(true);
+      setError('Search is unavailable right now.');
+    } finally {
+      setIsLoading(false);
     }
-
-    if (filters.space) {
-      filtered = filtered.filter(r => r.spaceName === filters.space);
-    }
-
-    if (filters.minHeat) {
-      filtered = filtered.filter(r => r.survivalProbability * 100 >= filters.minHeat!);
-    }
-
-    // Sort
-    switch (sortBy) {
-      case 'heat':
-        filtered.sort((a, b) => b.survivalProbability - a.survivalProbability);
-        break;
-      case 'newest':
-        filtered.sort((a, b) => b.createdAt - a.createdAt);
-        break;
-      case 'replies':
-        filtered.sort((a, b) => b.replyCount - a.replyCount);
-        break;
-      default:
-        filtered.sort((a, b) => b.scoreBreakdown.totalScore - a.scoreBreakdown.totalScore);
-    }
-
-    setResults(filtered);
-    setIsLoading(false);
   }, [filters, sortBy]);
 
   // Handle search
@@ -283,10 +160,10 @@ export function SearchPageClient({
     updateURL();
   }, [query, filters, sortBy]);
 
-  // Initial search
+  // Re-run search when query, filters, or sort change
   useEffect(() => {
     performSearch(query);
-  }, []);
+  }, [performSearch, query]);
 
   return (
     <div className="search-page-client">
@@ -304,6 +181,16 @@ export function SearchPageClient({
         onSortChange={handleSortChange}
       />
 
+      {nodeOffline && (
+        <div className="node-offline-notice" role="status">
+          <strong>Node offline</strong>
+          <p>
+            The gateway could not reach its Swimchain node. Search results are
+            temporarily unavailable — please try again shortly.
+          </p>
+        </div>
+      )}
+
       <div className="results-header">
         <span className="results-count">
           {isLoading ? 'Searching...' : `${results.length} results`}
@@ -319,9 +206,9 @@ export function SearchPageClient({
       </div>
 
       <div className="results-list">
-        {results.length === 0 && !isLoading && (
+        {results.length === 0 && !isLoading && !nodeOffline && (
           <div className="no-results">
-            <p>No results found.</p>
+            <p>{error ?? 'No results found.'}</p>
             <p className="text-muted">Try adjusting your search or filters.</p>
           </div>
         )}

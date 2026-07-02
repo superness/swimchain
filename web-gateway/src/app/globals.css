@@ -986,3 +986,24 @@ button.primary:hover {
 .posts-list {
   margin-top: 1rem;
 }
+
+/* Node offline notice (shown when the gateway cannot reach its node) */
+.node-offline-notice {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-warning, #b58900);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+  margin: 1.5rem 0;
+}
+
+.node-offline-notice strong {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--color-warning, #b58900);
+}
+
+.node-offline-notice p {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}

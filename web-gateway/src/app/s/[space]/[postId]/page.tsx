@@ -1,148 +1,37 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
+import { cache } from 'react';
 import type { ContentResponse } from '@/types/gateway';
 import { HeatIndicator } from '@/components/HeatIndicator';
 import { PoolDisplay } from '@/components/PoolDisplay';
 import { AddressDisplay } from '@/components/AddressDisplay';
 import { ReadOnlyReplyTree } from '@/components/ReadOnlyReplyTree';
 import { StructuredData } from '@/components/StructuredData';
+import { NodeOfflineNotice } from '@/components/NodeOfflineNotice';
+import { fetchPost } from '@/lib/node-service';
 
 interface PageProps {
   params: Promise<{ space: string; postId: string }>;
 }
 
-// Mock data
-function getMockPost(space: string, postId: string): ContentResponse | null {
-  return {
-    item: {
-      content_id: postId,
-      author_id: 'cs1q9x7yf8z3k4n5m6p7q8r9s0t1u2v3w4x5y6z7a8b2k4m',
-      signature: 'mock-signature',
-      created_at: Date.now() - 2 * 60 * 60 * 1000,
-      last_engagement: Date.now() - 30 * 60 * 1000,
-      content_type: 'POST',
-      parent_id: null,
-      space_id: space,
-      body_inline: `# Async traits finally stable in Rust 1.75!
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-After years of waiting, async traits are now stable in Rust. This is a huge milestone for the ecosystem.
-
-## What this means:
-
-1. No more \`#[async_trait]\` macro needed
-2. Better error messages
-3. Improved performance
-4. Native support in the compiler
-
-This opens up so many possibilities for async Rust development. Tower, Axum, and other frameworks will benefit greatly from this.
-
-What are your thoughts? How will this change your codebases?`,
-      content_hash: null,
-      content_size: null,
-      pow_nonce: 12345678,
-      pow_difficulty: 16,
-      engagement_count: 47,
-    },
-    survival_probability: 0.82,
-    is_decayed: false,
-    is_protected: false,
-    hours_until_decay: 168,
-    pool: {
-      poolId: 'pool-1',
-      contributedSeconds: 45,
-      requiredSeconds: 60,
-      contributorCount: 12,
-      timeRemainingMs: 900000,
-      progressPercentage: 75,
-    },
-    children: [
-      {
-        item: {
-          content_id: 'reply-1',
-          author_id: 'cs1qab3cd4ef5gh6ij7kl8mn9op0qr1st2uv3wx4yz5ab',
-          signature: 'mock-sig',
-          created_at: Date.now() - 1 * 60 * 60 * 1000,
-          last_engagement: Date.now() - 45 * 60 * 1000,
-          content_type: 'REPLY',
-          parent_id: postId,
-          space_id: space,
-          body_inline: 'This is huge! I\'ve been waiting for this for my web server project. The ecosystem implications are massive!',
-          content_hash: null,
-          content_size: null,
-          pow_nonce: 23456789,
-          pow_difficulty: 14,
-          engagement_count: 8,
-        },
-        survival_probability: 0.78,
-        is_decayed: false,
-        is_protected: false,
-        hours_until_decay: 144,
-        pool: null,
-        children: [
-          {
-            item: {
-              content_id: 'reply-1-1',
-              author_id: 'cs1q9x7yf8z3k4n5m6p7q8r9s0t1u2v3w4x5y6z7a8b2k4m',
-              signature: 'mock-sig',
-              created_at: Date.now() - 45 * 60 * 1000,
-              last_engagement: Date.now() - 30 * 60 * 1000,
-              content_type: 'REPLY',
-              parent_id: 'reply-1',
-              space_id: space,
-              body_inline: 'Right? I expect we\'ll see major framework updates within weeks.',
-              content_hash: null,
-              content_size: null,
-              pow_nonce: 34567890,
-              pow_difficulty: 14,
-              engagement_count: 3,
-            },
-            survival_probability: 0.75,
-            is_decayed: false,
-            is_protected: false,
-            hours_until_decay: 120,
-            pool: null,
-            children: [],
-          },
-        ],
-      },
-      {
-        item: {
-          content_id: 'reply-2',
-          author_id: 'cs1qcd5ef6gh7ij8kl9mn0op1qr2st3uv4wx5yz6ab7cd',
-          signature: 'mock-sig',
-          created_at: Date.now() - 30 * 60 * 1000,
-          last_engagement: Date.now() - 15 * 60 * 1000,
-          content_type: 'REPLY',
-          parent_id: postId,
-          space_id: space,
-          body_inline: 'Any benchmarks yet? I\'m curious about the overhead compared to the macro approach.',
-          content_hash: null,
-          content_size: null,
-          pow_nonce: 45678901,
-          pow_difficulty: 14,
-          engagement_count: 5,
-        },
-        survival_probability: 0.85,
-        is_decayed: false,
-        is_protected: false,
-        hours_until_decay: 192,
-        pool: null,
-        children: [],
-      },
-    ],
-  };
-}
+// Deduplicate the fetch between generateMetadata and the page render
+const getPost = cache(async (postId: string) => fetchPost(postId));
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { space, postId } = await params;
-  const post = getMockPost(space, postId);
+  const result = await getPost(decodeURIComponent(postId));
 
-  if (!post) {
-    return {
-      title: 'Post Not Found',
-    };
+  if (result.status === 'offline') {
+    return { title: 'Post (node offline)' };
+  }
+  if (result.status === 'not-found') {
+    return { title: 'Post Not Found' };
   }
 
+  const post = result.data;
   const title = extractTitle(post.item.body_inline);
   const description = createSnippet(post.item.body_inline);
 
@@ -166,12 +55,29 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function PostPage({ params }: PageProps) {
   const { space, postId } = await params;
-  const post = getMockPost(space, postId);
+  const decodedSpace = decodeURIComponent(space);
+  const result = await getPost(decodeURIComponent(postId));
 
-  if (!post) {
+  if (result.status === 'not-found') {
     notFound();
   }
 
+  if (result.status === 'offline') {
+    return (
+      <div className="post-page">
+        <div className="breadcrumb">
+          <a href="/spaces">Spaces</a>
+          <span className="separator">/</span>
+          <a href={`/spaces/${encodeURIComponent(decodedSpace)}`}>s/{decodedSpace}</a>
+          <span className="separator">/</span>
+          <span>Post</span>
+        </div>
+        <NodeOfflineNotice context="this post" />
+      </div>
+    );
+  }
+
+  const post = result.data;
   const title = extractTitle(post.item.body_inline);
   const timeAgo = formatTimeAgo(post.item.created_at);
   const replyCount = countReplies(post);
@@ -204,7 +110,9 @@ export default async function PostPage({ params }: PageProps) {
       <div className="breadcrumb">
         <a href="/spaces">Spaces</a>
         <span className="separator">/</span>
-        <a href={`/spaces/${encodeURIComponent(space)}`}>s/{space}</a>
+        <a href={`/spaces/${encodeURIComponent(post.item.space_id || decodedSpace)}`}>
+          s/{decodedSpace}
+        </a>
         <span className="separator">/</span>
         <span>Post</span>
       </div>
