@@ -150,6 +150,27 @@ async fn get_rpc_auth(state: tauri::State<'_, AppState>) -> Result<String, Strin
     Ok(auth)
 }
 
+/// Encode a raw 32-byte Ed25519 public key as a Swimchain Bech32m address.
+///
+/// Mirrors the node's `encode_address_from_pubkey` (src/crypto/address.rs,
+/// SPEC_01 §4.2) exactly: Bech32m, HRP "cs", payload = version byte (0)
+/// followed by the raw 32-byte public key. Uses the same bech32 crate ("0.11")
+/// as the node so the encoding is byte-for-byte identical.
+fn encode_cs_address(pubkey: &[u8]) -> Result<String, String> {
+    use bech32::{Bech32m, Hrp};
+
+    if pubkey.len() != 32 {
+        return Err(format!("Invalid public key length: {}", pubkey.len()));
+    }
+
+    let hrp = Hrp::parse("cs").expect("valid HRP");
+    let mut payload = Vec::with_capacity(33);
+    payload.push(0u8); // ADDRESS_VERSION per SPEC_01 §3.3
+    payload.extend_from_slice(pubkey);
+    bech32::encode::<Bech32m>(hrp, &payload)
+        .map_err(|e| format!("Failed to encode address: {}", e))
+}
+
 #[tauri::command]
 async fn check_identity(state: tauri::State<'_, AppState>) -> Result<IdentityInfo, String> {
     // Identity is stored at data_dir/identity.enc
@@ -172,15 +193,7 @@ async fn check_identity(state: tauri::State<'_, AppState>) -> Result<IdentityInf
         // Extract public key (bytes 5-37)
         let pubkey = &data[5..37];
 
-        // Generate address from public key using Bech32m
-        // Format: cs1<bech32m encoding of 0x00 || pubkey_hash>
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(pubkey);
-        let pubkey_hash: [u8; 32] = hasher.finalize().into();
-
-        // Simple hex address for now (proper Bech32m would need the bech32 crate)
-        let address = format!("cs1{}", hex::encode(&pubkey_hash[..20]));
+        let address = encode_cs_address(pubkey)?;
 
         Ok(IdentityInfo {
             exists: true,
@@ -290,6 +303,36 @@ struct IdentityInfo {
     exists: bool,
     name: Option<String>,
     address: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_cs_address;
+
+    /// Vectors generated with an independent BIP-350 reference implementation
+    /// of Bech32m (hrp "cs", payload = 0x00 version byte || 32-byte pubkey),
+    /// matching the node's encode_address_from_pubkey (src/crypto/address.rs).
+    #[test]
+    fn encodes_known_vectors() {
+        assert_eq!(
+            encode_cs_address(&[0xAB; 32]).unwrap(),
+            "cs1qz46h2at4w46h2at4w46h2at4w46h2at4w46h2at4w46h2at4w46kfp5fks"
+        );
+        let sequential: Vec<u8> = (0..32).collect();
+        assert_eq!(
+            encode_cs_address(&sequential).unwrap(),
+            "cs1qqqqzqsrqszsvpcgpy9qkrqdpc83qygjzv2p29shrqv35xcur50p7wdd7la"
+        );
+        assert_eq!(
+            encode_cs_address(&[0x00; 32]).unwrap(),
+            "cs1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq0x36sr"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_length() {
+        assert!(encode_cs_address(&[0u8; 20]).is_err());
+    }
 }
 
 fn main() {

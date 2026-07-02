@@ -29,6 +29,9 @@ interface IdentityInfo {
 type AppStage = "checking" | "onboarding" | "unlock" | "starting" | "ready" | "error";
 type ClientType = "forum" | "chat" | "feed" | "search";
 
+// Dev-only debug tooling (screenshots, verbose logging) is disabled in production builds
+const IS_DEV = import.meta.env.DEV;
+
 // Logger that writes to file via Tauri command
 const log = (level: string, message: string, data?: unknown) => {
   const logLine = data ? `${message} ${JSON.stringify(data)}` : message;
@@ -36,8 +39,9 @@ const log = (level: string, message: string, data?: unknown) => {
   invoke("write_client_log", { client: "desktop-app", level, message: logLine }).catch(() => {});
 };
 
-// Screenshot utility - takes a screenshot and saves it with a label
+// Screenshot utility (dev only) - takes a screenshot and saves it with a label
 const takeScreenshot = async (label: string): Promise<string | null> => {
+  if (!IS_DEV) return null;
   try {
     const path = await invoke<string>("take_screenshot", { label });
     log("info", `Screenshot saved: ${path}`);
@@ -48,12 +52,12 @@ const takeScreenshot = async (label: string): Promise<string | null> => {
   }
 };
 
-// Expose screenshot function globally for debugging
-(window as unknown as { takeScreenshot: typeof takeScreenshot }).takeScreenshot = takeScreenshot;
+// Expose screenshot function globally for debugging (dev only)
+if (IS_DEV) {
+  (window as unknown as { takeScreenshot: typeof takeScreenshot }).takeScreenshot = takeScreenshot;
+}
 
 function App() {
-  log("info", "===== App COMPONENT RENDERING =====");
-
   const [stage, setStage] = useState<AppStage>("checking");
   const [error, setError] = useState<string | null>(null);
   const [nodeStatus, setNodeStatus] = useState<NodeStatus | null>(null);
@@ -192,27 +196,25 @@ function App() {
     }
   };
 
-  // Log stage changes and take screenshot
+  // Dev only: log stage changes and auto-screenshot for debugging
   useEffect(() => {
-    log("info", "===== STAGE CHANGED =====", { stage, hasRpcEndpoint: !!rpcEndpoint, hasRpcAuth: !!rpcAuth });
-    // Auto-screenshot on stage changes for debugging
+    if (!IS_DEV) return;
+    log("info", "Stage changed", { stage, hasRpcEndpoint: !!rpcEndpoint, hasRpcAuth: !!rpcAuth });
     takeScreenshot(`stage-${stage}`);
   }, [stage, rpcEndpoint, rpcAuth]);
 
-  // Keyboard shortcut for manual screenshot (F9 or Ctrl+Shift+P)
+  // Dev only: keyboard shortcut for manual screenshot (F9 or Ctrl+Shift+P)
   useEffect(() => {
+    if (!IS_DEV) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      log("debug", "Key pressed:", { key: e.key, ctrl: e.ctrlKey, shift: e.shiftKey });
       // F9 as simple trigger (F12 is devtools)
       if (e.key === 'F9') {
         e.preventDefault();
-        log("info", "F9 pressed - taking screenshot");
         takeScreenshot('manual-f9');
       }
       // Ctrl+Shift+P as backup (P for picture)
       if (e.ctrlKey && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
         e.preventDefault();
-        log("info", "Ctrl+Shift+P pressed - taking screenshot");
         takeScreenshot('manual');
       }
     };
@@ -440,7 +442,7 @@ function App() {
         identity={identity}
         selectedClient={selectedClient}
         onClientChange={setSelectedClient}
-        onScreenshot={() => takeScreenshot('manual-btn')}
+        onScreenshot={IS_DEV ? () => takeScreenshot('manual-btn') : undefined}
       />
       <ClientFrame
         client={selectedClient}

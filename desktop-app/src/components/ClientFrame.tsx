@@ -24,9 +24,10 @@ const log = (level: string, message: string, data?: unknown) => {
   invoke("write_client_log", { client: "desktop-app", level, message: `[ClientFrame] ${logLine}` }).catch(() => {});
 };
 
-export function ClientFrame({ client, rpcEndpoint, rpcAuth }: ClientFrameProps): JSX.Element {
-  log("info", "===== ClientFrame MOUNTING =====", { client, rpcEndpoint, hasAuth: !!rpcAuth });
+// Dev-only verbose logging
+const IS_DEV = import.meta.env.DEV;
 
+export function ClientFrame({ client, rpcEndpoint, rpcAuth }: ClientFrameProps): JSX.Element {
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   // Send RPC config to iframe when it loads
@@ -35,7 +36,7 @@ export function ClientFrame({ client, rpcEndpoint, rpcAuth }: ClientFrameProps):
     if (!iframe) return;
 
     const handleLoad = () => {
-      log("info", "IFRAME LOADED - sending RPC config via postMessage", { client, rpcEndpoint });
+      if (IS_DEV) log("info", "Iframe loaded - sending RPC config via postMessage", { client, rpcEndpoint });
       // Send RPC config to the client via postMessage
       // Use specific origin instead of '*' to prevent credential interception
       iframe.contentWindow?.postMessage({

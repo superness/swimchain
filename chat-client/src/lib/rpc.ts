@@ -102,6 +102,8 @@ export interface RpcConfig {
     username: string;
     password: string;
   };
+  /** Raw Authorization header value (e.g., 'Basic base64...') - takes precedence over auth */
+  authHeader?: string;
   /** Signature auth: hex-encoded 32-byte seed (private key) */
   seed?: string;
   /** Signature auth: hex-encoded 32-byte public key */
@@ -146,6 +148,7 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
 export class SwimchainRpc {
   private endpoint: string;
   private auth?: { username: string; password: string };
+  private authHeader?: string;
   private keypair: WasmKeypair | null = null;
   private publicKeyHex: string | null = null;
   private remoteSignFn: RemoteSignFunction | null = null;
@@ -158,6 +161,7 @@ export class SwimchainRpc {
   constructor(config: RpcConfig) {
     this.endpoint = config.endpoint;
     this.auth = config.auth;
+    this.authHeader = config.authHeader;
     this.timeout = config.timeout ?? 30000;
 
     // Initialize keypair from seed if provided
@@ -259,6 +263,10 @@ export class SwimchainRpc {
         message,
         signatureLength: signatureHex.length,
       });
+    } else if (this.authHeader) {
+      // Use raw auth header (e.g., from parent frame via SWIMCHAIN_RPC_CONFIG)
+      headers['Authorization'] = this.authHeader;
+      console.log('[RPC Auth] Using provided auth header');
     } else if (this.auth) {
       // Fall back to basic auth
       const credentials = `${this.auth.username}:${this.auth.password}`;

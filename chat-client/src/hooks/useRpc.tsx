@@ -11,6 +11,7 @@ import {
   getLocalConfigWithAuth,
   isInTauri,
 } from '../lib/rpc';
+import { getParentConfig, isInIframe } from '@swimchain/frontend';
 import type { Space, Reply, SyncStatus, StoredIdentity, Message, DecayInfo, PoolState } from '../types';
 
 /**
@@ -159,10 +160,27 @@ export function RpcProvider({ children }: { children: ReactNode }) {
    * Build RPC config with identity for signature auth
    */
   const buildConfigWithIdentity = async (): Promise<RpcConfig> => {
-    // Get base config - in Tauri, this includes cookie auth
-    const baseConfig = isInTauri()
-      ? await getLocalConfigWithAuth('testnet')
-      : LOCAL_CONFIG;
+    // Get base config - check sources in order of priority:
+    // 1. Parent frame config (when running in desktop-app iframe)
+    // 2. Tauri (standalone Tauri app with cookie auth)
+    // 3. Local fallback (development)
+    let baseConfig: RpcConfig;
+
+    const parentConfig = getParentConfig();
+    if (parentConfig && isInIframe()) {
+      console.log('[RPC] Using parent frame config:', {
+        endpoint: parentConfig.rpcEndpoint,
+        hasAuth: !!parentConfig.rpcAuth,
+      });
+      baseConfig = {
+        endpoint: parentConfig.rpcEndpoint,
+        authHeader: parentConfig.rpcAuth,
+      };
+    } else if (isInTauri()) {
+      baseConfig = await getLocalConfigWithAuth('testnet');
+    } else {
+      baseConfig = LOCAL_CONFIG;
+    }
 
     // Load identity for signature auth (browser clients)
     const identity = loadStoredIdentity();
@@ -244,6 +262,50 @@ export function RpcProvider({ children }: { children: ReactNode }) {
       }
     }, 1000);
 
+    // If running in iframe, wait for parent config before connecting.
+    // The parent frame (desktop-app) sends config via postMessage after iframe loads.
+    if (isInIframe() && !getParentConfig()) {
+      console.log('[RPC] In iframe without parent config - waiting for postMessage...');
+
+      const handleParentConfig = () => {
+        console.log('[RPC] Parent config received, connecting...');
+        if (retryInterval) {
+          clearInterval(retryInterval);
+          retryInterval = null;
+        }
+        doConnect().then(success => {
+          if (success) {
+            console.log('[RPC] Connected with parent-provided config');
+          } else {
+            console.log('[RPC] Failed to connect with parent config, will retry...');
+            retryInterval = setInterval(async () => {
+              if (await doConnect()) {
+                console.log('[RPC] Connected to node via parent config');
+                if (retryInterval) clearInterval(retryInterval);
+              }
+            }, 5000);
+          }
+        });
+      };
+
+      // Listen for parent config via message event
+      // (the shared useParentRpcConfig listener stores it; we just trigger connect)
+      const messageHandler = (event: MessageEvent) => {
+        if (event.data?.type === 'SWIMCHAIN_RPC_CONFIG') {
+          handleParentConfig();
+          window.removeEventListener('message', messageHandler);
+        }
+      };
+      window.addEventListener('message', messageHandler);
+
+      return () => {
+        if (retryInterval) clearInterval(retryInterval);
+        if (identityCheckInterval) clearInterval(identityCheckInterval);
+        window.removeEventListener('message', messageHandler);
+      };
+    }
+
+    // Not in iframe or already have parent config - connect normally
     autoConnect();
 
     // Clean up intervals on unmount
