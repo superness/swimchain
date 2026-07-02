@@ -128,6 +128,45 @@ export interface PoolForContentResult {
   expires_at: number;
 }
 
+/**
+ * Parameters for submit_engagement JSON-RPC call.
+ * Matches the node's SubmitEngagementParams struct.
+ */
+export interface SubmitEngagementParams {
+  /** Content ID to engage with (sha256:... format) */
+  content_id: string;
+  /** Author public key (32-byte hex, 64 hex chars) */
+  author_id: string;
+  /** Engagement PoW nonce */
+  pow_nonce: number;
+  /** PoW difficulty */
+  pow_difficulty: number;
+  /** PoW nonce space (8-byte hex, 16 hex chars) */
+  pow_nonce_space: string;
+  /** PoW hash (32-byte hex, 64 hex chars) */
+  pow_hash: string;
+  /** Ed25519 signature (64-byte hex, 128 hex chars) */
+  signature: string;
+  /** Timestamp (unix seconds) */
+  timestamp: number;
+  /** Optional emoji type (1-8) */
+  emoji?: number;
+}
+
+/**
+ * Response from submit_engagement JSON-RPC call.
+ */
+export interface SubmitEngagementResponse {
+  /** Whether the engagement was recorded (decay timer reset) */
+  engaged: boolean;
+  /** Whether a reaction was stored (always false, goes to mempool) */
+  reaction_stored: boolean;
+  /** The content ID that was engaged */
+  content_id: string;
+  /** The emoji that was sent (null if none) */
+  emoji: number | null;
+}
+
 // =========================================================================
 // RPC Client
 // =========================================================================
@@ -325,6 +364,53 @@ export class SwimchainRpc {
     }
 
     return response.json();
+  }
+
+  /**
+   * Submit engagement PoW for content via JSON-RPC.
+   *
+   * Sends the solved Argon2id PoW proof to the node, which records
+   * the engagement (resets decay timer) and adds an ENGAGE action
+   * to the block builder for network propagation.
+   *
+   * @param params - Engagement parameters including solved PoW and signature
+   * @returns Response indicating whether engagement was recorded
+   */
+  async submitEngagement(params: SubmitEngagementParams): Promise<SubmitEngagementResponse | null> {
+    try {
+      const response = await fetchWithTimeout(this.baseUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'submit_engagement',
+          params: {
+            content_id: params.content_id,
+            author_id: params.author_id,
+            pow_nonce: params.pow_nonce,
+            pow_difficulty: params.pow_difficulty,
+            pow_nonce_space: params.pow_nonce_space,
+            pow_hash: params.pow_hash,
+            signature: params.signature,
+            timestamp: params.timestamp,
+            emoji: params.emoji,
+          },
+          id: 1,
+        }),
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      if (data.error) {
+        console.error('[RPC] submit_engagement error:', data.error);
+        return null;
+      }
+      return data.result as SubmitEngagementResponse;
+    } catch (error) {
+      console.error('[RPC] submit_engagement failed:', error);
+      return null;
+    }
   }
 }
 
