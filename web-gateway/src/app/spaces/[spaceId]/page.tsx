@@ -1,94 +1,104 @@
 import type { Metadata } from 'next';
+import { notFound } from 'next/navigation';
 import type { SpaceActivitySummary, ContentResponse } from '@/types/gateway';
 import { SearchResultCard } from '@/components/SearchResultCard';
-import type { SearchResult } from '@/types/search';
+import { getNodeRpc } from '@/lib/node-rpc';
 
 interface PageProps {
   params: Promise<{ spaceId: string }>;
 }
 
-// Mock data
-const MOCK_SPACE: SpaceActivitySummary = {
-  space_id: 'abcd1234efgh5678',
-  space_name: 'rust-lang',
-  description: 'The Rust programming language community. Share code, ask questions, discuss features.',
-  post_count: 892,
-  active_posts: 42,
-  unique_participants: 234,
-  last_activity: Date.now() - 2 * 60 * 60 * 1000,
-  decay_health: 82,
-  created_at: Date.parse('2024-01-15'),
-};
+/**
+ * Fetch space info from the node via RPC.
+ */
+async function fetchSpace(spaceId: string): Promise<SpaceActivitySummary | null> {
+  try {
+    const rpc = getNodeRpc();
+    return await rpc.getSpaceInfo(spaceId);
+  } catch (error) {
+    console.error(`[SpacePage] Failed to fetch space ${spaceId}:`, error);
+    return null;
+  }
+}
 
-const MOCK_POSTS: SearchResult[] = [
-  {
-    contentId: 'post-1',
-    spaceId: 'rust-lang',
-    spaceName: 'rust-lang',
-    authorId: 'cs1q9x7yf8z3k4n5m6p7q8r9s0t1u2v3w4x5y6z7a8b2k4m',
-    title: 'Async traits finally stable in Rust 1.75!',
-    body: 'After years of waiting, async traits are now stable in Rust...',
-    createdAt: Date.now() - 2 * 60 * 60 * 1000,
-    lastEngagement: Date.now() - 30 * 60 * 1000,
-    replyCount: 47,
-    survivalProbability: 0.82,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 168,
-    pool: {
-      poolId: 'pool-1',
-      contributedSeconds: 45,
-      requiredSeconds: 60,
-      contributorCount: 12,
-      timeRemainingMs: 900000,
-      progressPercentage: 75,
-    },
+/**
+ * Fetch posts in a space from the node.
+ */
+async function fetchSpacePosts(spaceId: string): Promise<ContentResponse[]> {
+  try {
+    const rpc = getNodeRpc();
+    return await rpc.getSpaceContent(spaceId, 50, 0);
+  } catch (error) {
+    console.error(`[SpacePage] Failed to fetch posts for ${spaceId}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Convert ContentResponse to a simplified card format for rendering.
+ */
+function contentToCard(post: ContentResponse) {
+  const body = post.item.body_inline || '';
+  const snippet = body.length > 200 ? body.slice(0, 197) + '...' : body;
+  const title = extractTitle(body);
+
+  return {
+    contentId: post.item.content_id,
+    spaceId: post.item.space_id,
+    spaceName: post.item.space_id,
+    authorId: post.item.author_id,
+    title,
+    body: snippet,
+    createdAt: post.item.created_at,
+    lastEngagement: post.item.last_engagement,
+    replyCount: countReplies(post),
+    survivalProbability: post.survival_probability,
+    isDecayed: post.is_decayed,
+    isProtected: post.is_protected,
+    hoursUntilDecay: post.hours_until_decay,
+    pool: post.pool,
     scoreBreakdown: {
       textRelevance: 0,
-      heatDecay: 82,
-      engagementPool: 75,
-      recency: 95,
-      totalScore: 55.55,
-      contributions: { textRelevance: 0, heatDecay: 20.5, engagementPool: 15, recency: 14.25 },
+      heatDecay: post.survival_probability * 100,
+      engagementPool: post.pool ? (post.pool.contributedSeconds / 60) * 100 : 0,
+      recency: normalizeRecency(post.item.created_at),
+      totalScore: 0,
+      contributions: { textRelevance: 0, heatDecay: 0, engagementPool: 0, recency: 0 },
     },
-  },
-  {
-    contentId: 'post-2',
-    spaceId: 'rust-lang',
-    spaceName: 'rust-lang',
-    authorId: 'cs1qab3cd4ef5gh6ij7kl8mn9op0qr1st2uv3wx4yz5ab',
-    title: 'Performance tips for Rust beginners',
-    body: 'Here are some tips I wish I knew when I started...',
-    createdAt: Date.now() - 8 * 60 * 60 * 1000,
-    lastEngagement: Date.now() - 2 * 60 * 60 * 1000,
-    replyCount: 23,
-    survivalProbability: 0.71,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 144,
-    pool: {
-      poolId: 'pool-2',
-      contributedSeconds: 30,
-      requiredSeconds: 60,
-      contributorCount: 8,
-      timeRemainingMs: 1800000,
-      progressPercentage: 50,
-    },
-    scoreBreakdown: {
-      textRelevance: 0,
-      heatDecay: 71,
-      engagementPool: 50,
-      recency: 80,
-      totalScore: 49.75,
-      contributions: { textRelevance: 0, heatDecay: 17.75, engagementPool: 10, recency: 12 },
-    },
-  },
-];
+  };
+}
+
+function extractTitle(body: string): string {
+  const firstLine = body.split('\n')[0]?.replace(/^#+\s*/, '').trim() ?? '';
+  if (firstLine.length > 0 && firstLine.length <= 100) return firstLine;
+  if (body.length <= 100) return body.trim();
+  return body.slice(0, 97).trim() + '...';
+}
+
+function countReplies(post: ContentResponse): number {
+  let count = post.children?.length ?? 0;
+  for (const child of post.children ?? []) {
+    count += countReplies(child);
+  }
+  return count;
+}
+
+function normalizeRecency(createdAt: number): number {
+  const ageMs = Date.now() - createdAt;
+  if (ageMs <= 0) return 100;
+  const hoursOld = ageMs / (1000 * 60 * 60);
+  return Math.max(0, 100 * Math.exp(-hoursOld / 24));
+}
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { spaceId } = await params;
-  // In production, fetch space data
-  const space = MOCK_SPACE;
+  const space = await fetchSpace(spaceId);
+
+  if (!space) {
+    return {
+      title: 'Space Not Found',
+    };
+  }
 
   return {
     title: `s/${space.space_name}`,
@@ -103,12 +113,18 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function SpacePage({ params }: PageProps) {
   const { spaceId } = await params;
-  // In production, fetch from node
-  const space = MOCK_SPACE;
-  const posts = MOCK_POSTS;
+  const [space, posts] = await Promise.all([
+    fetchSpace(spaceId),
+    fetchSpacePosts(spaceId),
+  ]);
 
-  // Sort by heat
-  const sortedPosts = [...posts].sort((a, b) => b.survivalProbability - a.survivalProbability);
+  if (!space) {
+    notFound();
+  }
+
+  const cards = posts.map(contentToCard);
+  // Sort by survival probability descending (heat)
+  const sortedCards = [...cards].sort((a, b) => b.survivalProbability - a.survivalProbability);
 
   return (
     <div className="space-page">
@@ -149,16 +165,16 @@ export default async function SpacePage({ params }: PageProps) {
         </p>
 
         <div className="posts-list">
-          {sortedPosts.map(post => (
+          {sortedCards.map(post => (
             <SearchResultCard key={post.contentId} result={post} />
           ))}
         </div>
 
-        {sortedPosts.length === 0 && (
+        {sortedCards.length === 0 && (
           <div className="no-posts">
             <p>No active posts in this space.</p>
             <p className="text-muted">
-              All content has decayed due to lack of engagement.
+              All content may have decayed or the node is unreachable.
             </p>
           </div>
         )}

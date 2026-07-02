@@ -3,8 +3,9 @@ import type {
   ContentResponse,
   SpaceActivitySummary,
   ReputationSummary,
-  HealthStatus
+  HealthStatus,
 } from '@/types/gateway';
+import { NodeRpcClient, getNodeRpc } from './node-rpc';
 
 /**
  * Connection state for the node
@@ -23,7 +24,10 @@ export interface NodeConnectionHandlers {
 
 /**
  * Node connection manager
- * Handles WebSocket connection to Swimchain node for real-time updates
+ * Handles WebSocket + RPC connection to Swimchain node for read-only gateway.
+ *
+ * Uses the RPC client for data queries and maintains a WebSocket connection
+ * for real-time content events (when available).
  */
 export class NodeConnection {
   private wsUrl: string;
@@ -35,10 +39,12 @@ export class NodeConnection {
   private reconnectDelay = 1000;
   private lastLatencyMs = 0;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
+  private rpc: NodeRpcClient;
 
   constructor(wsUrl: string, handlers: NodeConnectionHandlers = {}) {
     this.wsUrl = wsUrl;
     this.handlers = handlers;
+    this.rpc = new NodeRpcClient(wsUrl);
   }
 
   /**
@@ -51,53 +57,40 @@ export class NodeConnection {
 
     this.state = 'connecting';
 
-    return new Promise((resolve, reject) => {
+    // First verify RPC connectivity
+    try {
+      const connected = await this.rpc.ping();
+      if (connected) {
+        this.state = 'connected';
+        this.reconnectAttempts = 0;
+        this.handlers.onConnect?.();
+      } else {
+        throw new Error('RPC ping failed');
+      }
+    } catch (error) {
+      this.state = 'error';
+      this.handlers.onError?.(error instanceof Error ? error : new Error('Connection failed'));
+      return;
+    }
+
+    // Then try WebSocket for real-time events
+    if (typeof WebSocket !== 'undefined') {
       try {
-        // In server environment, we'd use a different WebSocket implementation
-        // For now, we'll use a mock for SSR compatibility
-        if (typeof WebSocket === 'undefined') {
-          // Server-side: use mock or defer connection
-          console.log('[NodeConnection] WebSocket not available (SSR mode)');
-          this.state = 'disconnected';
-          resolve();
-          return;
-        }
-
         this.ws = new WebSocket(this.wsUrl);
-
         this.ws.onopen = () => {
-          console.log('[NodeConnection] Connected to node');
-          this.state = 'connected';
-          this.reconnectAttempts = 0;
           this.startPingInterval();
-          this.handlers.onConnect?.();
-          resolve();
         };
-
         this.ws.onclose = () => {
-          console.log('[NodeConnection] Disconnected from node');
-          this.state = 'disconnected';
           this.stopPingInterval();
-          this.handlers.onDisconnect?.();
           this.attemptReconnect();
         };
-
-        this.ws.onerror = (event) => {
-          console.error('[NodeConnection] WebSocket error:', event);
-          this.state = 'error';
-          const error = new Error('WebSocket connection error');
-          this.handlers.onError?.(error);
-          reject(error);
-        };
-
         this.ws.onmessage = (event) => {
           this.handleMessage(event.data);
         };
-      } catch (error) {
-        this.state = 'error';
-        reject(error);
+      } catch {
+        // WebSocket is optional — fall back to polling via RPC
       }
-    });
+    }
   }
 
   /**
@@ -127,70 +120,72 @@ export class NodeConnection {
   }
 
   /**
-   * Query content by ID
+   * Get the underlying RPC client
+   */
+  getRpc(): NodeRpcClient {
+    return this.rpc;
+  }
+
+  /**
+   * Query content by ID — delegates to RPC
    */
   async getContent(contentId: string): Promise<ContentResponse | null> {
-    // In production, this would send a request to the node
-    // For now, return null (simulating not found)
-    console.log(`[NodeConnection] getContent(${contentId})`);
-    return null;
+    return this.rpc.getContent(contentId);
   }
 
   /**
-   * Query space activity
+   * Query space activity — delegates to RPC
    */
   async getSpaceActivity(spaceId: string): Promise<SpaceActivitySummary | null> {
-    console.log(`[NodeConnection] getSpaceActivity(${spaceId})`);
-    return null;
+    return this.rpc.getSpaceInfo(spaceId);
   }
 
   /**
-   * Query all spaces
+   * Query all spaces — delegates to RPC
    */
   async getAllSpaces(): Promise<SpaceActivitySummary[]> {
-    console.log('[NodeConnection] getAllSpaces()');
-    return [];
+    return this.rpc.getAllSpaces();
   }
 
   /**
-   * Query content in a space
+   * Query content in a space — delegates to RPC
    */
   async getSpaceContent(
     spaceId: string,
     limit: number = 50,
     offset: number = 0
   ): Promise<ContentResponse[]> {
-    console.log(`[NodeConnection] getSpaceContent(${spaceId}, ${limit}, ${offset})`);
-    return [];
+    return this.rpc.getSpaceContent(spaceId, limit, offset);
   }
 
   /**
-   * Query identity reputation
+   * Query identity reputation — delegates to RPC
    */
   async getIdentityReputation(address: string): Promise<ReputationSummary | null> {
-    console.log(`[NodeConnection] getIdentityReputation(${address})`);
-    return null;
+    return this.rpc.getIdentityReputation(address);
   }
 
   /**
-   * Query content by identity
+   * Query content by identity — delegates to RPC
    */
   async getContentByIdentity(
     address: string,
     limit: number = 50,
     offset: number = 0
   ): Promise<ContentResponse[]> {
-    console.log(`[NodeConnection] getContentByIdentity(${address}, ${limit}, ${offset})`);
-    return [];
+    return this.rpc.getContentByIdentity(address, limit, offset);
   }
 
   /**
-   * Get health status
+   * Get health status — uses RPC ping
    */
   async getHealthStatus(): Promise<HealthStatus> {
+    const connected = await this.rpc.ping();
+    const info = this.rpc.getNodeInfo();
+
     return {
-      status: this.state === 'connected' ? 'healthy' : 'unhealthy',
-      nodeConnected: this.state === 'connected',
+      status: connected ? 'healthy' : 'unhealthy',
+      nodeConnected: connected,
       nodeLatencyMs: this.lastLatencyMs,
       indexedPosts: 0,
       lastSyncTime: new Date().toISOString(),
@@ -200,12 +195,11 @@ export class NodeConnection {
   /**
    * Handle incoming WebSocket message
    */
-  private handleMessage(data: string | Buffer): void {
+  private handleMessage(data: string): void {
     try {
-      const message = JSON.parse(data.toString());
+      const message = JSON.parse(data);
 
       if (message.type === 'pong') {
-        // Calculate latency from ping-pong
         const sentAt = message.sentAt as number | undefined;
         if (sentAt) {
           this.lastLatencyMs = Date.now() - sentAt;
@@ -244,7 +238,7 @@ export class NodeConnection {
     this.stopPingInterval();
     this.pingInterval = setInterval(() => {
       this.sendPing();
-    }, 30000); // Every 30 seconds
+    }, 30000);
   }
 
   /**

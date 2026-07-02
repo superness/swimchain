@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { SearchBox } from '@/components/SearchBox';
 import { SearchFilters } from '@/components/SearchFilters';
@@ -19,117 +19,213 @@ interface SearchPageClientProps {
   initialPage?: number;
 }
 
-// Mock data for demonstration
-const MOCK_RESULTS: SearchResult[] = [
-  {
-    contentId: 'post-1',
-    spaceId: 'rust-lang',
-    spaceName: 'rust-lang',
-    authorId: 'cs1q9x7yf8z3k4n5m6p7q8r9s0t1u2v3w4x5y6z7a8b2k4m',
-    title: 'Async traits finally stable in Rust 1.75!',
-    body: 'After years of waiting, async traits are now stable in Rust. This is a huge milestone for the ecosystem...',
-    createdAt: Date.now() - 2 * 60 * 60 * 1000, // 2 hours ago
-    lastEngagement: Date.now() - 30 * 60 * 1000,
-    replyCount: 47,
-    survivalProbability: 0.82,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 168,
-    pool: {
-      poolId: 'pool-1',
-      contributedSeconds: 45,
-      requiredSeconds: 60,
-      contributorCount: 12,
-      timeRemainingMs: 900000,
-      progressPercentage: 75,
-    },
-    scoreBreakdown: {
-      textRelevance: 85,
-      heatDecay: 82,
-      engagementPool: 75,
-      recency: 95,
-      totalScore: 84.3,
-      contributions: {
-        textRelevance: 34,
-        heatDecay: 20.5,
-        engagementPool: 15,
-        recency: 14.25,
-      },
-    },
-  },
-  {
-    contentId: 'post-2',
-    spaceId: 'rust-lang',
-    spaceName: 'rust-lang',
-    authorId: 'cs1qab3cd4ef5gh6ij7kl8mn9op0qr1st2uv3wx4yz5ab',
-    title: 'Performance tips for Rust beginners',
-    body: 'Here are some tips I wish I knew when I started with Rust performance optimization...',
-    createdAt: Date.now() - 8 * 60 * 60 * 1000, // 8 hours ago
-    lastEngagement: Date.now() - 2 * 60 * 60 * 1000,
-    replyCount: 23,
-    survivalProbability: 0.71,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 144,
-    pool: {
-      poolId: 'pool-2',
-      contributedSeconds: 30,
-      requiredSeconds: 60,
-      contributorCount: 8,
-      timeRemainingMs: 1800000,
-      progressPercentage: 50,
-    },
-    scoreBreakdown: {
-      textRelevance: 70,
-      heatDecay: 71,
-      engagementPool: 50,
-      recency: 80,
-      totalScore: 69.75,
-      contributions: {
-        textRelevance: 28,
-        heatDecay: 17.75,
-        engagementPool: 10,
-        recency: 12,
-      },
-    },
-  },
-  {
-    contentId: 'post-3',
-    spaceId: 'boston',
-    spaceName: 'boston',
-    authorId: 'cs1qcd5ef6gh7ij8kl9mn0op1qr2st3uv4wx5yz6ab7cd',
-    title: 'Best coffee shops near Kendall Square?',
-    body: 'Just moved to the area. Looking for good spots to work from. Bonus points for outdoor seating!',
-    createdAt: Date.now() - 4 * 60 * 60 * 1000, // 4 hours ago
-    lastEngagement: Date.now() - 1 * 60 * 60 * 1000,
-    replyCount: 12,
-    survivalProbability: 0.67,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 120,
-    pool: {
-      poolId: 'pool-3',
-      contributedSeconds: 20,
-      requiredSeconds: 60,
-      contributorCount: 5,
-      timeRemainingMs: 2400000,
-      progressPercentage: 33,
-    },
-    scoreBreakdown: {
-      textRelevance: 40,
-      heatDecay: 67,
-      engagementPool: 33,
-      recency: 88,
-      totalScore: 52.95,
-      contributions: {
-        textRelevance: 16,
-        heatDecay: 16.75,
-        engagementPool: 6.6,
-        recency: 13.2,
-      },
-    },
-  },
-];
+/**
+ * Parse search params from URLSearchParams into initial state.
+ * Used for deep-link support when navigating back/forward.
+ */
+function parseFiltersFromParams(sp: URLSearchParams) {
+  return {
+    space: sp.get('space') || undefined,
+    author: sp.get('author') || undefined,
+    minHeat: sp.get('minHeat') ? (parseInt(sp.get('minHeat')!, 10) as 0 | 25 | 50 | 75 | 90) : undefined,
+    minEngagement: sp.get('minEngagement') ? (parseInt(sp.get('minEngagement')!, 10) as 0 | 20 | 40 | 60) : undefined,
+    timeRange: (sp.get('time') || 'all') as SearchFiltersType['timeRange'],
+    includeDecaying: sp.get('decaying') === 'true',
+  };
+}
+
+/**
+ * Perform a search via the node RPC endpoint.
+ * Falls back to the internal search API if direct node access fails.
+ */
+async function performRpcSearch(query: string, filters: SearchFiltersType, sortBy: SortOption): Promise<{ results: SearchResult[]; totalCount: number }> {
+  try {
+    // Call the node RPC endpoint directly for search
+    const rpcUrl = getRpcEndpoint();
+    const searchResponse = await fetch(`${rpcUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'search',
+        params: {
+          query,
+          space_id: filters.space,
+          author: filters.author,
+          sort_by: sortBy === 'relevance' ? 'relevance' : sortBy,
+          limit: 50,
+          offset: 0,
+        },
+        id: 1,
+      }),
+    });
+
+    if (!searchResponse.ok) {
+      throw new Error(`RPC search failed: ${searchResponse.status}`);
+    }
+
+    const rpcResult = await searchResponse.json();
+    if (rpcResult.error) {
+      throw new Error(`RPC search error: ${rpcResult.error.message}`);
+    }
+
+    const rawResults: RawContentResponse[] = rpcResult.result || [];
+    const nowMs = Date.now();
+
+    const results: SearchResult[] = rawResults.map(raw => {
+      const body = raw.item.body_inline || '';
+      const title = extractTitle(body);
+      const snippet = body.length > 200 ? body.slice(0, 197) + '...' : body;
+      const replyCount = countReplies(raw);
+      const textRelevanceScore = query ? 70 : 0; // approximate when no lunr available client-side
+
+      return {
+        contentId: raw.item.content_id,
+        spaceId: raw.item.space_id,
+        spaceName: raw.item.space_id,
+        authorId: raw.item.author_id,
+        title,
+        body: snippet,
+        createdAt: raw.item.created_at,
+        lastEngagement: raw.item.last_engagement,
+        replyCount,
+        survivalProbability: raw.survival_probability,
+        isDecayed: raw.is_decayed,
+        isProtected: raw.is_protected,
+        hoursUntilDecay: raw.hours_until_decay,
+        pool: raw.pool ? {
+          poolId: raw.pool.poolId,
+          contributedSeconds: raw.pool.contributedSeconds,
+          requiredSeconds: raw.pool.requiredSeconds,
+          contributorCount: raw.pool.contributorCount,
+          timeRemainingMs: raw.pool.timeRemainingMs,
+          progressPercentage: raw.pool.progressPercentage,
+        } : null,
+        scoreBreakdown: calculateScore(textRelevanceScore, raw, nowMs),
+      };
+    });
+
+    return { results, totalCount: results.length };
+  } catch (error) {
+    console.error('[Search] RPC search failed, falling back to API:', error);
+    // Fallback: try the internal search API
+    try {
+      const params = new URLSearchParams({ q: query });
+      if (filters.space) params.set('space', filters.space);
+      if (filters.author) params.set('author', filters.author);
+      params.set('sort', sortBy);
+
+      const response = await fetch(`/api/search?${params.toString()}`);
+      if (response.ok) {
+        return await response.json();
+      }
+    } catch {
+      // Both failed
+    }
+    return { results: [], totalCount: 0 };
+  }
+}
+
+/**
+ * Get the RPC endpoint URL (works both client and server side)
+ */
+function getRpcEndpoint(): string {
+  if (typeof window !== 'undefined') {
+    // Client-side: read from meta tag or env
+    const meta = document.querySelector('meta[name="node-rpc-url"]');
+    if (meta) return meta.getAttribute('content') || '';
+  }
+  return process.env.NEXT_PUBLIC_NODE_RPC_URL || 'http://127.0.0.1:19736';
+}
+
+// Raw content response from node (matches node-rpc.ts)
+interface RawContentResponse {
+  item: {
+    content_id: string;
+    author_id: string;
+    signature: string;
+    created_at: number;
+    last_engagement: number;
+    content_type: string;
+    parent_id: string | null;
+    space_id: string;
+    body_inline: string | null;
+    content_hash: string | null;
+    content_size: number | null;
+    pow_nonce: number;
+    pow_difficulty: number;
+    engagement_count: number;
+  };
+  survival_probability: number;
+  is_decayed: boolean;
+  is_protected: boolean;
+  hours_until_decay: number | null;
+  pool: {
+    poolId: string;
+    contributedSeconds: number;
+    requiredSeconds: number;
+    contributorCount: number;
+    timeRemainingMs: number | null;
+    progressPercentage: number;
+  } | null;
+  children?: RawContentResponse[];
+}
+
+interface ScoreBreakdown {
+  textRelevance: number;
+  heatDecay: number;
+  engagementPool: number;
+  recency: number;
+  totalScore: number;
+  contributions: {
+    textRelevance: number;
+    heatDecay: number;
+    engagementPool: number;
+    recency: number;
+  };
+}
+
+function calculateScore(textScore: number, content: RawContentResponse, nowMs: number): ScoreBreakdown {
+  const textRelevance = Math.min(100, Math.max(0, textScore));
+  const heatDecay = Math.min(100, Math.max(0, content.survival_probability * 100));
+  const engagementPool = content.pool ? Math.min(100, Math.max(0, (content.pool.contributedSeconds / 60) * 100)) : 0;
+
+  const ageMs = nowMs - content.item.created_at;
+  const hoursOld = ageMs > 0 ? ageMs / (1000 * 60 * 60) : 0;
+  const recency = Math.max(0, 100 * Math.exp(-hoursOld / 24));
+
+  const contributions = {
+    textRelevance: textRelevance * 0.40,
+    heatDecay: heatDecay * 0.25,
+    engagementPool: engagementPool * 0.20,
+    recency: recency * 0.15,
+  };
+
+  return {
+    textRelevance,
+    heatDecay,
+    engagementPool,
+    recency,
+    totalScore: contributions.textRelevance + contributions.heatDecay + contributions.engagementPool + contributions.recency,
+    contributions,
+  };
+}
+
+function extractTitle(body: string | null): string {
+  if (!body) return '[No title]';
+  const firstLine = body.split('\n')[0]?.replace(/^#+\s*/, '').trim() ?? '';
+  if (firstLine.length > 0 && firstLine.length <= 100) return firstLine;
+  if (body.length <= 100) return body.trim();
+  return body.slice(0, 97).trim() + '...';
+}
+
+function countReplies(content: RawContentResponse): number {
+  let count = content.children?.length ?? 0;
+  for (const child of content.children ?? []) {
+    count += countReplies(child);
+  }
+  return count;
+}
 
 export function SearchPageClient({
   initialQuery,
@@ -143,20 +239,33 @@ export function SearchPageClient({
   initialPage = 1,
 }: SearchPageClientProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const isFirstRender = useRef(true);
 
-  const [query, setQuery] = useState(initialQuery);
-  const [filters, setFilters] = useState<SearchFiltersType>({
-    space: initialSpace,
-    author: initialAuthor,
-    minHeat: initialMinHeat ? (parseInt(initialMinHeat, 10) as 0 | 25 | 50 | 75 | 90) : undefined,
-    minEngagement: initialMinEngagement ? (parseInt(initialMinEngagement, 10) as 0 | 20 | 40 | 60) : undefined,
-    timeRange: initialTimeRange as SearchFiltersType['timeRange'],
-    includeDecaying: initialDecaying,
+  // Sync state from URL search params for deep-link support
+  const [query, setQuery] = useState(() => {
+    const urlQ = searchParams?.get('q');
+    return urlQ ?? initialQuery;
+  });
+  const [filters, setFilters] = useState<SearchFiltersType>(() => {
+    const urlFilters = searchParams ? parseFiltersFromParams(searchParams) : null;
+    if (urlFilters && (urlFilters.space || urlFilters.author || urlFilters.minHeat || urlFilters.timeRange !== 'all')) {
+      return urlFilters;
+    }
+    return {
+      space: initialSpace,
+      author: initialAuthor,
+      minHeat: initialMinHeat ? (parseInt(initialMinHeat, 10) as 0 | 25 | 50 | 75 | 90) : undefined,
+      minEngagement: initialMinEngagement ? (parseInt(initialMinEngagement, 10) as 0 | 20 | 40 | 60) : undefined,
+      timeRange: initialTimeRange as SearchFiltersType['timeRange'],
+      includeDecaying: initialDecaying,
+    };
   });
   const [sortBy, setSortBy] = useState<SortOption>(
     (initialSort as SortOption) || 'relevance'
   );
-  const [results, setResults] = useState<SearchResult[]>(MOCK_RESULTS);
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
 
@@ -177,49 +286,36 @@ export function SearchPageClient({
     router.push(newURL, { scroll: false });
   }, [query, filters, sortBy, router]);
 
-  // Perform search
+  // Sync state when URL changes (browser back/forward)
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    const q = searchParams?.get('q') ?? '';
+    const parsedFilters = searchParams ? parseFiltersFromParams(searchParams) : null;
+    if (q !== query) setQuery(q);
+    if (parsedFilters) setFilters(parsedFilters);
+  }, [searchParams?.toString()]);
+
+  // Perform search via RPC
   const performSearch = useCallback(async (searchQuery: string) => {
     setIsLoading(true);
 
-    // In production, this would call the search API
-    // For now, filter mock data
-    await new Promise(resolve => setTimeout(resolve, 300));
-
-    let filtered = [...MOCK_RESULTS];
-
-    if (searchQuery) {
-      const lowerQuery = searchQuery.toLowerCase();
-      filtered = filtered.filter(
-        r =>
-          r.title.toLowerCase().includes(lowerQuery) ||
-          r.body.toLowerCase().includes(lowerQuery)
+    try {
+      const { results: searchResults, totalCount: count } = await performRpcSearch(
+        searchQuery,
+        filters,
+        sortBy
       );
+      setResults(searchResults);
+      setTotalCount(count);
+    } catch (error) {
+      console.error('[Search] Search failed:', error);
+      setResults([]);
+      setTotalCount(0);
     }
 
-    if (filters.space) {
-      filtered = filtered.filter(r => r.spaceName === filters.space);
-    }
-
-    if (filters.minHeat) {
-      filtered = filtered.filter(r => r.survivalProbability * 100 >= filters.minHeat!);
-    }
-
-    // Sort
-    switch (sortBy) {
-      case 'heat':
-        filtered.sort((a, b) => b.survivalProbability - a.survivalProbability);
-        break;
-      case 'newest':
-        filtered.sort((a, b) => b.createdAt - a.createdAt);
-        break;
-      case 'replies':
-        filtered.sort((a, b) => b.replyCount - a.replyCount);
-        break;
-      default:
-        filtered.sort((a, b) => b.scoreBreakdown.totalScore - a.scoreBreakdown.totalScore);
-    }
-
-    setResults(filtered);
     setIsLoading(false);
   }, [filters, sortBy]);
 
@@ -250,7 +346,7 @@ export function SearchPageClient({
   }, []);
 
   return (
-    <div className="search-client">
+    <div className="search-page-client">
       <SearchBox
         initialQuery={query}
         onSearch={handleSearch}
@@ -267,7 +363,7 @@ export function SearchPageClient({
 
       <div className="results-header">
         <span className="results-count">
-          {isLoading ? 'Searching...' : `${results.length} results`}
+          {isLoading ? 'Searching...' : `${totalCount} results`}
         </span>
         <label className="breakdown-toggle">
           <input
@@ -297,7 +393,7 @@ export function SearchPageClient({
       </div>
 
       <style jsx>{`
-        .search-client {
+        .search-page-client {
           display: flex;
           flex-direction: column;
           gap: 1rem;

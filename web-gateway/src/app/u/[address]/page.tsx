@@ -1,60 +1,84 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import type { ReputationSummary } from '@/types/gateway';
-import type { SearchResult } from '@/types/search';
+import type { ReputationSummary, ContentResponse } from '@/types/gateway';
 import { IdentityCard } from '@/components/IdentityCard';
 import { SearchResultCard } from '@/components/SearchResultCard';
 import { isValidAddress, formatAddress } from '@/lib/address';
+import { getNodeRpc } from '@/lib/node-rpc';
 
 interface PageProps {
   params: Promise<{ address: string }>;
 }
 
-// Mock data
-function getMockIdentity(address: string): ReputationSummary {
+/**
+ * Fetch identity reputation from the node via RPC.
+ */
+async function fetchIdentity(address: string): Promise<ReputationSummary | null> {
+  try {
+    const rpc = getNodeRpc();
+    return await rpc.getIdentityReputation(address);
+  } catch (error) {
+    console.error(`[IdentityPage] Failed to fetch identity ${address}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Fetch recent posts by an identity from the node.
+ */
+async function fetchIdentityPosts(address: string): Promise<ContentResponse[]> {
+  try {
+    const rpc = getNodeRpc();
+    return await rpc.getContentByIdentity(address, 50, 0);
+  } catch (error) {
+    console.error(`[IdentityPage] Failed to fetch posts for ${address}:`, error);
+    return [];
+  }
+}
+
+/**
+ * Convert ContentResponse to card format for rendering.
+ */
+function contentToCard(post: ContentResponse) {
+  const body = post.item.body_inline || '';
+  const snippet = body.length > 200 ? body.slice(0, 197) + '...' : body;
+  const firstLine = body.split('\n')[0]?.replace(/^#+\s*/, '').trim() ?? '';
+  const title = firstLine.length > 0 && firstLine.length <= 100 ? firstLine
+    : body.length <= 100 ? body.trim()
+    : body.slice(0, 97).trim() + '...';
+
   return {
-    identity: address,
-    first_block: 12345,
-    post_count: 42,
-    reply_count: 128,
-    received_replies: 89,
-    age_seconds: 180 * 24 * 60 * 60, // 180 days
+    contentId: post.item.content_id,
+    spaceId: post.item.space_id,
+    spaceName: post.item.space_id,
+    authorId: post.item.author_id,
+    title,
+    body: snippet,
+    createdAt: post.item.created_at,
+    lastEngagement: post.item.last_engagement,
+    replyCount: post.children?.length ?? 0,
+    survivalProbability: post.survival_probability,
+    isDecayed: post.is_decayed,
+    isProtected: post.is_protected,
+    hoursUntilDecay: post.hours_until_decay,
+    pool: post.pool,
+    scoreBreakdown: {
+      textRelevance: 0,
+      heatDecay: post.survival_probability * 100,
+      engagementPool: post.pool ? (post.pool.contributedSeconds / 60) * 100 : 0,
+      recency: normalizeRecency(post.item.created_at),
+      totalScore: 0,
+      contributions: { textRelevance: 0, heatDecay: 0, engagementPool: 0, recency: 0 },
+    },
   };
 }
 
-const MOCK_POSTS: SearchResult[] = [
-  {
-    contentId: 'post-1',
-    spaceId: 'rust-lang',
-    spaceName: 'rust-lang',
-    authorId: 'cs1q9x7yf8z3k4n5m6p7q8r9s0t1u2v3w4x5y6z7a8b2k4m',
-    title: 'Async traits finally stable in Rust 1.75!',
-    body: 'After years of waiting, async traits are now stable...',
-    createdAt: Date.now() - 2 * 60 * 60 * 1000,
-    lastEngagement: Date.now() - 30 * 60 * 1000,
-    replyCount: 47,
-    survivalProbability: 0.82,
-    isDecayed: false,
-    isProtected: false,
-    hoursUntilDecay: 168,
-    pool: {
-      poolId: 'pool-1',
-      contributedSeconds: 45,
-      requiredSeconds: 60,
-      contributorCount: 12,
-      timeRemainingMs: 900000,
-      progressPercentage: 75,
-    },
-    scoreBreakdown: {
-      textRelevance: 0,
-      heatDecay: 82,
-      engagementPool: 75,
-      recency: 95,
-      totalScore: 55.55,
-      contributions: { textRelevance: 0, heatDecay: 20.5, engagementPool: 15, recency: 14.25 },
-    },
-  },
-];
+function normalizeRecency(createdAt: number): number {
+  const ageMs = Date.now() - createdAt;
+  if (ageMs <= 0) return 100;
+  const hoursOld = ageMs / (1000 * 60 * 60);
+  return Math.max(0, 100 * Math.exp(-hoursOld / 24));
+}
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { address } = await params;
@@ -80,12 +104,19 @@ export default async function IdentityPage({ params }: PageProps) {
     notFound();
   }
 
-  // In production, fetch from node
-  const identity = getMockIdentity(decodedAddress);
-  const posts = MOCK_POSTS.filter(p => p.authorId === decodedAddress || true); // Show mock data
+  const [identity, posts] = await Promise.all([
+    fetchIdentity(decodedAddress),
+    fetchIdentityPosts(decodedAddress),
+  ]);
 
+  if (!identity) {
+    // Identity not found on node — still show the page with empty state
+    // (the address is valid, the node just doesn't know about it yet)
+  }
+
+  const cards = posts.map(contentToCard);
   // Sort by recency
-  const sortedPosts = [...posts].sort((a, b) => b.createdAt - a.createdAt);
+  const sortedCards = [...cards].sort((a, b) => b.createdAt - a.createdAt);
 
   return (
     <div className="identity-page">
@@ -93,7 +124,16 @@ export default async function IdentityPage({ params }: PageProps) {
         <h1>Identity Profile</h1>
       </header>
 
-      <IdentityCard identity={identity} showFullAddress />
+      {identity ? (
+        <IdentityCard identity={identity} showFullAddress />
+      ) : (
+        <div className="identity-unknown">
+          <p className="font-mono">{formatAddress(decodedAddress, 'full')}</p>
+          <p className="text-muted">
+            This identity has no on-chain activity yet, or the node is unreachable.
+          </p>
+        </div>
+      )}
 
       <section className="posts-section">
         <h2>Recent Posts</h2>
@@ -102,12 +142,12 @@ export default async function IdentityPage({ params }: PageProps) {
         </p>
 
         <div className="posts-list">
-          {sortedPosts.map(post => (
+          {sortedCards.map(post => (
             <SearchResultCard key={post.contentId} result={post} />
           ))}
         </div>
 
-        {sortedPosts.length === 0 && (
+        {sortedCards.length === 0 && (
           <div className="no-posts">
             <p>No active posts from this identity.</p>
             <p className="text-muted">

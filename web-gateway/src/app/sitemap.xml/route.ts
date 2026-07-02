@@ -1,4 +1,4 @@
-import { getConfig } from '@/lib/config/gateway';
+import { getNodeRpc } from '@/lib/node-rpc';
 
 interface SitemapEntry {
   url: string;
@@ -12,14 +12,13 @@ interface SitemapEntry {
  *
  * Lists all indexable content on the gateway:
  * - Static pages (about, spaces listing)
- * - Active spaces
- * - Recent/active posts (above decay threshold)
- * - Active user profiles
+ * - Active spaces (fetched live from node)
+ * - Recent/active posts (fetched live from node)
  */
 export async function GET(): Promise<Response> {
   let baseUrl = 'https://gateway.swimchain.network';
   try {
-    const config = getConfig();
+    const config = (await import('@/lib/config/gateway')).getConfig();
     baseUrl = config.publicUrl;
   } catch {
     // Use default if config not available
@@ -64,35 +63,42 @@ export async function GET(): Promise<Response> {
     priority: 0.5,
   });
 
-  // TODO: Fetch dynamic content from node when connected
-  // For now, add mock entries to demonstrate structure
+  // Dynamic spaces from node
+  // We only add a few spaces to keep the sitemap manageable
+  try {
+    const rpc = getNodeRpc();
+    const spaces = await rpc.getAllSpaces();
 
-  // Active spaces
-  const mockSpaces = ['rust', 'python', 'javascript', 'golang', 'crypto'];
-  for (const space of mockSpaces) {
-    entries.push({
-      url: `${baseUrl}/spaces/${space}`,
-      lastmod: new Date().toISOString(),
-      changefreq: 'hourly',
-      priority: 0.7,
-    });
-  }
+    // Limit to top 20 spaces by activity
+    const topSpaces = spaces
+      .sort((a, b) => b.active_posts - a.active_posts)
+      .slice(0, 20);
 
-  // Recent active posts (would be fetched from node)
-  // Posts with high heat get higher priority
-  const mockPosts = [
-    { space: 'rust', id: 'async-traits-stable', heat: 0.85 },
-    { space: 'python', id: 'gil-removal-progress', heat: 0.72 },
-    { space: 'javascript', id: 'deno-2-release', heat: 0.68 },
-  ];
+    for (const space of topSpaces) {
+      entries.push({
+        url: `${baseUrl}/spaces/${encodeURIComponent(space.space_id)}`,
+        lastmod: space.last_activity ? new Date(space.last_activity).toISOString() : undefined,
+        changefreq: 'hourly',
+        priority: 0.7,
+      });
 
-  for (const post of mockPosts) {
-    entries.push({
-      url: `${baseUrl}/s/${post.space}/${post.id}`,
-      lastmod: new Date().toISOString(),
-      changefreq: 'daily',
-      priority: Math.min(0.9, 0.5 + post.heat * 0.4),
-    });
+      // Fetch recent posts for each space (limit to 10 per space)
+      try {
+        const posts = await rpc.getSpaceContent(space.space_id, 10, 0);
+        for (const post of posts) {
+          entries.push({
+            url: `${baseUrl}/s/${encodeURIComponent(space.space_id)}/${encodeURIComponent(post.item.content_id)}`,
+            lastmod: new Date(post.item.last_engagement).toISOString(),
+            changefreq: 'daily',
+            priority: Math.min(0.9, 0.5 + post.survival_probability * 0.4),
+          });
+        }
+      } catch {
+        // Skip posts for this space if it fails
+      }
+    }
+  } catch {
+    // Node unavailable — sitemap still works with static pages
   }
 
   // Generate XML

@@ -1,4 +1,5 @@
 import { getConfig } from '@/lib/config/gateway';
+import { NodeRpcClient } from '@/lib/node-rpc';
 
 interface HealthStatus {
   status: 'healthy' | 'degraded' | 'unhealthy';
@@ -14,6 +15,8 @@ interface HealthStatus {
     url?: string;
     lastSyncTime?: string;
     chainHeight?: number;
+    peerCount?: number;
+    network?: string;
   };
   uptime: number;
 }
@@ -26,38 +29,47 @@ const startTime = Date.now();
  * Returns:
  * - 200 OK: Gateway is healthy
  * - 503 Service Unavailable: Gateway is unhealthy
+ *
+ * Performs a live RPC call to the configured node to verify connectivity.
  */
 export async function GET(): Promise<Response> {
   let config;
+  let nodeUrl: string | undefined;
+
   try {
     config = getConfig();
+    nodeUrl = config.nodeWebsocketUrl;
   } catch {
-    // Config not available (env vars missing) - return degraded status
-    const status: HealthStatus = {
-      status: 'degraded',
-      version: process.env.npm_package_version || '1.0.0',
-      timestamp: new Date().toISOString(),
-      gateway: {
-        name: process.env.GATEWAY_NAME || 'Swimchain Gateway',
-        operator: process.env.GATEWAY_OPERATOR,
-      },
-      node: {
-        connected: false,
-      },
-      uptime: Math.floor((Date.now() - startTime) / 1000),
-    };
-
-    return new Response(JSON.stringify(status, null, 2), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-      },
-    });
+    // Config not available (env vars missing)
   }
 
-  // Simulate node connection check (would actually ping the node)
-  const nodeConnected = await checkNodeConnection(config.nodeWebsocketUrl);
+  // Use NODE_RPC_URL env var directly, or derive from WebSocket URL
+  const rpcUrl = process.env.NODE_RPC_URL || nodeUrl;
+
+  // Ping the node via RPC
+  let nodeConnected = false;
+  let nodeInfo: { chainHeight?: number; peerCount?: number; network?: string } = {};
+  let lastSyncTime: string | undefined;
+
+  if (rpcUrl) {
+    try {
+      const client = new NodeRpcClient(rpcUrl, 5000);
+      nodeConnected = await client.ping();
+      if (nodeConnected) {
+        const info = client.getNodeInfo();
+        if (info) {
+          nodeInfo = {
+            chainHeight: info.block_height,
+            peerCount: info.peer_count,
+            network: info.network,
+          };
+        }
+        lastSyncTime = new Date().toISOString();
+      }
+    } catch {
+      nodeConnected = false;
+    }
+  }
 
   const status: HealthStatus = {
     status: nodeConnected ? 'healthy' : 'degraded',
@@ -66,14 +78,13 @@ export async function GET(): Promise<Response> {
     gateway: {
       name: process.env.GATEWAY_NAME || 'Swimchain Gateway',
       operator: process.env.GATEWAY_OPERATOR,
-      url: config.publicUrl,
+      url: config?.publicUrl,
     },
     node: {
       connected: nodeConnected,
-      url: maskUrl(config.nodeWebsocketUrl),
-      // These would come from actual node connection
-      lastSyncTime: nodeConnected ? new Date().toISOString() : undefined,
-      chainHeight: nodeConnected ? 12345 : undefined,
+      url: nodeUrl ? maskUrl(nodeUrl) : undefined,
+      lastSyncTime,
+      ...nodeInfo,
     },
     uptime: Math.floor((Date.now() - startTime) / 1000),
   };
@@ -89,26 +100,9 @@ export async function GET(): Promise<Response> {
   });
 }
 
-async function checkNodeConnection(nodeUrl?: string): Promise<boolean> {
-  if (!nodeUrl) {
-    return false;
-  }
-
-  // TODO: Implement actual node connection check
-  // For now, simulate a connected node
-  try {
-    // Would do: const response = await fetch(nodeUrl + '/health', { timeout: 5000 });
-    // return response.ok;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function maskUrl(url: string): string {
   try {
     const parsed = new URL(url);
-    // Hide credentials if present
     if (parsed.password) {
       parsed.password = '***';
     }
