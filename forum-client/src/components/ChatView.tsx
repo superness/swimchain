@@ -3,11 +3,16 @@
  *
  * Main chat interface for private spaces.
  * Displays messages and allows sending new ones.
+ *
+ * NOTE: Uses submitReply + real Argon2id PoW (not the phantom post_to_private_space).
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useSpaceMembers, useRpc } from '../hooks/useRpc';
+import { useSpaceMembers, useRpc, useReplySubmit } from '../hooks/useRpc';
+import { useReplyPow } from '../hooks/useActionPow';
+import { solutionToRpcParams } from '../lib/action-pow';
+import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
 import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
 import { usePrivateSpaceMessages } from '../hooks/usePrivateSpaceMessages';
@@ -15,6 +20,7 @@ import { encryptWithSpaceKey } from '../lib/encryption';
 import { bytesToHex } from '../lib/x25519';
 import { InviteModal } from './InviteModal';
 import { SpaceSettings } from './SpaceSettings';
+import { PowProgress } from './PowProgress';
 import './ChatView.css';
 
 export function ChatView(): JSX.Element {
@@ -23,7 +29,9 @@ export function ChatView(): JSX.Element {
   const userPublicKeyHex = publicKey ? bytesToHex(publicKey) : undefined;
   const { getSpaceKey, getSpaceKeyInfo } = usePrivateSpaceKeys(userPublicKeyHex);
   const { members, loading: membersLoading } = useSpaceMembers(spaceId);
-  const { rpc, connected } = useRpc();
+  const { identity, sign } = useNodeIdentity();
+  const { submitReply, submitting } = useReplySubmit();
+  const { state: powState, progress: powProgress, mineReply, cancel: cancelPow } = useReplyPow();
 
   // Get space key for this space
   const spaceKey = spaceId ? getSpaceKey(spaceId) : null;
@@ -46,6 +54,9 @@ export function ChatView(): JSX.Element {
   const [showSettings, setShowSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const isMining = powState === 'mining';
+  const isBusy = sending || isMining || submitting;
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Decrypt space name
@@ -54,7 +65,6 @@ export function ChatView(): JSX.Element {
       if (!spaceKeyInfo?.spaceName || !spaceKey) return;
 
       try {
-        // If we have a stored decrypted name, use it
         if (spaceKeyInfo.spaceName) {
           setSpaceName(spaceKeyInfo.spaceName);
         }
@@ -62,7 +72,6 @@ export function ChatView(): JSX.Element {
         console.error('Failed to decrypt space name:', err);
       }
     }
-
     decryptName();
   }, [spaceKeyInfo, spaceKey]);
 
@@ -71,11 +80,11 @@ export function ChatView(): JSX.Element {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [backendMessages]);
 
-  // Handle sending a message
+  // Handle sending a message with real Argon2id PoW
   const handleSendMessage = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!newMessage.trim() || !spaceKey || !publicKey || !spaceId || !rpc || !connected || !keypair) return;
+    if (!newMessage.trim() || !spaceKey || !publicKey || !spaceId || !identity || !sign) return;
 
     setSending(true);
     setError(null);
@@ -84,30 +93,27 @@ export function ChatView(): JSX.Element {
       // Encrypt the message with the space key
       const encryptedContent = await encryptWithSpaceKey(newMessage.trim(), spaceKey);
 
-      // Create timestamp and sign the action
-      const timestamp = Date.now();
-      const authorHex = bytesToHex(publicKey);
+      // Mine real Argon2id PoW for the reply action
+      const publicKeyBytes = new Uint8Array(publicKey);
+      const mined = await mineReply(bytesToHex(encryptedContent), publicKeyBytes, true);
+      const powParams = solutionToRpcParams(mined);
 
-      // Call RPC to post the message to the private space
-      // The backend will handle this as a post action with encrypted content
-      const result = await rpc.call('post_to_private_space', {
-        space_id: spaceId,
-        author: authorHex,
-        content: encryptedContent,
-        timestamp,
-      }) as { success: boolean; content_id?: string; error?: string };
+      // Submit the reply with PoW via useReplySubmit
+      const result = await submitReply(
+        spaceId,
+        bytesToHex(encryptedContent),
+        bytesToHex(publicKey),
+        sign,
+        powParams,
+      );
 
       if (!result.success) {
-        throw new Error(result.error || 'Failed to post message');
+        throw new Error('Failed to post message');
       }
 
       // Clear input and refresh messages
       setNewMessage('');
-
-      // Small delay then refresh to get the new message
-      setTimeout(() => {
-        refetchMessages();
-      }, 500);
+      setTimeout(() => refetchMessages(), 500);
 
     } catch (err) {
       console.error('Failed to send message:', err);
@@ -115,7 +121,7 @@ export function ChatView(): JSX.Element {
     } finally {
       setSending(false);
     }
-  }, [newMessage, spaceKey, publicKey, spaceId, rpc, connected, keypair, refetchMessages]);
+  }, [newMessage, spaceKey, publicKey, spaceId, identity, sign, mineReply, submitReply, refetchMessages]);
 
   // Format timestamp
   const formatTime = (timestamp: number): string => {
@@ -295,6 +301,7 @@ export function ChatView(): JSX.Element {
       {/* Message composer */}
       <footer className="chat-composer">
         {error && <div className="composer-error">{error}</div>}
+        {isMining && <PowProgress progress={powProgress} />}
         <form onSubmit={handleSendMessage} className="composer-form">
           <input
             type="text"
@@ -302,15 +309,17 @@ export function ChatView(): JSX.Element {
             onChange={(e) => setNewMessage(e.target.value)}
             placeholder="Type a message..."
             className="composer-input"
-            disabled={sending}
+            disabled={isBusy}
           />
           <button
             type="submit"
             className="btn btn-primary send-button"
-            disabled={sending || !newMessage.trim()}
+            disabled={isBusy || !newMessage.trim()}
           >
-            {sending ? (
-              <span className="sending-indicator">...</span>
+            {isMining ? (
+              <span className="sending-indicator">Mining...</span>
+            ) : sending ? (
+              <span className="sending-indicator">Sending...</span>
             ) : (
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="22" y1="2" x2="11" y2="13" />
