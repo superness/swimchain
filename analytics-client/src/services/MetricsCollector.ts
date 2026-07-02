@@ -167,19 +167,73 @@ class MetricsCollectorImpl {
 
   // === Data Collection ===
 
+  /**
+   * Count engagements in the last 24 hours using real chain data.
+   */
+  private async fetchEngagementsLast24h(): Promise<number> {
+    if (!this.rpcClient) return 0;
+
+    try {
+      const engagements = await this.rpcClient.getChainEngagements(undefined, true);
+      if (!engagements.actions) return engagements.total_engage_actions;
+
+      const now = Math.floor(Date.now() / 1000);
+      const dayAgo = now - 24 * 60 * 60;
+
+      return engagements.actions.filter(a => a.timestamp >= dayAgo).length;
+    } catch (error) {
+      console.warn('[MetricsCollector] Failed to fetch 24h engagements:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Count unique active actors from chain engagements in the last 24h.
+   * This is the REAL active-swimmer metric (vs peers.length which counts connected nodes).
+   */
+  private async fetchActiveSwimmers24h(): Promise<number> {
+    if (!this.rpcClient) return 0;
+
+    try {
+      const engagements = await this.rpcClient.getChainEngagements(undefined, true);
+      if (!engagements.actions) return 0;
+
+      const now = Math.floor(Date.now() / 1000);
+      const dayAgo = now - 24 * 60 * 60;
+
+      const uniqueActors = new Set<string>();
+      for (const action of engagements.actions) {
+        if (action.timestamp >= dayAgo) {
+          uniqueActors.add(action.actor);
+        }
+      }
+      return uniqueActors.size;
+    } catch (error) {
+      console.warn('[MetricsCollector] Failed to fetch active swimmers:', error);
+      return 0;
+    }
+  }
+
   private async collectNetworkHealth(): Promise<void> {
     try {
-      const stats = await this.fetchNetworkStats();
+      const [stats, activeSwimmersReal] = await Promise.all([
+        this.fetchNetworkStats(),
+        this.fetchActiveSwimmers24h(),
+      ]);
+
+      // Use REAL active swimmer metric (unique actors in 24h)
+      // Fall back to peer count if chain engagement data is unavailable
+      const activeSwimmers = activeSwimmersReal > 0 ? activeSwimmersReal : stats.activeSwimmers;
 
       const breakdown = {
-        swimmerScore: Math.min(30, (stats.activeSwimmers / 10) * 30),
+        swimmerScore: Math.min(30, (activeSwimmers / 10) * 30),
         riskScore: stats.postsAtRisk < 5 ? 30 : Math.max(0, 30 - stats.postsAtRisk),
         syncScore: stats.lastSyncAgeMinutes < 5 ? 20 : 0,
         heatScore: (stats.avgHeat / 100) * 20,
       };
 
       const score = calculateHealthScore(
-        stats.activeSwimmers,
+        activeSwimmers,
         stats.postsAtRisk,
         stats.lastSyncAgeMinutes,
         stats.avgHeat
@@ -188,7 +242,7 @@ class MetricsCollectorImpl {
       this.networkHealth = {
         score,
         status: getHealthStatus(score),
-        activeSwimmers: stats.activeSwimmers,
+        activeSwimmers,
         postsAtRisk: stats.postsAtRisk,
         lastSyncAgeMinutes: stats.lastSyncAgeMinutes,
         avgHeat: stats.avgHeat,
@@ -242,6 +296,9 @@ class MetricsCollectorImpl {
       p => now - new Date(p.createdAt).getTime() < day
     ).length;
 
+    // Real engagementsLast24h metric from chain data
+    const engagementsLast24h = await this.fetchEngagementsLast24h();
+
     // Update recent posts list
     this.updateRecentPosts(stats, spaceId);
 
@@ -255,7 +312,7 @@ class MetricsCollectorImpl {
       heatDistribution,
       activeContributors: stats.memberCount,
       postsLast24h,
-      engagementsLast24h: 0, // TODO: Fetch from API
+      engagementsLast24h,
       timestamp: new Date(),
     };
   }

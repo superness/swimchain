@@ -71,7 +71,7 @@ Completeness is a judgment of "distance from shippable for its scoped purpose," 
 | Client | Est. complete | Verdict |
 |---|---|---|
 | **bridge-client** | ~75% | Most complete end-to-end specialized client. Real Matrix Client-Server API (whoami/sync/send), real IRC protocol over WebSocket→TCP proxy, real signed `submit_post` with PoW, AES-GCM decryption of private content, echo/rate-limit/budget protection. **Gaps:** the required IRC WebSocket proxy isn't in the repo (IRC half dead out-of-box); messages arriving during mining are silently dropped; inbound always posts as new post, never threaded reply; Matrix sync is short-poll. |
-| **analytics-client** | ~70% (read-only) | Real telemetry (health score from live sync/peers/content). **Gaps:** `engagementsLast24h` hardcoded 0 (TODO); `activeSwimmers` = peer count (proxy metric); moderation page is localStorage-only, no on-chain attestation; client-side aggregation won't scale; zero tests. |
+| **analytics-client** | ~85% (read-only) | Real telemetry (health score from live sync/peers/content). `engagementsLast24h` now fetches from `get_chain_engagements` RPC. `activeSwimmers` = unique actors in last 24h from chain data (falls back to peer count). Moderation page has on-chain attestation via submit_spam_attestation/submit_counter_attestation/get_spam_status RPCs. **Gaps:** client-side aggregation won't scale; zero tests. |
 | **archiver-client** | ~50% | Detection real (decay math, spam filtering, pool status). **Core feature is a no-op:** `AutoEngageEngine.engage()` mines a valid Argon2id solution then discards it — its `rpc.ts` has no submit method at all. Pool progress shown to the user is computed locally (`currentSeconds + seconds`, `contributorCount + 1`). Burns CPU, preserves nothing on-chain. |
 | **wiki-client** | ~70% prototype | Newest work (Feb 18). Real signed RPC, markdown editor, wikilinks, TOC, revision diffs, talk pages. **Gaps:** untracked in git; a fork of search-client with orphaned leftovers; revisions faked by sorting `list_space_content`; verify writes actually mine PoW; moderation local-only. |
 | **debug-dashboard** | works (ops tool) | Vanilla JS + Node proxy, real multi-node RPC. Unhardened proxy (`Access-Control-Allow-Origin: *` on a cookie-auth proxy, no timeouts). |
@@ -149,7 +149,7 @@ Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parit
 - **P4** search: report/attestation parity. (M) — PR #6 open on GitHub
 - **P5** wiki: real revision model; verify write PoW; moderation. (M) **✔ DONE** — merged to main (PR #9)
 - **P6** real-time: adopt node WS events in the shared SDK, wire into chat (messages) and feed (new content) first. (L)
-- **P7** analytics: real engagement metric; on-chain attestation from moderation page (gated F2 blocklist RPC for synced blocklists). (M)
+- **P7** analytics: real engagement metric; on-chain attestation from moderation page. (M) **✔ DONE** — PR #36 open on GitHub
 - **P8** desktop: network selection UI; unified identity story across iframes; consider bundling wiki. (L)
 
 ### Phase 3 — Hardening & ship

@@ -244,6 +244,123 @@ export class SwimchainRpc {
     if (data.error) throw new Error(data.error.message ?? 'RPC error');
     return data.result;
   }
+
+  /**
+   * Submit a spam attestation report for content
+   *
+   * Flags content as spam with a reason and signature.
+   * Requires Argon2id PoW to prevent abuse.
+   */
+  async submitSpamAttestation(params: SpamAttestationParams): Promise<SpamAttestationResult> {
+    const response = await fetchWithTimeout(`${this.baseUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'submit_spam_attestation',
+        params: {
+          content_id: params.content_id,
+          attester_id: params.attester_id,
+          reason: params.reason,
+          signature: params.signature,
+          pow_nonce: params.pow_nonce,
+        },
+        id: Date.now(),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to submit spam attestation: ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message ?? 'RPC error');
+    return data.result;
+  }
+
+  /**
+   * Submit a counter-attestation (vouch that content is NOT spam)
+   */
+  async submitCounterAttestation(params: SpamAttestationParams): Promise<SpamAttestationResult> {
+    const response = await fetchWithTimeout(`${this.baseUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'submit_counter_attestation',
+        params: {
+          content_id: params.content_id,
+          attester_id: params.attester_id,
+          reason: params.reason,
+          signature: params.signature,
+          pow_nonce: params.pow_nonce,
+        },
+        id: Date.now(),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to submit counter-attestation: ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message ?? 'RPC error');
+    return data.result;
+  }
+
+  /**
+   * Check spam status of content
+   */
+  async getSpamStatus(contentId: string): Promise<SpamStatusResult> {
+    const response = await fetchWithTimeout(`${this.baseUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'get_spam_status',
+        params: { content_id: contentId },
+        id: Date.now(),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get spam status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message ?? 'RPC error');
+    return data.result;
+  }
+
+  /**
+   * Get chain-wide engagement stats
+   *
+   * Returns aggregated engagement data from the chain, with per-content breakdowns.
+   * When verbose=true, individual actions with timestamps are included for time-based filtering.
+   */
+  async getChainEngagements(contentId?: string, verbose = false): Promise<ChainEngagementsResponse> {
+    const response = await fetchWithTimeout(`${this.baseUrl}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'get_chain_engagements',
+        params: {
+          content_id: contentId,
+          verbose,
+        },
+        id: Date.now(),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get chain engagements: ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message ?? 'RPC error');
+    return data.result;
+  }
 }
 
 // =========================================================================
@@ -267,6 +384,58 @@ export interface SponsorshipOfferSummary {
 export interface SponsorshipOffersResponse {
   offers: SponsorshipOfferSummary[];
   total: number;
+}
+
+// =========================================================================
+// Chain Engagement Types
+// =========================================================================
+
+export interface EngageActionInfo {
+  content_hash: string;
+  actor: string;
+  timestamp: number;
+  pow_work: number;
+  emoji: string | null;
+  block_hash: string;
+}
+
+export interface ContentEngagementStats {
+  content_hash: string;
+  total_engagements: number;
+  total_pow_work: number;
+  unique_actors: number;
+  emoji_counts: Record<string, number>;
+}
+
+export interface ChainEngagementsResponse {
+  total_engage_actions: number;
+  content_stats: ContentEngagementStats[];
+  actions?: EngageActionInfo[];
+}
+
+// =========================================================================
+// Spam Attestation Types
+// =========================================================================
+
+export interface SpamAttestationParams {
+  content_id: string;
+  attester_id: string;
+  reason: string;
+  signature: string;
+  pow_nonce: number;
+}
+
+export interface SpamAttestationResult {
+  success: boolean;
+  message: string;
+}
+
+export interface SpamStatusResult {
+  content_id: string;
+  is_flagged: boolean;
+  attestation_count: number;
+  threshold: number;
+  is_spam: boolean;
 }
 
 // =========================================================================

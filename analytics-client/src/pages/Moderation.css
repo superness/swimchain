@@ -232,6 +232,157 @@
   opacity: 0.9;
 }
 
+.btn-danger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-sm {
+  font-size: var(--font-size-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+/* Attestation form */
+.attestation-form {
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.attestation-description {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+  margin: 0 0 var(--spacing-md) 0;
+}
+
+.attestation-warning {
+  color: var(--color-warning);
+  font-weight: 600;
+}
+
+.attestation-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.attestation-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.attestation-field label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.attestation-field input,
+.attestation-field select {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.attestation-field select {
+  cursor: pointer;
+}
+
+.attestation-checkbox {
+  margin-top: var(--spacing-xs);
+}
+
+.attestation-checkbox label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.attestation-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.attestation-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+  margin-bottom: var(--spacing-md);
+}
+
+.attestation-status {
+  font-size: var(--font-size-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--spacing-sm);
+}
+
+.status-flagged {
+  background: rgba(255, 100, 100, 0.15);
+  color: var(--color-error);
+  border: 1px solid var(--color-error);
+}
+
+.status-clean {
+  background: rgba(100, 255, 100, 0.1);
+  color: var(--color-success);
+  border: 1px solid var(--color-success);
+}
+
+.attestation-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--font-size-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+}
+
+.result-success {
+  background: rgba(100, 255, 100, 0.1);
+  color: var(--color-success);
+  border: 1px solid var(--color-success);
+}
+
+.result-error {
+  background: rgba(255, 100, 100, 0.15);
+  color: var(--color-error);
+  border: 1px solid var(--color-error);
+}
+
+.stat-connected {
+  color: var(--color-success);
+}
+
+.stat-disconnected {
+  color: var(--color-text-tertiary);
+}
+
+@media (max-width: 600px) {
+  .moderation-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .add-block-group {
+    flex-direction: column;
+  }
+
+  .attestation-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 @media (max-width: 600px) {
   .moderation-stats {
     grid-template-columns: 1fr;
