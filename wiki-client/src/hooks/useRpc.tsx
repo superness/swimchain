@@ -16,6 +16,12 @@ import { getParentConfig, isInIframe } from './useParentRpcConfig';
 import type { StoredIdentity, SyncStatus } from '../types';
 
 // Allow overriding endpoint via env for testing without local node
+
+
+/** Convert Uint8Array to hex string */
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 const USE_REMOTE_SEED = import.meta.env.VITE_USE_REMOTE_SEED === 'true';
 const REMOTE_SEED_CONFIG = TESTNET_SEED_SF;
 
@@ -246,6 +252,262 @@ export function useRpc() {
 
 // =========================================================================
 // Data fetching hooks
+// =========================================================================
+// Spam Attestation Types & Hooks (SPEC_12 Section 3)
+// =========================================================================
+
+export type SpamReason = 'advertising' | 'repetitive' | 'off_topic' | 'harassment' | 'illegal_content';
+
+export interface SpamStatus {
+  isFlagged: boolean;
+  attestationCount: number;
+  counterCount: number;
+  reasons: string[];
+  spamThreshold: number;
+  counterThreshold: number;
+}
+
+/**
+ * Hook to fetch spam status for content
+ */
+export function useSpamStatus(contentId: string): {
+  status: SpamStatus | null;
+  loading: boolean;
+  error: string | null;
+  refetch: () => void;
+} {
+  const { rpc, connected } = useRpc();
+  const [status, setStatus] = useState<SpamStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchStatus = useCallback(async () => {
+    if (!rpc || !connected || !contentId) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const result = await rpc.getSpamStatus(contentId);
+      setStatus({
+        isFlagged: result.is_flagged,
+        attestationCount: result.attestation_count,
+        counterCount: result.counter_count,
+        reasons: result.reasons ?? [],
+        spamThreshold: result.spam_threshold,
+        counterThreshold: result.counter_threshold,
+      });
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch spam status');
+      setStatus(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [rpc, connected, contentId]);
+
+  useEffect(() => {
+    if (contentId) {
+      fetchStatus();
+    }
+  }, [fetchStatus, contentId]);
+
+  return { status, loading, error, refetch: fetchStatus };
+}
+
+/**
+ * Hook to submit spam reports and counter-attestations
+ * Mines PoW and handles the full submission flow
+ */
+export function useSpamReport(): {
+  reportSpam: (
+    contentId: string,
+    reason: SpamReason,
+    identityPublicKey: string,
+    signFn: (message: Uint8Array) => Uint8Array,
+  ) => Promise<{ success: boolean; thresholdReached: boolean }>;
+  defendContent: (
+    contentId: string,
+    identityPublicKey: string,
+    signFn: (message: Uint8Array) => Uint8Array,
+  ) => Promise<{ success: boolean }>;
+  submitting: boolean;
+  progress: { attempts: number; elapsedMs: number };
+  error: string | null;
+} {
+  const { rpc, connected } = useRpc();
+  const [submitting, setSubmitting] = useState(false);
+  const [progress, setProgress] = useState({ attempts: 0, elapsedMs: 0 });
+  const [error, setError] = useState<string | null>(null);
+
+  const reportSpam = useCallback(async (
+    contentId: string,
+    reason: SpamReason,
+    identityPublicKey: string,
+    signFn: (message: Uint8Array) => Uint8Array,
+  ): Promise<{ success: boolean; thresholdReached: boolean }> => {
+    if (!rpc || !connected) {
+      return { success: false, thresholdReached: false };
+    }
+
+    setSubmitting(true);
+    setError(null);
+    setProgress({ attempts: 0, elapsedMs: 0 });
+
+    try {
+      const timestamp = Math.floor(Date.now() / 1000);
+      const nonceSpace = new Uint8Array(8);
+      crypto.getRandomValues(nonceSpace);
+      const nonceSpaceHex = Array.from(nonceSpace).map(b => b.toString(16).padStart(2, '0')).join('');
+
+      const difficulty = 12;
+      let nonce = 0n;
+      const startTime = Date.now();
+      let bestHash = '';
+
+      while (Date.now() - startTime < 30000) {
+        const nonceBytes = new Uint8Array(8);
+        new DataView(nonceBytes.buffer).setBigUint64(0, nonce, true);
+
+        const preimage = new Uint8Array([
+          ...new TextEncoder().encode(contentId + reason + timestamp.toString()),
+          ...nonceBytes,
+          ...nonceSpace,
+        ]);
+        const hash = await crypto.subtle.digest('SHA-256', preimage);
+
+        const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+        const leadingZeros = hashHex.match(/^0*/)?.[0].length ?? 0;
+
+        if (leadingZeros >= difficulty) {
+          bestHash = hashHex;
+          break;
+        }
+
+        if (leadingZeros > (bestHash.match(/^0*/)?.[0].length ?? 0)) {
+          bestHash = hashHex;
+        }
+
+        nonce++;
+        if (nonce % 1000n === 0n) {
+          setProgress({ attempts: Number(nonce), elapsedMs: Date.now() - startTime });
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+
+      const finalNonce = Number(nonce);
+      setProgress({ attempts: finalNonce, elapsedMs: Date.now() - startTime });
+
+      const message = "spam_attestation:" + contentId + ":" + reason + ":" + timestamp;
+      const signature = signFn(new TextEncoder().encode(message));
+      const signatureHex = bytesToHex(signature);
+
+      const result = await rpc.submitSpamAttestation({
+        contentId,
+        attesterId: identityPublicKey,
+        reason,
+        powNonce: finalNonce,
+        powDifficulty: difficulty,
+        powNonceSpace: nonceSpaceHex,
+        powHash: bestHash || "0000000000000000000000000000000000000000000000000000000000000000",
+        signature: signatureHex,
+        timestamp,
+      });
+
+      return { success: true, thresholdReached: result.threshold_reached };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to submit spam report';
+      setError(msg);
+      return { success: false, thresholdReached: false };
+    } finally {
+      setSubmitting(false);
+    }
+  }, [rpc, connected]);
+
+  const defendContent = useCallback(async (
+    contentId: string,
+    identityPublicKey: string,
+    signFn: (message: Uint8Array) => Uint8Array,
+  ): Promise<{ success: boolean }> => {
+    if (!rpc || !connected) {
+      return { success: false };
+    }
+
+    setSubmitting(true);
+    setError(null);
+    setProgress({ attempts: 0, elapsedMs: 0 });
+
+    try {
+      const timestamp = Math.floor(Date.now() / 1000);
+      const nonceSpace = new Uint8Array(8);
+      crypto.getRandomValues(nonceSpace);
+      const nonceSpaceHex = Array.from(nonceSpace).map(b => b.toString(16).padStart(2, '0')).join('');
+
+      const difficulty = 10;
+      let nonce = 0n;
+      const startTime = Date.now();
+      let bestHash = '';
+
+      while (Date.now() - startTime < 30000) {
+        const nonceBytes = new Uint8Array(8);
+        new DataView(nonceBytes.buffer).setBigUint64(0, nonce, true);
+
+        const preimage = new Uint8Array([
+          ...new TextEncoder().encode("counter:" + contentId + ":" + timestamp),
+          ...nonceBytes,
+          ...nonceSpace,
+        ]);
+        const hash = await crypto.subtle.digest('SHA-256', preimage);
+        const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+        const leadingZeros = hashHex.match(/^0*/)?.[0].length ?? 0;
+
+        if (leadingZeros >= difficulty) {
+          bestHash = hashHex;
+          break;
+        }
+
+        if (leadingZeros > (bestHash.match(/^0*/)?.[0].length ?? 0)) {
+          bestHash = hashHex;
+        }
+
+        nonce++;
+        if (nonce % 1000n === 0n) {
+          setProgress({ attempts: Number(nonce), elapsedMs: Date.now() - startTime });
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+
+      const finalNonce = Number(nonce);
+      setProgress({ attempts: finalNonce, elapsedMs: Date.now() - startTime });
+
+      const message = "counter_attestation:" + contentId + ":" + timestamp;
+      const signature = signFn(new TextEncoder().encode(message));
+      const signatureHex = bytesToHex(signature);
+
+      await rpc.submitCounterAttestation({
+        contentId,
+        attesterId: identityPublicKey,
+        powNonce: finalNonce,
+        powDifficulty: difficulty,
+        powNonceSpace: nonceSpaceHex,
+        powHash: bestHash || "0000000000000000000000000000000000000000000000000000000000000000",
+        signature: signatureHex,
+        timestamp,
+      });
+
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to defend content';
+      setError(msg);
+      return { success: false };
+    } finally {
+      setSubmitting(false);
+    }
+  }, [rpc, connected]);
+
+  return { reportSpam, defendContent, submitting, progress, error };
+}
+
 // =========================================================================
 
 /**

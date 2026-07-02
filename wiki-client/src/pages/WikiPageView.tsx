@@ -10,6 +10,7 @@ import { useWikiNamespaces } from '../hooks/useWikiNamespaces';
 import { renderMarkdown } from '../lib/markdown';
 import { parseWikiLinks } from '../lib/wikilinks';
 import { extractTableOfContents } from '../lib/toc';
+import { ReportModal, SpamBadge } from '../components/ReportModal';
 import type { TableOfContentsItem } from '../types/wiki';
 import './WikiPageView.css';
 
@@ -58,6 +59,7 @@ export function WikiPageView(): JSX.Element {
   const { data: page, loading, error } = useWikiPage(pageId ?? null);
   const { data: namespaces } = useWikiNamespaces();
   const [activeTocId] = useState<string | null>(null);
+  const [showReport, setShowReport] = useState(false);
 
   // Find namespace name
   const namespaceName = useMemo(() => {
@@ -124,6 +126,7 @@ export function WikiPageView(): JSX.Element {
         <>
           {/* Page header */}
           <div className="wiki-page-header">
+            {pageId && <SpamBadge contentId={pageId} />}
             <h1 className="wiki-page-title">
               {page.title}
               <Link
@@ -152,8 +155,16 @@ export function WikiPageView(): JSX.Element {
                   {decay.label}: {decay.text} alive
                 </span>
               )}
+              {pageId && (
+                <button className="report-btn" onClick={() => setShowReport(true)} title="Report this page">
+                  Report
+                </button>
+              )}
             </div>
           </div>
+          {showReport && pageId && (
+            <ReportModal contentId={pageId} onClose={() => setShowReport(false)} />
+          )}
 
           {/* Layout: TOC + content */}
           <div className="wiki-page-view__body">

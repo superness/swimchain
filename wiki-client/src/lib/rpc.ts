@@ -354,9 +354,82 @@ export class SwimchainRpc {
   }> {
     return this.call('get_identity_info', { identity_id: identityId });
   }
+
+  // =========================================================================
+  // Spam Attestation Methods (SPEC_12 ..167.)
+  // =========================================================================
+
+  /**
+   * Submit a spam attestation to flag content
+   */
+  async submitSpamAttestation(params: {
+    contentId: string;
+    attesterId: string;
+    reason: string;
+    powNonce: number;
+    powDifficulty: number;
+    powNonceSpace: string;
+    powHash: string;
+    signature: string;
+    timestamp: number;
+  }): Promise<{ success: boolean; threshold_reached: boolean }> {
+    return this.call('submit_spam_attestation', {
+      content_id: params.contentId,
+      attester_id: params.attesterId,
+      reason: params.reason,
+      pow_nonce: params.powNonce,
+      pow_difficulty: params.powDifficulty,
+      pow_nonce_space: params.powNonceSpace,
+      pow_hash: params.powHash,
+      signature: params.signature,
+      timestamp: params.timestamp,
+    });
+  }
+
+  /**
+   * Submit a counter-attestation to dispute a spam flag
+   */
+  async submitCounterAttestation(params: {
+    contentId: string;
+    attesterId: string;
+    powNonce: number;
+    powDifficulty: number;
+    powNonceSpace: string;
+    powHash: string;
+    signature: string;
+    timestamp: number;
+  }): Promise<{ success: boolean }> {
+    return this.call('submit_counter_attestation', {
+      content_id: params.contentId,
+      attester_id: params.attesterId,
+      pow_nonce: params.powNonce,
+      pow_difficulty: params.powDifficulty,
+      pow_nonce_space: params.powNonceSpace,
+      pow_hash: params.powHash,
+      signature: params.signature,
+      timestamp: params.timestamp,
+    });
+  }
+
+  /**
+   * Get spam status for content
+   */
+  async getSpamStatus(contentId: string): Promise<{
+    content_id: string;
+    is_flagged: boolean;
+    attestation_count: number;
+    counter_count: number;
+    reasons: string[];
+    spam_threshold: number;
+    counter_threshold: number;
+  }> {
+    return this.call('get_spam_status', {
+      content_id: contentId,
+    });
+  }
 }
 
-// =========================================================================
+// ========="================================================================
 // Global RPC instance management
 // =========================================================================
 
