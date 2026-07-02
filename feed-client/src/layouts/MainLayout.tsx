@@ -48,6 +48,14 @@ function Header(): JSX.Element {
           >
             Sponsorship
           </Link>
+          {identity && (
+            <Link
+              to="/dm"
+              className={`app-header__nav-link ${location.pathname === '/dm' ? 'app-header__nav-link--active' : ''}`}
+            >
+              Messages
+            </Link>
+          )}
         </nav>
 
         <div className="app-header__actions">
