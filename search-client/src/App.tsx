@@ -27,7 +27,7 @@ export function App(): JSX.Element {
 interface RedirectToAppProps { type: 'space' | 'post' | 'user'; }
 
 function RedirectToApp({ type }: RedirectToAppProps) {
-  const targetUrl = import.meta.env.VITE_DEEP_LINK_URL || 'http://localhost:5174';
+  const targetUrl = import.meta.env.VITE_DEEP_LINK_URL || 'http://localhost:5179';
   let path = window.location.pathname;
   if (path.startsWith('/thread/')) path = path.replace('/thread/', '/post/');
   if (path.startsWith('/user/')) path = path.replace('/user/', '/profile/');
