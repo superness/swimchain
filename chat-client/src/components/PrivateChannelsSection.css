@@ -1,0 +1,183 @@
+/* PrivateChannelsSection - sidebar section for invites + private channels */
+
+.private-channels-section {
+  border-top: 1px solid var(--bg-modifier-accent, rgba(78, 80, 88, 0.48));
+  padding: 4px 0;
+}
+
+.private-section-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  color: var(--text-muted, #949ba4);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  transition: color var(--transition-fast, 0.15s);
+}
+
+.private-section-header:hover {
+  color: var(--text-normal, #dbdee1);
+}
+
+.private-section-arrow {
+  transition: transform 0.15s;
+}
+
+.private-section-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+.private-section-title {
+  flex: 1;
+  text-align: left;
+}
+
+.invites-badge {
+  background: var(--text-danger, #ed4245);
+  color: #fff;
+  border-radius: 10px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.private-section-body {
+  padding: 0 8px 4px;
+}
+
+.private-section-empty {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text-muted, #949ba4);
+}
+
+/* Invite inbox items */
+
+.invite-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin-bottom: 2px;
+  background: var(--bg-modifier-hover, rgba(78, 80, 88, 0.3));
+}
+
+.invite-item-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.invite-item-title {
+  font-size: 13px;
+  color: var(--text-normal, #dbdee1);
+}
+
+.invite-item-from {
+  font-size: 11px;
+  font-family: monospace;
+  color: var(--text-muted, #949ba4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.invite-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.invite-accept-btn,
+.invite-decline-btn {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.invite-accept-btn {
+  background: var(--status-positive, #3ba55c);
+  color: #fff;
+}
+
+.invite-decline-btn {
+  background: var(--bg-modifier-selected, rgba(78, 80, 88, 0.6));
+  color: var(--text-normal, #dbdee1);
+}
+
+.invite-accept-btn:hover:not(:disabled),
+.invite-decline-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.invite-accept-btn:disabled,
+.invite-decline-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Private channel list items */
+
+.private-channel-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-muted, #949ba4);
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+  transition: background-color var(--transition-fast, 0.15s), color var(--transition-fast, 0.15s);
+}
+
+.private-channel-item:hover {
+  background-color: var(--bg-modifier-hover, rgba(78, 80, 88, 0.3));
+  color: var(--text-normal, #dbdee1);
+}
+
+.private-channel-lock {
+  flex-shrink: 0;
+}
+
+.private-channel-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.private-channel-role {
+  flex-shrink: 0;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--bg-modifier-selected, rgba(78, 80, 88, 0.6));
+}
+
+.private-channel-role--admin {
+  color: var(--text-warning, #f0b232);
+}
+
+.private-channel-role--moderator {
+  color: var(--brand, #5865f2);
+}
