@@ -7,7 +7,6 @@
 import { memo } from 'react';
 import { SearchResult, UserInfo } from '../../types';
 import { highlightToReactParts } from '../../lib/highlighter';
-import { BlockButton } from '../BlockButton';
 import './ResultCard.css';
 
 interface UserResultProps {
@@ -77,7 +76,7 @@ export const UserResult = memo(function UserResult({ result, searchTerms, search
 
         <div className="user-info">
           <h3 className="result-title user-name">
-            <a href={`/user/${data.identityId}`}>
+            <a href={`/profile/${data.identityId}`}>
               {nameParts.length > 0 ? (
                 nameParts.map((part, i) => (
                   part.isHighlighted
@@ -137,10 +136,9 @@ export const UserResult = memo(function UserResult({ result, searchTerms, search
       </div>
 
       <div className="user-actions">
-        <a href={`/user/${data.identityId}`} className="action-button primary">
+        <a href={`/profile/${data.identityId}`} className="action-button primary">
           View Profile
         </a>
-        <BlockButton id={data.identityId} type="user" />
       </div>
     </article>
   );

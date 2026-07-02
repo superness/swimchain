@@ -7,10 +7,6 @@
 import { memo } from 'react';
 import { SearchResult, ThreadInfo } from '../../types';
 import { highlightToReactParts } from '../../lib/highlighter';
-import { BlockButton } from '../BlockButton';
-import { ContentStatus } from '../ContentStatus';
-import { EncryptedBadge, isEncryptedContent } from '../EncryptedBadge';
-import { SponsoredBadge } from '../SponsoredBadge';
 import './ResultCard.css';
 
 interface ThreadResultProps {
@@ -53,17 +49,12 @@ export const ThreadResult = memo(function ThreadResult({ result, searchTerms, se
     searchPhrases
   );
 
-  const bodyIsEncrypted = isEncryptedContent(data.body);
-  const titleIsEncrypted = isEncryptedContent(data.title);
-
   return (
     <article className="result-card thread-result" role="listitem">
-      <div className="result-type-badge thread">THREAD</div>
-      {(bodyIsEncrypted || titleIsEncrypted) && <EncryptedBadge />}
-      {data.sponsorshipId && <SponsoredBadge />}
+      <div className="result-type-badge thread">POST</div>
 
       <h3 className="result-title">
-        <a href={`/thread/${data.contentId}`}>
+        <a href={`/post/${data.contentId}`}>
           {titleParts.map((part, i) => (
             part.isHighlighted
               ? <mark key={i}>{part.text}</mark>
@@ -117,8 +108,6 @@ export const ThreadResult = memo(function ThreadResult({ result, searchTerms, se
             </svg>
           </span>
         )}
-        <ContentStatus createdAt={data.createdAt} />
-        <BlockButton id={data.contentId} type="post" authorId={data.authorId} />
       </div>
     </article>
   );
