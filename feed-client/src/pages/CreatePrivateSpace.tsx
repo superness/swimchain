@@ -54,13 +54,7 @@ export function CreatePrivateSpace(): JSX.Element {
       // Generate a new space key
       const spaceKey = generateSpaceKey();
 
-      // Generate a unique space ID (hash of creator + timestamp + random)
       const timestamp = Date.now();
-      const randomBytes = new Uint8Array(8);
-      crypto.getRandomValues(randomBytes);
-      const spaceIdPreimage = `private:${userPublicKeyHex}:${timestamp}:${bytesToHex(randomBytes)}`;
-      const spaceIdHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(spaceIdPreimage));
-      const spaceId = bytesToHex(new Uint8Array(spaceIdHash).slice(0, 16));
 
       // Derive our X25519 keys
       const seed = keypair.seed();
@@ -112,34 +106,24 @@ export function CreatePrivateSpace(): JSX.Element {
         timestamp: powParams.timestamp,
       });
 
-      if (result) {
-        console.log('Private space created:', result.spaceId);
-
-        // Store the space key locally
-        await storeSpaceKey(
-          result.spaceId,
-          spaceKey,
-          userPublicKeyHex, // creator is the inviter
-          0,
-          name
-        );
-
-        success('Private space created!');
-        // Navigate to discover or the new space
-        navigate(`/space/${result.spaceId}`);
-      } else {
-        // Fallback: store locally if RPC fails
-        console.warn('RPC failed, storing locally with generated ID');
-        await storeSpaceKey(
-          spaceId,
-          spaceKey,
-          userPublicKeyHex,
-          0,
-          name
-        );
-        success('Private space created locally!');
-        navigate(`/space/${spaceId}`);
+      if (!result?.spaceId) {
+        throw new Error('Space creation failed: no space ID returned');
       }
+
+      console.log('Private space created:', result.spaceId);
+
+      // Store the space key locally
+      await storeSpaceKey(
+        result.spaceId,
+        spaceKey,
+        userPublicKeyHex, // creator is the inviter
+        0,
+        name
+      );
+
+      success('Private space created!');
+      // Navigate to discover or the new space
+      navigate(`/space/${result.spaceId}`);
 
     } catch (err) {
       console.error('Failed to create private space:', err);
