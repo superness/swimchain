@@ -7,10 +7,6 @@
 import { memo } from 'react';
 import { SearchResult, ReplyInfo } from '../../types';
 import { highlightToReactParts } from '../../lib/highlighter';
-import { BlockButton } from '../BlockButton';
-import { ContentStatus } from '../ContentStatus';
-import { EncryptedBadge, isEncryptedContent } from '../EncryptedBadge';
-import { SponsoredBadge } from '../SponsoredBadge';
 import './ResultCard.css';
 
 interface ReplyResultProps {
@@ -47,19 +43,15 @@ export const ReplyResult = memo(function ReplyResult({ result, searchTerms, sear
     searchPhrases
   );
 
-  const bodyIsEncrypted = isEncryptedContent(data.body);
-
   return (
     <article className="result-card reply-result" role="listitem">
       <div className="result-type-badge reply">REPLY</div>
-      {bodyIsEncrypted && <EncryptedBadge />}
-      {data.sponsorshipId && <SponsoredBadge />}
 
       {/* Context: which thread this reply is in */}
       {data.threadTitle && (
         <div className="reply-context">
           <span className="context-label">in</span>
-          <a href={`/thread/${data.threadId}`} className="context-link">
+          <a href={`/post/${data.threadId}`} className="context-link">
             "{data.threadTitle}"
           </a>
         </div>
@@ -91,12 +83,10 @@ export const ReplyResult = memo(function ReplyResult({ result, searchTerms, sear
           </svg>
           {data.reactionCount}
         </span>
-        <ContentStatus createdAt={data.createdAt} />
-        <BlockButton id={data.contentId} type="reply" authorId={data.authorId} />
       </div>
 
       <a
-        href={`/thread/${data.threadId}#reply-${data.contentId}`}
+        href={`/post/${data.threadId}#reply-${data.contentId}`}
         className="view-in-thread"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

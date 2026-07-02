@@ -7,7 +7,6 @@
 import { memo } from 'react';
 import { SearchResult, SpaceInfo } from '../../types';
 import { highlightToReactParts } from '../../lib/highlighter';
-import { BlockButton } from '../BlockButton';
 import './ResultCard.css';
 
 interface SpaceResultProps {
@@ -107,7 +106,6 @@ export const SpaceResult = memo(function SpaceResult({ result, searchTerms, sear
         <a href={`/space/${data.spaceId}`} className="action-button primary">
           View Space
         </a>
-        <BlockButton id={data.spaceId} type="space" />
       </div>
     </article>
   );
