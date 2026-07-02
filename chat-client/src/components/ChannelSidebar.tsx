@@ -272,11 +272,11 @@ export function ChannelSidebar({
               Create a channel
             </button>
           </div>
-
-      {/* Direct Messages panel */}
-      <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
-      {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
         )}
+
+        {/* Direct Messages panel */}
+        <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
+        {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
       </div>
 
       {/* User area at bottom */}
