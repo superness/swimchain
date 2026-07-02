@@ -39,6 +39,8 @@
     "copy-wasm": "cp src/wasm/swimchain_wasm.js src/wasm/swimchain_wasm.d.ts src/wasm/swimchain_wasm_bg.wasm dist/wasm/",
     "copy-css": "cp src/components/*.css dist/components/",
     "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },
@@ -56,7 +58,8 @@
   "devDependencies": {
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
   },
   "keywords": [
     "swimchain",

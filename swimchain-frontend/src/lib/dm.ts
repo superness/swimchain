@@ -8,7 +8,7 @@
  */
 
 import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex } from './utils';
+import { bytesToHex } from './action-pow';
 
 /**
  * Generate a deterministic DM space ID from two public keys.

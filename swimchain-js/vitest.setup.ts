@@ -18,9 +18,9 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = input.toString();
 
   // Check if this is a WASM file request
-  if (url.endsWith(".wasm") || url.includes("chainsocial_wasm_bg.wasm")) {
+  if (url.endsWith(".wasm") || url.includes("swimchain_wasm_bg.wasm")) {
     // Load from local filesystem
-    const wasmPath = join(__dirname, "pkg", "chainsocial_wasm_bg.wasm");
+    const wasmPath = join(__dirname, "pkg", "swimchain_wasm_bg.wasm");
     const wasmBuffer = readFileSync(wasmPath);
 
     return new Response(wasmBuffer, {

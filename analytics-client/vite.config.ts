@@ -10,7 +10,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ['@chainsocial/core'],
+    exclude: ['@swimchain/core'],
   },
   build: {
     target: 'esnext',

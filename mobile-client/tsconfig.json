@@ -17,8 +17,8 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
-      "@chainsocial/core": ["../chainsocial-js/src"],
-      "@chainsocial/react": ["../chainsocial-react/src"]
+      "@swimchain/core": ["../swimchain-js/src"],
+      "@swimchain/react": ["../swimchain-react/src"]
     }
   },
   "include": ["src/**/*", "App.tsx", "index.js"],
