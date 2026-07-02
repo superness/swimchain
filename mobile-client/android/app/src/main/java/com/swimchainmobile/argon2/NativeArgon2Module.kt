@@ -30,6 +30,58 @@ class NativeArgon2Module(reactContext: ReactApplicationContext) :
         promise.resolve(true)
     }
 
+    /**
+     * Cross-platform deriveKey — accepts password + salt as plain strings,
+     * returns derived key as hex string.
+     *
+     * Uses SPEC_03 Argon2id parameters: 64 MiB, 3 iterations, parallelism 2,
+     * 32-byte hash length, 16-byte salt.
+     *
+     * Bridges Android (argon2kt) and iOS (Argon2Swift) implementations.
+     */
+    @ReactMethod
+    fun deriveKey(
+        password: String,
+        salt: String,
+        promise: Promise
+    ) {
+        executor.execute {
+            try {
+                // SPEC_03: fixed parameters
+                val memoryKib = 65536      // 64 MiB
+                val iterations = 3
+                val parallelism = 2
+                val hashLength = 32
+
+                // Convert password and salt to UTF-8 bytes
+                val passwordBytes = password.toByteArray(Charsets.UTF_8)
+                val saltBytesRaw = salt.toByteArray(Charsets.UTF_8)
+
+                // Pad or truncate salt to exactly 16 bytes per SPEC_03
+                val saltBytes = if (saltBytesRaw.size >= 16) {
+                    saltBytesRaw.copyOfRange(0, 16)
+                } else {
+                    saltBytesRaw + ByteArray(16 - saltBytesRaw.size)
+                }
+
+                val hash = computeArgon2id(
+                    input = passwordBytes,
+                    salt = saltBytes,
+                    memoryKib = memoryKib,
+                    iterations = iterations,
+                    parallelism = parallelism,
+                    hashLength = hashLength
+                )
+
+                // Return as hex string (platform-independent format)
+                val hex = hash.joinToString("") { "%02x".format(it) }
+                promise.resolve(hex)
+            } catch (e: Exception) {
+                promise.reject("DERIVE_KEY_ERROR", e.message, e)
+            }
+        }
+    }
+
     @ReactMethod
     fun hash(
         inputBase64: String,

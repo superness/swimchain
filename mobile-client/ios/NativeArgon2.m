@@ -10,6 +10,11 @@
 RCT_EXTERN_METHOD(isAvailable:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject)
 
+RCT_EXTERN_METHOD(deriveKey:(NSString *)password
+                  salt:(NSString *)salt
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject)
+
 RCT_EXTERN_METHOD(hash:(NSString *)inputBase64
                   saltBase64:(NSString *)saltBase64
                   memoryKib:(int)memoryKib

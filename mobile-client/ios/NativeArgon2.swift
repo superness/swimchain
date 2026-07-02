@@ -49,6 +49,63 @@ class NativeArgon2: RCTEventEmitter {
     resolve(true)
   }
 
+  /**
+   * Cross-platform deriveKey — accepts password + salt as plain strings,
+   * returns derived key as hex string.
+   *
+   * Uses SPEC_03 Argon2id parameters: 64 MiB, 3 iterations, parallelism 2,
+   * 32-byte hash length, 16-byte salt.
+   *
+   * Bridges Android (argon2kt) and iOS (Argon2Swift) implementations.
+   */
+  @objc
+  func deriveKey(_ password: String,
+                 salt: String,
+                 resolve: @escaping RCTPromiseResolveBlock,
+                 reject: @escaping RCTPromiseRejectBlock) {
+
+    miningQueue.async {
+      do {
+        // SPEC_03: fixed parameters
+        let memoryKib = 65536      // 64 MiB
+        let iterations = 3
+        let parallelism = 2
+        let hashLength = 32
+
+        // Convert password and salt to UTF-8 data
+        guard let passwordData = password.data(using: .utf8),
+              let saltData = salt.data(using: .utf8) else {
+          reject("ENCODE_ERROR", "Failed to encode password or salt as UTF-8", nil)
+          return
+        }
+
+        // Pad or truncate salt to exactly 16 bytes per SPEC_03
+        var saltBytes = [UInt8](saltData)
+        if saltBytes.count > 16 {
+          saltBytes = Array(saltBytes[0..<16])
+        } else if saltBytes.count < 16 {
+          saltBytes.append(contentsOf: [UInt8](repeating: 0, count: 16 - saltBytes.count))
+        }
+        let paddedSalt = Data(saltBytes)
+
+        let hash = try self.computeArgon2id(
+          input: passwordData,
+          salt: paddedSalt,
+          memoryKib: memoryKib,
+          iterations: iterations,
+          parallelism: parallelism,
+          hashLength: hashLength
+        )
+
+        // Return as hex string (platform-independent format)
+        let hex = hash.map { String(format: "%02x", $0) }.joined()
+        resolve(hex)
+      } catch {
+        reject("DERIVE_KEY_ERROR", error.localizedDescription, error)
+      }
+    }
+  }
+
   @objc
   func hash(_ inputBase64: String,
             saltBase64: String,

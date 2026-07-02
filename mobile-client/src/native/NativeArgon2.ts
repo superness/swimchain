@@ -33,6 +33,20 @@ export interface PowSolution {
 
 // Native module interface
 interface NativeArgon2Bridge {
+  /**
+   * Cross-platform deriveKey — accepts password + salt as plain strings,
+   * returns derived key as hex string.
+   *
+   * Uses SPEC_03 Argon2id parameters: 64 MiB, 3 iterations, parallelism 2,
+   * 32-byte hash length, 16-byte salt (UTF-8 encoded, padded/truncated).
+   *
+   * Bridges Android (argon2kt) and iOS (Argon2Swift) implementations.
+   */
+  deriveKey(
+    password: string,
+    salt: string,
+  ): Promise<string>; // hex-encoded derived key (64 hex chars)
+
   hash(
     input: string, // base64-encoded
     salt: string, // base64-encoded
@@ -77,6 +91,17 @@ export type MiningProgressCallback = (progress: MiningProgress) => void;
 let progressListener: ReturnType<NativeEventEmitter['addListener']> | null = null;
 
 /**
+ * SPEC_03 Argon2id parameters for key derivation (production).
+ * Must match Android (argon2kt) and iOS (Argon2Swift) implementations.
+ */
+export const DERIVE_KEY_CONFIG: Argon2Config = {
+  memoryKib: 65536, // 64 MiB
+  iterations: 3,
+  parallelism: 2,
+  hashLength: 32,
+} as const;
+
+/**
  * NativeArgon2 - TypeScript wrapper for native Argon2id module
  */
 export const NativeArgon2 = {
@@ -85,6 +110,27 @@ export const NativeArgon2 = {
    */
   isAvailable(): boolean {
     return NativeArgon2Module !== undefined;
+  },
+
+  /**
+   * Cross-platform key derivation using Argon2id.
+   *
+   * Accepts password and salt as plain strings, returns the derived
+   * key as a hex string (64 hex characters = 32 bytes).
+   *
+   * Uses SPEC_03 parameters: Argon2id, 64 MiB, 3 iterations,
+   * parallelism 2, 32-byte output, 16-byte salt (UTF-8 encoded,
+   * padded or truncated as needed).
+   *
+   * Bridges Android (argon2kt) and iOS (Argon2Swift) so that:
+   *   deriveKey("password", "salt") === same 64-char hex on both platforms
+   */
+  async deriveKey(password: string, salt: string): Promise<string> {
+    if (!NativeArgon2Module) {
+      throw new Error('NativeArgon2 module not available');
+    }
+
+    return NativeArgon2Module.deriveKey(password, salt);
   },
 
   /**
