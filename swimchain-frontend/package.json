@@ -36,7 +36,7 @@
   ],
   "scripts": {
     "build": "tsc && npm run copy-wasm && npm run copy-css",
-    "copy-wasm": "cp src/wasm/chainsocial_wasm.js src/wasm/chainsocial_wasm.d.ts src/wasm/chainsocial_wasm_bg.wasm dist/wasm/",
+    "copy-wasm": "cp src/wasm/swimchain_wasm.js src/wasm/swimchain_wasm.d.ts src/wasm/swimchain_wasm_bg.wasm dist/wasm/",
     "copy-css": "cp src/components/*.css dist/components/",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
