@@ -18,7 +18,7 @@ Headline numbers:
 | Phantom methods (allowlisted, no handler) | 15 |
 | Client apps | 13 (10 web, 1 mobile, 1 desktop shell, 1 debug tool) |
 | Clients calling nonexistent RPC methods | 1 (forum-client, 3 methods) |
-| Clients with fake/no-op core features | 3 (archiver, web-gateway, mobile write path) |
+| Clients with fake/no-op core features | 2 (archiver, mobile write path) — web-gateway fixed in B8 |
 | Parallel implementations of crypto/RPC stack | 4 |
 | Clients using node WebSocket events | 0 |
 | Unit tests across analytics/archiver/bridge | 0 |
@@ -111,9 +111,9 @@ Legend: ✅ implemented · 🟡 partial · ❌ missing · 💥 broken (calls non
 | DMs | ✅ | 🟡 RPC no UI | ❌ | ▫ | ▫ | ▫ | ▫ | ▫ | ▫ | ❌ |
 | Moderation: report/attestation | ✅ + counter | ✅ + counter | 🟡 report only | ❌ | ❌ | ❌ local block | ✅ checks | ✅ checks | ▫ | ❌ |
 | Moderation: blocklist | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ▫ | ❌ |
-| Search | ✅ | ✅ | 💥 local filter | ✅ full | ✅ | ▫ | ▫ | ▫ | 💥 mock | ✅ |
+| Search | ✅ | ✅ | 💥 local filter | ✅ full | ✅ | ▫ | ▫ | ▫ | ✅ | ✅ |
 | Real-time (WS events) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Profile view/edit | 💥 save broken | ✅ | 🟡 name only | ▫ | ❌ | ▫ | ▫ | ▫ | 💥 mock | 🟡 |
+| Profile view/edit | 💥 save broken | ✅ | 🟡 name only | ▫ | ❌ | ▫ | ▫ | ▫ | ✅ | 🟡 |
 
 ¹ wiki writes need verification that PoW is actually mined before ship.
 
