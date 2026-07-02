@@ -4,9 +4,9 @@
  */
 
 // Import the WASM module directly from local copy
-import init, * as wasm from "./chainsocial_wasm.js";
+import init, * as wasm from "./swimchain_wasm.js";
 // Import WASM as URL - Vite will bundle this correctly
-import wasmUrl from "./chainsocial_wasm_bg.wasm?url";
+import wasmUrl from "./swimchain_wasm_bg.wasm?url";
 
 // Track initialization
 let initialized = false;
@@ -46,4 +46,4 @@ export function isWasmLoaded(): boolean {
 }
 
 // Re-export everything from the WASM module for convenience
-export * from "./chainsocial_wasm.js";
+export * from "./swimchain_wasm.js";
