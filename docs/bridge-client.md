@@ -102,6 +102,20 @@ Uses sliding window rate limiting:
 
 ## Running
 
+### 1. Start the IRC WebSocket Proxy (required for IRC bridging)
+
+```bash
+cd bridge-client/proxy
+npm install
+npm start
+# or from bridge-client root:
+npm run proxy
+```
+
+The proxy listens on `ws://localhost:8080` by default. Use `--port` and `--host` flags to customize.
+
+### 2. Start the Bridge Dashboard
+
 ```bash
 cd bridge-client
 npm install
