@@ -5,7 +5,7 @@
  * Uses signature-based authentication with the user's identity keypair.
  */
 
-import { WasmKeypair } from '../wasm/chainsocial_wasm';
+import { WasmKeypair } from '../wasm/swimchain_wasm';
 
 // RPC Types (inline to avoid build dependencies for now)
 interface RpcRequest {

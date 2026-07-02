@@ -17,7 +17,7 @@ export default defineConfig({
   resolve: {
     alias: {
       // Alias the WASM file to be loaded from filesystem
-      "../pkg/chainsocial_wasm_bg.wasm": join(__dirname, "pkg/chainsocial_wasm_bg.wasm"),
+      "../pkg/swimchain_wasm_bg.wasm": join(__dirname, "pkg/swimchain_wasm_bg.wasm"),
     },
   },
 });

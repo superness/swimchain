@@ -206,10 +206,10 @@ function Build-All {
             $WasmSrc = Join-Path $SwimchainFrontendDir "src\wasm"
             $WasmDest = Join-Path $SwimchainFrontendDir "dist\wasm"
             New-Item -ItemType Directory -Force -Path $WasmDest | Out-Null
-            if (Test-Path (Join-Path $WasmSrc "chainsocial_wasm.js")) {
-                Copy-Item (Join-Path $WasmSrc "chainsocial_wasm.js") $WasmDest -Force
-                Copy-Item (Join-Path $WasmSrc "chainsocial_wasm.d.ts") $WasmDest -Force
-                Copy-Item (Join-Path $WasmSrc "chainsocial_wasm_bg.wasm") $WasmDest -Force
+            if (Test-Path (Join-Path $WasmSrc "swimchain_wasm.js")) {
+                Copy-Item (Join-Path $WasmSrc "swimchain_wasm.js") $WasmDest -Force
+                Copy-Item (Join-Path $WasmSrc "swimchain_wasm.d.ts") $WasmDest -Force
+                Copy-Item (Join-Path $WasmSrc "swimchain_wasm_bg.wasm") $WasmDest -Force
             }
             # Copy CSS
             $CssSrc = Join-Path $SwimchainFrontendDir "src\styles"

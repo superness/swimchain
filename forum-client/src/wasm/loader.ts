@@ -4,7 +4,7 @@
  */
 
 // Import the WASM module directly from local copy
-import init, * as wasm from "./chainsocial_wasm.js";
+import init, * as wasm from "./swimchain_wasm.js";
 
 // Track initialization - use global to persist across HMR
 // @ts-expect-error - Using global for HMR persistence
@@ -24,7 +24,7 @@ export async function initWasm(): Promise<typeof wasm> {
 
   initPromise = (async () => {
     // Load the WASM binary
-    const wasmUrl = new URL("./chainsocial_wasm_bg.wasm", import.meta.url);
+    const wasmUrl = new URL("./swimchain_wasm_bg.wasm", import.meta.url);
     await init(wasmUrl);
     initialized = true;
     // Persist across HMR
@@ -53,4 +53,4 @@ export function isWasmLoaded(): boolean {
 }
 
 // Re-export everything from the WASM module for convenience
-export * from "./chainsocial_wasm.js";
+export * from "./swimchain_wasm.js";

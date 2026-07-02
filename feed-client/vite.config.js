@@ -6,8 +6,6 @@ export default defineConfig({
     resolve: {
         alias: {
             '@': path.resolve(__dirname, './src'),
-            // Alias old package name to new (swimchain-react dist files still reference chainsocial)
-            '@chainsocial/core': '@swimchain/core',
         },
         // Preserve symlinks for proper resolution
         preserveSymlinks: false,

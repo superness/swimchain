@@ -17,7 +17,7 @@
 //! Alternatively, credentials can be configured in config:
 //! ```toml
 //! [rpc]
-//! username = "chainsocial"
+//! username = "swimchain"
 //! password = "your-secure-password"
 //! ```
 //!
