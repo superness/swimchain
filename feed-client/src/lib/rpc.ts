@@ -515,6 +515,22 @@ export class SwimchainRpc {
     return this.call('request_content', { content_id: contentId });
   }
 
+  /**
+   * Get posts by a specific user
+   * Uses the node's get_user_posts RPC method.
+   * Returns the same ContentResult format as listSpaceContent.
+   */
+  async getUserPosts(
+    authorId: string,
+    options?: { limit?: number; sort?: string }
+  ): Promise<SpaceContentResult> {
+    return this.call<SpaceContentResult>('get_user_posts', {
+      author_id: authorId,
+      limit: options?.limit ?? 50,
+      sort: options?.sort ?? 'recent',
+    });
+  }
+
   // =========================================================================
   // Identity
   // =========================================================================
