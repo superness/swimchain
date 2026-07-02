@@ -8,6 +8,8 @@
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useBlocklist } from '../hooks/useBlocklist';
+import { DmPanel } from './DmPanel';
+import { StartDmModal } from './StartDmModal';
 import './ChannelSidebar.css';
 
 export interface Channel {
@@ -204,6 +206,11 @@ function ChannelItem({
   );
 }
 
+const [showDmModal, setShowDmModal] = useState(false);
+const handleSelectDm = useCallback((spaceId: string) => {
+    navigate('/channels/@me/' + spaceId);
+  }, [navigate]);
+
 export function ChannelSidebar({
   server,
   channels,
@@ -265,6 +272,10 @@ export function ChannelSidebar({
               Create a channel
             </button>
           </div>
+
+      {/* Direct Messages panel */}
+      <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
+      {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
         )}
       </div>
 
@@ -292,3 +303,4 @@ export function ChannelSidebar({
     </div>
   );
 }
+

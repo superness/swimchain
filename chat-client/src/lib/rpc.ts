@@ -683,7 +683,16 @@ export class SwimchainRpc {
   /**
    * Invite someone to a private channel/space
    */
-  async inviteToChannel(params: {
+  // DM methods
+
+  // DM methods
+  async requestDm(a:{targetPk:string;senderPk:string;encryptedSpaceKey:string;signature:string;powNonce:number;powDifficulty:number;powNonceSpace:string;powHash:string;timestamp:number;message?:string;}):Promise<{space_id:string;status:string}>{return this.call('request_dm',{target_pk:a.targetPk,sender_pk:a.senderPk,encrypted_space_key:a.encryptedSpaceKey,signature:a.signature,pow_nonce:a.powNonce,pow_difficulty:a.powDifficulty,pow_nonce_space:a.powNonceSpace,pow_hash:a.powHash,timestamp:a.timestamp,message:a.message});}
+  async acceptDm(a:{spaceId:string;accepterPk:string;encryptedSpaceKey:string;signature:string;powNonce:number;powDifficulty:number;powNonceSpace:string;powHash:string;timestamp:number;}):Promise<{space_id:string;status:string}>{return this.call('accept_dm',{space_id:a.spaceId,accepter_pk:a.accepterPk,encrypted_space_key:a.encryptedSpaceKey,signature:a.signature,pow_nonce:a.powNonce,pow_difficulty:a.powDifficulty,pow_nonce_space:a.powNonceSpace,pow_hash:a.powHash,timestamp:a.timestamp});}
+  async declineDm(a:{spaceId:string;declinerPk:string;signature:string;powNonce:number;powDifficulty:number;powNonceSpace:string;powHash:string;timestamp:number;}):Promise<{space_id:string;status:string}>{return this.call('decline_dm',{space_id:a.spaceId,decliner_pk:a.declinerPk,signature:a.signature,pow_nonce:a.powNonce,pow_difficulty:a.powDifficulty,pow_nonce_space:a.powNonceSpace,pow_hash:a.powHash,timestamp:a.timestamp});}
+  async getSponsorshipInfo(c:string):Promise<{sponsor_id:string|null;status:string;total_stake:number;}>{return this.call('get_sponsorship_info',{content_id:c});}
+  async listSponsorshipOffers(a?:{limit?:number;offset?:number;status?:string;}):Promise<{offers:Array<{offer_id:string;sponsor_id:string;title:string;description:string;total_stake:number;remaining_stake:number;status:string;}>;total:number;}>{return this.call('list_sponsorship_offers',{limit:a?.limit??20,offset:a?.offset??0,status:a?.status});}
+  async claimSponsorshipOffer(a:{offerId:string;claimantPk:string;contentId:string;signature:string;powNonce:number;powDifficulty:number;powNonceSpace:string;powHash:string;timestamp:number;}):Promise<{claim_id:string;status:string}>{return this.call('claim_sponsorship_offer',{offer_id:a.offerId,claimant_pk:a.claimantPk,content_id:a.contentId,signature:a.signature,pow_nonce:a.powNonce,pow_difficulty:a.powDifficulty,pow_nonce_space:a.powNonceSpace,pow_hash:a.powHash,timestamp:a.timestamp});}
+  async searchContent(a:{query:string;spaceId?:string;author?:string;types?:string[];sortBy?:"relevance"|"recent"|"heat";limit?:number;offset?:number;minReplies?:number;minReactions?:number;afterTimestamp?:number;beforeTimestamp?:number;}):Promise<{results:Array<{content_id:string;title:string;body:string;author_id:string;space_id:string;space_name?:string;content_type:string;created_at:number;last_engagement:number;reply_count:number;engagement_count:number;survival_probability:number;is_decayed:boolean;score:number;}>;total:number;took_ms:number;}>{return this.call('search',{query:a.query,space_id:a.spaceId,author:a.author,types:a.types,sort_by:a.sortBy??"relevance",limit:a.limit??20,offset:a.offset??0,min_replies:a.minReplies,min_reactions:a.minReactions,after_timestamp:a.afterTimestamp,before_timestamp:a.beforeTimestamp});}  async inviteToChannel(params: {
     spaceId: string;
     inviter: string;
     invitee: string;
