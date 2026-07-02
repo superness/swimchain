@@ -10,9 +10,13 @@ import { useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
 import { useUserProfile, clearProfileCache } from '../hooks/useUserProfile';
-import { useRpc } from '../hooks/useRpc';
+import { useNodeIdentity } from '../hooks/useNodeIdentity';
+import { usePostSubmit, useMediaUpload } from '../hooks/useRpc';
+import { usePostPow } from '../hooks/useActionPow';
+import { solutionToRpcParams } from '../lib/action-pow';
 import { UserAvatar } from '../components/UserAvatar';
 import { StartDMButton } from '../components/StartDMButton';
+import { PowProgress } from '../components/PowProgress';
 import {
   getProfileSpaceId,
   encodeProfileInfo,
@@ -32,9 +36,12 @@ function isValidPublicKey(pk: string | undefined): pk is string {
 
 export function ProfilePage(): JSX.Element {
   const { userPk: paramUserPk } = useParams<{ userPk?: string }>();
-  const { publicKey, keypair } = useStoredKeypair();
+  const { publicKey } = useStoredKeypair();
   const myPk = publicKey ? bytesToHex(publicKey) : undefined;
-  const { rpc, connected } = useRpc();
+  const { identity, sign } = useNodeIdentity();
+  const { submitPost, submitting } = usePostSubmit();
+  const { uploadImage, uploading } = useMediaUpload();
+  const { state: powState, progress: powProgress, minePost, cancel: cancelPow } = usePostPow();
 
   // Determine whose profile we're viewing
   // Validate that paramUserPk is a valid hex public key (not a template variable like {userId})
@@ -57,6 +64,9 @@ export function ProfilePage(): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+
+  const isMining = powState === 'mining';
+  const isBusy = saving || isMining || submitting || uploading;
 
   // Start editing
   const handleEdit = useCallback(() => {
@@ -103,7 +113,7 @@ export function ProfilePage(): JSX.Element {
 
   // Save profile
   const handleSave = useCallback(async () => {
-    if (!rpc || !connected || !myPk || !keypair) {
+    if (!identity || !myPk) {
       setSaveError('Not connected');
       return;
     }
@@ -122,42 +132,64 @@ export function ProfilePage(): JSX.Element {
         updatedAt: Date.now(),
       };
 
+      let avatarContentId: string | undefined;
+
       // Upload avatar if selected
       if (avatarFile) {
-        // Convert file to base64
-        const arrayBuffer = await avatarFile.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+        const uploadResult = await uploadImage(avatarFile);
+        if (uploadResult.success && uploadResult.result) {
+          avatarContentId = uploadResult.result.mediaHash;
 
-        // Upload image content
-        const uploadResult = await rpc.call('upload_content', {
-          content: base64,
-          content_type: avatarFile.type,
-          author: myPk,
-        }) as { content_id: string };
+          // Post avatar info as a profile post (with PoW)
+          const avatarBody = encodeAvatarInfo({
+            contentId: avatarContentId,
+            format: avatarFile.type.split('/')[1] || 'png',
+            updatedAt: Date.now(),
+          });
 
-        // Post avatar info
-        const avatarBody = encodeAvatarInfo({
-          contentId: uploadResult.content_id,
-          format: avatarFile.type.split('/')[1] || 'png',
-          updatedAt: Date.now(),
-        });
+          // Mine PoW for the avatar post
+          const publicKeyBytes = new Uint8Array(myPk.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+          const mined = await minePost(avatarBody, publicKeyBytes, true);
+          const powParams = solutionToRpcParams(mined);
 
-        await rpc.call('post_to_space', {
-          space_id: profileSpaceId,
-          author: myPk,
-          body: avatarBody,
-          timestamp: Date.now(),
-        });
+          const avatarResult = await submitPost(
+            profileSpaceId,
+            '', // no title
+            avatarBody,
+            identity.publicKey,
+            sign,
+            powParams,
+            undefined, // no media refs
+          );
+
+          if (!avatarResult.success) {
+            throw new Error('Failed to save avatar');
+          }
+        } else {
+          setSaveError('Failed to upload avatar image');
+          return;
+        }
       }
 
-      // Post profile info
+      // Post profile info (with PoW)
       const infoBody = encodeProfileInfo(profileInfo);
-      await rpc.call('post_to_space', {
-        space_id: profileSpaceId,
-        author: myPk,
-        body: infoBody,
-        timestamp: Date.now(),
-      });
+      const publicKeyBytes = new Uint8Array(myPk.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+      const mined = await minePost(infoBody, publicKeyBytes, true);
+      const powParams = solutionToRpcParams(mined);
+
+      const infoResult = await submitPost(
+        profileSpaceId,
+        '', // no title
+        infoBody,
+        identity.publicKey,
+        sign,
+        powParams,
+        undefined, // no media refs
+      );
+
+      if (!infoResult.success) {
+        throw new Error('Failed to save profile info');
+      }
 
       // Clear cache and refetch
       clearProfileCache(myPk);
@@ -172,7 +204,7 @@ export function ProfilePage(): JSX.Element {
     } finally {
       setSaving(false);
     }
-  }, [rpc, connected, myPk, keypair, displayName, bio, website, avatarFile, refetch]);
+  }, [identity, myPk, displayName, bio, website, avatarFile, uploadImage, minePost, submitPost, sign, refetch]);
 
   // Not logged in
   if (!myPk && !paramUserPk) {
@@ -338,11 +370,23 @@ export function ProfilePage(): JSX.Element {
             {isEditing && (
               <div className="profile-actions">
                 {saveError && <div className="profile-save-error">{saveError}</div>}
+
+                {isMining && (
+                  <div className="profile-mining">
+                    <PowProgress
+                      attempts={powProgress.attempts}
+                      elapsedMs={powProgress.elapsedMs}
+                      difficulty={10} /* Testnet IdentityUpdate difficulty */
+                      onCancel={cancelPow}
+                    />
+                  </div>
+                )}
+
                 <button
                   type="button"
                   className="btn btn-ghost"
                   onClick={handleCancel}
-                  disabled={saving}
+                  disabled={isBusy}
                 >
                   Cancel
                 </button>
@@ -350,9 +394,9 @@ export function ProfilePage(): JSX.Element {
                   type="button"
                   className="btn btn-primary"
                   onClick={handleSave}
-                  disabled={saving}
+                  disabled={isBusy}
                 >
-                  {saving ? 'Saving...' : 'Save Profile'}
+                  {isMining ? 'Mining PoW...' : submitting ? 'Submitting...' : uploading ? 'Uploading...' : 'Save Profile'}
                 </button>
               </div>
             )}
