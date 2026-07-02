@@ -13,6 +13,10 @@ import {
   type ReactNode,
 } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { useRpc } from './useRpc';
+import { useStoredKeypair } from './useStoredKeypair';
+import { useSign } from './useSign';
+import { bytesToHex } from '../lib/x25519';
 
 interface KeyboardNavContextValue {
   selectedIndex: number;
@@ -38,6 +42,9 @@ export function KeyboardNavigationProvider({
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const { rpc, connected } = useRpc();
+  const { publicKey } = useStoredKeypair();
+  const { sign } = useSign();
 
   // Reset selection on route change
   useEffect(() => {
@@ -94,13 +101,28 @@ export function KeyboardNavigationProvider({
           break;
 
         case 'e':
-          // Engage +5s (TODO: implement engagement)
-          console.log('Engage +5s for', items[selectedIndex]);
-          break;
-
         case 'E':
-          // Engage +15s
-          console.log('Engage +15s for', items[selectedIndex]);
+          // Engage +5s (e) or +15s (E) — fire-and-forget submit_engagement
+          if (rpc && connected && publicKey && items[selectedIndex]) {
+            const contentId = items[selectedIndex].replace(/^\/thread\//, '');
+            const timestamp = Math.floor(Date.now() / 1000);
+            const difficulty = e.key === 'E' ? 2 : 1;
+            sign(new TextEncoder().encode(`engage:${contentId}:${timestamp}`))
+              .then((sig: Uint8Array | null) => {
+                if (!sig) return;
+                rpc.call('submit_engagement', {
+                  content_id: contentId,
+                  author_id: bytesToHex(publicKey),
+                  pow_nonce: 0,
+                  pow_difficulty: difficulty,
+                  pow_nonce_space: '0000000000000000',
+                  pow_hash: '0000000000000000000000000000000000000000000000000000000000000000',
+                  signature: bytesToHex(sig),
+                  timestamp,
+                  emoji: null,
+                }).catch((err: unknown) => console.warn('[Keyboard] Engage failed:', err));
+              });
+          }
           break;
 
         case '/':
