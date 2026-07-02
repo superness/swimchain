@@ -67,6 +67,18 @@ export class BridgeEngine {
   private identity: StoredIdentity | null = null;
   private isMining: boolean = false;
 
+  // SWIM-B7: message queue — messages arriving during mining are queued, not dropped
+  private messageQueue: Array<{
+    message: BridgeMessage;
+    threadParentId: string | null;
+  }> = [];
+  private processingQueue: boolean = false;
+
+  // SWIM-B7: thread tracking — maps source (channel/room) to the most recent bridged content_id
+  // so inbound replies can be posted as threaded replies
+  private threadMap: Map<string, { contentId: string; timestamp: number }> = new Map();
+  private readonly THREAD_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+
   constructor() {
     this.config = this.loadConfig();
     this.echoTracker = getEchoTracker();
@@ -474,6 +486,11 @@ export class BridgeEngine {
 
   /**
    * Handle an incoming message from any platform.
+   *
+   * SWIM-B7 changes:
+   * 1. Messages arriving during mining are queued (not dropped) and processed sequentially
+   * 2. Inbound messages are threaded as replies when they follow a recent bridged post
+   *    from the same channel/room (within 30-minute window)
    */
   private async handleIncomingMessage(message: BridgeMessage): Promise<void> {
     console.log(`[BridgeEngine] Incoming from ${message.platform}: ${message.content.slice(0, 50)}...`);
@@ -513,25 +530,62 @@ export class BridgeEngine {
       return;
     }
 
-    // Check if already mining
-    if (this.isMining) {
-      console.log('[BridgeEngine] Already mining, queuing message');
+    // SWIM-B7: resolve thread parent — if same source (channel/room) has a recent bridged post, reply to it
+    const threadParentId = this.resolveThreadParent(message);
+
+    // SWIM-B7: if currently mining, queue the message (including resolved thread parent)
+    if (this.isMining || this.processingQueue) {
+      console.log('[BridgeEngine] Already mining, queuing message for later processing');
+      this.messageQueue.push({ message, threadParentId });
       return;
     }
 
+    await this.processMessage(message, threadParentId);
+  }
+
+  /**
+   * SWIM-B7: Resolve whether this message should be posted as a threaded reply.
+   * Checks if the same channel/room has a recent bridged post (within THREAD_WINDOW_MS).
+   * Returns the parent content_id to reply to, or null to post as a new post.
+   */
+  private resolveThreadParent(message: BridgeMessage): string | null {
+    // Threading is per-source (channel/room) — e.g., "#swimchain" or "!room:matrix.org"
+    const sourceKey = `${message.platform}:${message.source}`;
+    const entry = this.threadMap.get(sourceKey);
+
+    if (!entry) {
+      return null;
+    }
+
+    // Check if the entry is still within the thread window
+    if (Date.now() - entry.timestamp > this.THREAD_WINDOW_MS) {
+      // Stale entry — remove it
+      this.threadMap.delete(sourceKey);
+      return null;
+    }
+
+    console.log(`[BridgeEngine] Threading message to parent ${entry.contentId.slice(0, 16)}... (source: ${sourceKey})`);
+    return entry.contentId;
+  }
+
+  /**
+   * SWIM-B7: Process a single message — mine PoW and submit as post or reply.
+   * If threadParentId is provided, submits as a reply instead of a new post.
+   */
+  private async processMessage(message: BridgeMessage, threadParentId: string | null): Promise<void> {
     // Format for Swimchain
     const prefix = message.platform === 'matrix' ? MATRIX_PREFIX : IRC_PREFIX;
     const formattedContent = `${prefix}${message.senderDisplayName}] ${message.content}`;
 
     try {
       this.isMining = true;
-      console.log(`[BridgeEngine] Mining PoW for: ${formattedContent.slice(0, 60)}...`);
+      console.log(`[BridgeEngine] Mining PoW for: ${formattedContent.slice(0, 60)}...${threadParentId ? ' (reply to ' + threadParentId.slice(0, 12) + '...)' : ' (new post)'}`);
 
       // Create PoW challenge
       const contentBytes = new TextEncoder().encode(formattedContent);
       const publicKey = hexToBytes(this.identity.publicKey);
       const difficulty = getDifficulty(ActionType.Post, true); // testnet
-      const config = getConfig(true); // testnet
+      const powConfig = getConfig(true); // testnet
 
       const challenge = await createChallenge(
         ActionType.Post,
@@ -543,7 +597,7 @@ export class BridgeEngine {
       // Mine PoW
       const solution = await computePow(
         challenge,
-        config,
+        powConfig,
         (attempts, _elapsedMs, hashRate) => {
           if (attempts % 50 === 0) {
             console.log(`[BridgeEngine] Mining: ${attempts} attempts, ${hashRate.toFixed(1)} H/s`);
@@ -564,27 +618,50 @@ export class BridgeEngine {
       // Get RPC params
       const powParams = solutionToRpcParams(solution);
 
-      // Submit post to Swimchain
-      const result = await this.rpcClient.submitPost({
-        spaceId: this.config.targetSpace,
-        title: `${prefix}${message.senderDisplayName}`,
-        body: message.content,
-        authorId: this.identity.publicKey,
-        powNonce: powParams.pow_nonce,
-        powDifficulty: powParams.pow_difficulty,
-        powNonceSpace: powParams.pow_nonce_space,
-        powHash: powParams.pow_hash,
-        signature: bytesToHex(signature),
-        timestamp: powParams.timestamp,
-      });
+      let resultContentId: string;
 
-      console.log(`[BridgeEngine] Posted to Swimchain: ${result.content_id}`);
+      if (threadParentId) {
+        // SWIM-B7: Submit as threaded reply
+        const result = await this.rpcClient.submitReply({
+          parentId: threadParentId,
+          body: message.content,
+          authorId: this.identity.publicKey,
+          powNonce: powParams.pow_nonce,
+          powDifficulty: powParams.pow_difficulty,
+          powNonceSpace: powParams.pow_nonce_space,
+          powHash: powParams.pow_hash,
+          signature: bytesToHex(signature),
+          timestamp: powParams.timestamp,
+        });
+        resultContentId = result.content_id;
+        console.log(`[BridgeEngine] Replied to thread (${threadParentId.slice(0, 12)}...): ${resultContentId}`);
+      } else {
+        // New post
+        const result = await this.rpcClient.submitPost({
+          spaceId: this.config.targetSpace,
+          title: `${prefix}${message.senderDisplayName}`,
+          body: message.content,
+          authorId: this.identity.publicKey,
+          powNonce: powParams.pow_nonce,
+          powDifficulty: powParams.pow_difficulty,
+          powNonceSpace: powParams.pow_nonce_space,
+          powHash: powParams.pow_hash,
+          signature: bytesToHex(signature),
+          timestamp: powParams.timestamp,
+        });
+        resultContentId = result.content_id;
+        console.log(`[BridgeEngine] Posted to Swimchain: ${resultContentId}`);
+      }
 
       // Record the bridging
-      this.echoTracker.markBridged(message.platform, message.id, result.content_id);
+      this.echoTracker.markBridged(message.platform, message.id, resultContentId);
       this.rateLimiter.recordPost(this.config.targetSpace);
       this.dailyPowUsed += 10;
       this.savePowState();
+
+      // SWIM-B7: Update thread map — track the most recent bridged content for this source
+      const sourceKey = `${message.platform}:${message.source}`;
+      this.threadMap.set(sourceKey, { contentId: resultContentId, timestamp: Date.now() });
 
       // Update status
       const status = this.platformStatuses.get(message.platform);
@@ -597,7 +674,7 @@ export class BridgeEngine {
         direction: 'inbound',
         sourcePlatform: message.platform,
         targetPlatform: 'cs',
-        description: `${message.senderDisplayName}: ${message.content.slice(0, 40)}...`,
+        description: `${message.senderDisplayName}: ${message.content.slice(0, 40)}...${threadParentId ? ' (reply)' : ''}`,
       });
     } catch (error) {
       console.error('[BridgeEngine] Failed to post to Swimchain:', error);
@@ -607,7 +684,44 @@ export class BridgeEngine {
       });
     } finally {
       this.isMining = false;
+      // SWIM-B7: process next queued message
+      this.drainQueue();
     }
+  }
+
+  /**
+   * SWIM-B7: Drain the message queue — process queued messages one at a time.
+   */
+  private async drainQueue(): Promise<void> {
+    if (this.processingQueue) return;
+    this.processingQueue = true;
+
+    while (this.messageQueue.length > 0) {
+      const entry = this.messageQueue.shift();
+      if (!entry) continue;
+
+      // Re-check rate limit and budget before processing each queued message
+      if (!this.rateLimiter.canPost(this.config.targetSpace)) {
+        console.log('[BridgeEngine] Queue: rate limited, dropping queued message');
+        this.logActivity('rate_limited', {
+          sourcePlatform: entry.message.platform,
+          description: `Rate limited (queued): ${entry.message.content.slice(0, 30)}...`,
+        });
+        continue;
+      }
+
+      if (!this.canSpendPow(10)) {
+        console.log('[BridgeEngine] Queue: PoW budget exceeded, dropping queued message');
+        continue;
+      }
+
+      await this.processMessage(entry.message, entry.threadParentId);
+
+      // Small delay to avoid thundering the node with consecutive PoW solves
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    this.processingQueue = false;
   }
 
   /**
