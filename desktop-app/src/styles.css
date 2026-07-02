@@ -101,6 +101,37 @@ body {
   text-transform: uppercase;
 }
 
+/* Network switcher in the status bar (select styled like the badge) */
+select.network-select {
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+select.network-select:hover,
+select.network-select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* Network selector on onboarding/unlock screens */
+.onboarding-form select.network-select,
+.onboarding-form select#networkSelect {
+  width: 100%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.onboarding-form select#networkSelect:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .peer-count {
   color: var(--text-secondary);
 }

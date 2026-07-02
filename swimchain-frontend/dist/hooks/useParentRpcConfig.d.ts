@@ -5,12 +5,19 @@
  * {
  *   type: 'SWIMCHAIN_RPC_CONFIG',
  *   rpcEndpoint: 'http://127.0.0.1:19736',
- *   rpcAuth: 'Basic ...'
+ *   rpcAuth: 'Basic ...',
+ *   // Optional node identity info (PUBLIC data only - never the seed):
+ *   nodeAddress: 'cs1...',
+ *   nodeDisplayName: 'Alice'
  * }
  */
 interface ParentRpcConfig {
     rpcEndpoint: string;
     rpcAuth: string;
+    /** Node identity public address (cs1...), if the shell shared it. */
+    nodeAddress?: string;
+    /** Node identity display name, if the shell shared it. */
+    nodeDisplayName?: string;
 }
 /**
  * Hook to get RPC config from parent frame

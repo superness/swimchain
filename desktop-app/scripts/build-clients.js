@@ -1,7 +1,7 @@
 /**
  * Build all client apps and copy to desktop-app dist folder
  *
- * This script builds each client (forum, reddit, chat, feed, search)
+ * This script builds each client (forum, chat, feed, search, wiki)
  * and copies the built files to dist/clients/{name}-client/
  */
 
@@ -13,7 +13,7 @@ const ROOT_DIR = path.resolve(__dirname, '../..');
 const DIST_DIR = path.resolve(__dirname, '../dist');
 const CLIENTS_DIR = path.join(DIST_DIR, 'clients');
 
-const CLIENTS = ['forum', 'chat', 'feed', 'search'];
+const CLIENTS = ['forum', 'chat', 'feed', 'search', 'wiki'];
 
 function log(message) {
   console.log(`[build-clients] ${message}`);

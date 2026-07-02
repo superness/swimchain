@@ -32,8 +32,12 @@ const ALLOWED_PARENT_ORIGINS: string[] = [
 // Set up message listener once
 if (typeof window !== 'undefined') {
   window.addEventListener('message', (event) => {
-    // Security: Validate origin before accepting config
-    if (!ALLOWED_PARENT_ORIGINS.includes(event.origin)) {
+    // Security: Validate origin before accepting config.
+    // Same-origin is always trusted: the desktop-app shell embeds clients as
+    // same-origin iframes (origin varies by platform, e.g. tauri://localhost
+    // on macOS/Linux, http://tauri.localhost on Windows).
+    const isSameOrigin = event.origin === window.location.origin;
+    if (!isSameOrigin && !ALLOWED_PARENT_ORIGINS.includes(event.origin)) {
       console.warn('[ParentConfig] Rejected message from untrusted origin:', event.origin);
       return;
     }

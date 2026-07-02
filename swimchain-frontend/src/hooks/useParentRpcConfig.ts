@@ -5,7 +5,10 @@
  * {
  *   type: 'SWIMCHAIN_RPC_CONFIG',
  *   rpcEndpoint: 'http://127.0.0.1:19736',
- *   rpcAuth: 'Basic ...'
+ *   rpcAuth: 'Basic ...',
+ *   // Optional node identity info (PUBLIC data only - never the seed):
+ *   nodeAddress: 'cs1...',
+ *   nodeDisplayName: 'Alice'
  * }
  */
 
@@ -14,6 +17,10 @@ import { useState, useEffect } from 'react';
 interface ParentRpcConfig {
   rpcEndpoint: string;
   rpcAuth: string;
+  /** Node identity public address (cs1...), if the shell shared it. */
+  nodeAddress?: string;
+  /** Node identity display name, if the shell shared it. */
+  nodeDisplayName?: string;
 }
 
 // Global storage for parent config (persists across hook instances)
@@ -69,6 +76,12 @@ if (typeof window !== 'undefined') {
       parentConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
+        ...(typeof event.data.nodeAddress === 'string'
+          ? { nodeAddress: event.data.nodeAddress }
+          : {}),
+        ...(typeof event.data.nodeDisplayName === 'string'
+          ? { nodeDisplayName: event.data.nodeDisplayName }
+          : {}),
       };
 
       // Notify all listeners
