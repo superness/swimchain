@@ -7,9 +7,6 @@ export { SearchResults } from './SearchResults';
 export { SearchFilters } from './SearchFilters';
 export { Pagination } from './Pagination';
 
-// Macro Regime Card
-export { MacroRegimeCard } from './MacroRegimeCard';
-
 // ResultCard components
 export { ThreadResult } from './ResultCard/ThreadResult';
 export { SpaceResult } from './ResultCard/SpaceResult';
