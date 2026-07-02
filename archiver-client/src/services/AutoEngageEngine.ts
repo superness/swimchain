@@ -18,6 +18,7 @@ import {
   STORAGE_KEYS,
 } from '../types/constants';
 import { mineEngagementPow } from '../lib/engagement-pow';
+import type { SwimchainRpc } from '../lib/rpc';
 
 type BudgetSubscriber = (state: BudgetState) => void;
 
@@ -45,6 +46,7 @@ export class AutoEngageEngine {
   private budgetSubscribers: Set<BudgetSubscriber> = new Set();
   private authorPubkeyHex: string | null = null;
   private isTestnet: boolean = true;
+  private rpcClient: SwimchainRpc | null = null;
 
   constructor() {
     this.loadBudgetState();
@@ -70,6 +72,15 @@ export class AutoEngageEngine {
    */
   setTestnetMode(isTestnet: boolean): void {
     this.isTestnet = isTestnet;
+  }
+
+  /**
+   * Set the RPC client for authoritative pool status queries.
+   *
+   * @param client - An initialized SwimchainRpc instance, or null to clear
+   */
+  setRpcClient(client: SwimchainRpc | null): void {
+    this.rpcClient = client;
   }
 
   /**
@@ -218,20 +229,14 @@ export class AutoEngageEngine {
       // Record the engagement (using budget seconds, not actual mining time)
       this.recordEngagement(seconds);
 
-      // Calculate new pool status
-      const newCurrentSeconds = Math.min(
-        content.poolStatus.requiredSeconds,
-        content.poolStatus.currentSeconds + seconds
-      );
+      // Fetch authoritative pool status from the node, falling back to
+      // locally-computed estimate if RPC is unavailable or fails.
+      const newPoolStatus = await this.fetchPoolStatus(content, seconds);
 
       return {
         success: true,
         secondsContributed: seconds,
-        newPoolStatus: {
-          ...content.poolStatus,
-          currentSeconds: newCurrentSeconds,
-          contributorCount: content.poolStatus.contributorCount + 1,
-        },
+        newPoolStatus,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -424,6 +429,75 @@ export class AutoEngageEngine {
     } catch (error) {
       console.error('[AutoEngageEngine] Error saving budget state:', error);
     }
+  }
+
+  /**
+   * Fetch authoritative pool status from the node via RPC.
+   *
+   * Calls get_pool_for_content on the connected Swimchain node. If the RPC
+   * client is unavailable or the call fails, falls back to a local estimate
+   * (old content.poolStatus + contributedSeconds + 1 contributor).
+   *
+   * @param content - The content whose pool status to fetch
+   * @param contributedSeconds - Seconds this engagement contributed (for fallback)
+   * @returns Real or estimated pool status
+   */
+  private async fetchPoolStatus(
+    content: AtRiskContent,
+    contributedSeconds: number = 0
+  ): Promise<import('../types').PoolStatus> {
+    // Build a local fallback estimate in case RPC is unavailable
+    const fallbackStatus: import('../types').PoolStatus = {
+      currentSeconds: Math.min(
+        content.poolStatus.requiredSeconds,
+        content.poolStatus.currentSeconds + contributedSeconds
+      ),
+      requiredSeconds: content.poolStatus.requiredSeconds,
+      contributorCount: content.poolStatus.contributorCount + 1,
+    };
+
+    // Try up to 2 times (initial + 1 retry) to get real pool status from the node
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        if (!this.rpcClient) {
+          console.warn(
+            '[AutoEngageEngine] No RPC client available, using local pool estimate'
+          );
+          return fallbackStatus;
+        }
+
+        const pool = await this.rpcClient.getPoolForContent(content.postHash);
+
+        if (pool) {
+          return {
+            currentSeconds: Math.round(pool.total_pow),
+            requiredSeconds: pool.required_pow,
+            contributorCount: pool.contributor_count,
+          };
+        }
+
+        // pool is null — node returned no data; retry
+        console.warn(
+          `[AutoEngageEngine] Pool fetch returned null (attempt ${attempt}/${maxAttempts})`
+        );
+      } catch (error) {
+        console.warn(
+          `[AutoEngageEngine] Pool fetch failed (attempt ${attempt}/${maxAttempts}):`,
+          error
+        );
+      }
+
+      if (attempt < maxAttempts) {
+        // Wait a short time before retrying
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+
+    console.warn(
+      '[AutoEngageEngine] All pool fetch attempts failed, using local estimate'
+    );
+    return fallbackStatus;
   }
 }
 

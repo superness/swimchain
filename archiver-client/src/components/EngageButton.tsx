@@ -5,8 +5,9 @@
  * Uses real Argon2id PoW mining via @swimchain/react.
  */
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { getAutoEngageEngine } from '../services/AutoEngageEngine';
+import { useRpc } from '../hooks/useRpc';
 import type { AtRiskContent, PoolStatus } from '../types';
 import './EngageButton.css';
 
@@ -54,7 +55,14 @@ export function EngageButton({
   // Track mining start time for progress estimation
   const startTimeRef = useRef<number>(0);
 
+  const { rpc, connected } = useRpc();
   const engine = getAutoEngageEngine();
+
+  // Inject the RPC client into the engine so it can fetch real pool status
+  useEffect(() => {
+    engine.setRpcClient(connected && rpc ? rpc : null);
+  }, [engine, rpc, connected]);
+
   const canEngage = engine.canEngage(seconds);
 
   const handleCancel = useCallback(() => {
