@@ -5,6 +5,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { AtRiskContent, SpaceId } from '../types';
 import { ContentMonitor } from '../services/ContentMonitor';
+import { getAutoEngageEngine } from '../services/AutoEngageEngine';
 import { useRpc } from './useRpc';
 import { getContentMonitor } from '../services/ContentMonitor';
 
@@ -44,13 +45,16 @@ export function useContentMonitor(
   const monitorRef = useRef<ContentMonitor | null>(null);
   const { rpc, connected } = useRpc();
 
-  // Inject RPC client when available
+  // Inject RPC client into ContentMonitor and AutoEngageEngine when available
   useEffect(() => {
     const monitor = getContentMonitor();
+    const engine = getAutoEngageEngine();
     if (connected && rpc) {
       monitor.setRpcClient(rpc);
+      engine.setRpcClient(rpc);
     } else {
       monitor.setRpcClient(null);
+      engine.setRpcClient(null);
     }
   }, [rpc, connected]);
 

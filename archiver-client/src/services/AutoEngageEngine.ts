@@ -18,6 +18,7 @@ import {
   STORAGE_KEYS,
 } from '../types/constants';
 import { mineEngagementPow } from '../lib/engagement-pow';
+import type { SwimchainRpc, SubmitEngagementParams } from '../lib/rpc';
 
 type BudgetSubscriber = (state: BudgetState) => void;
 
@@ -45,9 +46,20 @@ export class AutoEngageEngine {
   private budgetSubscribers: Set<BudgetSubscriber> = new Set();
   private authorPubkeyHex: string | null = null;
   private isTestnet: boolean = true;
+  /** RPC client for submitting engagements and re-polling pool status */
+  private rpcClient: SwimchainRpc | null = null;
 
   constructor() {
     this.loadBudgetState();
+  }
+
+  /**
+   * Set the RPC client for submitting mined PoW and re-polling pool status.
+   *
+   * @param client - SwimchainRpc instance, or null to clear
+   */
+  setRpcClient(client: SwimchainRpc | null): void {
+    this.rpcClient = client;
   }
 
   /**
@@ -215,23 +227,85 @@ export class AutoEngageEngine {
         `[AutoEngageEngine] PoW complete: ${powResult.attempts} attempts in ${powResult.elapsedMs}ms`
       );
 
+      // Submit the mined PoW to the node via JSON-RPC
+      if (this.rpcClient) {
+        const params: SubmitEngagementParams = {
+          content_id: content.postHash,
+          author_id: this.authorPubkeyHex,
+          pow_nonce: Number(powResult.nonce),
+          pow_difficulty: powResult.difficulty,
+          pow_nonce_space: powResult.nonceSpace,
+          pow_hash: powResult.hash,
+          signature: powResult.signature,
+          timestamp: powResult.timestamp,
+          emoji: undefined,
+        };
+
+        const submitResult = await this.rpcClient.submitEngagement(params);
+
+        if (submitResult?.engaged) {
+          console.log(
+            `[AutoEngageEngine] Engagement submitted successfully for ${content.postHash}`
+          );
+        } else {
+          console.warn(
+            `[AutoEngageEngine] Engagement submission returned unexpected result:`,
+            submitResult
+          );
+        }
+      } else {
+        console.warn(
+          '[AutoEngageEngine] No RPC client set — engagement PoW mined but NOT submitted to node. ' +
+            'Call setRpcClient() to enable submission.'
+        );
+      }
+
       // Record the engagement (using budget seconds, not actual mining time)
       this.recordEngagement(seconds);
 
-      // Calculate new pool status
-      const newCurrentSeconds = Math.min(
-        content.poolStatus.requiredSeconds,
-        content.poolStatus.currentSeconds + seconds
-      );
+      // Re-poll authoritative pool status from node (SPEC_03) instead of fabricating locally
+      let newPoolStatus = { ...content.poolStatus };
+
+      if (this.rpcClient) {
+        try {
+          const pool = await this.rpcClient.getPoolForContent(content.postHash);
+          if (pool) {
+            newPoolStatus = {
+              currentSeconds: pool.total_pow,
+              requiredSeconds: pool.required_pow,
+              contributorCount: pool.contributor_count,
+            };
+            console.log(
+              `[AutoEngageEngine] Re-polled pool status: ${newPoolStatus.currentSeconds}s / ${newPoolStatus.requiredSeconds}s (${newPoolStatus.contributorCount} contributors)`
+            );
+          }
+        } catch (poolErr) {
+          console.warn('[AutoEngageEngine] Failed to re-poll pool status, using fallback:', poolErr);
+          newPoolStatus = {
+            ...content.poolStatus,
+            currentSeconds: Math.min(
+              content.poolStatus.requiredSeconds,
+              content.poolStatus.currentSeconds + seconds
+            ),
+            contributorCount: content.poolStatus.contributorCount + 1,
+          };
+        }
+      } else {
+        // No RPC client — fallback to local increment
+        newPoolStatus = {
+          ...content.poolStatus,
+          currentSeconds: Math.min(
+            content.poolStatus.requiredSeconds,
+            content.poolStatus.currentSeconds + seconds
+          ),
+          contributorCount: content.poolStatus.contributorCount + 1,
+        };
+      }
 
       return {
         success: true,
         secondsContributed: seconds,
-        newPoolStatus: {
-          ...content.poolStatus,
-          currentSeconds: newCurrentSeconds,
-          contributorCount: content.poolStatus.contributorCount + 1,
-        },
+        newPoolStatus,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

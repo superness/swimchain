@@ -27,6 +27,8 @@ export interface EngagementPowResult {
   nonceSpace: string;
   /** Hash result (hex) */
   hash: string;
+  /** Ed25519 signature (64-byte hex, 128 hex chars) */
+  signature: string;
   /** Timestamp when mining started */
   timestamp: number;
   /** Number of attempts needed */
@@ -82,6 +84,7 @@ export async function mineEngagementPow(
     difficulty: rpcParams.pow_difficulty,
     nonceSpace: rpcParams.pow_nonce_space,
     hash: rpcParams.pow_hash,
+    signature: rpcParams.signature,
     timestamp: rpcParams.timestamp,
     attempts: lastAttempts,
     elapsedMs,
