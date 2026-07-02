@@ -112,6 +112,125 @@ export function addressToSeed(address: string): number {
   return Math.abs(hash);
 }
 
+// ============================================================================
+// Bech32m encode/decode (BIP-350) — minimal, dependency-free implementation.
+// Swimchain addresses: HRP "cs", data = [version(0), 32-byte payload] (SPEC_01)
+// ============================================================================
+
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const BECH32M_CONST = 0x2bc830a3;
+
+function bech32Polymod(values: number[]): number {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >>> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) {
+      if ((top >>> i) & 1) {
+        chk ^= GEN[i]!;
+      }
+    }
+  }
+  return chk >>> 0;
+}
+
+function bech32HrpExpand(hrp: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < hrp.length; i++) out.push(hrp.charCodeAt(i) >>> 5);
+  out.push(0);
+  for (let i = 0; i < hrp.length; i++) out.push(hrp.charCodeAt(i) & 31);
+  return out;
+}
+
+function convertBits(
+  data: number[],
+  fromBits: number,
+  toBits: number,
+  pad: boolean
+): number[] | null {
+  let acc = 0;
+  let bits = 0;
+  const out: number[] = [];
+  const maxv = (1 << toBits) - 1;
+  for (const value of data) {
+    if (value < 0 || value >> fromBits !== 0) return null;
+    acc = (acc << fromBits) | value;
+    bits += fromBits;
+    while (bits >= toBits) {
+      bits -= toBits;
+      out.push((acc >> bits) & maxv);
+    }
+  }
+  if (pad) {
+    if (bits > 0) out.push((acc << (toBits - bits)) & maxv);
+  } else if (bits >= fromBits || (acc << (toBits - bits)) & maxv) {
+    return null;
+  }
+  return out;
+}
+
+/** Decode a bech32m string. Returns null on any error. */
+function bech32mDecode(str: string): { hrp: string; data: number[] } | null {
+  const lower = str.toLowerCase();
+  if (str !== lower && str !== str.toUpperCase()) return null;
+  const pos = lower.lastIndexOf('1');
+  if (pos < 1 || pos + 7 > lower.length) return null;
+  const hrp = lower.slice(0, pos);
+  const data: number[] = [];
+  for (const c of lower.slice(pos + 1)) {
+    const idx = BECH32_CHARSET.indexOf(c);
+    if (idx === -1) return null;
+    data.push(idx);
+  }
+  if (bech32Polymod([...bech32HrpExpand(hrp), ...data]) !== BECH32M_CONST) {
+    return null;
+  }
+  return { hrp, data: data.slice(0, -6) };
+}
+
+/** Encode data (5-bit groups) as bech32m. */
+function bech32mEncode(hrp: string, data: number[]): string {
+  const values = [...bech32HrpExpand(hrp), ...data];
+  const polymod = bech32Polymod([...values, 0, 0, 0, 0, 0, 0]) ^ BECH32M_CONST;
+  const checksum: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    checksum.push((polymod >>> (5 * (5 - i))) & 31);
+  }
+  return `${hrp}1${[...data, ...checksum].map(d => BECH32_CHARSET[d]).join('')}`;
+}
+
+/**
+ * Decode a cs1 identity address to a 64-char hex public key / identity ID.
+ * Returns null if the address is invalid.
+ */
+export function addressToHex(address: string): string | null {
+  const decoded = bech32mDecode(address);
+  if (!decoded || decoded.hrp !== 'cs') return null;
+  const bytes = convertBits(decoded.data, 5, 8, false);
+  // [version(0), 32-byte payload]
+  if (!bytes || bytes.length !== 33 || bytes[0] !== 0) return null;
+  return bytes
+    .slice(1)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Encode a 64-char hex public key / identity ID as a cs1 address.
+ * Returns null if the hex is invalid.
+ */
+export function hexToAddress(hex: string): string | null {
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) return null;
+  const bytes: number[] = [0]; // version byte
+  for (let i = 0; i < 64; i += 2) {
+    bytes.push(parseInt(hex.slice(i, i + 2), 16));
+  }
+  const data = convertBits(bytes, 8, 5, true);
+  if (!data) return null;
+  return bech32mEncode('cs', data);
+}
+
 /**
  * Compare addresses (case-insensitive)
  */

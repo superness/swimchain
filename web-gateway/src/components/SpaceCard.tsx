@@ -12,8 +12,12 @@ interface SpaceCardProps {
 export function SpaceCard({ space }: SpaceCardProps) {
   const healthPercentage = space.decay_health;
   const healthClass = getHealthClass(healthPercentage);
-  const lastActivityAgo = formatTimeAgo(space.last_activity);
-  const createdDate = new Date(space.created_at).toLocaleDateString();
+  const lastActivityAgo =
+    space.last_activity > 0 ? formatTimeAgo(space.last_activity) : 'unknown';
+  const createdDate =
+    space.created_at > 0
+      ? new Date(space.created_at).toLocaleDateString()
+      : 'unknown';
 
   return (
     <article className="space-card">

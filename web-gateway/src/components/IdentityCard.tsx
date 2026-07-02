@@ -1,37 +1,46 @@
 'use client';
 
-import type { ReputationSummary } from '@/types/gateway';
+import type { IdentitySummary } from '@/lib/node-service';
 import { AddressDisplay } from './AddressDisplay';
 import { addressToColor } from '@/lib/address';
 
 interface IdentityCardProps {
-  identity: ReputationSummary;
+  identity: IdentitySummary;
   showFullAddress?: boolean;
 }
 
 /**
- * Display identity information card
+ * Display identity information card (live profile + activity stats)
  */
 export function IdentityCard({
   identity,
   showFullAddress = false,
 }: IdentityCardProps) {
-  const identityColor = addressToColor(identity.identity);
-  const ageText = formatAge(identity.age_seconds);
-  const firstBlockText = identity.first_block > 0 ? `Block #${identity.first_block}` : 'Never active';
+  const identityColor = addressToColor(identity.address);
+  const ageText =
+    identity.firstSeen != null
+      ? formatAge(Math.floor((Date.now() - identity.firstSeen) / 1000))
+      : 'No recorded activity';
+  const firstSeenText =
+    identity.firstSeen != null
+      ? new Date(identity.firstSeen).toLocaleDateString()
+      : 'Never active';
 
   return (
     <div className="identity-card">
       <div className="identity-header">
         <div className="identity-avatar" style={{ backgroundColor: identityColor }}>
           <span className="avatar-letter">
-            {identity.identity.slice(-2).toUpperCase()}
+            {identity.address.slice(-2).toUpperCase()}
           </span>
         </div>
 
         <div className="identity-info">
+          {identity.displayName && (
+            <span className="identity-display-name">{identity.displayName}</span>
+          )}
           <AddressDisplay
-            address={identity.identity}
+            address={identity.address}
             format={showFullAddress ? 'full' : 'short'}
             copyable
           />
@@ -39,23 +48,28 @@ export function IdentityCard({
         </div>
       </div>
 
+      {identity.bio && <p className="identity-bio">{identity.bio}</p>}
+
       <div className="identity-stats">
         <div className="stat">
-          <span className="stat-value">{identity.post_count}</span>
+          <span className="stat-value">{identity.postCount}</span>
           <span className="stat-label">Posts</span>
         </div>
         <div className="stat">
-          <span className="stat-value">{identity.reply_count}</span>
+          <span className="stat-value">{identity.replyCount}</span>
           <span className="stat-label">Replies</span>
-        </div>
-        <div className="stat">
-          <span className="stat-value">{identity.received_replies}</span>
-          <span className="stat-label">Received</span>
         </div>
       </div>
 
       <div className="identity-meta">
-        <span>First seen: {firstBlockText}</span>
+        <span>First seen: {firstSeenText}</span>
+        {identity.website && (
+          <span className="identity-website">
+            <a href={identity.website} rel="nofollow noopener noreferrer" target="_blank">
+              {identity.website}
+            </a>
+          </span>
+        )}
       </div>
 
       <style jsx>{`
@@ -95,9 +109,21 @@ export function IdentityCard({
           gap: 0.25rem;
         }
 
+        .identity-display-name {
+          font-size: 1.1rem;
+          font-weight: 600;
+        }
+
         .identity-age {
           font-size: 0.8rem;
           color: var(--color-text-muted);
+        }
+
+        .identity-bio {
+          color: var(--color-text-muted);
+          font-size: 0.9rem;
+          line-height: 1.5;
+          margin-bottom: 1rem;
         }
 
         .identity-stats {
@@ -127,6 +153,9 @@ export function IdentityCard({
 
         .identity-meta {
           margin-top: 1rem;
+          display: flex;
+          gap: 1rem;
+          flex-wrap: wrap;
           font-size: 0.85rem;
           color: var(--color-text-muted);
         }
