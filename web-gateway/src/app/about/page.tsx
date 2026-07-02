@@ -42,7 +42,7 @@ export default function AboutPage() {
         <h2>Content Decay</h2>
         <p>
           Content on Swimchain naturally decays over time unless the community
-          engages with it. This creates "organic moderation":
+          engages with it. This creates &ldquo;organic moderation&rdquo;:
         </p>
         <ul>
           <li>New content starts at 100% heat</li>
@@ -79,7 +79,7 @@ export default function AboutPage() {
             <tr>
               <td>Heat (Decay)</td>
               <td>25%</td>
-              <td>Content's survival probability</td>
+              <td>Content&rsquo;s survival probability</td>
             </tr>
             <tr>
               <td>Engagement</td>

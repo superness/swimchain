@@ -244,6 +244,9 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     for (const spaceItems of spaceResults) {
       items.push(...spaceItems);
     }
+    for (const userItems of userResults) {
+      items.push(...userItems);
+    }
 
     if (errors.length > 0 && items.length === 0) {
       throw new Error(errors.join('; '));

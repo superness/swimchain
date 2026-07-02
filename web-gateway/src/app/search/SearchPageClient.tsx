@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { SearchBox } from '@/components/SearchBox';
 import { SearchFilters } from '@/components/SearchFilters';
@@ -17,6 +17,21 @@ interface SearchPageClientProps {
   initialSort?: string;
   initialDecaying?: boolean;
   initialPage?: number;
+}
+
+/**
+ * Parse search params from URLSearchParams into initial state.
+ * Used for deep-link support when navigating back/forward.
+ */
+function parseFiltersFromParams(sp: URLSearchParams) {
+  return {
+    space: sp.get('space') || undefined,
+    author: sp.get('author') || undefined,
+    minHeat: sp.get('minHeat') ? (parseInt(sp.get('minHeat')!, 10) as 0 | 25 | 50 | 75 | 90) : undefined,
+    minEngagement: sp.get('minEngagement') ? (parseInt(sp.get('minEngagement')!, 10) as 0 | 20 | 40 | 60) : undefined,
+    timeRange: (sp.get('time') || 'all') as SearchFiltersType['timeRange'],
+    includeDecaying: sp.get('decaying') === 'true',
+  };
 }
 
 // Mock data for demonstration
@@ -143,15 +158,27 @@ export function SearchPageClient({
   initialPage = 1,
 }: SearchPageClientProps) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const isFirstRender = useRef(true);
 
-  const [query, setQuery] = useState(initialQuery);
-  const [filters, setFilters] = useState<SearchFiltersType>({
-    space: initialSpace,
-    author: initialAuthor,
-    minHeat: initialMinHeat ? (parseInt(initialMinHeat, 10) as 0 | 25 | 50 | 75 | 90) : undefined,
-    minEngagement: initialMinEngagement ? (parseInt(initialMinEngagement, 10) as 0 | 20 | 40 | 60) : undefined,
-    timeRange: initialTimeRange as SearchFiltersType['timeRange'],
-    includeDecaying: initialDecaying,
+  // Sync state from URL search params for deep-link support
+  const [query, setQuery] = useState(() => {
+    const urlQ = searchParams?.get('q');
+    return urlQ ?? initialQuery;
+  });
+  const [filters, setFilters] = useState<SearchFiltersType>(() => {
+    const urlFilters = searchParams ? parseFiltersFromParams(searchParams) : null;
+    if (urlFilters && (urlFilters.space || urlFilters.author || urlFilters.minHeat || urlFilters.timeRange !== 'all')) {
+      return urlFilters;
+    }
+    return {
+      space: initialSpace,
+      author: initialAuthor,
+      minHeat: initialMinHeat ? (parseInt(initialMinHeat, 10) as 0 | 25 | 50 | 75 | 90) : undefined,
+      minEngagement: initialMinEngagement ? (parseInt(initialMinEngagement, 10) as 0 | 20 | 40 | 60) : undefined,
+      timeRange: initialTimeRange as SearchFiltersType['timeRange'],
+      includeDecaying: initialDecaying,
+    };
   });
   const [sortBy, setSortBy] = useState<SortOption>(
     (initialSort as SortOption) || 'relevance'
@@ -176,6 +203,18 @@ export function SearchPageClient({
     const newURL = params.toString() ? `/search?${params.toString()}` : '/search';
     router.push(newURL, { scroll: false });
   }, [query, filters, sortBy, router]);
+
+  // Sync state when URL changes (browser back/forward)
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    const q = searchParams?.get('q') ?? '';
+    const parsedFilters = searchParams ? parseFiltersFromParams(searchParams) : null;
+    if (q !== query) setQuery(q);
+    if (parsedFilters) setFilters(parsedFilters);
+  }, [searchParams?.toString()]);
 
   // Perform search
   const performSearch = useCallback(async (searchQuery: string) => {
@@ -250,7 +289,7 @@ export function SearchPageClient({
   }, []);
 
   return (
-    <div className="search-client">
+    <div className="search-page-client">
       <SearchBox
         initialQuery={query}
         onSearch={handleSearch}
@@ -297,7 +336,7 @@ export function SearchPageClient({
       </div>
 
       <style jsx>{`
-        .search-client {
+        .search-page-client {
           display: flex;
           flex-direction: column;
           gap: 1rem;
