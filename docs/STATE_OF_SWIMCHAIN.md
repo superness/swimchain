@@ -22,7 +22,7 @@ Headline numbers:
 | Parallel implementations of crypto/RPC stack | 4 |
 | Clients using node WebSocket events | 0 |
 | Unit tests across analytics/archiver/bridge | 0 |
-| Untracked-in-git deliverables | wiki-client, swimchain-frontend (both real, recent work) |
+| Delivered (committed) | wiki-client, swimchain-frontend — both real, recent work — now tracked in git |
 
 ### The five structural problems
 
@@ -30,7 +30,7 @@ Headline numbers:
 2. **Silent write-path breakage.** forum-client calls three methods the node doesn't have (`post_to_private_space`, `post_to_space`, `upload_content`) — private-space/DM message send and profile editing are broken. archiver-client mines real Argon2id PoW and never submits it — its core rescue feature has zero on-chain effect and its pool-progress display is fabricated. mobile-client's entire write path is fake (zero-byte signatures, SHA-256 masquerading as Argon2id in both native modules).
 3. **Dead code shipping in bundles.** chat-client carries an entire unrouted legacy UI generation (SpaceChatPage stack) full of `setTimeout`-fake PoW and `Math.random()` heat decay. search-client ships a 150-line financial-trading widget (`MacroRegimeCard`) from a different project. mobile ships ~450 lines of unmounted navigators. desktop bundles ~32 MB of stale/foreign node binaries.
 4. **No real-time.** The node has a WebSocket event system (`content_new`, `content_engaged`, `sync_status`, `peer_connected`…) that **zero clients use**. Chat polls; feed polls; the one "real-time updates" hook is an intentional no-op.
-5. **Version-control risk.** The two most recently developed pieces (wiki-client, `@swimchain/frontend` SDK) are entirely untracked in git.
+5. **Version-control risk (resolved).** The two most recently developed pieces (wiki-client, `@swimchain/frontend` SDK) were initially untracked. Both are now committed to git with a clean working tree.
 
 ---
 
@@ -73,7 +73,7 @@ Completeness is a judgment of "distance from shippable for its scoped purpose," 
 | **bridge-client** | ~75% | Most complete end-to-end specialized client. Real Matrix Client-Server API (whoami/sync/send), real IRC protocol over WebSocket→TCP proxy, real signed `submit_post` with PoW, AES-GCM decryption of private content, echo/rate-limit/budget protection. **Gaps:** the required IRC WebSocket proxy isn't in the repo (IRC half dead out-of-box); messages arriving during mining are silently dropped; inbound always posts as new post, never threaded reply; Matrix sync is short-poll. |
 | **analytics-client** | ~70% (read-only) | Real telemetry (health score from live sync/peers/content). **Gaps:** `engagementsLast24h` hardcoded 0 (TODO); `activeSwimmers` = peer count (proxy metric); moderation page is localStorage-only, no on-chain attestation; client-side aggregation won't scale; zero tests. |
 | **archiver-client** | ~50% | Detection real (decay math, spam filtering, pool status). **Core feature is a no-op:** `AutoEngageEngine.engage()` mines a valid Argon2id solution then discards it — its `rpc.ts` has no submit method at all. Pool progress shown to the user is computed locally (`currentSeconds + seconds`, `contributorCount + 1`). Burns CPU, preserves nothing on-chain. |
-| **wiki-client** | ~70% prototype | Newest work (Feb 18). Real signed RPC, markdown editor, wikilinks, TOC, revision diffs, talk pages. **Gaps:** untracked in git; a fork of search-client with orphaned leftovers; revisions faked by sorting `list_space_content`; verify writes actually mine PoW; moderation local-only. |
+| **wiki-client** | ~70% prototype | Newest work (Feb 18). Real signed RPC, markdown editor, wikilinks, TOC, revision diffs, talk pages. **Gaps:** a fork of search-client with orphaned leftovers; revisions faked by sorting `list_space_content`; verify writes actually mine PoW; moderation local-only. |
 | **debug-dashboard** | works (ops tool) | Vanilla JS + Node proxy, real multi-node RPC. Unhardened proxy (`Access-Control-Allow-Origin: *` on a cookie-auth proxy, no timeouts). |
 
 ### Tier 3 — Shells & husks
@@ -87,7 +87,7 @@ Completeness is a judgment of "distance from shippable for its scoped purpose," 
 
 ### Shared libraries
 
-- **`@swimchain/frontend`** (swimchain-frontend/): the SDK for chat/search/wiki. Identity provider, Argon2id action-PoW, encryption, X25519. Functional, built, **untracked in git**, ships pre-rename `chainsocial_wasm` artifacts, no tests on load-bearing crypto, consumed via `file:` links with silent-staleness risk.
+- **`@swimchain/frontend`** (swimchain-frontend/): the SDK for chat/search/wiki. Identity provider, Argon2id action-PoW, encryption, X25519. Functional, built, now tracked in git, ships pre-rename `chainsocial_wasm` artifacts, no tests on load-bearing crypto, consumed via `file:` links with silent-staleness risk.
 - **`@swimchain/react` + `@swimchain/core`** (swimchain-react/, swimchain-js/): the other SDK lineage (analytics/archiver/bridge). Broad hook surface incl. action-pow, encryption, DM utils. A *third* `@swimchain/react` fork exists at `clients/packages/react`.
 - **swimchain-wasm**: canonical Rust WASM crate; compiled copies vendored divergently across clients.
 
@@ -126,7 +126,7 @@ Blocklist row: all "local" = per-browser localStorage, not synced, because no no
 Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parity; Phase 3 hardens. Lanes within a phase are parallel and independently claimable. The DAG is encoded in `post_parity_dag.py` for the Overmind board; a static snapshot renders in `docs/parity-dashboard.html`.
 
 ### Phase 0 — Foundations (do first; small; unblocks everything)
-- **F1** Commit wiki-client + swimchain-frontend to git; delete reddit-client husk. (S) — PR #1 open on GitHub
+- **F1** Commit wiki-client + swimchain-frontend to git; delete reddit-client husk. (S) **✔ DONE** — wiki-client and swimchain-frontend committed (clean working tree); reddit-client husk removed.
 - **F2** Backend enablers: implement or remove `contribute_to_pool`; add network broadcast to the 4 private-space actions; add blocklist list/manage RPC; prune 15 phantom allowlist entries. (L, backend) — PR #13 open on GitHub
 - **F3** SDK decision: pick ONE shared package (recommend `@swimchain/frontend` as base — newest, already consumed by 3 clients), absorb `swimchain-react`'s action-pow/encryption/DM utils, add the parent-RPC-config (postMessage) handshake into it, rename `chainsocial_wasm` artifacts. (L) — PR #11 open on GitHub
 
