@@ -82,12 +82,15 @@ export function EngageButton({
     setStatusMessage(getStatusMessage('mining', seconds));
     startTimeRef.current = Date.now();
 
-    // Create a minimal AtRiskContent for the engine
+    // Create a minimal AtRiskContent for the engine. Only postHash and
+    // poolStatus are consumed by engage(): submit_engagement takes just the
+    // content_id (the node resolves space/thread from its own content store)
+    // and the author is the engine's configured node identity, not this field.
     const content: AtRiskContent = {
       postHash,
-      spaceId: '', // Not needed for PoW mining
+      spaceId: '', // Unused by engage(); node resolves the space from content_id
       title: '',
-      author: '',
+      author: '', // Unused by engage(); engagement author is the node identity
       heat: 0,
       estimatedDecayTime: new Date(),
       replyCount: 0,

@@ -18,6 +18,7 @@ import {
   STORAGE_KEYS,
 } from '../types/constants';
 import { mineEngagementPow } from '../lib/engagement-pow';
+import type { SwimchainRpc } from '../lib/rpc';
 
 type BudgetSubscriber = (state: BudgetState) => void;
 
@@ -45,9 +46,20 @@ export class AutoEngageEngine {
   private budgetSubscribers: Set<BudgetSubscriber> = new Set();
   private authorPubkeyHex: string | null = null;
   private isTestnet: boolean = true;
+  private rpcClient: SwimchainRpc | null = null;
 
   constructor() {
     this.loadBudgetState();
+  }
+
+  /**
+   * Set the RPC client used to submit engagements on-chain.
+   * Follows the same injection pattern as ContentMonitor.setRpcClient().
+   *
+   * @param client - Connected RPC client, or null when disconnected
+   */
+  setRpcClient(client: SwimchainRpc | null): void {
+    this.rpcClient = client;
   }
 
   /**
@@ -155,7 +167,11 @@ export class AutoEngageEngine {
   /**
    * Engage with content by contributing PoW.
    *
-   * Uses real Argon2id PoW mining via @swimchain/react.
+   * Flow: mine real Argon2id PoW via @swimchain/react, sign the engagement
+   * with the node identity, submit it on-chain via submit_engagement, then
+   * re-poll the node for the authoritative pool status. Budget is only
+   * recorded as spent after the node accepts the submission; failures are
+   * surfaced as errors (never fake success).
    *
    * @param content - Content to engage with
    * @param seconds - Seconds of PoW to contribute (used for budget tracking)
@@ -182,6 +198,15 @@ export class AutoEngageEngine {
         secondsContributed: 0,
         newPoolStatus: content.poolStatus,
         error: 'Author public key not set. Call setAuthorPubkey() first.',
+      };
+    }
+
+    if (!this.rpcClient) {
+      return {
+        success: false,
+        secondsContributed: 0,
+        newPoolStatus: content.poolStatus,
+        error: 'RPC client not set. Engagement cannot be submitted on-chain.',
       };
     }
 
@@ -215,23 +240,71 @@ export class AutoEngageEngine {
         `[AutoEngageEngine] PoW complete: ${powResult.attempts} attempts in ${powResult.elapsedMs}ms`
       );
 
-      // Record the engagement (using budget seconds, not actual mining time)
+      // The node deserializes pow_nonce as u64, so it must be sent as a
+      // JSON number. Argon2id nonces at these difficulties are far below
+      // Number.MAX_SAFE_INTEGER, but verify to be safe.
+      const powNonce = Number(powResult.nonce);
+      if (!Number.isSafeInteger(powNonce) || powNonce < 0) {
+        throw new Error(`PoW nonce out of safe integer range: ${powResult.nonce}`);
+      }
+
+      // Sign the engagement with the node identity. Message format must
+      // match the node's verification (methods.rs submit_engagement):
+      //   "engage:{content_id}:{pow_nonce}:{timestamp}" (no emoji)
+      const signingMessage = `engage:${content.postHash}:${powNonce}:${powResult.timestamp}`;
+      const signResult = await this.rpcClient.signMessage(signingMessage);
+
+      // The PoW challenge was mined against authorPubkeyHex; the node
+      // verifies the signature against the same key. If the node signed
+      // with a different identity, the submission would be rejected.
+      if (signResult.public_key.toLowerCase() !== this.authorPubkeyHex.toLowerCase()) {
+        throw new Error(
+          'Node signing key does not match the author public key used for mining. ' +
+            'Refresh the identity and try again.'
+        );
+      }
+
+      // Submit the solved PoW on-chain. Throws on rejection.
+      const submitResult = await this.rpcClient.submitEngagement({
+        content_id: content.postHash,
+        author_id: this.authorPubkeyHex,
+        pow_nonce: powNonce,
+        pow_difficulty: powResult.difficulty,
+        pow_nonce_space: powResult.nonceSpace,
+        pow_hash: powResult.hash,
+        signature: signResult.signature,
+        timestamp: powResult.timestamp,
+      });
+
+      console.log(
+        `[AutoEngageEngine] Engagement submitted on-chain: engaged=${submitResult.engaged}`
+      );
+
+      // Only record budget as spent after the node accepted the submission
       this.recordEngagement(seconds);
 
-      // Calculate new pool status
-      const newCurrentSeconds = Math.min(
-        content.poolStatus.requiredSeconds,
-        content.poolStatus.currentSeconds + seconds
-      );
+      // Re-poll the node for authoritative pool status instead of
+      // fabricating it locally. Fall back to the previous status if the
+      // pool lookup fails (never invent progress).
+      let newPoolStatus = content.poolStatus;
+      try {
+        const pool = await this.rpcClient.getPoolForContent(content.postHash);
+        if (pool && pool.has_pool && pool.required_pow > 0) {
+          const progress = Math.min(1, pool.total_pow / pool.required_pow);
+          newPoolStatus = {
+            currentSeconds: Math.round(progress * content.poolStatus.requiredSeconds),
+            requiredSeconds: content.poolStatus.requiredSeconds,
+            contributorCount: pool.contributor_count,
+          };
+        }
+      } catch (pollError) {
+        console.warn('[AutoEngageEngine] Pool re-poll failed:', pollError);
+      }
 
       return {
         success: true,
         secondsContributed: seconds,
-        newPoolStatus: {
-          ...content.poolStatus,
-          currentSeconds: newCurrentSeconds,
-          contributorCount: content.poolStatus.contributorCount + 1,
-        },
+        newPoolStatus,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

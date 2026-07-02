@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { NodeStatusBar } from '../components/NodeStatusBar';
+import { useAutoEngageWiring } from '../hooks/useAutoEngageWiring';
 import './MainLayout.css';
 
 interface MainLayoutProps {
@@ -9,6 +10,10 @@ interface MainLayoutProps {
 
 export function MainLayout({ children }: MainLayoutProps): JSX.Element {
   const location = useLocation();
+
+  // Keep the AutoEngageEngine wired to the RPC client and node identity
+  // so both auto-engage and manual EngageButton submissions work.
+  useAutoEngageWiring();
 
   useEffect(() => {
     const main = document.getElementById('main-content');
