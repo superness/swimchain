@@ -22,6 +22,7 @@ import {
 import { useIdentityContext } from '@swimchain/frontend';
 import { renderMarkdown } from '../lib/markdown';
 import { parseWikiLinks } from '../lib/wikilinks';
+import { encodeRevisionBody } from '../lib/revision';
 import './WikiPageEdit.css';
 
 type MiningState = 'idle' | 'mining' | 'submitting' | 'complete' | 'error' | 'cancelled';
@@ -135,15 +136,21 @@ export function WikiPageEdit(): JSX.Element {
     setSubmitError(null);
     cancelledRef.current = false;
 
-    // Determine action type: new page = Post, edit = Reply
+    // Determine action type: new page = Post, edit = Reply (revision reply)
     const actionType = isNew ? ActionType.Post : ActionType.Reply;
     const difficulty = getDifficulty(actionType, true /* testnet */);
     const config = getConfig(true /* testnet */);
 
-    // Build content to mine over
+    // Edits are submitted as revision replies: the body carries a
+    // machine-readable header with the edit summary (see lib/revision.ts)
+    // so revisions are distinguishable from discussion comments.
+    const revisionBody = isNew ? '' : encodeRevisionBody(content.trim(), summary.trim());
+
+    // Build content to mine over — MUST match the exact bytes the node
+    // re-hashes in verify_pow_submission (Post: "title\n\nbody", Reply: body)
     const postContent = isNew
       ? `${title.trim()}\n\n${content.trim()}`
-      : content.trim();
+      : revisionBody;
 
     const contentBytes = new TextEncoder().encode(postContent);
     const authorPubkey = hexToBytes(identity.publicKey);
@@ -181,7 +188,7 @@ export function WikiPageEdit(): JSX.Element {
       // Sign the content
       const signMessage = isNew
         ? `post:${namespaceId}:${title.trim()}:${content.trim()}:${powParams.timestamp}`
-        : `reply:${pageId}:${content.trim()}:${powParams.timestamp}`;
+        : `reply:${pageId}:${revisionBody}:${powParams.timestamp}`;
 
       // Use WASM keypair for signing
       const { wasm } = await import('@swimchain/frontend');
@@ -212,9 +219,9 @@ export function WikiPageEdit(): JSX.Element {
         setMiningState('complete');
         navigate(`/ns/${namespaceId}/page/${result.content_id}`);
       } else {
-        const result = await rpc.call<{ content_id: string }>('submit_reply', {
+        await rpc.call<{ content_id: string }>('submit_reply', {
           parent_id: pageId,
-          body: content.trim(),
+          body: revisionBody,
           author_id: identity.publicKey,
           pow_nonce: powParams.pow_nonce,
           pow_difficulty: powParams.pow_difficulty,
@@ -225,7 +232,9 @@ export function WikiPageEdit(): JSX.Element {
         });
 
         setMiningState('complete');
-        navigate(`/ns/${namespaceId}/page/${result.content_id}`);
+        // The page keeps its original content ID — revisions are replies to it.
+        // (Navigating to the revision's content_id would 404 the page view.)
+        navigate(`/ns/${namespaceId}/page/${pageId}`);
       }
     } catch (err) {
       if (cancelledRef.current) {
@@ -235,7 +244,7 @@ export function WikiPageEdit(): JSX.Element {
         setSubmitError(err instanceof Error ? err.message : 'Failed to submit');
       }
     }
-  }, [identity, rpc, connected, namespaceId, pageId, isNew, title, content, navigate]);
+  }, [identity, rpc, connected, namespaceId, pageId, isNew, title, content, summary, navigate]);
 
   const handleCancel = useCallback(() => {
     cancelledRef.current = true;
