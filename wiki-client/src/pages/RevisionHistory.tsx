@@ -78,7 +78,7 @@ type ViewMode = 'list' | 'view' | 'diff';
 export function RevisionHistory(): JSX.Element {
   const { namespaceId, pageId } = useParams<{ namespaceId: string; pageId: string }>();
   const { data: page } = useWikiPage(pageId ?? null);
-  const { data: revisions, loading, error, refetch } = useWikiRevisions(pageId ?? null, namespaceId ?? null);
+  const { data: revisions, loading, error, refetch } = useWikiRevisions(pageId ?? null);
 
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [selectedRevisionId, setSelectedRevisionId] = useState<string | null>(null);
@@ -96,15 +96,16 @@ export function RevisionHistory(): JSX.Element {
     let oldContent = '';
     let newContent = '';
 
-    // If comparing with the original page
+    // If comparing with the original page (baseContent = the original post
+    // body; page.content is the latest revision)
     if (oldId === 'original') {
-      oldContent = page?.content ?? '';
+      oldContent = page?.baseContent ?? '';
     } else {
       oldContent = revisions.find(r => r.id === oldId)?.content ?? '';
     }
 
     if (newId === 'original') {
-      newContent = page?.content ?? '';
+      newContent = page?.baseContent ?? '';
     } else {
       newContent = revisions.find(r => r.id === newId)?.content ?? '';
     }

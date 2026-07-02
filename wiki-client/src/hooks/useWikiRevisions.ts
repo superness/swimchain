@@ -1,10 +1,16 @@
 /**
  * Hook to fetch revision history for a wiki page.
- * Uses list_space_content RPC filtered by parent_id to get the revision chain.
+ *
+ * Uses the get_replies RPC (indexed by parent on the node — O(limit), complete)
+ * instead of scanning list_space_content client-side. Revisions are replies
+ * carrying the wiki-revision header (see lib/revision.ts); plain replies are
+ * discussion comments and are excluded here.
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
+import { decodeRevisionBody } from '../lib/revision';
+import type { SwimchainRpc } from '../lib/rpc';
 import type { WikiRevision } from '../types/wiki';
 
 interface UseWikiRevisionsResult {
@@ -14,40 +20,60 @@ interface UseWikiRevisionsResult {
   refetch: () => void;
 }
 
-interface RpcContentSummary {
+interface RpcReplyInfo {
   content_id: string;
-  content_type: string;
   author_id: string;
-  space_id: string;
-  parent_id: string | null;
+  body: string;
+  parent_id: string;
   created_at: number;
   last_engagement: number;
-  title: string | null;
-  body: string | null;
-  body_preview: string | null;
-  engagement_count: number;
-  reply_count: number;
-  display_name?: string;
+  depth: number;
+  child_count: number;
+  display_name?: string | null;
 }
 
-interface RpcListContentResult {
-  items: RpcContentSummary[];
-  total: number;
+interface RpcGetRepliesResult {
+  parent_id: string;
+  replies: RpcReplyInfo[];
+  total_count: number;
 }
 
-function mapToRevision(raw: RpcContentSummary, pageId: string): WikiRevision {
-  return {
-    id: raw.content_id,
-    pageId,
-    author: raw.display_name ?? raw.author_id,
-    authorAddress: raw.author_id,
-    timestamp: raw.created_at,
-    summary: raw.title ?? raw.body_preview ?? '',
-    content: raw.body ?? '',
-  };
+/** get_replies returns unix ms; the rest of the wiki UI uses unix seconds */
+function toUnixSeconds(ts: number): number {
+  return ts > 1e12 ? Math.floor(ts / 1000) : ts;
 }
 
-export function useWikiRevisions(pageId: string | null, spaceId: string | null): UseWikiRevisionsResult {
+/**
+ * Fetch all revisions for a page (newest first).
+ * Shared by useWikiRevisions and useWikiPage.
+ */
+export async function fetchWikiRevisions(
+  rpc: SwimchainRpc,
+  pageId: string,
+): Promise<WikiRevision[]> {
+  const result = await rpc.call<RpcGetRepliesResult>('get_replies', {
+    content_id: pageId,
+    limit: 500,
+    depth_limit: 0, // only direct children of the page
+  });
+
+  return result.replies
+    .filter((r) => r.parent_id === pageId)
+    .map((r) => ({ raw: r, decoded: decodeRevisionBody(r.body ?? '') }))
+    .filter((x) => x.decoded.isRevision)
+    .map((x) => ({
+      id: x.raw.content_id,
+      pageId,
+      author: x.raw.display_name ?? x.raw.author_id,
+      authorAddress: x.raw.author_id,
+      timestamp: toUnixSeconds(x.raw.created_at),
+      summary: x.decoded.summary,
+      content: x.decoded.content,
+    }))
+    .sort((a, b) => b.timestamp - a.timestamp);
+}
+
+export function useWikiRevisions(pageId: string | null): UseWikiRevisionsResult {
   const { rpc, connected } = useRpc();
   const [data, setData] = useState<WikiRevision[]>([]);
   const [loading, setLoading] = useState(false);
@@ -57,7 +83,7 @@ export function useWikiRevisions(pageId: string | null, spaceId: string | null):
   const refetch = useCallback(() => setFetchKey(k => k + 1), []);
 
   useEffect(() => {
-    if (!rpc || !connected || !pageId || !spaceId) {
+    if (!rpc || !connected || !pageId) {
       setData([]);
       setLoading(false);
       return;
@@ -67,21 +93,9 @@ export function useWikiRevisions(pageId: string | null, spaceId: string | null):
     setLoading(true);
     setError(null);
 
-    // Fetch replies to this content — each reply represents a revision/edit
-    rpc.call<RpcListContentResult>('list_space_content', {
-      space_id: spaceId,
-      limit: 100,
-      offset: 0,
-      sort: 'recent',
-      content_type: 'Reply',
-    })
-      .then(result => {
+    fetchWikiRevisions(rpc, pageId)
+      .then(revisions => {
         if (!cancelled) {
-          // Filter to only replies that are direct children of this page
-          const revisions = result.items
-            .filter(item => item.parent_id === pageId)
-            .map(item => mapToRevision(item, pageId))
-            .sort((a, b) => b.timestamp - a.timestamp);
           setData(revisions);
         }
       })
@@ -95,7 +109,7 @@ export function useWikiRevisions(pageId: string | null, spaceId: string | null):
       });
 
     return () => { cancelled = true; };
-  }, [rpc, connected, pageId, spaceId, fetchKey]);
+  }, [rpc, connected, pageId, fetchKey]);
 
   return { data, loading, error, refetch };
 }

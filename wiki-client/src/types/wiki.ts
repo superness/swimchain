@@ -11,7 +11,14 @@ export interface WikiPage {
   id: string;
   namespaceId: string;
   title: string;
+  /** Current content: latest revision if any, otherwise the original post body */
   content: string;
+  /**
+   * Original post body (revision 0), used as the diff base in history.
+   * Only populated by useWikiPage (full page fetch); list/search mappings
+   * omit it.
+   */
+  baseContent?: string;
   author: string;
   authorAddress: string;
   createdAt: number;
