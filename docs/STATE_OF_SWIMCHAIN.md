@@ -137,7 +137,7 @@ Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parit
 - **B4** feed: wire followed-user posts via existing `get_user_posts`; remove fabricated local-space fallback. (M)
 - **B5** search: delete MacroRegimeCard; fix dead footer routes; unify deep-link target. (S)
 - **B6** archiver: add `submit_engagement` to its RPC client and actually submit mined PoW; replace locally-fabricated pool status with authoritative re-poll. (L) ← *top correctness fix in the fleet*
-- **B7** bridge: ship/document IRC WebSocket proxy; queue (don't drop) messages during mining; thread inbound as replies. (M)
+- **B7** ✅ bridge: ship/document IRC WebSocket proxy; queue (don't drop) messages during mining; thread inbound as replies. (M)
 - **B8** web-gateway: port wiki-client's read-only RPC subset; delete all MOCK_*; feed lunr index + sitemap from live node; real health check. (L)
 - **B9** mobile: real Ed25519 signing (replace zero-byte stub); real Argon2id (argon2kt / Argon2Swift); on-device identity generation. (L)
 - **B10** desktop: chat parent-RPC handshake (via F3 SDK); strip debug scaffolding; prune stale binaries; real Bech32m in `check_identity`. (M)
