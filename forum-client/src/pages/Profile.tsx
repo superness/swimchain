@@ -10,9 +10,11 @@ import { useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
 import { useUserProfile, clearProfileCache } from '../hooks/useUserProfile';
-import { useRpc } from '../hooks/useRpc';
+import { useRpc, usePostSubmit, useMediaUpload } from '../hooks/useRpc';
 import { UserAvatar } from '../components/UserAvatar';
 import { StartDMButton } from '../components/StartDMButton';
+import { usePostPow } from '../hooks/useActionPow';
+import { solutionToRpcParams } from '../lib/action-pow';
 import {
   getProfileSpaceId,
   encodeProfileInfo,
@@ -35,6 +37,10 @@ export function ProfilePage(): JSX.Element {
   const { publicKey, keypair } = useStoredKeypair();
   const myPk = publicKey ? bytesToHex(publicKey) : undefined;
   const { rpc, connected } = useRpc();
+  const { submitPost } = usePostSubmit();
+  const { uploadImage: uploadMedia } = useMediaUpload();
+  const { state: postPowState, minePost, progress: postPowProgress, reset: resetPow } = usePostPow();
+  const isMining = postPowState === 'mining';
 
   // Determine whose profile we're viewing
   // Validate that paramUserPk is a valid hex public key (not a template variable like {userId})
@@ -110,6 +116,7 @@ export function ProfilePage(): JSX.Element {
 
     setSaving(true);
     setSaveError(null);
+    resetPow();
 
     try {
       const profileSpaceId = getProfileSpaceId(myPk);
@@ -124,40 +131,67 @@ export function ProfilePage(): JSX.Element {
 
       // Upload avatar if selected
       if (avatarFile) {
-        // Convert file to base64
-        const arrayBuffer = await avatarFile.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+        // Upload image via useMediaUpload hook
+        const uploadResult = await uploadMedia(avatarFile);
 
-        // Upload image content
-        const uploadResult = await rpc.call('upload_content', {
-          content: base64,
-          content_type: avatarFile.type,
-          author: myPk,
-        }) as { content_id: string };
+        if (!uploadResult.success || !uploadResult.result) {
+          throw new Error('Failed to upload avatar image');
+        }
 
-        // Post avatar info
+        // Build avatar info body
         const avatarBody = encodeAvatarInfo({
-          contentId: uploadResult.content_id,
+          contentId: uploadResult.result.mediaHash,
           format: avatarFile.type.split('/')[1] || 'png',
           updatedAt: Date.now(),
         });
 
-        await rpc.call('post_to_space', {
-          space_id: profileSpaceId,
-          author: myPk,
-          body: avatarBody,
-          timestamp: Date.now(),
-        });
+        // Mine PoW for the avatar post
+        const publicKeyBytes = new Uint8Array(
+          myPk.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16))
+        );
+        const avatarSolution = await minePost(avatarBody, publicKeyBytes, true);
+        const avatarPowParams = solutionToRpcParams(avatarSolution);
+
+        // Submit avatar post via usePostSubmit hook
+        const asyncSign = async (message: Uint8Array): Promise<Uint8Array | null> => keypair.sign(message);
+        const avatarResult = await submitPost(
+          profileSpaceId,
+          '',
+          avatarBody,
+          myPk,
+          asyncSign,
+          avatarPowParams
+        );
+
+        if (!avatarResult.success) {
+          throw new Error('Failed to submit avatar post');
+        }
       }
 
       // Post profile info
       const infoBody = encodeProfileInfo(profileInfo);
-      await rpc.call('post_to_space', {
-        space_id: profileSpaceId,
-        author: myPk,
-        body: infoBody,
-        timestamp: Date.now(),
-      });
+
+      // Mine PoW for profile info post
+      const publicKeyBytes = new Uint8Array(
+        myPk.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16))
+      );
+      const infoSolution = await minePost(infoBody, publicKeyBytes, true);
+      const infoPowParams = solutionToRpcParams(infoSolution);
+
+      // Submit profile info via usePostSubmit hook
+      const asyncSign = async (message: Uint8Array): Promise<Uint8Array | null> => keypair.sign(message);
+      const infoResult = await submitPost(
+        profileSpaceId,
+        '',
+        infoBody,
+        myPk,
+        asyncSign,
+        infoPowParams
+      );
+
+      if (!infoResult.success) {
+        throw new Error('Failed to submit profile update');
+      }
 
       // Clear cache and refetch
       clearProfileCache(myPk);
@@ -171,8 +205,9 @@ export function ProfilePage(): JSX.Element {
       setSaveError(err instanceof Error ? err.message : 'Failed to save profile');
     } finally {
       setSaving(false);
+      resetPow();
     }
-  }, [rpc, connected, myPk, keypair, displayName, bio, website, avatarFile, refetch]);
+  }, [rpc, connected, myPk, keypair, displayName, bio, website, avatarFile, uploadMedia, minePost, submitPost, refetch, resetPow]);
 
   // Not logged in
   if (!myPk && !paramUserPk) {
@@ -338,11 +373,16 @@ export function ProfilePage(): JSX.Element {
             {isEditing && (
               <div className="profile-actions">
                 {saveError && <div className="profile-save-error">{saveError}</div>}
+                {isMining && (
+                  <div className="profile-mining">
+                    <span>Mining PoW... {postPowProgress.attempts} attempts ({Math.round(postPowProgress.elapsedMs / 1000)}s)</span>
+                  </div>
+                )}
                 <button
                   type="button"
                   className="btn btn-ghost"
                   onClick={handleCancel}
-                  disabled={saving}
+                  disabled={saving || isMining}
                 >
                   Cancel
                 </button>
@@ -350,9 +390,9 @@ export function ProfilePage(): JSX.Element {
                   type="button"
                   className="btn btn-primary"
                   onClick={handleSave}
-                  disabled={saving}
+                  disabled={saving || isMining}
                 >
-                  {saving ? 'Saving...' : 'Save Profile'}
+                  {isMining ? 'Mining PoW...' : saving ? 'Saving...' : 'Save Profile'}
                 </button>
               </div>
             )}
