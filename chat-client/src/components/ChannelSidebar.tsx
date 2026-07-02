@@ -5,11 +5,12 @@
  * Maps: Channel = Thread in Swimchain terminology.
  */
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { DmPanel } from './DmPanel';
 import { StartDmModal } from './StartDmModal';
+import { PrivateChannelsSection } from './PrivateChannelsSection';
 import './ChannelSidebar.css';
 
 export interface Channel {
@@ -206,11 +207,6 @@ function ChannelItem({
   );
 }
 
-const [showDmModal, setShowDmModal] = useState(false);
-const handleSelectDm = useCallback((spaceId: string) => {
-    navigate('/channels/@me/' + spaceId);
-  }, [navigate]);
-
 export function ChannelSidebar({
   server,
   channels,
@@ -218,6 +214,10 @@ export function ChannelSidebar({
   onChannelSelect: _onChannelSelect,
 }: ChannelSidebarProps) {
   const navigate = useNavigate();
+  const [showDmModal, setShowDmModal] = useState(false);
+  const handleSelectDm = useCallback((spaceId: string) => {
+    navigate('/channels/@me/' + spaceId);
+  }, [navigate]);
   const [categories, setCategories] = useState<ChannelCategory[]>(() =>
     groupChannelsByCategory(channels)
   );
@@ -272,11 +272,14 @@ export function ChannelSidebar({
               Create a channel
             </button>
           </div>
-
-      {/* Direct Messages panel */}
-      <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
-      {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
         )}
+
+        {/* Direct Messages panel */}
+        <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
+        {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
+
+        {/* Private channels: invites inbox + my private channels */}
+        <PrivateChannelsSection />
       </div>
 
       {/* User area at bottom */}
