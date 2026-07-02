@@ -17,7 +17,7 @@ Headline numbers:
 | Node RPC methods stubbed/partial | 6 (1 stub, 1 deprecated, 4 partial private-space) |
 | Phantom methods (allowlisted, no handler) | 15 |
 | Client apps | 13 (10 web, 1 mobile, 1 desktop shell, 1 debug tool) |
-| Clients calling nonexistent RPC methods | 1 (forum-client, 3 methods) |
+| Clients calling nonexistent RPC methods | 0 (B1 fixed forum-client's 3 phantom calls) |
 | Clients with fake/no-op core features | 3 (archiver, web-gateway, mobile write path) |
 | Parallel implementations of crypto/RPC stack | 4 |
 | Clients using node WebSocket events | 0 |
@@ -27,7 +27,7 @@ Headline numbers:
 ### The five structural problems
 
 1. **SDK fragmentation (root cause of parity drift).** Four parallel stacks: (a) `swimchain-react` + `swimchain-js` (used by analytics/archiver/bridge), (b) `@swimchain/frontend` (chat/search/wiki — still ships pre-rename `chainsocial_wasm`), (c) forum/feed self-contained `@noble`-based copies, (d) mobile's own React Native copies (where signing is a zero-byte stub). Every protocol change must be ported 4 times; in practice it isn't, so clients drift.
-2. **Silent write-path breakage.** forum-client calls three methods the node doesn't have (`post_to_private_space`, `post_to_space`, `upload_content`) — private-space/DM message send and profile editing are broken. archiver-client mines real Argon2id PoW and never submits it — its core rescue feature has zero on-chain effect and its pool-progress display is fabricated. mobile-client's entire write path is fake (zero-byte signatures, SHA-256 masquerading as Argon2id in both native modules).
+2. **Silent write-path breakage.** forum-client called three methods the node didn't have (`post_to_private_space`, `post_to_space`, `upload_content`) — private-space/DM message send and profile editing were broken. **Fixed in B1:** now uses `submit_reply`/`submit_post`/`upload_media` with real PoW. archiver-client mines real Argon2id PoW and never submits it — its core rescue feature has zero on-chain effect and its pool-progress display is fabricated. mobile-client's entire write path is fake (zero-byte signatures, SHA-256 masquerading as Argon2id in both native modules).
 3. **Dead code shipping in bundles.** chat-client carries an entire unrouted legacy UI generation (SpaceChatPage stack) full of `setTimeout`-fake PoW and `Math.random()` heat decay. search-client ships a 150-line financial-trading widget (`MacroRegimeCard`) from a different project. mobile ships ~450 lines of unmounted navigators. desktop bundles ~32 MB of stale/foreign node binaries.
 4. **No real-time.** The node has a WebSocket event system (`content_new`, `content_engaged`, `sync_status`, `peer_connected`…) that **zero clients use**. Chat polls; feed polls; the one "real-time updates" hook is an intentional no-op.
 5. **Version-control risk.** The two most recently developed pieces (wiki-client, `@swimchain/frontend` SDK) are entirely untracked in git.
@@ -61,7 +61,7 @@ Completeness is a judgment of "distance from shippable for its scoped purpose," 
 
 | Client | Est. complete | Verdict |
 |---|---|---|
-| **forum-client** | ~85% | Most complete client. Full sponsorship (all 12 RPCs), moderation w/ real PoW, media, decay display, DM/invite plumbing. **Broken:** private-space chat send (`post_to_private_space` — method doesn't exist), profile save (`post_to_space`), avatar upload (`upload_content`); all three lack PoW params and were written against an imagined API. Leave-space unwired (`SpaceSettings.tsx:119`). Node-managed identity (remote `sign_message`). |
+| **forum-client** | ~87% | Most complete client. Full sponsorship (all 12 RPCs), moderation w/ real PoW, media, decay display, DM/invite plumbing. **Fixed (B1):** private-space chat send now uses `submit_reply` + PoW; profile save uses `submit_post` + PoW; avatar upload uses `upload_media`. Leave-space unwired (`SpaceSettings.tsx:119`). Node-managed identity (remote `sign_message`). |
 | **feed-client** | ~85% | Real PoW, real signatures, full sponsorship, moderation w/ counter-attestation, private-space E2E crypto. **Gaps:** followed *users* contribute nothing to feed (`useFeed.ts:239` TODO — node's `get_user_posts` exists, just unwired); user discovery tab empty; DM RPC wrappers with no UI; private-space creation silently falls back to a fabricated local-only space on RPC failure (`CreatePrivateSpace.tsx:130-142`). |
 | **chat-client** | ~65% | Live path (servers=spaces, channels=threads, messages=replies, reactions via `submit_engagement`, real Argon2id PoW) is genuine. **But:** ships dead legacy SpaceChatPage stack with fake PoW/heat; presence/typing are local-only simulations; private spaces are create-only (no accept-invite UI, no channel list, no members/kick — node supports all); zero sponsorship; no DMs; no decay display; search is client-side filter; no identity backup, seed stored plaintext. |
 | **search-client** | ~75% (scoped) | Clean, real search/suggest/trending with query DSL, client-side blocklist. **Gaps:** no report/spam-attestation path; `MacroRegimeCard` foreign dead code; footer links to unregistered routes; deep links target forum-client while feed-client is the natural post renderer. |
@@ -106,14 +106,14 @@ Legend: ✅ implemented · 🟡 partial · ❌ missing · 💥 broken (calls non
 | Engagement/reactions | ✅ | ✅ | ✅ | ▫ | ❌ | ▫ | 💥 not submitted | ▫ | ▫ | 💥 |
 | Sponsorship | ✅ full | ✅ full | ❌ | 🟡 badge only | ❌ | 🟡 offers view | ❌ | ❌ | ❌ | ❌ |
 | Private spaces (create/E2E) | ✅ | ✅ | 🟡 create-only | ▫ | ❌ | ▫ | ▫ | 🟡 decrypt only | ▫ | ❌ |
-| Private space send | 💥 phantom RPC | ✅ | ✅ | ▫ | ▫ | ▫ | ▫ | ▫ | ▫ | ❌ |
+| Private space send | ✅ (B1) | ✅ | ✅ | ▫ | ▫ | ▫ | ▫ | ▫ | ▫ | ❌ |
 | Invites (send/accept/members/kick) | ✅ | ✅ | 🟡 send only | ▫ | ❌ | ▫ | ▫ | ▫ | ▫ | ❌ |
 | DMs | ✅ | 🟡 RPC no UI | ❌ | ▫ | ▫ | ▫ | ▫ | ▫ | ▫ | ❌ |
 | Moderation: report/attestation | ✅ + counter | ✅ + counter | 🟡 report only | ❌ | ❌ | ❌ local block | ✅ checks | ✅ checks | ▫ | ❌ |
 | Moderation: blocklist | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ✅ local | ▫ | ❌ |
 | Search | ✅ | ✅ | 💥 local filter | ✅ full | ✅ | ▫ | ▫ | ▫ | 💥 mock | ✅ |
 | Real-time (WS events) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Profile view/edit | 💥 save broken | ✅ | 🟡 name only | ▫ | ❌ | ▫ | ▫ | ▫ | 💥 mock | 🟡 |
+| Profile view/edit | ✅ (B1) | ✅ | 🟡 name only | ▫ | ❌ | ▫ | ▫ | ▫ | 💥 mock | 🟡 |
 
 ¹ wiki writes need verification that PoW is actually mined before ship.
 
@@ -131,7 +131,7 @@ Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parit
 - **F3** SDK decision: pick ONE shared package (recommend `@swimchain/frontend` as base — newest, already consumed by 3 clients), absorb `swimchain-react`'s action-pow/encryption/DM utils, add the parent-RPC-config (postMessage) handshake into it, rename `chainsocial_wasm` artifacts. (L)
 
 ### Phase 1 — Fix what's broken (parallel lanes)
-- **B1** forum: replace 3 phantom RPC calls with real `submit_post`/`submit_reply`/`upload_media` + PoW (fixes private-space chat send, profile save, avatar). (M)
+- **B1 ✅ DONE** forum: replace 3 phantom RPC calls with real `submit_post`/`submit_reply`/`upload_media` + PoW (fixes private-space chat send, profile save, avatar). (M)
 - **B2** forum: wire leave-space; delete dead mocks/data.ts; wire keyboard engagement. (S)
 - **B3** chat: delete dead SpaceChatPage stack + fake hooks (useReactions, useRealTimeUpdates, etc.). (M)
 - **B4** feed: wire followed-user posts via existing `get_user_posts`; remove fabricated local-space fallback. (M)
@@ -165,7 +165,7 @@ F3 (SDK unification) is the highest-leverage item in the program: B10's chat han
 ## Appendix: source audit trails
 
 Per-client detail (file:line evidence for every claim above) lives in the six audit transcripts from 2026-07-01; key anchors:
-- forum phantom RPCs: `ChatView.tsx:93`, `Profile.tsx:132,145,155`
+- forum phantom RPCs (all fixed in B1): `ChatView.tsx:93`, `Profile.tsx:132,145,155` — replaced with `submit_reply`+PoW, `submit_post`+PoW, `upload_media`
 - archiver no-op rescue: `AutoEngageEngine.ts:165-259`, `EngageButton.tsx:103`
 - mobile fake crypto: `useKeypair.ts` (zero-byte sign), `NativeArgon2Module.kt:187-200`, `NativeArgon2.swift:181-215`
 - chat dead stack: `SpaceChatPage.tsx` subtree, `useReactions.ts:49-52`, `useRealTimeUpdates.ts:29-67`
