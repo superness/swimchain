@@ -11,10 +11,15 @@ import { useSpaceMembers, useRpc } from '../hooks/useRpc';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
 import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
 import { usePrivateSpaceMessages } from '../hooks/usePrivateSpaceMessages';
+import { useReplyPow } from '../hooks/useActionPow';
+import { useNodeIdentity } from '../hooks/useNodeIdentity';
+import { useReplySubmit } from '../hooks/useRpc';
 import { encryptWithSpaceKey } from '../lib/encryption';
-import { bytesToHex } from '../lib/x25519';
+import { bytesToHex, hexToBytes } from '../lib/x25519';
+import { solutionToRpcParams } from '../lib/action-pow';
 import { InviteModal } from './InviteModal';
 import { SpaceSettings } from './SpaceSettings';
+import { PowProgress } from './PowProgress';
 import './ChatView.css';
 
 export function ChatView(): JSX.Element {
@@ -24,11 +29,15 @@ export function ChatView(): JSX.Element {
   const { getSpaceKey, getSpaceKeyInfo } = usePrivateSpaceKeys(userPublicKeyHex);
   const { members, loading: membersLoading } = useSpaceMembers(spaceId);
   const { rpc, connected } = useRpc();
+  const { identity, sign } = useNodeIdentity();
+  const { state: powState, progress: powProgress, mineReply, cancel: cancelPow } = useReplyPow();
+  const { submitReply, submitting } = useReplySubmit();
 
   // Get space key for this space
   const spaceKey = spaceId ? getSpaceKey(spaceId) : null;
   const spaceKeyInfo = spaceId ? getSpaceKeyInfo(spaceId) : null;
   const isMember = !!spaceKey;
+  const isMining = powState === 'mining';
 
   // Fetch messages from backend
   const {
@@ -75,7 +84,10 @@ export function ChatView(): JSX.Element {
   const handleSendMessage = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!newMessage.trim() || !spaceKey || !publicKey || !spaceId || !rpc || !connected || !keypair) return;
+    if (!newMessage.trim() || !spaceKey || !publicKey || !spaceId || !rpc || !connected || !keypair || !identity) {
+      setError('Not connected or identity not ready');
+      return;
+    }
 
     setSending(true);
     setError(null);
@@ -84,21 +96,28 @@ export function ChatView(): JSX.Element {
       // Encrypt the message with the space key
       const encryptedContent = await encryptWithSpaceKey(newMessage.trim(), spaceKey);
 
-      // Create timestamp and sign the action
-      const timestamp = Date.now();
       const authorHex = bytesToHex(publicKey);
+      const authorBytes = new Uint8Array(authorHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
 
-      // Call RPC to post the message to the private space
-      // The backend will handle this as a post action with encrypted content
-      const result = await rpc.call('post_to_private_space', {
-        space_id: spaceId,
-        author: authorHex,
-        content: encryptedContent,
-        timestamp,
-      }) as { success: boolean; content_id?: string; error?: string };
+      // Mine Argon2id PoW for the reply
+      const mined = await mineReply(encryptedContent, authorBytes, true);
+      const powParams = solutionToRpcParams(mined);
+
+      // Submit the reply with PoW proof
+      const result = await submitReply(
+        spaceId,
+        encryptedContent,
+        identity.publicKey,
+        async (message: Uint8Array) => {
+          // Sign the message
+          const signResult = await sign(message);
+          return signResult;
+        },
+        powParams,
+      );
 
       if (!result.success) {
-        throw new Error(result.error || 'Failed to post message');
+        throw new Error('Failed to post message');
       }
 
       // Clear input and refresh messages
@@ -115,7 +134,7 @@ export function ChatView(): JSX.Element {
     } finally {
       setSending(false);
     }
-  }, [newMessage, spaceKey, publicKey, spaceId, rpc, connected, keypair, refetchMessages]);
+  }, [newMessage, spaceKey, publicKey, spaceId, rpc, connected, keypair, identity, mineReply, submitReply, refetchMessages, sign]);
 
   // Format timestamp
   const formatTime = (timestamp: number): string => {
@@ -295,6 +314,18 @@ export function ChatView(): JSX.Element {
       {/* Message composer */}
       <footer className="chat-composer">
         {error && <div className="composer-error">{error}</div>}
+
+        {isMining && (
+          <div className="composer-mining">
+            <PowProgress
+              attempts={powProgress.attempts}
+              elapsedMs={powProgress.elapsedMs}
+              difficulty={10} /* Testnet Reply difficulty */
+              onCancel={cancelPow}
+            />
+          </div>
+        )}
+
         <form onSubmit={handleSendMessage} className="composer-form">
           <input
             type="text"
@@ -302,15 +333,15 @@ export function ChatView(): JSX.Element {
             onChange={(e) => setNewMessage(e.target.value)}
             placeholder="Type a message..."
             className="composer-input"
-            disabled={sending}
+            disabled={sending || isMining}
           />
           <button
             type="submit"
             className="btn btn-primary send-button"
-            disabled={sending || !newMessage.trim()}
+            disabled={sending || isMining || !newMessage.trim()}
           >
-            {sending ? (
-              <span className="sending-indicator">...</span>
+            {sending || isMining ? (
+              <span className="sending-indicator">...{isMining ? ' mining PoW' : ''}</span>
             ) : (
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <line x1="22" y1="2" x2="11" y2="13" />
