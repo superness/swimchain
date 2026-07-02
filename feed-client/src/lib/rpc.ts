@@ -515,6 +515,22 @@ export class SwimchainRpc {
     return this.call('request_content', { content_id: contentId });
   }
 
+  /**
+   * Get posts by a specific user (paginated)
+   * Used by the feed to show followed users' content
+   */
+  async getUserPosts(
+    userId: string,
+    options?: { limit?: number; offset?: number; includeReplies?: boolean }
+  ): Promise<SpaceContentResult> {
+    return this.call<SpaceContentResult>('get_user_posts', {
+      user_id: userId,
+      limit: options?.limit ?? 50,
+      offset: options?.offset ?? 0,
+      include_replies: options?.includeReplies ?? false,
+    });
+  }
+
   // =========================================================================
   // Identity
   // =========================================================================
