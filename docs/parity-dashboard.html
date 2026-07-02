@@ -187,7 +187,7 @@ const CLIENTS = [
   { name: "mobile-client",  pct: 55, note: "read path real; write path is fake crypto end-to-end" },
   { name: "archiver-client",pct: 50, note: "detection real; rescue mines PoW then discards it (no-op)" },
   { name: "web-gateway",    pct: 40, note: "polished SSR shell over 100% mock data" },
-  { name: "reddit-client",  pct: 0,  note: "dead husk - recommend delete" },
+  { name: "reddit-client",  pct: 0,  note: "deleted (dead husk)" },
 ];
 
 // ok | partial | missing | broken | na
@@ -211,7 +211,7 @@ const COLS = ["forum","feed","chat","search","wiki","analytics","archiver","brid
 
 const LANES = [
   // phase, id, title, size, deps
-  ["Phase 0 - Foundations","F1","Commit wiki-client + swimchain-frontend to git; delete reddit-client husk","S",[]],
+  ["Phase 0 - Foundations","F1","Commit wiki-client + swimchain-frontend to git; delete reddit-client husk","S",["done"]],
   ["Phase 0 - Foundations","F2","Backend enablers: contribute_to_pool, private-space broadcasts, blocklist RPC, prune phantom allowlist","L",[]],
   ["Phase 0 - Foundations","F3","SDK unification on @swimchain/frontend: absorb swimchain-react utils, parent-RPC handshake, rename chainsocial_wasm","L",[]],
   ["Phase 1 - Fix broken","B1","forum: replace 3 phantom RPC calls (private send, profile save, avatar) with real methods + PoW","M",[]],

@@ -451,7 +451,7 @@ sw --help                          # Full command list
 
 ## Next Steps
 
-1. **Run the other clients**: Try `reddit-client/`, `chat-client/` for different UX
+1. **Run the other clients**: Try `chat-client/`, `feed-client/` for different UX
 2. **Read the specs**: See `specs/` for protocol details
 3. **Explore swimmer levels**: Host content to increase your level
 4. **Test attestation**: Flag spam content, see accelerated decay

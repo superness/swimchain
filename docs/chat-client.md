@@ -28,7 +28,7 @@ npm install
 npm run dev
 ```
 
-The client runs on **port 5175** (different from forum-client on 5173 and reddit-client on 5174).
+The client runs on **port 5175** (different from forum-client on 5173).
 
 ### Production Build
 
