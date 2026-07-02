@@ -10,9 +10,12 @@ use log::{debug, info, warn};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, RwLock};
 
-use crate::blocklist::BlocklistStore;
+use crate::blocklist::{BlocklistEntry, BlocklistReason, BlocklistStore};
 use crate::blocks::{Action, BranchPath};
 use crate::content::decay_integration::DecayIntegration;
+use crate::content::pool::{
+    compute_pool_pow_target, CompletionResult, PoolContribution, PoolError, PoolManager,
+};
 use crate::content::retrieval::ContentRetrievalManager;
 use crate::crypto::action_pow::{
     ActionType, ForkPoWConfig, PoWChallenge, PoWSolution, verify_pow, compute_pow,
@@ -383,6 +386,8 @@ pub struct NodeRef {
     pub identity_name: Arc<RwLock<Option<String>>>,
     /// Full-text search index (Tantivy) for content search
     pub search_index: Option<Arc<std::sync::RwLock<SearchIndex>>>,
+    /// Pool manager for engagement pool operations (shared with the message router)
+    pub pool_manager: Option<Arc<std::sync::RwLock<PoolManager>>>,
 }
 
 /// RPC method dispatcher
@@ -752,6 +757,10 @@ impl RpcMethods {
             "submit_spam_attestation" => self.submit_spam_attestation(params, id).await,
             "submit_counter_attestation" => self.submit_counter_attestation(params, id).await,
             "get_spam_status" => self.get_spam_status(params, id).await,
+
+            // Blocklist management methods (SPEC_12 §3.6)
+            "list_blocklist" => self.list_blocklist(params, id).await,
+            "manage_blocklist" => self.manage_blocklist(params, id).await,
 
             // Private space methods (DMs, group chats)
             "create_private_space" => self.create_private_space(params, id).await,
@@ -6483,14 +6492,332 @@ impl RpcMethods {
         )
     }
 
-    /// Contribute PoW to an engagement pool (DEPRECATED)
-    /// Use submit_engagement with emoji param instead
-    async fn contribute_to_pool(&self, _params: Value, id: Value) -> RpcResponse {
-        RpcResponse::error(
-            RpcErrorCode::MethodNotFound,
-            "Pool system deprecated. Use submit_engagement with emoji param for reactions.",
-            id,
-        )
+    /// Contribute PoW to an engagement pool (SPEC_03 §7, SPEC_08 §3.3)
+    ///
+    /// Adds a proof-of-work contribution to an existing engagement pool.
+    /// If the pool reaches its required total, it completes and the target
+    /// content's decay timer is reset.
+    ///
+    /// # Parameters
+    /// Accepts the full `ContributeToPoolParams` shape, or a simplified form
+    /// with just `pool_id` and `amount`/`pow_work` (seconds of work):
+    /// - `pool_id`: 32-byte hex pool identifier (required)
+    /// - `pow_work` / `amount`: Amount of work in seconds (required, min 1)
+    /// - `contributor_id`: 32-byte hex contributor public key (defaults to node identity)
+    /// - `pow_nonce`: PoW nonce
+    /// - `pow_target`: 32-byte hex target hash (validated against the pool's expected target)
+    /// - `nonce_space`: 8-byte hex nonce space
+    /// - `signature`: 64-byte hex Ed25519 signature
+    /// - `emoji`: Optional emoji code (1-8)
+    async fn contribute_to_pool(&self, params: Value, id: Value) -> RpcResponse {
+        // Parse parameters: try the full ContributeToPoolParams shape first,
+        // then fall back to the simplified {pool_id, amount} form.
+        let (pool_id, contributor_id, pow_nonce, pow_work, pow_target, nonce_space, signature, emoji) =
+            if let Ok(p) = serde_json::from_value::<ContributeToPoolParams>(params.clone()) {
+                (
+                    p.pool_id,
+                    p.contributor_id,
+                    p.pow_nonce,
+                    p.pow_work,
+                    p.pow_target,
+                    p.nonce_space,
+                    p.signature,
+                    p.emoji,
+                )
+            } else {
+                let pool_id = match params.get("pool_id").and_then(|v| v.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Missing required parameter: pool_id",
+                            id,
+                        );
+                    }
+                };
+                let pow_work = match params
+                    .get("amount")
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| params.get("pow_work").and_then(|v| v.as_u64()))
+                {
+                    Some(w) => w,
+                    None => {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Missing required parameter: amount or pow_work",
+                            id,
+                        );
+                    }
+                };
+                let contributor_id = params
+                    .get("contributor_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let pow_nonce = params.get("pow_nonce").and_then(|v| v.as_u64()).unwrap_or(0);
+                let pow_target = params
+                    .get("pow_target")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let nonce_space = params
+                    .get("nonce_space")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let signature = params
+                    .get("signature")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let emoji = params.get("emoji").and_then(|v| v.as_u64()).map(|e| e as u8);
+                (pool_id, contributor_id, pow_nonce, pow_work, pow_target, nonce_space, signature, emoji)
+            };
+
+        // Validate work amount
+        if pow_work == 0 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "pow_work must be positive",
+                id,
+            );
+        }
+
+        // Validate pool_id format
+        let pool_id_bytes: [u8; 32] = match hex::decode(&pool_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid pool_id: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Parse contributor_id (defaults to this node's identity if not provided)
+        let contributor_bytes: [u8; 32] = if contributor_id.is_empty() {
+            *self.node.keypair.public_key.as_bytes()
+        } else {
+            match hex::decode(&contributor_id) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid contributor_id: must be 32-byte hex",
+                        id,
+                    );
+                }
+            }
+        };
+
+        // Parse pow_target (optional; validated against the expected target below)
+        let pow_target_bytes: [u8; 32] = if pow_target.is_empty() {
+            [0u8; 32]
+        } else {
+            match hex::decode(&pow_target) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid pow_target: must be 32-byte hex",
+                        id,
+                    );
+                }
+            }
+        };
+
+        // Parse nonce_space (optional)
+        let nonce_space_bytes: [u8; 8] = if nonce_space.is_empty() {
+            [0u8; 8]
+        } else {
+            match hex::decode(&nonce_space) {
+                Ok(bytes) if bytes.len() == 8 => {
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid nonce_space: must be 8-byte hex",
+                        id,
+                    );
+                }
+            }
+        };
+
+        // Parse signature (optional)
+        let signature_bytes: [u8; 64] = if signature.is_empty() {
+            [0u8; 64]
+        } else {
+            match hex::decode(&signature) {
+                Ok(bytes) if bytes.len() == 64 => {
+                    let mut arr = [0u8; 64];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid signature: must be 64-byte hex",
+                        id,
+                    );
+                }
+            }
+        };
+
+        // Get pool manager
+        let pool_manager = match &self.node.pool_manager {
+            Some(pm) => pm,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Pool manager not available",
+                    id,
+                );
+            }
+        };
+
+        let current_time_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        // Compute the expected PoW target for this pool (SPEC_03 §7.4)
+        let expected_target = {
+            let pm = match pool_manager.read() {
+                Ok(pm) => pm,
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        "Pool manager lock poisoned",
+                        id,
+                    );
+                }
+            };
+            match pm.get_pool(&pool_id_bytes) {
+                Some(pool) => compute_pool_pow_target(&pool.target_content, &pool_id_bytes, None),
+                None => {
+                    return RpcResponse::error(
+                        RpcErrorCode::ContentNotFound,
+                        &format!("Pool not found: {}", &pool_id[..16.min(pool_id.len())]),
+                        id,
+                    );
+                }
+            }
+        };
+
+        // If the caller supplied an explicit target, it must match the expected one
+        if pow_target_bytes != [0u8; 32] && pow_target_bytes != expected_target {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "PoW target does not match expected target for this pool",
+                id,
+            );
+        }
+
+        // Build and add the contribution (validation happens inside add_contribution)
+        let contribution = PoolContribution {
+            contributor: contributor_bytes,
+            pow_nonce,
+            pow_work,
+            pow_target: expected_target,
+            timestamp: current_time_ms,
+            signature: signature_bytes,
+            nonce_space: nonce_space_bytes,
+            emoji,
+        };
+
+        let config = ForkPoWConfig::default();
+        let result = {
+            let mut pm = match pool_manager.write() {
+                Ok(pm) => pm,
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        "Pool manager lock poisoned",
+                        id,
+                    );
+                }
+            };
+            pm.add_contribution(pool_id_bytes, contribution, current_time_ms, &config)
+                .map(|()| {
+                    let total_pow = pm.get_pool_total(&pool_id_bytes).unwrap_or(0);
+                    let completion = pm.check_completion(pool_id_bytes);
+                    let pool_complete =
+                        matches!(completion, Ok(CompletionResult::Completed { .. }));
+                    (total_pow, pool_complete)
+                })
+        };
+
+        match result {
+            Ok((total_pow, pool_complete)) => {
+                // Pool completed: reset the content's decay timer (mirrors router behavior)
+                if pool_complete {
+                    if let Some(ref decay) = self.node.decay_integration {
+                        let target_content = pool_manager
+                            .read()
+                            .ok()
+                            .and_then(|pm| pm.get_pool(&pool_id_bytes).map(|p| p.target_content));
+                        if let Some(target_content) = target_content {
+                            let blob_hash = ContentBlobHash::from_bytes(target_content);
+                            if let Err(e) = decay.on_engagement(&blob_hash) {
+                                warn!("[POOL] Failed to record engagement: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                let status = if pool_complete { "completed" } else { "open" };
+                let response = ContributeToPoolResult {
+                    accepted: true,
+                    total_pow,
+                    pool_complete,
+                    status: status.to_string(),
+                };
+                RpcResponse::success(serde_json::to_value(response).unwrap(), id)
+            }
+            Err(e) => {
+                let (code, msg) = match &e {
+                    PoolError::PoolNotFound(_) => {
+                        (RpcErrorCode::ContentNotFound, format!("{}", e))
+                    }
+                    PoolError::PoolNotOpen(_) => (
+                        RpcErrorCode::InvalidParams,
+                        "Pool is not open for contributions".to_string(),
+                    ),
+                    PoolError::PoolExpired(_) => {
+                        (RpcErrorCode::InvalidParams, "Pool has expired".to_string())
+                    }
+                    PoolError::ContributionTooSmall { .. }
+                    | PoolError::ContentMismatch
+                    | PoolError::ContributionAfterDeadline { .. } => {
+                        (RpcErrorCode::InvalidParams, format!("{}", e))
+                    }
+                    PoolError::InvalidPoW(_) => (RpcErrorCode::PowInvalid, format!("{}", e)),
+                    PoolError::InvalidSignature => {
+                        (RpcErrorCode::InvalidSignature, format!("{}", e))
+                    }
+                    PoolError::InvalidStatus(_) => {
+                        (RpcErrorCode::InternalError, format!("Internal error: {}", e))
+                    }
+                };
+                RpcResponse::error(code, &msg, id)
+            }
+        }
     }
 
     /// Get information about an engagement pool (DEPRECATED)
@@ -6511,9 +6838,9 @@ impl RpcMethods {
         )
     }
 
-    // NOTE: Pool methods (create_pool, contribute_to_pool, get_pool_info, get_pool_for_content)
-    // have been deprecated. Use submit_engagement with emoji param for reactions.
-    // Reactions are now stored directly and don't require pooled PoW.
+    // NOTE: create_pool, get_pool_info, and get_pool_for_content remain deprecated
+    // (use submit_engagement with emoji param for reactions). contribute_to_pool is
+    // live again so nodes can contribute PoW to pools announced over the network.
 
     // === Reply Methods ===
 
@@ -9568,10 +9895,63 @@ impl RpcMethods {
             );
         }
 
-        // Broadcast accept action (no PoW required for accept)
+        // Create and broadcast the accept action (no PoW required for accept per spec).
+        // NOTE: The protocol has no dedicated AcceptInvite action type yet, so we reuse
+        // ActionType::AcceptDM ("accept membership in a private space"): content_hash =
+        // the invite hash being accepted, parent_id = the space joined. No consumer
+        // currently interprets AcceptDM chain actions beyond generic indexing.
         let mut broadcast = false;
-        // Note: Accept actions don't require PoW per the spec
-        // TODO: Create and broadcast AcceptInvite action
+        if let Some(ref block_builder) = self.node.block_builder {
+            let mut signature_bytes = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    signature_bytes.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&invite.space_id);
+
+            let action = Action {
+                action_type: crate::blocks::ActionType::AcceptDM,
+                actor: acceptor_pk,
+                timestamp: params.timestamp,
+                content_hash: Some(invite_hash),
+                parent_id: Some(space_id_32),
+                pow_nonce: 0,
+                pow_work: 0, // Accepting is free per SPEC validation rules
+                pow_target: [0u8; 32],
+                signature: signature_bytes,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    builder.add_action(invite_hash, space_id_32, action.clone(), BranchPath::root())
+                }
+                Err(_) => false,
+            };
+
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let payload =
+                        ActionAnnouncePayload::new(invite_hash, space_id_32, action.serialize());
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    let sent = pool.broadcast(&envelope).await;
+                    broadcast = sent > 0;
+                }
+            }
+        }
 
         let result = AcceptInviteResult {
             space_id: hex::encode(&invite.space_id),
@@ -9797,10 +10177,67 @@ impl RpcMethods {
             }
         }
 
-        // Broadcast leave action (no PoW required for leave)
+        // Create and broadcast the Leave action (no PoW required for leave per spec)
         let mut broadcast = false;
-        // Note: Leave actions don't require PoW per the spec
-        // TODO: Create and broadcast Leave action
+        if let Some(ref block_builder) = self.node.block_builder {
+            let mut signature_bytes = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    signature_bytes.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&space_id);
+
+            // Deterministic content hash for the leave event:
+            // sha256(space_id || member_pk || timestamp)
+            let mut leave_input = Vec::with_capacity(16 + 32 + 8);
+            leave_input.extend_from_slice(&space_id);
+            leave_input.extend_from_slice(&member_pk);
+            leave_input.extend_from_slice(&params.timestamp.to_le_bytes());
+            let leave_hash = crate::crypto::sha256(&leave_input);
+
+            let action = Action {
+                action_type: crate::blocks::ActionType::Leave,
+                actor: member_pk,
+                timestamp: params.timestamp,
+                content_hash: Some(leave_hash),
+                parent_id: Some(space_id_32),
+                pow_nonce: 0,
+                pow_work: 0, // Leaving is free per SPEC validation rules
+                pow_target: [0u8; 32],
+                signature: signature_bytes,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    builder.add_action(leave_hash, space_id_32, action.clone(), BranchPath::root())
+                }
+                Err(_) => false,
+            };
+
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let payload =
+                        ActionAnnouncePayload::new(leave_hash, space_id_32, action.serialize());
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+
+                    let sent = pool.broadcast(&envelope).await;
+                    broadcast = sent > 0;
+                }
+            }
+        }
 
         let result = LeaveSpaceResult {
             success: true,
@@ -10011,18 +10448,332 @@ impl RpcMethods {
             }
         }
 
+        // Create and broadcast Kick + KeyRotation actions
+        let mut broadcast = false;
+        if let Some(ref block_builder) = self.node.block_builder {
+            let mut signature_bytes = [0u8; 64];
+            if let Ok(sig_bytes) = hex::decode(&params.signature) {
+                if sig_bytes.len() == 64 {
+                    signature_bytes.copy_from_slice(&sig_bytes);
+                }
+            }
+
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&space_id);
+
+            // Kick and KeyRotation require basic PoW per SPEC validation rules
+            let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
+            let pow_target = crate::crypto::sha256(params.pow_hash.as_bytes());
+            let display_name = self.node.identity_name.read().await.clone();
+
+            // Kick action: content_hash = kicked member pubkey hash, parent_id = space_id
+            let kick_hash = crate::crypto::sha256(&member_pk);
+            let kick_action = Action {
+                action_type: crate::blocks::ActionType::Kick,
+                actor: admin_pk,
+                timestamp: params.timestamp,
+                content_hash: Some(kick_hash),
+                parent_id: Some(space_id_32),
+                pow_nonce: params.pow_nonce,
+                pow_work,
+                pow_target,
+                signature: signature_bytes,
+                emoji: None,
+                display_name: display_name.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            // KeyRotation action: content_hash = hash of the rotation payload
+            // (space_id || key_version || sorted encrypted keys), parent_id = space_id
+            let mut rotation_input = Vec::new();
+            rotation_input.extend_from_slice(&space_id);
+            rotation_input.extend_from_slice(&params.key_version.to_le_bytes());
+            let mut sorted_keys: Vec<(&String, &String)> =
+                params.new_encrypted_keys.iter().collect();
+            sorted_keys.sort_by(|a, b| a.0.cmp(b.0));
+            for (_, encrypted_key) in &sorted_keys {
+                if let Ok(bytes) = hex::decode(encrypted_key) {
+                    rotation_input.extend_from_slice(&bytes);
+                }
+            }
+            let rotation_hash = crate::crypto::sha256(&rotation_input);
+
+            let rotation_action = Action {
+                action_type: crate::blocks::ActionType::KeyRotation,
+                actor: admin_pk,
+                timestamp: params.timestamp,
+                content_hash: Some(rotation_hash),
+                parent_id: Some(space_id_32),
+                pow_nonce: params.pow_nonce,
+                pow_work,
+                pow_target,
+                signature: signature_bytes,
+                emoji: None,
+                display_name,
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            // Add both actions to the mempool, then announce whichever were accepted
+            let (added_kick, added_rotation) = match block_builder.write() {
+                Ok(mut builder) => (
+                    builder.add_action(
+                        kick_hash,
+                        space_id_32,
+                        kick_action.clone(),
+                        BranchPath::root(),
+                    ),
+                    builder.add_action(
+                        rotation_hash,
+                        space_id_32,
+                        rotation_action.clone(),
+                        BranchPath::root(),
+                    ),
+                ),
+                Err(_) => (false, false),
+            };
+
+            if added_kick || added_rotation {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+
+                    let mut sent = 0usize;
+                    if added_kick {
+                        let payload = ActionAnnouncePayload::new(
+                            kick_hash,
+                            space_id_32,
+                            kick_action.serialize(),
+                        );
+                        let envelope = MessageEnvelope::new_fork_agnostic(
+                            MessageType::ActionAnnounce,
+                            payload.to_bytes().to_vec(),
+                        );
+                        sent += pool.broadcast(&envelope).await;
+                    }
+                    if added_rotation {
+                        let payload = ActionAnnouncePayload::new(
+                            rotation_hash,
+                            space_id_32,
+                            rotation_action.serialize(),
+                        );
+                        let envelope = MessageEnvelope::new_fork_agnostic(
+                            MessageType::ActionAnnounce,
+                            payload.to_bytes().to_vec(),
+                        );
+                        sent += pool.broadcast(&envelope).await;
+                    }
+                    broadcast = sent > 0;
+                }
+            }
+        }
+
         info!(
-            "[KICK] Kicked {} from space {}, rotated {} keys to version {}",
+            "[KICK] Kicked {} from space {}, rotated {} keys to version {}, broadcast: {}",
             &params.member[..16],
             &params.space_id[..16],
             keys_updated,
-            params.key_version
+            params.key_version,
+            broadcast
         );
 
         let result = KickMemberResult {
             success: true,
             key_version: params.key_version,
-            broadcast: false, // TODO: Create and broadcast Kick + KeyRotation actions
+            broadcast,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    // ========================================================================
+    // Blocklist Management Methods (SPEC_12 §3.6)
+    // ========================================================================
+
+    /// List all entries in the local blocklist
+    ///
+    /// Returns every blocklist entry along with the current entry count and
+    /// Merkle root, so clients can inspect (and diff) the local blocklist.
+    async fn list_blocklist(&self, _params: Value, id: Value) -> RpcResponse {
+        let blocklist = match &self.node.blocklist {
+            Some(bl) => bl,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Blocklist store not available",
+                    id,
+                );
+            }
+        };
+
+        let store = match blocklist.read() {
+            Ok(store) => store,
+            Err(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Blocklist store lock poisoned",
+                    id,
+                );
+            }
+        };
+
+        let entries = match store.get_all() {
+            Ok(entries) => entries,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to read blocklist: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let entries: Vec<BlocklistEntryInfo> = entries
+            .iter()
+            .map(|entry| BlocklistEntryInfo {
+                content_hash: hex::encode(entry.content_hash),
+                reason: entry.reason.name().to_string(),
+                added_at: entry.added_at,
+                source_node: hex::encode(entry.source_node),
+                confirmations: entry.propagation_confirmations,
+                attestation_count: entry.attestation_count() as u32,
+            })
+            .collect();
+
+        let result = ListBlocklistResult {
+            count: entries.len() as u32,
+            merkle_root: hex::encode(store.merkle_root()),
+            entries,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Add or remove a blocklist entry (local node administration)
+    ///
+    /// # Parameters
+    /// - `action`: "add" or "remove"
+    /// - `content_hash`: 32-byte hex SHA-256 hash of the content
+    /// - `reason`: For "add": "csam", "terrorism", or "external_list" (default)
+    async fn manage_blocklist(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ManageBlocklistParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let content_hash: [u8; 32] = match hex::decode(&params.content_hash) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid content_hash: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        let blocklist = match &self.node.blocklist {
+            Some(bl) => bl,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Blocklist store not available",
+                    id,
+                );
+            }
+        };
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut store = match blocklist.write() {
+            Ok(store) => store,
+            Err(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Blocklist store lock poisoned",
+                    id,
+                );
+            }
+        };
+
+        match params.action.as_str() {
+            "add" => {
+                let reason = match params.reason.as_deref() {
+                    None => BlocklistReason::ExternalList,
+                    Some(r) => match r.to_ascii_lowercase().as_str() {
+                        "csam" => BlocklistReason::CSAM,
+                        "terrorism" => BlocklistReason::Terrorism,
+                        "external_list" | "external" => BlocklistReason::ExternalList,
+                        _ => {
+                            return RpcResponse::error(
+                                RpcErrorCode::InvalidParams,
+                                "Invalid reason: expected csam, terrorism, or external_list",
+                                id,
+                            );
+                        }
+                    },
+                };
+
+                let entry = BlocklistEntry::new(
+                    content_hash,
+                    reason,
+                    Vec::new(), // Manual admin entry: no attestations
+                    *self.node.keypair.public_key.as_bytes(),
+                    timestamp,
+                );
+
+                if let Err(e) = store.add(entry) {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Failed to add blocklist entry: {}", e),
+                        id,
+                    );
+                }
+                info!(
+                    "[BLOCKLIST] Added {} (reason: {}) via RPC",
+                    &params.content_hash[..16],
+                    reason.name()
+                );
+            }
+            "remove" => {
+                if let Err(e) = store.remove(&content_hash, timestamp) {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Failed to remove blocklist entry: {}", e),
+                        id,
+                    );
+                }
+                info!(
+                    "[BLOCKLIST] Removed {} via RPC",
+                    &params.content_hash[..16]
+                );
+            }
+            other => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid action '{}': expected \"add\" or \"remove\"", other),
+                    id,
+                );
+            }
+        }
+
+        let result = ManageBlocklistResult {
+            success: true,
+            action: params.action,
+            content_hash: params.content_hash,
+            count: store.count(),
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
