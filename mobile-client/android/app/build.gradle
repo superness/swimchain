@@ -122,6 +122,9 @@ dependencies {
     } else {
         implementation jscFlavor
     }
+
+    // Argon2id for Proof of Work (SPEC_03)
+    implementation("com.lambdapioneer.argon2kt:argon2kt:1.5.0")
 }
 
 apply from: file("../../node_modules/react-native/node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)

@@ -62,7 +62,7 @@ Completeness is a judgment of "distance from shippable for its scoped purpose," 
 | Client | Est. complete | Verdict |
 |---|---|---|
 | **forum-client** | ~85% | Most complete client. Full sponsorship (all 12 RPCs), moderation w/ real PoW, media, decay display, DM/invite plumbing. **Broken:** private-space chat send (`post_to_private_space` — method doesn't exist), profile save (`post_to_space`), avatar upload (`upload_content`); all three lack PoW params and were written against an imagined API. Leave-space unwired (`SpaceSettings.tsx:119`). Node-managed identity (remote `sign_message`). |
-| **feed-client** | ~85% | Real PoW, real signatures, full sponsorship, moderation w/ counter-attestation, private-space E2E crypto. **Gaps:** followed *users* contribute nothing to feed (`useFeed.ts:239` TODO — node's `get_user_posts` exists, just unwired); user discovery tab empty; DM RPC wrappers with no UI; private-space creation silently falls back to a fabricated local-only space on RPC failure (`CreatePrivateSpace.tsx:130-142`). |
+| **feed-client** | ~88% | Real PoW, real signatures, full sponsorship, moderation w/ counter-attestation, private-space E2E crypto. **FIXED:** followed-user posts now appear in feed via `get_user_posts` RPC (`useFeed.ts:239` wired); fabricated local-space fallback removed (`CreatePrivateSpace.tsx`). **Gaps:** user discovery tab empty; DM RPC wrappers with no UI. |
 | **chat-client** | ~65% | Live path (servers=spaces, channels=threads, messages=replies, reactions via `submit_engagement`, real Argon2id PoW) is genuine. **But:** ships dead legacy SpaceChatPage stack with fake PoW/heat; presence/typing are local-only simulations; private spaces are create-only (no accept-invite UI, no channel list, no members/kick — node supports all); zero sponsorship; no DMs; no decay display; search is client-side filter; no identity backup, seed stored plaintext. |
 | **search-client** | ~75% (scoped) | Clean, real search/suggest/trending with query DSL, client-side blocklist. **Gaps:** no report/spam-attestation path; `MacroRegimeCard` foreign dead code; footer links to unregistered routes; deep links target forum-client while feed-client is the natural post renderer. |
 
@@ -126,28 +126,28 @@ Blocklist row: all "local" = per-browser localStorage, not synced, because no no
 Four phases. Phase 0 unblocks; Phase 1 fixes what's broken; Phase 2 builds parity; Phase 3 hardens. Lanes within a phase are parallel and independently claimable. The DAG is encoded in `post_parity_dag.py` for the Overmind board; a static snapshot renders in `docs/parity-dashboard.html`.
 
 ### Phase 0 — Foundations (do first; small; unblocks everything)
-- **F1** Commit wiki-client + swimchain-frontend to git; delete reddit-client husk. (S)
-- **F2** Backend enablers: implement or remove `contribute_to_pool`; add network broadcast to the 4 private-space actions; add blocklist list/manage RPC; prune 15 phantom allowlist entries. (L, backend)
-- **F3** SDK decision: pick ONE shared package (recommend `@swimchain/frontend` as base — newest, already consumed by 3 clients), absorb `swimchain-react`'s action-pow/encryption/DM utils, add the parent-RPC-config (postMessage) handshake into it, rename `chainsocial_wasm` artifacts. (L)
+- **F1** Commit wiki-client + swimchain-frontend to git; delete reddit-client husk. (S) — PR #1 open on GitHub
+- **F2** Backend enablers: implement or remove `contribute_to_pool`; add network broadcast to the 4 private-space actions; add blocklist list/manage RPC; prune 15 phantom allowlist entries. (L, backend) — PR #13 open on GitHub
+- **F3** SDK decision: pick ONE shared package (recommend `@swimchain/frontend` as base — newest, already consumed by 3 clients), absorb `swimchain-react`'s action-pow/encryption/DM utils, add the parent-RPC-config (postMessage) handshake into it, rename `chainsocial_wasm` artifacts. (L) — PR #11 open on GitHub
 
 ### Phase 1 — Fix what's broken (parallel lanes)
-- **B1** forum: replace 3 phantom RPC calls with real `submit_post`/`submit_reply`/`upload_media` + PoW (fixes private-space chat send, profile save, avatar). (M)
-- **B2** forum: wire leave-space; delete dead mocks/data.ts; wire keyboard engagement. (S)
-- **B3** chat: delete dead SpaceChatPage stack + fake hooks (useReactions, useRealTimeUpdates, etc.). (M)
-- **B4** feed: wire followed-user posts via existing `get_user_posts`; remove fabricated local-space fallback. (M)
+- **B1** forum: replace 3 phantom RPC calls with real `submit_post`/`submit_reply`/`upload_media` + PoW (fixes private-space chat send, profile save, avatar). (M) **✔ DONE** — merged to main (commit 9fbbc1f, PR #3)
+- **B2** forum: wire leave-space; delete dead mocks/data.ts; wire keyboard engagement. (S) **✔ DONE** — merged to main (commit 00c75f5, PR #5)
+- **B3** chat: delete dead SpaceChatPage stack + fake hooks (useReactions, useRealTimeUpdates, etc.). (M) — PR #2 open on GitHub
+- **B4** feed: wire followed-user posts via existing `get_user_posts`; remove fabricated local-space fallback. (M) **✔ DONE** — merged to main — PR #7 closed
 - **B5** search: delete MacroRegimeCard; fix dead footer routes; unify deep-link target. (S)
-- **B6** archiver: add `submit_engagement` to its RPC client and actually submit mined PoW; replace locally-fabricated pool status with authoritative re-poll. (L) ← *top correctness fix in the fleet*
-- **B7** bridge: ship/document IRC WebSocket proxy; queue (don't drop) messages during mining; thread inbound as replies. (M)
+- **B6** archiver: add `submit_engagement` to its RPC client and actually submit mined PoW; replace locally-fabricated pool status with authoritative re-poll. (L) **✔ DONE** — merged to main (commit cc96dc2, PR #12). ← *top correctness fix in the fleet*
+- **B7** ✅ bridge: ship/document IRC WebSocket proxy; queue (don't drop) messages during mining; thread inbound as replies. (M) — PR #10 open on GitHub; docs update on main (commit 61e7bb6)
 - **B8** web-gateway: port wiki-client's read-only RPC subset; delete all MOCK_*; feed lunr index + sitemap from live node; real health check. (L)
-- **B9** mobile: real Ed25519 signing (replace zero-byte stub); real Argon2id (argon2kt / Argon2Swift); on-device identity generation. (L)
+- **B9** mobile: real Ed25519 signing (replace zero-byte stub); real Argon2id (argon2kt / Argon2Swift); on-device identity generation. (L) — PR #4 open on GitHub
 - **B10** desktop: chat parent-RPC handshake (via F3 SDK); strip debug scaffolding; prune stale binaries; real Bech32m in `check_identity`. (M)
 
 ### Phase 2 — Parity build-out (gated on relevant Phase 0/1 lanes)
 - **P1** chat: accept-invite UI + private-channel list + members/kick (gated F2). (M)
-- **P2** chat: DMs; sponsorship; decay indicators; server-side search. (L)
+- **P2** chat: DMs; sponsorship; decay indicators; server-side search. (L) — PR #8 open on GitHub
 - **P3** feed: user discovery; DM inbox UI. (M)
-- **P4** search: report/attestation parity. (M)
-- **P5** wiki: real revision model; verify write PoW; moderation. (M)
+- **P4** search: report/attestation parity. (M) — PR #6 open on GitHub
+- **P5** wiki: real revision model; verify write PoW; moderation. (M) **✔ DONE** — merged to main (PR #9)
 - **P6** real-time: adopt node WS events in the shared SDK, wire into chat (messages) and feed (new content) first. (L)
 - **P7** analytics: real engagement metric; on-chain attestation from moderation page (gated F2 blocklist RPC for synced blocklists). (M)
 - **P8** desktop: network selection UI; unified identity story across iframes; consider bundling wiki. (L)
@@ -165,9 +165,9 @@ F3 (SDK unification) is the highest-leverage item in the program: B10's chat han
 ## Appendix: source audit trails
 
 Per-client detail (file:line evidence for every claim above) lives in the six audit transcripts from 2026-07-01; key anchors:
-- forum phantom RPCs: `ChatView.tsx:93`, `Profile.tsx:132,145,155`
-- archiver no-op rescue: `AutoEngageEngine.ts:165-259`, `EngageButton.tsx:103`
-- mobile fake crypto: `useKeypair.ts` (zero-byte sign), `NativeArgon2Module.kt:187-200`, `NativeArgon2.swift:181-215`
-- chat dead stack: `SpaceChatPage.tsx` subtree, `useReactions.ts:49-52`, `useRealTimeUpdates.ts:29-67`
-- desktop chat gap: no `useParentRpcConfig` in chat-client or `@swimchain/frontend`
-- node partial private-space: `methods.rs:9333, 9574, 9803, 10025`; pool stub `methods.rs:6488`
+- forum phantom RPCs: `ChatView.tsx:93`, `Profile.tsx:132,145,155` **— FIXED in B1 (merged to main)**
+- archiver no-op rescue: `AutoEngageEngine.ts:165-259`, `EngageButton.tsx:103` **— FIXED in B6 (merged to main)**
+- mobile fake crypto: `useKeypair.ts` (zero-byte sign), `NativeArgon2Module.kt:187-200`, `NativeArgon2.swift:181-215` — PR #4 open
+- chat dead stack: `SpaceChatPage.tsx` subtree, `useReactions.ts:49-52`, `useRealTimeUpdates.ts:29-67` — PR #2 open
+- desktop chat gap: no `useParentRpcConfig` in chat-client or `@swimchain/frontend` — PR #11 addresses SDK unification
+- node partial private-space: `methods.rs:9333, 9574, 9803, 10025`; pool stub `methods.rs:6488` — PR #13 addresses F2 backend enablers
