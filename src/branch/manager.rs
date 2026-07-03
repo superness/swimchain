@@ -13,9 +13,12 @@
 //! This maintains thread locality - users syncing branch B will get all
 //! engagements on content in that branch, regardless of engager's home branch.
 
+use std::collections::BTreeSet;
+
 use crate::blocks::{BranchDirection, BranchPath};
 use crate::storage::ChainStore;
 
+use super::behavioral::{self, ClusterOutcome, ClusteringAction, CommunityFormation};
 use super::error::BranchError;
 use super::metadata::{BranchMetadata, SpaceBranchState};
 use super::BRANCH_FRACTURE_THRESHOLD;
@@ -358,6 +361,404 @@ impl<'a> BranchManager<'a> {
         self.store.put_space_branch_state(space_id, &state)?;
 
         Ok(())
+    }
+
+    // ========================================================================
+    // Behavioral branching (SPEC_13 Phase A)
+    // ========================================================================
+
+    /// Process one action for behavioral clustering (SPEC_13 §3.1).
+    ///
+    /// Updates per-identity interaction metrics, checks whether the acting
+    /// identity's cluster now crosses the formation thresholds, and applies
+    /// the outcome:
+    ///
+    /// - **Community** (cluster >= `MIN_COMMUNITY_SIZE`): executes a
+    ///   behavioral fracture — threads are assigned by cluster membership,
+    ///   not hash bit — then records the formation.
+    /// - **Spam signal** (cluster of one, §6.1): records a
+    ///   [`behavioral::SpamClusterSignal`] for the spam-attestation /
+    ///   space-health side. No community forms.
+    ///
+    /// Callers must gate this behind
+    /// `NodeConfig::behavioral_branching_enabled()` — detection is local-only
+    /// until SPEC_13 §7 consensus messages land.
+    ///
+    /// # Arguments
+    /// * `space_id` - Space the action occurred in
+    /// * `action` - Normalized clustering view of the action
+    /// * `current_height` - Current chain height (for age/cooldown gates)
+    /// * `timestamp` - Current timestamp (for branch metadata updates)
+    pub fn process_action_for_clustering(
+        &self,
+        space_id: &[u8; 32],
+        action: &ClusteringAction,
+        current_height: u64,
+        timestamp: u64,
+    ) -> Result<ClusterOutcome, BranchError> {
+        behavioral::update_metrics_for_action(self.store, space_id, action, current_height)?;
+
+        let outcome = behavioral::check_threshold_crossing(
+            self.store,
+            space_id,
+            &action.author(),
+            current_height,
+        )?;
+
+        match outcome {
+            ClusterOutcome::Community(mut formation) => {
+                let community_branch =
+                    self.execute_behavioral_fracture(space_id, &formation, timestamp)?;
+                formation.community_branch = Some(community_branch);
+                self.store.record_community_formation(&formation)?;
+                self.store
+                    .put_last_formation_height(space_id, current_height)?;
+                Ok(ClusterOutcome::Community(formation))
+            }
+            ClusterOutcome::SpamSignal(signal) => {
+                self.store.record_spam_cluster_signal(&signal)?;
+                Ok(ClusterOutcome::SpamSignal(signal))
+            }
+            ClusterOutcome::None => Ok(ClusterOutcome::None),
+        }
+    }
+
+    /// Execute a behavioral fracture along a community boundary (SPEC_13).
+    ///
+    /// Unlike [`Self::execute_fracture`] (SPEC_08 size trigger, hash-bit
+    /// assignment), threads are assigned by **cluster membership**: threads
+    /// whose author is a founding member go to the RIGHT (community) child,
+    /// everything else — including threads whose author cannot be resolved —
+    /// goes to the LEFT (remainder) child.
+    ///
+    /// The fractured branch is the active branch holding the most
+    /// community-authored threads (deterministic tie-break: shallowest depth,
+    /// then lexicographic path). Existing community branches are never
+    /// re-fractured behaviorally, and `MAX_DEPTH` is respected.
+    ///
+    /// As with size fractures, only index pointers change — ContentBlock data
+    /// is not moved (§13.2/§13.6: no content migration).
+    ///
+    /// # Returns
+    /// The community child branch path.
+    pub fn execute_behavioral_fracture(
+        &self,
+        space_id: &[u8; 32],
+        formation: &CommunityFormation,
+        timestamp: u64,
+    ) -> Result<BranchPath, BranchError> {
+        self.ensure_space_initialized(space_id, timestamp)?;
+
+        let mut state = self
+            .store
+            .get_space_branch_state(space_id)?
+            .unwrap_or_else(SpaceBranchState::new);
+
+        let members: BTreeSet<[u8; 32]> = formation.founding_members.iter().copied().collect();
+
+        // 1. Pick the target branch deterministically.
+        let mut candidates: Vec<BranchPath> = state.active_branches.clone();
+        candidates.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.path.cmp(&b.path)));
+
+        let mut target: Option<BranchPath> = None;
+        let mut best_count: usize = 0;
+        for branch in &candidates {
+            if branch.depth >= BranchPath::MAX_DEPTH {
+                continue;
+            }
+            if self
+                .store
+                .get_community_for_branch(space_id, branch)?
+                .is_some()
+            {
+                continue;
+            }
+            let threads = self.store.get_threads_in_branch(space_id, branch)?;
+            let count = threads
+                .iter()
+                .filter(|(thread_id, _)| {
+                    self.store
+                        .get_content_author(thread_id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|a| members.contains(&a))
+                })
+                .count();
+            if target.is_none() || count > best_count {
+                target = Some(branch.clone());
+                best_count = count;
+            }
+        }
+
+        let target = target.ok_or_else(|| {
+            BranchError::FractureError(
+                "no eligible branch for behavioral fracture (all at max depth or community-owned)"
+                    .to_string(),
+            )
+        })?;
+
+        // 2. Create child branches: LEFT = remainder, RIGHT = community.
+        let remainder_child = target.branch(BranchDirection::Left);
+        let community_child = target.branch(BranchDirection::Right);
+
+        // 3. Reassign threads by cluster membership.
+        let threads = self.store.get_threads_in_branch(space_id, &target)?;
+        let mut community_size: u64 = 0;
+        let mut community_count: u32 = 0;
+        let mut remainder_size: u64 = 0;
+        let mut remainder_count: u32 = 0;
+
+        for (thread_id, size) in &threads {
+            let in_community = self
+                .store
+                .get_content_author(thread_id)?
+                .is_some_and(|a| members.contains(&a));
+
+            self.store
+                .delete_thread_branch(space_id, thread_id, &target)?;
+
+            if in_community {
+                self.store
+                    .put_thread_branch(space_id, thread_id, &community_child)?;
+                community_size += size;
+                community_count += 1;
+            } else {
+                self.store
+                    .put_thread_branch(space_id, thread_id, &remainder_child)?;
+                remainder_size += size;
+                remainder_count += 1;
+            }
+        }
+
+        // 4. Create child branch metadata, delete parent metadata.
+        let remainder_meta = BranchMetadata {
+            branch_path: remainder_child.clone(),
+            total_size: remainder_size,
+            thread_count: remainder_count,
+            last_updated: timestamp,
+        };
+        let community_meta = BranchMetadata {
+            branch_path: community_child.clone(),
+            total_size: community_size,
+            thread_count: community_count,
+            last_updated: timestamp,
+        };
+        self.store.put_branch_metadata(space_id, &remainder_meta)?;
+        self.store.put_branch_metadata(space_id, &community_meta)?;
+        self.store.delete_branch_metadata(space_id, &target)?;
+
+        // 5. Update SpaceBranchState.
+        state.active_branches.retain(|p| p != &target);
+        state.active_branches.push(remainder_child);
+        state.active_branches.push(community_child.clone());
+
+        let new_depth = target.depth + 1;
+        if new_depth > state.max_depth {
+            state.max_depth = new_depth;
+        }
+        self.store.put_space_branch_state(space_id, &state)?;
+
+        // 6. Index the community branch so routing can honor membership.
+        self.store
+            .put_community_branch(space_id, &community_child, &formation.community_id)?;
+
+        Ok(community_child)
+    }
+
+    /// Assign branch for a NEW thread with community-aware routing (SPEC_13).
+    ///
+    /// Routing rules (§13.2: only new posts route to the community):
+    /// 1. If the author belongs to a community in this space, the thread goes
+    ///    to the community branch (or the hash-resolved leaf under it, if the
+    ///    community branch has since size-fractured).
+    /// 2. Otherwise hash-bit assignment applies; if the hash lands inside a
+    ///    community subtree, the thread is deterministically redirected to
+    ///    the community branch's sibling (remainder) subtree.
+    ///
+    /// With no communities in the space this behaves identically to
+    /// [`Self::assign_branch_for_new_thread`].
+    pub fn assign_branch_for_new_thread_with_author(
+        &self,
+        space_id: &[u8; 32],
+        thread_root_id: &[u8; 32],
+        author: Option<&[u8; 32]>,
+    ) -> Result<BranchPath, BranchError> {
+        let state = self
+            .store
+            .get_space_branch_state(space_id)?
+            .unwrap_or_else(SpaceBranchState::new);
+
+        if state.max_depth == 0 {
+            return Ok(BranchPath::root());
+        }
+
+        let community_branches = self.store.get_community_branches(space_id)?;
+
+        // 1. Community members: route into their community subtree.
+        if let Some(author) = author {
+            if let Some(community_id) = self.store.get_identity_community(space_id, author)? {
+                if let Some((base, _)) = community_branches
+                    .iter()
+                    .find(|(_, cid)| cid == &community_id)
+                {
+                    if let Some(leaf) =
+                        Self::resolve_active_leaf_under(&state, base, thread_root_id)
+                    {
+                        return Ok(leaf);
+                    }
+                }
+            }
+        }
+
+        // 2. Non-members: hash-bit assignment, redirected out of community subtrees.
+        for active_branch in &state.active_branches {
+            if Self::hash_matches_branch(thread_root_id, active_branch) {
+                if let Some((community_base, _)) = community_branches
+                    .iter()
+                    .find(|(base, _)| Self::is_prefix_of(base, active_branch))
+                {
+                    // Redirect to the community branch's sibling subtree.
+                    if let Some(sibling) = Self::sibling_path(community_base) {
+                        if let Some(leaf) =
+                            Self::resolve_active_leaf_under(&state, &sibling, thread_root_id)
+                        {
+                            return Ok(leaf);
+                        }
+                    }
+                }
+                return Ok(active_branch.clone());
+            }
+        }
+
+        // Fallback mirrors assign_branch_for_new_thread.
+        let mut current = BranchPath::root();
+        for depth in 0..state.max_depth {
+            let direction = BranchPath::direction_at(thread_root_id, depth);
+            current = current.branch(direction);
+        }
+        Err(BranchError::NotLeafBranch {
+            branch_path: current,
+        })
+    }
+
+    /// Register a content block with community-aware branch assignment.
+    ///
+    /// Identical to [`Self::register_content_block`] except new threads are
+    /// assigned via [`Self::assign_branch_for_new_thread_with_author`], so
+    /// community members' new threads land in their community branch (§13.2).
+    pub fn register_content_block_with_author(
+        &self,
+        space_id: &[u8; 32],
+        thread_root_id: &[u8; 32],
+        is_new_thread: bool,
+        serialized_size: u64,
+        timestamp: u64,
+        author: Option<&[u8; 32]>,
+    ) -> Result<(BranchPath, bool), BranchError> {
+        // 1. Ensure space is initialized
+        self.ensure_space_initialized(space_id, timestamp)?;
+
+        // 2. Get or assign branch path
+        let path = if is_new_thread {
+            let assigned =
+                self.assign_branch_for_new_thread_with_author(space_id, thread_root_id, author)?;
+            self.store
+                .put_thread_branch(space_id, thread_root_id, &assigned)?;
+            assigned
+        } else {
+            self.assign_branch_for_reply(space_id, thread_root_id)?
+        };
+
+        // 3. Update thread size tracking
+        self.store
+            .update_thread_size(space_id, thread_root_id, serialized_size)?;
+
+        // 4. Update branch metadata
+        let mut metadata = self
+            .store
+            .get_branch_metadata(space_id, &path)?
+            .unwrap_or_else(|| BranchMetadata::new_empty(path.clone(), timestamp));
+
+        metadata.total_size += serialized_size;
+        if is_new_thread {
+            metadata.thread_count += 1;
+        }
+        metadata.last_updated = timestamp;
+        self.store.put_branch_metadata(space_id, &metadata)?;
+
+        // 5. Check for fracture trigger (size-based, SPEC_08)
+        let fracture_triggered = if self.needs_fracture(space_id, &path)? {
+            self.execute_fracture(space_id, &path, timestamp)?;
+            true
+        } else {
+            false
+        };
+
+        Ok((path, fracture_triggered))
+    }
+
+    /// Get the bit of a branch path at a given depth (0 = left, 1 = right).
+    fn branch_bit(path: &BranchPath, depth: u8) -> u8 {
+        let byte_index = (depth / 8) as usize;
+        let bit_index = 7 - (depth % 8);
+        if byte_index < path.path.len() {
+            (path.path[byte_index] >> bit_index) & 1
+        } else {
+            0
+        }
+    }
+
+    /// Check if `prefix` is a prefix of (or equal to) `other` in the branch tree.
+    fn is_prefix_of(prefix: &BranchPath, other: &BranchPath) -> bool {
+        if prefix.depth > other.depth {
+            return false;
+        }
+        (0..prefix.depth).all(|d| Self::branch_bit(prefix, d) == Self::branch_bit(other, d))
+    }
+
+    /// Get the sibling of a branch (same parent, flipped last bit).
+    fn sibling_path(path: &BranchPath) -> Option<BranchPath> {
+        if path.depth == 0 {
+            return None;
+        }
+        let mut sibling = path.clone();
+        let last = path.depth - 1;
+        let byte_index = (last / 8) as usize;
+        let bit_index = 7 - (last % 8);
+        if byte_index >= sibling.path.len() {
+            return None;
+        }
+        sibling.path[byte_index] ^= 1 << bit_index;
+        Some(sibling)
+    }
+
+    /// Check if hash bits from `from_depth` up to `branch.depth` match the
+    /// branch's path bits (ignoring bits above `from_depth`).
+    fn hash_matches_from(hash: &[u8; 32], branch: &BranchPath, from_depth: u8) -> bool {
+        (from_depth..branch.depth).all(|d| {
+            let bit = Self::branch_bit(branch, d);
+            match BranchPath::direction_at(hash, d) {
+                BranchDirection::Left => bit == 0,
+                BranchDirection::Right => bit == 1,
+            }
+        })
+    }
+
+    /// Find the active leaf under `base` selected by the hash bits beyond
+    /// `base.depth`. Returns `base` itself if it is still an active leaf.
+    fn resolve_active_leaf_under(
+        state: &SpaceBranchState,
+        base: &BranchPath,
+        hash: &[u8; 32],
+    ) -> Option<BranchPath> {
+        state
+            .active_branches
+            .iter()
+            .find(|active| {
+                Self::is_prefix_of(base, active)
+                    && Self::hash_matches_from(hash, active, base.depth)
+            })
+            .cloned()
     }
 
     /// Get the branch for a thread (by thread_root_id)

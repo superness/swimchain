@@ -176,6 +176,10 @@ pub struct MessageRouter {
 
     /// Event manager for publishing real-time WebSocket events (H-RPC-2)
     event_manager: Option<Arc<crate::rpc::events::EventManager>>,
+
+    /// Behavioral branching enabled (SPEC_13 Phase A)
+    /// Gates organic community detection during block processing.
+    behavioral_branching_enabled: bool,
 }
 
 impl MessageRouter {
@@ -208,6 +212,7 @@ impl MessageRouter {
             node_id: None,
             search_index: None,
             event_manager: None,
+            behavioral_branching_enabled: false,
         }
     }
 
@@ -247,6 +252,7 @@ impl MessageRouter {
             node_id: None,
             search_index: None,
             event_manager: None,
+            behavioral_branching_enabled: false,
         }
     }
 
@@ -2164,6 +2170,8 @@ impl MessageRouter {
                 self.extract_reactions_from_block(&content_block);
                 // Track engagements in the engagement graph
                 self.extract_engagements_from_block(&content_block);
+                // SPEC_13 Phase A: behavioral clustering (organic communities)
+                self.process_behavioral_clustering(&content_block);
                 // Update reply counts in aggregation cache
                 self.update_reply_counts_from_block(&content_block);
             }
@@ -3391,6 +3399,8 @@ impl MessageRouter {
                     self.extract_reactions_from_block(content_block);
                     // Track engagements in the engagement graph
                     self.extract_engagements_from_block(content_block);
+                    // SPEC_13 Phase A: behavioral clustering (organic communities)
+                    self.process_behavioral_clustering(content_block);
                     // SPEC_11 Phase 6: Process on-chain sponsorship actions from synced blocks
                     self.apply_sponsorship_actions_from_block(content_block);
                 }
@@ -3727,6 +3737,82 @@ impl MessageRouter {
                     hex::encode(&engager[..8]),
                     hex::encode(&author[..8])
                 );
+            }
+        }
+    }
+
+    /// SPEC_13 Phase A: Process actions in a content block for behavioral clustering.
+    ///
+    /// Updates per-identity interaction metrics (SPEC_13 §3.1) and applies
+    /// detection outcomes (community fracture or spam signal). Gated by
+    /// `behavioral_branching_enabled` (from `NodeConfig`, default ON only for
+    /// regtest until SPEC_13 §7 consensus messages land).
+    fn process_behavioral_clustering(&self, content_block: &crate::blocks::ContentBlock) {
+        use crate::branch::{BranchManager, ClusterOutcome, ClusteringAction};
+
+        if !self.behavioral_branching_enabled {
+            return;
+        }
+        let chain_store = match &self.chain_store {
+            Some(store) => store,
+            None => return,
+        };
+
+        let current_height = chain_store.get_latest_height().ok().flatten().unwrap_or(0);
+        let manager = BranchManager::new(chain_store);
+
+        for action in &content_block.actions {
+            // Resolve the target author from existing chain indexes (§8.1).
+            let clustering_action = match action.action_type {
+                crate::blocks::ActionType::Post => Some(ClusteringAction::Post {
+                    author: action.actor,
+                }),
+                crate::blocks::ActionType::Reply => action
+                    .parent_id
+                    .and_then(|parent| chain_store.get_content_author(&parent).ok().flatten())
+                    .map(|parent_author| ClusteringAction::Reply {
+                        author: action.actor,
+                        parent_author,
+                    }),
+                crate::blocks::ActionType::Engage => action
+                    .content_hash
+                    .and_then(|target| chain_store.get_content_author(&target).ok().flatten())
+                    .map(|target_author| ClusteringAction::Engage {
+                        author: action.actor,
+                        target_author,
+                    }),
+                _ => None,
+            };
+
+            let Some(clustering_action) = clustering_action else {
+                continue;
+            };
+
+            match manager.process_action_for_clustering(
+                &content_block.space_id,
+                &clustering_action,
+                current_height,
+                action.timestamp,
+            ) {
+                Ok(ClusterOutcome::Community(formation)) => {
+                    info!(
+                        "[SPEC13] Community formed in space {}: {} members, branch {:?}",
+                        hex::encode(&content_block.space_id[..8]),
+                        formation.founding_members.len(),
+                        formation.community_branch,
+                    );
+                }
+                Ok(ClusterOutcome::SpamSignal(signal)) => {
+                    info!(
+                        "[SPEC13] Spam cluster signal in space {} for identity {}",
+                        hex::encode(&content_block.space_id[..8]),
+                        hex::encode(&signal.identity[..8]),
+                    );
+                }
+                Ok(ClusterOutcome::None) => {}
+                Err(e) => {
+                    warn!("[SPEC13] Behavioral clustering failed: {}", e);
+                }
             }
         }
     }
@@ -6698,6 +6784,7 @@ pub struct MessageRouterBuilder {
     node_id: Option<[u8; 32]>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
     event_manager: Option<Arc<crate::rpc::events::EventManager>>,
+    behavioral_branching_enabled: bool,
 }
 
 impl MessageRouterBuilder {
@@ -6727,6 +6814,7 @@ impl MessageRouterBuilder {
             node_id: None,
             search_index: None,
             event_manager: None,
+            behavioral_branching_enabled: false,
         }
     }
 
@@ -6872,6 +6960,12 @@ impl MessageRouterBuilder {
         self
     }
 
+    /// Enable behavioral branching (SPEC_13 Phase A organic community detection)
+    pub fn behavioral_branching(mut self, enabled: bool) -> Self {
+        self.behavioral_branching_enabled = enabled;
+        self
+    }
+
     /// Build the MessageRouter
     ///
     /// # Panics
@@ -6906,6 +7000,7 @@ impl MessageRouterBuilder {
             node_id: self.node_id,
             search_index: self.search_index,
             event_manager: self.event_manager,
+            behavioral_branching_enabled: self.behavioral_branching_enabled,
         }
     }
 
@@ -6939,6 +7034,7 @@ impl MessageRouterBuilder {
             node_id: self.node_id,
             search_index: self.search_index,
             event_manager: self.event_manager,
+            behavioral_branching_enabled: self.behavioral_branching_enabled,
         })
     }
 }
