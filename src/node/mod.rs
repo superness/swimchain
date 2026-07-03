@@ -35,6 +35,7 @@ pub mod connection_manager;
 pub mod error;
 pub mod manager;
 pub mod metrics;
+pub mod origin_privacy;
 pub mod peer_connections;
 pub mod router;
 pub mod state;
@@ -49,6 +50,7 @@ pub use connection_manager::{
 pub use error::NodeError;
 pub use manager::NodeManager;
 pub use metrics::NodeMetrics;
+pub use origin_privacy::{route_relayed, route_self_originated, OriginPrivacyConfig, OriginRoute};
 pub use peer_connections::{PeerConnection, PeerConnectionPool, SendError};
 pub use router::{MessageRouter, MessageRouterBuilder, RouteError};
 pub use state::{NodeState, NodeStatus};

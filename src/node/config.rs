@@ -214,6 +214,29 @@ pub struct NodeConfig {
     /// deterministic from chain data (§4.3), but keeping public networks off
     /// avoids state divergence with nodes that don't run detection yet.
     pub behavioral_branching: Option<bool>,
+
+    // ========== Gossip Origin Privacy (SWIM-PRIV-1) ==========
+    /// Enable gossip origin obfuscation for self-originated actions.
+    ///
+    /// When on, actions this node authors (via its own `submit_*` RPC) get a
+    /// randomized first-announce delay (and, if `origin_privacy_stem`, a single
+    /// random stem hop) so a passive observer can't identify the author by who
+    /// announces first. Relayed actions are unaffected and propagate promptly.
+    ///
+    /// `None` uses the network-mode default: ON for Mainnet/Testnet, OFF for
+    /// Regtest (so local/e2e tests are not slowed by diffusion delays).
+    pub origin_privacy: Option<bool>,
+
+    /// Lower bound of the randomized first-announce delay (default: 2s).
+    pub origin_privacy_min_delay: Duration,
+
+    /// Upper bound of the randomized first-announce delay (default: 12s).
+    pub origin_privacy_max_delay: Duration,
+
+    /// Use stem+fluff: relay the first hop of a self-originated action to a
+    /// single random peer before the network-wide diffusion (default: true).
+    /// When false, falls back to delay-only diffusion (delay then broadcast).
+    pub origin_privacy_stem: bool,
 }
 
 impl Default for NodeConfig {
@@ -273,6 +296,14 @@ impl Default for NodeConfig {
             // Behavioral branching defaults to network-mode behavior
             // (ON for regtest, OFF for mainnet/testnet)
             behavioral_branching: None,
+
+            // Gossip origin privacy (SWIM-PRIV-1) defaults to network-mode
+            // behavior (ON for mainnet/testnet, OFF for regtest) with a
+            // 2-12s jittered first-announce delay and stem+fluff enabled.
+            origin_privacy: None,
+            origin_privacy_min_delay: Duration::from_secs(2),
+            origin_privacy_max_delay: Duration::from_secs(12),
+            origin_privacy_stem: true,
         }
     }
 }
@@ -368,6 +399,29 @@ impl NodeConfig {
     pub fn behavioral_branching_enabled(&self) -> bool {
         self.behavioral_branching
             .unwrap_or(matches!(self.network_mode, NetworkMode::Regtest))
+    }
+
+    /// Check if gossip origin privacy (SWIM-PRIV-1) is enabled.
+    ///
+    /// Explicit setting wins; otherwise defaults ON for Mainnet/Testnet and OFF
+    /// for Regtest (so local/e2e tests are not slowed by diffusion delays).
+    pub fn origin_privacy_enabled(&self) -> bool {
+        self.origin_privacy
+            .unwrap_or(!matches!(self.network_mode, NetworkMode::Regtest))
+    }
+
+    /// Resolve the effective origin-privacy settings for this node.
+    ///
+    /// Combines the network-mode-aware enable flag with the configured delay
+    /// bounds and stem toggle into an [`OriginPrivacyConfig`] that the gossip
+    /// path consults on every self-originated broadcast.
+    pub fn origin_privacy(&self) -> crate::node::OriginPrivacyConfig {
+        crate::node::OriginPrivacyConfig {
+            enabled: self.origin_privacy_enabled(),
+            min_delay: self.origin_privacy_min_delay,
+            max_delay: self.origin_privacy_max_delay,
+            stem_enabled: self.origin_privacy_stem,
+        }
     }
 
     /// Validate the configuration
@@ -628,6 +682,41 @@ mod tests {
         );
         assert_eq!(config.min_peers, 0);
         assert_eq!(config.target_peers, 1);
+    }
+
+    #[test]
+    fn test_origin_privacy_network_defaults() {
+        // Default (None) resolves ON for mainnet/testnet, OFF for regtest so
+        // local/e2e tests are not slowed by diffusion delays.
+        let mainnet = NodeConfig::with_network_defaults(NetworkMode::Mainnet);
+        assert!(mainnet.origin_privacy_enabled());
+        assert!(mainnet.origin_privacy().enabled);
+
+        let testnet = NodeConfig::for_testnet();
+        assert!(testnet.origin_privacy_enabled());
+
+        let regtest = NodeConfig::for_regtest(29999);
+        assert!(!regtest.origin_privacy_enabled());
+        assert!(!regtest.origin_privacy().enabled);
+
+        // Explicit override wins over the network-mode default.
+        let forced_on = NodeConfig {
+            origin_privacy: Some(true),
+            ..NodeConfig::for_regtest(29998)
+        };
+        assert!(forced_on.origin_privacy_enabled());
+    }
+
+    #[test]
+    fn test_origin_privacy_delay_bounds_default() {
+        let cfg = NodeConfig::default();
+        assert_eq!(cfg.origin_privacy_min_delay, Duration::from_secs(2));
+        assert_eq!(cfg.origin_privacy_max_delay, Duration::from_secs(12));
+        assert!(cfg.origin_privacy_stem);
+        let op = cfg.origin_privacy();
+        assert_eq!(op.min_delay, Duration::from_secs(2));
+        assert_eq!(op.max_delay, Duration::from_secs(12));
+        assert!(op.stem_enabled);
     }
 
     #[test]

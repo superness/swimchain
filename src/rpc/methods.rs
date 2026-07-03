@@ -390,6 +390,9 @@ pub struct NodeRef {
     pub pool_manager: Option<Arc<std::sync::RwLock<PoolManager>>>,
     /// Event manager for publishing real-time WebSocket events (H-RPC-2)
     pub event_manager: Option<Arc<crate::rpc::events::EventManager>>,
+    /// Gossip origin-privacy settings (SWIM-PRIV-1). Controls whether/how
+    /// self-originated actions are delayed/stem-relayed on their first announce.
+    pub origin_privacy: crate::node::OriginPrivacyConfig,
 }
 
 /// RPC method dispatcher
@@ -406,6 +409,88 @@ impl RpcMethods {
     /// Get the network mode (mainnet, testnet, regtest)
     pub fn network(&self) -> &str {
         &self.node.network
+    }
+
+    /// Gossip a *self-originated* action to peers with origin obfuscation
+    /// (SWIM-PRIV-1).
+    ///
+    /// This is the single choke point for announcing actions this node authored
+    /// (post/reply/edit/engage/create-space/invite/accept). Unlike relayed
+    /// actions — which `MessageRouter::handle_action_announce` forwards
+    /// immediately — a self-originated action's *first* announce is treated per
+    /// [`crate::node::route_self_originated`]:
+    ///
+    /// - Privacy off (default on regtest) or no peers: broadcast to all peers now.
+    /// - Privacy on, delay-only: wait a jittered delay, then broadcast to all peers.
+    /// - Privacy on, stem+fluff: wait a jittered delay, then send to ONE random
+    ///   peer (the stem); that peer diffuses it normally so the origin is one hop
+    ///   removed from the observable fan-out.
+    ///
+    /// The action is already in the local mempool before this is called, so
+    /// block formation, decay, PoW and validation are unaffected — only the
+    /// timing/target of the first outward announce changes. Delayed/stem
+    /// deliveries run on a detached task so the RPC returns promptly.
+    async fn gossip_self_originated_action(&self, envelope: crate::types::network::MessageEnvelope) {
+        use crate::node::{route_self_originated, OriginRoute};
+
+        let pool = match &self.node.connection_pool {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        let peers = pool.peer_ids().await;
+        if peers.is_empty() {
+            return;
+        }
+
+        let route = {
+            let mut rng = rand::thread_rng();
+            route_self_originated(&self.node.origin_privacy, &mut rng, peers.len())
+        };
+
+        match route {
+            OriginRoute::Immediate => {
+                for peer_id in peers {
+                    if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                        debug!(
+                            "[MEMPOOL] Failed to broadcast self-originated action to peer {}: {}",
+                            hex::encode(&peer_id[..8]),
+                            e
+                        );
+                    }
+                }
+            }
+            OriginRoute::Delayed { delay } => {
+                info!(
+                    "[PRIV] Delaying self-originated action announce by {:?} (origin obfuscation)",
+                    delay
+                );
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let peers = pool.peer_ids().await;
+                    for peer_id in peers {
+                        let _ = pool.send_to(&peer_id, &envelope).await;
+                    }
+                });
+            }
+            OriginRoute::StemDelayed { delay, stem_index } => {
+                info!(
+                    "[PRIV] Stem-relaying self-originated action after {:?} to 1 random peer (origin obfuscation)",
+                    delay
+                );
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let peers = pool.peer_ids().await;
+                    if peers.is_empty() {
+                        return;
+                    }
+                    // Re-derive a valid index against the live peer set: the set
+                    // may have changed during the delay.
+                    let idx = stem_index % peers.len();
+                    let _ = pool.send_to(&peers[idx], &envelope).await;
+                });
+            }
+        }
     }
 
     /// Check if identity is sponsored and can perform actions.
@@ -1707,7 +1792,7 @@ impl RpcMethods {
 
             // Broadcast action to peers (mempool gossip)
             if added {
-                if let Some(ref pool) = self.node.connection_pool {
+                if self.node.connection_pool.is_some() {
                     use crate::network::messages::ActionAnnouncePayload;
                     use crate::types::network::{MessageEnvelope, MessageType};
 
@@ -1718,15 +1803,10 @@ impl RpcMethods {
                         payload.to_bytes().to_vec(),
                     );
 
-                    // Broadcast to all peers
-                    let peers = pool.peer_ids().await;
-                    for peer_id in peers {
-                        if let Err(e) = pool.send_to(&peer_id, &envelope).await {
-                            debug!("[MEMPOOL] Failed to broadcast POST action to peer {}: {}",
-                                   hex::encode(&peer_id[..8]), e);
-                        }
-                    }
-                    info!("[MEMPOOL] Broadcast POST action to peers (thread={})", hex::encode(&thread_id[..8]));
+                    // Announce with origin obfuscation (SWIM-PRIV-1): self-originated
+                    // actions are delayed/stem-relayed instead of broadcast immediately.
+                    self.gossip_self_originated_action(envelope).await;
+                    info!("[MEMPOOL] Announced POST action to peers (thread={})", hex::encode(&thread_id[..8]));
 
                     // Check if PoW threshold met - form block immediately if so
                     self.try_form_block_if_threshold_met().await;
@@ -2367,7 +2447,7 @@ impl RpcMethods {
 
             // Broadcast action to peers (mempool gossip)
             if added {
-                if let Some(ref pool) = self.node.connection_pool {
+                if self.node.connection_pool.is_some() {
                     use crate::network::messages::ActionAnnouncePayload;
                     use crate::types::network::{MessageEnvelope, MessageType};
 
@@ -2378,14 +2458,9 @@ impl RpcMethods {
                         payload.to_bytes().to_vec(),
                     );
 
-                    let peers = pool.peer_ids().await;
-                    for peer_id in peers {
-                        if let Err(e) = pool.send_to(&peer_id, &envelope).await {
-                            debug!("[MEMPOOL] Failed to broadcast REPLY action to peer {}: {}",
-                                   hex::encode(&peer_id[..8]), e);
-                        }
-                    }
-                    info!("[MEMPOOL] Broadcast REPLY action to peers (thread={})", hex::encode(&thread_id[..8]));
+                    // Origin obfuscation (SWIM-PRIV-1): delay/stem self-originated announce.
+                    self.gossip_self_originated_action(envelope).await;
+                    info!("[MEMPOOL] Announced REPLY action to peers (thread={})", hex::encode(&thread_id[..8]));
 
                     // Check if PoW threshold met - form block immediately if so
                     self.try_form_block_if_threshold_met().await;
@@ -2797,7 +2872,7 @@ impl RpcMethods {
 
             // Broadcast action to peers
             if added {
-                if let Some(ref pool) = self.node.connection_pool {
+                if self.node.connection_pool.is_some() {
                     use crate::network::messages::ActionAnnouncePayload;
                     use crate::types::network::{MessageEnvelope, MessageType};
 
@@ -2808,14 +2883,9 @@ impl RpcMethods {
                         payload.to_bytes().to_vec(),
                     );
 
-                    let peers = pool.peer_ids().await;
-                    for peer_id in peers {
-                        if let Err(e) = pool.send_to(&peer_id, &envelope).await {
-                            debug!("[MEMPOOL] Failed to broadcast EDIT action to peer {}: {}",
-                                   hex::encode(&peer_id[..8]), e);
-                        }
-                    }
-                    info!("[MEMPOOL] Broadcast EDIT action (original={}, new={})",
+                    // Origin obfuscation (SWIM-PRIV-1): delay/stem self-originated announce.
+                    self.gossip_self_originated_action(envelope).await;
+                    info!("[MEMPOOL] Announced EDIT action (original={}, new={})",
                           hex::encode(&original_hash[..8]), hex::encode(&new_content_hash[..8]));
 
                     self.try_form_block_if_threshold_met().await;
@@ -3073,7 +3143,7 @@ impl RpcMethods {
 
                         // Broadcast action to peers (mempool gossip)
                         if added {
-                            if let Some(ref pool) = self.node.connection_pool {
+                            if self.node.connection_pool.is_some() {
                                 use crate::network::messages::ActionAnnouncePayload;
                                 use crate::types::network::{MessageEnvelope, MessageType};
 
@@ -3084,14 +3154,9 @@ impl RpcMethods {
                                     payload.to_bytes().to_vec(),
                                 );
 
-                                let peers = pool.peer_ids().await;
-                                for peer_id in peers {
-                                    if let Err(e) = pool.send_to(&peer_id, &envelope).await {
-                                        debug!("[MEMPOOL] Failed to broadcast ENGAGE action to peer {}: {}",
-                                               hex::encode(&peer_id[..8]), e);
-                                    }
-                                }
-                                info!("[MEMPOOL] Broadcast ENGAGE action to peers (thread={})", hex::encode(&thread_id[..8]));
+                                // Origin obfuscation (SWIM-PRIV-1): delay/stem self-originated announce.
+                                self.gossip_self_originated_action(envelope).await;
+                                info!("[MEMPOOL] Announced ENGAGE action to peers (thread={})", hex::encode(&thread_id[..8]));
 
                                 // Check if PoW threshold met - form block immediately if so
                                 self.try_form_block_if_threshold_met().await;
@@ -4494,7 +4559,7 @@ impl RpcMethods {
             } // Lock released here
 
             // Broadcast action to peers (mempool gossip)
-            if let Some(ref pool) = self.node.connection_pool {
+            if self.node.connection_pool.is_some() {
                 use crate::network::messages::ActionAnnouncePayload;
                 use crate::types::network::{MessageEnvelope, MessageType};
 
@@ -4505,15 +4570,9 @@ impl RpcMethods {
                     payload.to_bytes().to_vec(),
                 );
 
-                // Broadcast to all peers
-                let peers = pool.peer_ids().await;
-                for peer_id in peers {
-                    if let Err(e) = pool.send_to(&peer_id, &envelope).await {
-                        debug!("[MEMPOOL] Failed to broadcast CREATE_SPACE action to peer {}: {}",
-                               hex::encode(&peer_id[..8]), e);
-                    }
-                }
-                info!("[MEMPOOL] Broadcast CREATE_SPACE action to peers (space={})", space_id);
+                // Origin obfuscation (SWIM-PRIV-1): delay/stem self-originated announce.
+                self.gossip_self_originated_action(envelope).await;
+                info!("[MEMPOOL] Announced CREATE_SPACE action to peers (space={})", space_id);
 
                 // Check if PoW threshold met - form block immediately if so
                 self.try_form_block_if_threshold_met().await;

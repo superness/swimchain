@@ -1382,6 +1382,7 @@ impl NodeManager {
             search_index: self.search_index.clone(),
             pool_manager: self.pool_manager.clone(),
             event_manager: Some(self.event_manager.clone()),
+            origin_privacy: self.config.origin_privacy(),
         });
 
         // Create RPC methods
