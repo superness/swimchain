@@ -89,9 +89,18 @@ impl<'a> BranchAwareStore<'a> {
         let is_new_thread = block.prev_content_hash.is_none();
         let timestamp = block.timestamp;
 
+        // Thread author (first action's actor) for community-aware routing
+        // (SPEC_13 §13.2: new threads by community members go to their
+        // community branch). With no communities this is a no-op.
+        let thread_author = block.actions.first().map(|a| a.actor);
+
         // 1. Pre-assign branch path to compute correct size
         let path = if is_new_thread {
-            manager.assign_branch_for_new_thread(&block.space_id, &block.thread_root_id)?
+            manager.assign_branch_for_new_thread_with_author(
+                &block.space_id,
+                &block.thread_root_id,
+                thread_author.as_ref(),
+            )?
         } else {
             manager.assign_branch_for_reply(&block.space_id, &block.thread_root_id)?
         };
@@ -107,12 +116,13 @@ impl<'a> BranchAwareStore<'a> {
         let hash = self.chain_store.put_content_block(&block)?;
 
         // 5. Register with branch manager (this also handles fracture if needed)
-        let (_, fracture_triggered) = manager.register_content_block(
+        let (_, fracture_triggered) = manager.register_content_block_with_author(
             &block.space_id,
             &block.thread_root_id,
             is_new_thread,
             serialized_size,
             timestamp,
+            thread_author.as_ref(),
         )?;
 
         Ok(PutResult {

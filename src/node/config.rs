@@ -205,6 +205,15 @@ pub struct NodeConfig {
     /// Display name for this node's identity (max 31 UTF-8 bytes)
     /// This name is attached to all actions (posts, replies) created by this node
     pub identity_name: Option<String>,
+
+    // ========== Behavioral Branching (SPEC_13 Phase A) ==========
+    /// Enable behavioral branching (organic community detection + fracture).
+    ///
+    /// `None` uses the network-mode default: ON for Regtest, OFF for
+    /// Mainnet/Testnet until SPEC_13 §7 consensus messages land. Detection is
+    /// deterministic from chain data (§4.3), but keeping public networks off
+    /// avoids state divergence with nodes that don't run detection yet.
+    pub behavioral_branching: Option<bool>,
 }
 
 impl Default for NodeConfig {
@@ -260,6 +269,10 @@ impl Default for NodeConfig {
 
             // Identity defaults
             identity_name: None,
+
+            // Behavioral branching defaults to network-mode behavior
+            // (ON for regtest, OFF for mainnet/testnet)
+            behavioral_branching: None,
         }
     }
 }
@@ -346,6 +359,15 @@ impl NodeConfig {
     /// Returns true in Regtest mode where users can self-sponsor.
     pub fn allows_self_sponsorship(&self) -> bool {
         self.network_mode.allows_self_sponsorship()
+    }
+
+    /// Check if behavioral branching (SPEC_13) is enabled.
+    ///
+    /// Explicit setting wins; otherwise defaults ON for Regtest and OFF for
+    /// Mainnet/Testnet (until SPEC_13 §7 network messages are implemented).
+    pub fn behavioral_branching_enabled(&self) -> bool {
+        self.behavioral_branching
+            .unwrap_or(matches!(self.network_mode, NetworkMode::Regtest))
     }
 
     /// Validate the configuration

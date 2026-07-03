@@ -45,11 +45,16 @@
 //! # }
 //! ```
 
+pub mod behavioral;
 pub mod error;
 pub mod manager;
 pub mod metadata;
 pub mod storage;
 
+pub use behavioral::{
+    ClusterMetrics, ClusterOutcome, ClusteringAction, CommunityFormation, IdentitySpaceMetrics,
+    SpamClusterSignal,
+};
 pub use error::BranchError;
 pub use manager::BranchManager;
 pub use metadata::{BranchMetadata, SpaceBranchState};

@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sled::Db;
 
 use crate::blocks::{BranchPath, ContentBlock, RootBlock, SpaceBlock};
+use crate::branch::behavioral::{CommunityFormation, IdentitySpaceMetrics, SpamClusterSignal};
 use crate::branch::{BranchMetadata, SpaceBranchState};
 use crate::types::error::StorageError;
 
@@ -85,6 +86,29 @@ pub struct ChainStore {
     /// Finalized actions: Key = action_hash(32), Value = block_height(8, big-endian)
     /// Tracks which actions have been included in finalized blocks to prevent re-inclusion
     finalized_actions: sled::Tree,
+
+    // === Behavioral Branching (SPEC_13 Phase A) ===
+    /// Per-identity, per-space interaction metrics (SPEC_13 §3.2, §8.1):
+    /// Key = space_id(32) || identity(32), Value = IdentitySpaceMetrics (bincode)
+    identity_space_metrics: sled::Tree,
+    /// Community formation records (SPEC_13 §8.1 TREE_COMMUNITIES):
+    /// Key = community_id(32), Value = CommunityFormation (bincode)
+    communities: sled::Tree,
+    /// Identity -> primary community mapping (SPEC_13 §8.1 TREE_IDENTITY_COMMUNITY):
+    /// Key = space_id(32) || identity(32), Value = community_id(32)
+    identity_community: sled::Tree,
+    /// Communities by parent space (SPEC_13 §8.1 TREE_SPACE_COMMUNITIES):
+    /// Key = parent_space_id(32) || community_id(32), Value = formation_height(8, big-endian)
+    space_communities: sled::Tree,
+    /// Community branch index (Phase A: community realized as a branch):
+    /// Key = space_id(32) || branch_path_bytes, Value = community_id(32)
+    community_branches: sled::Tree,
+    /// Spam cluster signals (SPEC_13 §6.1, surfaced to spam/space-health side):
+    /// Key = space_id(32) || identity(32), Value = SpamClusterSignal (bincode)
+    spam_cluster_signals: sled::Tree,
+    /// Last behavioral formation height per space (SPEC_13 §6.3 cooldown):
+    /// Key = space_id(32), Value = height(8, big-endian)
+    space_formation_heights: sled::Tree,
 }
 
 /// Compact content metadata for indexed lookups
@@ -178,6 +202,15 @@ impl ChainStore {
         // Finalized action tracking (prevents duplicate action inclusion)
         let finalized_actions = db.open_tree("finalized_actions")?;
 
+        // Behavioral branching trees (SPEC_13 Phase A)
+        let identity_space_metrics = db.open_tree("identity_space_metrics")?;
+        let communities = db.open_tree("communities")?;
+        let identity_community = db.open_tree("identity_community")?;
+        let space_communities = db.open_tree("space_communities")?;
+        let community_branches = db.open_tree("community_branches")?;
+        let spam_cluster_signals = db.open_tree("spam_cluster_signals")?;
+        let space_formation_heights = db.open_tree("space_formation_heights")?;
+
         // Calculate initial total bytes
         let mut total = 0u64;
         for result in root_blocks.iter() {
@@ -213,6 +246,13 @@ impl ChainStore {
             branch_thread_index,
             space_registry,
             finalized_actions,
+            identity_space_metrics,
+            communities,
+            identity_community,
+            space_communities,
+            community_branches,
+            spam_cluster_signals,
+            space_formation_heights,
         })
     }
 
@@ -2038,6 +2078,398 @@ impl ChainStore {
             }
         }
         Ok(threads)
+    }
+
+    // === Behavioral Branching State (SPEC_13 Phase A) ===
+
+    /// Build key for identity-scoped space state: space_id(32) || identity(32)
+    fn space_identity_key(space_id: &[u8; 32], identity: &[u8; 32]) -> [u8; 64] {
+        let mut key = [0u8; 64];
+        key[..32].copy_from_slice(space_id);
+        key[32..].copy_from_slice(identity);
+        key
+    }
+
+    /// Get per-identity metrics within a space (SPEC_13 §3.2)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_identity_space_metrics(
+        &self,
+        space_id: &[u8; 32],
+        identity: &[u8; 32],
+    ) -> Result<Option<IdentitySpaceMetrics>, StorageError> {
+        let key = Self::space_identity_key(space_id, identity);
+        match self.identity_space_metrics.get(key)? {
+            Some(data) => Ok(Some(bincode::deserialize(&data)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Store per-identity metrics within a space (SPEC_13 §3.2)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if serialization or database write fails.
+    pub fn put_identity_space_metrics(
+        &self,
+        space_id: &[u8; 32],
+        identity: &[u8; 32],
+        metrics: &IdentitySpaceMetrics,
+    ) -> Result<(), StorageError> {
+        let key = Self::space_identity_key(space_id, identity);
+        let data = bincode::serialize(metrics)?;
+        self.identity_space_metrics.insert(key, data)?;
+        Ok(())
+    }
+
+    /// Record a directed interaction author -> target_author (SPEC_13 §3.1).
+    ///
+    /// Updates the author's outgoing edge count and the target's received
+    /// engagement counters. Self-interactions (author == target) are recorded
+    /// against a single metrics entry — the §6.1 spam case depends on this.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read/write fails.
+    pub fn increment_interaction(
+        &self,
+        space_id: &[u8; 32],
+        author: &[u8; 32],
+        target_author: &[u8; 32],
+        current_height: u64,
+    ) -> Result<(), StorageError> {
+        if author == target_author {
+            // Single entry: outgoing self-edge plus received self-engagement.
+            let mut m = self
+                .get_identity_space_metrics(space_id, author)?
+                .unwrap_or_else(|| Self::new_identity_metrics(current_height));
+            *m.interactions.entry(*target_author).or_insert(0) += 1;
+            m.engagements_received += 1;
+            m.unique_engagers.insert(*author);
+            self.put_identity_space_metrics(space_id, author, &m)?;
+            return Ok(());
+        }
+
+        // Author side: outgoing edge count.
+        let mut author_metrics = self
+            .get_identity_space_metrics(space_id, author)?
+            .unwrap_or_else(|| Self::new_identity_metrics(current_height));
+        *author_metrics
+            .interactions
+            .entry(*target_author)
+            .or_insert(0) += 1;
+        self.put_identity_space_metrics(space_id, author, &author_metrics)?;
+
+        // Target side: received engagement counters.
+        let mut target_metrics = self
+            .get_identity_space_metrics(space_id, target_author)?
+            .unwrap_or_else(|| Self::new_identity_metrics(current_height));
+        target_metrics.engagements_received += 1;
+        target_metrics.unique_engagers.insert(*author);
+        self.put_identity_space_metrics(space_id, target_author, &target_metrics)?;
+
+        Ok(())
+    }
+
+    /// Register authored content for clustering metrics (SPEC_13 §3.1 Post arm).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read/write fails.
+    pub fn register_author_content(
+        &self,
+        space_id: &[u8; 32],
+        author: &[u8; 32],
+        current_height: u64,
+    ) -> Result<(), StorageError> {
+        let mut m = self
+            .get_identity_space_metrics(space_id, author)?
+            .unwrap_or_else(|| Self::new_identity_metrics(current_height));
+        m.content_count += 1;
+        self.put_identity_space_metrics(space_id, author, &m)?;
+        Ok(())
+    }
+
+    fn new_identity_metrics(current_height: u64) -> IdentitySpaceMetrics {
+        IdentitySpaceMetrics {
+            first_activity_height: current_height,
+            ..IdentitySpaceMetrics::default()
+        }
+    }
+
+    /// Record a community formation (SPEC_13 §5.1 step 3 / §8.1).
+    ///
+    /// Writes the formation record, maps each founding member to the
+    /// community, indexes the community under its parent space, and (if the
+    /// fracture already executed) indexes the community branch.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if serialization or database write fails.
+    pub fn record_community_formation(
+        &self,
+        formation: &CommunityFormation,
+    ) -> Result<(), StorageError> {
+        let data = bincode::serialize(formation)?;
+        self.communities.insert(formation.community_id, data)?;
+
+        for member in &formation.founding_members {
+            let key = Self::space_identity_key(&formation.parent_space_id, member);
+            self.identity_community
+                .insert(key, &formation.community_id)?;
+        }
+
+        let space_key =
+            Self::space_identity_key(&formation.parent_space_id, &formation.community_id);
+        self.space_communities
+            .insert(space_key, &formation.formation_height.to_be_bytes())?;
+
+        if let Some(branch) = &formation.community_branch {
+            self.put_community_branch(&formation.parent_space_id, branch, &formation.community_id)?;
+        }
+
+        Ok(())
+    }
+
+    /// Get a community formation record by ID (SPEC_13 §8.1)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_community_formation(
+        &self,
+        community_id: &[u8; 32],
+    ) -> Result<Option<CommunityFormation>, StorageError> {
+        match self.communities.get(community_id)? {
+            Some(data) => Ok(Some(bincode::deserialize(&data)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Get the primary community an identity belongs to in a space (SPEC_13 §8.1)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn get_identity_community(
+        &self,
+        space_id: &[u8; 32],
+        identity: &[u8; 32],
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        let key = Self::space_identity_key(space_id, identity);
+        match self.identity_community.get(key)? {
+            Some(data) => {
+                let id: [u8; 32] =
+                    data.as_ref()
+                        .try_into()
+                        .map_err(|_| StorageError::CorruptedData {
+                            expected: "32 bytes for community_id".to_string(),
+                            actual: format!("{} bytes", data.len()),
+                        })?;
+                Ok(Some(id))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List communities formed under a parent space (SPEC_13 §8.1)
+    ///
+    /// Returns (community_id, formation_height) pairs.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn get_space_communities(
+        &self,
+        space_id: &[u8; 32],
+    ) -> Result<Vec<([u8; 32], u64)>, StorageError> {
+        let mut result = Vec::new();
+        for item in self.space_communities.scan_prefix(space_id) {
+            let (key, value) = item?;
+            if key.len() == 64 && value.len() == 8 {
+                let community_id: [u8; 32] =
+                    key[32..]
+                        .try_into()
+                        .map_err(|_| StorageError::CorruptedData {
+                            expected: "32 bytes for community_id".to_string(),
+                            actual: format!("{} bytes", key.len() - 32),
+                        })?;
+                let height = u64::from_be_bytes(value.as_ref().try_into().map_err(|_| {
+                    StorageError::CorruptedData {
+                        expected: "8 bytes for height".to_string(),
+                        actual: format!("{} bytes", value.len()),
+                    }
+                })?);
+                result.push((community_id, height));
+            }
+        }
+        Ok(result)
+    }
+
+    /// Index a branch as belonging to a community (Phase A community-as-branch).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database write fails.
+    pub fn put_community_branch(
+        &self,
+        space_id: &[u8; 32],
+        branch_path: &BranchPath,
+        community_id: &[u8; 32],
+    ) -> Result<(), StorageError> {
+        let key = Self::branch_metadata_key(space_id, branch_path);
+        self.community_branches.insert(key, community_id)?;
+        Ok(())
+    }
+
+    /// Get the community owning a branch, if any (Phase A community-as-branch).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn get_community_for_branch(
+        &self,
+        space_id: &[u8; 32],
+        branch_path: &BranchPath,
+    ) -> Result<Option<[u8; 32]>, StorageError> {
+        let key = Self::branch_metadata_key(space_id, branch_path);
+        match self.community_branches.get(key)? {
+            Some(data) => {
+                let id: [u8; 32] =
+                    data.as_ref()
+                        .try_into()
+                        .map_err(|_| StorageError::CorruptedData {
+                            expected: "32 bytes for community_id".to_string(),
+                            actual: format!("{} bytes", data.len()),
+                        })?;
+                Ok(Some(id))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List all community branches in a space (Phase A community-as-branch).
+    ///
+    /// Returns (branch_path, community_id) pairs.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn get_community_branches(
+        &self,
+        space_id: &[u8; 32],
+    ) -> Result<Vec<(BranchPath, [u8; 32])>, StorageError> {
+        let mut result = Vec::new();
+        for item in self.community_branches.scan_prefix(space_id) {
+            let (key, value) = item?;
+            if key.len() > 32 && value.len() == 32 {
+                if let Some(path) = BranchPath::deserialize(&key[32..]) {
+                    let community_id: [u8; 32] =
+                        value
+                            .as_ref()
+                            .try_into()
+                            .map_err(|_| StorageError::CorruptedData {
+                                expected: "32 bytes for community_id".to_string(),
+                                actual: format!("{} bytes", value.len()),
+                            })?;
+                    result.push((path, community_id));
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// Record a spam cluster signal (SPEC_13 §6.1).
+    ///
+    /// Upserts by (space, identity) — repeated detections refresh the signal.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if serialization or database write fails.
+    pub fn record_spam_cluster_signal(
+        &self,
+        signal: &SpamClusterSignal,
+    ) -> Result<(), StorageError> {
+        let key = Self::space_identity_key(&signal.space_id, &signal.identity);
+        let data = bincode::serialize(signal)?;
+        self.spam_cluster_signals.insert(key, data)?;
+        Ok(())
+    }
+
+    /// Get the spam cluster signal for an identity in a space, if any (SPEC_13 §6.1)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_spam_cluster_signal(
+        &self,
+        space_id: &[u8; 32],
+        identity: &[u8; 32],
+    ) -> Result<Option<SpamClusterSignal>, StorageError> {
+        let key = Self::space_identity_key(space_id, identity);
+        match self.spam_cluster_signals.get(key)? {
+            Some(data) => Ok(Some(bincode::deserialize(&data)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List spam cluster signals for a space (SPEC_13 §6.1), for consumption
+    /// by the spam-attestation / space-health side.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_spam_cluster_signals(
+        &self,
+        space_id: &[u8; 32],
+    ) -> Result<Vec<SpamClusterSignal>, StorageError> {
+        let mut result = Vec::new();
+        for item in self.spam_cluster_signals.scan_prefix(space_id) {
+            let (_, data) = item?;
+            result.push(bincode::deserialize(&data)?);
+        }
+        Ok(result)
+    }
+
+    /// Get the last behavioral formation height for a space (SPEC_13 §6.3 cooldown)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn get_last_formation_height(
+        &self,
+        space_id: &[u8; 32],
+    ) -> Result<Option<u64>, StorageError> {
+        match self.space_formation_heights.get(space_id)? {
+            Some(data) => {
+                let bytes: [u8; 8] =
+                    data.as_ref()
+                        .try_into()
+                        .map_err(|_| StorageError::CorruptedData {
+                            expected: "8 bytes for height".to_string(),
+                            actual: format!("{} bytes", data.len()),
+                        })?;
+                Ok(Some(u64::from_be_bytes(bytes)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Set the last behavioral formation height for a space (SPEC_13 §6.3 cooldown)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database write fails.
+    pub fn put_last_formation_height(
+        &self,
+        space_id: &[u8; 32],
+        height: u64,
+    ) -> Result<(), StorageError> {
+        self.space_formation_heights
+            .insert(space_id, &height.to_be_bytes())?;
+        Ok(())
     }
 
     // === Finalized Action Tracking ===
