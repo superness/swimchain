@@ -1,5 +1,6 @@
 'use client';
 
+import { withBase } from '@/lib/base-path';
 import type { SpaceActivitySummary } from '@/types/gateway';
 
 interface SpaceCardProps {
@@ -21,7 +22,7 @@ export function SpaceCard({ space }: SpaceCardProps) {
 
   return (
     <article className="space-card">
-      <a href={`/spaces/${encodeURIComponent(space.space_id)}`} className="space-link">
+      <a href={withBase(`/spaces/${encodeURIComponent(space.space_id)}`)} className="space-link">
         <header className="space-header">
           <h3 className="space-name">s/{space.space_name}</h3>
           <span className="space-id font-mono text-subtle">{formatSpaceId(space.space_id)}</span>

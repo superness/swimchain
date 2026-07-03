@@ -1,5 +1,6 @@
 'use client';
 
+import { withBase } from '@/lib/base-path';
 import { useState } from 'react';
 
 type AddressFormat = 'full' | 'short' | 'veryShort';
@@ -104,7 +105,7 @@ export function AddressDisplay({
 
   if (linkToProfile) {
     return (
-      <a href={`/u/${encodeURIComponent(address)}`} className="address-link">
+      <a href={withBase(`/u/${encodeURIComponent(address)}`)} className="address-link">
         {content}
         <style jsx>{`
           .address-link {

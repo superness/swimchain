@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/base-path';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { cache } from 'react';
@@ -122,7 +123,7 @@ export default async function SpacePage({ params }: PageProps) {
       <div className="cta-section">
         <h2>Want to post in this space?</h2>
         <p>This is a read-only gateway. Download a full client to participate.</p>
-        <a href="/about#download" className="cta-button">
+        <a href={withBase('/about#download')} className="cta-button">
           Download Swimchain
         </a>
       </div>

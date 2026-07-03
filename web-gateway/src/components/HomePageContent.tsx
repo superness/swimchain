@@ -1,5 +1,6 @@
 'use client';
 
+import { withBase } from '@/lib/base-path';
 import { DownloadCTA } from '@/components/DownloadCTA';
 
 export function HomePageContent() {
@@ -11,10 +12,10 @@ export function HomePageContent() {
           Decentralized forums where content persists through engagement, not moderators.
         </p>
         <div className="hero-actions">
-          <a href="/search" className="button-primary">
+          <a href={withBase('/search')} className="button-primary">
             Search Content
           </a>
-          <a href="/spaces" className="button-secondary">
+          <a href={withBase('/spaces')} className="button-secondary">
             Browse Spaces
           </a>
         </div>
@@ -27,7 +28,7 @@ export function HomePageContent() {
             Content naturally decays over time. Community engagement keeps valuable
             discussions alive while low-quality content fades away.
           </p>
-          <a href="/about#decay">Learn about content decay</a>
+          <a href={withBase('/about#decay')}>Learn about content decay</a>
         </div>
 
         <div className="feature">
@@ -36,7 +37,7 @@ export function HomePageContent() {
             No hidden algorithms. Search results are ranked using a fixed, public formula.
             You can verify how every result is scored.
           </p>
-          <a href="/docs/search-ranking">See the ranking formula</a>
+          <a href={withBase('/docs/search-ranking')}>See the ranking formula</a>
         </div>
 
         <div className="feature">
@@ -45,31 +46,31 @@ export function HomePageContent() {
             No email or phone required. Your identity is a cryptographic keypair.
             Persistent pseudonymity with no central authority.
           </p>
-          <a href="/about#identity">Learn about identities</a>
+          <a href={withBase('/about#identity')}>Learn about identities</a>
         </div>
       </section>
 
       <section className="trending">
         <h2>Trending Spaces</h2>
         <div className="space-grid">
-          <a href="/spaces/rust" className="space-preview">
+          <a href={withBase('/spaces/rust')} className="space-preview">
             <strong>s/rust</strong>
             <span>Systems programming discussions</span>
           </a>
-          <a href="/spaces/python" className="space-preview">
+          <a href={withBase('/spaces/python')} className="space-preview">
             <strong>s/python</strong>
             <span>Python development community</span>
           </a>
-          <a href="/spaces/crypto" className="space-preview">
+          <a href={withBase('/spaces/crypto')} className="space-preview">
             <strong>s/crypto</strong>
             <span>Cryptography and blockchain</span>
           </a>
-          <a href="/spaces/javascript" className="space-preview">
+          <a href={withBase('/spaces/javascript')} className="space-preview">
             <strong>s/javascript</strong>
             <span>Web development and JS ecosystem</span>
           </a>
         </div>
-        <a href="/spaces" className="view-all">View all spaces</a>
+        <a href={withBase('/spaces')} className="view-all">View all spaces</a>
       </section>
 
       <section className="cta-section">

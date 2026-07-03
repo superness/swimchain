@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/base-path';
 import type { Metadata } from 'next';
 import './globals.css';
 
@@ -36,13 +37,13 @@ export default function RootLayout({
         <div className="gateway-layout">
           <header className="gateway-header">
             <nav className="gateway-nav">
-              <a href="/search" className="gateway-logo">
+              <a href={withBase('/search')} className="gateway-logo">
                 Swimchain
               </a>
               <div className="gateway-nav-links">
-                <a href="/search">Search</a>
-                <a href="/spaces">Spaces</a>
-                <a href="/about">About</a>
+                <a href={withBase('/search')}>Search</a>
+                <a href={withBase('/spaces')}>Spaces</a>
+                <a href={withBase('/about')}>About</a>
               </div>
             </nav>
           </header>
@@ -57,13 +58,13 @@ export default function RootLayout({
                 <h4>Swimchain Gateway</h4>
                 <p>Read-only access to Swimchain content.</p>
                 <p>
-                  <a href="/about">Learn more about Swimchain</a>
+                  <a href={withBase('/about')}>Learn more about Swimchain</a>
                 </p>
               </div>
               <div className="gateway-footer-section">
                 <h4>Participate</h4>
                 <p>This is a read-only gateway. To post, reply, or engage with content:</p>
-                <a href="/about#download" className="cta-button">
+                <a href={withBase('/about#download')} className="cta-button">
                   Download Swimchain
                 </a>
               </div>
@@ -71,7 +72,7 @@ export default function RootLayout({
                 <h4>Transparency</h4>
                 <p>
                   All ranking factors are visible.
-                  <a href="/about#ranking">See how search results are ranked.</a>
+                  <a href={withBase('/about#ranking')}>See how search results are ranked.</a>
                 </p>
               </div>
             </div>

@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/base-path';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { cache } from 'react';
@@ -66,9 +67,9 @@ export default async function PostPage({ params }: PageProps) {
     return (
       <div className="post-page">
         <div className="breadcrumb">
-          <a href="/spaces">Spaces</a>
+          <a href={withBase('/spaces')}>Spaces</a>
           <span className="separator">/</span>
-          <a href={`/spaces/${encodeURIComponent(decodedSpace)}`}>s/{decodedSpace}</a>
+          <a href={withBase(`/spaces/${encodeURIComponent(decodedSpace)}`)}>s/{decodedSpace}</a>
           <span className="separator">/</span>
           <span>Post</span>
         </div>
@@ -108,9 +109,9 @@ export default async function PostPage({ params }: PageProps) {
       <StructuredData data={structuredData} />
 
       <div className="breadcrumb">
-        <a href="/spaces">Spaces</a>
+        <a href={withBase('/spaces')}>Spaces</a>
         <span className="separator">/</span>
-        <a href={`/spaces/${encodeURIComponent(post.item.space_id || decodedSpace)}`}>
+        <a href={withBase(`/spaces/${encodeURIComponent(post.item.space_id || decodedSpace)}`)}>
           s/{decodedSpace}
         </a>
         <span className="separator">/</span>
@@ -168,7 +169,7 @@ export default async function PostPage({ params }: PageProps) {
           <li>Engage content (help it persist)</li>
           <li>Create your own posts</li>
         </ul>
-        <a href="/about#download" className="cta-button">
+        <a href={withBase('/about#download')} className="cta-button">
           Download Swimchain
         </a>
       </div>

@@ -1,5 +1,6 @@
 'use client';
 
+import { withBase } from '@/lib/base-path';
 import type { SearchResult } from '@/types/search';
 import { HeatIndicator } from './HeatIndicator';
 import { AddressDisplay } from './AddressDisplay';
@@ -22,7 +23,7 @@ export function SearchResultCard({
   return (
     <article className={`result-card ${heatClass}`}>
       <div className="result-header">
-        <a href={`/spaces/${encodeURIComponent(result.spaceId)}`} className="space-link">
+        <a href={withBase(`/spaces/${encodeURIComponent(result.spaceId)}`)} className="space-link">
           s/{result.spaceName}
         </a>
         <span className="separator">&bull;</span>
@@ -31,7 +32,7 @@ export function SearchResultCard({
         <time dateTime={new Date(result.createdAt).toISOString()}>{timeAgo}</time>
       </div>
 
-      <a href={`/s/${encodeURIComponent(result.spaceId)}/${encodeURIComponent(result.contentId)}`} className="result-link">
+      <a href={withBase(`/s/${encodeURIComponent(result.spaceId)}/${encodeURIComponent(result.contentId)}`)} className="result-link">
         <h3 className="result-title">{result.title}</h3>
         {result.body && <p className="result-body">{result.body}</p>}
       </a>
