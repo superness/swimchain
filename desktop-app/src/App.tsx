@@ -12,6 +12,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { NodeStatusBar } from "./components/NodeStatusBar";
 import { ClientFrame } from "./components/ClientFrame";
+import { InviteRedemption } from "./components/InviteRedemption";
+import { parseInviteInput, type InvitePayload } from "./lib/invite";
 
 interface NodeStatus {
   running: boolean;
@@ -83,6 +85,57 @@ function App() {
   const [isCreating, setIsCreating] = useState(false);
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+
+  // Invite hand-off (SWIM-INV-3): raw code from the onboarding field or a
+  // swimchain:// deep link, the parsed payload to redeem once the node is up,
+  // and whether redemption has finished so we drop the overlay.
+  const [inviteInput, setInviteInput] = useState("");
+  const [showInvite, setShowInvite] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [pendingInvite, setPendingInvite] = useState<InvitePayload | null>(null);
+  const [redeemComplete, setRedeemComplete] = useState(false);
+
+  // Absorb a swimchain://invite/<token> deep link that the OS handed the node.
+  // We poll a local Tauri command (no event-permission needed) so this works
+  // for both cold starts and links that fire while the app is already open.
+  useEffect(() => {
+    let cancelled = false;
+
+    const absorb = (raw: string | null) => {
+      if (!raw || cancelled) return;
+      try {
+        const payload = parseInviteInput(raw);
+        if (!payload) return;
+        // Prefill the onboarding field (new users) AND stash the parsed
+        // payload so returning users redeem straight after unlocking.
+        setInviteInput(raw.trim());
+        setShowInvite(true);
+        setInviteError(null);
+        setPendingInvite(payload);
+        setRedeemComplete(false);
+        log("info", "Deep-link invite absorbed");
+      } catch (e) {
+        log("warn", "Ignoring malformed deep-link invite:", e);
+      }
+    };
+
+    const poll = async () => {
+      try {
+        const raw = await invoke<string | null>("take_pending_deeplink");
+        absorb(raw);
+      } catch {
+        // Command unavailable (older shell) — deep links just won't fire.
+      }
+    };
+
+    poll();
+    const interval = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleResetIdentity = async () => {
     log("info", "===== USER CHOSE START-FRESH (reset identity) =====");
@@ -232,8 +285,22 @@ function App() {
       return;
     }
 
+    // Validate any invite code up front so we fail before creating an identity.
+    let invite: InvitePayload | null = null;
+    if (inviteInput.trim()) {
+      try {
+        invite = parseInviteInput(inviteInput);
+      } catch (e) {
+        log("error", "Invalid invite code:", e);
+        setInviteError(e instanceof Error ? e.message : "Invalid invite code");
+        setShowInvite(true);
+        return;
+      }
+    }
+
     setIsCreating(true);
     setError(null);
+    setInviteError(null);
 
     try {
       log("info", "Calling create_identity with displayName:", displayName);
@@ -246,6 +313,11 @@ function App() {
       if (info.exists) {
         log("info", "Identity created successfully!");
         setIdentity(info);
+        // Redeem after the node is up, if an invite came along.
+        if (invite) {
+          setPendingInvite(invite);
+          setRedeemComplete(false);
+        }
         setStage("starting");
         await startNode(password);
       } else {
@@ -502,6 +574,39 @@ function App() {
               />
             </div>
 
+            {!showInvite ? (
+              <button
+                type="button"
+                className="btn-link"
+                disabled={isCreating}
+                onClick={() => setShowInvite(true)}
+              >
+                Have an invite code?
+              </button>
+            ) : (
+              <div className="form-group">
+                <label htmlFor="inviteCode">Invite code (optional)</label>
+                <input
+                  type="text"
+                  id="inviteCode"
+                  value={inviteInput}
+                  onChange={(e) => {
+                    setInviteInput(e.target.value);
+                    setInviteError(null);
+                  }}
+                  placeholder="Paste your invite code or link"
+                  disabled={isCreating}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <small>
+                  Paste the code your friend sent, or the whole
+                  https://swimchain.io/i/ link. We&apos;ll get you sponsored automatically.
+                </small>
+                {inviteError && <div className="form-error">{inviteError}</div>}
+              </div>
+            )}
+
             {error && <div className="form-error">{error}</div>}
 
             <div className="identity-warning">
@@ -551,6 +656,24 @@ function App() {
           <h2>Waiting for node connection...</h2>
         </div>
       </div>
+    );
+  }
+
+  // Invite hand-off (SWIM-INV-3): the node is up and the newcomer arrived with
+  // an invite. Redeem it before dropping them into the client, so they land
+  // already sponsored (with, ideally, a DM waiting from their friend).
+  if (pendingInvite && !redeemComplete) {
+    return (
+      <InviteRedemption
+        invite={pendingInvite}
+        rpcEndpoint={rpcEndpoint}
+        rpcAuth={rpcAuth}
+        onDone={() => {
+          setRedeemComplete(true);
+          setPendingInvite(null);
+          setInviteInput("");
+        }}
+      />
     );
   }
 
