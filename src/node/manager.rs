@@ -104,6 +104,10 @@ pub struct NodeManager {
     search_index: Option<Arc<RwLock<SearchIndex>>>,
     pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
 
+    /// Shared event manager for real-time WebSocket events (H-RPC-2).
+    /// Shared between the message router (gossip ingestion) and the RPC server.
+    event_manager: Arc<crate::rpc::EventManager>,
+
     // Runtime state
     state: Arc<RwLock<NodeState>>,
     sync_state: Arc<tokio::sync::RwLock<SyncState>>,
@@ -170,6 +174,7 @@ impl NodeManager {
             peer_branch_tracker: None,
             search_index: None,
             pool_manager: None,
+            event_manager: Arc::new(crate::rpc::EventManager::new()),
             state: Arc::new(RwLock::new(NodeState::Stopped)),
             sync_state: Arc::new(tokio::sync::RwLock::new(SyncState::Idle)),
             metrics: RwLock::new(NodeMetrics::new()),
@@ -675,6 +680,7 @@ impl NodeManager {
         let metrics = Arc::new(NodeMetrics::new());
         let mut router_builder = MessageRouter::builder()
             .metrics(metrics.clone())
+            .event_manager(self.event_manager.clone()) // For real-time WS events (H-RPC-2)
             .content_retrieval(content_retrieval)
             .data_dir(self.config.data_dir.clone()) // For multi-hop propagation
             .decay_integration(decay_integration.clone()) // For decay tracking
@@ -1372,6 +1378,7 @@ impl NodeManager {
             identity_name: Arc::new(tokio::sync::RwLock::new(self.config.identity_name.clone())),
             search_index: self.search_index.clone(),
             pool_manager: self.pool_manager.clone(),
+            event_manager: Some(self.event_manager.clone()),
         });
 
         // Create RPC methods
@@ -1381,7 +1388,7 @@ impl NodeManager {
         let server = RpcServer::new(rpc_config, self.shutdown_rx.clone())
             .map_err(|e| NodeError::RpcError(e.to_string()))?;
 
-        let rpc_addr = server.start(methods).await
+        let rpc_addr = server.start_with_events(methods, self.event_manager.clone()).await
             .map_err(|e| NodeError::RpcError(e.to_string()))?;
 
         self.rpc_addr = Some(rpc_addr);

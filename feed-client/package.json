@@ -18,12 +18,13 @@
     "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
+    "@swimchain/frontend": "file:../swimchain-frontend",
     "@tauri-apps/api": "^2.9.1",
     "hash-wasm": "^4.12.0",
+    "idb": "^8.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.20.0",
-    "idb": "^8.0.0"
+    "react-router-dom": "^6.20.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.1.0",

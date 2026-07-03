@@ -122,7 +122,10 @@ impl Event {
     }
 
     /// Create a content_new event
-    pub fn content_new(content_id: &str, content_type: &str, space_id: &str, author_id: &str) -> Self {
+    ///
+    /// `thread_id` is the content ID of the thread root (parent for replies, self for
+    /// posts) so chat-style clients can filter events to the active channel.
+    pub fn content_new(content_id: &str, content_type: &str, space_id: &str, author_id: &str, thread_id: Option<&str>) -> Self {
         Self::new(
             EventType::ContentNew,
             json!({
@@ -130,18 +133,24 @@ impl Event {
                 "content_type": content_type,
                 "space_id": space_id,
                 "author_id": author_id,
+                "thread_id": thread_id,
             }),
         )
     }
 
     /// Create a content_engaged event
-    pub fn content_engaged(content_id: &str, engager_id: &str, emoji: Option<u8>) -> Self {
+    ///
+    /// `space_id` / `thread_id` are included when known so clients can filter
+    /// engagement events to the space/thread they are currently viewing.
+    pub fn content_engaged(content_id: &str, engager_id: &str, emoji: Option<u8>, space_id: Option<&str>, thread_id: Option<&str>) -> Self {
         Self::new(
             EventType::ContentEngaged,
             json!({
                 "content_id": content_id,
                 "engager_id": engager_id,
                 "emoji": emoji,
+                "space_id": space_id,
+                "thread_id": thread_id,
             }),
         )
     }
@@ -309,13 +318,13 @@ impl EventManager {
     }
 
     /// Publish a content_new event
-    pub fn publish_content_new(&self, content_id: &str, content_type: &str, space_id: &str, author_id: &str) {
-        self.publish(Event::content_new(content_id, content_type, space_id, author_id));
+    pub fn publish_content_new(&self, content_id: &str, content_type: &str, space_id: &str, author_id: &str, thread_id: Option<&str>) {
+        self.publish(Event::content_new(content_id, content_type, space_id, author_id, thread_id));
     }
 
     /// Publish a content_engaged event
-    pub fn publish_content_engaged(&self, content_id: &str, engager_id: &str, emoji: Option<u8>) {
-        self.publish(Event::content_engaged(content_id, engager_id, emoji));
+    pub fn publish_content_engaged(&self, content_id: &str, engager_id: &str, emoji: Option<u8>, space_id: Option<&str>, thread_id: Option<&str>) {
+        self.publish(Event::content_engaged(content_id, engager_id, emoji, space_id, thread_id));
     }
 
     /// Publish a sync_status event
@@ -493,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_event_creation() {
-        let event = Event::content_new("sha256:abc", "post", "sp1xyz", "author123");
+        let event = Event::content_new("sha256:abc", "post", "sp1xyz", "author123", Some("sha256:abc"));
         assert_eq!(event.event_type, EventType::ContentNew);
         assert_eq!(event.data["content_id"], "sha256:abc");
         assert_eq!(event.data["content_type"], "post");
@@ -559,7 +568,7 @@ mod tests {
         let sub_id = result.subscription_id;
 
         // Matching event
-        let event = Event::content_new("sha256:abc", "post", "sp1test", "author");
+        let event = Event::content_new("sha256:abc", "post", "sp1test", "author", None);
         assert!(manager.matches_subscription(&sub_id, &event).await);
 
         // Non-matching event type
@@ -567,7 +576,7 @@ mod tests {
         assert!(!manager.matches_subscription(&sub_id, &event2).await);
 
         // Non-matching space
-        let event3 = Event::content_new("sha256:abc", "post", "sp1other", "author");
+        let event3 = Event::content_new("sha256:abc", "post", "sp1other", "author", None);
         assert!(!manager.matches_subscription(&sub_id, &event3).await);
     }
 
@@ -577,7 +586,7 @@ mod tests {
         let mut rx = manager.subscribe();
 
         // Publish an event
-        manager.publish_content_new("sha256:test", "post", "sp1test", "author123");
+        manager.publish_content_new("sha256:test", "post", "sp1test", "author123", None);
 
         // Receive the event
         let event = rx.recv().await.unwrap();
