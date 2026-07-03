@@ -9,7 +9,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRpc, useReplySubmit } from './useRpc';
 import type { Message } from '../components/MessageItem';
-import { useIdentityContext, useNodeEvents } from '@swimchain/frontend';
+import { useNodeEvents } from '@swimchain/frontend';
+import { useChatIdentity } from './useChatIdentity';
 
 /** Poll interval for messages (ms) when WebSocket events are unavailable */
 const MESSAGE_POLL_INTERVAL = 5000;
@@ -69,7 +70,7 @@ export function useMessages(
   spaceId?: string
 ) {
   const { rpc, connected, authReady } = useRpc();
-  const { identity } = useIdentityContext();
+  const { identity } = useChatIdentity();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -173,13 +174,14 @@ export function useMessages(
  */
 export function useSendMessage(channelId: string) {
   const { submitReply, submitting, error: submitError } = useReplySubmit();
-  const { identity } = useIdentityContext();
+  const { identity } = useChatIdentity();
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const sendMessage = useCallback(async (
     content: string,
-    signFn: (message: Uint8Array) => Uint8Array,
+    // Sync (browser keypair) or async (node sign_message RPC).
+    signFn: (message: Uint8Array) => Uint8Array | Promise<Uint8Array | null>,
     powParams: {
       pow_nonce: number;
       pow_difficulty: number;

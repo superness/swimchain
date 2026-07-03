@@ -13,7 +13,7 @@ import {
   type ReactNode,
 } from 'react';
 import { TYPING_TIMEOUT_MS } from '../types';
-import { useIdentityContext } from '@swimchain/frontend';
+import { useChatIdentity } from '../hooks/useChatIdentity';
 
 interface TypingContextValue {
   /** Map of spaceId -> Set of userIds currently typing */
@@ -33,7 +33,7 @@ interface TypingProviderProps {
 }
 
 export function TypingProvider({ children }: TypingProviderProps): JSX.Element {
-  const { identity } = useIdentityContext();
+  const { identity } = useChatIdentity();
   const currentUserId = identity?.publicKey ?? '';
 
   // In-memory only - never persisted

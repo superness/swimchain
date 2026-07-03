@@ -14,7 +14,8 @@ import { useToast } from '../components/Toast';
 import { useServers } from '../hooks/useServers';
 import { useChannels } from '../hooks/useChannels';
 import { useOptimisticMessages, useSendMessage } from '../hooks/useMessages';
-import { useIdentityContext, hexToBytes, solutionToRpcParams, wasm } from '@swimchain/frontend';
+import { hexToBytes, solutionToRpcParams } from '@swimchain/frontend';
+import { useChatIdentity } from '../hooks/useChatIdentity';
 import { useReplyPow, useActionPow, ActionType } from '../hooks/useActionPow';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { useRpc, useMediaUpload, usePoolContribution } from '../hooks/useRpc';
@@ -23,21 +24,13 @@ import { encryptWithChannelKey } from '../lib/encryption';
 import type { SpamReason } from '../components/ReportModal';
 import './Chat.css';
 
-/**
- * Helper to create sign function from identity
- */
-function createSignFn(identity: { seed: string; publicKey: string }) {
-  return (message: Uint8Array): Uint8Array => {
-    const seedBytes = hexToBytes(identity.seed);
-    const keypair = wasm.WasmKeypair.fromSeed(seedBytes);
-    return keypair.sign(message);
-  };
-}
-
 export function Chat() {
   const { serverId, channelId } = useParams<{ serverId: string; channelId?: string }>();
   const navigate = useNavigate();
-  const { identity } = useIdentityContext();
+  // Unified identity: the node's identity when embedded in the desktop shell,
+  // otherwise the browser keypair. `sign` routes to the node's sign_message RPC
+  // in node mode and to the local keypair in browser mode.
+  const { identity, sign: signAsync, publicKeyBytes, hasIdentity } = useChatIdentity();
 
   // Fetch servers and channels
   const { servers, loading: serversLoading } = useServers();
@@ -112,7 +105,7 @@ export function Chat() {
 
   // Handle message send with PoW and optional image attachments
   const handleSendMessage = useCallback(async (content: string, attachments?: File[]) => {
-    if (!identity?.seed || !identity?.publicKey || !channelId) {
+    if (!hasIdentity || !identity?.publicKey || !channelId) {
       console.error('[Chat] Cannot send: missing identity or channel');
       return;
     }
@@ -167,21 +160,19 @@ export function Chat() {
       console.log('[Chat] Mining PoW for reply...');
 
       // Get author pubkey bytes from identity
-      const authorPubkey = hexToBytes(identity.publicKey);
+      const authorPubkey = publicKeyBytes ?? hexToBytes(identity.publicKey);
 
       // Mine the reply PoW
       const powSolution = await mineReply(messageContent, authorPubkey, true);
 
       console.log('[Chat] PoW complete, sending message...');
 
-      // Create sign function
-      const signFn = createSignFn(identity);
-
       // Convert solution to RPC params
       const powParams = solutionToRpcParams(powSolution);
 
-      // Send the (possibly encrypted) message with media refs
-      const result = await sendMessage(messageContent, signFn, powParams, mediaRefs.length > 0 ? mediaRefs : undefined);
+      // Send the (possibly encrypted) message with media refs.
+      // `signAsync` signs via the node in node mode, or the local keypair otherwise.
+      const result = await sendMessage(messageContent, signAsync, powParams, mediaRefs.length > 0 ? mediaRefs : undefined);
 
       if (result.success && result.messageId) {
         console.log('[Chat] Message sent successfully:', result.messageId);
@@ -199,7 +190,7 @@ export function Chat() {
     } finally {
       setIsSending(false);
     }
-  }, [identity, channelId, addPendingMessage, mineReply, sendMessage, confirmPendingMessage, failPendingMessage, uploadImage, compressAndUpload, toast, getChannelKey]);
+  }, [identity, hasIdentity, signAsync, publicKeyBytes, channelId, addPendingMessage, mineReply, sendMessage, confirmPendingMessage, failPendingMessage, uploadImage, compressAndUpload, toast, getChannelKey]);
 
   // Handle reply - sets reply target and focuses input
   const handleReply = useCallback((messageId: string) => {
@@ -217,7 +208,7 @@ export function Chat() {
 
   // Handle reaction with PoW mining and RPC submission
   const handleReaction = useCallback(async (messageId: string, emoji: string) => {
-    if (!identity?.seed || !identity?.publicKey) {
+    if (!hasIdentity || !identity?.publicKey) {
       toast.error('Identity required to react');
       return;
     }
@@ -230,8 +221,7 @@ export function Chat() {
 
     try {
       console.log('[Chat] Mining engagement PoW for reaction:', emoji, 'on', messageId);
-      const signFn = createSignFn(identity);
-      const result = await submitEngagement(messageId, 5, identity.publicKey, signFn, emojiCode);
+      const result = await submitEngagement(messageId, 5, identity.publicKey, signAsync, emojiCode);
 
       if (result.success) {
         toast.success('Reaction added!');
@@ -242,7 +232,7 @@ export function Chat() {
       console.error('[Chat] Reaction error:', err);
       toast.error('Failed to submit reaction');
     }
-  }, [identity, submitEngagement, toast]);
+  }, [identity, hasIdentity, signAsync, submitEngagement, toast]);
 
   // Handle content report with PoW mining
   const handleReport = useCallback(async (contentId: string, reason: SpamReason): Promise<boolean> => {
@@ -253,7 +243,7 @@ export function Chat() {
 
     try {
       // Submit spam attestation via RPC with real PoW
-      if (rpc && identity?.seed && identity?.publicKey) {
+      if (rpc && hasIdentity && identity?.publicKey) {
         try {
           const { bytesToHex: bytesToHexLocal, solutionToRpcParams: toRpcParams } = await import('@swimchain/frontend');
 
@@ -280,9 +270,10 @@ export function Chat() {
           const signatureMessage = new TextEncoder().encode(
             `spam:${contentId}:${reason.toLowerCase()}:${solution.nonce}:${timestamp}`
           );
-          const seedBytes = hexToBytes(identity.seed);
-          const keypair = wasm.WasmKeypair.fromSeed(seedBytes);
-          const signature = keypair.sign(signatureMessage);
+          const signature = await signAsync(signatureMessage);
+          if (!signature) {
+            throw new Error('Failed to sign spam report');
+          }
 
           await rpc.call('submit_spam_attestation', {
             content_id: contentId,
@@ -317,7 +308,7 @@ export function Chat() {
       toast.error('Failed to submit report. Please try again.');
       return false;
     }
-  }, [messages, rpc, identity, block, toast, mineReportPow]);
+  }, [messages, rpc, identity, hasIdentity, signAsync, block, toast, mineReportPow]);
 
   // If no server selected, redirect to first server
   if (!serversLoading && servers.length > 0 && !serverId) {
