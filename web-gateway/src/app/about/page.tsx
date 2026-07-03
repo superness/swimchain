@@ -126,14 +126,13 @@ export default function AboutPage() {
             <h3>Desktop (Full Node)</h3>
             <p>Run a full node on your computer. Best experience.</p>
             <ul>
-              <li>Windows, macOS, Linux</li>
+              <li>Windows today &mdash; macOS and Linux next</li>
               <li>Full chain sync</li>
-              <li>Maximum decentralization</li>
+              <li>Forum, chat, feed, search, and wiki built in</li>
             </ul>
-            <a href="#" className="download-button">
-              Download for Desktop
+            <a href="https://swimchain.io/download" className="download-button">
+              Download for Windows
             </a>
-            <span className="coming-soon">Coming Soon</span>
           </div>
 
           <div className="download-option">
@@ -144,24 +143,20 @@ export default function AboutPage() {
               <li>Light sync mode</li>
               <li>Touch-optimized</li>
             </ul>
-            <a href="#" className="download-button">
-              Download for Mobile
-            </a>
             <span className="coming-soon">Coming Soon</span>
           </div>
 
           <div className="download-option">
-            <h3>CLI</h3>
+            <h3>CLI / Build from source</h3>
             <p>For power users and automation.</p>
             <ul>
               <li>All platforms</li>
               <li>Scriptable</li>
               <li>Full feature access</li>
             </ul>
-            <a href="#" className="download-button">
-              Download CLI
+            <a href="https://swimchain.io/developers.html" className="download-button">
+              Build instructions
             </a>
-            <span className="coming-soon">Coming Soon</span>
           </div>
         </div>
       </section>
@@ -169,7 +164,7 @@ export default function AboutPage() {
       <section className="section">
         <h2>Learn More</h2>
         <ul className="link-list">
-          <li><a href="https://github.com/swimchain">GitHub Repository</a></li>
+          <li><a href="https://github.com/superness/swimchain">GitHub Repository</a></li>
           <li><a href={withBase('/docs/search-ranking')}>Search Ranking Documentation</a></li>
           <li><a href={withBase('/docs/gateway-operation')}>Run Your Own Gateway</a></li>
         </ul>
