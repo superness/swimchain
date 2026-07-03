@@ -1,0 +1,13 @@
+{
+  "name": "@swimchain/wiki-import",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Import CC-BY-SA pages from MediaWiki wikis (Wikipedia, Fandom) into a swimchain wiki namespace, with mandatory attribution footers",
+  "scripts": {
+    "e2e": "node e2e/run-e2e.js"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.11.0"
+  }
+}
