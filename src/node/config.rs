@@ -118,6 +118,25 @@ pub struct NodeConfig {
     /// Connection timeout in seconds (default: 30)
     pub connect_timeout: Duration,
 
+    // ========== Privacy / Proxy (SWIM-PRIV-2) ==========
+    /// SOCKS5 proxy for outbound peer connections (e.g. `127.0.0.1:9050` for Tor).
+    ///
+    /// When set, every outbound peer dial is performed via a SOCKS5 CONNECT
+    /// handshake through this proxy instead of a direct `TcpStream::connect`,
+    /// so peers see the proxy's / Tor exit's address rather than the node's
+    /// real IP. `None` (default) means direct clearnet connections.
+    pub proxy: Option<SocketAddr>,
+
+    /// Refuse any outbound path that would bypass the proxy or leak the local IP.
+    ///
+    /// Requires `proxy` to be set. When enabled, the node:
+    /// - skips DNS-seed resolution (which would leak DNS lookups on clearnet),
+    /// - disables local/mDNS discovery, and
+    /// - advertises no local address in the P2P handshake.
+    ///
+    /// See the SWIM-PRIV-2 docs for the exact leak-prevention scope.
+    pub proxy_only: bool,
+
     // ========== Bootstrap ==========
     /// Seed nodes for discovery
     pub seeds: Vec<SeedEntry>,
@@ -228,6 +247,10 @@ impl Default for NodeConfig {
             max_inbound: MAX_INBOUND_CONNECTIONS,
             max_outbound: MAX_OUTBOUND_CONNECTIONS,
             connect_timeout: Duration::from_secs(30),
+
+            // Privacy / proxy defaults (SWIM-PRIV-2): direct clearnet, no proxy
+            proxy: None,
+            proxy_only: false,
 
             // Bootstrap defaults
             seeds: vec![],
@@ -347,6 +370,12 @@ impl NodeConfig {
         }
     }
 
+    /// Returns true when outbound connections should be routed through a
+    /// SOCKS5 proxy (SWIM-PRIV-2).
+    pub fn proxy_enabled(&self) -> bool {
+        self.proxy.is_some()
+    }
+
     /// Check if level checks should be bypassed
     ///
     /// Returns true in Regtest mode where level gating is disabled.
@@ -406,6 +435,14 @@ impl NodeConfig {
         if self.sync_batch_size == 0 {
             return Err(NodeError::InvalidConfig(
                 "sync_batch_size must be > 0".into(),
+            ));
+        }
+
+        // proxy_only requires a proxy to be configured (SWIM-PRIV-2), otherwise
+        // there is no proxied path to fall back to and every dial would fail.
+        if self.proxy_only && self.proxy.is_none() {
+            return Err(NodeError::InvalidConfig(
+                "proxy_only requires a proxy address (set --proxy)".into(),
             ));
         }
 
@@ -581,6 +618,47 @@ mod tests {
         let config = NodeConfig {
             bandwidth_limit_mbps: 0,
             seeding_mode: SeedingMode::Disabled,
+            ..NodeConfig::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_proxy_defaults_off() {
+        let config = NodeConfig::default();
+        assert!(config.proxy.is_none());
+        assert!(!config.proxy_only);
+        assert!(!config.proxy_enabled());
+    }
+
+    #[test]
+    fn test_proxy_enabled_when_set() {
+        let config = NodeConfig {
+            proxy: Some("127.0.0.1:9050".parse().unwrap()),
+            ..NodeConfig::default()
+        };
+        assert!(config.proxy_enabled());
+        // proxy alone (without proxy_only) is a valid config
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_proxy_only_without_proxy() {
+        let config = NodeConfig {
+            proxy: None,
+            proxy_only: true,
+            ..NodeConfig::default()
+        };
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("proxy_only"));
+    }
+
+    #[test]
+    fn test_validate_accepts_proxy_only_with_proxy() {
+        let config = NodeConfig {
+            proxy: Some("127.0.0.1:9050".parse().unwrap()),
+            proxy_only: true,
             ..NodeConfig::default()
         };
         assert!(config.validate().is_ok());
