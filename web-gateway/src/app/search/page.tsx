@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/base-path';
 import type { Metadata } from 'next';
 import { SearchPageClient } from './SearchPageClient';
 
@@ -32,7 +33,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     <div className="search-page">
       <h1>Search Swimchain</h1>
       <p className="search-description">
-        Search content with <a href="/about#ranking">transparent ranking</a>.
+        Search content with <a href={withBase('/about#ranking')}>transparent ranking</a>.
         No hidden algorithms, no personalization.
       </p>
 

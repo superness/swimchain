@@ -1,5 +1,7 @@
 'use client';
 
+import { withBase } from '@/lib/base-path';
+
 type CTAVariant = 'banner' | 'inline' | 'footer';
 type CTAContext = 'postView' | 'spaceView' | 'search' | 'generic';
 
@@ -56,7 +58,7 @@ export function DownloadCTA({
               <li key={i}>{action}</li>
             ))}
           </ul>
-          <a href="/about#download" className="cta-button">
+          <a href={withBase('/about#download')} className="cta-button">
             Download Swimchain
           </a>
         </div>
@@ -125,7 +127,7 @@ export function DownloadCTA({
         <span className="cta-icon">📱</span>
         <div className="cta-text">
           <strong>{messages.title}</strong>
-          <a href="/about#download">Download Swimchain</a>
+          <a href={withBase('/about#download')}>Download Swimchain</a>
         </div>
 
         <style jsx>{`
@@ -167,7 +169,7 @@ export function DownloadCTA({
     <div className="cta-footer">
       <h3 className="cta-title">{messages.title}</h3>
       <p className="cta-body">{messages.body}</p>
-      <a href="/about#download" className="cta-button">
+      <a href={withBase('/about#download')} className="cta-button">
         Download Swimchain
       </a>
 

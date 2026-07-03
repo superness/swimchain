@@ -1,5 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Serve under a subpath (e.g. /browse behind nginx). Must match the
+  // NEXT_PUBLIC_BASE_PATH used by src/lib/base-path.ts at build time.
+  basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
+
   // Enable standalone output for Docker deployment
   output: 'standalone',
 

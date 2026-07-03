@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { withBase } from '@/lib/base-path';
 import { SearchBox } from '@/components/SearchBox';
 import { SearchFilters } from '@/components/SearchFilters';
 import { SearchResultCard } from '@/components/SearchResultCard';
@@ -123,7 +124,7 @@ export function SearchPageClient({
       params.set('sort', sortBy);
       params.set('pageSize', '50');
 
-      const response = await fetch(`/api/search/query?${params.toString()}`);
+      const response = await fetch(withBase(`/api/search/query?${params.toString()}`));
       if (!response.ok) {
         throw new Error(`Search request failed (HTTP ${response.status})`);
       }
