@@ -207,12 +207,14 @@ pub fn default_testnet_dns_seeds() -> Vec<DnsSeed> {
 }
 
 /// Default mainnet DNS seeds
+///
+/// A records live in swimchain.io DNS (DreamHost). The seed host runs
+/// `swimchain-mainnet.service` listening on `DEFAULT_PORT` (9735).
 #[must_use]
 pub fn default_mainnet_dns_seeds() -> Vec<DnsSeed> {
     vec![
-        // TODO: Set up actual DNS seed servers before mainnet launch
-        // DnsSeed::new("seed1.swimchain.net", DEFAULT_PORT),
-        // DnsSeed::new("seed2.swimchain.net", DEFAULT_PORT),
+        DnsSeed::new("seed1.swimchain.io", DEFAULT_PORT),
+        DnsSeed::new("seed2.swimchain.io", DEFAULT_PORT),
     ]
 }
 
