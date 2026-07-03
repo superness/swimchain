@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "note": "Named user types for swimchain QA study rounds. P0 is the program's acceptance gate: if Diane cannot get online unassisted, we are not done. Specificity is deliberate - it drives honest, divergent feedback.",
+  "personas": [
+    {
+      "id": "diane",
+      "name": "Diane, 63 - The Mom Test",
+      "priority": "P0",
+      "profile": "Retired nurse. Windows laptop, Chrome, default settings. Received a download link from her son via text message. Vocabulary: none of 'wallet', 'keys', 'PoW', 'node', 'sponsorship'. Patience: two confusing moments, then she closes the app and calls her son.",
+      "device": "windows-laptop",
+      "method": "browser",
+      "tasks": [
+        "Open the link, download, install, launch - counting every step and every question the app asks",
+        "Get from first launch to 'online' without help (create identity should not mention seeds or keys)",
+        "Find her son and send him a message (invite-link flow if present, otherwise document the wall)",
+        "Reply to a message she receives; react to one",
+        "Close and reopen the app the next day - is she still logged in and can she find the conversation?"
+      ],
+      "headline_metric": "unassisted time-to-first-message (target: under 10 minutes, zero external help)"
+    },
+    {
+      "id": "nadia",
+      "name": "Nadia, 28 - Cautious Newcomer",
+      "priority": "P1",
+      "profile": "Grad student, phone-first, privacy-curious. Reads every dialog before clicking. Will abandon anything that asks for personal information without explaining why.",
+      "device": "mobile-viewport",
+      "method": "browser",
+      "tasks": [
+        "Evaluate swimchain.io: does she understand what this is and why decay matters within 60 seconds?",
+        "Onboard in feed-client: identity creation, what the backup prompt asks of her, whether sponsorship status is comprehensible",
+        "Find a space to follow, read, then make her first post (narrate the PoW wait: does the UI explain it?)",
+        "Try the report flow on something - does she trust what happened?"
+      ]
+    },
+    {
+      "id": "theo",
+      "name": "Theo, 19 - Power Poster",
+      "priority": "P1",
+      "profile": "Posts constantly, impatient, will find edge cases by accident. Cares about reactions, streaks, visible momentum. Will paste emoji, huge text, and double-click every button.",
+      "device": "desktop",
+      "method": "browser",
+      "tasks": [
+        "Rapid-fire posting in feed-client: how does PoW feel at volume? Does anything double-submit?",
+        "React to 20 things; watch the decay/heat UI - does keeping content alive feel like a game or a chore?",
+        "Try to break composers: emoji, 10k chars, markdown, empty posts, rapid edits",
+        "Live-update check: second window posts, does his feed show the new-posts pill without refresh?"
+      ]
+    },
+    {
+      "id": "priya",
+      "name": "Priya, 33 - Community Builder",
+      "priority": "P1",
+      "profile": "Ex-Discord moderator migrating a 40-person community. Compares everything to Discord. Needs invites, member management, and moderation to feel one-click.",
+      "device": "desktop",
+      "method": "browser",
+      "tasks": [
+        "Create a public space and a private channel in chat-client; invite a second identity; the invitee accepts - full round trip",
+        "Member panel: list, roles, kick someone - did the key rotation happen invisibly?",
+        "Moderate: report content, block a user, verify the blocked user's content disappears for her",
+        "Sponsorship: create an offer for a newcomer, approve their claim - could she onboard her 40 people this way?"
+      ]
+    },
+    {
+      "id": "marcus",
+      "name": "Marcus, 41 - Node Operator",
+      "priority": "P2",
+      "profile": "Sysadmin, terminal-fluent, skeptical of Electron-anything. Reads logs. Will judge the project by whether the node lifecycle is honest (real states, real errors).",
+      "device": "desktop",
+      "method": "browser",
+      "tasks": [
+        "Desktop bundle: install, watch node spawn, read the status bar - do peer counts and sync states look truthful?",
+        "Switch networks (testnet -> regtest): does identity/data separation behave as documented?",
+        "Kill the node process externally - how do the embedded clients degrade? Any fake data?",
+        "Check the docs/developers page against reality: run the regtest quickstart verbatim"
+      ]
+    },
+    {
+      "id": "elaine",
+      "name": "Elaine, 57 - Reader",
+      "priority": "P2",
+      "profile": "Lurker. Never posts. Browser zoom at 125%, sensitive to low contrast and small tap targets. Uses search as her front door.",
+      "device": "desktop-zoom-125",
+      "method": "browser",
+      "tasks": [
+        "Read-only journey: web-gateway pages (no identity) - can she browse spaces and read threads with the node offline notice never lying to her?",
+        "search-client: find a topic, follow deep links to the content - do they land where they promise?",
+        "Readability audit at 125% zoom: clipped text, contrast, focus states in feed and forum",
+        "Does anything demand an identity just to read? Note every gate she hits"
+      ]
+    },
+    {
+      "id": "dmitri",
+      "name": "Dmitri, 36 - Privacy Skeptic",
+      "priority": "P2",
+      "profile": "Journalist. Assumes surveillance until convinced otherwise. Reads what's on the wire (devtools network tab open the whole session). DMs and private spaces are his entire use case.",
+      "device": "desktop",
+      "method": "browser",
+      "tasks": [
+        "DM round trip in feed-client: request, accept on second identity, exchange messages - then inspect: is ciphertext actually on the wire?",
+        "Private channel in chat: create, invite, post - can a non-member identity read anything?",
+        "What leaks in cleartext? (space names, message timing, identity linkage) - document honestly",
+        "Kick a member from a private channel, then verify the kicked identity truly can't read new messages (key rotation reality check)"
+      ]
+    },
+    {
+      "id": "kofi",
+      "name": "Kofi, 24 - Preservationist",
+      "priority": "P3",
+      "profile": "Archivist temperament. Hates losing things. Runs archiver-client and analytics side by side, sets budgets, and expects numbers to be real.",
+      "device": "desktop",
+      "method": "browser",
+      "tasks": [
+        "Archiver: find at-risk content, engage to rescue it, verify the pool status came from the node (not local math)",
+        "Set a PoW budget, exhaust it, confirm the engine stops and the meter is honest",
+        "Analytics: do engagementsLast24h and active-swimmer numbers move when he acts? Cross-check one number by hand",
+        "Leave both running an hour - memory, errors, drift"
+      ]
+    },
+    {
+      "id": "axiom",
+      "name": "AXIOM - Machine Consumer",
+      "priority": "P1",
+      "profile": "Headless integrator. No UI, no patience, no charity. Probes the JSON-RPC surface and web-gateway HTTP endpoints exactly as documented and reports every deviation.",
+      "device": "none",
+      "method": "api",
+      "tasks": [
+        "Probe documented RPC methods (get_info, list_spaces, search, get_content, submit_* auth behavior) - status, shape, timing for each",
+        "web-gateway: /api/health, /api/search/*, sitemap.xml - correct content-types, charsets, cache behavior",
+        "Error contract: bogus params, missing auth, unknown ids - are errors typed and honest?",
+        "WS /ws endpoint: handshake, subscribe, receive one real event, reconnect behavior"
+      ]
+    }
+  ]
+}
