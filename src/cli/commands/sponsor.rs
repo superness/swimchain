@@ -87,6 +87,26 @@ pub enum SponsorCmd {
         require_application: bool,
     },
 
+    /// Create an instant-join invite link (auto-approve offer)
+    #[command(
+        about = "Create an invite link that auto-approves its claimant",
+        long_about = "Create a sponsorship offer with auto-approve enabled and print an \
+                      invite token/URL. A newcomer who opens the link becomes sponsored in \
+                      one step — no waiting for manual approval. The node running your \
+                      identity must be online to approve claims.",
+        after_help = "EXAMPLES:\n  sw sponsor invite\n  \
+                      sw sponsor invite --slots 3 --expires-hours 48"
+    )]
+    Invite {
+        /// Maximum number of users who can claim this invite
+        #[arg(long, default_value = "1")]
+        slots: u8,
+
+        /// Hours until the invite expires (rounded up to whole days)
+        #[arg(long, default_value = "168")]
+        expires_hours: u32,
+    },
+
     /// List your sponsorship offers
     #[command(
         about = "List your sponsorship offers",
@@ -212,6 +232,7 @@ pub fn execute(cmd: SponsorCmd, config: &CliConfig) -> Result<()> {
         SponsorCmd::OfferCreate { slots, offer_type, expires_days, min_pow, require_application } => {
             offer_create(config, slots, &offer_type, expires_days, min_pow, require_application)
         }
+        SponsorCmd::Invite { slots, expires_hours } => invite(config, slots, expires_hours),
         SponsorCmd::OfferList { json } => offer_list(config, json),
         SponsorCmd::OfferView { offer_id, json } => offer_view(config, &offer_id, json),
         SponsorCmd::OfferCancel { offer_id } => offer_cancel(config, &offer_id),
@@ -428,6 +449,84 @@ fn offer_create(
     println!();
     println!("Share this offer ID with users who want to join:");
     println!("  sw sponsor claim {}", result.offer_id);
+
+    Ok(())
+}
+
+/// Create an auto-approve invite offer and print the invite token/URL
+fn invite(config: &CliConfig, slots: u8, expires_hours: u32) -> Result<()> {
+    use base64::Engine;
+
+    if expires_hours == 0 {
+        return Err(CliError::Other("--expires-hours must be at least 1".into()));
+    }
+
+    let keypair = load_keypair(config)?;
+    let pubkey = keypair.public_key;
+    let pubkey_hex = hex::encode(pubkey.as_bytes());
+
+    // The offer signature message carries whole days; round hours up.
+    let expires_days = ((expires_hours + 23) / 24).clamp(1, 365);
+
+    let offer_type_enum = SponsorshipOfferType::Open;
+    let now = current_time();
+
+    // Build signature message matching server's verification
+    let sig_msg = PublicSponsorshipOffer::signature_message_for_creation(
+        pubkey.as_bytes(),
+        slots,
+        &offer_type_enum,
+        expires_days,
+        0,     // min_pow_difficulty
+        false, // application_required
+        now,
+    );
+    let signature = sign(&keypair.private_key, &sig_msg);
+    let sig_hex = hex::encode(signature.as_bytes());
+
+    let mut client = create_rpc_client(config)?;
+
+    let result: CreateSponsorshipOfferResult = rpc_call_result(
+        &mut client,
+        "create_sponsorship_offer",
+        json!({
+            "sponsor_pubkey": pubkey_hex,
+            "slots": slots,
+            "offer_type": "open",
+            "expires_days": expires_days,
+            "min_pow_difficulty": 0,
+            "application_required": false,
+            "auto_approve": true,
+            "signature": sig_hex,
+            "timestamp": now
+        }),
+    )?;
+
+    // Build the invite token: base64url(JSON{v, offer_id, sponsor, net})
+    let net = NetworkContext::mode().name();
+    let token_json = json!({
+        "v": 1,
+        "offer_id": result.offer_id,
+        "sponsor": pubkey_hex,
+        "net": net,
+    });
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(token_json.to_string().as_bytes());
+
+    println!("Invite created!");
+    println!("Offer ID: {}", result.offer_id);
+    println!("Slots: {}", result.slots);
+    println!("Expires: in {} day(s) (at unix {})", expires_days, result.expires_at);
+    println!("Network: {}", net);
+    println!();
+    println!("Invite token:");
+    println!("  {}", token);
+    println!();
+    println!("Invite URL:");
+    println!("  https://swimchain.io/i/#{}", token);
+    println!();
+    println!("Anyone who opens this link joins instantly — no approval step.");
+    println!("Keep your node running so claims can be auto-approved.");
 
     Ok(())
 }

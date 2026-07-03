@@ -11544,6 +11544,7 @@ impl RpcMethods {
                             min_pow_difficulty: o.requirements.min_pow_difficulty,
                             application_required: o.requirements.application_required,
                         },
+                        auto_approve: o.auto_approve,
                     }
                 }).collect();
 
@@ -11644,6 +11645,7 @@ impl RpcMethods {
                         min_pow_difficulty: offer.requirements.min_pow_difficulty,
                         application_required: offer.requirements.application_required,
                     },
+                    auto_approve: offer.auto_approve,
                     pending_claims,
                 };
                 RpcResponse::success(serde_json::to_value(result).unwrap(), id)
@@ -11870,6 +11872,7 @@ impl RpcMethods {
             offer_type,
             requirements,
             signature: Signature::from_bytes(sig_bytes),
+            auto_approve: params.auto_approve,
         };
 
         // Store the offer
@@ -11915,8 +11918,9 @@ impl RpcMethods {
         }
 
         info!(
-            "[SPONSORSHIP] Created offer {} by {} ({} slots, expires in {} days)",
-            hex::encode(offer_id), params.sponsor_pubkey, params.slots, params.expires_days
+            "[SPONSORSHIP] Created offer {} by {} ({} slots, expires in {} days, auto_approve={})",
+            hex::encode(offer_id), params.sponsor_pubkey, params.slots, params.expires_days,
+            params.auto_approve
         );
 
         let result = CreateSponsorshipOfferResult {
@@ -12230,21 +12234,232 @@ impl RpcMethods {
             params.claimant_pubkey, params.offer_id
         );
 
+        // SWIM-INV-1: auto-approve offers are approved immediately at claim time,
+        // turning invite-link onboarding into a single step. The on-chain Sponsor
+        // action requires a signature from the sponsor over
+        // (claimant(32) || timestamp(8 BE)), so instant approval is only possible
+        // when this node holds the sponsor identity (i.e. the offer was created by
+        // this node's identity). Otherwise the claim stays pending as usual.
+        if offer.auto_approve {
+            if self.node.keypair.public_key.as_bytes() == offer.sponsor.as_bytes() {
+                // Sign the exact message approve_sponsorship_claim expects the
+                // sponsor's client to sign, then run the same internal approval
+                // path the approve RPC uses.
+                let mut approval_msg = Vec::with_capacity(40);
+                approval_msg.extend_from_slice(&claimant_bytes);
+                approval_msg.extend_from_slice(&current_time.to_be_bytes());
+                let approval_sig = crate::identity::sign(&self.node.keypair.private_key, &approval_msg);
+                let approval_sig_bytes: [u8; 64] = *approval_sig.as_bytes();
+
+                match self
+                    .execute_claim_approval(&offer, &claim, approval_sig_bytes, current_time, current_time)
+                    .await
+                {
+                    Ok((depth, probationary)) => {
+                        let claimant_address =
+                            crate::crypto::address::encode_address_from_pubkey(&claimant_pk);
+
+                        info!(
+                            "[SPONSORSHIP] Auto-approved claim: {} sponsored by {} (depth={}, offer {})",
+                            params.claimant_pubkey,
+                            hex::encode(offer.sponsor.as_bytes()),
+                            depth,
+                            params.offer_id
+                        );
+
+                        let result = ClaimSponsorshipOfferResult {
+                            offer_id: params.offer_id,
+                            status: "approved".to_string(),
+                            message: "Invite accepted — you are now sponsored.".to_string(),
+                            claimant_address: Some(claimant_address),
+                            depth: Some(depth),
+                            probationary: Some(probationary),
+                        };
+                        return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                    }
+                    Err((code, msg)) => {
+                        // Auto-approval failed (e.g. no remaining slots or sponsor
+                        // restricted). Remove the pending claim so the claimant is
+                        // not left waiting on an approval that will never come.
+                        let _ = offer_store.remove_claim(&offer_id_bytes, &claimant_pk);
+                        return RpcResponse::error(code, &msg, id);
+                    }
+                }
+            } else {
+                log::warn!(
+                    "[SPONSORSHIP] Offer {} is auto_approve but this node does not hold \
+                     the sponsor identity; claim left pending",
+                    params.offer_id
+                );
+            }
+        }
+
         let result = ClaimSponsorshipOfferResult {
             offer_id: params.offer_id,
             status: "pending".to_string(),
             message: "Claim submitted. The sponsor will review your request.".to_string(),
+            claimant_address: None,
+            depth: None,
+            probationary: None,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
+    /// Execute the chain-side effects of approving a sponsorship claim.
+    ///
+    /// This is the single internal approval path (SWIM-INV-1), shared by:
+    /// - `approve_sponsorship_claim` — the sponsor calls in with their own
+    ///   approval signature, and
+    /// - `claim_sponsorship_offer` — when the offer has `auto_approve` set and
+    ///   this node holds the sponsor identity, the node signs the same message
+    ///   and approves immediately.
+    ///
+    /// `sponsor_sig_bytes` MUST be a valid Ed25519 signature by `offer.sponsor`
+    /// over (claimant(32) || timestamp(8 BE)): it is embedded in the on-chain
+    /// Sponsor action and independently re-verified by every node in
+    /// `apply_sponsorship_actions_from_block`, so the action carries the same
+    /// `timestamp` the signature covers.
+    ///
+    /// Slot capacity is enforced atomically (sled fetch_and_update) before any
+    /// other side effect, so concurrent claims cannot over-claim an offer.
+    /// Returns (depth, probationary) on success.
+    async fn execute_claim_approval(
+        &self,
+        offer: &crate::sponsorship::types::PublicSponsorshipOffer,
+        claim: &crate::sponsorship::types::SponsorshipClaim,
+        sponsor_sig_bytes: [u8; 64],
+        timestamp: u64,
+        current_time: u64,
+    ) -> Result<(u8, bool), (RpcErrorCode, String)> {
+        use crate::sponsorship::types::SponsorshipOfferType;
+
+        let offer_store = self.node.offer_store.as_ref().ok_or((
+            RpcErrorCode::SubsystemUnavailable,
+            "Offer store not available".to_string(),
+        ))?;
+        let sponsorship_store = self.node.sponsorship_store.as_ref().ok_or((
+            RpcErrorCode::SubsystemUnavailable,
+            "Sponsorship store not available".to_string(),
+        ))?;
+
+        let sponsor_pk = offer.sponsor;
+        let sponsor_bytes = *sponsor_pk.as_bytes();
+        let claimant_bytes = *claim.claimant.as_bytes();
+
+        // Verify sponsor is Active (or in genesis list)
+        let sponsor_record = match sponsorship_store.get(&sponsor_pk) {
+            Ok(Some(r)) => Some(r),
+            Ok(None) => {
+                // Genesis identities can sponsor without a store record
+                if crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&sponsor_pk) {
+                    None
+                } else {
+                    return Err((RpcErrorCode::PermissionDenied, "Sponsor not found".to_string()));
+                }
+            }
+            Err(e) => {
+                return Err((
+                    RpcErrorCode::InternalError,
+                    format!("Failed to check sponsor: {}", e),
+                ));
+            }
+        };
+
+        // Genesis identities can always sponsor; others need to pass can_sponsor_basic
+        if let Some(ref record) = sponsor_record {
+            if !record.can_sponsor_basic(current_time) {
+                return Err((
+                    RpcErrorCode::PermissionDenied,
+                    "Sponsor cannot sponsor at this time".to_string(),
+                ));
+            }
+        }
+
+        // Genesis identities have depth 0, so children get depth 1
+        let depth = match &sponsor_record {
+            Some(r) => r.depth.saturating_add(1),
+            None => 1,
+        };
+        let probationary = offer.offer_type == SponsorshipOfferType::Probationary;
+
+        // Atomically claim a slot BEFORE any other side effect. This is the
+        // over-claim guard: increment_claimed_count uses sled fetch_and_update
+        // and fails with OfferFullyClaimed once max_sponsees is reached.
+        if let Err(e) = offer_store.increment_claimed_count(&offer.offer_id, offer.max_sponsees) {
+            return Err((
+                RpcErrorCode::InvalidParams,
+                format!("Offer has no remaining slots: {}", e),
+            ));
+        }
+
+        // NOTE: Do NOT create StoredSponsorship directly here.
+        // The on-chain Sponsor action (created below) will be processed by
+        // apply_sponsorship_actions_from_block when the block is formed,
+        // which creates the StoredSponsorship on all nodes including this one.
+        // This ensures the chain is the single source of truth.
+
+        // Remove the claim from pending
+        let _ = offer_store.remove_claim(&offer.offer_id, &claim.claimant);
+
+        // Create on-chain Sponsor action
+        {
+            use crate::blocks::action::Action;
+            use crate::blocks::BranchPath;
+
+            // Compute actual pow_work from the claim's PoW proof
+            let pow_work = {
+                use sha2::{Sha256, Digest};
+                let mut pow_input = Vec::with_capacity(40);
+                pow_input.extend_from_slice(&claim.pow_nonce_space);
+                pow_input.extend_from_slice(&claim.identity_pow_proof.nonce.to_le_bytes());
+                let pow_hash = Sha256::digest(&pow_input);
+                pow_hash.iter().take_while(|&&b| b == 0).count() as u64
+            };
+
+            let action = Action::new_sponsor_with_pow(
+                sponsor_bytes,
+                claimant_bytes,
+                timestamp, // must match the timestamp covered by sponsor_sig_bytes
+                sponsor_sig_bytes,
+                claim.identity_pow_proof.nonce,
+                pow_work,
+                claim.pow_nonce_space, // pow_target = the challenge input, not the hash output
+            );
+
+            let system_space_id = [0u8; 32];
+            let action_hash = action.hash();
+
+            if let Some(ref block_builder) = self.node.block_builder {
+                if let Ok(mut builder) = block_builder.write() {
+                    builder.add_action(action_hash, system_space_id, action.clone(), BranchPath::root());
+                }
+            }
+
+            // Broadcast to peers
+            if let Some(ref pool) = self.node.connection_pool {
+                use crate::network::messages::ActionAnnouncePayload;
+                use crate::types::network::{MessageEnvelope, MessageType};
+
+                let action_data = action.serialize();
+                let payload = ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
+                let envelope = MessageEnvelope::new_fork_agnostic(
+                    MessageType::ActionAnnounce,
+                    payload.to_bytes().to_vec(),
+                );
+                let peers = pool.peer_ids().await;
+                for peer_id in peers {
+                    let _ = pool.send_to(&peer_id, &envelope).await;
+                }
+            }
+        }
+
+        Ok((depth, probationary))
+    }
+
     /// Approve a pending sponsorship claim (sponsor only)
     async fn approve_sponsorship_claim(&self, params: Value, id: Value) -> RpcResponse {
-        use crate::sponsorship::types::{
-            StoredSponsorship, SponsorshipStatus, PROBATION_PERIOD_SECONDS,
-            TIMESTAMP_TOLERANCE_SECONDS, SponsorshipOfferType,
-        };
-        use crate::types::identity::{PublicKey, Signature};
+        use crate::sponsorship::types::TIMESTAMP_TOLERANCE_SECONDS;
+        use crate::types::identity::PublicKey;
 
         let params: ApproveSponsorshipClaimParams = match serde_json::from_value(params) {
             Ok(p) => p,
@@ -12290,10 +12505,6 @@ impl RpcMethods {
             Some(s) => s,
             None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
         };
-        let sponsorship_store = match &self.node.sponsorship_store {
-            Some(s) => s,
-            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Sponsorship store not available", id),
-        };
 
         // Verify offer exists and sponsor owns it
         let offer = match offer_store.get_offer(&offer_id_bytes) {
@@ -12330,96 +12541,15 @@ impl RpcMethods {
             }
         }
 
-        // Verify sponsor is Active (or in genesis list)
-        let sponsor_pk = PublicKey::from_bytes(sponsor_bytes);
-        let sponsor_record = match sponsorship_store.get(&sponsor_pk) {
-            Ok(Some(r)) => Some(r),
-            Ok(None) => {
-                // Genesis identities can sponsor without a store record
-                if crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&sponsor_pk) {
-                    None  // Genesis identity - no store record needed
-                } else {
-                    return RpcResponse::error(RpcErrorCode::PermissionDenied, "Sponsor not found", id);
-                }
-            }
-            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to check sponsor: {}", e), id),
-        };
-
-        // Genesis identities can always sponsor; others need to pass can_sponsor_basic
-        if let Some(ref record) = sponsor_record {
-            if !record.can_sponsor_basic(current_time) {
-                return RpcResponse::error(RpcErrorCode::PermissionDenied, "Sponsor cannot sponsor at this time", id);
-            }
-        }
-
-        // Genesis identities have depth 0, so children get depth 1
-        let depth = match &sponsor_record {
-            Some(r) => r.depth.saturating_add(1),
-            None => 1,
-        };
-        let probationary = offer.offer_type == SponsorshipOfferType::Probationary;
-
-        // NOTE: Do NOT create StoredSponsorship directly here.
-        // The on-chain Sponsor action (created below) will be processed by
-        // apply_sponsorship_actions_from_block when the block is formed,
-        // which creates the StoredSponsorship on all nodes including this one.
-        // This ensures the chain is the single source of truth.
-
-        // Remove the claim from pending
-        let _ = offer_store.remove_claim(&offer_id_bytes, &claimant_pk);
-        let _ = offer_store.increment_claimed_count(&offer_id_bytes, offer.max_sponsees);
-
-        // Create on-chain Sponsor action
+        // Run the shared approval path (sponsor checks, atomic slot claim,
+        // on-chain Sponsor action + broadcast)
+        let (depth, probationary) = match self
+            .execute_claim_approval(&offer, &_claim, sig_bytes, params.timestamp, current_time)
+            .await
         {
-            use crate::blocks::action::Action;
-            use crate::blocks::BranchPath;
-
-            // Compute actual pow_work from the claim's PoW proof
-            let pow_work = {
-                use sha2::{Sha256, Digest};
-                let mut pow_input = Vec::with_capacity(40);
-                pow_input.extend_from_slice(&_claim.pow_nonce_space);
-                pow_input.extend_from_slice(&_claim.identity_pow_proof.nonce.to_le_bytes());
-                let pow_hash = Sha256::digest(&pow_input);
-                pow_hash.iter().take_while(|&&b| b == 0).count() as u64
-            };
-
-            let action = Action::new_sponsor_with_pow(
-                sponsor_bytes,
-                claimant_bytes,
-                current_time,
-                sig_bytes,
-                _claim.identity_pow_proof.nonce,
-                pow_work,
-                _claim.pow_nonce_space, // pow_target = the challenge input, not the hash output
-            );
-
-            let system_space_id = [0u8; 32];
-            let action_hash = action.hash();
-
-            if let Some(ref block_builder) = self.node.block_builder {
-                if let Ok(mut builder) = block_builder.write() {
-                    builder.add_action(action_hash, system_space_id, action.clone(), BranchPath::root());
-                }
-            }
-
-            // Broadcast to peers
-            if let Some(ref pool) = self.node.connection_pool {
-                use crate::network::messages::ActionAnnouncePayload;
-                use crate::types::network::{MessageEnvelope, MessageType};
-
-                let action_data = action.serialize();
-                let payload = ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
-                let envelope = MessageEnvelope::new_fork_agnostic(
-                    MessageType::ActionAnnounce,
-                    payload.to_bytes().to_vec(),
-                );
-                let peers = pool.peer_ids().await;
-                for peer_id in peers {
-                    let _ = pool.send_to(&peer_id, &envelope).await;
-                }
-            }
-        }
+            Ok(v) => v,
+            Err((code, msg)) => return RpcResponse::error(code, &msg, id),
+        };
 
         info!(
             "[SPONSORSHIP] Approved claim: {} sponsored by {} (depth={})",
@@ -12712,6 +12842,7 @@ impl RpcMethods {
                         expires_at: o.expires_at,
                         created_at: o.created_at,
                         is_expired: o.is_expired(current_time),
+                        auto_approve: o.auto_approve,
                     }
                 }).collect();
 

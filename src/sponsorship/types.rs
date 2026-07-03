@@ -1475,6 +1475,10 @@ pub struct PublicSponsorshipOffer {
     pub requirements: SponsorshipRequirements,
     /// Sponsor's signature over offer data
     pub signature: Signature,
+    /// When true, claims are approved immediately without sponsor review
+    /// (invite-link onboarding). Default false.
+    #[serde(default)]
+    pub auto_approve: bool,
 }
 
 impl PublicSponsorshipOffer {
@@ -1749,18 +1753,25 @@ mod public_offer_tests {
             offer_type: SponsorshipOfferType::Open,
             requirements: SponsorshipRequirements::default(),
             signature: Signature::from_bytes([0u8; 64]),
+            auto_approve: false,
         };
 
         let msg = offer.signature_message();
-        assert_eq!(msg.len(), 98); // 32 + 16 + 8 + 8 + 1 + 1 + 32
+        // prefix(24) + sponsor(32) + slots(1) + offer_type(1) + expires_days(4)
+        // + min_pow(1) + app_required(1) + timestamp(8)
+        assert_eq!(msg.len(), 72);
 
         // Verify components are in correct order
-        assert_eq!(&msg[0..32], &[1u8; 32]); // sponsor
-        assert_eq!(&msg[32..48], &[2u8; 16]); // offer_id
-        assert_eq!(&msg[48..56], &1735689600u64.to_be_bytes()); // created_at
-        assert_eq!(&msg[56..64], &1738281600u64.to_be_bytes()); // expires_at
-        assert_eq!(msg[64], 5); // max_sponsees
-        assert_eq!(msg[65], 0); // offer_type (Open)
+        let prefix = b"swimchain-sponsor-offer:";
+        assert_eq!(&msg[0..24], prefix);
+        assert_eq!(&msg[24..56], &[1u8; 32]); // sponsor
+        assert_eq!(msg[56], 5); // max_sponsees
+        assert_eq!(msg[57], 0); // offer_type (Open)
+        // expires_days = (expires_at - created_at) / 86400 = 30
+        assert_eq!(&msg[58..62], &30u32.to_be_bytes());
+        assert_eq!(msg[62], 0); // min_pow_difficulty
+        assert_eq!(msg[63], 0); // application_required
+        assert_eq!(&msg[64..72], &1735689600u64.to_be_bytes()); // timestamp (created_at)
     }
 
     #[test]
@@ -1774,6 +1785,7 @@ mod public_offer_tests {
             offer_type: SponsorshipOfferType::Open,
             requirements: SponsorshipRequirements::default(),
             signature: Signature::from_bytes([0u8; 64]),
+            auto_approve: false,
         };
 
         assert!(!offer.is_expired(1735689600));
@@ -1908,6 +1920,7 @@ mod public_offer_tests {
                 application_required: true,
             },
             signature: Signature::from_bytes([4u8; 64]),
+            auto_approve: false,
         };
 
         let bytes = bincode::serialize(&offer).unwrap();
