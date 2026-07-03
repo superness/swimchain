@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/base-path';
 import type { Metadata } from 'next';
 import { SpaceCard } from '@/components/SpaceCard';
 import { NodeOfflineNotice } from '@/components/NodeOfflineNotice';
@@ -69,7 +70,7 @@ export default async function SpacesPage() {
           Spaces can only be created with a full Swimchain client.
           The gateway is read-only.
         </p>
-        <a href="/about#download" className="cta-button">
+        <a href={withBase('/about#download')} className="cta-button">
           Download Swimchain
         </a>
       </div>

@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/base-path';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { cache } from 'react';
@@ -99,7 +100,7 @@ export default async function IdentityPage({ params }: PageProps) {
           without revealing any personal information.
         </p>
         <p>
-          <a href="/about#identity">Learn more about Swimchain identities</a>
+          <a href={withBase('/about#identity')}>Learn more about Swimchain identities</a>
         </p>
       </div>
     </div>

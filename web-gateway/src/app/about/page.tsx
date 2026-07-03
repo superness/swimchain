@@ -1,3 +1,4 @@
+import { withBase } from '@/lib/base-path';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
@@ -94,7 +95,7 @@ export default function AboutPage() {
           </tbody>
         </table>
         <p>
-          <a href="/docs/search-ranking">Read the full ranking documentation</a>
+          <a href={withBase('/docs/search-ranking')}>Read the full ranking documentation</a>
         </p>
       </section>
 
@@ -169,8 +170,8 @@ export default function AboutPage() {
         <h2>Learn More</h2>
         <ul className="link-list">
           <li><a href="https://github.com/swimchain">GitHub Repository</a></li>
-          <li><a href="/docs/search-ranking">Search Ranking Documentation</a></li>
-          <li><a href="/docs/gateway-operation">Run Your Own Gateway</a></li>
+          <li><a href={withBase('/docs/search-ranking')}>Search Ranking Documentation</a></li>
+          <li><a href={withBase('/docs/gateway-operation')}>Run Your Own Gateway</a></li>
         </ul>
       </section>
     </div>

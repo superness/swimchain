@@ -1,0 +1,36 @@
+# Swimchain Web Gateway systemd unit (deployed on the testnet seed droplet).
+# Serves the Next.js standalone build from /opt/swimchain-gateway on
+# 127.0.0.1:3300, behind nginx at https://swimchain.io/browse.
+#
+# Build the bundle with:
+#   NEXT_PUBLIC_BASE_PATH=/browse npm run build
+#   cp -r .next/static .next/standalone/.next/static
+#   cp -r public .next/standalone/public
+# then ship .next/standalone/* to /opt/swimchain-gateway/.
+#
+# The node RPC cookie is read at gateway start; restart the gateway after
+# restarting the node if the cookie rotates (read-only RPC methods currently
+# work without auth, so this is belt-and-braces).
+
+[Unit]
+Description=Swimchain Web Gateway (read-only browse UI at /browse)
+After=network.target swimchain.service
+Wants=swimchain.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/swimchain-gateway
+Environment=NODE_ENV=production
+Environment=PORT=3300
+Environment=HOSTNAME=127.0.0.1
+Environment=NODE_RPC_URL=http://127.0.0.1:19736
+Environment="GATEWAY_NAME=Swimchain Seed Gateway"
+Environment=GATEWAY_PUBLIC_URL=https://swimchain.io/browse
+ExecStart=/bin/bash -c 'export NODE_RPC_COOKIE="$(cat /var/lib/swimchain-testnet/.cookie 2>/dev/null || true)"; exec /usr/bin/node server.js'
+Restart=always
+RestartSec=5
+MemoryMax=300M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
