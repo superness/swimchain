@@ -15,6 +15,10 @@ struct AppState {
     data_dir_base: PathBuf, // Base data dir without suffix (what we pass to CLI)
     settings_path: PathBuf, // Desktop shell settings (persisted network selection)
     cached_cookie: Arc<Mutex<Option<String>>>, // Cached RPC auth to avoid file reads
+    // Pending swimchain://invite/<token> deep link the OS handed us, waiting to
+    // be picked up by the frontend. Plain std Mutex so the (sync) deep-link
+    // callback can store into it without an async runtime.
+    pending_deeplink: Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -172,6 +176,18 @@ async fn write_client_log(
 #[tauri::command]
 async fn get_data_dir(state: tauri::State<'_, AppState>) -> Result<String, String> {
     Ok(state.current_data_dir().await.to_string_lossy().to_string())
+}
+
+/// Return (and clear) any pending swimchain:// deep link the OS handed us.
+/// The frontend polls this so invite deep links flow into onboarding for both
+/// cold starts and links fired while the app is already open.
+#[tauri::command]
+async fn take_pending_deeplink(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
+    let mut pending = state
+        .pending_deeplink
+        .lock()
+        .map_err(|e| format!("Failed to read pending deep link: {}", e))?;
+    Ok(pending.take())
 }
 
 #[tauri::command]
@@ -444,6 +460,7 @@ mod tests {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
 
@@ -485,12 +502,41 @@ fn main() {
                 network,
             );
 
+            // Shared store for incoming swimchain:// invite deep links.
+            let pending_deeplink: Arc<std::sync::Mutex<Option<String>>> =
+                Arc::new(std::sync::Mutex::new(None));
+
+            // Cold start: the app may have been launched by clicking a deep link.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    if let Some(url) = urls.into_iter().next() {
+                        *pending_deeplink.lock().unwrap() = Some(url.to_string());
+                    }
+                }
+
+                // Warm start: a link fired while the app is already running.
+                let sink = pending_deeplink.clone();
+                app.deep_link().on_open_url(move |event| {
+                    if let Some(url) = event.urls().into_iter().next() {
+                        if let Ok(mut guard) = sink.lock() {
+                            *guard = Some(url.to_string());
+                        }
+                    }
+                });
+
+                // Best-effort runtime scheme registration (needed for dev; the
+                // installed bundle registers "swimchain" from tauri.conf.json).
+                let _ = app.deep_link().register("swimchain");
+            }
+
             let state = AppState {
                 node_manager: Arc::new(Mutex::new(node_manager)),
                 binary_path,
                 data_dir_base,      // Without suffix (for CLI commands)
                 settings_path,
                 cached_cookie: Arc::new(Mutex::new(None)), // Will be populated on first get_rpc_auth call
+                pending_deeplink,
             };
 
             app.manage(state);
@@ -515,6 +561,7 @@ fn main() {
             create_identity,
             reset_identity,
             take_screenshot,
+            take_pending_deeplink,
         ])
         .on_window_event(|window, event| {
             // Stop node when app closes

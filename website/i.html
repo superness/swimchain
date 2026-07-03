@@ -73,6 +73,14 @@
   }
   .btn:hover { background: var(--heat-deep); border-color: var(--heat-deep); }
 
+  .open-app {
+    display: block;
+    margin: 14px 0 0;
+    font-family: var(--mono); font-size: 14px;
+    color: var(--shallow); text-decoration: none;
+  }
+  .open-app:hover { color: var(--foam); }
+
   .code-card {
     margin: 40px 0 8px;
     background: var(--surface);
@@ -178,6 +186,7 @@
   </p>
 
   <a class="btn" id="download-btn" href="/download">Download Swimchain</a>
+  <a class="open-app" id="open-app-btn" href="#" hidden>Already installed? Open in Swimchain &rarr;</a>
 
   <div class="code-card">
     <p class="code-label">Your invite code</p>
@@ -236,6 +245,16 @@
   if (hint) hint.hidden = false;
   var dl = document.getElementById('download-btn');
   if (dl) dl.setAttribute('href', '/download#invite=' + encodeURIComponent(code));
+
+  // If the app is already installed, this deep link hands the invite straight
+  // to it (swimchain://invite/<token>) so onboarding is pre-filled. Harmless
+  // if the app isn't installed — the Download button + code box are the
+  // fallbacks, so we always offer it.
+  var openApp = document.getElementById('open-app-btn');
+  if (openApp) {
+    openApp.setAttribute('href', 'swimchain://invite/' + encodeURIComponent(code));
+    openApp.hidden = false;
+  }
 
   function fallbackCopy() {
     var range = document.createRange();
