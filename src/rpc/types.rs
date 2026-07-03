@@ -1674,6 +1674,9 @@ pub struct SponsorshipOfferSummary {
     pub expires_at: u64,
     pub created_at: u64,
     pub requirements: SponsorshipOfferRequirements,
+    /// True if claims on this offer are approved instantly (invite links)
+    #[serde(default)]
+    pub auto_approve: bool,
 }
 
 /// Requirements sub-object for offer summaries
@@ -1718,6 +1721,9 @@ pub struct GetSponsorshipOfferResult {
     pub expires_at: u64,
     pub created_at: u64,
     pub requirements: SponsorshipOfferRequirements,
+    /// True if claims on this offer are approved instantly (invite links)
+    #[serde(default)]
+    pub auto_approve: bool,
     pub pending_claims: Vec<PendingClaimDetail>,
 }
 
@@ -1732,6 +1738,10 @@ pub struct CreateSponsorshipOfferParams {
     pub min_pow_difficulty: u8,
     #[serde(default)]
     pub application_required: bool,
+    /// When true, claims on this offer are approved immediately without
+    /// sponsor review (one-step invite-link onboarding). Default false.
+    #[serde(default)]
+    pub auto_approve: bool,
     pub signature: String,
     pub timestamp: u64,
 }
@@ -1761,11 +1771,24 @@ pub struct ClaimSponsorshipOfferParams {
 }
 
 /// claim_sponsorship_offer result
+///
+/// `status` is "pending" for normal offers. For auto-approve offers the claim
+/// is approved immediately: `status` is "approved" and the approval fields
+/// (`claimant_address`, `depth`, `probationary`) are populated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimSponsorshipOfferResult {
     pub offer_id: String,
     pub status: String,
     pub message: String,
+    /// Bech32m address of the claimant (present when status == "approved")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimant_address: Option<String>,
+    /// Sponsorship tree depth (present when status == "approved")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u8>,
+    /// Whether the sponsorship is probationary (present when status == "approved")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probationary: Option<bool>,
 }
 
 /// approve_sponsorship_claim params
@@ -1841,6 +1864,9 @@ pub struct MySponsorshipOfferSummary {
     pub expires_at: u64,
     pub created_at: u64,
     pub is_expired: bool,
+    /// True if claims on this offer are approved instantly (invite links)
+    #[serde(default)]
+    pub auto_approve: bool,
 }
 
 /// list_my_sponsorship_offers result

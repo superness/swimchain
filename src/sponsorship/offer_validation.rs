@@ -257,6 +257,7 @@ mod tests {
             offer_type: SponsorshipOfferType::Open,
             requirements: SponsorshipRequirements::default(),
             signature: Signature::from_bytes([0u8; 64]),
+            auto_approve: false,
         }
     }
 

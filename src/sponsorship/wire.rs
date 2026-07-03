@@ -9,8 +9,12 @@
 //! ```text
 //! sponsor(32) + offer_id(16) + created_at(8 LE) + expires_at(8 LE) +
 //! max_sponsees(1) + offer_type(1) + requirements_len(2 LE) +
-//! requirements(var, bincode) + signature(64)
+//! requirements(var, bincode) + signature(64) + [auto_approve(1)]
 //! ```
+//!
+//! The trailing `auto_approve` byte is optional for backwards compatibility:
+//! offers serialized by older nodes omit it (interpreted as false), and older
+//! nodes ignore the trailing byte when deserializing newer offers.
 //!
 //! ## SPONSORSHIP_OFFER_CLAIM (0x4A)
 //! ```text
@@ -99,6 +103,7 @@ impl std::error::Error for WireError {}
 /// - requirements_len(2 LE): Length of requirements blob
 /// - requirements(var): Bincode-serialized requirements
 /// - signature(64): Ed25519 signature
+/// - auto_approve(1): 1 if claims auto-approve (trailing, optional on read)
 pub fn serialize_offer(offer: &PublicSponsorshipOffer) -> Result<Vec<u8>, WireError> {
     let requirements_bytes = bincode::serialize(&offer.requirements)
         .map_err(|e| WireError::BincodeError(e.to_string()))?;
@@ -121,6 +126,7 @@ pub fn serialize_offer(offer: &PublicSponsorshipOffer) -> Result<Vec<u8>, WireEr
     buf.extend_from_slice(&(requirements_bytes.len() as u16).to_le_bytes()); // 2 LE
     buf.extend_from_slice(&requirements_bytes);              // var
     buf.extend_from_slice(offer.signature.as_bytes());       // 64
+    buf.push(if offer.auto_approve { 1 } else { 0 });        // 1 (trailing, optional)
 
     Ok(buf)
 }
@@ -203,6 +209,10 @@ pub fn deserialize_offer(data: &[u8]) -> Result<PublicSponsorshipOffer, WireErro
             .try_into()
             .expect("slice is 64 bytes"),
     );
+    pos += 64;
+
+    // auto_approve(1) — optional trailing byte for backwards compatibility
+    let auto_approve = data.get(pos).is_some_and(|&b| b == 1);
 
     Ok(PublicSponsorshipOffer {
         sponsor,
@@ -213,6 +223,7 @@ pub fn deserialize_offer(data: &[u8]) -> Result<PublicSponsorshipOffer, WireErro
         offer_type,
         requirements,
         signature,
+        auto_approve,
     })
 }
 
@@ -553,6 +564,7 @@ mod tests {
                 application_required: true,
             },
             signature: Signature::from_bytes([4u8; 64]),
+            auto_approve: false,
         }
     }
 
@@ -702,6 +714,34 @@ mod tests {
 
             assert_eq!(offer.offer_type, decoded.offer_type);
         }
+    }
+
+    #[test]
+    fn test_offer_auto_approve_roundtrip() {
+        let mut offer = make_test_offer();
+        offer.auto_approve = true;
+
+        let bytes = serialize_offer(&offer).unwrap();
+        let decoded = deserialize_offer(&bytes).unwrap();
+        assert!(decoded.auto_approve);
+
+        offer.auto_approve = false;
+        let bytes = serialize_offer(&offer).unwrap();
+        let decoded = deserialize_offer(&bytes).unwrap();
+        assert!(!decoded.auto_approve);
+    }
+
+    #[test]
+    fn test_offer_legacy_wire_without_auto_approve_byte() {
+        // Offers serialized by older nodes end at the signature; the missing
+        // trailing byte must deserialize as auto_approve = false.
+        let offer = make_test_offer();
+        let mut bytes = serialize_offer(&offer).unwrap();
+        bytes.pop(); // strip the auto_approve byte to simulate legacy format
+
+        let decoded = deserialize_offer(&bytes).unwrap();
+        assert!(!decoded.auto_approve);
+        assert_eq!(decoded.signature, offer.signature);
     }
 
     #[test]
