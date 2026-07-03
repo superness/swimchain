@@ -10,7 +10,7 @@
  * - Node identity support (desktop app mode)
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useKeypair } from '../hooks/useKeypair';
 import { usePow } from '../hooks/usePow';
@@ -23,6 +23,8 @@ import { PowProgress } from '../components/PowProgress';
 import { IdentityCard } from '../components/IdentityCard';
 import { BackupPromptModal } from '../components/BackupPromptModal';
 import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
+import { InviteRedemption } from '../components/InviteRedemption';
+import { parseInviteInput, type InvitePayload } from '../lib/invite';
 import './IdentityPage.css';
 
 // Helper: Convert hex string to Uint8Array
@@ -60,6 +62,54 @@ export function IdentityPage(): JSX.Element {
   const [importSeed, setImportSeed] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [showImport, setShowImport] = useState(false);
+
+  // Invite code state (SWIM-INV-2)
+  const [inviteInput, setInviteInput] = useState('');
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  // When set, we're redeeming an invite for a freshly saved identity
+  const [redeeming, setRedeeming] = useState<{
+    invite: InvitePayload;
+    seed: string;
+    publicKey: string;
+  } | null>(null);
+
+  // Auto-fill the invite field when the app is opened with #invite=<token>
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (hash.startsWith('#invite=')) {
+      setInviteInput(hash.slice('#invite='.length));
+      // Clear the fragment so the token doesn't linger in the address bar
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+  }, []);
+
+  // Validate the invite input as the user types (soft validation)
+  const handleInviteChange = useCallback((value: string) => {
+    setInviteInput(value);
+    if (!value.trim()) {
+      setInviteError(null);
+      return;
+    }
+    try {
+      parseInviteInput(value);
+      setInviteError(null);
+    } catch {
+      setInviteError("That invite code doesn't look right — double-check you copied the whole link or code.");
+    }
+  }, []);
+
+  /**
+   * Parse the invite input; returns null when empty or malformed.
+   * (A malformed code already shows an inline error — identity creation
+   * still succeeds, we just skip redemption.)
+   */
+  const getParsedInvite = useCallback((): InvitePayload | null => {
+    try {
+      return parseInviteInput(inviteInput);
+    } catch {
+      return null;
+    }
+  }, [inviteInput]);
 
   // Delete confirmation modal state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -119,15 +169,27 @@ export function IdentityPage(): JSX.Element {
   const handleBackupModalClose = useCallback(() => {
     if (pendingIdentity) {
       setIdentity(pendingIdentity);
-      setPendingIdentity(null);
       setShowBackupModal(false);
       reset();
       clear();
 
+      // If the user provided a valid invite code, redeem it before moving on
+      const invite = getParsedInvite();
+      if (invite) {
+        setRedeeming({
+          invite,
+          seed: pendingIdentity.seed,
+          publicKey: pendingIdentity.publicKey,
+        });
+        setPendingIdentity(null);
+        return;
+      }
+
+      setPendingIdentity(null);
       // Navigate to the original destination after saving
       navigate(returnTo, { replace: true });
     }
-  }, [pendingIdentity, setIdentity, reset, clear, navigate, returnTo]);
+  }, [pendingIdentity, setIdentity, reset, clear, navigate, returnTo, getParsedInvite]);
 
   const handleDeleteIdentity = useCallback(() => {
     setShowDeleteModal(true);
@@ -199,15 +261,45 @@ export function IdentityPage(): JSX.Element {
       setImportSeed('');
       setShowImport(false);
 
+      // If the user provided a valid invite code, redeem it before moving on
+      const invite = getParsedInvite();
+      if (invite) {
+        setRedeeming({ invite, seed: cleanSeed, publicKey: publicKeyHex });
+        return;
+      }
+
       // Navigate to feed
       navigate('/', { replace: true });
     } catch (error) {
       setImportError(`Failed to import identity: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }, [importSeed, setIdentity, navigate]);
+  }, [importSeed, setIdentity, navigate, getParsedInvite]);
 
   // If node has identity, show that instead of browser identity management
   const hasNodeIdentity = nodeIdentity && nodeIdentity.address;
+
+  // Invite redemption takes over the page after identity creation (SWIM-INV-2)
+  if (redeeming) {
+    return (
+      <div className="identity-page">
+        <header className="identity-page__header">
+          <h1 className="identity-page__title">Welcome to Swimchain</h1>
+        </header>
+        <div className="identity-page__content">
+          <InviteRedemption
+            invite={redeeming.invite}
+            seed={redeeming.seed}
+            publicKey={redeeming.publicKey}
+            onDone={() => {
+              setRedeeming(null);
+              setInviteInput('');
+              navigate(returnTo, { replace: true });
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="identity-page">
@@ -506,6 +598,31 @@ export function IdentityPage(): JSX.Element {
                   Generate a new cryptographic identity to participate in Swimchain.
                   This process includes mining a proof-of-work to prevent spam.
                 </p>
+
+                {/* Invite code (optional) - SWIM-INV-2 */}
+                <div className="identity-page__card identity-page__invite">
+                  <h3>Have an invite code or link?</h3>
+                  <label htmlFor="invite-code-input" className="identity-page__desc">
+                    If a friend sent you an invite, paste the link or code here (optional).
+                    You'll be connected to them automatically once your identity is ready.
+                  </label>
+                  <input
+                    type="text"
+                    id="invite-code-input"
+                    className="identity-page__input"
+                    placeholder="Paste invite link or code"
+                    value={inviteInput}
+                    onChange={(e) => handleInviteChange(e.target.value)}
+                  />
+                  {inviteError && (
+                    <p className="identity-page__error" role="alert">{inviteError}</p>
+                  )}
+                  {!inviteError && inviteInput.trim() !== '' && (
+                    <p className="identity-page__invite-ok">
+                      Invite looks good — it will be redeemed as soon as your identity is created.
+                    </p>
+                  )}
+                </div>
 
                 {state === 'idle' && !keypair && (
                   <div className="identity-page__create-options">

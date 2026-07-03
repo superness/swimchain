@@ -1,0 +1,253 @@
+<meta charset="utf-8">
+<title>You're invited to Swimchain</title>
+<meta name="description" content="A friend invited you to Swimchain - a social network run entirely by its members, with no company in the middle.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<style>
+  :root {
+    --ink: #071E26;
+    --surface: #0C2A33;
+    --surface-2: #10333E;
+    --line: #1B4450;
+    --foam: #E8F1EF;
+    --muted: #8FB0AC;
+    --heat: #FF9E5E;
+    --heat-deep: #E07B3A;
+    --shallow: #6ED3C2;
+    --serif: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+  }
+
+  html { background: var(--ink); }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, rgba(110, 211, 194, 0.07), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(255, 158, 94, 0.05), transparent 55%),
+      var(--ink);
+    color: var(--foam);
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.65;
+  }
+
+  a { color: var(--shallow); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--heat); outline-offset: 3px; border-radius: 2px; }
+
+  .wrap { max-width: 640px; margin: 0 auto; padding: 0 24px 64px; }
+
+  header.site { padding: 28px 0 0; }
+  .mark {
+    font-family: var(--mono); font-size: 15px; letter-spacing: 0.06em; color: var(--foam);
+    text-decoration: none;
+  }
+  .mark .tld { color: var(--muted); }
+
+  .eyebrow {
+    display: block;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--shallow);
+    margin-top: 72px;
+  }
+
+  h1 {
+    margin: 14px 0 16px;
+    font-size: clamp(32px, 6vw, 46px);
+    line-height: 1.1;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  h1 em { font-style: italic; color: var(--heat); }
+
+  .lede { color: var(--muted); font-size: 19px; margin: 0 0 36px; }
+  .lede strong { color: var(--foam); font-weight: 600; }
+
+  .btn {
+    display: inline-block; padding: 14px 28px;
+    font-family: var(--mono); font-size: 15px; text-decoration: none;
+    border: 1px solid var(--heat); color: #241205; border-radius: 4px;
+    background: var(--heat); font-weight: 600;
+  }
+  .btn:hover { background: var(--heat-deep); border-color: var(--heat-deep); }
+
+  .code-card {
+    margin: 40px 0 8px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 22px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  }
+  .code-label {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 12px;
+  }
+  .code-box {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    background: #04141A;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 16px;
+    font-family: var(--mono);
+    font-size: 16px;
+    line-height: 1.5;
+    color: var(--shallow);
+    word-break: break-all;
+    user-select: all;
+    overflow-x: auto;
+  }
+  .copy-btn {
+    margin-top: 14px;
+    width: 100%;
+    padding: 12px 0;
+    font-family: var(--mono); font-size: 14px; font-weight: 600;
+    background: transparent; border: 1px solid var(--heat); color: var(--heat);
+    border-radius: 4px; cursor: pointer;
+  }
+  .copy-btn:hover { background: rgba(255, 158, 94, 0.12); }
+  .copy-btn.copied { border-color: var(--shallow); color: var(--shallow); }
+
+  .missing {
+    color: var(--muted);
+    font-size: 16px;
+    margin: 0;
+  }
+
+  ol.steps {
+    margin: 44px 0 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: step;
+  }
+  ol.steps li {
+    counter-increment: step;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    padding: 16px 0;
+    border-top: 1px solid var(--line);
+    font-size: 17px;
+  }
+  ol.steps li::before {
+    content: counter(step);
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--heat);
+    border: 1px solid var(--line);
+    border-radius: 99px;
+    min-width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    position: relative;
+    top: 4px;
+  }
+
+  footer.site {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+  }
+  footer.site a { color: var(--muted); }
+  footer.site a:hover { color: var(--foam); }
+</style>
+
+<div class="wrap">
+  <header class="site">
+    <a class="mark" href="/">swimchain<span class="tld">.io</span></a>
+  </header>
+
+  <span class="eyebrow">Personal invite</span>
+  <h1>A friend wants you <em>in</em>.</h1>
+  <p class="lede">
+    Swimchain is a social network run entirely by the people on it &mdash;
+    <strong>no company in the middle</strong>, no ads, no algorithm deciding what you see.
+  </p>
+
+  <a class="btn" href="/download">Download Swimchain</a>
+
+  <div class="code-card">
+    <p class="code-label">Your invite code</p>
+    <code class="code-box" id="invite-code">&mdash;</code>
+    <button class="copy-btn" id="copy-btn" type="button">Copy invite code</button>
+    <p class="missing" id="missing-note" hidden>
+      This invite link is missing its code. Ask your friend to send the whole link again.
+    </p>
+  </div>
+
+  <ol class="steps">
+    <li>Download and install.</li>
+    <li>Open it and paste this code when asked.</li>
+    <li>You're in &mdash; your friend is already waiting.</li>
+  </ol>
+
+  <footer class="site">
+    swimchain.io &mdash; a network kept alive by the people on it &middot;
+    <a href="/">what is this?</a>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var codeEl = document.getElementById('invite-code');
+  var copyBtn = document.getElementById('copy-btn');
+  var missing = document.getElementById('missing-note');
+
+  // The invite code travels in the URL fragment so it never reaches
+  // any server logs. Accept both "#<code>" and "#invite=<code>".
+  var raw = window.location.hash || '';
+  var code = raw.replace(/^#/, '');
+  if (code.indexOf('invite=') === 0) {
+    code = code.slice('invite='.length);
+  }
+  try { code = decodeURIComponent(code); } catch (e) { /* keep as-is */ }
+  code = code.replace(/^\s+|\s+$/g, '');
+
+  if (!code) {
+    codeEl.textContent = '\u2014';
+    copyBtn.hidden = true;
+    missing.hidden = false;
+    return;
+  }
+
+  codeEl.textContent = code;
+
+  function fallbackCopy() {
+    var range = document.createRange();
+    range.selectNodeContents(codeEl);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    try { document.execCommand('copy'); } catch (e) { /* selection stays for manual copy */ }
+  }
+
+  function markCopied() {
+    copyBtn.textContent = 'Copied!';
+    copyBtn.className = 'copy-btn copied';
+    setTimeout(function () {
+      copyBtn.textContent = 'Copy invite code';
+      copyBtn.className = 'copy-btn';
+    }, 2000);
+  }
+
+  copyBtn.addEventListener('click', function () {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(markCopied, function () {
+        fallbackCopy();
+        markCopied();
+      });
+    } else {
+      fallbackCopy();
+      markCopied();
+    }
+  });
+})();
+</script>

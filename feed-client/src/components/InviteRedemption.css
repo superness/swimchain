@@ -1,0 +1,54 @@
+/* InviteRedemption styles */
+
+.invite-redemption {
+  display: flex;
+  justify-content: center;
+  padding: 2rem 1rem;
+}
+
+.invite-redemption__card {
+  max-width: 480px;
+  width: 100%;
+  padding: 2rem;
+  border: 1px solid var(--border-color, #e1e5eb);
+  border-radius: 12px;
+  background: var(--bg-primary, #ffffff);
+  text-align: center;
+}
+
+.invite-redemption__card h2 {
+  margin: 0.75rem 0;
+  font-size: 1.25rem;
+}
+
+.invite-redemption__card--success {
+  border-color: var(--success-color, #28a745);
+}
+
+.invite-redemption__card--error {
+  border-color: var(--danger-color, #dc3545);
+}
+
+.invite-redemption__status {
+  color: var(--text-secondary, #5a6169);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0.5rem 0 1.25rem;
+}
+
+.invite-redemption__actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+}
+
+@media (prefers-color-scheme: dark) {
+  .invite-redemption__card {
+    background: var(--bg-primary-dark, #161616);
+    border-color: var(--border-color-dark, #444);
+  }
+
+  .invite-redemption__status {
+    color: var(--text-secondary-dark, #9ca3af);
+  }
+}
