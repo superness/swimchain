@@ -12,9 +12,42 @@ use tokio::sync::Mutex;
 struct AppState {
     node_manager: Arc<Mutex<NodeManager>>,
     binary_path: PathBuf,
-    data_dir: PathBuf,      // Actual data dir with network suffix (e.g., swimchain-testnet)
     data_dir_base: PathBuf, // Base data dir without suffix (what we pass to CLI)
+    settings_path: PathBuf, // Desktop shell settings (persisted network selection)
     cached_cookie: Arc<Mutex<Option<String>>>, // Cached RPC auth to avoid file reads
+}
+
+impl AppState {
+    /// Actual data dir with network suffix for the currently selected network
+    /// (e.g., swimchain-testnet). Derived from the node manager so it stays
+    /// correct after a network switch.
+    async fn current_data_dir(&self) -> PathBuf {
+        self.node_manager.lock().await.data_dir_with_suffix().clone()
+    }
+}
+
+/// Desktop shell settings persisted across launches.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct DesktopSettings {
+    #[serde(default)]
+    network: Option<String>,
+}
+
+fn load_settings(path: &PathBuf) -> DesktopSettings {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings(path: &PathBuf, settings: &DesktopSettings) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create settings dir: {}", e))?;
+    }
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    std::fs::write(path, json).map_err(|e| format!("Failed to write settings: {}", e))
 }
 
 #[tauri::command]
@@ -38,7 +71,7 @@ async fn start_node(state: tauri::State<'_, AppState>, password: String) -> Resu
 
     // Delete old cookie file so we don't read a stale cookie
     // The new node will write a fresh one when it starts
-    let cookie_path = state.data_dir.join(".cookie");
+    let cookie_path = state.current_data_dir().await.join(".cookie");
     if cookie_path.exists() {
         let _ = std::fs::remove_file(&cookie_path);
     }
@@ -57,6 +90,43 @@ async fn stop_node(state: tauri::State<'_, AppState>) -> Result<(), String> {
         *cache = None;
     }
     result
+}
+
+#[tauri::command]
+async fn get_network(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let manager = state.node_manager.lock().await;
+    Ok(manager.network().to_string())
+}
+
+/// Switch the node to a different network (mainnet/testnet/regtest).
+/// Stops the node first if it is running, then persists the selection.
+/// Each network has its own data dir (and therefore its own identity).
+#[tauri::command]
+async fn set_network(state: tauri::State<'_, AppState>, network: String) -> Result<(), String> {
+    let mut manager = state.node_manager.lock().await;
+
+    if manager.network() == network {
+        return Ok(());
+    }
+
+    // Stop the node before switching (no-op if not running)
+    manager.stop().await.map_err(|e| e.to_string())?;
+
+    manager.set_network(&network)?;
+
+    // Clear cached RPC auth - the new network has its own cookie
+    {
+        let mut cache = state.cached_cookie.lock().await;
+        *cache = None;
+    }
+
+    // Persist the selection for the next launch
+    let settings = DesktopSettings {
+        network: Some(network),
+    };
+    save_settings(&state.settings_path, &settings)?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -80,10 +150,11 @@ async fn write_client_log(
 ) -> Result<(), String> {
     use std::io::Write;
 
-    std::fs::create_dir_all(&state.data_dir)
+    let data_dir = state.current_data_dir().await;
+    std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("Failed to create data dir: {}", e))?;
 
-    let log_file = state.data_dir.join(format!("{}.log", client));
+    let log_file = data_dir.join(format!("{}.log", client));
 
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -100,7 +171,7 @@ async fn write_client_log(
 
 #[tauri::command]
 async fn get_data_dir(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    Ok(state.data_dir.to_string_lossy().to_string())
+    Ok(state.current_data_dir().await.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -113,8 +184,8 @@ async fn get_rpc_auth(state: tauri::State<'_, AppState>) -> Result<String, Strin
         }
     }
 
-    // Read the .cookie file from data_dir
-    let cookie_path = state.data_dir.join(".cookie");
+    // Read the .cookie file from the current network's data dir
+    let cookie_path = state.current_data_dir().await.join(".cookie");
 
     // Wait for cookie file to exist (node may still be starting)
     // Poll for up to 10 seconds
@@ -173,9 +244,9 @@ fn encode_cs_address(pubkey: &[u8]) -> Result<String, String> {
 
 #[tauri::command]
 async fn check_identity(state: tauri::State<'_, AppState>) -> Result<IdentityInfo, String> {
-    // Identity is stored at data_dir/identity.enc
+    // Identity is stored at data_dir/identity.enc (per-network data dir)
     // Binary format: CSID(4) + version(1) + pubkey(32) + ...
-    let identity_path = state.data_dir.join("identity.enc");
+    let identity_path = state.current_data_dir().await.join("identity.enc");
 
     if identity_path.exists() {
         // Read the binary file
@@ -218,16 +289,30 @@ async fn create_identity(
     use std::process::Stdio;
     use tokio::process::Command;
 
-    // Run: sw --testnet identity create --data-dir DATA_DIR_BASE
+    // Run: sw [--testnet|--regtest] identity create --data-dir DATA_DIR_BASE
     // Note: CLI auto-appends network suffix to data-dir (swimchain -> swimchain-testnet)
     // Note: --name is not supported for identity create (it's a cryptographic operation)
     // Display name would be set later via identity metadata
-    let output = Command::new(&state.binary_path)
-        .arg("--testnet")
+    let network = {
+        let manager = state.node_manager.lock().await;
+        manager.network().to_string()
+    };
+
+    let mut cmd = Command::new(&state.binary_path);
+    match network.as_str() {
+        "testnet" => {
+            cmd.arg("--testnet");
+        }
+        "regtest" => {
+            cmd.arg("--regtest");
+        }
+        _ => {} // mainnet is default
+    }
+    let output = cmd
         .arg("identity")
         .arg("create")
         .arg("--data-dir")
-        .arg(&state.data_dir_base) // Pass base path, CLI adds -testnet suffix
+        .arg(&state.data_dir_base) // Pass base path, CLI adds network suffix
         .env("SWIMCHAIN_PASSWORD", &password)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -279,9 +364,10 @@ async fn take_screenshot(
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let safe_label = label.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
     let filename = format!("screenshot_{}_{}.png", timestamp, safe_label);
-    let path = state.data_dir.join(&filename);
+    let data_dir = state.current_data_dir().await;
+    let path = data_dir.join(&filename);
 
-    std::fs::create_dir_all(&state.data_dir)
+    std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("Failed to create data dir: {}", e))?;
 
     // Save as PNG
@@ -363,22 +449,27 @@ fn main() {
 
             let data_dir_base = base_data_dir.join("swimchain");
 
-            // The actual path with network suffix (what CLI creates)
-            let data_dir = base_data_dir.join("swimchain-testnet");
+            // Desktop shell settings (network selection persists across launches)
+            let settings_path = base_data_dir.join("swimchain-desktop").join("settings.json");
+            let settings = load_settings(&settings_path);
+            let network = settings
+                .network
+                .filter(|n| node_manager::VALID_NETWORKS.contains(&n.as_str()))
+                .unwrap_or_else(|| "testnet".to_string());
 
             // Create node manager
-            // Pass the BASE path (without -testnet) because CLI auto-appends the network suffix
+            // Pass the BASE path (without suffix) because CLI auto-appends the network suffix
             let node_manager = NodeManager::new(
                 binary_path.clone(),
-                data_dir_base.clone(), // Pass base path, CLI adds -testnet suffix
-                "testnet".to_string(), // Default to testnet for now
+                data_dir_base.clone(), // Pass base path, CLI adds network suffix
+                network,
             );
 
             let state = AppState {
                 node_manager: Arc::new(Mutex::new(node_manager)),
                 binary_path,
-                data_dir,           // With -testnet suffix (for check_identity)
                 data_dir_base,      // Without suffix (for CLI commands)
+                settings_path,
                 cached_cookie: Arc::new(Mutex::new(None)), // Will be populated on first get_rpc_auth call
             };
 
@@ -393,6 +484,8 @@ fn main() {
             get_node_status,
             start_node,
             stop_node,
+            get_network,
+            set_network,
             get_rpc_endpoint,
             get_rpc_auth,
             get_log_file_path,

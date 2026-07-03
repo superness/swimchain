@@ -13,31 +13,44 @@ pub struct NodeManager {
     rpc_port: u16,
 }
 
+/// Valid network names accepted by the desktop shell.
+pub const VALID_NETWORKS: [&str; 3] = ["mainnet", "testnet", "regtest"];
+
+/// Default RPC port per network. Matches the node (src/network/mode.rs):
+/// RPC port = default P2P port + 1 (mainnet 9735+1, testnet 19735+1, regtest 29735+1).
+pub fn default_rpc_port(network: &str) -> u16 {
+    match network {
+        "mainnet" => 9736,
+        "testnet" => 19736,
+        "regtest" => 29736,
+        _ => 19736,
+    }
+}
+
+/// Compute the actual data dir with network suffix (what the CLI creates),
+/// e.g. `swimchain` -> `swimchain-testnet`. Mainnet has no suffix.
+fn data_dir_with_suffix_for(data_dir: &PathBuf, network: &str) -> PathBuf {
+    let suffix = match network {
+        "testnet" => "-testnet",
+        "regtest" => "-regtest",
+        _ => "",
+    };
+    if suffix.is_empty() {
+        data_dir.clone()
+    } else {
+        let base_name = data_dir.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("swimchain");
+        data_dir.parent()
+            .map(|p| p.join(format!("{}{}", base_name, suffix)))
+            .unwrap_or_else(|| data_dir.clone())
+    }
+}
+
 impl NodeManager {
     pub fn new(binary_path: PathBuf, data_dir: PathBuf, network: String) -> Self {
-        let rpc_port = match network.as_str() {
-            "mainnet" => 9100,
-            "testnet" => 19736,
-            "regtest" => 29100,
-            _ => 9100,
-        };
-
-        // Calculate actual data dir with network suffix (what the CLI creates)
-        let suffix = match network.as_str() {
-            "testnet" => "-testnet",
-            "regtest" => "-regtest",
-            _ => "",
-        };
-        let data_dir_with_suffix = if suffix.is_empty() {
-            data_dir.clone()
-        } else {
-            let base_name = data_dir.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("swimchain");
-            data_dir.parent()
-                .map(|p| p.join(format!("{}{}", base_name, suffix)))
-                .unwrap_or_else(|| data_dir.clone())
-        };
+        let rpc_port = default_rpc_port(&network);
+        let data_dir_with_suffix = data_dir_with_suffix_for(&data_dir, &network);
 
         Self {
             binary_path,
@@ -47,6 +60,20 @@ impl NodeManager {
             process: None,
             rpc_port,
         }
+    }
+
+    /// Switch to a different network. The node must be stopped first.
+    pub fn set_network(&mut self, network: &str) -> Result<(), String> {
+        if !VALID_NETWORKS.contains(&network) {
+            return Err(format!("Invalid network: {}", network));
+        }
+        if self.is_running() {
+            return Err("Cannot switch networks while the node is running".to_string());
+        }
+        self.network = network.to_string();
+        self.rpc_port = default_rpc_port(network);
+        self.data_dir_with_suffix = data_dir_with_suffix_for(&self.data_dir, network);
+        Ok(())
     }
 
     pub fn is_running(&self) -> bool {

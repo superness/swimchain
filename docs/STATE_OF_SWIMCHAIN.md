@@ -1,5 +1,20 @@
 # State of Swimchain — Frontend Parity Audit
 
+> **PROGRAM COMPLETE — 2026-07-02.** All 24 lanes of the parity DAG below are
+> verified done on main (PRs #1–#51, each gated on typecheck/cargo/live-node
+> verification). Highlights beyond the plan: four write paths that a real node
+> rejected 100% of the time (feed reactions, chat messages, bridged posts,
+> archiver engagements) were found and fixed by the new e2e suite
+> (`tests/e2e-write-paths/`, 19 tests vs a live regtest node, ~25s); the node's
+> WebSocket endpoint was discovered broken-since-birth and repaired (P6); the
+> desktop app's mainnet/regtest RPC ports could never have connected (P8);
+> chat-client didn't compile on main until P1. Remaining known gaps are
+> documented in lane results on the Overmind board and PR bodies: node-side
+> revision/content_type support for wiki (P5), a user-listing RPC for global
+> discovery (P3), UI-layer Argon2id configs hardcoded to testnet (Q2 note).
+> The matrix and per-client verdicts below are the 2026-07-01 PRE-program
+> baseline, kept for historical reference.
+
 **Date:** 2026-07-01
 **Method:** 6 parallel code audits (node RPC surface + all 13 client apps + shared libraries), verified against current source. Supersedes `CROSS_CLIENT_AUDIT.md` (2026-02-17) and `NOT_IMPLEMENTED_SWEEP.md` (2026-02-17), both of which are now materially stale — several of their "PASS" claims are false against the current node API, and several of their CRITICAL findings have since been fixed.
 

@@ -63,7 +63,7 @@ npm run build
 echo ""
 echo "Step 6: Building all clients..."
 
-CLIENTS=("forum-client" "chat-client" "feed-client" "search-client")
+CLIENTS=("forum-client" "chat-client" "feed-client" "search-client" "wiki-client")
 
 for CLIENT in "${CLIENTS[@]}"; do
     echo ""

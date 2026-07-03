@@ -4,7 +4,9 @@
 
 import { useMemo } from "react";
 
-type ClientType = "forum" | "chat" | "feed" | "search";
+type ClientType = "forum" | "chat" | "feed" | "search" | "wiki";
+
+const NETWORKS = ["mainnet", "testnet", "regtest"] as const;
 
 interface NodeStatus {
   running: boolean;
@@ -24,6 +26,10 @@ interface Props {
   identity?: IdentityInfo | null;
   selectedClient: ClientType;
   onClientChange: (client: ClientType) => void;
+  /** Currently selected network (mainnet/testnet/regtest). */
+  network?: string;
+  /** Called when the user picks a different network. Switching stops the node. */
+  onNetworkChange?: (network: string) => void;
   onScreenshot?: () => void;
 }
 
@@ -32,9 +38,10 @@ const CLIENT_LABELS: Record<ClientType, string> = {
   chat: "Chat",
   feed: "Feed",
   search: "Search",
+  wiki: "Wiki",
 };
 
-export function NodeStatusBar({ status, identity, selectedClient, onClientChange, onScreenshot }: Props) {
+export function NodeStatusBar({ status, identity, selectedClient, onClientChange, network, onNetworkChange, onScreenshot }: Props) {
   const truncatedAddress = useMemo(() => {
     if (!identity?.address) return null;
     const addr = identity.address;
@@ -53,7 +60,29 @@ export function NodeStatusBar({ status, identity, selectedClient, onClientChange
         {status?.running && (
           <>
             <span className="status-divider">|</span>
-            <span className="network-badge">{status.network}</span>
+            {onNetworkChange ? (
+              <select
+                className="network-badge network-select"
+                value={network ?? status.network}
+                title="Switch network (stops the node)"
+                onChange={(e) => {
+                  const next = e.target.value;
+                  const current = network ?? status.network;
+                  if (next === current) return;
+                  if (window.confirm(`Switch to ${next}? This stops the node; you'll need to unlock the ${next} identity.`)) {
+                    onNetworkChange(next);
+                  } else {
+                    e.target.value = current;
+                  }
+                }}
+              >
+                {NETWORKS.map((net) => (
+                  <option key={net} value={net}>{net}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="network-badge">{status.network}</span>
+            )}
             <span className="status-divider">|</span>
             <span className="peer-count">{status.peer_count} peers</span>
           </>

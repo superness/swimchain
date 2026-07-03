@@ -67,5 +67,9 @@ export { useSponsorship, SponsorshipProvider } from './useSponsorship';
 export { useSponsorshipOffers } from './useSponsorshipOffers';
 export { useMySponsorshipOffers } from './useMySponsorshipOffers';
 
+// Real-time new-posts indicator (node WebSocket events)
+export { useNewPostsIndicator } from './useNewPostsIndicator';
+export type { UseNewPostsIndicatorResult } from './useNewPostsIndicator';
+
 // Keyboard navigation
 export { useKeyboardNavigation, KeyboardNavigationProvider } from './useKeyboardNavigation';

@@ -70,8 +70,11 @@ describe('archiver-client write path (mine -> sign_message -> submit_engagement 
   });
 
   it('submits an engagement the node accepts, then re-polls pool status', async () => {
-    // Baseline for the on-chain assertion at the end.
+    // Baseline for the on-chain assertion at the end. last_engagement has
+    // second resolution; without this pause a fast run lands in the same
+    // second as the seed post and the strict > assertion flakes.
     const before = await seeder.rpc.getContent(targetPostId);
+    await new Promise((r) => setTimeout(r, 1100));
     // Step 1: author identity = node identity (AutoEngageEngine mines
     // against the key that will sign, and verifies they match).
     const probe = await archiverRpc.signMessage('identity-probe');

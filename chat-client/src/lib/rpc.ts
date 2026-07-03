@@ -177,6 +177,14 @@ export class SwimchainRpc {
   }
 
   /**
+   * Get the HTTP RPC endpoint this client talks to.
+   * Used to derive the WebSocket events URL (ws://.../ws).
+   */
+  getEndpoint(): string {
+    return this.endpoint;
+  }
+
+  /**
    * Set identity for signature auth (can be called after construction)
    */
   setIdentity(seed: string, publicKey: string): void {

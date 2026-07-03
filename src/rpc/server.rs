@@ -702,12 +702,14 @@ async fn handle_connection(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::io::AsyncReadExt;
 
-    // Peek at the first bytes to check for WebSocket upgrade
-    let mut peek_buf = [0u8; 128];
+    // Read the first bytes to check for WebSocket upgrade. The buffer must be
+    // large enough to reach the Upgrade header past long User-Agent headers
+    // sent by browsers. The consumed bytes are replayed to whichever handler
+    // wins (PeekedStream), so nothing is lost.
+    let mut peek_buf = [0u8; 1024];
     let stream = stream.into_std()?;
     stream.set_nonblocking(false)?;
 
-    // Peek at the data without consuming it
     let n = {
         use std::io::Read;
         let mut stream_ref = &stream;
@@ -717,20 +719,21 @@ async fn handle_connection(
         }
     };
 
-    // Convert back to tokio stream and put peeked data back
+    // Convert back to tokio stream (peeked data is replayed by the handlers below)
     stream.set_nonblocking(true)?;
     let stream = TcpStream::from_std(stream)?;
 
-    // Check if this looks like a WebSocket upgrade request to /ws
+    // Check if this looks like a WebSocket upgrade request to /ws.
+    // Header names are case-insensitive (browsers send "Upgrade:", Node sends "upgrade:").
     let is_ws_upgrade = if n > 0 {
-        let request_start = String::from_utf8_lossy(&peek_buf[..n]);
-        request_start.starts_with("GET /ws") && request_start.contains("Upgrade: websocket")
+        let request_start = String::from_utf8_lossy(&peek_buf[..n]).to_ascii_lowercase();
+        request_start.starts_with("get /ws") && request_start.contains("upgrade: websocket")
     } else {
         false
     };
 
     if is_ws_upgrade {
-        // Handle WebSocket connection
+        // Handle WebSocket connection (replaying the consumed handshake bytes)
         handle_websocket(stream, state, client_ip, &peek_buf[..n]).await
     } else {
         // Handle regular HTTP connection - we need to replay the peeked data
@@ -749,17 +752,19 @@ async fn handle_tls_connection(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::io::AsyncReadExt;
 
-    // For TLS connections, we read the first bytes directly
-    let mut peek_buf = [0u8; 128];
+    // For TLS connections, we read the first bytes directly. The consumed
+    // bytes are replayed to whichever handler wins (TlsPeekedStream).
+    let mut peek_buf = [0u8; 1024];
     let n = match stream.read(&mut peek_buf).await {
         Ok(n) => n,
         Err(_) => 0,
     };
 
-    // Check if this looks like a WebSocket upgrade request to /ws
+    // Check if this looks like a WebSocket upgrade request to /ws.
+    // Header names are case-insensitive (browsers send "Upgrade:", Node sends "upgrade:").
     let is_ws_upgrade = if n > 0 {
-        let request_start = String::from_utf8_lossy(&peek_buf[..n]);
-        request_start.starts_with("GET /ws") && request_start.contains("Upgrade: websocket")
+        let request_start = String::from_utf8_lossy(&peek_buf[..n]).to_ascii_lowercase();
+        request_start.starts_with("get /ws") && request_start.contains("upgrade: websocket")
     } else {
         false
     };
@@ -962,13 +967,17 @@ async fn handle_websocket(
     stream: TcpStream,
     state: Arc<ServerState>,
     client_ip: IpAddr,
-    _peeked: &[u8],
+    peeked: &[u8],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Check connection limits
     if !state.event_manager.can_accept_connection(client_ip).await {
         warn!("WebSocket connection rejected: too many connections from {}", client_ip);
         return Ok(());
     }
+
+    // Replay the handshake bytes consumed during protocol detection so the
+    // WebSocket handshake sees the full HTTP upgrade request.
+    let stream = PeekedStream::new(peeked.to_vec(), stream);
 
     // Accept WebSocket connection
     let ws_stream = match tokio_tungstenite::accept_async(stream).await {
@@ -1180,13 +1189,17 @@ async fn handle_tls_websocket(
     stream: tokio_rustls::server::TlsStream<TcpStream>,
     state: Arc<ServerState>,
     client_ip: IpAddr,
-    _peeked: &[u8],
+    peeked: &[u8],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Check connection limits
     if !state.event_manager.can_accept_connection(client_ip).await {
         warn!("WebSocket TLS connection rejected: too many connections from {}", client_ip);
         return Ok(());
     }
+
+    // Replay the handshake bytes consumed during protocol detection so the
+    // WebSocket handshake sees the full HTTP upgrade request.
+    let stream = TlsPeekedStream::new(peeked.to_vec(), stream);
 
     // Accept WebSocket connection over TLS
     let ws_stream = match tokio_tungstenite::accept_async(stream).await {
