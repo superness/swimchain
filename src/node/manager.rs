@@ -740,6 +740,7 @@ impl NodeManager {
         self.set_state(NodeState::Bootstrapping);
 
         // 6. Bind transport (wrapped in Arc for sharing with accept loop)
+        // SWIM-PRIV-2: route outbound dials through the SOCKS5 proxy when set.
         let transport = TcpTransport::bind(self.config.listen_addr, self.local_info.clone())
             .await
             .map_err(|e| {
@@ -747,7 +748,19 @@ impl NodeManager {
                     self.config.listen_addr,
                     std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                 )
-            })?;
+            })?
+            .with_proxy(self.config.proxy);
+        if let Some(proxy) = self.config.proxy {
+            info!(
+                "[PRIVACY] Outbound connections routed through SOCKS5 proxy {}{}",
+                proxy,
+                if self.config.proxy_only {
+                    " (proxy-only: DNS-seed + local discovery disabled)"
+                } else {
+                    ""
+                }
+            );
+        }
         let actual_addr = transport.local_addr();
         let transport_arc = Arc::new(transport);
         self.transport = Some(transport_arc.clone());
@@ -953,7 +966,14 @@ impl NodeManager {
             crate::discovery::seed_list::default_mainnet_dns_seeds()
         };
 
-        if !dns_seeds.is_empty() {
+        // SWIM-PRIV-2: proxy-only mode must not resolve DNS seeds locally, as
+        // that would leak DNS lookups (and thus interest in the network) on
+        // clearnet even though the peer connections themselves are proxied.
+        if self.config.proxy_only && !dns_seeds.is_empty() {
+            info!("[BOOTSTRAP] proxy-only mode: skipping DNS-seed resolution to avoid DNS leak");
+        }
+
+        if !dns_seeds.is_empty() && !self.config.proxy_only {
             info!("[BOOTSTRAP] Resolving {} DNS seeds...", dns_seeds.len());
             let dns_peers = crate::discovery::seed_list::resolve_dns_seeds(&dns_seeds).await;
             if !dns_peers.is_empty() {

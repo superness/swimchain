@@ -59,6 +59,17 @@ pub enum NodeCmd {
         #[arg(short, long)]
         connect: Vec<SocketAddr>,
 
+        /// Route all outbound connections through a SOCKS5 proxy
+        /// (e.g. 127.0.0.1:9050 for Tor), hiding the node's real IP from peers.
+        #[arg(long, value_name = "HOST:PORT")]
+        proxy: Option<SocketAddr>,
+
+        /// Refuse any non-proxied path: requires --proxy, disables DNS-seed and
+        /// local (mDNS) discovery, and advertises no local address. Nothing
+        /// dials clearnet directly.
+        #[arg(long)]
+        proxy_only: bool,
+
         /// Run in background (not yet implemented)
         #[arg(long)]
         background: bool,
@@ -233,8 +244,10 @@ pub async fn execute(cmd: NodeCmd, config: &CliConfig, seed_node_mode: bool) -> 
         NodeCmd::Start {
             listen,
             connect,
+            proxy,
+            proxy_only,
             background,
-        } => start(config, listen, connect, background, seed_node_mode).await,
+        } => start(config, listen, connect, proxy, proxy_only, background, seed_node_mode).await,
         NodeCmd::Stop => stop(),
         NodeCmd::Status { json } => status(json),
         NodeCmd::Peers { json } => peers(json),
@@ -299,10 +312,13 @@ fn format_address(node_id: &[u8; 32]) -> String {
 }
 
 /// Start the node in foreground mode
+#[allow(clippy::too_many_arguments)]
 async fn start(
     config: &CliConfig,
     listen: SocketAddr,
     connect: Vec<SocketAddr>,
+    proxy: Option<SocketAddr>,
+    proxy_only: bool,
     background: bool,
     seed_node_mode: bool,
 ) -> Result<()> {
@@ -337,6 +353,23 @@ async fn start(
     node_config.data_dir = config.data_dir();
     node_config.rpc_port = Some(rpc_port);
     node_config.seed_node_mode = seed_node_mode;
+
+    // SWIM-PRIV-2: SOCKS5 / Tor outbound proxy settings
+    node_config.proxy = proxy;
+    node_config.proxy_only = proxy_only;
+
+    // --proxy-only is meaningless without a proxy to route through.
+    if proxy_only && proxy.is_none() {
+        return Err(CliError::Other(
+            "--proxy-only requires --proxy <host:port> (e.g. --proxy 127.0.0.1:9050)".to_string(),
+        ));
+    }
+    if let Some(p) = proxy {
+        println!("Privacy: outbound connections routed through SOCKS5 proxy {p}");
+        if proxy_only {
+            println!("Privacy: proxy-only mode — DNS-seed and local (mDNS) discovery disabled");
+        }
+    }
 
     // Add any explicit --connect peers (they will be connected after seeds)
     for addr in &connect {
@@ -581,6 +614,58 @@ fn contribution_status(json_output: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_start_parses_proxy_flags() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(subcommand)]
+            cmd: NodeCmd,
+        }
+
+        let w = Wrap::try_parse_from([
+            "sw",
+            "start",
+            "--proxy",
+            "127.0.0.1:9050",
+            "--proxy-only",
+        ])
+        .expect("should parse proxy flags");
+
+        match w.cmd {
+            NodeCmd::Start {
+                proxy, proxy_only, ..
+            } => {
+                assert_eq!(proxy, Some("127.0.0.1:9050".parse().unwrap()));
+                assert!(proxy_only);
+            }
+            other => panic!("expected Start, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_start_proxy_defaults_off() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Wrap {
+            #[command(subcommand)]
+            cmd: NodeCmd,
+        }
+
+        let w = Wrap::try_parse_from(["sw", "start"]).expect("should parse with no proxy");
+        match w.cmd {
+            NodeCmd::Start {
+                proxy, proxy_only, ..
+            } => {
+                assert!(proxy.is_none());
+                assert!(!proxy_only);
+            }
+            other => panic!("expected Start, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_parse_valid_peer_id() {

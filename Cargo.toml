@@ -28,6 +28,9 @@ path = "src/bin/cs.rs"
 # Async runtime (ROADMAP Appendix B)
 tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
 
+# SOCKS5 proxy for outbound P2P (SWIM-PRIV-2 - Tor/proxy IP privacy)
+tokio-socks = "0.5"
+
 # Cryptography - Ed25519 per SPEC_01
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 
