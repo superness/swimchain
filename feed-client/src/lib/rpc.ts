@@ -103,6 +103,8 @@ export interface SponsorshipOfferSummary {
   expires_at: number;
   created_at: number;
   requirements: SponsorshipOfferRequirements;
+  /** When true, claims are approved immediately (invite links) */
+  auto_approve?: boolean;
 }
 
 export interface ListSponsorshipOffersResult {
@@ -127,6 +129,8 @@ export interface SponsorshipOfferDetail {
   created_at: number;
   requirements: SponsorshipOfferRequirements;
   pending_claims: PendingClaimDetail[];
+  /** When true, claims are approved immediately (invite links) */
+  auto_approve?: boolean;
 }
 
 export interface CreateSponsorshipOfferResult {
@@ -169,6 +173,8 @@ export interface MySponsorshipOfferSummary {
   expires_at: number;
   created_at: number;
   is_expired: boolean;
+  /** When true, claims are approved immediately (invite links) */
+  auto_approve?: boolean;
 }
 
 export interface ListMySponsorshipOffersResult {
@@ -980,6 +986,8 @@ export class SwimchainRpc {
     expiresDays: number;
     minPowDifficulty?: number;
     applicationRequired?: boolean;
+    /** When true, claims are approved immediately (used by invite links) */
+    autoApprove?: boolean;
     signature: string;
     timestamp: number;
   }): Promise<CreateSponsorshipOfferResult> {
@@ -990,6 +998,7 @@ export class SwimchainRpc {
       expires_days: params.expiresDays,
       min_pow_difficulty: params.minPowDifficulty ?? 0,
       application_required: params.applicationRequired ?? false,
+      auto_approve: params.autoApprove ?? false,
       signature: params.signature,
       timestamp: params.timestamp,
     });

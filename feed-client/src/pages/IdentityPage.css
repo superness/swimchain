@@ -266,3 +266,14 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* Invite code field (SWIM-INV-2) */
+.identity-page__invite {
+  margin-bottom: 1rem;
+}
+
+.identity-page__invite-ok {
+  color: var(--color-success);
+  font-size: 0.875rem;
+  margin: 0.5rem 0 0;
+}

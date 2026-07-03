@@ -16,6 +16,7 @@ import { SponsorshipOfferCard } from '../components/SponsorshipOfferCard';
 import { SponsorshipStatus } from '../components/SponsorshipStatus';
 import { ClaimOfferModal } from '../components/ClaimOfferModal';
 import { CreateOfferModal } from '../components/CreateOfferModal';
+import { CreateInviteLinkModal } from '../components/CreateInviteLinkModal';
 import { logger } from '../lib/logger';
 import type { SponsorshipOfferSummary, SponsorshipOfferDetail } from '../lib/rpc';
 import './Sponsorship.css';
@@ -102,6 +103,9 @@ export function SponsorshipPage(): JSX.Element {
 
   // Create offer modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
+
+  // Create invite link modal state
+  const [inviteModalOpen, setInviteModalOpen] = useState(false);
 
   // Offer detail / claims view state
   const [viewingDetail, setViewingDetail] = useState<SponsorshipOfferDetail | null>(null);
@@ -352,6 +356,13 @@ export function SponsorshipPage(): JSX.Element {
                     <button
                       type="button"
                       className="btn btn-primary"
+                      onClick={() => setInviteModalOpen(true)}
+                    >
+                      Create Invite Link
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
                       onClick={() => setCreateModalOpen(true)}
                     >
                       Create Offer
@@ -492,6 +503,11 @@ export function SponsorshipPage(): JSX.Element {
       <CreateOfferModal
         isOpen={createModalOpen}
         onClose={() => setCreateModalOpen(false)}
+        onSuccess={handleCreateSuccess}
+      />
+      <CreateInviteLinkModal
+        isOpen={inviteModalOpen}
+        onClose={() => setInviteModalOpen(false)}
         onSuccess={handleCreateSuccess}
       />
     </div>
