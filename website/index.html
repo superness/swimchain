@@ -191,6 +191,13 @@
     .split { grid-template-columns: 1fr; }
     ul.spec-list { columns: 1; }
   }
+  @media (max-width: 640px) {
+    /* the desktop nav row overflows a phone; the hero CTAs are the real
+       entry points, so drop the nav rather than jam or hamburger it */
+    nav.site { display: none; }
+    .cta-row { flex-direction: column; align-items: stretch; }
+    .cta-row .btn { text-align: center; }
+  }
   @media (prefers-reduced-motion: reduce) {
     .post, .heat-fill { transition: none !important; }
   }
@@ -217,7 +224,8 @@
       on a 7-day half-life enforced by the protocol itself.
     </p>
     <div class="cta-row">
-      <a class="btn primary" href="#node">Run a node</a>
+      <a class="btn primary" href="/download">Get Swimchain</a>
+      <a class="btn" href="#node">Run a node</a>
       <a class="btn" href="developers.html">Read the protocol</a>
     </div>
   </div>

@@ -56,3 +56,6 @@ ACADEMIC_WHITEPAPER.md
 desktop-app/public/clients/
 tools/dns-seeder/swimchain-dns-seeder
 *.tsbuildinfo
+
+docs/qa/node_modules/
+docs/qa/package*.json

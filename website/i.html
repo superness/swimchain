@@ -117,6 +117,11 @@
     font-size: 16px;
     margin: 0;
   }
+  .code-hint {
+    color: var(--muted);
+    font-size: 14px;
+    margin: 10px 0 0;
+  }
 
   ol.steps {
     margin: 44px 0 0;
@@ -172,12 +177,16 @@
     <strong>no company in the middle</strong>, no ads, no algorithm deciding what you see.
   </p>
 
-  <a class="btn" href="/download">Download Swimchain</a>
+  <a class="btn" id="download-btn" href="/download">Download Swimchain</a>
 
   <div class="code-card">
     <p class="code-label">Your invite code</p>
     <code class="code-box" id="invite-code">&mdash;</code>
     <button class="copy-btn" id="copy-btn" type="button">Copy invite code</button>
+    <p class="code-hint" id="code-hint" hidden>
+      You usually won't need this &mdash; the app picks up your invite automatically.
+      It's here as a backup in case it asks.
+    </p>
     <p class="missing" id="missing-note" hidden>
       This invite link is missing its code. Ask your friend to send the whole link again.
     </p>
@@ -218,7 +227,15 @@
     return;
   }
 
-  codeEl.textContent = code;
+  // Show a short, non-scary preview; the full token stays copyable and is
+  // carried on the download link so the app can pick it up automatically.
+  var preview = code.length > 18 ? code.slice(0, 10) + '…' + code.slice(-4) : code;
+  codeEl.textContent = preview;
+  codeEl.setAttribute('data-full', code);
+  var hint = document.getElementById('code-hint');
+  if (hint) hint.hidden = false;
+  var dl = document.getElementById('download-btn');
+  if (dl) dl.setAttribute('href', '/download#invite=' + encodeURIComponent(code));
 
   function fallbackCopy() {
     var range = document.createRange();
