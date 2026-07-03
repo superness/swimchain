@@ -710,6 +710,9 @@ impl NodeManager {
         if let Some(ref engagement_graph) = self.engagement_graph {
             router_builder = router_builder.engagement_graph(engagement_graph.clone());
         }
+        // SPEC_13 Phase A: behavioral branching (default ON for regtest only)
+        router_builder =
+            router_builder.behavioral_branching(self.config.behavioral_branching_enabled());
         if let Some(ref agg_cache) = self.aggregation_cache {
             router_builder = router_builder.aggregation_cache(agg_cache.clone());
         }
