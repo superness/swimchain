@@ -152,9 +152,14 @@ export function useMessageInput({
     cancelRef.current = false;
     setProgress({ attempts: 0, elapsedMs: 0, estimatedRemainingMs: 15000 });
 
-    // Start mining PoW for the message
+    // Start mining PoW for the message.
+    // The node verifies post PoW over `${title}\n\n${body}` (submit_post in
+    // rpc/methods.rs). Messages are submitted with title=body=content, so the
+    // PoW MUST be mined over the composed bytes — mining over the bare
+    // content produced "PoW verification failed" on a real node (SWIM-Q2).
+    const trimmed = content.trim();
     const publicKey = keypair.publicKey();
-    minePost(content.trim(), publicKey).catch((err) => {
+    minePost(`${trimmed}\n\n${trimmed}`, publicKey).catch((err) => {
       console.error('[MessageInput] Mining failed:', err);
       if (!cancelRef.current) {
         setState('typing');

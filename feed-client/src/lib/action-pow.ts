@@ -178,6 +178,46 @@ export async function createChallenge(
 }
 
 /**
+ * Create a challenge with a pre-computed content hash (no re-hashing)
+ *
+ * Use this for engagement PoW where the contentId is already a hash
+ * (e.g., "sha256:abc123..."). The node reconstructs the challenge with the
+ * raw 32-byte content hash (verify_pow_submission_raw), NOT with
+ * SHA256 of the "sha256:..." string — mining over the string is rejected.
+ *
+ * @param actionType - The action type
+ * @param contentHash - Pre-computed 32-byte content hash (raw bytes, not hex string)
+ * @param authorPubkey - 32-byte author public key
+ * @param difficulty - PoW difficulty (leading zero bits)
+ * @returns PoW challenge ready for mining
+ */
+export function createChallengeWithRawHash(
+  actionType: ActionType,
+  contentHash: Uint8Array,
+  authorPubkey: Uint8Array,
+  difficulty: number,
+): PoWChallenge {
+  if (contentHash.length !== 32) {
+    throw new Error(`Content hash must be 32 bytes, got ${contentHash.length}`);
+  }
+  if (authorPubkey.length !== 32) {
+    throw new Error(`Author pubkey must be 32 bytes, got ${authorPubkey.length}`);
+  }
+
+  const timestamp = Math.floor(Date.now() / 1000);
+  const nonceSpace = generateNonceSpace();
+
+  return {
+    actionType,
+    contentHash,
+    authorId: authorPubkey,
+    timestamp,
+    difficulty,
+    nonceSpace,
+  };
+}
+
+/**
  * Compute Argon2id hash for PoW
  */
 async function computeArgon2id(

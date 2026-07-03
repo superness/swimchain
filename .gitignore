@@ -55,3 +55,4 @@ ACADEMIC_WHITEPAPER.md
 # Keep only the consolidated whitepaper in docs/
 desktop-app/public/clients/
 tools/dns-seeder/swimchain-dns-seeder
+*.tsbuildinfo

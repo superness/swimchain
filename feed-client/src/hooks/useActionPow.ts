@@ -10,10 +10,12 @@ import {
   ActionType,
   type PoWSolution,
   createChallenge,
+  createChallengeWithRawHash,
   computePow,
   getDifficulty,
   getConfig,
   solutionToRpcParams,
+  hexToBytes,
 } from '../lib/action-pow';
 
 // Re-export ActionType for convenience
@@ -43,6 +45,17 @@ export interface UseActionPowResult {
   mine: (
     actionType: ActionType,
     content: Uint8Array,
+    authorPubkey: Uint8Array,
+    isTestnet?: boolean,
+  ) => Promise<PoWSolution>;
+  /**
+   * Start mining with a pre-computed raw 32-byte content hash (no
+   * re-hashing). Required for engagement challenges, where the node
+   * rebuilds the challenge from the raw content hash.
+   */
+  mineWithRawHash: (
+    actionType: ActionType,
+    contentHash: Uint8Array,
     authorPubkey: Uint8Array,
     isTestnet?: boolean,
   ) => Promise<PoWSolution>;
@@ -127,6 +140,50 @@ export function useActionPow(): UseActionPowResult {
     }
   }, []);
 
+  /**
+   * Mine with a pre-computed raw 32-byte content hash (no re-hashing).
+   * Required for engagement, where contentId is already a hash and the node
+   * rebuilds the challenge from the raw bytes.
+   */
+  const mineWithRawHash = useCallback(async (
+    actionType: ActionType,
+    contentHash: Uint8Array,
+    authorPubkey: Uint8Array,
+    isTestnet: boolean = true,
+  ): Promise<PoWSolution> => {
+    setState('mining');
+    setSolution(null);
+    setError(null);
+    setProgress({ attempts: 0, elapsedMs: 0, hashRate: 0 });
+    cancelledRef.current = false;
+
+    try {
+      const difficulty = getDifficulty(actionType, isTestnet);
+      const config = getConfig(isTestnet);
+
+      const challenge = createChallengeWithRawHash(actionType, contentHash, authorPubkey, difficulty);
+
+      const result = await computePow(
+        challenge,
+        config,
+        (attempts, elapsedMs, hashRate) => {
+          setProgress({ attempts, elapsedMs, hashRate });
+        },
+        () => cancelledRef.current,
+      );
+
+      setSolution(result);
+      setState('complete');
+      return result;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Mining failed';
+      console.error('[ActionPow] Mining error:', message);
+      setError(message);
+      setState(message.includes('cancelled') ? 'cancelled' : 'error');
+      throw err;
+    }
+  }, []);
+
   const cancel = useCallback(() => {
     cancelledRef.current = true;
     setState('cancelled');
@@ -151,6 +208,7 @@ export function useActionPow(): UseActionPowResult {
     solution,
     error,
     mine,
+    mineWithRawHash,
     cancel,
     reset,
     getRpcParams,
@@ -201,6 +259,12 @@ export function useReplyPow() {
 
 /**
  * Hook for engagement PoW (reactions, etc.)
+ *
+ * IMPORTANT: For engagement, the contentId is already a hash ("sha256:abc...").
+ * The node reconstructs the challenge with the raw 32-byte hash
+ * (verify_pow_submission_raw), NOT SHA256 of the contentId string. Mining
+ * over the string produced "PoW verification failed: hash mismatch" on a
+ * real node — same bug forum-client fixed with createChallengeWithRawHash.
  */
 export function useEngagementPow() {
   const actionPow = useActionPow();
@@ -210,9 +274,14 @@ export function useEngagementPow() {
     authorPubkey: Uint8Array,
     isTestnet: boolean = true,
   ): Promise<PoWSolution> => {
-    const content = new TextEncoder().encode(contentId);
-    return actionPow.mine(ActionType.Engage, content, authorPubkey, isTestnet);
-  }, [actionPow.mine]);
+    // Extract raw hash bytes from contentId ("sha256:abc123..." -> bytes)
+    const hashHex = contentId.startsWith('sha256:') ? contentId.slice(7) : contentId;
+    const contentHash = hexToBytes(hashHex);
+    if (contentHash.length !== 32) {
+      throw new Error(`Invalid content hash length: expected 32 bytes, got ${contentHash.length}`);
+    }
+    return actionPow.mineWithRawHash(ActionType.Engage, contentHash, authorPubkey, isTestnet);
+  }, [actionPow.mineWithRawHash]);
 
   return {
     ...actionPow,
