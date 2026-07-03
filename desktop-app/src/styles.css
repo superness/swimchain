@@ -714,3 +714,16 @@ select.network-select:focus {
 .screenshot-btn:hover {
   opacity: 1;
 }
+
+/* "forgot password -> start fresh" escape hatch on the unlock screen */
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--text-muted, #8fb0ac);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 13px;
+  margin-top: 16px;
+}
+.btn-link:hover { color: var(--text, #e8f1ef); }
+.reset-confirm { margin-top: 16px; }

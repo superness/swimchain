@@ -281,6 +281,26 @@ async fn check_identity(state: tauri::State<'_, AppState>) -> Result<IdentityInf
 }
 
 #[tauri::command]
+async fn reset_identity(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    // "Forgot password" escape hatch: archive the existing identity (NEVER
+    // delete a key file) and let onboarding create a fresh one. The old
+    // identity stays recoverable at identity.enc.bak-<ts> if the password
+    // ever resurfaces.
+    let data_dir = state.current_data_dir().await;
+    let identity_path = data_dir.join("identity.enc");
+    if identity_path.exists() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let backup = data_dir.join(format!("identity.enc.bak-{}", ts));
+        std::fs::rename(&identity_path, &backup)
+            .map_err(|e| format!("Failed to archive identity: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn create_identity(
     state: tauri::State<'_, AppState>,
     _name: String, // Display name will be set separately via metadata
@@ -493,6 +513,7 @@ fn main() {
             write_client_log,
             check_identity,
             create_identity,
+            reset_identity,
             take_screenshot,
         ])
         .on_window_event(|window, event| {

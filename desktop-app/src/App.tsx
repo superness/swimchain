@@ -82,6 +82,23 @@ function App() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [isUnlocking, setIsUnlocking] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  const handleResetIdentity = async () => {
+    log("info", "===== USER CHOSE START-FRESH (reset identity) =====");
+    setError(null);
+    try {
+      await invoke("reset_identity");
+      setIdentity(null);
+      setPassword("");
+      setConfirmReset(false);
+      setStage("onboarding");
+      log("info", "Identity archived; routing to onboarding");
+    } catch (err) {
+      log("error", "reset_identity FAILED:", err);
+      setError(String(err));
+    }
+  };
 
   // Re-check identity (each network has its own data dir + identity)
   const checkIdentity = async () => {
@@ -398,6 +415,40 @@ function App() {
               {isUnlocking ? "Unlocking..." : "Unlock & Connect"}
             </button>
           </form>
+
+          {!confirmReset ? (
+            <button
+              type="button"
+              className="btn-link"
+              disabled={isUnlocking}
+              onClick={() => setConfirmReset(true)}
+            >
+              Forgot your password? Start fresh with a new identity
+            </button>
+          ) : (
+            <div className="reset-confirm">
+              <p className="subtitle">
+                Your current identity will be archived (not deleted) and you'll
+                create a new one. Anything tied to the old identity stays with it.
+              </p>
+              <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleResetIdentity}
+                >
+                  Yes, start fresh
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setConfirmReset(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
