@@ -13,7 +13,7 @@ import {
 } from 'react';
 import type { PresenceState, PresenceStatus } from '../types';
 import { PRESENCE_HEARTBEAT_MS, PRESENCE_AWAY_THRESHOLD_MS } from '../types';
-import { useIdentityContext } from '@swimchain/frontend';
+import { useChatIdentity } from '../hooks/useChatIdentity';
 
 interface PresenceContextValue {
   presenceMap: Map<string, PresenceState>;
@@ -31,7 +31,7 @@ interface PresenceProviderProps {
 }
 
 export function PresenceProvider({ children }: PresenceProviderProps): JSX.Element {
-  const { identity } = useIdentityContext();
+  const { identity } = useChatIdentity();
   const currentUserId = identity?.publicKey ?? '';
 
   // Initialize empty — no mock users

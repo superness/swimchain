@@ -6,6 +6,7 @@
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { IdentityProvider } from '@swimchain/frontend';
+import { ChatIdentityProvider } from './hooks/useChatIdentity';
 import { TypingProvider } from './contexts/TypingContext';
 import { PresenceProvider } from './contexts/PresenceContext';
 import { ToastProvider } from './components/Toast';
@@ -101,15 +102,17 @@ function AppRoutes(): JSX.Element {
 export function App(): JSX.Element {
   return (
     <IdentityProvider>
-      <ToastProvider>
-        <PresenceProvider>
-          <TypingProvider>
-            <BrowserRouter>
-              <AppRoutes />
-            </BrowserRouter>
-          </TypingProvider>
-        </PresenceProvider>
-      </ToastProvider>
+      <ChatIdentityProvider>
+        <ToastProvider>
+          <PresenceProvider>
+            <TypingProvider>
+              <BrowserRouter>
+                <AppRoutes />
+              </BrowserRouter>
+            </TypingProvider>
+          </PresenceProvider>
+        </ToastProvider>
+      </ChatIdentityProvider>
     </IdentityProvider>
   );
 }

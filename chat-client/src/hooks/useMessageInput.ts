@@ -7,7 +7,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import type { MessageInputState, MiningProgress, Message } from '../types';
 import { usePostPow } from './useActionPow';
 import { usePostSubmit } from './useRpc';
-import { useStoredKeypair, useIdentityContext } from '@swimchain/frontend';
+import { useChatIdentity } from './useChatIdentity';
 
 interface UseMessageInputOptions {
   spaceId: string;
@@ -34,8 +34,7 @@ export function useMessageInput({
   const [progress, setProgress] = useState<MiningProgress | null>(null);
   const cancelRef = useRef(false);
 
-  const { identity } = useIdentityContext();
-  const { keypair, sign } = useStoredKeypair();
+  const { identity, sign: signAsync, publicKeyBytes, hasIdentity } = useChatIdentity();
   const { submitPost, submitting } = usePostSubmit();
   const {
     state: powState,
@@ -48,7 +47,7 @@ export function useMessageInput({
 
   // Handle PoW completion - submit the message
   useEffect(() => {
-    if (powState === 'complete' && keypair && identity) {
+    if (powState === 'complete' && hasIdentity && identity) {
       const doSubmit = async () => {
         const powParams = getRpcParams();
         if (!powParams) {
@@ -58,23 +57,15 @@ export function useMessageInput({
           return;
         }
 
-        // Create sign function that handles null
-        const signFn = (message: Uint8Array): Uint8Array => {
-          const result = sign(message);
-          if (!result) {
-            throw new Error('Failed to sign message');
-          }
-          return result;
-        };
-
         try {
-          // For messages, we submit as a post to the space
+          // For messages, we submit as a post to the space.
+          // `signAsync` signs via the node (node mode) or the local keypair.
           const result = await submitPost(
             spaceId,
             content.trim(), // Use content as title for chat messages
             content.trim(),
             identity.publicKey,
-            signFn,
+            signAsync,
             powParams
           );
 
@@ -119,7 +110,7 @@ export function useMessageInput({
 
       doSubmit();
     }
-  }, [powState, keypair, identity, spaceId, content, parentId, submitPost, sign, getRpcParams, resetMining, onMessageSent]);
+  }, [powState, hasIdentity, identity, spaceId, content, parentId, submitPost, signAsync, getRpcParams, resetMining, onMessageSent]);
 
   // Update progress from PoW mining
   useEffect(() => {
@@ -143,7 +134,7 @@ export function useMessageInput({
 
   const submit = useCallback(async () => {
     if (content.trim().length === 0 || state === 'mining' || submitting) return;
-    if (!keypair || !identity) {
+    if (!publicKeyBytes || !identity) {
       console.error('[MessageInput] No identity available');
       return;
     }
@@ -158,8 +149,7 @@ export function useMessageInput({
     // PoW MUST be mined over the composed bytes — mining over the bare
     // content produced "PoW verification failed" on a real node (SWIM-Q2).
     const trimmed = content.trim();
-    const publicKey = keypair.publicKey();
-    minePost(`${trimmed}\n\n${trimmed}`, publicKey).catch((err) => {
+    minePost(`${trimmed}\n\n${trimmed}`, publicKeyBytes).catch((err) => {
       console.error('[MessageInput] Mining failed:', err);
       if (!cancelRef.current) {
         setState('typing');
@@ -167,7 +157,7 @@ export function useMessageInput({
         resetMining();
       }
     });
-  }, [content, state, submitting, keypair, identity, minePost, resetMining]);
+  }, [content, state, submitting, publicKeyBytes, identity, minePost, resetMining]);
 
   const cancel = useCallback(() => {
     cancelRef.current = true;

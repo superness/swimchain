@@ -777,7 +777,8 @@ export function usePoolContribution() {
     contentId: string,
     _targetSeconds: number, // Not used anymore - PoW difficulty determines work
     identityPublicKey: string,
-    signFn: (message: Uint8Array) => Uint8Array,
+    // Sync (browser keypair) or async (node sign_message RPC).
+    signFn: (message: Uint8Array) => Uint8Array | Promise<Uint8Array | null>,
     emoji?: number // Optional emoji code (1-8)
   ): Promise<{ success: boolean; poolComplete: boolean; totalPow: number }> => {
     if (!rpc || !connected) {
@@ -837,7 +838,10 @@ export function usePoolContribution() {
       const signMessage = new TextEncoder().encode(
         `engage:${contentId}:${solution.nonce}:${timestamp}${emoji ? `:${emoji}` : ''}`
       );
-      const signature = signFn(signMessage);
+      const signature = await Promise.resolve(signFn(signMessage));
+      if (!signature) {
+        throw new Error('Failed to sign engagement');
+      }
       const signatureHex = bytesToHex(signature);
 
       // Submit engagement directly (no pool needed)
@@ -900,7 +904,8 @@ export function usePostSubmit() {
     title: string,
     body: string,
     identityPublicKey: string,
-    signFn: (message: Uint8Array) => Uint8Array,
+    // Sync (browser keypair) or async (node sign_message RPC).
+    signFn: (message: Uint8Array) => Uint8Array | Promise<Uint8Array | null>,
     powParams: {
       pow_nonce: number;
       pow_difficulty: number;
@@ -921,7 +926,10 @@ export function usePostSubmit() {
       const signMessage = new TextEncoder().encode(
         `post:${spaceId}:${title}:${body}:${powParams.timestamp}`
       );
-      const signature = signFn(signMessage);
+      const signature = await Promise.resolve(signFn(signMessage));
+      if (!signature) {
+        throw new Error('Failed to sign post');
+      }
       const signatureHex = Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
 
       // Submit to RPC
@@ -979,7 +987,8 @@ export function useReplySubmit() {
     parentId: string,
     body: string,
     identityPublicKey: string,
-    signFn: (message: Uint8Array) => Uint8Array,
+    // Sync (browser keypair) or async (node sign_message RPC).
+    signFn: (message: Uint8Array) => Uint8Array | Promise<Uint8Array | null>,
     powParams: {
       pow_nonce: number;
       pow_difficulty: number;
@@ -1001,7 +1010,10 @@ export function useReplySubmit() {
       const signMessage = new TextEncoder().encode(
         `reply:${parentId}:${body}:${powParams.timestamp}`
       );
-      const signature = signFn(signMessage);
+      const signature = await Promise.resolve(signFn(signMessage));
+      if (!signature) {
+        throw new Error('Failed to sign reply');
+      }
       const signatureHex = Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
 
       // Submit to RPC
