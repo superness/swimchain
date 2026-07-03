@@ -2,7 +2,7 @@
 
 **Website:** [swimchain.io](https://swimchain.io)
 
-[![CI](https://github.com/swimchain/swimchain/actions/workflows/ci.yml/badge.svg)](https://github.com/swimchain/swimchain/actions/workflows/ci.yml)
+[![CI](https://github.com/superness/swimchain/actions/workflows/ci.yml/badge.svg)](https://github.com/superness/swimchain/actions/workflows/ci.yml)
 
 Decentralized social media protocol. No servers, no algorithms, no ads.
 
@@ -34,7 +34,7 @@ See [VISION.md](VISION.md) for the full design philosophy and [GLOSSARY.md](GLOS
 ### Build
 
 ```bash
-git clone https://github.com/swimchain/swimchain.git
+git clone https://github.com/superness/swimchain.git
 cd swimchain
 cargo build
 ```
