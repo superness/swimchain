@@ -388,6 +388,8 @@ pub struct NodeRef {
     pub search_index: Option<Arc<std::sync::RwLock<SearchIndex>>>,
     /// Pool manager for engagement pool operations (shared with the message router)
     pub pool_manager: Option<Arc<std::sync::RwLock<PoolManager>>>,
+    /// Event manager for publishing real-time WebSocket events (H-RPC-2)
+    pub event_manager: Option<Arc<crate::rpc::events::EventManager>>,
 }
 
 /// RPC method dispatcher
@@ -1912,6 +1914,17 @@ impl RpcMethods {
             recipients,
         };
 
+        // Publish real-time event for WebSocket subscribers (H-RPC-2)
+        if let Some(ref events) = self.node.event_manager {
+            events.publish_content_new(
+                &result.content_id,
+                "post",
+                &params.space_id,
+                &params.author_id,
+                Some(&result.content_id), // A post is its own thread root
+            );
+        }
+
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
@@ -2551,6 +2564,18 @@ impl RpcMethods {
             recipients,
         };
 
+        // Publish real-time event for WebSocket subscribers (H-RPC-2)
+        if let Some(ref events) = self.node.event_manager {
+            let space_id_16: [u8; 16] = space_id_bytes[..16].try_into().unwrap_or([0u8; 16]);
+            events.publish_content_new(
+                &result.content_id,
+                "reply",
+                &encode_space_id(&space_id_16),
+                &params.author_id,
+                Some(&params.parent_id), // Thread root = parent content
+            );
+        }
+
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
@@ -2992,6 +3017,11 @@ impl RpcMethods {
             let _ = content_store.update_last_engagement(&content_id, params.timestamp * 1000);
         }
 
+        // Space/thread context for the content_engaged event (filled in when the
+        // target content is found in the content store below)
+        let mut event_space_id: Option<String> = None;
+        let mut event_thread_id: Option<String> = None;
+
         // Add ENGAGE action to BlockBuilder for network propagation
         if let Some(ref block_builder) = self.node.block_builder {
             // Look up content to get space_id and thread context
@@ -3005,6 +3035,11 @@ impl RpcMethods {
                         let thread_id = content.parent_id
                             .map(|p| *p.as_bytes())
                             .unwrap_or(content_bytes);
+
+                        // Capture context for the real-time event
+                        let space_id_16: [u8; 16] = space_id_bytes[..16].try_into().unwrap_or([0u8; 16]);
+                        event_space_id = Some(encode_space_id(&space_id_16));
+                        event_thread_id = Some(format!("sha256:{}", hex::encode(thread_id)));
 
                         // Estimate PoW work (inversely proportional to difficulty)
                         let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
@@ -3075,6 +3110,17 @@ impl RpcMethods {
             }
         } else {
             warn!("[BLOCKS] No block_builder available for ENGAGE action");
+        }
+
+        // Publish real-time event for WebSocket subscribers (H-RPC-2)
+        if let Some(ref events) = self.node.event_manager {
+            events.publish_content_engaged(
+                &params.content_id,
+                &params.author_id,
+                params.emoji,
+                event_space_id.as_deref(),
+                event_thread_id.as_deref(),
+            );
         }
 
         RpcResponse::success(json!({

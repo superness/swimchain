@@ -1,0 +1,404 @@
+<title>Swimchain — a social protocol where attention is life support</title>
+<meta name="description" content="Swimchain is a peer-to-peer social network with no servers. Posting costs proof-of-work. Content nobody engages with decays and disappears.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #071E26;
+    --surface: #0C2A33;
+    --surface-2: #10333E;
+    --line: #1B4450;
+    --foam: #E8F1EF;
+    --muted: #8FB0AC;
+    --heat: #FF9E5E;
+    --heat-deep: #E07B3A;
+    --shallow: #6ED3C2;
+    --cold: #3E7C8A;
+    --serif: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+  }
+
+  html { background: var(--ink); }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, rgba(110, 211, 194, 0.07), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(255, 158, 94, 0.05), transparent 55%),
+      var(--ink);
+    color: var(--foam);
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.65;
+  }
+
+  a { color: var(--shallow); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--foam); }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--heat); outline-offset: 3px; border-radius: 2px; }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--shallow);
+  }
+
+  /* ---------- header ---------- */
+  header.site {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 28px 0 0;
+  }
+  .mark {
+    font-family: var(--mono); font-size: 15px; letter-spacing: 0.06em; color: var(--foam);
+    text-decoration: none;
+  }
+  .mark .tld { color: var(--muted); }
+  nav.site { display: flex; gap: 22px; font-family: var(--mono); font-size: 13px; }
+  nav.site a { color: var(--muted); text-decoration: none; }
+  nav.site a:hover { color: var(--foam); }
+
+  /* ---------- hero ---------- */
+  .hero {
+    display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    gap: 56px; align-items: center;
+    padding: 96px 0 84px;
+  }
+  h1 {
+    margin: 18px 0 22px;
+    font-size: clamp(38px, 5.2vw, 58px);
+    line-height: 1.08;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  h1 em { font-style: italic; color: var(--heat); }
+  .lede { max-width: 34em; color: var(--muted); font-size: 19px; margin: 0 0 34px; }
+  .lede strong { color: var(--foam); font-weight: 600; }
+
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 12px 22px;
+    font-family: var(--mono); font-size: 14px; text-decoration: none;
+    border: 1px solid var(--line); color: var(--foam); border-radius: 3px;
+  }
+  .btn.primary { background: var(--heat); border-color: var(--heat); color: #241205; font-weight: 600; }
+  .btn.primary:hover { background: var(--heat-deep); border-color: var(--heat-deep); color: #241205; }
+  .btn:hover { border-color: var(--shallow); color: var(--foam); }
+
+  /* ---------- decay demo ---------- */
+  .demo-caption {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    letter-spacing: 0.04em; margin-top: 14px; text-align: center;
+  }
+  .post {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 22px 22px 18px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+    transition: opacity 1.2s ease, filter 1.2s ease, transform 1.2s ease;
+  }
+  .post.dead { opacity: 0.28; filter: saturate(0.2); transform: translateY(10px); }
+  .post-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .post-author { font-family: var(--mono); font-size: 12px; color: var(--shallow); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .post-age { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .post-body { margin: 12px 0 18px; font-size: 17px; line-height: 1.55; }
+  .heat-row { display: flex; align-items: center; gap: 14px; }
+  .heat-track {
+    flex: 1; height: 8px; border-radius: 99px;
+    background: var(--surface-2); overflow: hidden; border: 1px solid var(--line);
+  }
+  .heat-fill {
+    height: 100%; width: 100%;
+    background: linear-gradient(90deg, var(--cold), var(--heat));
+    transform-origin: left center;
+  }
+  .heat-label { font-family: var(--mono); font-size: 12px; color: var(--muted); min-width: 96px; text-align: right; font-variant-numeric: tabular-nums; }
+  .engage {
+    margin-top: 16px; width: 100%;
+    font-family: var(--mono); font-size: 14px;
+    padding: 11px 0; cursor: pointer; border-radius: 4px;
+    background: transparent; border: 1px solid var(--heat); color: var(--heat);
+  }
+  .engage:hover { background: rgba(255, 158, 94, 0.12); }
+  .engage:disabled { border-color: var(--line); color: var(--muted); cursor: default; background: transparent; }
+
+  /* ---------- sections ---------- */
+  section { padding: 72px 0; border-top: 1px solid var(--line); }
+  h2 {
+    font-size: clamp(26px, 3.2vw, 36px); font-weight: 600; letter-spacing: -0.01em;
+    margin: 14px 0 10px; text-wrap: balance;
+  }
+  .section-lede { color: var(--muted); max-width: 38em; margin: 0 0 44px; }
+
+  .laws { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .law {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 26px 24px;
+  }
+  .law h3 { margin: 0 0 10px; font-size: 20px; font-weight: 600; }
+  .law p { margin: 0; color: var(--muted); font-size: 16px; }
+  .law .stat {
+    display: block; font-family: var(--mono); font-size: 12px; color: var(--heat);
+    letter-spacing: 0.08em; margin-bottom: 14px; text-transform: uppercase;
+  }
+
+  /* clients */
+  .clients { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .client {
+    border: 1px solid var(--line); border-radius: 6px; padding: 18px;
+    background: transparent;
+  }
+  .client:hover { border-color: var(--cold); background: var(--surface); }
+  .client b { display: block; font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--foam); margin-bottom: 6px; }
+  .client span { font-size: 14.5px; color: var(--muted); line-height: 1.45; display: block; }
+
+  /* terminal */
+  .term {
+    background: #04141A; border: 1px solid var(--line); border-radius: 6px;
+    font-family: var(--mono); font-size: 14px; line-height: 1.8;
+    padding: 22px 24px; overflow-x: auto; white-space: pre;
+  }
+  .term .c { color: var(--muted); }
+  .term .p { color: var(--shallow); user-select: none; }
+  .term .o { color: var(--heat); }
+
+  .split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 48px; align-items: start; }
+  .split p { color: var(--muted); }
+  .split p strong { color: var(--foam); }
+
+  ul.spec-list { list-style: none; padding: 0; margin: 0; columns: 2; column-gap: 40px; }
+  ul.spec-list li {
+    font-family: var(--mono); font-size: 13.5px; color: var(--muted);
+    padding: 7px 0; border-bottom: 1px solid var(--line);
+    break-inside: avoid;
+  }
+  ul.spec-list li b { color: var(--foam); font-weight: 600; }
+
+  footer.site {
+    border-top: 1px solid var(--line); padding: 42px 0 56px;
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+  }
+  footer.site a { color: var(--muted); }
+  footer.site a:hover { color: var(--foam); }
+
+  @media (max-width: 860px) {
+    .hero { grid-template-columns: 1fr; gap: 44px; padding: 64px 0 60px; }
+    .laws { grid-template-columns: 1fr; }
+    .clients { grid-template-columns: repeat(2, 1fr); }
+    .split { grid-template-columns: 1fr; }
+    ul.spec-list { columns: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .post, .heat-fill { transition: none !important; }
+  }
+</style>
+
+<header class="site wrap">
+  <a class="mark" href="/">swimchain<span class="tld">.io</span></a>
+  <nav class="site">
+    <a href="#protocol">Protocol</a>
+    <a href="#clients">Clients</a>
+    <a href="#node">Run a node</a>
+    <a href="developers.html">Developers</a>
+  </nav>
+</header>
+
+<div class="hero wrap">
+  <div>
+    <span class="eyebrow">Peer-to-peer social protocol · testnet live</span>
+    <h1>A social network where attention is <em>life support</em>.</h1>
+    <p class="lede">
+      Swimchain has <strong>no servers</strong> — every reader is a node.
+      Posting costs <strong>real computational work</strong>, so spam is expensive.
+      And content that nobody engages with <strong>decays and disappears</strong>,
+      on a 7-day half-life enforced by the protocol itself.
+    </p>
+    <div class="cta-row">
+      <a class="btn primary" href="#node">Run a node</a>
+      <a class="btn" href="developers.html">Read the protocol</a>
+    </div>
+  </div>
+
+  <div>
+    <div class="post" id="demo-post">
+      <div class="post-head">
+        <span class="post-author">st1qz6nm04erxrg0…j6wzk5</span>
+        <span class="post-age" id="demo-age">just now</span>
+      </div>
+      <p class="post-body" id="demo-body">First post from the open water. If you stop paying attention to me, I will sink. That is not a bug.</p>
+      <div class="heat-row">
+        <div class="heat-track"><div class="heat-fill" id="demo-heat"></div></div>
+        <span class="heat-label" id="demo-heat-label">heat 100%</span>
+      </div>
+      <button class="engage" id="demo-engage" type="button">&#127946; Keep it alive</button>
+    </div>
+    <p class="demo-caption" id="demo-caption">Live demo — this post decays like the real thing. Engagement resets the clock.</p>
+  </div>
+</div>
+
+<section id="protocol">
+  <div class="wrap">
+    <span class="eyebrow">How it stays honest</span>
+    <h2>Three laws instead of a landlord.</h2>
+    <p class="section-lede">There is no company, no moderators-of-last-resort, no ad auction deciding what you see. The protocol replaces them with physics.</p>
+    <div class="laws">
+      <div class="law">
+        <span class="stat">Argon2id &middot; ~30s per post</span>
+        <h3>Speech costs work.</h3>
+        <p>Every post, reply, and reaction carries a memory-hard proof-of-work. One voice is cheap. A million fake ones are not. Nodes verify the work before a byte propagates.</p>
+      </div>
+      <div class="law">
+        <span class="stat">7-day half-life &middot; 4h if spam-flagged</span>
+        <h3>Heat or death.</h3>
+        <p>Engagement is warmth. Content nobody touches cools, sinks, and is pruned by every node in the network. Nothing accumulates except what people actively keep alive.</p>
+      </div>
+      <div class="law">
+        <span class="stat">Ed25519 identity &middot; sponsorship trees</span>
+        <h3>No servers to seize.</h3>
+        <p>Your identity is a keypair you hold. Your feed is assembled by your own node from peers. New identities enter by sponsorship, so reputation has roots — and consequences.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="clients">
+  <div class="wrap">
+    <span class="eyebrow">One chain, many shores</span>
+    <h2>Every way you already talk, rebuilt without the middleman.</h2>
+    <p class="section-lede">All clients speak the same protocol to your local node. The same post can be a forum thread, a chat message, and a feed item — decaying or thriving everywhere at once.</p>
+    <div class="clients">
+      <div class="client"><b>Forum</b><span>Long-form threads and replies, Reddit-shaped, landlord-free.</span></div>
+      <div class="client"><b>Chat</b><span>Discord-style servers and channels over the same chain.</span></div>
+      <div class="client"><b>Feed</b><span>A timeline built by your node, not an engagement auction.</span></div>
+      <div class="client"><b>Wiki</b><span>Collaborative pages where revisions live on-chain.</span></div>
+      <div class="client"><b>Search</b><span>Full-text search over everything your node has seen.</span></div>
+      <div class="client"><b>Archiver</b><span>Spend proof-of-work to keep content you value alive.</span></div>
+      <div class="client"><b>Bridge</b><span>Pipe Matrix and IRC rooms onto the chain and back.</span></div>
+      <div class="client"><b>Analytics</b><span>Watch spaces breathe: heat, decay, and engagement flows.</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="node">
+  <div class="wrap split">
+    <div>
+      <span class="eyebrow">Join the water</span>
+      <h2>Your node is your account.</h2>
+      <p>
+        One binary. It keeps your keys, syncs the chain, serves every client,
+        and helps carry the content <strong>you</strong> care about.
+        The testnet is live with a public seed — you'll find peers in seconds.
+      </p>
+      <p>Runs on Linux, macOS, and Windows. 1 CPU and 1&nbsp;GB of RAM is plenty.</p>
+    </div>
+    <div>
+      <div class="term"><span class="p">$</span> git clone https://github.com/superness/swimchain
+<span class="p">$</span> cd swimchain <span class="c">&amp;&amp;</span> cargo build --release
+<span class="p">$</span> ./target/release/sw --testnet identity create
+<span class="p">$</span> ./target/release/sw --testnet node start
+<span class="o">Node started · listening on 0.0.0.0:19735</span>
+<span class="o">Found 3 peers via seed · chain syncing…</span></div>
+      <p class="demo-caption" style="text-align:left">Clients connect to your node's JSON-RPC on port 19736. See <a href="developers.html">Developers</a> for the full protocol.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <span class="eyebrow">Specified, not vibes</span>
+    <h2>Thirteen specs. No trust required.</h2>
+    <p class="section-lede">Every rule a node enforces is written down. If you disagree with the protocol, fork it — chain selection is a spec too.</p>
+    <ul class="spec-list">
+      <li><b>SPEC_01</b> · Identity — Ed25519 keys &amp; addresses</li>
+      <li><b>SPEC_02</b> · Content — chunking, retrieval, decay</li>
+      <li><b>SPEC_03</b> · Action proof-of-work (Argon2id)</li>
+      <li><b>SPEC_05</b> · Forks &amp; chain selection</li>
+      <li><b>SPEC_06</b> · Synchronization</li>
+      <li><b>SPEC_08</b> · Blocks &amp; propagation</li>
+      <li><b>SPEC_11</b> · Sponsorship trees &amp; penalties</li>
+      <li><b>SPEC_12</b> · Spam attestation</li>
+      <li><b>SPEC_13</b> · Engagement pools</li>
+      <li><b>THESIS_01–10</b> · Why decay, why work, why now</li>
+    </ul>
+  </div>
+</section>
+
+<footer class="site wrap">
+  <span>swimchain.io — content that earns its place</span>
+  <span>
+    <a href="https://github.com/superness/swimchain">GitHub</a> ·
+    <a href="developers.html">Developers</a> ·
+    <a href="#protocol">Protocol</a>
+  </span>
+</footer>
+
+<script>
+(function () {
+  var HALF_LIFE_MS = 22000; // demo half-life: 22s (real protocol: 7 days)
+  var DEAD_AT = 0.06;
+  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var post = document.getElementById('demo-post');
+  var fill = document.getElementById('demo-heat');
+  var label = document.getElementById('demo-heat-label');
+  var age = document.getElementById('demo-age');
+  var btn = document.getElementById('demo-engage');
+  var caption = document.getElementById('demo-caption');
+
+  var lastEngage = Date.now();
+  var born = Date.now();
+  var dead = false;
+
+  function fmtAge(ms) {
+    var s = Math.floor(ms / 1000);
+    if (s < 5) return 'just now';
+    if (s < 60) return s + 's ago';
+    return Math.floor(s / 60) + 'm ago';
+  }
+
+  function tick() {
+    var now = Date.now();
+    var heat = Math.pow(0.5, (now - lastEngage) / HALF_LIFE_MS);
+    age.textContent = fmtAge(now - born);
+
+    if (!dead && heat <= DEAD_AT) {
+      dead = true;
+      post.classList.add('dead');
+      btn.disabled = true;
+      btn.textContent = 'Decayed — pruned from the network';
+      label.textContent = 'heat 0%';
+      fill.style.transform = 'scaleX(0)';
+      caption.innerHTML = 'It’s gone. Every node just reclaimed the space. <a href="#" id="demo-reset">Post it again</a> (costs proof-of-work).';
+      var reset = document.getElementById('demo-reset');
+      reset.addEventListener('click', function (e) {
+        e.preventDefault();
+        dead = false;
+        lastEngage = Date.now();
+        born = Date.now();
+        post.classList.remove('dead');
+        btn.disabled = false;
+        btn.innerHTML = '&#127946; Keep it alive';
+        caption.textContent = 'Live demo — this post decays like the real thing. Engagement resets the clock.';
+      });
+      return;
+    }
+
+    if (!dead) {
+      fill.style.transform = 'scaleX(' + heat.toFixed(3) + ')';
+      label.textContent = 'heat ' + Math.round(heat * 100) + '%';
+    }
+  }
+
+  btn.addEventListener('click', function () {
+    if (dead) return;
+    lastEngage = Date.now();
+    label.textContent = 'heat 100%';
+  });
+
+  tick();
+  setInterval(tick, reduced ? 1500 : 200);
+})();
+</script>

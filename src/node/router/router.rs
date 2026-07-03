@@ -173,6 +173,9 @@ pub struct MessageRouter {
 
     /// Search index for full-text content indexing
     search_index: Option<Arc<RwLock<SearchIndex>>>,
+
+    /// Event manager for publishing real-time WebSocket events (H-RPC-2)
+    event_manager: Option<Arc<crate::rpc::events::EventManager>>,
 }
 
 impl MessageRouter {
@@ -204,6 +207,7 @@ impl MessageRouter {
             aggregation_cache: None,
             node_id: None,
             search_index: None,
+            event_manager: None,
         }
     }
 
@@ -242,6 +246,7 @@ impl MessageRouter {
             aggregation_cache: None,
             node_id: None,
             search_index: None,
+            event_manager: None,
         }
     }
 
@@ -4636,6 +4641,54 @@ impl MessageRouter {
             added
         };
 
+        // Publish real-time events for WebSocket subscribers (H-RPC-2)
+        // This is the ingestion point for content gossiped from other nodes, so
+        // connected clients see remote posts/replies/reactions without polling.
+        if added {
+            if let Some(ref events) = self.event_manager {
+                use crate::blocks::action::ActionType;
+
+                let space_id_16: [u8; 16] =
+                    announce.space_id[..16].try_into().unwrap_or([0u8; 16]);
+                let space_id_str = encode_space_id_bech32(&space_id_16);
+                let thread_id_str = format!("sha256:{}", hex::encode(announce.thread_id));
+                let author_str = hex::encode(action.actor);
+
+                match action.action_type {
+                    ActionType::Post | ActionType::Reply => {
+                        if let Some(content_hash) = action.content_hash {
+                            let content_id = format!("sha256:{}", hex::encode(content_hash));
+                            let content_type = if action.action_type == ActionType::Post {
+                                "post"
+                            } else {
+                                "reply"
+                            };
+                            events.publish_content_new(
+                                &content_id,
+                                content_type,
+                                &space_id_str,
+                                &author_str,
+                                Some(&thread_id_str),
+                            );
+                        }
+                    }
+                    ActionType::Engage => {
+                        if let Some(target_hash) = action.content_hash {
+                            let content_id = format!("sha256:{}", hex::encode(target_hash));
+                            events.publish_content_engaged(
+                                &content_id,
+                                &author_str,
+                                action.emoji,
+                                Some(&space_id_str),
+                                Some(&thread_id_str),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // CRITICAL: Fetch missing content blobs for gossiped actions (P0 fix)
         // When we receive an action via gossip, it only contains content_hash references,
         // NOT the actual blob data. We need to request the blobs so the node can:
@@ -6610,6 +6663,17 @@ impl MessageRouter {
 }
 
 /// Builder for MessageRouter with fluent configuration
+/// Encode 16 bytes as a bech32m space ID (sp1...), matching the RPC layer's format.
+fn encode_space_id_bech32(bytes: &[u8; 16]) -> String {
+    use bech32::{Bech32m, Hrp};
+
+    let hrp = Hrp::parse("sp").expect("valid HRP");
+    let mut data = Vec::with_capacity(17);
+    data.push(0); // version byte
+    data.extend_from_slice(bytes);
+    bech32::encode::<Bech32m>(hrp, &data).expect("valid encoding")
+}
+
 pub struct MessageRouterBuilder {
     metrics: Option<Arc<NodeMetrics>>,
     content_retrieval: Option<Arc<ContentRetrievalManager>>,
@@ -6633,6 +6697,7 @@ pub struct MessageRouterBuilder {
     aggregation_cache: Option<Arc<AggregationCache>>,
     node_id: Option<[u8; 32]>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
+    event_manager: Option<Arc<crate::rpc::events::EventManager>>,
 }
 
 impl MessageRouterBuilder {
@@ -6661,6 +6726,7 @@ impl MessageRouterBuilder {
             aggregation_cache: None,
             node_id: None,
             search_index: None,
+            event_manager: None,
         }
     }
 
@@ -6800,6 +6866,12 @@ impl MessageRouterBuilder {
         self
     }
 
+    /// Set the event manager for publishing real-time WebSocket events (H-RPC-2)
+    pub fn event_manager(mut self, manager: Arc<crate::rpc::events::EventManager>) -> Self {
+        self.event_manager = Some(manager);
+        self
+    }
+
     /// Build the MessageRouter
     ///
     /// # Panics
@@ -6833,6 +6905,7 @@ impl MessageRouterBuilder {
             aggregation_cache: self.aggregation_cache,
             node_id: self.node_id,
             search_index: self.search_index,
+            event_manager: self.event_manager,
         }
     }
 
@@ -6865,6 +6938,7 @@ impl MessageRouterBuilder {
             aggregation_cache: self.aggregation_cache,
             node_id: self.node_id,
             search_index: self.search_index,
+            event_manager: self.event_manager,
         })
     }
 }

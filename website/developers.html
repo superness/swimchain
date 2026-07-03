@@ -1,0 +1,169 @@
+<title>Swimchain for developers — run a node, speak the protocol</title>
+<meta name="description" content="Build on Swimchain: run a regtest node, speak JSON-RPC, mine action proof-of-work, and ship a client.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #071E26;
+    --surface: #0C2A33;
+    --line: #1B4450;
+    --foam: #E8F1EF;
+    --muted: #8FB0AC;
+    --heat: #FF9E5E;
+    --shallow: #6ED3C2;
+    --serif: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+  }
+  html { background: var(--ink); }
+  body {
+    margin: 0; background: var(--ink); color: var(--foam);
+    font-family: var(--serif); font-size: 17.5px; line-height: 1.65;
+  }
+  a { color: var(--shallow); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--foam); }
+  a:focus-visible { outline: 2px solid var(--heat); outline-offset: 3px; border-radius: 2px; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+
+  header.site {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 28px 0 0;
+  }
+  .mark { font-family: var(--mono); font-size: 15px; letter-spacing: 0.06em; color: var(--foam); text-decoration: none; }
+  .mark .tld { color: var(--muted); }
+  nav.site { display: flex; gap: 22px; font-family: var(--mono); font-size: 13px; }
+  nav.site a { color: var(--muted); text-decoration: none; }
+  nav.site a:hover { color: var(--foam); }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--shallow);
+  }
+  h1 { font-size: clamp(30px, 4.5vw, 44px); line-height: 1.12; font-weight: 600; margin: 14px 0 16px; text-wrap: balance; }
+  .lede { color: var(--muted); max-width: 36em; margin: 0 0 8px; }
+  main { padding-bottom: 40px; }
+  .head { padding: 64px 0 40px; }
+
+  h2 { font-size: 25px; font-weight: 600; margin: 0 0 6px; }
+  section { padding: 36px 0; border-top: 1px solid var(--line); }
+  section p { color: var(--muted); max-width: 40em; }
+  section p strong, section li strong { color: var(--foam); }
+
+  .term {
+    background: #04141A; border: 1px solid var(--line); border-radius: 6px;
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.8;
+    padding: 18px 22px; overflow-x: auto; white-space: pre; margin: 20px 0;
+  }
+  .term .c { color: var(--muted); }
+  .term .p { color: var(--shallow); user-select: none; }
+  .term .o { color: var(--heat); }
+
+  table { border-collapse: collapse; width: 100%; margin: 20px 0; font-size: 15px; }
+  .table-scroll { overflow-x: auto; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  td code, p code, li code {
+    font-family: var(--mono); font-size: 0.86em; color: var(--heat);
+    background: rgba(255, 158, 94, 0.08); padding: 1px 6px; border-radius: 3px;
+  }
+  td:first-child { font-family: var(--mono); font-size: 13.5px; color: var(--foam); white-space: nowrap; }
+  td { color: var(--muted); }
+
+  ol.flow { color: var(--muted); padding-left: 22px; max-width: 42em; }
+  ol.flow li { margin: 10px 0; }
+
+  footer.site {
+    border-top: 1px solid var(--line); padding: 36px 0 52px; margin-top: 24px;
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+  }
+  footer.site a { color: var(--muted); }
+  footer.site a:hover { color: var(--foam); }
+</style>
+
+<header class="site wrap">
+  <a class="mark" href="index.html">swimchain<span class="tld">.io</span></a>
+  <nav class="site">
+    <a href="index.html#protocol">Protocol</a>
+    <a href="index.html#clients">Clients</a>
+    <a href="#node">Run a node</a>
+    <a href="https://github.com/superness/swimchain">GitHub</a>
+  </nav>
+</header>
+
+<main class="wrap">
+  <div class="head">
+    <span class="eyebrow">For builders</span>
+    <h1>Speak to the chain like the clients do.</h1>
+    <p class="lede">
+      A Swimchain node is a single Rust binary. It exposes JSON-RPC 2.0 over HTTP,
+      verifies Argon2id proof-of-work on every write, and prunes anything the
+      network stops caring about. Everything below is what our own eight clients use —
+      there is no private API.
+    </p>
+  </div>
+
+  <section id="node">
+    <h2>1 · Run a local dev node</h2>
+    <p>
+      <strong>Regtest</strong> is the local development mode: PoW difficulty drops to a
+      minimum (a few dozen hash attempts), level checks are bypassed, and many read methods
+      are auth-exempt. Data lives in an isolated <code>-regtest</code> directory.
+    </p>
+    <div class="term"><span class="p">$</span> cargo build --release
+<span class="p">$</span> ./target/release/sw --regtest identity create
+<span class="p">$</span> ./target/release/sw --regtest node start --listen 127.0.0.1:29735
+<span class="o">RPC server listening on 127.0.0.1:29736</span></div>
+    <p>The JSON-RPC port is always <strong>P2P port + 1</strong>. Health check: <code>GET /health</code>.</p>
+  </section>
+
+  <section>
+    <h2>2 · The write path</h2>
+    <p>Every write follows the same shape. Get the bytes right and the node accepts you; get them wrong and it rejects you — there is no partial credit.</p>
+    <ol class="flow">
+      <li><strong>Compose the content bytes.</strong> Posts hash <code>title\n\nbody</code>; replies hash the body alone; engagements use the parent's <strong>raw 32-byte hash</strong> (not the <code>sha256:…</code> string).</li>
+      <li><strong>Mine the challenge.</strong> Argon2id over an 82-byte canonical challenge + nonce. Config must match the node's network: regtest 1&nbsp;MiB/1&nbsp;iter, testnet 8&nbsp;MiB, mainnet 64&nbsp;MiB (SPEC_03).</li>
+      <li><strong>Sign the request.</strong> Ed25519 headers: <code>X-CS-Identity</code>, <code>X-CS-Timestamp</code>, <code>X-CS-Signature</code> over <code>swimchain-rpc:&lt;method&gt;:&lt;sha256(params)&gt;:&lt;timestamp&gt;</code>.</li>
+      <li><strong>Submit and verify.</strong> Call <code>submit_post</code> / <code>submit_reply</code> / <code>submit_engagement</code>, then read your content back — acceptance means it is retrievable, broadcast, and in the block builder.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>3 · Core RPC methods</h2>
+    <div class="table-scroll"><table>
+      <tr><th>Method</th><th>What it does</th></tr>
+      <tr><td>get_info</td><td>Node version, network, peer count, block height.</td></tr>
+      <tr><td>create_space</td><td>Create a space (community). PoW over the space name.</td></tr>
+      <tr><td>submit_post</td><td>New thread in a space. PoW over <code>title\n\nbody</code>.</td></tr>
+      <tr><td>submit_reply</td><td>Threaded reply. PoW over the body.</td></tr>
+      <tr><td>submit_engagement</td><td>Reaction / preservation work. Raw-hash PoW challenge; resets the parent's decay clock.</td></tr>
+      <tr><td>get_content · get_replies</td><td>Read content and threads, with decay state and heat.</td></tr>
+      <tr><td>get_reactions · get_pool_for_content</td><td>Reaction counts and engagement-pool status.</td></tr>
+      <tr><td>search</td><td>Full-text search over the node's indexed content (Tantivy).</td></tr>
+      <tr><td>sign_message</td><td>Sign with the node identity — how keyless browser clients authenticate writes.</td></tr>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>4 · Prove it against a real node</h2>
+    <p>
+      The repo ships an end-to-end write-path suite that boots a throwaway regtest node and
+      drives every client's own rpc/pow modules through post → mine → sign → accept → read-back.
+      If your client can pass it, your writes are real.
+    </p>
+    <div class="term"><span class="p">$</span> cd tests/e2e-write-paths <span class="c">&amp;&amp;</span> npm install
+<span class="p">$</span> npm test
+<span class="o">Test Files  6 passed (6) · Tests  19 passed (19)</span></div>
+    <p>
+      Specs live in <code>specs/</code> (SPEC_01–SPEC_13), design rationale in
+      <code>VISION.md</code> and the thesis documents. WASM bindings for browser crypto
+      (Ed25519, SHA-256, Bech32m) are in <code>swimchain-wasm/</code>.
+    </p>
+  </section>
+</main>
+
+<footer class="site wrap">
+  <span>swimchain.io — content that earns its place</span>
+  <span>
+    <a href="https://github.com/superness/swimchain">GitHub</a> ·
+    <a href="index.html">Home</a>
+  </span>
+</footer>

@@ -5,7 +5,10 @@
  * {
  *   type: 'SWIMCHAIN_RPC_CONFIG',
  *   rpcEndpoint: 'http://127.0.0.1:19736',
- *   rpcAuth: 'Basic ...'
+ *   rpcAuth: 'Basic ...',
+ *   // Optional node identity info (PUBLIC data only - never the seed):
+ *   nodeAddress: 'cs1...',
+ *   nodeDisplayName: 'Alice'
  * }
  */
 import { useState, useEffect } from 'react';
@@ -55,6 +58,12 @@ if (typeof window !== 'undefined') {
             parentConfig = {
                 rpcEndpoint: event.data.rpcEndpoint,
                 rpcAuth: event.data.rpcAuth,
+                ...(typeof event.data.nodeAddress === 'string'
+                    ? { nodeAddress: event.data.nodeAddress }
+                    : {}),
+                ...(typeof event.data.nodeDisplayName === 'string'
+                    ? { nodeDisplayName: event.data.nodeDisplayName }
+                    : {}),
             };
             // Notify all listeners
             listeners.forEach(fn => fn(parentConfig));

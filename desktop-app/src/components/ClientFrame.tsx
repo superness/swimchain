@@ -6,9 +6,17 @@ import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface ClientFrameProps {
-  client: 'forum' | 'chat' | 'feed' | 'search';
+  client: 'forum' | 'chat' | 'feed' | 'search' | 'wiki';
   rpcEndpoint: string;
   rpcAuth: string;
+  /**
+   * Node identity public address (cs1...). Optional, never includes key material.
+   * Clients that support node-managed signing (e.g. forum via sign_message RPC)
+   * can use this to display/prefer the node identity.
+   */
+  nodeAddress?: string | null;
+  /** Node identity display name, if known. */
+  nodeDisplayName?: string | null;
 }
 
 interface LogMessage {
@@ -27,8 +35,20 @@ const log = (level: string, message: string, data?: unknown) => {
 // Dev-only verbose logging
 const IS_DEV = import.meta.env.DEV;
 
-export function ClientFrame({ client, rpcEndpoint, rpcAuth }: ClientFrameProps): JSX.Element {
+export function ClientFrame({ client, rpcEndpoint, rpcAuth, nodeAddress, nodeDisplayName }: ClientFrameProps): JSX.Element {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+
+  // Build the RPC config message. Optionally carries the node identity's
+  // PUBLIC address + display name so clients can show "node identity: cs1..."
+  // and prefer node-managed signing where supported. Never carries the seed
+  // or any private key material.
+  const buildConfigMessage = () => ({
+    type: 'SWIMCHAIN_RPC_CONFIG',
+    rpcEndpoint,
+    rpcAuth,
+    ...(nodeAddress ? { nodeAddress } : {}),
+    ...(nodeDisplayName ? { nodeDisplayName } : {}),
+  });
 
   // Send RPC config to iframe when it loads
   useEffect(() => {
@@ -39,11 +59,7 @@ export function ClientFrame({ client, rpcEndpoint, rpcAuth }: ClientFrameProps):
       if (IS_DEV) log("info", "Iframe loaded - sending RPC config via postMessage", { client, rpcEndpoint });
       // Send RPC config to the client via postMessage
       // Use specific origin instead of '*' to prevent credential interception
-      iframe.contentWindow?.postMessage({
-        type: 'SWIMCHAIN_RPC_CONFIG',
-        rpcEndpoint,
-        rpcAuth,
-      }, window.location.origin);
+      iframe.contentWindow?.postMessage(buildConfigMessage(), window.location.origin);
     };
 
     const handleError = (e: Event) => {
@@ -56,7 +72,8 @@ export function ClientFrame({ client, rpcEndpoint, rpcAuth }: ClientFrameProps):
       iframe.removeEventListener('load', handleLoad);
       iframe.removeEventListener('error', handleError);
     };
-  }, [rpcEndpoint, rpcAuth, client]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rpcEndpoint, rpcAuth, nodeAddress, nodeDisplayName, client]);
 
   // Also send config periodically in case iframe missed it
   useEffect(() => {
@@ -64,11 +81,7 @@ export function ClientFrame({ client, rpcEndpoint, rpcAuth }: ClientFrameProps):
     if (!iframe) return;
 
     const interval = setInterval(() => {
-      iframe.contentWindow?.postMessage({
-        type: 'SWIMCHAIN_RPC_CONFIG',
-        rpcEndpoint,
-        rpcAuth,
-      }, window.location.origin);
+      iframe.contentWindow?.postMessage(buildConfigMessage(), window.location.origin);
     }, 1000);
 
     // Stop after 10 seconds (client should have received it by then)
@@ -78,7 +91,8 @@ export function ClientFrame({ client, rpcEndpoint, rpcAuth }: ClientFrameProps):
       clearInterval(interval);
       clearTimeout(timeout);
     };
-  }, [rpcEndpoint, rpcAuth]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rpcEndpoint, rpcAuth, nodeAddress, nodeDisplayName]);
 
   // Listen for log messages from iframe and write to file
   useEffect(() => {

@@ -27,7 +27,16 @@ interface IdentityInfo {
 }
 
 type AppStage = "checking" | "onboarding" | "unlock" | "starting" | "ready" | "error";
-type ClientType = "forum" | "chat" | "feed" | "search";
+type ClientType = "forum" | "chat" | "feed" | "search" | "wiki";
+type NetworkType = "mainnet" | "testnet" | "regtest";
+
+const NETWORKS: NetworkType[] = ["mainnet", "testnet", "regtest"];
+
+const NETWORK_LABELS: Record<NetworkType, string> = {
+  mainnet: "Mainnet",
+  testnet: "Testnet",
+  regtest: "Regtest (local dev)",
+};
 
 // Dev-only debug tooling (screenshots, verbose logging) is disabled in production builds
 const IS_DEV = import.meta.env.DEV;
@@ -65,6 +74,7 @@ function App() {
   const [rpcEndpoint, setRpcEndpoint] = useState<string | null>(null);
   const [rpcAuth, setRpcAuth] = useState<string | null>(null);
   const [selectedClient, setSelectedClient] = useState<ClientType>("forum");
+  const [network, setNetwork] = useState<NetworkType>("testnet");
 
   // Onboarding form state
   const [displayName, setDisplayName] = useState("");
@@ -73,31 +83,68 @@ function App() {
   const [isCreating, setIsCreating] = useState(false);
   const [isUnlocking, setIsUnlocking] = useState(false);
 
-  // Check identity on startup
+  // Re-check identity (each network has its own data dir + identity)
+  const checkIdentity = async () => {
+    try {
+      const info = await invoke<IdentityInfo>("check_identity");
+      log("info", "Identity check result:", info);
+      setIdentity(info);
+
+      if (info.exists) {
+        log("info", "IDENTITY EXISTS - showing unlock screen");
+        setStage("unlock");
+      } else {
+        log("info", "NO IDENTITY - showing onboarding screen");
+        setStage("onboarding");
+      }
+    } catch (e) {
+      log("error", "FAILED to check identity:", e);
+      setError(String(e));
+      setStage("error");
+    }
+  };
+
+  // Check network + identity on startup
   useEffect(() => {
-    const checkIdentity = async () => {
+    const init = async () => {
       log("info", "===== CHECKING IDENTITY ON STARTUP =====");
       try {
-        const info = await invoke<IdentityInfo>("check_identity");
-        log("info", "Identity check result:", info);
-        setIdentity(info);
-
-        if (info.exists) {
-          log("info", "IDENTITY EXISTS - showing unlock screen");
-          setStage("unlock");
-        } else {
-          log("info", "NO IDENTITY - showing onboarding screen");
-          setStage("onboarding");
+        const net = await invoke<string>("get_network");
+        log("info", "Current network:", net);
+        if (NETWORKS.includes(net as NetworkType)) {
+          setNetwork(net as NetworkType);
         }
       } catch (e) {
-        log("error", "FAILED to check identity:", e);
-        setError(String(e));
-        setStage("error");
+        log("error", "Failed to get network, defaulting to testnet:", e);
       }
+      await checkIdentity();
     };
 
-    checkIdentity();
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Switch networks: stops the node (if running), re-checks identity for the
+  // new network's data dir, and routes to unlock/onboarding accordingly.
+  const selectNetwork = async (net: NetworkType) => {
+    if (net === network) return;
+    log("info", `===== SWITCHING NETWORK: ${network} -> ${net} =====`);
+    setError(null);
+    try {
+      await invoke("set_network", { network: net });
+      setNetwork(net);
+      // Any previous node connection is now invalid
+      setRpcEndpoint(null);
+      setRpcAuth(null);
+      setNodeStatus(null);
+      setPassword("");
+      setStage("checking");
+      await checkIdentity();
+    } catch (e) {
+      log("error", "Failed to switch network:", e);
+      setError(String(e));
+    }
+  };
 
   const startNode = async (pwd: string) => {
     log("info", "===== STARTING NODE =====");
@@ -263,6 +310,25 @@ function App() {
     </svg>
   );
 
+  // Network selector shared by onboarding + unlock screens
+  const renderNetworkSelector = (disabled?: boolean) => (
+    <div className="form-group">
+      <label htmlFor="networkSelect">Network</label>
+      <select
+        id="networkSelect"
+        className="network-select"
+        value={network}
+        onChange={(e) => selectNetwork(e.target.value as NetworkType)}
+        disabled={disabled}
+      >
+        {NETWORKS.map((net) => (
+          <option key={net} value={net}>{NETWORK_LABELS[net]}</option>
+        ))}
+      </select>
+      <small>Each network keeps its own identity and data</small>
+    </div>
+  );
+
   // Checking stage
   if (stage === "checking") {
     return (
@@ -308,6 +374,7 @@ function App() {
           )}
 
           <form onSubmit={handleUnlock} className="onboarding-form">
+            {renderNetworkSelector(isUnlocking)}
             <div className="form-group">
               <label htmlFor="unlockPassword">Password</label>
               <input
@@ -346,6 +413,7 @@ function App() {
           <p className="subtitle">A truly decentralized social network - no servers, no ads, no algorithms.</p>
 
           <form onSubmit={handleCreateIdentity} className="onboarding-form">
+            {renderNetworkSelector(isCreating)}
             <div className="form-group">
               <label htmlFor="displayName">Display Name</label>
               <input
@@ -442,12 +510,16 @@ function App() {
         identity={identity}
         selectedClient={selectedClient}
         onClientChange={setSelectedClient}
+        network={network}
+        onNetworkChange={(net) => selectNetwork(net as NetworkType)}
         onScreenshot={IS_DEV ? () => takeScreenshot('manual-btn') : undefined}
       />
       <ClientFrame
         client={selectedClient}
         rpcEndpoint={rpcEndpoint}
         rpcAuth={rpcAuth}
+        nodeAddress={identity?.address ?? null}
+        nodeDisplayName={identity?.name ?? null}
       />
     </div>
   );
