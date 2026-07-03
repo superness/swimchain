@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useSpaceMembers, useRpc, useReplySubmit } from '../hooks/useRpc';
+import { useSpaceMembers, useReplySubmit } from '../hooks/useRpc';
 import { useReplyPow } from '../hooks/useActionPow';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
@@ -25,7 +25,7 @@ import './ChatView.css';
 
 export function ChatView(): JSX.Element {
   const { spaceId } = useParams<{ spaceId: string }>();
-  const { publicKey, keypair } = useStoredKeypair();
+  const { publicKey } = useStoredKeypair();
   const userPublicKeyHex = publicKey ? bytesToHex(publicKey) : undefined;
   const { getSpaceKey, getSpaceKeyInfo } = usePrivateSpaceKeys(userPublicKeyHex);
   const { members, loading: membersLoading } = useSpaceMembers(spaceId);
@@ -93,15 +93,16 @@ export function ChatView(): JSX.Element {
       // Encrypt the message with the space key
       const encryptedContent = await encryptWithSpaceKey(newMessage.trim(), spaceKey);
 
-      // Mine real Argon2id PoW for the reply action
+      // Mine real Argon2id PoW for the reply action. encryptWithSpaceKey
+      // returns a string ciphertext, which is the reply body verbatim.
       const publicKeyBytes = new Uint8Array(publicKey);
-      const mined = await mineReply(bytesToHex(encryptedContent), publicKeyBytes, true);
+      const mined = await mineReply(encryptedContent, publicKeyBytes, true);
       const powParams = solutionToRpcParams(mined);
 
       // Submit the reply with PoW via useReplySubmit
       const result = await submitReply(
         spaceId,
-        bytesToHex(encryptedContent),
+        encryptedContent,
         bytesToHex(publicKey),
         sign,
         powParams,
@@ -301,7 +302,14 @@ export function ChatView(): JSX.Element {
       {/* Message composer */}
       <footer className="chat-composer">
         {error && <div className="composer-error">{error}</div>}
-        {isMining && <PowProgress progress={powProgress} />}
+        {isMining && (
+          <PowProgress
+            attempts={powProgress.attempts}
+            elapsedMs={powProgress.elapsedMs}
+            difficulty={8} /* Testnet Reply difficulty */
+            onCancel={cancelPow}
+          />
+        )}
         <form onSubmit={handleSendMessage} className="composer-form">
           <input
             type="text"
