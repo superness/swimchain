@@ -134,13 +134,13 @@
   </div>
 
   <section>
-    <h2>Program at a glance</h2>
+    <h2>Program at a glance <span style="font-size:12px;color:var(--good-text);font-weight:600">&#10003; ALL 24 LANES COMPLETE 2026-07-02</span></h2>
     <div class="kpis">
-      <div class="tile"><div class="v">74</div><div class="l">node RPC methods</div><div class="d ok">backend healthy</div></div>
-      <div class="tile"><div class="v">13</div><div class="l">client apps</div><div class="d">0 production-ready</div></div>
-      <div class="tile"><div class="v">5</div><div class="l">broken core paths</div><div class="d bad">forum ×3 · archiver · mobile</div></div>
-      <div class="tile"><div class="v">4</div><div class="l">parallel SDK stacks</div><div class="d bad">root cause of drift</div></div>
-      <div class="tile"><div class="v">0</div><div class="l">clients on WS events</div><div class="d">real-time unused</div></div>
+      <div class="tile"><div class="v">76</div><div class="l">node RPC methods</div><div class="d ok">+ blocklist RPC, WS events live</div></div>
+      <div class="tile"><div class="v">13</div><div class="l">client apps</div><div class="d ok">write paths node-verified</div></div>
+      <div class="tile"><div class="v">0</div><div class="l">broken core paths</div><div class="d ok">was 5 + 4 found by e2e</div></div>
+      <div class="tile"><div class="v">1</div><div class="l">unified SDK</div><div class="d ok">@swimchain/frontend (was 4 stacks)</div></div>
+      <div class="tile"><div class="v">2</div><div class="l">clients on WS events</div><div class="d ok">chat + feed (endpoint fixed)</div></div>
       <div class="tile"><div class="v" id="kpi-lanes">24</div><div class="l">work lanes</div><div class="d" id="kpi-lanes-done">0 done</div></div>
     </div>
   </section>
@@ -148,7 +148,7 @@
   <section>
     <h2>Client completeness (estimated distance from shippable, %)</h2>
     <div class="bars" id="bars"></div>
-    <div class="gridnote">Judgment scores from the 2026-07-01 audit, not checkbox counts. desktop-app is scored as packaged-app readiness. Hover a bar for the verdict.</div>
+    <div class="gridnote">Judgment scores from the 2026-07-01 PRE-program audit — kept as the historical baseline. All 24 remediation lanes have since merged (see the DAG below / live board states); a fresh re-score is the natural next audit.</div>
   </section>
 
   <section>
