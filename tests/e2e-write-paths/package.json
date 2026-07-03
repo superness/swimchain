@@ -1,0 +1,21 @@
+{
+  "name": "@swimchain/e2e-write-paths",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "End-to-end write-path validation: each client's post/reply/engagement code exercised against a real regtest node",
+  "scripts": {
+    "test": "vitest run",
+    "test:forum": "vitest run tests/forum.test.ts",
+    "test:feed": "vitest run tests/feed.test.ts",
+    "test:chat": "vitest run tests/chat.test.ts",
+    "test:wiki": "vitest run tests/wiki.test.ts",
+    "test:archiver": "vitest run tests/archiver.test.ts",
+    "test:bridge": "vitest run tests/bridge.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "~5.6.2",
+    "vitest": "^2.1.8"
+  }
+}

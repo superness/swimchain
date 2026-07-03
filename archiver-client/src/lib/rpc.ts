@@ -428,23 +428,50 @@ export class SwimchainRpc {
    * @throws Error if the RPC call fails or the node rejects the submission
    */
   async submitEngagement(params: SubmitEngagementParams): Promise<SubmitEngagementResponse> {
+    const rpcParams = {
+      content_id: params.content_id,
+      author_id: params.author_id,
+      pow_nonce: params.pow_nonce,
+      pow_difficulty: params.pow_difficulty,
+      pow_nonce_space: params.pow_nonce_space,
+      pow_hash: params.pow_hash,
+      signature: params.signature,
+      timestamp: params.timestamp,
+      emoji: params.emoji,
+    };
+
+    // submit_engagement is NOT auth-exempt on the node (rpc/server.rs), so
+    // an unauthenticated request gets HTTP 401 before the PoW is even
+    // checked. The archiver has no client-side keys; authenticate with the
+    // node identity via remote signing (sign_message), mirroring the forum
+    // client's remote-signer pattern:
+    //   sig over "swimchain-rpc:<method>:<sha256(params_json)>:<timestamp>"
+    const paramsJson = JSON.stringify(rpcParams);
+    const paramsHashBuf = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(paramsJson),
+    );
+    const paramsHashHex = Array.from(new Uint8Array(paramsHashBuf))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    const authTimestamp = Math.floor(Date.now() / 1000).toString();
+    const authMessage = `swimchain-rpc:submit_engagement:${paramsHashHex}:${authTimestamp}`;
+    const signResult = await this.signMessage(authMessage);
+
     const response = await fetchWithTimeout(this.baseUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CS-Identity': signResult.public_key,
+        'X-CS-Timestamp': authTimestamp,
+        'X-CS-Signature': signResult.signature,
+      },
+      // IMPORTANT: the node hashes the raw params bytes from the body; the
+      // nested `params` here serializes identically to `paramsJson` above.
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'submit_engagement',
-        params: {
-          content_id: params.content_id,
-          author_id: params.author_id,
-          pow_nonce: params.pow_nonce,
-          pow_difficulty: params.pow_difficulty,
-          pow_nonce_space: params.pow_nonce_space,
-          pow_hash: params.pow_hash,
-          signature: params.signature,
-          timestamp: params.timestamp,
-          emoji: params.emoji,
-        },
+        params: rpcParams,
         id: 1,
       }),
     });

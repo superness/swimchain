@@ -591,14 +591,27 @@ export class BridgeEngine {
       this.isMining = true;
       console.log(`[BridgeEngine] Mining PoW for: ${formattedContent.slice(0, 60)}...${threadParentId ? ' (reply to ' + threadParentId.slice(0, 12) + '...)' : ' (new post)'}`);
 
-      // Create PoW challenge
-      const contentBytes = new TextEncoder().encode(formattedContent);
+      // Create PoW challenge over the EXACT bytes the node re-hashes
+      // (rpc/methods.rs verify_pow_submission):
+      //   submit_post:  `${title}\n\n${body}`
+      //   submit_reply: body
+      // Mining over `formattedContent` (the old behavior) matched neither
+      // submission, so every bridged message was rejected by a real node
+      // with "PoW verification failed" (SWIM-Q2 finding). Replies also need
+      // ActionType.Reply, not Post.
+      const postTitle = `${prefix}${message.senderDisplayName}`;
+      const actionType = threadParentId ? ActionType.Reply : ActionType.Post;
+      const powContent = threadParentId
+        ? message.content
+        : `${postTitle}\n\n${message.content}`;
+
+      const contentBytes = new TextEncoder().encode(powContent);
       const publicKey = hexToBytes(identity.publicKey);
-      const difficulty = getDifficulty(ActionType.Post, true); // testnet
+      const difficulty = getDifficulty(actionType, true); // testnet
       const powConfig = getConfig(true); // testnet
 
       const challenge = await createChallenge(
-        ActionType.Post,
+        actionType,
         contentBytes,
         publicKey,
         difficulty
@@ -617,7 +630,7 @@ export class BridgeEngine {
 
       // Create signature
       const signatureData = new Uint8Array(1 + 32 + 8 + 8);
-      signatureData[0] = ActionType.Post;
+      signatureData[0] = actionType;
       signatureData.set(challenge.contentHash, 1);
       const view = new DataView(signatureData.buffer);
       view.setBigUint64(33, BigInt(challenge.timestamp), false);
