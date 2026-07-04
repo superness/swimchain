@@ -31,17 +31,29 @@ let listeners: Array<(config: ParentRpcConfig | null) => void> = [];
 // Allowed parent origins for postMessage security
 // Only accept RPC config from trusted origins
 const ALLOWED_PARENT_ORIGINS: string[] = [
-  'http://localhost:1420',      // Tauri dev
-  'http://127.0.0.1:1420',      // Tauri dev alt
-  'tauri://localhost',          // Tauri production
+  'http://localhost',           // Local development (any port)
+  'http://127.0.0.1',           // Local development (IP)
+  'tauri://localhost',          // Tauri v1 production
+  'http://tauri.localhost',     // Tauri v2 production (Windows webview origin)
+  'https://tauri.localhost',    // Tauri v2 production (macOS/Linux)
+  'https://localhost',          // Local HTTPS development
   'https://app.swimchain.io',   // Production web app
 ];
+
+// Accept same-origin (the desktop shell embeds clients under its own origin,
+// so the iframe's origin equals the shell's) plus the trusted prefixes above.
+// The prior exact .includes() match rejected Tauri v2's http://tauri.localhost,
+// which silently blocked search from ever receiving the node RPC config.
+function isOriginAllowed(origin: string): boolean {
+  if (!origin || origin === window.location.origin) return true;
+  return ALLOWED_PARENT_ORIGINS.some((allowed) => origin.startsWith(allowed));
+}
 
 // Set up message listener once
 if (typeof window !== 'undefined') {
   window.addEventListener('message', (event) => {
     // Security: Validate origin before accepting config
-    if (!ALLOWED_PARENT_ORIGINS.includes(event.origin)) {
+    if (!isOriginAllowed(event.origin)) {
       console.warn('[ParentConfig] Rejected message from untrusted origin:', event.origin);
       return;
     }
