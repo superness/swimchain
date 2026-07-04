@@ -304,6 +304,34 @@ impl BackgroundTaskRunner {
                                 our_height
                             );
                         }
+
+                        // RECORD-LAYER BACKFILL (SPEC_02 §1.1.1): header-first sync brings
+                        // down root headers only. The locator-based block sync above is fooled
+                        // into thinking we are fully synced (our height already matches the peer),
+                        // so it never fetches the space/content records for header-only heights.
+                        // Detect such "header-only" canonical blocks and pull their full records
+                        // by hash via GET_BLOCK. Bounded scan/keeps this cheap on synced nodes.
+                        // This is a safety net; handle_headers requests bodies immediately too.
+                        if let Ok(missing) = store.find_root_blocks_missing_bodies(16, 1024) {
+                            if !missing.is_empty() {
+                                if let Some(peer_id) = peer_ids.first() {
+                                    info!(
+                                        "[SYNC-LOOP] Backfilling record layer for {} header-only block(s)",
+                                        missing.len()
+                                    );
+                                    for hash in &missing {
+                                        let get_block =
+                                            crate::network::messages::GetBlockPayload::new(*hash);
+                                        let envelope =
+                                            crate::types::network::MessageEnvelope::new_fork_agnostic(
+                                                crate::types::network::MessageType::GetBlock,
+                                                get_block.to_bytes().to_vec(),
+                                            );
+                                        let _ = connection_pool.send_to(peer_id, &envelope).await;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

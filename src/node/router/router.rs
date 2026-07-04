@@ -1721,13 +1721,29 @@ impl MessageRouter {
         // Check 1: If we already have a block at this height, apply fork resolution
         if let Ok(Some(existing_hash)) = chain_store.get_root_hash_at_height(block_height) {
             if existing_hash == computed_hash {
-                // Same block, already have it - skip but don't error
+                // We already have this ROOT block. But header-first sync (handle_headers)
+                // stores the root header WITHOUT its space/content records. If we are missing
+                // any referenced space block, we are "header-only" for this height — fall
+                // through to store the record layer so "everyone has full chain" holds
+                // (SPEC_02 §1.1.1). Only short-circuit when the full record layer is present.
+                let have_all_records = root_block
+                    .space_block_hashes
+                    .iter()
+                    .all(|h| chain_store.has_space_block(h).unwrap_or(false));
+                if have_all_records {
+                    info!(
+                        "[BLOCK] Already have full block {} at height {}, skipping",
+                        hex::encode(&computed_hash[..8]),
+                        block_height
+                    );
+                    return Ok(None);
+                }
                 info!(
-                    "[BLOCK] Already have block {} at height {}, skipping",
+                    "[BLOCK] Have header for block {} at height {} but missing space records - storing record layer",
                     hex::encode(&computed_hash[..8]),
                     block_height
                 );
-                return Ok(None);
+                // Fall through to the storage section below to persist space/content records.
             } else {
                 // Different block at same height - FORK RESOLUTION
                 // Priority: 1) Higher cumulative_pow wins, 2) Lower hash wins (tiebreaker)
@@ -2790,8 +2806,19 @@ impl MessageRouter {
             // Check 1: If we already have a block at this height, apply fork resolution
             if let Ok(Some(existing_hash)) = chain_store.get_root_hash_at_height(block_height) {
                 if existing_hash == computed_hash {
-                    // Same block, already have it - skip
-                    continue;
+                    // We already have this ROOT block. If header-first sync stored it as a
+                    // header only, we may still be missing its space/content records. Only
+                    // skip when the full record layer is present locally; otherwise fall
+                    // through to store the records (SPEC_02 §1.1.1).
+                    let have_all_records = root_block
+                        .space_block_hashes
+                        .iter()
+                        .all(|h| chain_store.has_space_block(h).unwrap_or(false));
+                    if have_all_records {
+                        // Same block, already have it fully - skip
+                        continue;
+                    }
+                    // Fall through to the storage phase to persist the missing records.
                 } else {
                     // Different block at same height - FORK RESOLUTION
                     // Priority: 1) Higher cumulative_pow wins, 2) Lower hash wins (tiebreaker)
@@ -4345,28 +4372,71 @@ impl MessageRouter {
         let mut stored_count = 0;
         let our_height = chain_store.get_latest_height().ok().flatten().unwrap_or(0);
 
+        // Root blocks whose RECORD layer (space + content blocks) we still need to fetch.
+        // Header-first sync stores only the root header; per SPEC_02 §1.1.1 every node must
+        // also hold the chain records (space names + post titles live in the space/content
+        // blocks, ~500 bytes each). Without this, list_spaces (a local chain read) can't see
+        // a space the node has header-synced. Only the content BLOBS stay on-demand.
+        let mut need_bodies: Vec<[u8; 32]> = Vec::new();
+
         for header in &headers {
-            // Skip headers we already have
-            if header.height <= our_height {
-                continue;
-            }
-
-            // Store just the header (as a root block without space/content blocks)
-            if let Err(e) = chain_store.put_root_block(header) {
-                warn!("[HEADERS] Failed to store header at height {}: {}", header.height, e);
-                continue;
-            }
-
             let hash = header.hash();
-            if let Err(e) = chain_store.index_height(header.height, hash) {
-                warn!("[HEADERS] Failed to index header at height {}: {}", header.height, e);
+
+            // Store the header if it is new (advances our header chain).
+            if header.height > our_height {
+                // Store just the header (as a root block without space/content blocks)
+                if let Err(e) = chain_store.put_root_block(header) {
+                    warn!("[HEADERS] Failed to store header at height {}: {}", header.height, e);
+                    continue;
+                }
+                if let Err(e) = chain_store.index_height(header.height, hash) {
+                    warn!("[HEADERS] Failed to index header at height {}: {}", header.height, e);
+                }
+                stored_count += 1;
             }
 
-            stored_count += 1;
+            // Whether newly stored or previously header-only, ensure we have its record layer.
+            if !header.space_block_hashes.is_empty() {
+                let missing = header
+                    .space_block_hashes
+                    .iter()
+                    .any(|h| !chain_store.has_space_block(h).unwrap_or(false));
+                if missing {
+                    need_bodies.push(hash);
+                }
+            }
         }
 
         if stored_count > 0 {
             info!("[HEADERS] Stored {} new headers", stored_count);
+        }
+
+        // BODY BACKFILL: header-first sync only brought down root headers. Immediately
+        // request the full blocks (space + content records) for any header whose record
+        // layer we do not yet have, so the chain-record layer is complete locally
+        // (SPEC_02 §1.1.1). The peer replies with BLOCK_DATA, applied by handle_block_data.
+        if !need_bodies.is_empty() {
+            if let Some(ref pool) = self.connection_pool {
+                info!(
+                    "[HEADERS] Requesting record layer for {} header-only block(s) from peer {}",
+                    need_bodies.len(),
+                    hex::encode(&peer_id[..8])
+                );
+                for hash in &need_bodies {
+                    let get_block = GetBlockPayload::new(*hash);
+                    let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                        crate::types::network::MessageType::GetBlock,
+                        get_block.to_bytes().to_vec(),
+                    );
+                    if let Err(e) = pool.send_to(peer_id, &envelope).await {
+                        debug!(
+                            "[HEADERS] Failed to request block body {}: {}",
+                            hex::encode(&hash[..8]),
+                            e
+                        );
+                    }
+                }
+            }
         }
 
         // No response needed

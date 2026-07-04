@@ -772,6 +772,67 @@ impl ChainStore {
         Ok(self.content_blocks.contains_key(hash)?)
     }
 
+    /// Find canonical root blocks whose referenced space blocks are NOT all present locally.
+    ///
+    /// Header-first sync (SPEC_06) stores root headers without their space/content
+    /// records. Per SPEC_02 §1.1.1 the chain RECORD layer (space names + post titles,
+    /// which live in the space/content blocks) must be held by every node — only the
+    /// content BLOBS are fetched on-demand. This returns the hashes of "header-only"
+    /// canonical blocks so the sync layer can backfill their full records.
+    ///
+    /// The scan walks from the tip downward and stops after `max_scan` heights are
+    /// examined or `limit` matches are collected, whichever comes first (bounded cost).
+    /// Header-only blocks produced by header-first sync cluster near the tip, so a
+    /// bounded recent-window scan finds them.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if a database read fails.
+    pub fn find_root_blocks_missing_bodies(
+        &self,
+        limit: usize,
+        max_scan: usize,
+    ) -> Result<Vec<BlockHash>, StorageError> {
+        let mut result = Vec::new();
+        if limit == 0 || max_scan == 0 {
+            return Ok(result);
+        }
+        let tip = match self.get_latest_height()? {
+            Some(h) => h,
+            None => return Ok(result),
+        };
+
+        let mut height = tip;
+        let mut scanned = 0usize;
+        loop {
+            if result.len() >= limit || scanned >= max_scan {
+                break;
+            }
+            scanned += 1;
+
+            if let Some(hash) = self.get_root_hash_at_height(height)? {
+                if let Some(block) = self.get_root_block(&hash)? {
+                    if !block.space_block_hashes.is_empty() {
+                        let missing = block
+                            .space_block_hashes
+                            .iter()
+                            .any(|h| !self.has_space_block(h).unwrap_or(false));
+                        if missing {
+                            result.push(hash);
+                        }
+                    }
+                }
+            }
+
+            if height == 0 {
+                break;
+            }
+            height -= 1;
+        }
+
+        Ok(result)
+    }
+
     /// Iterate over all root block hashes
     pub fn root_block_hashes(&self) -> impl Iterator<Item = Result<BlockHash, StorageError>> + '_ {
         self.root_blocks.iter().map(|result| {
