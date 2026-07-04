@@ -5,7 +5,9 @@
  * {
  *   type: 'SWIMCHAIN_RPC_CONFIG',
  *   rpcEndpoint: 'http://127.0.0.1:19736',
- *   rpcAuth: 'Basic ...'
+ *   rpcAuth: 'Basic ...',
+ *   nodeAddress: 'cs1...',      // optional: node identity address
+ *   nodeDisplayName: 'Alice'    // optional: node identity display name
  * }
  */
 
@@ -14,6 +16,12 @@ import { useState, useEffect } from 'react';
 interface ParentRpcConfig {
   rpcEndpoint: string;
   rpcAuth: string;
+  // The desktop shell's node identity, when running embedded. In the desktop
+  // app the NODE holds the identity (the browser has no keypair), so search
+  // adopts this for display and as the stable per-user key for client-side
+  // state (blocklist, search history) instead of a browser publicKey.
+  nodeAddress?: string;
+  nodeDisplayName?: string;
 }
 
 // Global storage for parent config (persists across hook instances)
@@ -48,6 +56,8 @@ if (typeof window !== 'undefined') {
       parentConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
+        nodeAddress: typeof event.data.nodeAddress === 'string' ? event.data.nodeAddress : undefined,
+        nodeDisplayName: typeof event.data.nodeDisplayName === 'string' ? event.data.nodeDisplayName : undefined,
       };
 
       // Notify all listeners

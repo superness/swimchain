@@ -3,8 +3,9 @@
  */
 
 import { useState, useCallback, useEffect } from 'react';
+import { useSearchIdentity, storageKeyFor } from './useSearchIdentity';
 
-const STORAGE_KEY = 'search-history';
+const STORAGE_KEY_BASE = 'search-history';
 const MAX_HISTORY_ITEMS = 20;
 
 interface UseSearchHistoryResult {
@@ -16,21 +17,28 @@ interface UseSearchHistoryResult {
 
 export function useSearchHistory(): UseSearchHistoryResult {
   const [history, setHistory] = useState<string[]>([]);
+  // Key history on the node address when embedded (node owns the identity), so
+  // it is stable per identity and consistent with the other clients. Standalone
+  // browser tabs keep the base key unchanged.
+  const { nodeAddress } = useSearchIdentity();
+  const storageKey = storageKeyFor(STORAGE_KEY_BASE, nodeAddress);
 
-  // Load history from localStorage on mount
+  // Load history from localStorage when the active storage key resolves
   useEffect(() => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(storageKey);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) {
           setHistory(parsed);
+          return;
         }
       }
+      setHistory([]);
     } catch (error) {
       console.error('Failed to load search history:', error);
     }
-  }, []);
+  }, [storageKey]);
 
   /**
    * Add a query to search history
@@ -49,14 +57,14 @@ export function useSearchHistory(): UseSearchHistoryResult {
 
       // Persist to localStorage
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+        localStorage.setItem(storageKey, JSON.stringify(updated));
       } catch (error) {
         console.error('Failed to save search history:', error);
       }
 
       return updated;
     });
-  }, []);
+  }, [storageKey]);
 
   /**
    * Remove a specific query from history
@@ -66,26 +74,26 @@ export function useSearchHistory(): UseSearchHistoryResult {
       const filtered = prev.filter(q => q !== query);
 
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+        localStorage.setItem(storageKey, JSON.stringify(filtered));
       } catch (error) {
         console.error('Failed to save search history:', error);
       }
 
       return filtered;
     });
-  }, []);
+  }, [storageKey]);
 
   /**
    * Clear all search history
    */
   const clearHistory = useCallback(() => {
     try {
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(storageKey);
     } catch (error) {
       console.error('Failed to clear search history:', error);
     }
     setHistory([]);
-  }, []);
+  }, [storageKey]);
 
   return {
     history,
