@@ -96,13 +96,22 @@ export function NamespacePage(): JSX.Element {
     try {
       const result = await rpc.call<RpcListContentResult>('list_space_content', {
         space_id: namespaceId,
-        content_type: 'Thread',
         limit: 200,
         offset: 0,
         sort: 'recent',
       });
 
-      setPages(result.items.map(mapToWikiPage));
+      // Wiki pages are top-level posts (the node stores them as
+      // content_type 'Post', not 'Thread' — the old 'Thread' filter matched
+      // nothing, so the list was always empty while the namespace count,
+      // sourced from post_count, showed pages existed). Show top-level posts
+      // as pages: Post type, or anything without a parent that isn't a reply.
+      const pageItems = result.items.filter(
+        (item) =>
+          item.content_type === 'Post' ||
+          (!item.parent_id && item.content_type !== 'Reply'),
+      );
+      setPages(pageItems.map(mapToWikiPage));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch pages');
     } finally {
