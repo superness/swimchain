@@ -12,12 +12,14 @@ import {
   PowProgress,
   IdentityCard,
 } from '@swimchain/frontend';
+import { useSearchIdentity } from '../hooks/useSearchIdentity';
 import './IdentityPage.css';
 
 export function IdentityPage(): JSX.Element {
   const { keypair, address, generate, clear } = useKeypair();
   const { state, solution, mine, cancel, attempts, elapsedMs, reset } = usePow();
   const { identity, setIdentity, clearIdentity, hasValidIdentity } = useIdentityContext();
+  const { isNodeMode, nodeAddress, nodeDisplayName } = useSearchIdentity();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -96,8 +98,39 @@ export function IdentityPage(): JSX.Element {
       </header>
 
       <div className="identity-page__content">
+        {/* Node mode (desktop app): the node owns the identity. Show it read-only
+            and skip the browser create/import flow entirely. */}
+        {isNodeMode && (
+          <section className="identity-page__section">
+            <h2 className="identity-page__section-title">Your Identity</h2>
+            <div className="identity-page__card">
+              <p className="identity-page__desc">
+                This desktop app uses your <strong>node's identity</strong>. Search and
+                all identity-bound actions are signed by the node, so there is no
+                separate browser identity to create or manage here.
+              </p>
+              {nodeDisplayName && (
+                <p className="identity-page__desc">
+                  <strong>Name:</strong> {nodeDisplayName}
+                </p>
+              )}
+              <p className="identity-page__desc">
+                <strong>Address:</strong>
+              </p>
+              <AddressDisplay address={nodeAddress || ''} chars={12} showCopy />
+            </div>
+            <div className="identity-page__card">
+              <h3>About Your Identity</h3>
+              <p className="identity-page__desc">
+                Your private key is held by your local node, not the browser. It never
+                leaves your device and is shared across all Swimchain desktop clients.
+              </p>
+            </div>
+          </section>
+        )}
+
         {/* Show upgrade notice if identity exists but needs upgrade */}
-        {identity && !hasValidIdentity && (
+        {!isNodeMode && identity && !hasValidIdentity && (
           <section className="identity-page__section">
             <div className="identity-page__card identity-page__warning">
               <h2 className="identity-page__section-title">Identity Upgrade Required</h2>
@@ -119,7 +152,7 @@ export function IdentityPage(): JSX.Element {
           </section>
         )}
 
-        {identity && hasValidIdentity && (
+        {!isNodeMode && identity && hasValidIdentity && (
           <section className="identity-page__section">
             <h2 className="identity-page__section-title">Your Identity</h2>
             <IdentityCard identity={identity} />
@@ -148,7 +181,7 @@ export function IdentityPage(): JSX.Element {
           </section>
         )}
 
-        {!identity && (
+        {!isNodeMode && !identity && (
           <section className="identity-page__section">
             <h2 className="identity-page__section-title">Create New Identity</h2>
             <p className="identity-page__desc">

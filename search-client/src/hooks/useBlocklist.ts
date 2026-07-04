@@ -6,8 +6,9 @@
  */
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useSearchIdentity, storageKeyFor } from './useSearchIdentity';
 
-const STORAGE_KEY = 'swimchain-search-blocklist';
+const STORAGE_KEY_BASE = 'swimchain-search-blocklist';
 
 export type BlockType = 'user' | 'post' | 'space' | 'reply';
 
@@ -40,10 +41,15 @@ function getListKey(type: BlockType): keyof Blocklist {
 
 export function useBlocklist() {
   const [blocklist, setBlocklist] = useState<Blocklist>(createEmptyBlocklist);
+  // In the desktop app the node owns the identity; key the blocklist on the
+  // node address so it is stable per identity and consistent with the other
+  // embedded clients. Standalone browser tabs keep the base key unchanged.
+  const { nodeAddress } = useSearchIdentity();
+  const storageKey = storageKeyFor(STORAGE_KEY_BASE, nodeAddress);
 
   useEffect(() => {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
+      const stored = localStorage.getItem(storageKey);
       if (stored) {
         const parsed = JSON.parse(stored) as Blocklist;
         setBlocklist({
@@ -52,20 +58,22 @@ export function useBlocklist() {
           spaces: parsed.spaces || [],
           replies: parsed.replies || [],
         });
+      } else {
+        setBlocklist(createEmptyBlocklist());
       }
     } catch (error) {
       console.error('[Blocklist] Failed to load:', error);
     }
-  }, []);
+  }, [storageKey]);
 
   const saveBlocklist = useCallback((newBlocklist: Blocklist) => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(newBlocklist));
+      localStorage.setItem(storageKey, JSON.stringify(newBlocklist));
       setBlocklist(newBlocklist);
     } catch (error) {
       console.error('[Blocklist] Failed to save:', error);
     }
-  }, []);
+  }, [storageKey]);
 
   const blockedSets = useMemo(() => ({
     users: new Set(blocklist.users.map(b => b.id)),
