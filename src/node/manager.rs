@@ -618,9 +618,17 @@ impl NodeManager {
         info!("[CONTENT-SYNC] Connection pool initialized");
 
         // 4.7. Initialize BlockBuilder for block-based content propagation (SPEC_08)
-        let block_builder = Arc::new(RwLock::new(BlockBuilder::new(
-            crate::blocks::INITIAL_DIFFICULTY,
-        )));
+        // SWIM-BLOCK-THRESHOLD: scale the block-formation threshold by the network's
+        // PoW multiplier so it matches per-action PoW scaling. Without this, on
+        // testnet/regtest each action contributes ~10%/0.1% of the PoW toward a full
+        // mainnet-sized threshold of 30, so blocks never seal on low-traffic chains and
+        // content sits `pending` forever. Values: mainnet 30, testnet 3, regtest 1.
+        // The scaled value is stamped into RootBlock.difficulty_target at formation and
+        // validated self-referentially (RootBlock::verify_difficulty), so all nodes on
+        // a network agree on the threshold without any external constant.
+        let block_difficulty_target = crate::network::NetworkContext::mode()
+            .scaled_block_difficulty(crate::blocks::INITIAL_DIFFICULTY);
+        let block_builder = Arc::new(RwLock::new(BlockBuilder::new(block_difficulty_target)));
 
         // Sync BlockBuilder with chain state so new blocks continue from current height
         if let Some(ref cs) = self.chain_store {
@@ -643,7 +651,9 @@ impl NodeManager {
         }
 
         self.block_builder = Some(block_builder.clone());
-        info!("[BLOCKS] Block builder initialized with difficulty target {}s",
+        info!("[BLOCKS] Block builder initialized with difficulty target {}s (network={}, base={}s)",
+              block_difficulty_target,
+              crate::network::NetworkContext::mode(),
               crate::blocks::INITIAL_DIFFICULTY);
 
         // 4.7.2. Resubmit recovered actions from chain repair to mempool

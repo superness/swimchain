@@ -201,6 +201,41 @@ impl NetworkMode {
         }
     }
 
+    /// Scale a root-block formation difficulty target by this network's PoW multiplier.
+    ///
+    /// Per-action PoW is scaled by `pow_difficulty_multiplier()` (mainnet 1.0,
+    /// testnet 0.1, regtest 0.001), so each action contributes proportionally less
+    /// PoW-seconds toward a root block. The block-formation threshold MUST be scaled
+    /// by the same factor, otherwise low-traffic testnet/regtest chains never seal a
+    /// block and content sits `pending` forever (SWIM-BLOCK-THRESHOLD).
+    ///
+    /// The result is floored at 1 so regtest (30 * 0.001 = 0.03 -> 1) requires at
+    /// least a single small action to seal a block, rather than 0 which would allow
+    /// instant/empty-block spam.
+    ///
+    /// # Consensus
+    ///
+    /// The scaled value is stamped into `RootBlock.difficulty_target` at formation and
+    /// is part of the block hash. Validation (`RootBlock::verify_difficulty`) checks
+    /// `total_pow >= self.difficulty_target` against the block's OWN field, so all
+    /// nodes on a given network agree without any external constant. All formation on
+    /// a network must use this same scaled value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use swimchain::network::NetworkMode;
+    ///
+    /// assert_eq!(NetworkMode::Mainnet.scaled_block_difficulty(30), 30);
+    /// assert_eq!(NetworkMode::Testnet.scaled_block_difficulty(30), 3);
+    /// assert_eq!(NetworkMode::Regtest.scaled_block_difficulty(30), 1); // floored
+    /// ```
+    #[must_use]
+    pub fn scaled_block_difficulty(&self, base_difficulty: u64) -> u64 {
+        let scaled = (base_difficulty as f64 * self.pow_difficulty_multiplier()).round();
+        (scaled as u64).max(1)
+    }
+
     /// Get the decay time multiplier
     ///
     /// - Mainnet: 1.0 (normal decay)
@@ -360,6 +395,24 @@ mod tests {
         assert_eq!(NetworkMode::Mainnet.pow_difficulty_multiplier(), 1.0);
         assert_eq!(NetworkMode::Testnet.pow_difficulty_multiplier(), 0.1);
         assert_eq!(NetworkMode::Regtest.pow_difficulty_multiplier(), 0.001);
+    }
+
+    #[test]
+    fn test_scaled_block_difficulty() {
+        // SWIM-BLOCK-THRESHOLD: root-block formation threshold must be scaled by the
+        // same multiplier as per-action PoW, else low-traffic testnet/regtest never seal.
+        assert_eq!(NetworkMode::Mainnet.scaled_block_difficulty(30), 30);
+        assert_eq!(NetworkMode::Testnet.scaled_block_difficulty(30), 3);
+        // regtest: 30 * 0.001 = 0.03 -> rounds to 0 -> floored to 1
+        assert_eq!(NetworkMode::Regtest.scaled_block_difficulty(30), 1);
+    }
+
+    #[test]
+    fn test_scaled_block_difficulty_floor() {
+        // Floor at 1 for any tiny base so a single action can still seal a block.
+        assert_eq!(NetworkMode::Regtest.scaled_block_difficulty(1), 1);
+        assert_eq!(NetworkMode::Regtest.scaled_block_difficulty(0), 1);
+        assert_eq!(NetworkMode::Mainnet.scaled_block_difficulty(0), 1);
     }
 
     #[test]
