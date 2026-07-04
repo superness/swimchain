@@ -14,6 +14,14 @@ import { useState, useEffect } from 'react';
 interface ParentRpcConfig {
   rpcEndpoint: string;
   rpcAuth: string;
+  // The desktop shell's node identity address (cs1...), when running embedded.
+  // The node holds the identity, so the browser has no keypair — its presence
+  // is what flips wiki into "node mode" (see hooks/identityMode.ts), where page
+  // edits and discussion replies are signed via the node's sign_message RPC.
+  nodeAddress?: string;
+  // Optional human-readable name for the node identity (shown as the current
+  // user in node mode). Sent by the desktop shell alongside nodeAddress.
+  nodeDisplayName?: string;
 }
 
 // Global storage for parent config (persists across hook instances)
@@ -52,6 +60,8 @@ if (typeof window !== 'undefined') {
       parentConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
+        nodeAddress: event.data.nodeAddress,
+        nodeDisplayName: event.data.nodeDisplayName,
       };
 
       // Notify all listeners

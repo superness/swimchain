@@ -19,7 +19,7 @@ import {
   getConfig,
   hexToBytes,
 } from '@swimchain/frontend';
-import { useIdentityContext } from '@swimchain/frontend';
+import { useWikiIdentity } from '../hooks/useWikiIdentity';
 import { renderMarkdown } from '../lib/markdown';
 import { parseWikiLinks } from '../lib/wikilinks';
 import { encodeRevisionBody } from '../lib/revision';
@@ -42,7 +42,7 @@ export function WikiPageEdit(): JSX.Element {
   const { namespaceId, pageId } = useParams<{ namespaceId: string; pageId: string }>();
   const navigate = useNavigate();
   const { rpc, connected } = useRpc();
-  const { identity } = useIdentityContext();
+  const identity = useWikiIdentity();
   const { data: namespaces } = useWikiNamespaces();
   const isNew = !pageId;
 
@@ -112,10 +112,11 @@ export function WikiPageEdit(): JSX.Element {
 
   // Submit handler — mines PoW then submits via RPC
   const handleSubmit = useCallback(async () => {
-    if (!identity) {
+    if (!identity.hasIdentity || !identity.publicKey) {
       setSubmitError('Identity required — go to Identity page first.');
       return;
     }
+    const authorPublicKey = identity.publicKey;
     if (!rpc || !connected) {
       setSubmitError('Not connected to node.');
       return;
@@ -153,7 +154,7 @@ export function WikiPageEdit(): JSX.Element {
       : revisionBody;
 
     const contentBytes = new TextEncoder().encode(postContent);
-    const authorPubkey = hexToBytes(identity.publicKey);
+    const authorPubkey = hexToBytes(authorPublicKey);
 
     setMiningState('mining');
     setProgress({ attempts: 0, elapsedMs: 0, hashRate: 0 });
@@ -185,19 +186,19 @@ export function WikiPageEdit(): JSX.Element {
       // Convert solution to RPC params
       const powParams = solutionToRpcParams(solution);
 
-      // Sign the content
+      // Sign the content via the unified signer: the node's sign_message RPC
+      // when embedded in the desktop shell, or the local WASM keypair when
+      // standalone. The signed bytes are identical in both modes — only WHO
+      // holds the key changes, so the PoW/hash contract is untouched.
       const signMessage = isNew
         ? `post:${namespaceId}:${title.trim()}:${content.trim()}:${powParams.timestamp}`
         : `reply:${pageId}:${revisionBody}:${powParams.timestamp}`;
-
-      // Use WASM keypair for signing
-      const { wasm } = await import('@swimchain/frontend');
-      const seedBytes = hexToBytes(identity.seed);
-      const keypair = wasm.WasmKeypair.fromSeed(seedBytes);
       const msgBytes = new TextEncoder().encode(signMessage);
-      const signature = keypair.sign(msgBytes);
+      const signature = await identity.sign(msgBytes);
+      if (!signature) {
+        throw new Error('Signing failed — identity unavailable.');
+      }
       const signatureHex = Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
-      keypair.free();
 
       setMiningState('submitting');
 
@@ -207,7 +208,7 @@ export function WikiPageEdit(): JSX.Element {
           space_id: namespaceId,
           title: title.trim(),
           body: content.trim(),
-          author_id: identity.publicKey,
+          author_id: authorPublicKey,
           pow_nonce: powParams.pow_nonce,
           pow_difficulty: powParams.pow_difficulty,
           pow_nonce_space: powParams.pow_nonce_space,
@@ -222,7 +223,7 @@ export function WikiPageEdit(): JSX.Element {
         await rpc.call<{ content_id: string }>('submit_reply', {
           parent_id: pageId,
           body: revisionBody,
-          author_id: identity.publicKey,
+          author_id: authorPublicKey,
           pow_nonce: powParams.pow_nonce,
           pow_difficulty: powParams.pow_difficulty,
           pow_nonce_space: powParams.pow_nonce_space,
@@ -402,7 +403,7 @@ export function WikiPageEdit(): JSX.Element {
             <button
               className="wiki-btn wiki-btn--primary"
               onClick={handleSubmit}
-              disabled={!identity || !connected || (isNew && !title.trim()) || !content.trim()}
+              disabled={!identity.hasIdentity || !connected || (isNew && !title.trim()) || !content.trim()}
             >
               {isNew ? 'Create Page' : 'Save Changes'}
             </button>
@@ -415,7 +416,7 @@ export function WikiPageEdit(): JSX.Element {
           </div>
         )}
 
-        {!identity && (
+        {!identity.hasIdentity && identity.mode !== 'node' && (
           <p className="wiki-editor__hint wiki-editor__hint--warn">
             You need an <Link to="/identity">identity</Link> to create or edit pages.
           </p>

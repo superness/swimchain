@@ -8,8 +8,8 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useIdentityContext, hexToBytes } from '@swimchain/frontend';
 import { useSpamReport, useSpamStatus, type SpamReason } from '../hooks/useSpamAttestation';
+import { useWikiIdentity } from '../hooks/useWikiIdentity';
 import './ReportModal.css';
 
 interface ReportModalProps {
@@ -30,25 +30,24 @@ export function ReportModal({ contentId, onClose }: ReportModalProps): JSX.Eleme
   const [result, setResult] = useState<'success' | 'error' | null>(null);
   const { status, refetch: refetchStatus } = useSpamStatus(contentId);
   const { reportSpam, defendContent, submitting, progress, error } = useSpamReport();
-  const { identity } = useIdentityContext();
+  const identity = useWikiIdentity();
   const modalRef = useRef<HTMLDivElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
 
-  const hasIdentity = Boolean(identity?.publicKey && identity?.seed);
+  const hasIdentity = identity.hasIdentity;
 
-  /** Sign with the stored identity's WASM keypair */
+  /**
+   * Sign via the unified signer: the node's sign_message RPC when embedded in
+   * the desktop shell, or the local WASM keypair when standalone.
+   */
+  const identitySign = identity.sign;
   const signFn = useCallback(async (message: Uint8Array): Promise<Uint8Array> => {
-    if (!identity?.seed) {
+    const signature = await identitySign(message);
+    if (!signature) {
       throw new Error('Identity required');
     }
-    const { wasm } = await import('@swimchain/frontend');
-    const keypair = wasm.WasmKeypair.fromSeed(hexToBytes(identity.seed));
-    try {
-      return keypair.sign(message);
-    } finally {
-      keypair.free();
-    }
-  }, [identity?.seed]);
+    return signature;
+  }, [identitySign]);
 
   // Focus trap: get all focusable elements within the modal
   const getFocusableElements = useCallback(() => {
@@ -104,7 +103,7 @@ export function ReportModal({ contentId, onClose }: ReportModalProps): JSX.Eleme
   }, [onClose, submitting, getFocusableElements]);
 
   const handleReport = async () => {
-    if (!selectedReason || !hasIdentity || !identity) return;
+    if (!selectedReason || !hasIdentity || !identity.publicKey) return;
 
     const { success } = await reportSpam(contentId, selectedReason, identity.publicKey, signFn);
 
@@ -117,7 +116,7 @@ export function ReportModal({ contentId, onClose }: ReportModalProps): JSX.Eleme
   };
 
   const handleDefend = async () => {
-    if (!hasIdentity || !identity) return;
+    if (!hasIdentity || !identity.publicKey) return;
 
     const { success } = await defendContent(contentId, identity.publicKey, signFn);
 
@@ -233,7 +232,7 @@ export function ReportModal({ contentId, onClose }: ReportModalProps): JSX.Eleme
           </button>
         </div>
 
-        {!hasIdentity && (
+        {!hasIdentity && identity.mode !== 'node' && (
           <p className="report-identity-hint">
             Create an identity to report content.
           </p>
