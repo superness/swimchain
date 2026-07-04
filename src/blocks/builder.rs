@@ -1118,6 +1118,27 @@ mod tests {
     }
 
     #[test]
+    fn test_builder_threshold_scaled_per_network() {
+        // SWIM-BLOCK-THRESHOLD: the block-formation threshold the builder is created
+        // with must be the network-scaled value, matching per-action PoW scaling.
+        use crate::blocks::INITIAL_DIFFICULTY;
+        use crate::network::NetworkMode;
+
+        let mainnet = BlockBuilder::new(NetworkMode::Mainnet.scaled_block_difficulty(INITIAL_DIFFICULTY));
+        let testnet = BlockBuilder::new(NetworkMode::Testnet.scaled_block_difficulty(INITIAL_DIFFICULTY));
+        let regtest = BlockBuilder::new(NetworkMode::Regtest.scaled_block_difficulty(INITIAL_DIFFICULTY));
+
+        assert_eq!(mainnet.difficulty_target(), 30);
+        assert_eq!(testnet.difficulty_target(), 3);
+        assert_eq!(regtest.difficulty_target(), 1);
+
+        // A single small action must seal a block on regtest (near-instant).
+        let mut regtest = regtest;
+        regtest.add_action([1u8; 32], [2u8; 32], make_test_action(1), BranchPath::root());
+        assert!(regtest.is_threshold_met(), "regtest should seal on a single pow=1 action");
+    }
+
+    #[test]
     fn test_add_action() {
         let mut builder = BlockBuilder::new(30);
         let action = make_test_action(10);

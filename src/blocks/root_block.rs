@@ -514,6 +514,38 @@ mod tests {
     }
 
     #[test]
+    fn test_scaled_threshold_formation_matches_validation() {
+        // SWIM-BLOCK-THRESHOLD consensus invariant: a block formed at a network's
+        // scaled threshold must PASS validation, because verify_difficulty() reads the
+        // block's own difficulty_target field (which is part of the hash). This is what
+        // keeps every node on a network in agreement.
+        use crate::network::NetworkMode;
+
+        for mode in [NetworkMode::Mainnet, NetworkMode::Testnet, NetworkMode::Regtest] {
+            let threshold = mode.scaled_block_difficulty(INITIAL_DIFFICULTY);
+            // A block whose total_pow exactly meets the scaled threshold.
+            let sb = make_test_space_block(threshold);
+            let block =
+                RootBlock::from_space_blocks(&[sb], [0u8; 32], 0, 1000, threshold, 1, [0u8; 32]);
+            assert!(
+                block.verify_difficulty().is_ok(),
+                "block formed at {mode} scaled threshold {threshold} must validate"
+            );
+        }
+
+        // Demonstrates the bug this fixes: a low-PoW block (e.g. a single regtest action,
+        // pow=1) is REJECTED if validated against the unscaled mainnet threshold of 30,
+        // which is exactly why low-traffic testnet/regtest content used to sit pending
+        // forever. With the scaled threshold (1) it validates (checked in the loop above).
+        let sb = make_test_space_block(1);
+        let stuck = RootBlock::from_space_blocks(&[sb], [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
+        assert!(matches!(
+            stuck.verify_difficulty(),
+            Err(RootBlockError::DifficultyNotMet { .. })
+        ));
+    }
+
+    #[test]
     fn test_verify_difficulty() {
         let sb = make_test_space_block(30);
         let block = RootBlock::from_space_blocks(&[sb], [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
