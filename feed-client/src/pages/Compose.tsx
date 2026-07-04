@@ -8,7 +8,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useIdentityContext } from '../providers/IdentityProvider';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { usePostSubmit, useSpaces, useMediaUpload } from '../hooks/useRpc';
 import { usePostPow } from '../hooks/useActionPow';
 import { solutionToRpcParams } from '../lib/action-pow';
@@ -41,7 +41,8 @@ export function Compose(): JSX.Element {
   const [pendingCompression, setPendingCompression] = useState<PendingCompression | null>(null);
 
   const { identity, hasValidIdentity } = useIdentityContext();
-  const { sign } = useStoredKeypair();
+  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
+  const { sign } = useFeedIdentity();
   const { state, minePost, cancel, progress, reset, solution } = usePostPow();
   const { submitPost, submitting, error: rpcError } = usePostSubmit();
   const { uploadImage, compressAndUpload, uploading, error: uploadError } = useMediaUpload();
@@ -205,17 +206,12 @@ export function Compose(): JSX.Element {
     });
 
     try {
-      // Create async sign wrapper
-      const asyncSign = async (message: Uint8Array): Promise<Uint8Array | null> => {
-        return sign(message);
-      };
-
       const result = await submitPost(
         selectedSpace,
         titleRef.current,
         bodyRef.current,
         identity.publicKey,
-        asyncSign,
+        sign,
         powParams,
         mediaRefs.length > 0 ? mediaRefs : undefined,
       );

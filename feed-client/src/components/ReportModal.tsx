@@ -5,15 +5,10 @@
  * Also shows spam status and allows counter-attestations.
  */
 
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSpamReport, useSpamStatus, SpamReason } from '../hooks/useRpc';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import './ReportModal.css';
-
-// Helper to convert Uint8Array to hex
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 interface ReportModalProps {
   contentId: string;
@@ -33,8 +28,8 @@ export function ReportModal({ contentId, onClose }: ReportModalProps) {
   const [result, setResult] = useState<'success' | 'error' | null>(null);
   const { status, refetch: refetchStatus } = useSpamStatus(contentId);
   const { reportSpam, defendContent, submitting, progress, error } = useSpamReport();
-  const { keypair, publicKey } = useStoredKeypair();
-  const publicKeyHex = useMemo(() => publicKey ? bytesToHex(publicKey) : null, [publicKey]);
+  // Unified identity: node identity + sign_message RPC when embedded, browser keypair otherwise.
+  const { publicKey: publicKeyHex, hasIdentity, sign } = useFeedIdentity();
   const modalRef = useRef<HTMLDivElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
 
@@ -93,10 +88,9 @@ export function ReportModal({ contentId, onClose }: ReportModalProps) {
   }, [onClose, submitting, getFocusableElements]);
 
   const handleReport = async () => {
-    if (!selectedReason || !keypair || !publicKeyHex) return;
+    if (!selectedReason || !hasIdentity || !publicKeyHex) return;
 
-    const signFn = (message: Uint8Array) => keypair.sign(message);
-    const { success } = await reportSpam(contentId, selectedReason, publicKeyHex, signFn);
+    const { success } = await reportSpam(contentId, selectedReason, publicKeyHex, sign);
 
     if (success) {
       setResult('success');
@@ -107,10 +101,9 @@ export function ReportModal({ contentId, onClose }: ReportModalProps) {
   };
 
   const handleDefend = async () => {
-    if (!keypair || !publicKeyHex) return;
+    if (!hasIdentity || !publicKeyHex) return;
 
-    const signFn = (message: Uint8Array) => keypair.sign(message);
-    const { success } = await defendContent(contentId, publicKeyHex, signFn);
+    const { success } = await defendContent(contentId, publicKeyHex, sign);
 
     if (success) {
       setResult('success');
@@ -208,7 +201,7 @@ export function ReportModal({ contentId, onClose }: ReportModalProps) {
             <button
               className="report-cancel defend-btn"
               onClick={handleDefend}
-              disabled={!keypair}
+              disabled={!hasIdentity}
               title="Submit counter-attestation to defend this content"
             >
               Defend
@@ -218,13 +211,13 @@ export function ReportModal({ contentId, onClose }: ReportModalProps) {
           <button
             className="report-submit"
             onClick={handleReport}
-            disabled={!selectedReason || !keypair}
+            disabled={!selectedReason || !hasIdentity}
           >
             Report
           </button>
         </div>
 
-        {!keypair && (
+        {!hasIdentity && (
           <p className="report-identity-hint">
             Create an identity to report content.
           </p>

@@ -8,7 +8,7 @@ import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useThread, useReplies, useReplySubmit } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { useReplyPow } from '../hooks/useActionPow';
 import { solutionToRpcParams } from '../lib/action-pow';
@@ -180,7 +180,8 @@ export function Post(): JSX.Element {
   const { replies, loading: repliesLoading, fetching: repliesFetching, refetch: refetchReplies } = useReplies(postId || '');
 
   const { identity, hasValidIdentity } = useIdentityContext();
-  const { sign } = useStoredKeypair();
+  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
+  const { sign } = useFeedIdentity();
   const { isPostBlocked, isUserBlocked } = useBlocklist();
   const { state: miningState, mineReply, cancel, progress, reset, solution } = useReplyPow();
   const { submitReply, submitting, error: rpcError } = useReplySubmit();
@@ -262,7 +263,7 @@ export function Post(): JSX.Element {
         replyParentRef.current,
         replyBodyRef.current,
         identity.publicKey,
-        (message: Uint8Array) => sign(message)!,
+        sign,
         powParams,
       );
 
