@@ -9,6 +9,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { SwimchainProvider, WaveLoader } from '@swimchain/frontend';
 import { RpcProvider } from './hooks/useRpc';
+import { NodeIdentityProvider } from './hooks/useNodeIdentity';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { App } from './App';
 import './styles/wiki.css';
@@ -28,7 +29,9 @@ ReactDOM.createRoot(rootElement).render(
         onError={(err) => console.error('WASM initialization failed:', err)}
       >
         <RpcProvider>
-          <App />
+          <NodeIdentityProvider>
+            <App />
+          </NodeIdentityProvider>
         </RpcProvider>
       </SwimchainProvider>
     </ErrorBoundary>

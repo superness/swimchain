@@ -8,7 +8,6 @@ import { useParams, Link } from 'react-router-dom';
 import { useRpc } from '../hooks/useRpc';
 import { useWikiPage } from '../hooks/useWikiPage';
 import {
-  useIdentityContext,
   ActionType,
   createChallenge,
   computePow,
@@ -19,6 +18,7 @@ import {
   TESTNET_CONFIG,
   type PoWSolution,
 } from '@swimchain/frontend';
+import { useWikiIdentity } from '../hooks/useWikiIdentity';
 import { renderMarkdown } from '../lib/markdown';
 import { decodeRevisionBody } from '../lib/revision';
 import { ReportModal } from '../components/ReportModal';
@@ -188,7 +188,7 @@ export function Discussion(): JSX.Element {
   const { namespaceId, pageId } = useParams<{ namespaceId: string; pageId: string }>();
   const { rpc, connected } = useRpc();
   const { data: page } = useWikiPage(pageId ?? null);
-  const { identity } = useIdentityContext();
+  const identity = useWikiIdentity();
 
   const [replies, setReplies] = useState<DiscussionReply[]>([]);
   const [loading, setLoading] = useState(false);
@@ -261,8 +261,9 @@ export function Discussion(): JSX.Element {
 
   const handleSubmitReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!replyBody.trim() || !rpc || !connected || !identity || !pageId) return;
+    if (!replyBody.trim() || !rpc || !connected || !identity.hasIdentity || !identity.publicKey || !pageId) return;
 
+    const authorPublicKey = identity.publicKey;
     const targetParentId = replyParentId ?? pageId;
     cancelledRef.current = false;
     setSubmitError(null);
@@ -276,7 +277,7 @@ export function Discussion(): JSX.Element {
       // makes the content hash mismatch and every comment gets rejected
       // with "PoW verification failed".
       const contentBytes = new TextEncoder().encode(replyBody.trim());
-      const authorPubkey = hexToBytes(identity.publicKey);
+      const authorPubkey = hexToBytes(authorPublicKey);
       const difficulty = TESTNET_DIFFICULTY[ActionType.Reply];
       const challenge = await createChallenge(ActionType.Reply, contentBytes, authorPubkey, difficulty);
 
@@ -300,25 +301,25 @@ export function Discussion(): JSX.Element {
       // Build PoW params
       const powParams = solutionToRpcParams(solution);
 
-      // Sign the reply
+      // Sign the reply via the unified signer: the node's sign_message RPC when
+      // embedded in the desktop shell, or the local WASM keypair when
+      // standalone. The signed bytes are identical in both modes — only WHO
+      // holds the key changes, so the PoW/hash contract (PR #45) is untouched.
       const timestamp = powParams.timestamp;
       const signMessage = new TextEncoder().encode(
         `reply:${targetParentId}:${replyBody.trim()}:${timestamp}`
       );
-
-      // Use the identity seed to sign via WASM keypair
-      const { wasm } = await import('@swimchain/frontend');
-      const seedBytes = hexToBytes(identity.seed);
-      const keypair = wasm.WasmKeypair.fromSeed(seedBytes);
-      const signature = keypair.sign(signMessage);
+      const signature = await identity.sign(signMessage);
+      if (!signature) {
+        throw new Error('Signing failed — identity unavailable.');
+      }
       const signatureHex = bytesToHex(signature);
-      keypair.free();
 
       // Submit via RPC
       await rpc.call('submit_reply', {
         parent_id: targetParentId,
         body: replyBody.trim(),
-        author_id: identity.publicKey,
+        author_id: authorPublicKey,
         pow_nonce: powParams.pow_nonce,
         pow_difficulty: powParams.pow_difficulty,
         pow_nonce_space: powParams.pow_nonce_space,
@@ -428,7 +429,7 @@ export function Discussion(): JSX.Element {
           </div>
         )}
 
-        {!identity && (
+        {!identity.hasIdentity && identity.mode !== 'node' && (
           <div className="disc-page__identity-notice">
             <Link to="/identity">Create or load an identity</Link> to participate in discussions.
           </div>
@@ -441,7 +442,7 @@ export function Discussion(): JSX.Element {
             placeholder="Write your comment (Markdown supported)..."
             value={replyBody}
             onChange={(e) => setReplyBody(e.target.value)}
-            disabled={!identity || miningState === 'mining' || miningState === 'submitting'}
+            disabled={!identity.hasIdentity || miningState === 'mining' || miningState === 'submitting'}
             rows={5}
           />
 
@@ -485,7 +486,7 @@ export function Discussion(): JSX.Element {
             <button
               type="submit"
               className="wiki-btn wiki-btn--primary"
-              disabled={!replyBody.trim() || !identity || miningState === 'mining' || miningState === 'submitting'}
+              disabled={!replyBody.trim() || !identity.hasIdentity || miningState === 'mining' || miningState === 'submitting'}
             >
               Post Comment
             </button>
