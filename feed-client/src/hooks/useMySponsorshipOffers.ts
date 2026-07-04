@@ -5,7 +5,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRpc } from './useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
-import { useStoredKeypair } from './useStoredKeypair';
+import { useFeedIdentity } from './useFeedIdentity';
 import { logger } from '../lib/logger';
 import type { MySponsorshipOfferSummary, SponsorshipOfferDetail } from '../lib/rpc';
 
@@ -47,7 +47,8 @@ interface UseMySponsorshipOffersResult {
 export function useMySponsorshipOffers(): UseMySponsorshipOffersResult {
   const { rpc, connected } = useRpc();
   const { identity } = useIdentityContext();
-  const { sign } = useStoredKeypair();
+  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
+  const { sign } = useFeedIdentity();
   const [offers, setOffers] = useState<MySponsorshipOfferSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +61,7 @@ export function useMySponsorshipOffers(): UseMySponsorshipOffersResult {
     try {
       const timestamp = Math.floor(Date.now() / 1000);
       const sigMsg = buildListOffersSignatureMessage(identity.publicKey, timestamp);
-      const sigBytes = sign(sigMsg);
+      const sigBytes = await sign(sigMsg);
       if (!sigBytes) {
         setError('Failed to sign request');
         return;

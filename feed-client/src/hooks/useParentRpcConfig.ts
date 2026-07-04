@@ -19,6 +19,9 @@ interface ParentRpcConfig {
   // stable per-user key for anything that would otherwise key on a browser
   // publicKey (e.g. feed follow preferences).
   nodeAddress?: string;
+  // Optional human-readable name for the node identity (shown as the current
+  // user in node mode). Sent by the desktop shell alongside nodeAddress.
+  nodeDisplayName?: string;
 }
 
 // Global storage for parent config (persists across hook instances)
@@ -70,6 +73,7 @@ if (typeof window !== 'undefined') {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
         nodeAddress: event.data.nodeAddress,
+        nodeDisplayName: event.data.nodeDisplayName,
       };
 
       // Notify all listeners

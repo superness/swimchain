@@ -29,6 +29,10 @@ export {
 export { useStoredIdentity } from './useStoredIdentity';
 export { useStoredKeypair } from './useStoredKeypair';
 
+// Unified identity + signer (node identity when embedded, browser keypair otherwise)
+export { useFeedIdentity, selectIdentityMode } from './useFeedIdentity';
+export type { FeedIdentity, IdentityMode } from './useFeedIdentity';
+
 // Action PoW hooks
 export {
   useActionPow,

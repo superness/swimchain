@@ -5,7 +5,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRpc } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { logger } from '../lib/logger';
 import type { SponsorshipOfferSummary } from '../lib/rpc';
 import './ClaimOfferModal.css';
@@ -113,7 +113,8 @@ export function ClaimOfferModal({
 }: ClaimOfferModalProps): JSX.Element | null {
   const { rpc } = useRpc();
   const { identity } = useIdentityContext();
-  const { sign } = useStoredKeypair();
+  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
+  const { sign } = useFeedIdentity();
   const [applicationText, setApplicationText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [mining, setMining] = useState(false);
@@ -201,7 +202,7 @@ export function ClaimOfferModal({
         timestamp,
         powHash,
       );
-      const sigBytes = sign(sigMsg);
+      const sigBytes = await sign(sigMsg);
       if (!sigBytes) {
         setError('Failed to sign claim. Check your identity.');
         return;

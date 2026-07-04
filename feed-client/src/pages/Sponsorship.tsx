@@ -11,7 +11,7 @@ import { useSponsorshipOffers } from '../hooks/useSponsorshipOffers';
 import { useMySponsorshipOffers } from '../hooks/useMySponsorshipOffers';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useRpc } from '../hooks/useRpc';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { SponsorshipOfferCard } from '../components/SponsorshipOfferCard';
 import { SponsorshipStatus } from '../components/SponsorshipStatus';
 import { ClaimOfferModal } from '../components/ClaimOfferModal';
@@ -61,7 +61,8 @@ export function SponsorshipPage(): JSX.Element {
   const { isSponsored, pendingClaim } = useSponsorship();
   const { identity } = useIdentityContext();
   const { rpc } = useRpc();
-  const { sign } = useStoredKeypair();
+  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
+  const { sign } = useFeedIdentity();
 
   // Tab state - default to "find" for unsponsored, "my-offers" for sponsored
   const [activeTab, setActiveTab] = useState<Tab>(
@@ -141,7 +142,7 @@ export function SponsorshipPage(): JSX.Element {
     try {
       const timestamp = Math.floor(Date.now() / 1000);
       const sigMsg = buildCancelSignatureMessage(offerId, timestamp);
-      const sigBytes = sign(sigMsg);
+      const sigBytes = await sign(sigMsg);
       if (!sigBytes) { logger.error('[Sponsorship] Failed to sign cancel'); return; }
       const signature = bytesToHex(sigBytes);
       await rpc.cancelSponsorshipOffer({
@@ -164,7 +165,7 @@ export function SponsorshipPage(): JSX.Element {
     try {
       const timestamp = Math.floor(Date.now() / 1000);
       const sigMsg = buildApprovalSignatureMessage(claimantPubkey, timestamp);
-      const sigBytes = sign(sigMsg);
+      const sigBytes = await sign(sigMsg);
       if (!sigBytes) { logger.error('[Sponsorship] Failed to sign approve'); return; }
       const signature = bytesToHex(sigBytes);
       await rpc.approveSponsorshipClaim({
@@ -191,7 +192,7 @@ export function SponsorshipPage(): JSX.Element {
     try {
       const timestamp = Math.floor(Date.now() / 1000);
       const sigMsg = buildApprovalSignatureMessage(claimantPubkey, timestamp);
-      const sigBytes = sign(sigMsg);
+      const sigBytes = await sign(sigMsg);
       if (!sigBytes) { logger.error('[Sponsorship] Failed to sign reject'); return; }
       const signature = bytesToHex(sigBytes);
       await rpc.rejectSponsorshipClaim({

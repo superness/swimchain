@@ -5,7 +5,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRpc } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { logger } from '../lib/logger';
 import './CreateOfferModal.css';
 
@@ -66,7 +66,8 @@ export function CreateOfferModal({
 }: CreateOfferModalProps): JSX.Element | null {
   const { rpc } = useRpc();
   const { identity } = useIdentityContext();
-  const { sign } = useStoredKeypair();
+  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
+  const { sign } = useFeedIdentity();
   const [offerType, setOfferType] = useState<'open' | 'probationary'>('probationary');
   const [slots, setSlots] = useState(1);
   const [expiresDays, setExpiresDays] = useState(7);
@@ -135,7 +136,7 @@ export function CreateOfferModal({
         identity.publicKey, slots, offerType, expiresDays,
         minPowDifficulty, applicationRequired, timestamp,
       );
-      const sigBytes = sign(sigMsg);
+      const sigBytes = await sign(sigMsg);
       if (!sigBytes) {
         setError('Failed to sign offer. Check your identity.');
         return;

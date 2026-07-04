@@ -15,7 +15,7 @@ import { ReportModal, SpamBadge } from './ReportModal';
 import { usePoolContribution } from '../hooks/useRpc';
 import { useEngagementPow } from '../hooks/useActionPow';
 import { useStoredIdentity } from '../hooks/useStoredIdentity';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { useToast } from './Toast';
 import './FeedCard.css';
@@ -131,7 +131,8 @@ export function FeedCard({
 
   // Hooks for interactions
   const { identity } = useStoredIdentity();
-  const { sign } = useStoredKeypair();
+  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
+  const { sign } = useFeedIdentity();
   const { contribute, contributing } = usePoolContribution();
   const { state: engagementPowState, mineEngagement, solution: engagementSolution, reset: resetEngagementPow } = useEngagementPow();
   const { block } = useBlocklist();
@@ -188,8 +189,6 @@ export function FeedCard({
         try {
           // Note: powParams would be used by contribute() internally
           // solutionToRpcParams(engagementSolution) converts the solution
-          const signFn = (msg: Uint8Array) => sign(msg) || new Uint8Array(0);
-
           const emojiCode = pendingReactionRef.current
             ? REACTION_CODE_MAP[pendingReactionRef.current]
             : 1; // default to heart
@@ -198,7 +197,7 @@ export function FeedCard({
             item.id,
             0, // targetSeconds not used
             identity.publicKey,
-            signFn,
+            sign,
             emojiCode
           );
 
