@@ -14,6 +14,11 @@ import { useState, useEffect } from 'react';
 interface ParentRpcConfig {
   rpcEndpoint: string;
   rpcAuth: string;
+  // The desktop shell's node identity address (cs1...), when running embedded.
+  // The node holds the identity, so the browser has no keypair — this is the
+  // stable per-user key for anything that would otherwise key on a browser
+  // publicKey (e.g. feed follow preferences).
+  nodeAddress?: string;
 }
 
 // Global storage for parent config (persists across hook instances)
@@ -64,6 +69,7 @@ if (typeof window !== 'undefined') {
       parentConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
+        nodeAddress: event.data.nodeAddress,
       };
 
       // Notify all listeners

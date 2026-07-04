@@ -8,6 +8,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { FeedSource, FeedPreferences, StoredFeedPreferences } from '../types/feed';
 import { useStoredIdentity } from './useStoredIdentity';
+import { useParentRpcConfig } from './useParentRpcConfig';
 
 const STORAGE_KEY_PREFIX = 'feed_prefs_';
 const CURRENT_VERSION = 1;
@@ -135,29 +136,40 @@ export interface UseFeedPreferencesResult {
  */
 export function useFeedPreferences(): UseFeedPreferencesResult {
   const { identity, isLoading: identityLoading } = useStoredIdentity();
+  // Subscribing hook (not getParentConfig()) so prefsKey recomputes when the
+  // desktop shell's config arrives async via postMessage after first render.
+  const parentConfig = useParentRpcConfig();
   const [preferences, setPreferences] = useState<FeedPreferences>(getDefaultPreferences);
   const [loading, setLoading] = useState(true);
 
-  // Load preferences when identity is available
+  // The stable per-user key for preferences. In a plain browser this is the
+  // browser identity's publicKey. In the desktop app the NODE holds the
+  // identity (no browser keypair), so fall back to the node address the shell
+  // injects — otherwise follow/save silently no-ops and nothing persists.
+  const prefsKey = identity?.publicKey ?? parentConfig?.nodeAddress ?? null;
+
+  // Load preferences once we know which key to use
   useEffect(() => {
     if (identityLoading) return;
 
-    if (identity?.publicKey) {
-      const prefs = loadPreferences(identity.publicKey);
+    if (prefsKey) {
+      const prefs = loadPreferences(prefsKey);
       setPreferences(prefs);
-      console.log('[FeedPrefs] Loaded preferences for', identity.publicKey.substring(0, 16) + '...');
+      console.log('[FeedPrefs] Loaded preferences for', prefsKey.substring(0, 16) + '...');
     } else {
       setPreferences(getDefaultPreferences());
     }
     setLoading(false);
-  }, [identity?.publicKey, identityLoading]);
+  }, [prefsKey, identityLoading]);
 
   // Helper to save preferences
   const persist = useCallback((newPrefs: FeedPreferences) => {
-    if (identity?.publicKey) {
-      savePreferences(identity.publicKey, newPrefs);
+    if (prefsKey) {
+      savePreferences(prefsKey, newPrefs);
+    } else {
+      console.warn('[FeedPrefs] No identity or node address - cannot persist preferences');
     }
-  }, [identity?.publicKey]);
+  }, [prefsKey]);
 
   // Space management
   const followSpace = useCallback((spaceId: string, name?: string) => {
