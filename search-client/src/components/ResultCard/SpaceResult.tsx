@@ -5,6 +5,7 @@
  */
 
 import { memo } from 'react';
+import { Link } from 'react-router-dom';
 import { SearchResult, SpaceInfo } from '../../types';
 import { highlightToReactParts } from '../../lib/highlighter';
 import { BlockButton } from '../BlockButton';
@@ -50,13 +51,13 @@ export const SpaceResult = memo(function SpaceResult({ result, searchTerms, sear
       <div className="result-type-badge space">SPACE</div>
 
       <h3 className="result-title">
-        <a href={`/space/${data.spaceId}`}>
+        <Link to={`/space/${data.spaceId}`}>
           {nameParts.map((part, i) => (
             part.isHighlighted
               ? <mark key={i}>{part.text}</mark>
               : <span key={i}>{part.text}</span>
           ))}
-        </a>
+        </Link>
       </h3>
 
       <div className="result-meta">
@@ -104,9 +105,9 @@ export const SpaceResult = memo(function SpaceResult({ result, searchTerms, sear
       </div>
 
       <div className="space-actions">
-        <a href={`/space/${data.spaceId}`} className="action-button primary">
+        <Link to={`/space/${data.spaceId}`} className="action-button primary">
           View Space
-        </a>
+        </Link>
         <BlockButton id={data.spaceId} type="space" />
       </div>
     </article>

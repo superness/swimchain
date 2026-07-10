@@ -1691,7 +1691,108 @@ export function useCreatePrivateChannel() {
     }
   }, [rpc, connected]);
 
-  return { createChannel, creating, error };
+  // Node-managed create (desktop mode): the node owns the identity seed and does all
+  // the crypto + PoW + signing, so the client sends only the plaintext channel name.
+  // A private chat channel IS a private space. Used when identity mode === 'node'.
+  const createChannelManaged = useCallback(async (params: {
+    name: string;
+    description?: string;
+  }): Promise<{ channelId: string; channelIdBech32: string } | null> => {
+    if (!rpc || !connected) {
+      setError('Not connected');
+      return null;
+    }
+    setCreating(true);
+    setError(null);
+    try {
+      const result = await rpc.call('create_private_space_managed', {
+        name: params.name,
+        description: params.description ?? null,
+      }) as { space_id: string; space_id_bech32: string; broadcast: boolean };
+      return { channelId: result.space_id, channelIdBech32: result.space_id_bech32 };
+    } catch (err) {
+      console.error('[CreatePrivateChannel] Managed create failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to create private channel');
+      return null;
+    } finally {
+      setCreating(false);
+    }
+  }, [rpc, connected]);
+
+  return { createChannel, createChannelManaged, creating, error };
+}
+
+/**
+ * Node-managed private-channel content crypto (desktop mode).
+ *
+ * A private chat channel IS a private space, and the node holds its key. Instead of
+ * encrypting/decrypting client-side with a local channel key (browser mode), embedded
+ * clients ask the node to do it. `encryptForSpace` returns `[PRIVATE:v1:...]` ciphertext
+ * to submit; `decryptForSpace` recovers plaintext. All-or-nothing: callers must NOT fall
+ * back to plaintext when these return null.
+ */
+export function usePrivateContent() {
+  const { rpc, connected } = useRpc();
+
+  const encryptForSpace = useCallback(async (spaceId: string, plaintext: string): Promise<string | null> => {
+    if (!rpc || !connected) return null;
+    try {
+      const r = await rpc.call('encrypt_private_content', { space_id: spaceId, content: plaintext }) as { content: string };
+      return r.content;
+    } catch (err) {
+      console.error('[PrivateContent] encrypt failed:', err);
+      return null;
+    }
+  }, [rpc, connected]);
+
+  const decryptForSpace = useCallback(async (spaceId: string, ciphertext: string): Promise<string | null> => {
+    if (!rpc || !connected) return null;
+    try {
+      const r = await rpc.call('decrypt_private_content', { space_id: spaceId, content: ciphertext }) as { content: string };
+      return r.content;
+    } catch (err) {
+      console.error('[PrivateContent] decrypt failed:', err);
+      return null;
+    }
+  }, [rpc, connected]);
+
+  return { encryptForSpace, decryptForSpace };
+}
+
+/**
+ * The set of private-space (channel) IDs the node identity is a member of
+ * (node-managed mode). Used to decide whether a chat server/space needs node-side
+ * crypto on send and display.
+ */
+export function usePrivateSpaceIds(userPublicKey?: string): Set<string> {
+  const { rpc, connected } = useRpc();
+  const [ids, setIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!rpc || !connected || !userPublicKey) return;
+    let cancelled = false;
+    const fetchIds = async () => {
+      try {
+        const r = await rpc.call('get_my_private_spaces', { user: userPublicKey }) as {
+          spaces: Array<{ space_id: string }>;
+        };
+        if (!cancelled) setIds(new Set(r.spaces.map(s => s.space_id)));
+      } catch {
+        /* not fatal — treat as no private spaces */
+      }
+    };
+    fetchIds();
+    // Poll so newly created/joined private channels start encrypting/decrypting.
+    const interval = setInterval(fetchIds, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [rpc, connected, userPublicKey]);
+
+  return ids;
+}
+
+/** True if a message body carries node-decryptable private-space ciphertext. */
+export function isPrivateCiphertext(text: string | null | undefined): boolean {
+  return typeof text === 'string' && text.startsWith('[PRIVATE:v1:');
 }
 
 /**
@@ -1740,6 +1841,42 @@ export function useInviteToChannel() {
   }, [rpc, connected]);
 
   return { invite, inviting, error };
+}
+
+/**
+ * Node-managed shareable invites (desktop mode).
+ *
+ * The node wraps a private space's key into a self-contained `swiminv1:...` code:
+ *  - `createBlob(spaceId, inviteePubkeyHex)` → `create_space_invite_blob` returns the code
+ *    to share out-of-band. NOTE: `spaceId` MUST be the 16-byte HEX space id (the
+ *    `space_id` field from get_my_private_spaces), NOT the sp1 bech32 form.
+ *  - `redeem(blob)` → `redeem_space_invite`: the invitee's node unwraps the key and joins.
+ * Mirrors feed-client's useSpaceInvites().
+ */
+export function useSpaceInvites() {
+  const { rpc, connected } = useRpc();
+
+  const createBlob = useCallback(async (spaceId: string, inviteePubkeyHex: string): Promise<string> => {
+    if (!rpc || !connected) throw new Error('Not connected to node');
+    const r = await rpc.call<{ blob: string }>('create_space_invite_blob', {
+      space_id: spaceId,
+      invitee: inviteePubkeyHex,
+    });
+    return r.blob;
+  }, [rpc, connected]);
+
+  const redeem = useCallback(async (
+    blob: string,
+  ): Promise<{ spaceId: string; spaceIdBech32: string; name: string }> => {
+    if (!rpc || !connected) throw new Error('Not connected to node');
+    const r = await rpc.call<{ space_id: string; space_id_bech32: string; name: string }>(
+      'redeem_space_invite',
+      { blob },
+    );
+    return { spaceId: r.space_id, spaceIdBech32: r.space_id_bech32, name: r.name };
+  }, [rpc, connected]);
+
+  return { createBlob, redeem };
 }
 
 

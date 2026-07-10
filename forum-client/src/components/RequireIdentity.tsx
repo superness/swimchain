@@ -5,6 +5,7 @@
 
 import { Navigate, useLocation } from 'react-router-dom';
 import { useIdentityContext } from '../providers/IdentityProvider';
+import { isInIframe } from '../hooks/useParentRpcConfig';
 import { logger } from '../lib/logger';
 
 interface RequireIdentityProps {
@@ -14,6 +15,10 @@ interface RequireIdentityProps {
 export function RequireIdentity({ children }: RequireIdentityProps): JSX.Element {
   const { identity, isLoading, hasValidIdentity } = useIdentityContext();
   const location = useLocation();
+
+  // Node-wide centralized identity: when embedded in the desktop app the node owns
+  // one central (valid) identity, so never bounce to the client's own /identity page.
+  const embedded = isInIframe();
 
   logger.info('[RequireIdentity] ===== GUARD CHECK =====', {
     path: location.pathname,
@@ -34,14 +39,14 @@ export function RequireIdentity({ children }: RequireIdentityProps): JSX.Element
     );
   }
 
-  // No identity at all - redirect to create one
-  if (!identity) {
+  // No identity at all - redirect to create one (standalone only; embedded uses node identity)
+  if (!identity && !embedded) {
     logger.info('[RequireIdentity] DECISION: REDIRECTING TO /identity (no identity found)');
     return <Navigate to="/identity" state={{ from: location }} replace />;
   }
 
-  // Identity exists but not valid - redirect to recreate
-  if (!hasValidIdentity) {
+  // Identity exists but not valid - redirect to recreate (standalone only)
+  if (!hasValidIdentity && !embedded) {
     logger.info('[RequireIdentity] DECISION: REDIRECTING TO /identity (identity not valid)');
     return (
       <Navigate

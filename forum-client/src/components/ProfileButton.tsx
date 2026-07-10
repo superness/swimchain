@@ -4,14 +4,20 @@
 
 import { Link } from 'react-router-dom';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
+import { isInIframe } from '../hooks/useParentRpcConfig';
 import { AddressDisplay } from './AddressDisplay';
 import './ProfileButton.css';
 
 export function ProfileButton(): JSX.Element {
   const { identity, isLoading } = useNodeIdentity();
 
+  // Node-wide centralized identity: when embedded in the desktop app the node owns
+  // one central identity, so hide this client's own /identity entry point.
+  const embedded = isInIframe();
+
   return (
     <div className="profile-button-container">
+      {!embedded && (
       <Link
         to="/identity"
         className="profile-button"
@@ -36,6 +42,7 @@ export function ProfileButton(): JSX.Element {
           </>
         )}
       </Link>
+      )}
 
       <Link
         to="/settings"

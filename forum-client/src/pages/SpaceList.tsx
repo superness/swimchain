@@ -11,6 +11,7 @@ import { useSpaceCreationPow } from '../hooks/useActionPow';
 import { useSponsorship } from '../hooks/useSponsorship';
 import { useSign } from '../hooks/useSign';
 import { PowProgress } from '../components/PowProgress';
+import { JoinPrivateSpace } from '../components/JoinPrivateSpace';
 import { logger } from '../lib/logger';
 import { formatErrorMessage, getErrorAction, isAuthenticationError } from '../lib/errorMessages';
 import './SpaceList.css';
@@ -220,6 +221,9 @@ export function SpaceList(): JSX.Element {
           </button>
         )}
       </header>
+
+      {/* Join a private space via shared invite code (node/desktop mode only) */}
+      <JoinPrivateSpace />
 
       {/* Create space form */}
       {showCreateForm && identity && (

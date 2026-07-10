@@ -109,9 +109,11 @@
 
 .node-controls-dropdown {
   position: absolute;
-  top: 100%;
+  /* The status bar sits at the BOTTOM of the chat page, so open the menu upward
+     (bottom: 100%) instead of downward — downward pushed it off-screen. */
+  bottom: 100%;
   right: 0;
-  margin-top: 4px;
+  margin-bottom: 4px;
   background: var(--background-floating, #18191c);
   border: 1px solid var(--background-tertiary, #202225);
   border-radius: 6px;

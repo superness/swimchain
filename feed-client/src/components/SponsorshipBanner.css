@@ -6,7 +6,10 @@
   top: 56px; /* Header height */
   left: 0;
   right: 0;
-  z-index: 199; /* Below the header (z-index: 200), above content */
+  /* Raised above page-level headers (e.g. the "Your Feed" title bar) which were
+     painting over the banner and hiding it. It sits at top:56px so it still clears
+     the main nav; this only ensures it is not occluded by in-page headers. */
+  z-index: 250;
 }
 
 .sponsorship-banner-content {

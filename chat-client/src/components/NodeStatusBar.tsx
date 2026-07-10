@@ -30,13 +30,22 @@ export function NodeStatusBar({ onSettingsClick }: NodeStatusBarProps): JSX.Elem
 
   const fetchStatus = useCallback(async () => {
     try {
-      const result = await invoke<NodeStatus>('get_node_status');
+      // When embedded as an iframe in the desktop shell, the Tauri IPC is not
+      // wired into the frame, so invoke() can hang forever — which left the
+      // status stuck on "Checking...". Race it against a timeout and treat a
+      // timeout as "not in Tauri" (the shell shows the real node status bar).
+      const result = await Promise.race([
+        invoke<NodeStatus>('get_node_status'),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('__TAURI unavailable (timeout)')), 2000)
+        ),
+      ]);
       setStatus(result);
       setError(null);
       setIsTauriAvailable(true);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      // If invoke fails completely, we're not in Tauri
+      // If invoke fails/hangs, we're not in a Tauri window (e.g. embedded iframe).
       if (errMsg.includes('not a function') || errMsg.includes('__TAURI')) {
         setIsTauriAvailable(false);
       } else {

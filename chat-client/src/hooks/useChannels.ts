@@ -40,6 +40,18 @@ export function useChannels(serverId: string) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Reset channels the INSTANT the server changes (adjust-state-during-render pattern),
+  // BEFORE any effect runs. Otherwise the new server briefly renders with the PREVIOUS
+  // server's channels still in state, and the auto-select-first-channel effect in Chat.tsx
+  // navigates to a channel that doesn't exist in the new server — which loads nothing and
+  // made the space require a SECOND click before its content appeared (#12).
+  const [channelsForServer, setChannelsForServer] = useState(serverId);
+  if (serverId !== channelsForServer) {
+    setChannelsForServer(serverId);
+    setChannels([]);
+    setLoading(true);
+  }
+
   const fetchChannels = useCallback(async () => {
     if (!rpc || !connected || !authReady || !serverId) {
       setLoading(false);
@@ -114,12 +126,24 @@ export function useChannels(serverId: string) {
     return () => clearInterval(interval);
   }, [connected, authReady, serverId, fetchChannels]);
 
+  // Mark a channel read AND clear its badge immediately in local state (#13). The
+  // module-level markChannelRead only persists the timestamp — without also updating
+  // `channels` here, the red unread "(1)" lingered until the next 15s refetch (and
+  // looked permanent to the user). Persisting Date.now() keeps it cleared on refetch.
+  const markRead = useCallback((channelId: string) => {
+    markChannelRead(channelId);
+    setChannels(prev =>
+      prev.map(c => (c.id === channelId && c.unreadCount > 0 ? { ...c, unreadCount: 0 } : c))
+    );
+  }, []);
+
   return {
     channels,
     loading,
     error,
     refetch: fetchChannels,
     markChannelRead,
+    markRead,
   };
 }
 

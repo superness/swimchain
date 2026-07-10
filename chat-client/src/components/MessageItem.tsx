@@ -160,6 +160,16 @@ export function MessageItem({
   const [isFocused, setIsFocused] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  // Long-form content (e.g. a wiki page cross-posted into a space) is unreadable
+  // as a single chat message. Collapse anything over the limit behind "Show more".
+  const CONTENT_COLLAPSE_LIMIT = 600;
+  const isLongContent = (message.content?.length ?? 0) > CONTENT_COLLAPSE_LIMIT;
+  const displayedContent =
+    isLongContent && !expanded
+      ? `${message.content.slice(0, CONTENT_COLLAPSE_LIMIT).trimEnd()}…`
+      : message.content;
   const avatarRef = useRef<HTMLDivElement>(null);
 
   const displayName = getDisplayName(message.authorId, message.authorName);
@@ -243,7 +253,16 @@ export function MessageItem({
         )}
 
         <div className="message-body">
-          {message.content}
+          <span className="message-text">{displayedContent}</span>
+          {isLongContent && (
+            <button
+              type="button"
+              className="message-show-more"
+              onClick={() => setExpanded((v) => !v)}
+            >
+              {expanded ? 'Show less' : 'Show more'}
+            </button>
+          )}
           {message.status === 'sending' && (
             <span className="message-status-indicator">Sending...</span>
           )}

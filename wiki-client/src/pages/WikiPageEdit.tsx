@@ -20,6 +20,7 @@ import {
   hexToBytes,
 } from '@swimchain/frontend';
 import { useWikiIdentity } from '../hooks/useWikiIdentity';
+import { useIsSponsored } from '../hooks/useIsSponsored';
 import { renderMarkdown } from '../lib/markdown';
 import { parseWikiLinks } from '../lib/wikilinks';
 import { encodeRevisionBody } from '../lib/revision';
@@ -43,6 +44,7 @@ export function WikiPageEdit(): JSX.Element {
   const navigate = useNavigate();
   const { rpc, connected } = useRpc();
   const identity = useWikiIdentity();
+  const isSponsored = useIsSponsored();
   const { data: namespaces } = useWikiNamespaces();
   const isNew = !pageId;
 
@@ -119,6 +121,14 @@ export function WikiPageEdit(): JSX.Element {
     const authorPublicKey = identity.publicKey;
     if (!rpc || !connected) {
       setSubmitError('Not connected to node.');
+      return;
+    }
+    // Gate on sponsorship BEFORE spending PoW — the node rejects unsponsored posts
+    // (SPEC_11), so mining first only wastes the user's time.
+    if (isSponsored === false) {
+      setSubmitError(
+        'You need a sponsor before you can create or edit pages. Redeem an invite or request sponsorship — no proof-of-work is spent until then.'
+      );
       return;
     }
     if (!namespaceId) {
@@ -245,7 +255,7 @@ export function WikiPageEdit(): JSX.Element {
         setSubmitError(err instanceof Error ? err.message : 'Failed to submit');
       }
     }
-  }, [identity, rpc, connected, namespaceId, pageId, isNew, title, content, summary, navigate]);
+  }, [identity, rpc, connected, namespaceId, pageId, isNew, title, content, summary, navigate, isSponsored]);
 
   const handleCancel = useCallback(() => {
     cancelledRef.current = true;

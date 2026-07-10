@@ -361,9 +361,64 @@ impl NodeManager {
             }
         }
 
-        // 3.1b. Initialize search index for full-text search
+        // 3.1b. Initialize search index for full-text search.
+        // Reindex existing content when the index is behind the content store — content
+        // created on an older build (before indexing), synced from peers via the block
+        // path, or a wiped/empty index would otherwise be INVISIBLE to search. (Proven:
+        // a node can hold N content items with an empty index → search returns nothing.)
         match SearchIndex::open_or_create(&self.config.data_dir) {
-            Ok(index) => {
+            Ok(mut index) => {
+                let docs = index.doc_count();
+                if let Some(ref cs) = self.content_store {
+                    let content_len = cs.len() as u64;
+                    if docs < content_len {
+                        info!(
+                            "[SEARCH] Index has {} docs but node holds {} content items — reindexing…",
+                            docs, content_len
+                        );
+                        let iter = cs.iter_content().filter_map(|r| r.ok()).map(|item| {
+                            // Same mapping the network-receive path uses (title = text
+                            // before the first blank line; body = the rest).
+                            let (title, body) = match &item.body_inline {
+                                Some(bi) => match bi.find("\n\n") {
+                                    Some(i) => (bi[..i].to_string(), bi[i + 2..].to_string()),
+                                    None => (String::new(), bi.clone()),
+                                },
+                                None => (String::new(), String::new()),
+                            };
+                            let space_id = {
+                                use bech32::{Bech32m, Hrp};
+                                let sb = item.space_id.as_bytes();
+                                let mut d = Vec::with_capacity(17);
+                                d.push(0);
+                                d.extend_from_slice(&sb[..16]);
+                                bech32::encode::<Bech32m>(
+                                    Hrp::parse("sp").expect("valid HRP"),
+                                    &d,
+                                )
+                                .unwrap_or_else(|_| hex::encode(&sb[..16]))
+                            };
+                            crate::cli::search_index::IndexableContent {
+                                content_id: format!(
+                                    "sha256:{}",
+                                    hex::encode(item.content_id.0)
+                                ),
+                                space_id,
+                                author: crate::crypto::address::encode_address(
+                                    &item.author_id,
+                                ),
+                                title,
+                                body,
+                                heat: 100.0,
+                                timestamp: item.created_at,
+                            }
+                        });
+                        match index.rebuild(iter) {
+                            Ok(n) => info!("[SEARCH] Reindexed {} content items", n),
+                            Err(e) => warn!("[SEARCH] Reindex failed: {}", e),
+                        }
+                    }
+                }
                 info!("[SEARCH] Opened search index with {} documents", index.doc_count());
                 self.search_index = Some(Arc::new(RwLock::new(index)));
             }

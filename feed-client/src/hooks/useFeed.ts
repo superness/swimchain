@@ -9,6 +9,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRpc } from './useRpc';
 import { useFeedPreferences } from './useFeedPreferences';
 import { useBlocklist } from './useBlocklist';
+import { logger } from '../lib/logger';
 import type { FeedItem, FeedCursor, FeedSource } from '../types/feed';
 
 const ITEMS_PER_PAGE = 20;
@@ -219,6 +220,14 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     const items: FeedItem[] = [];
     const errors: string[] = [];
 
+    // SWIM-FEED-DIAG (#6): trace exactly which followed spaces get fetched and what
+    // comes back — routed via logger so it lands in the desktop log. A followed
+    // space that silently returns 0 items (or throws on a bad space.id) is why it
+    // never shows in the feed.
+    logger.info(
+      `[Feed] fetching followed sources: spaces=[${spaces.map(s => s.id).join(', ')}] users=${users.length}`
+    );
+
     // Fetch from spaces in parallel
     const spacePromises = spaces.map(async (space) => {
       try {
@@ -226,11 +235,12 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
           limit: FETCH_LIMIT_PER_SOURCE,
           sort: 'recent',
         });
+        logger.info(`[Feed] followed space ${space.id} -> ${result.items.length} item(s)`);
         return result.items.map(item =>
           mapContentToFeedItem(item, 'space', space.id, space.displayName)
         );
       } catch (err) {
-        console.error(`[Feed] Failed to fetch space ${space.id}:`, err);
+        logger.error(`[Feed] Failed to fetch followed space ${space.id}:`, err);
         errors.push(`Space ${space.displayName ?? space.id}: ${err}`);
         return [];
       }

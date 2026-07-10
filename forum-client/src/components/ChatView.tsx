@@ -9,15 +9,16 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useSpaceMembers, useReplySubmit } from '../hooks/useRpc';
-import { useReplyPow } from '../hooks/useActionPow';
+import { useSpaceMembers, usePostSubmit, usePrivateContent, usePrivateSpaces } from '../hooks/useRpc';
+import { usePostPow } from '../hooks/useActionPow';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { isInIframe } from '../hooks/useParentRpcConfig';
 import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
 import { usePrivateSpaceMessages } from '../hooks/usePrivateSpaceMessages';
 import { encryptWithSpaceKey } from '../lib/encryption';
-import { bytesToHex } from '../lib/x25519';
+import { bytesToHex, hexToBytes } from '../lib/x25519';
 import { InviteModal } from './InviteModal';
 import { SpaceSettings } from './SpaceSettings';
 import { PowProgress } from './PowProgress';
@@ -26,25 +27,39 @@ import './ChatView.css';
 export function ChatView(): JSX.Element {
   const { spaceId } = useParams<{ spaceId: string }>();
   const { publicKey } = useStoredKeypair();
-  const userPublicKeyHex = publicKey ? bytesToHex(publicKey) : undefined;
+  const { identity, sign } = useNodeIdentity();
+  // Node-managed mode (desktop shell): the node owns the identity + space key, so we use
+  // the node identity and node-side encrypt/decrypt instead of a local browser keypair.
+  const embedded = isInIframe();
+  const userPublicKeyHex = embedded ? (identity?.publicKey || undefined) : (publicKey ? bytesToHex(publicKey) : undefined);
   const { getSpaceKey, getSpaceKeyInfo } = usePrivateSpaceKeys(userPublicKeyHex);
   const { members, loading: membersLoading } = useSpaceMembers(spaceId);
-  const { identity, sign } = useNodeIdentity();
-  const { submitReply, submitting } = useReplySubmit();
-  const { state: powState, progress: powProgress, mineReply, cancel: cancelPow } = useReplyPow();
+  const { submitPost, submitting } = usePostSubmit();
+  const { state: powState, progress: powProgress, minePost, cancel: cancelPow } = usePostPow();
+  const { encryptForSpace } = usePrivateContent();
+  const { spaces: myPrivateSpaces } = usePrivateSpaces(userPublicKeyHex);
 
-  // Get space key for this space
-  const spaceKey = spaceId ? getSpaceKey(spaceId) : null;
-  const spaceKeyInfo = spaceId ? getSpaceKeyInfo(spaceId) : null;
-  const isMember = !!spaceKey;
+  // Browser mode: local space key. Node mode: no local key — membership, the canonical
+  // hex space id, and the decrypted name all come from the node's private-space list.
+  const spaceKey = (!embedded && spaceId) ? getSpaceKey(spaceId) : null;
+  const spaceKeyInfo = (!embedded && spaceId) ? getSpaceKeyInfo(spaceId) : null;
+  const nodeSpace = (embedded && spaceId)
+    ? myPrivateSpaces.find(s => s.spaceId === spaceId || s.spaceIdBech32 === spaceId)
+    : undefined;
+  // The node RPCs disagree on space-id format: submit_post / list_posts_for_space want
+  // the sp1 BECH32 id; encrypt_private_content / decrypt_private_content want the 16-byte
+  // HEX id. Resolve both from the node's private-space list.
+  const listSpaceId = embedded ? (nodeSpace?.spaceIdBech32 ?? spaceId) : spaceId; // bech32
+  const cryptoSpaceId = embedded ? (nodeSpace?.spaceId ?? spaceId) : spaceId;      // hex
+  const isMember = embedded ? !!nodeSpace : !!spaceKey;
 
-  // Fetch messages from backend
+  // Fetch messages: list via bech32, decrypt (node mode) via the hex crypto id.
   const {
     messages: backendMessages,
     loading: messagesLoading,
     error: messagesError,
     refetch: refetchMessages,
-  } = usePrivateSpaceMessages(spaceId, spaceKey, { pollInterval: 3000 });
+  } = usePrivateSpaceMessages(listSpaceId, spaceKey, { pollInterval: 3000, nodeMode: embedded, cryptoSpaceId });
 
   const [spaceName, setSpaceName] = useState<string>('Private Space');
   const [newMessage, setNewMessage] = useState('');
@@ -59,21 +74,15 @@ export function ChatView(): JSX.Element {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Decrypt space name
+  // Space name: node mode gets it decrypted from the node's private-space list; browser
+  // mode reads it from the locally-stored space-key info.
   useEffect(() => {
-    async function decryptName() {
-      if (!spaceKeyInfo?.spaceName || !spaceKey) return;
-
-      try {
-        if (spaceKeyInfo.spaceName) {
-          setSpaceName(spaceKeyInfo.spaceName);
-        }
-      } catch (err) {
-        console.error('Failed to decrypt space name:', err);
-      }
+    if (embedded) {
+      if (nodeSpace?.name) setSpaceName(nodeSpace.name);
+      return;
     }
-    decryptName();
-  }, [spaceKeyInfo, spaceKey]);
+    if (spaceKeyInfo?.spaceName) setSpaceName(spaceKeyInfo.spaceName);
+  }, [embedded, nodeSpace, spaceKeyInfo]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -84,26 +93,45 @@ export function ChatView(): JSX.Element {
   const handleSendMessage = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!newMessage.trim() || !spaceKey || !publicKey || !spaceId || !identity || !sign) return;
+    if (!newMessage.trim() || !spaceId || !identity || !sign) return;
+    // Membership/keys differ by mode: node mode needs the resolved hex space id;
+    // browser mode needs the local space key + browser public key.
+    if (embedded ? !cryptoSpaceId : (!spaceKey || !publicKey)) return;
 
     setSending(true);
     setError(null);
 
     try {
-      // Encrypt the message with the space key
-      const encryptedContent = await encryptWithSpaceKey(newMessage.trim(), spaceKey);
+      // Encrypt the message. Node mode: the node holds the space key, so we ask it to
+      // encrypt. Browser mode: encrypt locally with the stored space key.
+      let encryptedContent: string;
+      if (embedded) {
+        const c = await encryptForSpace(cryptoSpaceId!, newMessage.trim());
+        if (!c) {
+          throw new Error('Could not encrypt for this space — are you a member?');
+        }
+        encryptedContent = c;
+      } else {
+        encryptedContent = await encryptWithSpaceKey(newMessage.trim(), spaceKey!);
+      }
 
-      // Mine real Argon2id PoW for the reply action. encryptWithSpaceKey
-      // returns a string ciphertext, which is the reply body verbatim.
-      const publicKeyBytes = new Uint8Array(publicKey);
-      const mined = await mineReply(encryptedContent, publicKeyBytes, true);
+      // Author identity: node identity when embedded, local keypair otherwise.
+      const authorHex = embedded ? identity.publicKey : bytesToHex(publicKey!);
+      const authorBytes = embedded ? hexToBytes(identity.publicKey) : new Uint8Array(publicKey!);
+
+      // Messages are POSTS to the space (empty title), NOT replies — a private space has
+      // no root thread to reply to, and submit_reply requires a sha256 content-id parent.
+      // submit_post binds PoW to sha256(`${title}\n\n${body}`), so mine over that exact
+      // string (title empty → "\n\n" + ciphertext).
+      const postContent = `\n\n${encryptedContent}`;
+      const mined = await minePost(postContent, authorBytes, true);
       const powParams = solutionToRpcParams(mined);
 
-      // Submit the reply with PoW via useReplySubmit
-      const result = await submitReply(
-        spaceId,
+      const result = await submitPost(
+        embedded ? listSpaceId! : spaceId,   // submit_post wants the sp1 bech32 id
+        '',
         encryptedContent,
-        bytesToHex(publicKey),
+        authorHex,
         sign,
         powParams,
       );
@@ -122,7 +150,7 @@ export function ChatView(): JSX.Element {
     } finally {
       setSending(false);
     }
-  }, [newMessage, spaceKey, publicKey, spaceId, identity, sign, mineReply, submitReply, refetchMessages]);
+  }, [newMessage, embedded, cryptoSpaceId, listSpaceId, spaceKey, publicKey, spaceId, identity, sign, encryptForSpace, minePost, submitPost, refetchMessages]);
 
   // Format timestamp
   const formatTime = (timestamp: number): string => {
@@ -343,6 +371,7 @@ export function ChatView(): JSX.Element {
         isOpen={showInviteModal}
         onClose={() => setShowInviteModal(false)}
         spaceId={spaceId}
+        hexSpaceId={cryptoSpaceId}
         spaceName={spaceName}
       />
 

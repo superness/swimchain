@@ -2623,7 +2623,125 @@ export function useCreatePrivateSpace() {
     }
   }, [rpc, connected]);
 
-  return { createSpace, creating, error };
+  // Node-managed create (desktop mode): the node owns the identity seed and does all
+  // the crypto + PoW + signing, so the client sends only the plaintext name. Used when
+  // running embedded in the desktop shell (identity mode === 'node').
+  const createSpaceManaged = useCallback(async (params: {
+    name: string;
+    description?: string;
+  }): Promise<{ spaceId: string; spaceIdBech32: string } | null> => {
+    if (!rpc || !connected) {
+      setError('Not connected');
+      return null;
+    }
+    setCreating(true);
+    setError(null);
+    try {
+      const result = await rpc.call('create_private_space_managed', {
+        name: params.name,
+        description: params.description ?? null,
+      }) as { space_id: string; space_id_bech32: string; broadcast: boolean };
+      return { spaceId: result.space_id, spaceIdBech32: result.space_id_bech32 };
+    } catch (err) {
+      console.error('[CreatePrivateSpace] Managed create failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to create private space');
+      return null;
+    } finally {
+      setCreating(false);
+    }
+  }, [rpc, connected]);
+
+  return { createSpace, createSpaceManaged, creating, error };
+}
+
+/**
+ * Node-managed private-space content crypto (desktop mode).
+ *
+ * The node holds the space key, so instead of encrypting/decrypting client-side with a
+ * local space key (browser mode), embedded clients ask the node to do it. `encryptForSpace`
+ * returns `[PRIVATE:v1:...]` ciphertext to submit; `decryptForSpace` recovers plaintext.
+ */
+export function usePrivateContent() {
+  const { rpc, connected } = useRpc();
+
+  const encryptForSpace = useCallback(async (spaceId: string, plaintext: string): Promise<string | null> => {
+    if (!rpc || !connected) return null;
+    try {
+      const r = await rpc.call('encrypt_private_content', { space_id: spaceId, content: plaintext }) as { content: string };
+      return r.content;
+    } catch (err) {
+      console.error('[PrivateContent] encrypt failed:', err);
+      return null;
+    }
+  }, [rpc, connected]);
+
+  const decryptForSpace = useCallback(async (spaceId: string, ciphertext: string): Promise<string | null> => {
+    if (!rpc || !connected) return null;
+    try {
+      const r = await rpc.call('decrypt_private_content', { space_id: spaceId, content: ciphertext }) as { content: string };
+      return r.content;
+    } catch (err) {
+      console.error('[PrivateContent] decrypt failed:', err);
+      return null;
+    }
+  }, [rpc, connected]);
+
+  return { encryptForSpace, decryptForSpace };
+}
+
+/**
+ * The set of private-space IDs the node identity is a member of (node-managed mode).
+ * Used to decide whether a compose target / rendered content needs node-side crypto.
+ */
+export function usePrivateSpaceIds(userPublicKey?: string) {
+  const { rpc, connected } = useRpc();
+  const [ids, setIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!rpc || !connected || !userPublicKey) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await rpc.call('get_my_private_spaces', { user: userPublicKey }) as {
+          spaces: Array<{ space_id: string }>;
+        };
+        if (!cancelled) setIds(new Set(r.spaces.map(s => s.space_id)));
+      } catch {
+        /* not fatal — treat as no private spaces */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [rpc, connected, userPublicKey]);
+
+  return ids;
+}
+
+/** True if a body/title carries node-decryptable private-space ciphertext. */
+export function isPrivateCiphertext(text: string | null | undefined): boolean {
+  return typeof text === 'string' && text.startsWith('[PRIVATE:v1:');
+}
+
+/**
+ * Shareable private-space invites (node-managed, out-of-band). The inviter's node
+ * produces a self-contained `swiminv1:...` blob (space key wrapped for the invitee);
+ * the invitee redeems it to join — no network invite propagation needed.
+ */
+export function useSpaceInvites() {
+  const { rpc, connected } = useRpc();
+
+  const createBlob = useCallback(async (spaceId: string, inviteePubkeyHex: string): Promise<string> => {
+    if (!rpc || !connected) throw new Error('Not connected');
+    const r = await rpc.call('create_space_invite_blob', { space_id: spaceId, invitee: inviteePubkeyHex }) as { blob: string };
+    return r.blob;
+  }, [rpc, connected]);
+
+  const redeem = useCallback(async (blob: string): Promise<{ spaceId: string; name?: string }> => {
+    if (!rpc || !connected) throw new Error('Not connected');
+    const r = await rpc.call('redeem_space_invite', { blob: blob.trim() }) as { space_id: string; name?: string | null };
+    return { spaceId: r.space_id, name: r.name ?? undefined };
+  }, [rpc, connected]);
+
+  return { createBlob, redeem };
 }
 
 /**
@@ -2682,7 +2800,37 @@ export function useInviteToSpace() {
     }
   }, [rpc, connected]);
 
-  return { invite, inviting, error };
+  // Node-managed invite (desktop mode): the node is the inviter, recovers the space key
+  // from its membership record, wraps it for the invitee, and mines PoW + signs itself.
+  // The client sends only the invitee pubkey — no local key wrapping or PoW.
+  const inviteManaged = useCallback(async (params: {
+    spaceId: string;
+    invitee: string;
+    expiresAt?: number;
+  }): Promise<{ inviteHash: string } | null> => {
+    if (!rpc || !connected) {
+      setError('Not connected');
+      return null;
+    }
+    setInviting(true);
+    setError(null);
+    try {
+      const result = await rpc.call('invite_to_space_managed', {
+        space_id: params.spaceId,
+        invitee: params.invitee,
+        expires_at: params.expiresAt ?? null,
+      }) as { invite_hash: string; broadcast: boolean };
+      return { inviteHash: result.invite_hash };
+    } catch (err) {
+      console.error('[InviteToSpace] Managed invite failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to send invite');
+      return null;
+    } finally {
+      setInviting(false);
+    }
+  }, [rpc, connected]);
+
+  return { invite, inviteManaged, inviting, error };
 }
 
 /**
@@ -2725,7 +2873,33 @@ export function useAcceptInvite() {
     }
   }, [rpc, connected]);
 
-  return { accept, accepting, error };
+  // Node-managed accept (desktop mode): the node is the acceptor, stores its own
+  // membership record from the invite's wrapped key, and signs/broadcasts itself. The
+  // client sends only the invite hash — no local signing.
+  const acceptManaged = useCallback(async (params: {
+    inviteHash: string;
+  }): Promise<{ spaceId: string } | null> => {
+    if (!rpc || !connected) {
+      setError('Not connected');
+      return null;
+    }
+    setAccepting(true);
+    setError(null);
+    try {
+      const result = await rpc.call('accept_invite_managed', {
+        invite_hash: params.inviteHash,
+      }) as { space_id: string; broadcast: boolean };
+      return { spaceId: result.space_id };
+    } catch (err) {
+      console.error('[AcceptInvite] Managed accept failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to accept invite');
+      return null;
+    } finally {
+      setAccepting(false);
+    }
+  }, [rpc, connected]);
+
+  return { accept, acceptManaged, accepting, error };
 }
 
 /**

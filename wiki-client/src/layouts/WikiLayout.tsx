@@ -7,6 +7,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useState, type ReactNode } from 'react';
 import { WikiSidebar } from '../components/WikiSidebar';
 import { NodeStatusBar } from '../components/NodeStatusBar';
+import { useWikiIdentity } from '../hooks/useWikiIdentity';
 
 interface WikiLayoutProps {
   children: ReactNode;
@@ -16,6 +17,9 @@ export function WikiLayout({ children }: WikiLayoutProps): JSX.Element {
   const [searchQuery, setSearchQuery] = useState('');
   const navigate = useNavigate();
   const location = useLocation();
+  // Node-wide centralized identity: when embedded in the desktop shell the node
+  // owns the single identity, so hide wiki's own per-client identity entry point.
+  const { mode } = useWikiIdentity();
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,7 +60,9 @@ export function WikiLayout({ children }: WikiLayoutProps): JSX.Element {
         <nav className="wiki-header__nav" aria-label="Main navigation">
           <Link to="/" className={`wiki-header__nav-link ${isActive('/')}`}>Home</Link>
           <Link to="/search" className={`wiki-header__nav-link ${isActive('/search')}`}>Search</Link>
-          <Link to="/identity" className={`wiki-header__nav-link ${isActive('/identity')}`}>Identity</Link>
+          {mode !== 'node' && (
+            <Link to="/identity" className={`wiki-header__nav-link ${isActive('/identity')}`}>Identity</Link>
+          )}
         </nav>
       </header>
 

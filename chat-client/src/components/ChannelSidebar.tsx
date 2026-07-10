@@ -11,6 +11,7 @@ import { useBlocklist } from '../hooks/useBlocklist';
 import { DmPanel } from './DmPanel';
 import { StartDmModal } from './StartDmModal';
 import { PrivateChannelsSection } from './PrivateChannelsSection';
+import { NodePrivateChannelActions } from './NodePrivateChannelActions';
 import './ChannelSidebar.css';
 
 export interface Channel {
@@ -278,8 +279,12 @@ export function ChannelSidebar({
         <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
         {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
 
-        {/* Private channels: invites inbox + my private channels */}
+        {/* Private channels: invites inbox + my private channels (browser mode) */}
         <PrivateChannelsSection />
+
+        {/* Node-mode shareable invites: create a swiminv1 code for this private channel,
+            or redeem one to join. Renders only when the node owns the identity. */}
+        <NodePrivateChannelActions serverId={server.id} />
       </div>
 
       {/* User area at bottom */}

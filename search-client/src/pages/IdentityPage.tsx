@@ -12,6 +12,7 @@ import {
   PowProgress,
   IdentityCard,
 } from '@swimchain/frontend';
+import { isInIframe } from '../hooks/useParentRpcConfig';
 import { useSearchIdentity } from '../hooks/useSearchIdentity';
 import './IdentityPage.css';
 
@@ -19,7 +20,11 @@ export function IdentityPage(): JSX.Element {
   const { keypair, address, generate, clear } = useKeypair();
   const { state, solution, mine, cancel, attempts, elapsedMs, reset } = usePow();
   const { identity, setIdentity, clearIdentity, hasValidIdentity } = useIdentityContext();
-  const { isNodeMode, nodeAddress, nodeDisplayName } = useSearchIdentity();
+  // Node-wide centralized identity: when embedded in the Swimchain desktop shell
+  // (same-origin iframe) the NODE owns the single identity. Never render this
+  // client's own create/unlock/manage identity UI in that case.
+  const embedded = isInIframe();
+  const { nodeAddress } = useSearchIdentity();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -73,6 +78,27 @@ export function IdentityPage(): JSX.Element {
     }
   }, [clearIdentity]);
 
+  // Embedded: identity is centralized in the node. Show a calm placeholder
+  // instead of any create/unlock/manage forms.
+  if (embedded) {
+    return (
+      <div className="identity-page">
+        <div className="identity-page__content">
+          <section className="identity-page__section">
+            <h2 className="identity-page__section-title">Your identity</h2>
+            <p className="identity-page__desc">
+              Managed by the Swimchain app — the node holds your key and signs on your
+              behalf, so there&apos;s nothing to create or unlock here.
+            </p>
+            {nodeAddress
+              ? <AddressDisplay address={nodeAddress} />
+              : <p className="identity-page__desc">Resolving your identity…</p>}
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="identity-page">
       <header className="identity-page__header">
@@ -98,39 +124,9 @@ export function IdentityPage(): JSX.Element {
       </header>
 
       <div className="identity-page__content">
-        {/* Node mode (desktop app): the node owns the identity. Show it read-only
-            and skip the browser create/import flow entirely. */}
-        {isNodeMode && (
-          <section className="identity-page__section">
-            <h2 className="identity-page__section-title">Your Identity</h2>
-            <div className="identity-page__card">
-              <p className="identity-page__desc">
-                This desktop app uses your <strong>node's identity</strong>. Search and
-                all identity-bound actions are signed by the node, so there is no
-                separate browser identity to create or manage here.
-              </p>
-              {nodeDisplayName && (
-                <p className="identity-page__desc">
-                  <strong>Name:</strong> {nodeDisplayName}
-                </p>
-              )}
-              <p className="identity-page__desc">
-                <strong>Address:</strong>
-              </p>
-              <AddressDisplay address={nodeAddress || ''} chars={12} showCopy />
-            </div>
-            <div className="identity-page__card">
-              <h3>About Your Identity</h3>
-              <p className="identity-page__desc">
-                Your private key is held by your local node, not the browser. It never
-                leaves your device and is shared across all Swimchain desktop clients.
-              </p>
-            </div>
-          </section>
-        )}
-
+        {/* Standalone browser tab: this client manages its own browser identity. */}
         {/* Show upgrade notice if identity exists but needs upgrade */}
-        {!isNodeMode && identity && !hasValidIdentity && (
+        {identity && !hasValidIdentity && (
           <section className="identity-page__section">
             <div className="identity-page__card identity-page__warning">
               <h2 className="identity-page__section-title">Identity Upgrade Required</h2>
@@ -152,7 +148,7 @@ export function IdentityPage(): JSX.Element {
           </section>
         )}
 
-        {!isNodeMode && identity && hasValidIdentity && (
+        {identity && hasValidIdentity && (
           <section className="identity-page__section">
             <h2 className="identity-page__section-title">Your Identity</h2>
             <IdentityCard identity={identity} />
@@ -181,7 +177,7 @@ export function IdentityPage(): JSX.Element {
           </section>
         )}
 
-        {!isNodeMode && !identity && (
+        {!identity && (
           <section className="identity-page__section">
             <h2 className="identity-page__section-title">Create New Identity</h2>
             <p className="identity-page__desc">

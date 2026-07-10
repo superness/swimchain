@@ -851,8 +851,15 @@ impl RpcMethods {
 
             // Private space methods (DMs, group chats)
             "create_private_space" => self.create_private_space(params, id).await,
+            "create_private_space_managed" => self.create_private_space_managed(params, id).await,
+            "encrypt_private_content" => self.encrypt_private_content(params, id).await,
+            "decrypt_private_content" => self.decrypt_private_content(params, id).await,
             "invite_to_space" => self.invite_to_space(params, id).await,
+            "invite_to_space_managed" => self.invite_to_space_managed(params, id).await,
+            "create_space_invite_blob" => self.create_space_invite_blob(params, id).await,
+            "redeem_space_invite" => self.redeem_space_invite(params, id).await,
             "accept_invite" => self.accept_invite(params, id).await,
+            "accept_invite_managed" => self.accept_invite_managed(params, id).await,
             "decline_invite" => self.decline_invite(params, id).await,
             "leave_space" => self.leave_space(params, id).await,
             "kick_member" => self.kick_member(params, id).await,
@@ -8937,21 +8944,37 @@ impl RpcMethods {
             // Get member count
             let member_count = membership_store.member_count(&space_id).unwrap_or(0);
 
-            // Get space info from chain store for encrypted name
-            let encrypted_name = if let Some(ref chain_store) = self.node.chain_store {
+            // Get space info from chain store for encrypted name, and — when this is the
+            // node's own membership (node-managed mode) — decrypt the name node-side so
+            // desktop clients can show it without ever holding the space key.
+            let (encrypted_name, decrypted_name) = if let Some(ref chain_store) =
+                self.node.chain_store
+            {
                 if let Ok(Some(space_info)) = chain_store.get_space(&space_id) {
-                    space_info.encrypted_name.map(|n| hex::encode(&n))
+                    let raw = space_info.encrypted_name;
+                    let decrypted = if user_pk == self.node.keypair.public_key.0 {
+                        match self.node_space_key(&space_id) {
+                            Ok(key) => raw.as_ref().and_then(|n| {
+                                crate::crypto::private_space::decrypt_space_name(n, &key).ok()
+                            }),
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    };
+                    (raw.map(|n| hex::encode(&n)), decrypted)
                 } else {
-                    None
+                    (None, None)
                 }
             } else {
-                None
+                (None, None)
             };
 
             spaces.push(PrivateSpaceInfo {
                 space_id: hex::encode(&space_id),
                 space_id_bech32: encode_space_id(&space_id),
                 encrypted_name,
+                name: decrypted_name,
                 role,
                 joined_at,
                 member_count,
@@ -9643,6 +9666,562 @@ impl RpcMethods {
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
+    /// Create a private space in NODE-MANAGED mode (desktop app).
+    ///
+    /// The node owns the identity seed and never exposes it, so — unlike
+    /// `create_private_space`, which takes client-encrypted blobs — the client sends
+    /// only the plaintext name and the NODE does everything: derives its X25519 keys,
+    /// generates the space key, wraps it for itself, encrypts the name, mines the PoW,
+    /// and signs the CreateSpace action. Every value is bound to the RAW encrypted-name
+    /// blob so the node reads back exactly what it wrote (self-consistent).
+    async fn create_private_space_managed(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::crypto::private_space::{
+            encrypt_space_name, generate_space_key, wrap_space_key_for,
+        };
+
+        let params: CreatePrivateSpaceManagedParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+        let name = params.name.trim();
+        if name.is_empty() {
+            return RpcResponse::error(RpcErrorCode::InvalidParams, "Space name required", id);
+        }
+
+        // The creator is the node's own identity.
+        let creator_pk = self.node.keypair.public_key.0;
+        let creator_hex = hex::encode(creator_pk);
+
+        // Sponsorship gate (SPEC_11), same as the client-blob path.
+        if let Err(response) = self.check_identity_sponsored(&creator_hex, &id) {
+            return response;
+        }
+
+        // Node identity seed -> everything is derived from it, never exposed.
+        let seed_slice = self.node.keypair.private_key.seed();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_slice[..32]);
+
+        // Space key + wraps + encrypted name (all node-side).
+        let space_key = generate_space_key();
+        let creator_encrypted_key = match wrap_space_key_for(&space_key, &creator_pk, &seed) {
+            Ok(k) => k,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to wrap space key: {}", e),
+                    id,
+                );
+            }
+        };
+        let encrypted_name = encrypt_space_name(name, &space_key);
+
+        let timestamp = crate::crypto::current_timestamp();
+
+        // PoW config, bound to the RAW encrypted-name blob. The actual mining is
+        // deferred to a background task (below): testnet SpaceCreation PoW takes
+        // ~70s, far past any client RPC timeout, yet none of the values the client
+        // needs (space_id, membership) depend on the solution — so we register the
+        // space up front, return immediately, and let the miner fill in the
+        // on-chain action asynchronously.
+        let content_hash = crate::crypto::sha256(&encrypted_name);
+        let config = match self.node.network.as_str() {
+            "testnet" => ForkPoWConfig::testnet(),
+            "regtest" => ForkPoWConfig::test(),
+            _ => ForkPoWConfig::production(),
+        };
+        let network_mode = match self.node.network.as_str() {
+            "testnet" => crate::network::NetworkMode::Testnet,
+            "regtest" => crate::network::NetworkMode::Regtest,
+            _ => crate::network::NetworkMode::Mainnet,
+        };
+        let difficulty =
+            network_mode.adjusted_difficulty(config.get_difficulty(ActionType::SpaceCreation));
+        let mut nonce_space = [0u8; 8];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce_space);
+        let challenge = PoWChallenge {
+            action_type: ActionType::SpaceCreation,
+            content_hash,
+            author_id: creator_pk,
+            timestamp,
+            difficulty,
+            nonce_space,
+        };
+        // space_id = sha256(creator || encrypted_name || timestamp)[..16], mirroring
+        // create_private_space's derivation (bound to the same encrypted-name blob).
+        let mut space_id_input = Vec::new();
+        space_id_input.extend_from_slice(&creator_pk);
+        space_id_input.extend_from_slice(&encrypted_name);
+        space_id_input.extend_from_slice(&timestamp.to_le_bytes());
+        let space_hash = crate::crypto::sha256(&space_id_input);
+        let mut space_id = [0u8; 16];
+        space_id.copy_from_slice(&space_hash[..16]);
+
+        // Register the space locally (raw encrypted-name blob so the node can decrypt it).
+        let space_info = crate::storage::chain::SpaceInfo {
+            space_id,
+            name: String::new(),
+            description: None,
+            creator: creator_pk,
+            created_at: timestamp,
+            pow_work: (1u64 << difficulty.min(63)) / 1000 + 1,
+            is_private: true,
+            encrypted_name: Some(encrypted_name.clone()),
+            creator_encrypted_key: Some(creator_encrypted_key.clone()),
+            key_version: 0,
+        };
+        if let Some(ref chain_store) = self.node.chain_store {
+            if let Err(e) = chain_store.register_space(&space_info) {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to register space: {}", e),
+                    id,
+                );
+            }
+        }
+
+        // Creator becomes admin; encrypted_space_key is the self-wrap so the node can
+        // recover the space key on demand (invited_by = 0 => self).
+        if let Some(ref membership_store) = self.node.membership_store {
+            let member_record = crate::storage::membership::MemberRecord {
+                member_pk: creator_pk,
+                role: crate::storage::membership::MemberRole::Admin,
+                joined_at: timestamp,
+                invited_by: [0u8; 32],
+                encrypted_space_key: creator_encrypted_key.clone(),
+                key_version: 0,
+            };
+            if let Err(e) = membership_store.add_member(&space_id, &member_record) {
+                warn!("Failed to add creator to membership store: {}", e);
+            }
+        }
+
+        // Sign the CreateSpace action now (node-side signing over the same convention
+        // the client used: create_private_space:<pubkey>:<timestamp>). The signature
+        // is over identity + timestamp only — independent of the PoW solution — so we
+        // sign here and hand the raw bytes to the background miner.
+        let signing_msg =
+            format!("create_private_space:{}:{}", creator_hex, timestamp).into_bytes();
+        let signature_bytes = ed25519_sign(&self.node.keypair.private_key, &signing_msg).0;
+        let display_name = self.node.identity_name.read().await.clone();
+
+        // Mine the PoW + announce the action in the background. The space is already
+        // registered and joined locally, so the RPC returns immediately; the miner
+        // fills in the on-chain action once the (slow) argon2id PoW completes. This
+        // keeps `create_private_space_managed` well under any client RPC timeout even
+        // on testnet/mainnet where SpaceCreation PoW takes tens of seconds.
+        let block_builder = self.node.block_builder.clone();
+        let connection_pool = self.node.connection_pool.clone();
+        tokio::spawn(async move {
+            let solution =
+                match tokio::task::spawn_blocking(move || compute_pow(&challenge, &config)).await {
+                    Ok(Ok(s)) => s,
+                    Ok(Err(e)) => {
+                        warn!("[PRIVATE] Managed CreateSpace PoW failed: {}", e);
+                        return;
+                    }
+                    Err(e) => {
+                        warn!("[PRIVATE] Managed CreateSpace PoW task panicked: {}", e);
+                        return;
+                    }
+                };
+
+            let block_builder = match block_builder {
+                Some(b) => b,
+                None => return,
+            };
+
+            let pow_work = (1u64 << difficulty.min(63)) / 1000 + 1;
+            let action = Action {
+                action_type: crate::blocks::ActionType::CreateSpace,
+                actor: creator_pk,
+                timestamp,
+                content_hash: Some(content_hash),
+                parent_id: None,
+                pow_nonce: solution.nonce,
+                pow_work,
+                pow_target: crate::crypto::sha256(hex::encode(solution.hash).as_bytes()),
+                signature: signature_bytes,
+                emoji: None,
+                display_name,
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            let mut thread_id = [0u8; 32];
+            thread_id[..16].copy_from_slice(&space_id);
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&space_id);
+
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                }
+                Err(e) => {
+                    warn!("[BLOCKS] Failed to acquire block builder lock: {:?}", e);
+                    false
+                }
+            };
+
+            if added {
+                if let Some(pool) = connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(thread_id, space_id_32, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+                    let sent = pool.broadcast(&envelope).await;
+                    info!("[PRIVATE] Broadcast managed CreatePrivateSpace to {} peers", sent);
+                }
+            }
+        });
+
+        // Space is registered + joined locally and the action is being mined in the
+        // background; broadcast reflects "not yet on the wire" (async).
+        let result = CreatePrivateSpaceResult {
+            space_id: hex::encode(space_id),
+            space_id_bech32: encode_space_id(&space_id),
+            broadcast: false,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Recover the space key for a private space the NODE is a member of, by
+    /// unwrapping the node's own membership record with its identity seed. Never
+    /// stores raw space keys at rest.
+    fn node_space_key(&self, space_id: &[u8; 16]) -> Result<[u8; 32], (RpcErrorCode, String)> {
+        let membership = self.node.membership_store.as_ref().ok_or((
+            RpcErrorCode::InternalError,
+            "membership store unavailable".to_string(),
+        ))?;
+        let me = self.node.keypair.public_key.0;
+        let member = membership
+            .get_member(space_id, &me)
+            .map_err(|e| (RpcErrorCode::InternalError, format!("membership lookup: {e}")))?
+            .ok_or((
+                RpcErrorCode::InvalidParams,
+                "not a member of this private space".to_string(),
+            ))?;
+        let seed_slice = self.node.keypair.private_key.seed();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_slice[..32]);
+        crate::crypto::private_space::unwrap_space_key(
+            &member.encrypted_space_key,
+            &member.invited_by,
+            &me,
+            &seed,
+        )
+        .map_err(|e| (RpcErrorCode::InternalError, format!("recover space key: {e}")))
+    }
+
+    /// Parse a hex 16-byte space id from a request field.
+    fn parse_space_id_16(hex_str: &str) -> Result<[u8; 16], (RpcErrorCode, String)> {
+        let bytes = hex::decode(hex_str)
+            .map_err(|e| (RpcErrorCode::InvalidParams, format!("invalid space_id hex: {e}")))?;
+        bytes.try_into().map_err(|_| {
+            (
+                RpcErrorCode::InvalidParams,
+                "space_id must be 16 bytes".to_string(),
+            )
+        })
+    }
+
+    /// Encrypt plaintext with a private space's key (node-managed mode). The client
+    /// sends plaintext; the node returns `[PRIVATE:v1:...]` framed ciphertext to submit.
+    async fn encrypt_private_content(&self, params: Value, id: Value) -> RpcResponse {
+        let params: PrivateContentParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                )
+            }
+        };
+        let space_id = match Self::parse_space_id_16(&params.space_id) {
+            Ok(s) => s,
+            Err((c, m)) => return RpcResponse::error(c, &m, id),
+        };
+        let key = match self.node_space_key(&space_id) {
+            Ok(k) => k,
+            Err((c, m)) => return RpcResponse::error(c, &m, id),
+        };
+        let ciphertext =
+            crate::crypto::private_space::encrypt_content_with_space_key(&params.content, &key);
+        RpcResponse::success(
+            serde_json::to_value(PrivateContentResult { content: ciphertext }).unwrap(),
+            id,
+        )
+    }
+
+    /// Decrypt `[PRIVATE:v1:...]` content with a private space's key (node-managed mode).
+    async fn decrypt_private_content(&self, params: Value, id: Value) -> RpcResponse {
+        let params: PrivateContentParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                )
+            }
+        };
+        let space_id = match Self::parse_space_id_16(&params.space_id) {
+            Ok(s) => s,
+            Err((c, m)) => return RpcResponse::error(c, &m, id),
+        };
+        let key = match self.node_space_key(&space_id) {
+            Ok(k) => k,
+            Err((c, m)) => return RpcResponse::error(c, &m, id),
+        };
+        match crate::crypto::private_space::decrypt_content_with_space_key(&params.content, &key) {
+            Ok(plaintext) => RpcResponse::success(
+                serde_json::to_value(PrivateContentResult { content: plaintext }).unwrap(),
+                id,
+            ),
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!("decryption failed: {e}"),
+                id,
+            ),
+        }
+    }
+
+    /// Produce a SELF-CONTAINED invite blob (node-managed, out-of-band).
+    ///
+    /// The inviter's node recovers its space key, wraps it for the invitee's ed25519
+    /// pubkey, and packs `{space_id, inviter, encrypted_name, encrypted_space_key}` into a
+    /// shareable `swiminv1:<base64>` code. This is shared out-of-band (copy/paste/DM), so
+    /// no network invite propagation is needed — the invitee redeems it with
+    /// `redeem_space_invite`. Space CONTENT still syncs via normal block sync.
+    async fn create_space_invite_blob(&self, params: Value, id: Value) -> RpcResponse {
+        use base64::Engine as _;
+        let params: CreateSpaceInviteBlobParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                )
+            }
+        };
+        let space_id = match Self::parse_space_id_16(&params.space_id) {
+            Ok(s) => s,
+            Err((c, m)) => return RpcResponse::error(c, &m, id),
+        };
+        let invitee_pk: [u8; 32] = match hex::decode(&params.invitee) {
+            Ok(b) if b.len() == 32 => b.try_into().unwrap(),
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid invitee: must be 32-byte hex",
+                    id,
+                )
+            }
+        };
+
+        // Must be a member (admin/mod) of the space to invite others.
+        let me = self.node.keypair.public_key.0;
+        if let Some(ref ms) = self.node.membership_store {
+            match ms.get_member(&space_id, &me) {
+                Ok(Some(m)) if m.role != crate::storage::membership::MemberRole::Member => {}
+                Ok(Some(_)) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Only admins and moderators can create invites",
+                        id,
+                    )
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "You are not a member of this space",
+                        id,
+                    )
+                }
+            }
+        }
+
+        // Recover the space key and wrap it for the invitee.
+        let key = match self.node_space_key(&space_id) {
+            Ok(k) => k,
+            Err((c, m)) => return RpcResponse::error(c, &m, id),
+        };
+        let seed_slice = self.node.keypair.private_key.seed();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_slice[..32]);
+        let encrypted_key =
+            match crate::crypto::private_space::wrap_space_key_for(&key, &invitee_pk, &seed) {
+                Ok(k) => k,
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        &format!("Failed to wrap space key: {}", e),
+                        id,
+                    )
+                }
+            };
+
+        // Carry the encrypted name so the invitee can show the space name on redeem.
+        let enc_name = self
+            .node
+            .chain_store
+            .as_ref()
+            .and_then(|cs| cs.get_space(&space_id).ok().flatten())
+            .and_then(|s| s.encrypted_name)
+            .unwrap_or_default();
+
+        let payload = serde_json::json!({
+            "v": 1,
+            "space_id": hex::encode(space_id),
+            "inviter": hex::encode(me),
+            "enc_name": hex::encode(&enc_name),
+            "enc_key": hex::encode(&encrypted_key),
+        });
+        let blob = format!(
+            "swiminv1:{}",
+            base64::engine::general_purpose::STANDARD.encode(payload.to_string().as_bytes())
+        );
+        RpcResponse::success(
+            serde_json::to_value(CreateSpaceInviteBlobResult { blob }).unwrap(),
+            id,
+        )
+    }
+
+    /// Redeem a `swiminv1:<base64>` invite blob: unwrap the space key (proving the blob
+    /// is for us), register the space + membership locally so we can read/post. After
+    /// this, `node_space_key` recovers the key on demand and content decrypts.
+    async fn redeem_space_invite(&self, params: Value, id: Value) -> RpcResponse {
+        use base64::Engine as _;
+        let params: RedeemSpaceInviteParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                )
+            }
+        };
+        let b64 = match params.blob.trim().strip_prefix("swiminv1:") {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Not a valid invite (expected swiminv1: prefix)",
+                    id,
+                )
+            }
+        };
+        let json_bytes = match base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
+            Ok(b) => b,
+            Err(_) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Malformed invite blob", id)
+            }
+        };
+        let v: Value = match serde_json::from_slice(&json_bytes) {
+            Ok(v) => v,
+            Err(_) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Malformed invite blob", id)
+            }
+        };
+        let getb = |k: &str| -> Option<Vec<u8>> {
+            v.get(k).and_then(|x| x.as_str()).and_then(|s| hex::decode(s).ok())
+        };
+        let space_id: [u8; 16] = match getb("space_id") {
+            Some(b) if b.len() == 16 => b.try_into().unwrap(),
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite: bad space_id", id),
+        };
+        let inviter: [u8; 32] = match getb("inviter") {
+            Some(b) if b.len() == 32 => b.try_into().unwrap(),
+            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite: bad inviter", id),
+        };
+        let enc_key = getb("enc_key").unwrap_or_default();
+        let enc_name = getb("enc_name").unwrap_or_default();
+
+        // Unwrap the space key with OUR seed — fails if this invite wasn't for us.
+        let me = self.node.keypair.public_key.0;
+        let seed_slice = self.node.keypair.private_key.seed();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_slice[..32]);
+        let space_key =
+            match crate::crypto::private_space::unwrap_space_key(&enc_key, &inviter, &me, &seed) {
+                Ok(k) => k,
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "This invite is not for your identity (could not unwrap the space key)",
+                        id,
+                    )
+                }
+            };
+        let name = if enc_name.is_empty() {
+            None
+        } else {
+            crate::crypto::private_space::decrypt_space_name(&enc_name, &space_key).ok()
+        };
+
+        let now = crate::crypto::current_timestamp();
+
+        // Register the space locally (best-effort) so it shows in our private-space list.
+        if let Some(ref cs) = self.node.chain_store {
+            let space_info = crate::storage::chain::SpaceInfo {
+                space_id,
+                name: String::new(),
+                description: None,
+                creator: inviter,
+                created_at: now,
+                pow_work: 1,
+                is_private: true,
+                encrypted_name: if enc_name.is_empty() { None } else { Some(enc_name) },
+                creator_encrypted_key: None,
+                key_version: 0,
+            };
+            let _ = cs.register_space(&space_info);
+        }
+
+        // Store our membership with the wrapped key (invited_by = inviter) so
+        // node_space_key can recover the key on demand.
+        if let Some(ref ms) = self.node.membership_store {
+            let member = crate::storage::membership::MemberRecord {
+                member_pk: me,
+                role: crate::storage::membership::MemberRole::Member,
+                joined_at: now,
+                invited_by: inviter,
+                encrypted_space_key: enc_key,
+                key_version: 0,
+            };
+            if let Err(e) = ms.add_member(&space_id, &member) {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to store membership: {}", e),
+                    id,
+                );
+            }
+        }
+
+        RpcResponse::success(
+            serde_json::to_value(RedeemSpaceInviteResult {
+                space_id: hex::encode(space_id),
+                space_id_bech32: encode_space_id(&space_id),
+                name,
+            })
+            .unwrap(),
+            id,
+        )
+    }
+
     /// Invite a user to a private space
     async fn invite_to_space(&self, params: Value, id: Value) -> RpcResponse {
         let params: InviteToSpaceParams = match serde_json::from_value(params) {
@@ -10060,6 +10639,411 @@ impl RpcMethods {
 
         let result = AcceptInviteResult {
             space_id: hex::encode(&invite.space_id),
+            broadcast,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Node-managed invite to a private space (desktop mode).
+    ///
+    /// The inviter is the node's own identity. The node recovers the space key from its
+    /// membership record, wraps it for the invitee with its identity seed (the client
+    /// never touches the seed), mines PoW, and signs/broadcasts the invite. Mirrors
+    /// `invite_to_space` for record creation / PoW / broadcast, but sources the
+    /// `encrypted_space_key` node-side instead of from the client.
+    async fn invite_to_space_managed(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::crypto::private_space::wrap_space_key_for;
+
+        let params: InviteToSpaceManagedParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse space ID (16 bytes).
+        let space_id = match Self::parse_space_id_16(&params.space_id) {
+            Ok(s) => s,
+            Err((c, m)) => return RpcResponse::error(c, &m, id),
+        };
+
+        // Parse invitee public key (32 bytes).
+        let invitee_pk: [u8; 32] = match hex::decode(&params.invitee) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid invitee: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // The inviter is the node's own identity.
+        let inviter_pk = self.node.keypair.public_key.0;
+        let inviter_hex = hex::encode(inviter_pk);
+
+        // Sponsorship gate on the node's own identity.
+        if let Err(response) = self.check_identity_sponsored(&inviter_hex, &id) {
+            return response;
+        }
+
+        // The node must be an admin/mod member of the space (same rule as invite_to_space).
+        if let Some(ref membership_store) = self.node.membership_store {
+            match membership_store.get_member(&space_id, &inviter_pk) {
+                Ok(Some(member)) => {
+                    if member.role == crate::storage::membership::MemberRole::Member {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Only admins and moderators can invite members",
+                            id,
+                        );
+                    }
+                }
+                Ok(None) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Inviter is not a member of this space",
+                        id,
+                    );
+                }
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        &format!("Failed to check membership: {}", e),
+                        id,
+                    );
+                }
+            }
+        }
+
+        // Recover the node's space key and wrap it for the invitee (all node-side).
+        let space_key = match self.node_space_key(&space_id) {
+            Ok(k) => k,
+            Err((c, m)) => return RpcResponse::error(c, &m, id),
+        };
+        let seed_slice = self.node.keypair.private_key.seed();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_slice[..32]);
+        let encrypted_space_key = match wrap_space_key_for(&space_key, &invitee_pk, &seed) {
+            Ok(k) => k,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to wrap space key: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let timestamp = crate::crypto::current_timestamp();
+
+        // Invite hash (deterministic), identical derivation to invite_to_space.
+        let mut invite_input = Vec::new();
+        invite_input.extend_from_slice(&space_id);
+        invite_input.extend_from_slice(&inviter_pk);
+        invite_input.extend_from_slice(&invitee_pk);
+        invite_input.extend_from_slice(&timestamp.to_le_bytes());
+        let invite_hash = crate::crypto::sha256(&invite_input);
+
+        // Mine PoW node-side, bound to the invite hash. invite_to_space uses Post
+        // difficulty for invites, so we do the same.
+        let config = match self.node.network.as_str() {
+            "testnet" => ForkPoWConfig::testnet(),
+            "regtest" => ForkPoWConfig::test(),
+            _ => ForkPoWConfig::production(),
+        };
+        let network_mode = match self.node.network.as_str() {
+            "testnet" => crate::network::NetworkMode::Testnet,
+            "regtest" => crate::network::NetworkMode::Regtest,
+            _ => crate::network::NetworkMode::Mainnet,
+        };
+        let difficulty = network_mode.adjusted_difficulty(config.get_difficulty(ActionType::Post));
+        let mut nonce_space = [0u8; 8];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce_space);
+        let challenge = PoWChallenge {
+            action_type: ActionType::Post,
+            content_hash: invite_hash,
+            author_id: inviter_pk,
+            timestamp,
+            difficulty,
+            nonce_space,
+        };
+        let solution = match compute_pow(&challenge, &config) {
+            Ok(s) => s,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to mine PoW: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Store the invite in the membership store (same as invite_to_space).
+        if let Some(ref membership_store) = self.node.membership_store {
+            let invite_record = crate::storage::membership::InviteRecord {
+                invite_hash,
+                space_id,
+                inviter_pk,
+                invitee_pk,
+                encrypted_space_key: encrypted_space_key.clone(),
+                created_at: timestamp,
+                expires_at: params.expires_at,
+                status: crate::storage::membership::InviteStatus::Pending,
+                message: None,
+            };
+            if let Err(e) = membership_store.add_invite(&invite_record) {
+                warn!("Failed to store invite: {}", e);
+            }
+        }
+
+        // Sign + broadcast the Invite action node-side.
+        let mut broadcast = false;
+        if let Some(ref block_builder) = self.node.block_builder {
+            let signing_msg = format!(
+                "invite_to_space:{}:{}:{}",
+                inviter_hex,
+                hex::encode(invitee_pk),
+                timestamp
+            )
+            .into_bytes();
+            let signature = ed25519_sign(&self.node.keypair.private_key, &signing_msg);
+
+            let pow_work = (1u64 << difficulty.min(63)) / 1000 + 1;
+            let action = Action {
+                action_type: crate::blocks::ActionType::Invite,
+                actor: inviter_pk,
+                timestamp,
+                content_hash: Some(invite_hash),
+                parent_id: Some({
+                    let mut parent = [0u8; 32];
+                    parent[..16].copy_from_slice(&space_id);
+                    parent
+                }),
+                pow_nonce: solution.nonce,
+                pow_work,
+                pow_target: crate::crypto::sha256(hex::encode(solution.hash).as_bytes()),
+                signature: signature.0,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            let mut thread_id = [0u8; 32];
+            thread_id.copy_from_slice(&invite_hash);
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&space_id);
+
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                }
+                Err(_) => false,
+            };
+
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+                    let action_data = action.serialize();
+                    let payload = ActionAnnouncePayload::new(thread_id, space_id_32, action_data);
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+                    let sent = pool.broadcast(&envelope).await;
+                    broadcast = sent > 0;
+                    info!("[PRIVATE] Broadcast managed invite to {} peers", sent);
+                }
+            }
+        }
+
+        let result = InviteToSpaceResult {
+            invite_hash: hex::encode(invite_hash),
+            broadcast,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Node-managed accept of a pending invite (desktop mode).
+    ///
+    /// The acceptor is the node's own identity. The node stores its own MemberRecord
+    /// with `encrypted_space_key` = the invite's wrapped key and `invited_by` = the
+    /// inviter, so a later `node_space_key(&space_id)` recovers the space key via
+    /// `unwrap_space_key` (sender = inviter). This is exactly the
+    /// `node_invite_wrap_unwrap_round_trips` path. Mirrors `accept_invite` but sources
+    /// the acceptor identity + signature node-side.
+    async fn accept_invite_managed(&self, params: Value, id: Value) -> RpcResponse {
+        let params: AcceptInviteManagedParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Parse invite hash.
+        let invite_hash: [u8; 32] = match hex::decode(&params.invite_hash) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid invite_hash: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // The acceptor is the node's own identity.
+        let acceptor_pk = self.node.keypair.public_key.0;
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+
+        // Get the invite.
+        let invite = match membership_store.get_invite(&invite_hash) {
+            Ok(Some(inv)) => inv,
+            Ok(None) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite not found", id);
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get invite: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // The node must be the invitee.
+        if invite.invitee_pk != acceptor_pk {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "This node is not the invitee for this invite",
+                id,
+            );
+        }
+
+        // Check invite status.
+        if invite.status != crate::storage::membership::InviteStatus::Pending {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invite is no longer pending",
+                id,
+            );
+        }
+
+        let timestamp = crate::crypto::current_timestamp();
+
+        // Check expiry.
+        if let Some(expires_at) = invite.expires_at {
+            if timestamp > expires_at {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite has expired", id);
+            }
+        }
+
+        // Update invite status.
+        if let Err(e) = membership_store.update_invite_status(
+            &invite_hash,
+            crate::storage::membership::InviteStatus::Accepted,
+        ) {
+            warn!("Failed to update invite status: {}", e);
+        }
+
+        // Add the node as a member. Storing the invite's wrapped key + invited_by = the
+        // inviter is the invariant that lets node_space_key recover the key later.
+        let member_record = crate::storage::membership::MemberRecord {
+            member_pk: acceptor_pk,
+            role: crate::storage::membership::MemberRole::Member,
+            joined_at: timestamp,
+            invited_by: invite.inviter_pk,
+            encrypted_space_key: invite.encrypted_space_key.clone(),
+            key_version: 0,
+        };
+        if let Err(e) = membership_store.add_member(&invite.space_id, &member_record) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to add member: {}", e),
+                id,
+            );
+        }
+
+        // Sign + broadcast the accept action node-side (reusing AcceptDM like accept_invite).
+        let mut broadcast = false;
+        if let Some(ref block_builder) = self.node.block_builder {
+            let signing_msg =
+                format!("accept_invite:{}:{}", hex::encode(acceptor_pk), timestamp).into_bytes();
+            let signature = ed25519_sign(&self.node.keypair.private_key, &signing_msg);
+
+            let mut space_id_32 = [0u8; 32];
+            space_id_32[..16].copy_from_slice(&invite.space_id);
+
+            let action = Action {
+                action_type: crate::blocks::ActionType::AcceptDM,
+                actor: acceptor_pk,
+                timestamp,
+                content_hash: Some(invite_hash),
+                parent_id: Some(space_id_32),
+                pow_nonce: 0,
+                pow_work: 0,
+                pow_target: [0u8; 32],
+                signature: signature.0,
+                emoji: None,
+                display_name: self.node.identity_name.read().await.clone(),
+                media_refs: vec![],
+                replaces_pending: None,
+            };
+
+            let added = match block_builder.write() {
+                Ok(mut builder) => {
+                    builder.add_action(invite_hash, space_id_32, action.clone(), BranchPath::root())
+                }
+                Err(_) => false,
+            };
+
+            if added {
+                if let Some(ref pool) = self.node.connection_pool {
+                    use crate::network::messages::ActionAnnouncePayload;
+                    use crate::types::network::{MessageEnvelope, MessageType};
+                    let payload =
+                        ActionAnnouncePayload::new(invite_hash, space_id_32, action.serialize());
+                    let envelope = MessageEnvelope::new_fork_agnostic(
+                        MessageType::ActionAnnounce,
+                        payload.to_bytes().to_vec(),
+                    );
+                    let sent = pool.broadcast(&envelope).await;
+                    broadcast = sent > 0;
+                }
+            }
+        }
+
+        let result = AcceptInviteResult {
+            space_id: hex::encode(invite.space_id),
             broadcast,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)

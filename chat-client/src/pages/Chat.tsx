@@ -4,7 +4,7 @@
  * Combines ServerList, ChannelSidebar, and ChatArea into a unified experience.
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ServerList } from '../components/ServerList';
 import { ChannelSidebar } from '../components/ChannelSidebar';
@@ -17,8 +17,9 @@ import { useOptimisticMessages, useSendMessage } from '../hooks/useMessages';
 import { hexToBytes, solutionToRpcParams } from '@swimchain/frontend';
 import { useChatIdentity } from '../hooks/useChatIdentity';
 import { useReplyPow, useActionPow, ActionType } from '../hooks/useActionPow';
+import { useIsSponsored } from '../hooks/useIsSponsored';
 import { useBlocklist } from '../hooks/useBlocklist';
-import { useRpc, useMediaUpload, usePoolContribution } from '../hooks/useRpc';
+import { useRpc, useMediaUpload, usePoolContribution, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext } from '../hooks/useRpc';
 import { usePrivateChannelKeys } from '../hooks/usePrivateSpaceKeys';
 import { encryptWithChannelKey } from '../lib/encryption';
 import type { SpamReason } from '../components/ReportModal';
@@ -30,11 +31,11 @@ export function Chat() {
   // Unified identity: the node's identity when embedded in the desktop shell,
   // otherwise the browser keypair. `sign` routes to the node's sign_message RPC
   // in node mode and to the local keypair in browser mode.
-  const { identity, sign: signAsync, publicKeyBytes, hasIdentity } = useChatIdentity();
+  const { identity, sign: signAsync, publicKeyBytes, hasIdentity, mode } = useChatIdentity();
 
   // Fetch servers and channels
   const { servers, loading: serversLoading } = useServers();
-  const { channels, loading: channelsLoading } = useChannels(serverId ?? '');
+  const { channels, loading: channelsLoading, markRead: markChannelRead } = useChannels(serverId ?? '');
 
   // Get current server info
   const currentServer = servers.find(s => s.id === serverId);
@@ -54,6 +55,7 @@ export function Chat() {
 
   // PoW mining for replies
   const { mineReply, state: miningState, progress: miningProgress, cancel: cancelMining } = useReplyPow();
+  const isSponsored = useIsSponsored();
   // PoW mining for spam reports
   const { mine: mineReportPow, state: reportMiningState, progress: reportMiningProgress, cancel: cancelReportMining } = useActionPow();
   const [isSending, setIsSending] = useState(false);
@@ -69,6 +71,11 @@ export function Chat() {
     setMobileNavOpen(false);
     setReplyTargetId(null);
   }, [channelId]);
+
+  // Mark the opened channel as read so its unread "(1)" badge clears (#13).
+  useEffect(() => {
+    if (channelId) markChannelRead(channelId);
+  }, [channelId, markChannelRead]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -94,8 +101,15 @@ export function Chat() {
 
   const mining = miningState === 'mining' || reportMiningState === 'mining' || engagementMining;
 
-  // Private channel key management
+  // Private channel key management (browser mode: local E2E key per channel)
   const { getChannelKey } = usePrivateChannelKeys(identity?.publicKey);
+
+  // Node-managed private channels (desktop mode): a private chat server/space is
+  // encrypted by the node, which holds the space key. We detect membership via the
+  // node's private-space list and use node-side encrypt/decrypt RPCs.
+  const { encryptForSpace, decryptForSpace } = usePrivateContent();
+  const privateSpaceIds = usePrivateSpaceIds(identity?.publicKey);
+  const isPrivateServer = mode === 'node' && !!serverId && privateSpaceIds.has(serverId);
 
   // Toast notifications for user feedback
   const toast = useToast();
@@ -103,10 +117,35 @@ export function Chat() {
   // Get current channel info
   const currentChannel = channels.find(c => c.id === channelId);
 
+  // Auto-select the first server, then its first channel. These MUST run as effects
+  // (post-commit), not during render: calling navigate() during render is unreliable
+  // in React Router and made a space require a SECOND click before its content loaded
+  // (#12) — on the first click the new server's channels were still loading, so the
+  // render-phase redirect didn't fire and nothing advanced to a channel.
+  useEffect(() => {
+    if (!serversLoading && servers.length > 0 && !serverId) {
+      navigate(`/channels/${servers[0]!.id}`, { replace: true });
+    }
+  }, [serversLoading, servers, serverId, navigate]);
+
+  useEffect(() => {
+    if (!channelsLoading && channels.length > 0 && serverId && !channelId) {
+      navigate(`/channels/${serverId}/${channels[0]!.id}`, { replace: true });
+    }
+  }, [channelsLoading, channels, serverId, channelId, navigate]);
+
   // Handle message send with PoW and optional image attachments
   const handleSendMessage = useCallback(async (content: string, attachments?: File[]) => {
     if (!hasIdentity || !identity?.publicKey || !channelId) {
       console.error('[Chat] Cannot send: missing identity or channel');
+      return;
+    }
+    // Gate on sponsorship BEFORE spending PoW — the node rejects unsponsored posts
+    // (SPEC_11), so mining first only wastes the user's time.
+    if (isSponsored === false) {
+      toast.error(
+        'You need a sponsor before you can post. Redeem an invite or request sponsorship — no proof-of-work is spent until then.'
+      );
       return;
     }
 
@@ -148,12 +187,29 @@ export function Chat() {
         console.log('[Chat] Uploaded', mediaRefs.length, 'image(s)');
       }
 
-      // Encrypt content if this is a private channel
-      const channelKey = channelId ? getChannelKey(channelId) : null;
+      // Encrypt content if this is a private channel.
       let messageContent = content;
-      if (channelKey) {
-        console.log('[Chat] Encrypting message for private channel...');
-        messageContent = await encryptWithChannelKey(content, channelKey);
+      if (mode === 'node') {
+        // Node-managed private channel: ask the node (which holds the space key) to
+        // encrypt BEFORE mining, so PoW binds to the ciphertext. All-or-nothing —
+        // if encryption fails we abort rather than leak plaintext into a private channel.
+        if (isPrivateServer && serverId) {
+          console.log('[Chat] Encrypting message via node for private channel...');
+          const cipher = await encryptForSpace(serverId, content);
+          if (!cipher) {
+            failPendingMessage(tempId);
+            toast.error('Could not encrypt your message for this private channel. Nothing was sent.');
+            return;
+          }
+          messageContent = cipher;
+        }
+      } else {
+        // Browser mode: local E2E channel key (unchanged).
+        const channelKey = channelId ? getChannelKey(channelId) : null;
+        if (channelKey) {
+          console.log('[Chat] Encrypting message for private channel...');
+          messageContent = await encryptWithChannelKey(content, channelKey);
+        }
       }
 
       // Mine PoW for reply action
@@ -190,7 +246,44 @@ export function Chat() {
     } finally {
       setIsSending(false);
     }
-  }, [identity, hasIdentity, signAsync, publicKeyBytes, channelId, addPendingMessage, mineReply, sendMessage, confirmPendingMessage, failPendingMessage, uploadImage, compressAndUpload, toast, getChannelKey]);
+  }, [identity, hasIdentity, signAsync, publicKeyBytes, channelId, serverId, mode, isPrivateServer, encryptForSpace, addPendingMessage, mineReply, sendMessage, confirmPendingMessage, failPendingMessage, uploadImage, compressAndUpload, toast, getChannelKey, isSponsored]);
+
+  // Node-managed private channels: decrypt `[PRIVATE:v1:...]` message bodies for
+  // display via the node (which holds the space key). Cache plaintext by message id
+  // so we only decrypt each message once; show a lock placeholder until it resolves.
+  const [decryptedById, setDecryptedById] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!isPrivateServer || !serverId) return;
+    const pending = messages.filter(
+      m => isPrivateCiphertext(m.content) && decryptedById[m.id] === undefined
+    );
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const updates: Record<string, string> = {};
+      for (const m of pending) {
+        const plain = await decryptForSpace(serverId, m.content);
+        if (plain !== null) updates[m.id] = plain;
+      }
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setDecryptedById(prev => ({ ...prev, ...updates }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isPrivateServer, serverId, messages, decryptForSpace, decryptedById]);
+
+  // What we actually render: in a node-managed private channel, swap ciphertext for
+  // decrypted plaintext (or a lock placeholder while it decrypts). Non-private and
+  // browser modes pass messages through unchanged.
+  const displayMessages = useMemo(() => {
+    if (!isPrivateServer) return messages;
+    return messages.map(m => {
+      if (!isPrivateCiphertext(m.content)) return m;
+      const plain = decryptedById[m.id];
+      return { ...m, content: plain ?? '🔒 Encrypted — decrypting…' };
+    });
+  }, [isPrivateServer, messages, decryptedById]);
 
   // Handle reply - sets reply target and focuses input
   const handleReply = useCallback((messageId: string) => {
@@ -310,17 +403,12 @@ export function Chat() {
     }
   }, [messages, rpc, identity, hasIdentity, signAsync, block, toast, mineReportPow]);
 
-  // If no server selected, redirect to first server
+  // While the auto-select effects above resolve the server/channel, render nothing to
+  // avoid flashing an empty layout. (The navigation itself now happens in the effects.)
   if (!serversLoading && servers.length > 0 && !serverId) {
-    const firstServer = servers[0]!;
-    navigate(`/channels/${firstServer.id}`, { replace: true });
     return null;
   }
-
-  // If server selected but no channel, redirect to first channel
   if (!channelsLoading && channels.length > 0 && serverId && !channelId) {
-    const firstChannel = channels[0]!;
-    navigate(`/channels/${serverId}/${firstChannel.id}`, { replace: true });
     return null;
   }
 
@@ -387,7 +475,7 @@ export function Chat() {
             id: currentChannel.id,
             name: currentChannel.name,
           }}
-          messages={messages}
+          messages={displayMessages}
           loading={messagesLoading}
           onSendMessage={handleSendMessage}
           onReaction={handleReaction}

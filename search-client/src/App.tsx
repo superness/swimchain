@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { IdentityProvider } from '@swimchain/frontend';
 import { ToastProvider } from './components/Toast';
@@ -27,11 +28,37 @@ export function App(): JSX.Element {
 interface RedirectToAppProps { type: 'space' | 'post' | 'user'; }
 
 function RedirectToApp({ type }: RedirectToAppProps) {
-  const targetUrl = import.meta.env.VITE_DEEP_LINK_URL || 'http://localhost:5179';
-  let path = window.location.pathname;
-  if (path.startsWith('/thread/')) path = path.replace('/thread/', '/post/');
-  if (path.startsWith('/user/')) path = path.replace('/user/', '/profile/');
-  window.location.href = targetUrl + path;
+  useEffect(() => {
+    const rawPath = window.location.pathname;
+    const spaceId = new URLSearchParams(window.location.search).get('space');
+
+    // Embedded in the desktop shell: all clients are same-origin iframes with no
+    // dev server, so a URL redirect (localhost:5179) goes nowhere / hangs. Ask the
+    // shell to switch to the forum client and route there, translating to forum's
+    // native routes. Standalone browser: fall back to the deep-link URL.
+    if (window.parent !== window) {
+      let forumPath = rawPath;
+      if (rawPath.startsWith('/space/')) {
+        // forum spaces live at /spaces/<id>
+        forumPath = rawPath.replace('/space/', '/spaces/');
+      } else if (rawPath.startsWith('/thread/') && spaceId) {
+        // forum threads need both ids: /spaces/<space>/thread/<thread>
+        const threadId = rawPath.slice('/thread/'.length);
+        forumPath = `/spaces/${spaceId}/thread/${threadId}`;
+      } else if (rawPath.startsWith('/user/')) {
+        forumPath = rawPath.replace('/user/', '/profile/');
+      }
+      // (/profile/<id> already matches forum; a thread with no space id falls
+      //  through to forum's home.)
+      window.parent.postMessage({ type: 'SWIMCHAIN_NAVIGATE', client: 'forum', path: forumPath }, '*');
+    } else {
+      let path = rawPath;
+      if (path.startsWith('/thread/')) path = path.replace('/thread/', '/post/');
+      if (path.startsWith('/user/')) path = path.replace('/user/', '/profile/');
+      const targetUrl = import.meta.env.VITE_DEEP_LINK_URL || 'http://localhost:5179';
+      window.location.href = targetUrl + path;
+    }
+  }, []);
   const labels: Record<string, string> = { space: 'space', post: 'post', user: 'profile' };
   return <div style={{padding:'2rem',textAlign:'center',color:'#666'}}><p>Opening {labels[type]}...</p></div>;
 }

@@ -22,14 +22,19 @@ import { usePrivateChannelKeys } from '../hooks/usePrivateSpaceKeys';
 import { useCreatePrivateChannel } from '../hooks/useRpc';
 import { useChannelCreationPow } from '../hooks/useActionPow';
 import { useToast } from '../components/Toast';
+import { useChatIdentity } from '../hooks/useChatIdentity';
 import './CreatePrivateChannel.css';
 
 export function CreatePrivateChannel(): JSX.Element {
   const navigate = useNavigate();
   const { identity, hasValidIdentity } = useIdentityContext();
+  // Node-wide centralized identity: in embedded (node) mode the seed lives in
+  // the node and is never exposed to the client, so E2E private channels can't
+  // work here. Standalone (browser) mode is unchanged.
+  const { mode } = useChatIdentity();
   const userPublicKeyHex = identity?.publicKey;
   const { storeChannelKey } = usePrivateChannelKeys(userPublicKeyHex);
-  const { createChannel, creating: rpcCreating, error: rpcError } = useCreatePrivateChannel();
+  const { createChannel, createChannelManaged, creating: rpcCreating, error: rpcError } = useCreatePrivateChannel();
   const { mineChannelCreation, state: miningState, progress: miningProgress, reset: resetMining } = useChannelCreationPow();
   const toast = useToast();
 
@@ -44,14 +49,37 @@ export function CreatePrivateChannel(): JSX.Element {
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!identity?.seed || !userPublicKeyHex || !hasValidIdentity) {
-      setError('No identity available');
-      return;
-    }
-
     const name = channelName.trim();
     if (!name) {
       setError('Please enter a channel name');
+      return;
+    }
+
+    // Node-managed mode (desktop app): a private channel IS a private space, and the
+    // node holds the seed and does all the crypto + PoW + signing. We send only the
+    // plaintext name — no client-side keypair or E2E key handling needed.
+    if (mode === 'node') {
+      setCreating(true);
+      setError(null);
+      try {
+        const result = await createChannelManaged({ name });
+        if (!result?.channelId) {
+          throw new Error('Channel creation failed: no channel ID returned');
+        }
+        toast.success('Private channel created successfully!');
+        navigate(`/channels/${result.channelId}`);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to create channel';
+        setError(errorMsg);
+        toast.error(errorMsg);
+      } finally {
+        setCreating(false);
+      }
+      return;
+    }
+
+    if (!identity?.seed || !userPublicKeyHex || !hasValidIdentity) {
+      setError('No identity available');
       return;
     }
 
@@ -148,10 +176,11 @@ export function CreatePrivateChannel(): JSX.Element {
     } finally {
       setCreating(false);
     }
-  }, [identity, userPublicKeyHex, hasValidIdentity, channelName, storeChannelKey, navigate, createChannel, mineChannelCreation, resetMining, toast]);
+  }, [mode, identity, userPublicKeyHex, hasValidIdentity, channelName, storeChannelKey, navigate, createChannel, createChannelManaged, mineChannelCreation, resetMining, toast]);
 
-  // No identity - prompt to create one
-  if (!identity || !hasValidIdentity) {
+  // No identity - prompt to create one (browser mode only). In node mode the node
+  // holds the identity, so we skip this gate and render the form directly.
+  if (mode !== 'node' && (!identity || !hasValidIdentity)) {
     return (
       <div className="create-private-channel">
         <div className="no-identity">

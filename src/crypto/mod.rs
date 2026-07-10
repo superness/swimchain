@@ -11,6 +11,7 @@ pub mod action_pow;
 pub mod address;
 pub mod hash;
 pub mod pow;
+pub mod private_space;
 pub mod signature;
 
 // Re-export commonly used functions

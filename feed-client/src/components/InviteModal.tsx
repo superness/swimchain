@@ -8,7 +8,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
-import { useInviteToSpace } from '../hooks/useRpc';
+import { useInviteToSpace, useSpaceInvites } from '../hooks/useRpc';
 import { useToast } from './Toast';
 import {
   encryptSpaceKeyForRecipient,
@@ -29,10 +29,11 @@ interface InviteModalProps {
 }
 
 export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModalProps): JSX.Element | null {
-  const { identity, hasValidIdentity } = useIdentityContext();
+  const { identity, hasValidIdentity, mode } = useIdentityContext();
   const userPublicKeyHex = identity?.publicKey;
   const { getSpaceKey } = usePrivateSpaceKeys(userPublicKeyHex);
   const { invite: inviteToSpace, inviting } = useInviteToSpace();
+  const { createBlob } = useSpaceInvites();
   const { mine: minePow } = useActionPow();
   const toast = useToast();
 
@@ -41,6 +42,8 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Node-managed invite: the shareable blob the inviter sends out-of-band.
+  const [inviteBlob, setInviteBlob] = useState<string | null>(null);
 
   const modalRef = useRef<HTMLDivElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
@@ -107,15 +110,37 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!identity?.seed || !identity?.publicKey || !hasValidIdentity) {
-      setInviteError('No identity available');
-      return;
-    }
-
-    // Validate recipient address
+    // Validate recipient address (needed in both modes).
     const recipientHex = recipientAddress.trim();
     if (!recipientHex || recipientHex.length !== 64) {
       setInviteError('Invalid recipient address (must be 64 hex characters)');
+      return;
+    }
+
+    // Node-managed mode (desktop app): the node wraps the space key for the invitee and
+    // returns a SELF-CONTAINED `swiminv1:...` blob. There is no reliable network invite
+    // propagation, so instead of "sending" we produce a code the inviter shares
+    // out-of-band; the invitee redeems it in their app to join.
+    if (mode === 'node') {
+      setInviteError(null);
+      setSuccess(false);
+      setLoading(true);
+      try {
+        const blob = await createBlob(spaceId, recipientHex);
+        setInviteBlob(blob);
+        toast.success('Invite code created — share it with your invitee.');
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to create invite';
+        setInviteError(errorMsg);
+        toast.error(errorMsg);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (!identity?.seed || !identity?.publicKey || !hasValidIdentity) {
+      setInviteError('No identity available');
       return;
     }
 
@@ -212,13 +237,14 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
     } finally {
       setLoading(false);
     }
-  }, [identity, hasValidIdentity, spaceId, recipientAddress, message, getSpaceKey, onClose, inviteToSpace, toast]);
+  }, [identity, hasValidIdentity, mode, spaceId, recipientAddress, message, getSpaceKey, onClose, inviteToSpace, createBlob, minePow, toast]);
 
   const handleClose = useCallback(() => {
     setRecipientAddress('');
     setMessage('');
     setInviteError(null);
     setSuccess(false);
+    setInviteBlob(null);
     onClose();
   }, [onClose]);
 
@@ -249,6 +275,40 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
           </button>
         </header>
 
+        {inviteBlob ? (
+          <div className="invite-form">
+            <p className="form-hint" style={{ marginBottom: '0.5rem' }}>
+              Share this invite code with the person you invited. They paste it into
+              <strong> Discover → Join a private space</strong> to join. It contains the
+              space key encrypted just for them.
+            </p>
+            <textarea
+              className="form-textarea"
+              value={inviteBlob}
+              readOnly
+              rows={4}
+              onFocus={(e) => e.currentTarget.select()}
+              style={{ fontFamily: 'monospace', fontSize: '0.8rem', wordBreak: 'break-all' }}
+            />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  navigator.clipboard?.writeText(inviteBlob).then(
+                    () => toast.success('Invite code copied'),
+                    () => toast.error('Copy failed — select and copy manually'),
+                  );
+                }}
+              >
+                Copy invite code
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={handleClose}>
+                Done
+              </button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="invite-form">
           <div className="form-group">
             <label htmlFor="recipient">Recipient Address</label>
@@ -306,10 +366,11 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
               className="btn btn-primary"
               disabled={isLoading || !recipientAddress.trim()}
             >
-              {isLoading ? 'Sending...' : 'Send Invite'}
+              {isLoading ? 'Creating…' : 'Create invite code'}
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
   );

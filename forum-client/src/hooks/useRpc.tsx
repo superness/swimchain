@@ -2540,6 +2540,8 @@ export interface PrivateSpaceInfo {
   spaceId: string;
   spaceIdBech32: string;
   encryptedName?: string;
+  /** Decrypted name — populated in node-managed mode (the node holds the key). */
+  name?: string;
   role: 'admin' | 'moderator' | 'member';
   joinedAt: number;
   memberCount: number;
@@ -2584,6 +2586,7 @@ export function usePrivateSpaces(userPublicKey?: string) {
           space_id: string;
           space_id_bech32: string;
           encrypted_name?: string;
+          name?: string | null;
           role: string;
           joined_at: number;
           member_count: number;
@@ -2595,6 +2598,7 @@ export function usePrivateSpaces(userPublicKey?: string) {
         spaceId: s.space_id,
         spaceIdBech32: s.space_id_bech32,
         encryptedName: s.encrypted_name,
+        name: s.name ?? undefined,
         role: s.role as 'admin' | 'moderator' | 'member',
         joinedAt: s.joined_at,
         memberCount: s.member_count,
@@ -2615,6 +2619,68 @@ export function usePrivateSpaces(userPublicKey?: string) {
   }, [connected, authReady, userPublicKey, fetchSpaces]);
 
   return { spaces, loading, error, refetch: fetchSpaces };
+}
+
+/** True if a message body carries node-decryptable private-space ciphertext. */
+export function isPrivateCiphertext(text: string | null | undefined): boolean {
+  return typeof text === 'string' && text.startsWith('[PRIVATE:v1:');
+}
+
+/**
+ * Node-managed private-space content crypto (desktop mode). The node holds the space
+ * key, so embedded clients delegate encrypt/decrypt instead of using a local key.
+ */
+export function usePrivateContent() {
+  const { rpc, connected, authReady } = useRpc();
+
+  const encryptForSpace = useCallback(async (spaceId: string, plaintext: string): Promise<string | null> => {
+    if (!rpc || !connected || !authReady) return null;
+    try {
+      const r = await rpc.call('encrypt_private_content', { space_id: spaceId, content: plaintext }) as { content: string };
+      return r.content;
+    } catch (err) {
+      console.error('[PrivateContent] encrypt failed:', err);
+      return null;
+    }
+  }, [rpc, connected, authReady]);
+
+  const decryptForSpace = useCallback(async (spaceId: string, ciphertext: string): Promise<string | null> => {
+    if (!rpc || !connected || !authReady) return null;
+    try {
+      const r = await rpc.call('decrypt_private_content', { space_id: spaceId, content: ciphertext }) as { content: string };
+      return r.content;
+    } catch (err) {
+      console.error('[PrivateContent] decrypt failed:', err);
+      return null;
+    }
+  }, [rpc, connected, authReady]);
+
+  return { encryptForSpace, decryptForSpace };
+}
+
+/**
+ * Shareable private-space invites (node-managed, out-of-band). The inviter's node
+ * produces a self-contained `swiminv1:...` blob (space key wrapped for the invitee);
+ * the invitee redeems it to join — no network invite propagation needed.
+ *
+ * NOTE: create_space_invite_blob needs the 16-byte HEX space id, not the sp1 bech32 form.
+ */
+export function useSpaceInvites() {
+  const { rpc, connected } = useRpc();
+
+  const createBlob = useCallback(async (spaceId: string, inviteePubkeyHex: string): Promise<string> => {
+    if (!rpc || !connected) throw new Error('Not connected');
+    const r = await rpc.call('create_space_invite_blob', { space_id: spaceId, invitee: inviteePubkeyHex }) as { blob: string };
+    return r.blob;
+  }, [rpc, connected]);
+
+  const redeem = useCallback(async (blob: string): Promise<{ spaceId: string; spaceIdBech32?: string; name?: string }> => {
+    if (!rpc || !connected) throw new Error('Not connected');
+    const r = await rpc.call('redeem_space_invite', { blob: blob.trim() }) as { space_id: string; space_id_bech32?: string; name?: string | null };
+    return { spaceId: r.space_id, spaceIdBech32: r.space_id_bech32, name: r.name ?? undefined };
+  }, [rpc, connected]);
+
+  return { createBlob, redeem };
 }
 
 /**
@@ -2774,7 +2840,34 @@ export function useCreatePrivateSpace() {
     }
   }, [rpc, connected, authReady]);
 
-  return { createSpace, creating, error };
+  // Node-managed create (desktop mode): the node owns the seed and does all crypto +
+  // PoW + signing, so we send only the plaintext name. Used when embedded in the shell.
+  const createSpaceManaged = useCallback(async (params: {
+    name: string;
+    description?: string;
+  }): Promise<{ spaceId: string; spaceIdBech32: string } | null> => {
+    if (!rpc || !connected || !authReady) {
+      setError('Not connected or auth not ready');
+      return null;
+    }
+    setCreating(true);
+    setError(null);
+    try {
+      const result = await rpc.call('create_private_space_managed', {
+        name: params.name,
+        description: params.description ?? null,
+      }) as { space_id: string; space_id_bech32: string; broadcast: boolean };
+      return { spaceId: result.space_id, spaceIdBech32: result.space_id_bech32 };
+    } catch (err) {
+      console.error('[CreatePrivateSpace] Managed create failed:', err);
+      setError(err instanceof Error ? err.message : 'Failed to create private space');
+      return null;
+    } finally {
+      setCreating(false);
+    }
+  }, [rpc, connected, authReady]);
+
+  return { createSpace, createSpaceManaged, creating, error };
 }
 
 /**

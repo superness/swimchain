@@ -46,7 +46,7 @@ function bytesToHex(bytes: Uint8Array): string {
 export function IdentityPage(): JSX.Element {
   const { keypair, address, generate, clear } = useKeypair();
   const { state, solution, mine, cancel, attempts, elapsedMs, reset } = usePow();
-  const { identity, setIdentity, clearIdentity, hasValidIdentity } = useIdentityContext();
+  const { identity, setIdentity, clearIdentity, hasValidIdentity, mode } = useIdentityContext();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -277,6 +277,29 @@ export function IdentityPage(): JSX.Element {
 
   // If node has identity, show that instead of browser identity management
   const hasNodeIdentity = nodeIdentity && nodeIdentity.address;
+
+  // Node-wide centralized identity (user directive): in the desktop app the node owns
+  // the identity, so this per-client identity-management page is intentionally inert —
+  // show a calm pointer instead of create/import/delete controls the user shouldn't touch.
+  if (mode === 'node') {
+    return (
+      <div className="identity-page">
+        <header className="identity-page__header">
+          <h1 className="identity-page__title">Your identity</h1>
+        </header>
+        <div className="identity-page__content">
+          <p>
+            Managed by the Swimchain app — the node holds your key and signs on your
+            behalf, so there&apos;s nothing to create or unlock here.
+          </p>
+          {displayName && <p><strong>{displayName}</strong></p>}
+          {nodeIdentity?.address
+            ? <AddressDisplay address={nodeIdentity.address} chars={12} showCopy />
+            : <p>Resolving your identity…</p>}
+        </div>
+      </div>
+    );
+  }
 
   // Invite redemption takes over the page after identity creation (SWIM-INV-2)
   if (redeeming) {

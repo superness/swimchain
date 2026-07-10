@@ -31,9 +31,16 @@ export function usePrivateSpaceMessages(
   options?: {
     pollInterval?: number;
     limit?: number;
+    /** Node-managed mode: decrypt each message via the node instead of a local key. */
+    nodeMode?: boolean;
+    /** The 16-byte HEX space id for decrypt_private_content (node mode). `spaceId`
+     *  itself is used for list_posts_for_space, which wants the sp1 bech32 form. */
+    cryptoSpaceId?: string;
   }
 ) {
   const { rpc, connected, authReady } = useRpc();
+  const nodeMode = options?.nodeMode ?? false;
+  const cryptoSpaceId = options?.cryptoSpaceId ?? spaceId;
   const [messages, setMessages] = useState<PrivateMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -105,9 +112,50 @@ export function usePrivateSpaceMessages(
           continue;
         }
 
-        // If we have a space key, try to decrypt
-        if (spaceKey) {
-          const { content, error: decryptError } = await decryptMessage(post.body, spaceKey);
+        // Posts store their body as `${title}\n\n${body}`. Messages are posted with an
+        // empty title, so strip the leading title-separator to recover the actual
+        // (encrypted) message content.
+        const sep = post.body.indexOf('\n\n');
+        const msgBody = sep >= 0 ? post.body.slice(sep + 2) : post.body;
+
+        // Node-managed mode: decrypt via the node (it holds the space key). Only
+        // [PRIVATE:v1:...] bodies need decrypting; anything else is shown verbatim.
+        if (nodeMode) {
+          if (msgBody.startsWith('[PRIVATE:v1:')) {
+            let content = '[Unable to decrypt]';
+            let decErr: string | undefined = 'Decryption failed';
+            try {
+              const r = await rpc.call('decrypt_private_content', {
+                space_id: cryptoSpaceId,
+                content: msgBody,
+              }) as { content: string };
+              content = r.content;
+              decErr = undefined;
+            } catch (err) {
+              decErr = err instanceof Error ? err.message : 'Decryption failed';
+            }
+            processedMessages.push({
+              id: post.content_id,
+              sender: post.author,
+              content,
+              encryptedContent: msgBody,
+              timestamp: post.created_at,
+              isDecrypted: !decErr,
+              decryptionError: decErr,
+              replyTo: post.parent_id,
+            });
+          } else {
+            processedMessages.push({
+              id: post.content_id,
+              sender: post.author,
+              content: msgBody,
+              timestamp: post.created_at,
+              isDecrypted: true,
+              replyTo: post.parent_id,
+            });
+          }
+        } else if (spaceKey) {
+          const { content, error: decryptError } = await decryptMessage(msgBody, spaceKey);
           processedMessages.push({
             id: post.content_id,
             sender: post.author,
@@ -147,7 +195,7 @@ export function usePrivateSpaceMessages(
         setLoading(false);
       }
     }
-  }, [rpc, connected, authReady, spaceId, spaceKey, limit, decryptMessage]);
+  }, [rpc, connected, authReady, spaceId, spaceKey, limit, decryptMessage, nodeMode, cryptoSpaceId]);
 
   // Initial fetch
   useEffect(() => {

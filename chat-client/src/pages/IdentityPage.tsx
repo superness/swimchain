@@ -12,6 +12,7 @@ import {
   PowProgress,
   IdentityCard,
 } from '@swimchain/frontend';
+import { useChatIdentity } from '../hooks/useChatIdentity';
 import './IdentityPage.css';
 
 export function IdentityPage(): JSX.Element {
@@ -20,6 +21,12 @@ export function IdentityPage(): JSX.Element {
   const { identity, setIdentity, clearIdentity, hasValidIdentity } = useIdentityContext();
   const location = useLocation();
   const navigate = useNavigate();
+  // Node-wide centralized identity: when embedded in the desktop shell the node
+  // owns the one identity, so this client must not show create/unlock/manage
+  // forms. Standalone (browser) mode is unchanged.
+  const { mode, identity: nodeChatIdentity } = useChatIdentity();
+  const nodeAddress = nodeChatIdentity?.address;
+  const nodeDisplayName = nodeChatIdentity?.displayName;
 
   // Get the path to return to after identity is created
   const returnTo = (location.state as { from?: { pathname: string } } | null)?.from?.pathname || '/';
@@ -70,6 +77,52 @@ export function IdentityPage(): JSX.Element {
       clearIdentity();
     }
   }, [clearIdentity]);
+
+  // Node-wide centralized identity: in embedded (node) mode there is nothing to
+  // set up here — the node holds the identity. Render a calm message instead of
+  // the create/unlock/manage forms. Standalone (browser) mode falls through.
+  if (mode === 'node') {
+    return (
+      <div className="identity-page">
+        <header className="identity-page__header">
+          <Link
+            to="/channels/@me"
+            className="identity-page__back"
+          >
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <line x1="19" y1="12" x2="5" y2="12" />
+              <polyline points="12 19 5 12 12 5" />
+            </svg>
+            Back to Chat
+          </Link>
+          <h1 className="identity-page__title">Identity</h1>
+        </header>
+
+        <div className="identity-page__content">
+          <section className="identity-page__section">
+            <div className="identity-page__card">
+              <h2 className="identity-page__section-title">Your identity</h2>
+              <p className="identity-page__desc">
+                Managed by the Swimchain app — the node holds your key and signs on your
+                behalf, so there's nothing to create or unlock here.
+              </p>
+              {nodeDisplayName && <p className="identity-page__desc"><strong>{nodeDisplayName}</strong></p>}
+              {nodeAddress
+                ? <AddressDisplay address={nodeAddress} />
+                : <p className="identity-page__desc">Resolving your identity…</p>}
+            </div>
+          </section>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="identity-page">

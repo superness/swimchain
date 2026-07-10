@@ -12,6 +12,7 @@ import {
   PowProgress,
   IdentityCard,
 } from '@swimchain/frontend';
+import { useWikiIdentity } from '../hooks/useWikiIdentity';
 import './IdentityPage.css';
 
 export function IdentityPage(): JSX.Element {
@@ -20,6 +21,36 @@ export function IdentityPage(): JSX.Element {
   const { identity, setIdentity, clearIdentity, hasValidIdentity } = useIdentityContext();
   const location = useLocation();
   const navigate = useNavigate();
+  // Node-wide centralized identity: when embedded in the desktop shell the node
+  // owns the single identity — there is no per-client identity to create/manage, but
+  // we DO show who you are (address + name) rather than a useless placeholder.
+  const { mode, address: nodeAddress, displayName: nodeDisplayName } = useWikiIdentity();
+
+  if (mode === 'node') {
+    return (
+      <div className="identity-page">
+        <div className="identity-page__content">
+          <section className="identity-page__section">
+            <h2 className="identity-page__section-title">Your identity</h2>
+            <p className="identity-page__desc">
+              Managed by the Swimchain app — the node holds your key and signs on your
+              behalf, so there's nothing to create or unlock here.
+            </p>
+            {nodeDisplayName && (
+              <p className="identity-page__desc">
+                <strong>{nodeDisplayName}</strong>
+              </p>
+            )}
+            {nodeAddress ? (
+              <AddressDisplay address={nodeAddress} />
+            ) : (
+              <p className="identity-page__desc">Resolving your identity…</p>
+            )}
+          </section>
+        </div>
+      </div>
+    );
+  }
 
   // Get the path to return to after identity is created
   const returnTo = (location.state as { from?: { pathname: string } } | null)?.from?.pathname || '/';

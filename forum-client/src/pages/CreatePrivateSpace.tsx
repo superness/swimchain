@@ -8,6 +8,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
+import { isInIframe } from '../hooks/useParentRpcConfig';
 import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
 import { useCreatePrivateSpace } from '../hooks/useRpc';
 import { useSpaceCreationPow } from '../hooks/useActionPow';
@@ -25,7 +26,8 @@ export function CreatePrivateSpace(): JSX.Element {
   const { identity: nodeIdentity } = useNodeIdentity();
   const userPublicKeyHex = publicKey ? bytesToHex(publicKey) : (nodeIdentity?.publicKey || undefined);
   const { storeSpaceKey } = usePrivateSpaceKeys(userPublicKeyHex);
-  const { createSpace, creating: rpcCreating } = useCreatePrivateSpace();
+  const { createSpace, createSpaceManaged, creating: rpcCreating } = useCreatePrivateSpace();
+  const embedded = isInIframe();
   const { mineSpaceCreation, state: miningState, progress: miningProgress, cancel: cancelMining } = useSpaceCreationPow();
 
   // Log on every render
@@ -63,13 +65,38 @@ export function CreatePrivateSpace(): JSX.Element {
       spaceName,
     });
 
+    const name = spaceName.trim();
+
+    // Node-managed mode (desktop shell): the node holds the seed and performs all the
+    // crypto + PoW + signing. Send only the plaintext name — no local keypair/seed
+    // needed. (This is what was throwing "Seed is not available" before.)
+    if (embedded) {
+      if (!name) {
+        setError('Please enter a space name');
+        return;
+      }
+      setCreating(true);
+      setError(null);
+      try {
+        const result = await createSpaceManaged({ name });
+        if (!result?.spaceId) {
+          throw new Error('Space creation failed: no space ID returned');
+        }
+        navigate(`/chat/${result.spaceIdBech32 || result.spaceId}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to create space');
+      } finally {
+        setCreating(false);
+      }
+      return;
+    }
+
     if (!keypair || !publicKey || !userPublicKeyHex) {
       logger.error('[CreatePrivateSpace] No identity available - blocking submit');
       setError('No identity available');
       return;
     }
 
-    const name = spaceName.trim();
     if (!name) {
       setError('Please enter a space name');
       return;
@@ -162,9 +189,12 @@ export function CreatePrivateSpace(): JSX.Element {
     } finally {
       setCreating(false);
     }
-  }, [keypair, publicKey, userPublicKeyHex, spaceName, storeSpaceKey, navigate, createSpace, mineSpaceCreation]);
+  }, [embedded, keypair, publicKey, userPublicKeyHex, spaceName, storeSpaceKey, navigate, createSpace, createSpaceManaged, mineSpaceCreation]);
 
-  if (!publicKey) {
+  // Standalone browser without an identity: needs a local one. In node mode (embedded)
+  // the node owns the identity and does the crypto, so we render the form regardless of
+  // the (absent) local keypair and create via the managed RPC.
+  if (!publicKey && !embedded) {
     return (
       <div className="create-private-space">
         <div className="no-identity">

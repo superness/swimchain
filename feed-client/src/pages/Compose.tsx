@@ -9,8 +9,9 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
-import { usePostSubmit, useSpaces, useMediaUpload } from '../hooks/useRpc';
+import { usePostSubmit, useSpaces, useMediaUpload, usePrivateContent, usePrivateSpaceIds } from '../hooks/useRpc';
 import { usePostPow } from '../hooks/useActionPow';
+import { useSponsorship } from '../hooks/useSponsorship';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { PowProgress } from '../components/PowProgress';
 import { useToast } from '../components/Toast';
@@ -40,10 +41,14 @@ export function Compose(): JSX.Element {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [pendingCompression, setPendingCompression] = useState<PendingCompression | null>(null);
 
-  const { identity, hasValidIdentity } = useIdentityContext();
+  const { identity, hasValidIdentity, mode } = useIdentityContext();
   // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
   const { sign } = useFeedIdentity();
+  // Node-managed private-space crypto (desktop mode): encrypt the post before mining.
+  const { encryptForSpace } = usePrivateContent();
+  const privateSpaceIds = usePrivateSpaceIds(identity?.publicKey);
   const { state, minePost, cancel, progress, reset, solution } = usePostPow();
+  const { isSponsored } = useSponsorship();
   const { submitPost, submitting, error: rpcError } = usePostSubmit();
   const { uploadImage, compressAndUpload, uploading, error: uploadError } = useMediaUpload();
   const { spaces, loading: spacesLoading } = useSpaces();
@@ -152,16 +157,39 @@ export function Compose(): JSX.Element {
       setSubmitError('Please select a space');
       return;
     }
+    // Gate on sponsorship BEFORE mining PoW — the node rejects unsponsored posts
+    // (SPEC_11), so mining first only wastes the user's time.
+    if (isSponsored === false) {
+      setSubmitError(
+        'You need a sponsor before you can post. Open "Get Sponsored" to redeem an invite or request sponsorship — no proof-of-work is spent until then.'
+      );
+      return;
+    }
 
     setSubmitError(null);
     submittedRef.current = false;
 
-    // Store content for use after mining completes
-    titleRef.current = title;
-    bodyRef.current = body;
+    // Private space in node mode: encrypt the (title+body) with the space key via the
+    // node BEFORE mining, and submit as title="[Private]" + [PRIVATE:v1:...] body. PoW
+    // binds to sha256(finalTitle\n\nfinalBody), so we must mine over the CIPHERTEXT.
+    let finalTitle = title;
+    let finalBody = body;
+    if (mode === 'node' && privateSpaceIds.has(selectedSpace)) {
+      const cipher = await encryptForSpace(selectedSpace, `${title}\n\n${body}`);
+      if (!cipher) {
+        setSubmitError('Could not encrypt for this private space. Are you a member?');
+        return;
+      }
+      finalTitle = '[Private]';
+      finalBody = cipher;
+    }
+
+    // Store the FINAL (possibly encrypted) content for submission after mining.
+    titleRef.current = finalTitle;
+    bodyRef.current = finalBody;
     imagesRef.current = [...images];
 
-    const postContent = `${title}\n\n${body}`;
+    const postContent = `${finalTitle}\n\n${finalBody}`;
 
     // Convert hex public key to Uint8Array for PoW
     const publicKeyBytes = new Uint8Array(
@@ -174,7 +202,7 @@ export function Compose(): JSX.Element {
     } catch (err) {
       console.log('[Compose] Mining ended:', err);
     }
-  }, [title, body, hasValidIdentity, identity, selectedSpace, images, minePost]);
+  }, [title, body, hasValidIdentity, identity, selectedSpace, images, minePost, isSponsored, mode, privateSpaceIds, encryptForSpace]);
 
   const handleMiningComplete = useCallback(async () => {
     // Prevent double submission

@@ -3,7 +3,7 @@
  */
 
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { MainLayout } from './layouts/MainLayout';
 import { SpaceList } from './pages/SpaceList';
 import { SpaceView } from './pages/SpaceView';
@@ -67,6 +67,26 @@ function AppStateLogger(): null {
   return null;
 }
 
+/**
+ * SWIM-NAV (#7): in the desktop shell, other clients (e.g. search) open a space/
+ * post/profile here by having the shell switch to forum and forward the route via a
+ * SWIMCHAIN_NAVIGATE postMessage. Route to it.
+ */
+function NavListener(): null {
+  const navigate = useNavigate();
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      const d = e.data;
+      if (d?.type === 'SWIMCHAIN_NAVIGATE' && typeof d.path === 'string' && d.path.startsWith('/')) {
+        navigate(d.path);
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [navigate]);
+  return null;
+}
+
 export function App(): JSX.Element {
   logger.info('[APP] ===== App COMPONENT RENDERING =====');
 
@@ -77,6 +97,7 @@ export function App(): JSX.Element {
           <SponsorshipProvider>
             <KeyboardNavigationProvider>
               <AppStateLogger />
+              <NavListener />
               <SponsorshipBanner />
               <MainLayout>
               <Routes>

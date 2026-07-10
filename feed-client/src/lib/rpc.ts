@@ -946,8 +946,11 @@ export class SwimchainRpc {
    * Get sponsorship status for an identity
    */
   async getSponsorshipInfo(identityId: string): Promise<SponsorshipInfo> {
+    // Node RPC expects `identity_pubkey` (32-byte hex), NOT `identity_id`. Passing
+    // the wrong key made every sponsorship check fail with -32602 (missing field
+    // identity_pubkey), so the banner defaulted everyone to unsponsored.
     return this.call('get_sponsorship_info', {
-      identity_id: identityId,
+      identity_pubkey: identityId,
     });
   }
 

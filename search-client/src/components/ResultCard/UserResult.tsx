@@ -5,6 +5,7 @@
  */
 
 import { memo } from 'react';
+import { Link } from 'react-router-dom';
 import { SearchResult, UserInfo } from '../../types';
 import { highlightToReactParts } from '../../lib/highlighter';
 import { BlockButton } from '../BlockButton';
@@ -77,7 +78,7 @@ export const UserResult = memo(function UserResult({ result, searchTerms, search
 
         <div className="user-info">
           <h3 className="result-title user-name">
-            <a href={`/user/${data.identityId}`}>
+            <Link to={`/user/${data.identityId}`}>
               {nameParts.length > 0 ? (
                 nameParts.map((part, i) => (
                   part.isHighlighted
@@ -87,7 +88,7 @@ export const UserResult = memo(function UserResult({ result, searchTerms, search
               ) : (
                 truncateAddress(data.identityId)
               )}
-            </a>
+            </Link>
             {data.isVerified && (
               <span className="verified-badge" title="Verified">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -137,9 +138,9 @@ export const UserResult = memo(function UserResult({ result, searchTerms, search
       </div>
 
       <div className="user-actions">
-        <a href={`/user/${data.identityId}`} className="action-button primary">
+        <Link to={`/user/${data.identityId}`} className="action-button primary">
           View Profile
-        </a>
+        </Link>
         <BlockButton id={data.identityId} type="user" />
       </div>
     </article>

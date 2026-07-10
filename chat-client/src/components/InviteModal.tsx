@@ -16,7 +16,8 @@ import {
   bytesToHex,
 } from '@swimchain/frontend';
 import { usePrivateChannelKeys } from '../hooks/usePrivateSpaceKeys';
-import { useInviteToChannel } from '../hooks/useRpc';
+import { useInviteToChannel, useSpaceInvites } from '../hooks/useRpc';
+import { useChatIdentity } from '../hooks/useChatIdentity';
 import { useActionPow, ActionType } from '../hooks/useActionPow';
 import { useToast } from './Toast';
 import './InviteModal.css';
@@ -30,9 +31,13 @@ interface InviteModalProps {
 
 export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteModalProps): JSX.Element | null {
   const { identity, hasValidIdentity } = useIdentityContext();
+  // Canonical mode (node when embedded in the desktop shell). Node mode uses the
+  // self-contained `swiminv1:` blob flow instead of the browser X25519 invite.
+  const { mode } = useChatIdentity();
   const userPublicKeyHex = identity?.publicKey;
   const { getChannelKey } = usePrivateChannelKeys(userPublicKeyHex);
   const { invite: inviteToChannel, inviting } = useInviteToChannel();
+  const { createBlob } = useSpaceInvites();
   const { mine: mineInvitePow, state: inviteMiningState, progress: inviteMiningProgress, cancel: cancelInviteMining } = useActionPow();
   const toast = useToast();
 
@@ -41,6 +46,8 @@ export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteM
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Node-managed invite: the shareable code the inviter passes out-of-band.
+  const [inviteBlob, setInviteBlob] = useState<string | null>(null);
 
   const modalRef = useRef<HTMLDivElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
@@ -108,15 +115,37 @@ export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteM
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!identity?.seed || !identity?.publicKey || !hasValidIdentity) {
-      setInviteError('No identity available');
-      return;
-    }
-
-    // Validate recipient address
+    // Validate recipient address (needed in both modes).
     const recipientHex = recipientAddress.trim();
     if (!recipientHex || recipientHex.length !== 64) {
       setInviteError('Invalid recipient address (must be 64 hex characters)');
+      return;
+    }
+
+    // Node-managed mode (desktop app): the node wraps the space key for the invitee and
+    // returns a SELF-CONTAINED `swiminv1:...` blob. Instead of "sending" an invite we
+    // produce a code the inviter shares out-of-band; the invitee redeems it to join.
+    // `channelId` here is the 16-byte HEX space id required by create_space_invite_blob.
+    if (mode === 'node') {
+      setInviteError(null);
+      setSuccess(false);
+      setLoading(true);
+      try {
+        const blob = await createBlob(channelId, recipientHex);
+        setInviteBlob(blob);
+        toast.success('Invite code created — share it with your invitee.');
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to create invite';
+        setInviteError(errorMsg);
+        toast.error(errorMsg);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (!identity?.seed || !identity?.publicKey || !hasValidIdentity) {
+      setInviteError('No identity available');
       return;
     }
 
@@ -210,13 +239,14 @@ export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteM
     } finally {
       setLoading(false);
     }
-  }, [identity, hasValidIdentity, channelId, recipientAddress, message, getChannelKey, onClose, inviteToChannel, mineInvitePow, toast]);
+  }, [identity, hasValidIdentity, mode, channelId, recipientAddress, message, getChannelKey, onClose, inviteToChannel, createBlob, mineInvitePow, toast]);
 
   const handleClose = useCallback(() => {
     setRecipientAddress('');
     setMessage('');
     setInviteError(null);
     setSuccess(false);
+    setInviteBlob(null);
     onClose();
   }, [onClose]);
 
@@ -247,6 +277,40 @@ export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteM
           </button>
         </header>
 
+        {inviteBlob ? (
+          <div className="invite-form">
+            <p className="form-hint" style={{ marginBottom: '0.5rem' }}>
+              Share this invite code with the person you invited. They paste it into
+              <strong> Join a private channel</strong> to join. It contains the channel
+              key encrypted just for them.
+            </p>
+            <textarea
+              className="form-textarea"
+              value={inviteBlob}
+              readOnly
+              rows={4}
+              onFocus={(e) => e.currentTarget.select()}
+              style={{ fontFamily: 'monospace', fontSize: '0.8rem', wordBreak: 'break-all' }}
+            />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  navigator.clipboard?.writeText(inviteBlob).then(
+                    () => toast.success('Invite code copied'),
+                    () => toast.error('Copy failed — select and copy manually'),
+                  );
+                }}
+              >
+                Copy invite code
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={handleClose}>
+                Done
+              </button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="invite-form">
           <div className="form-group">
             <label htmlFor="recipient">Recipient Address</label>
@@ -320,10 +384,13 @@ export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteM
               className="btn btn-primary"
               disabled={isLoading || !recipientAddress.trim()}
             >
-              {isMining ? 'Mining...' : isLoading ? 'Sending...' : 'Send Invite'}
+              {mode === 'node'
+                ? (isLoading ? 'Creating…' : 'Create invite code')
+                : (isMining ? 'Mining...' : isLoading ? 'Sending...' : 'Send Invite')}
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
   );

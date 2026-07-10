@@ -5,6 +5,7 @@
  */
 
 import { memo } from 'react';
+import { Link } from 'react-router-dom';
 import { SearchResult, ReplyInfo } from '../../types';
 import { highlightToReactParts } from '../../lib/highlighter';
 import { BlockButton } from '../BlockButton';
@@ -59,9 +60,9 @@ export const ReplyResult = memo(function ReplyResult({ result, searchTerms, sear
       {data.threadTitle && (
         <div className="reply-context">
           <span className="context-label">in</span>
-          <a href={`/thread/${data.threadId}`} className="context-link">
+          <Link to={`/thread/${data.threadId}?space=${data.spaceId}`} className="context-link">
             "{data.threadTitle}"
-          </a>
+          </Link>
         </div>
       )}
 
@@ -95,8 +96,8 @@ export const ReplyResult = memo(function ReplyResult({ result, searchTerms, sear
         <BlockButton id={data.contentId} type="reply" authorId={data.authorId} />
       </div>
 
-      <a
-        href={`/thread/${data.threadId}#reply-${data.contentId}`}
+      <Link
+        to={`/thread/${data.threadId}?space=${data.spaceId}#reply-${data.contentId}`}
         className="view-in-thread"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -104,7 +105,7 @@ export const ReplyResult = memo(function ReplyResult({ result, searchTerms, sear
           <path d="M20 4v7a4 4 0 0 1-4 4H4" />
         </svg>
         View in thread
-      </a>
+      </Link>
     </article>
   );
 });

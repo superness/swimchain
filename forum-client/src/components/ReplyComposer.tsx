@@ -9,6 +9,7 @@ import { useIdentityContext } from '../providers/IdentityProvider';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { useReplySubmit } from '../hooks/useRpc';
 import { useReplyPow } from '../hooks/useActionPow';
+import { useSponsorship } from '../hooks/useSponsorship';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { PowProgress } from './PowProgress';
 import './ReplyComposer.css';
@@ -41,6 +42,7 @@ export function ReplyComposer({
   const { sign: nodeSign } = useNodeIdentity();
   const { state, mineReply, cancel, progress, reset, solution } = useReplyPow();
   const { submitReply, submitting, error: rpcError } = useReplySubmit();
+  const { isSponsored } = useSponsorship();
   const contentRef = useRef<string>('');
   const submittedRef = useRef(false);
 
@@ -50,6 +52,15 @@ export function ReplyComposer({
     if (!content.trim()) return;
     if (!identity) {
       setSubmitError('Please wait for identity to load');
+      return;
+    }
+    // Gate posting on sponsorship BEFORE spending any proof-of-work. Unsponsored
+    // identities are rejected by the node's participation gate (SPEC_11), so mining
+    // first just wastes the user's time and returns a generic failure.
+    if (isSponsored === false) {
+      setSubmitError(
+        'You need a sponsor before you can post. Open "Get Sponsored" to redeem an invite or request sponsorship — no proof-of-work is spent until then.'
+      );
       return;
     }
 
@@ -67,7 +78,7 @@ export function ReplyComposer({
       // Mining cancelled or failed - error state is handled by hook
       console.log('[Reply] Mining ended:', err);
     }
-  }, [content, identity, mineReply]);
+  }, [content, identity, mineReply, isSponsored]);
 
   const handleMiningComplete = useCallback(async () => {
     // Prevent double submission

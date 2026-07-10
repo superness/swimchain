@@ -3,12 +3,20 @@
  * Uses RPC to fetch real threads from the node
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useSpaceThreads, useSpaces } from '../hooks/useRpc';
+import { useSpaceThreads, useSpaces, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext } from '../hooks/useRpc';
+import { useIdentityContext } from '../providers/IdentityProvider';
 import { useBlocklist } from '../hooks/useBlocklist';
+import { InviteModal } from '../components/InviteModal';
 import type { Thread } from '../types';
 import './SpaceView.css';
+
+/** Split a decrypted `title\n\nbody` payload back into title + body. */
+function splitPrivate(decrypted: string): { title: string; body: string } {
+  const i = decrypted.indexOf('\n\n');
+  return i === -1 ? { title: '', body: decrypted } : { title: decrypted.slice(0, i), body: decrypted.slice(i + 2) };
+}
 
 type SortOption = 'newest' | 'oldest' | 'active' | 'replies';
 
@@ -20,10 +28,15 @@ function formatTimeAgo(timestamp: number): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-function ThreadCard({ thread }: { thread: Thread }): JSX.Element {
+function ThreadCard({ thread, decrypted }: { thread: Thread; decrypted?: { title: string; body: string } }): JSX.Element {
   const decayClass = thread.decay?.state === 'protected' ? 'thread-card--protected' :
                      thread.decay?.state === 'stale' ? 'thread-card--stale' :
                      thread.decay?.state === 'decayed' ? 'thread-card--decayed' : '';
+
+  // Prefer node-decrypted content for private posts; fall back to raw fields.
+  const displayTitle = decrypted?.title || thread.title;
+  const displayBody = decrypted?.body ?? thread.content;
+  const stillEncrypted = !decrypted && isPrivateCiphertext(thread.content);
 
   return (
     <Link
@@ -32,13 +45,13 @@ function ThreadCard({ thread }: { thread: Thread }): JSX.Element {
     >
       <div className="thread-card__content">
         <h3 className="thread-card__title">
-          {thread.title || '(Untitled)'}
+          {displayTitle || (stillEncrypted ? '🔒 Encrypted' : '(Untitled)')}
         </h3>
-        {thread.content && (
+        {displayBody && !stillEncrypted && (
           <p className="thread-card__excerpt">
-            {thread.content.length > 150
-              ? thread.content.substring(0, 150) + '...'
-              : thread.content
+            {displayBody.length > 150
+              ? displayBody.substring(0, 150) + '...'
+              : displayBody
             }
           </p>
         )}
@@ -62,8 +75,16 @@ function ThreadCard({ thread }: { thread: Thread }): JSX.Element {
 export function SpaceView(): JSX.Element {
   const { spaceId } = useParams<{ spaceId: string }>();
   const { spaces } = useSpaces();
+  const { mode, identity } = useIdentityContext();
+  const { decryptForSpace } = usePrivateContent();
+  const privateSpaceIds = usePrivateSpaceIds(identity?.publicKey);
+  const isPrivate = mode === 'node' && !!spaceId && privateSpaceIds.has(spaceId);
 
   const { isPostBlocked, isUserBlocked } = useBlocklist();
+
+  // Node-decrypted private posts, keyed by thread id (node-managed mode only).
+  const [decryptedThreads, setDecryptedThreads] = useState<Record<string, { title: string; body: string }>>({});
+  const [showInvite, setShowInvite] = useState(false);
 
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState<SortOption>('newest');
@@ -99,6 +120,26 @@ export function SpaceView(): JSX.Element {
       }
     });
   }, [rpcThreads, sortBy, isPostBlocked, isUserBlocked]);
+
+  // Decrypt private-space posts via the node (node-managed mode). Runs whenever new
+  // encrypted threads appear; each result is cached by thread id so we don't re-decrypt.
+  useEffect(() => {
+    if (mode !== 'node' || !spaceId) return;
+    const pending = threads.filter(t => isPrivateCiphertext(t.content) && !decryptedThreads[t.id]);
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const updates: Record<string, { title: string; body: string }> = {};
+      for (const t of pending) {
+        const plain = await decryptForSpace(spaceId, t.content as string);
+        if (plain != null) updates[t.id] = splitPrivate(plain);
+      }
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setDecryptedThreads(prev => ({ ...prev, ...updates }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [threads, mode, spaceId, decryptForSpace, decryptedThreads]);
 
   // Use server-side total for pagination
   const totalPages = Math.ceil(total / threadsPerPage);
@@ -144,13 +185,33 @@ export function SpaceView(): JSX.Element {
             {total} post{total !== 1 ? 's' : ''} in this space
           </p>
         </div>
-        <Link
-          to={`/compose?space=${spaceId}`}
-          className="btn btn-primary"
-        >
-          New Post
-        </Link>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          {isPrivate && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => setShowInvite(true)}
+            >
+              Invite
+            </button>
+          )}
+          <Link
+            to={`/compose?space=${spaceId}`}
+            className="btn btn-primary"
+          >
+            New Post
+          </Link>
+        </div>
       </header>
+
+      {isPrivate && (
+        <InviteModal
+          isOpen={showInvite}
+          onClose={() => setShowInvite(false)}
+          spaceId={spaceId || ''}
+          spaceName={spaceName}
+        />
+      )}
 
       <div className="space-view__controls">
         <div className="space-view__sort">
@@ -180,7 +241,7 @@ export function SpaceView(): JSX.Element {
         <>
           <div className="space-view__threads">
             {threads.map(thread => (
-              <ThreadCard key={thread.id} thread={thread} />
+              <ThreadCard key={thread.id} thread={thread} decrypted={decryptedThreads[thread.id]} />
             ))}
           </div>
           {totalPages > 1 && (

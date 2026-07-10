@@ -7,6 +7,7 @@
 import { useCallback, useState, useEffect } from 'react';
 import { useIdentityName } from '../hooks/useRpc';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
+import { isInIframe } from '../hooks/useParentRpcConfig';
 import { logger } from '../lib/logger';
 import { AddressDisplay } from '../components/AddressDisplay';
 import { BackupPromptModal } from '../components/BackupPromptModal';
@@ -100,6 +101,25 @@ export function IdentityPage(): JSX.Element {
   }, []);
 
   const hasNodeIdentity = nodeIdentity && nodeIdentity.address;
+
+  // Node-wide centralized identity (desktop app): the node owns one central identity —
+  // no per-client create/unlock/manage. Show WHO you are (address + name) rather than a
+  // dead-end placeholder.
+  if (isInIframe()) {
+    return (
+      <div className="identity-page">
+        <h1>Your identity</h1>
+        <p>
+          Managed by the Swimchain app — the node holds your key and signs on your behalf,
+          so there&apos;s nothing to create or unlock here.
+        </p>
+        {displayName && <p><strong>{displayName}</strong></p>}
+        {nodeIdentity?.address
+          ? <AddressDisplay address={nodeIdentity.address} />
+          : <p>Resolving your identity…</p>}
+      </div>
+    );
+  }
 
   return (
     <div className="identity-page">

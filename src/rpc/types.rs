@@ -1133,6 +1133,40 @@ pub struct CreatePrivateSpaceParams {
     pub timestamp: u64,
 }
 
+/// create_private_space_managed params (node-managed / desktop mode).
+///
+/// The node owns the identity seed and never exposes it, so the CLIENT sends only the
+/// plaintext name and the NODE performs all crypto (space-key gen + wrap, name
+/// encryption), signs, and mines PoW itself. Used by embedded desktop clients.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePrivateSpaceManagedParams {
+    /// Space name (plaintext; the node encrypts it).
+    pub name: String,
+    /// Optional description (plaintext).
+    pub description: Option<String>,
+}
+
+/// encrypt_private_content / decrypt_private_content params (node-managed mode).
+///
+/// The node holds the space key (recovered on demand from the caller's membership
+/// record), so embedded clients delegate the space-key crypto they'd otherwise do
+/// with the raw seed. `content` is the plaintext (encrypt) or `[PRIVATE:v1:...]`
+/// ciphertext (decrypt).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivateContentParams {
+    /// Space ID (hex, 16-byte).
+    pub space_id: String,
+    /// Plaintext to encrypt, or `[PRIVATE:v1:...]` framed content to decrypt.
+    pub content: String,
+}
+
+/// Result carrying a single content string (encrypted or decrypted).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrivateContentResult {
+    /// The resulting content (ciphertext for encrypt, plaintext for decrypt).
+    pub content: String,
+}
+
 /// create_private_space result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatePrivateSpaceResult {
@@ -1182,6 +1216,22 @@ pub struct InviteToSpaceResult {
     pub broadcast: bool,
 }
 
+/// invite_to_space_managed params (node-managed / desktop mode).
+///
+/// The inviter is the node's own identity. The node recovers the space key from its
+/// membership record, wraps it for the invitee itself (the client never touches the
+/// seed), mines PoW, and signs/broadcasts the invite. The client sends only the
+/// invitee's public key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteToSpaceManagedParams {
+    /// Space ID (hex, 16-byte).
+    pub space_id: String,
+    /// Invitee's public key (hex, 32-byte ed25519).
+    pub invitee: String,
+    /// Optional expiry timestamp (Unix seconds).
+    pub expires_at: Option<u64>,
+}
+
 /// accept_invite params
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptInviteParams {
@@ -1202,6 +1252,56 @@ pub struct AcceptInviteResult {
     pub space_id: String,
     /// Whether the action was broadcast
     pub broadcast: bool,
+}
+
+/// accept_invite_managed params (node-managed / desktop mode).
+///
+/// The acceptor is the node's own identity. The node stores its own membership record
+/// using the invite's wrapped key (invited_by = inviter), so `node_space_key` can later
+/// recover the space key. The client sends only the invite hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AcceptInviteManagedParams {
+    /// Invite hash to accept (hex, 32-byte).
+    pub invite_hash: String,
+}
+
+/// create_space_invite_blob params (node-managed, out-of-band invite).
+///
+/// The node produces a SELF-CONTAINED invite the inviter shares out-of-band (copy/paste,
+/// DM, link). It carries the space key wrapped for the invitee, so no network invite
+/// propagation is needed — the invitee redeems it directly. (Space CONTENT still syncs
+/// via normal block sync.)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSpaceInviteBlobParams {
+    /// Space ID (hex, 16-byte).
+    pub space_id: String,
+    /// Invitee's public key (hex, 32-byte ed25519).
+    pub invitee: String,
+}
+
+/// create_space_invite_blob result — a shareable `swiminv1:<base64>` code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateSpaceInviteBlobResult {
+    /// The shareable invite blob.
+    pub blob: String,
+}
+
+/// redeem_space_invite params.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedeemSpaceInviteParams {
+    /// The `swiminv1:<base64>` invite blob to redeem.
+    pub blob: String,
+}
+
+/// redeem_space_invite result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedeemSpaceInviteResult {
+    /// Joined space ID (hex).
+    pub space_id: String,
+    /// Space ID (bech32).
+    pub space_id_bech32: String,
+    /// Decrypted space name (if the blob carried it).
+    pub name: Option<String>,
 }
 
 /// decline_invite params
@@ -1522,6 +1622,10 @@ pub struct PrivateSpaceInfo {
     pub space_id_bech32: String,
     /// Encrypted space name (hex)
     pub encrypted_name: Option<String>,
+    /// Decrypted space name — populated only in node-managed mode, when the node holds
+    /// the space key (i.e. the requesting user is the node's own identity). None for
+    /// browser clients, which decrypt the name themselves with their local space key.
+    pub name: Option<String>,
     /// User's role in the space
     pub role: String,
     /// When joined

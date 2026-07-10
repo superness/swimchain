@@ -479,6 +479,17 @@ async fn handle_request(
         "create_space",
         "create_thread",
         "create_reply",
+        // Node-managed private-space methods (desktop mode) — exempt in regtest so the
+        // create->encrypt->decrypt flow can be exercised end-to-end without cookie setup.
+        "create_private_space_managed",
+        "invite_to_space_managed",
+        "accept_invite_managed",
+        "create_space_invite_blob",
+        "redeem_space_invite",
+        "get_my_invites",
+        "encrypt_private_content",
+        "decrypt_private_content",
+        "get_my_private_spaces",
         "create_sponsorship_offer",
         "claim_sponsorship_offer",
         "approve_sponsorship_claim",

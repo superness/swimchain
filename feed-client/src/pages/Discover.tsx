@@ -12,6 +12,7 @@ import { useActiveAuthors } from '../hooks/useActiveAuthors';
 import { useStoredIdentity } from '../hooks/useStoredIdentity';
 import { FollowButton } from '../components/FollowButton';
 import { PrivateSpaceList } from '../components/PrivateSpaceList';
+import { JoinPrivateSpace } from '../components/JoinPrivateSpace';
 import './Discover.css';
 
 interface SpaceCardProps {
@@ -204,6 +205,9 @@ export function Discover(): JSX.Element {
 
       {/* Private Spaces */}
       <PrivateSpaceList />
+
+      {/* Join a private space via an invite code (node-managed / desktop) */}
+      <JoinPrivateSpace />
 
       {/* Content */}
       <main className="discover-page__content">

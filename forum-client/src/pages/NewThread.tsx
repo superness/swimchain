@@ -9,6 +9,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { usePostSubmit, useSpaces, useMediaUpload } from '../hooks/useRpc';
 import { usePostPow } from '../hooks/useActionPow';
+import { useSponsorship } from '../hooks/useSponsorship';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { encryptPost, generatePassphrase } from '../lib/encryption';
 import { PowProgress } from '../components/PowProgress';
@@ -40,6 +41,7 @@ export function NewThread(): JSX.Element {
   const [pendingCompression, setPendingCompression] = useState<PendingCompression | null>(null);
   const { identity, sign } = useNodeIdentity();
   const { state, minePost, cancel, progress, reset } = usePostPow();
+  const { isSponsored } = useSponsorship();
   const { submitPost, submitting, error: rpcError } = usePostSubmit();
   const { uploadImage, compressAndUpload, uploadEncryptedImage, compressAndUploadEncrypted, uploading, error: uploadError } = useMediaUpload();
   const { spaces } = useSpaces();
@@ -165,6 +167,14 @@ export function NewThread(): JSX.Element {
       setSubmitError('Node identity not available - is the node running?');
       return;
     }
+    // Gate on sponsorship BEFORE mining PoW — the node rejects unsponsored posts
+    // (SPEC_11), so mining first only wastes the user's time.
+    if (isSponsored === false) {
+      setSubmitError(
+        'You need a sponsor before you can post. Open "Get Sponsored" to redeem an invite or request sponsorship — no proof-of-work is spent until then.'
+      );
+      return;
+    }
     if (!spaceId) {
       setSubmitError('No space ID');
       return;
@@ -259,7 +269,7 @@ export function NewThread(): JSX.Element {
         setSubmitError(err instanceof Error ? err.message : 'Mining failed');
       }
     }
-  }, [title, body, identity, spaceId, encryptionEnabled, passphrase, images, minePost, submitPost, sign, navigate, reset]);
+  }, [title, body, identity, spaceId, encryptionEnabled, passphrase, images, minePost, submitPost, sign, navigate, reset, isSponsored]);
 
   const isMining = state === 'mining';
 

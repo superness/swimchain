@@ -6,9 +6,11 @@
 
 import { useState, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { useIdentityContext } from '../providers/IdentityProvider';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
 import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
 import { useCreatePrivateSpace } from '../hooks/useRpc';
+import { useSponsorship } from '../hooks/useSponsorship';
 import { useToast } from '../components/Toast';
 import { generateSpaceKey, encryptSpaceKeyForRecipient, deriveX25519Keys, bytesToHex, hexToBytes } from '../lib/x25519';
 import { encryptSpaceName } from '../lib/encryption';
@@ -18,10 +20,12 @@ import './CreatePrivateSpace.css';
 
 export function CreatePrivateSpace(): JSX.Element {
   const navigate = useNavigate();
+  const { mode } = useIdentityContext();
   const { publicKey, keypair } = useStoredKeypair();
   const userPublicKeyHex = publicKey ? bytesToHex(publicKey) : undefined;
   const { storeSpaceKey } = usePrivateSpaceKeys(userPublicKeyHex);
-  const { createSpace, creating: rpcCreating } = useCreatePrivateSpace();
+  const { createSpace, createSpaceManaged, creating: rpcCreating } = useCreatePrivateSpace();
+  const { isSponsored } = useSponsorship();
   const { mine: minePow } = useActionPow();
   const { success, error: showError } = useToast();
 
@@ -36,14 +40,46 @@ export function CreatePrivateSpace(): JSX.Element {
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!keypair || !publicKey || !userPublicKeyHex) {
-      setError('No identity available');
-      return;
-    }
-
     const name = spaceName.trim();
     if (!name) {
       setError('Please enter a space name');
+      return;
+    }
+
+    // Sponsorship gate: the node rejects space creation from unsponsored identities
+    // (SPEC_11). Check up front so the user gets an actionable message instead of a
+    // generic "Space creation failed: no space ID returned" after the fact.
+    if (isSponsored === false) {
+      const msg = 'You need a sponsor before you can create a space. Redeem an invite or request sponsorship first.';
+      setError(msg);
+      showError(msg);
+      return;
+    }
+
+    // Node-managed mode (desktop app): the node holds the seed and does the crypto +
+    // PoW + signing. We only send the plaintext name — no local keypair needed.
+    if (mode === 'node') {
+      setCreating(true);
+      setError(null);
+      try {
+        const result = await createSpaceManaged({ name, description: description.trim() || undefined });
+        if (!result?.spaceId) {
+          throw new Error('Space creation failed: no space ID returned');
+        }
+        success('Private space created!');
+        navigate(`/space/${result.spaceId}`);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : 'Failed to create space';
+        setError(errMsg);
+        showError(errMsg);
+      } finally {
+        setCreating(false);
+      }
+      return;
+    }
+
+    if (!keypair || !publicKey || !userPublicKeyHex) {
+      setError('No identity available');
       return;
     }
 
@@ -133,9 +169,12 @@ export function CreatePrivateSpace(): JSX.Element {
     } finally {
       setCreating(false);
     }
-  }, [keypair, publicKey, userPublicKeyHex, spaceName, storeSpaceKey, navigate, createSpace, success, showError]);
+  }, [mode, isSponsored, keypair, publicKey, userPublicKeyHex, spaceName, description, storeSpaceKey, navigate, createSpace, createSpaceManaged, success, showError]);
 
-  if (!publicKey) {
+  // Node mode (desktop app): the node holds the seed and performs the E2E crypto via
+  // create_private_space_managed, so we render the normal form (no local keypair
+  // needed). Only the standalone browser path requires a local identity below.
+  if (mode !== 'node' && !publicKey) {
     return (
       <div className="create-private-space">
         <div className="no-identity">

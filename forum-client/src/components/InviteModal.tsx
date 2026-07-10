@@ -7,31 +7,41 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
 import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
-import { useInviteToSpace } from '../hooks/useRpc';
+import { useInviteToSpace, useSpaceInvites } from '../hooks/useRpc';
 import { useActionPow } from '../hooks/useActionPow';
 import { ActionType, solutionToRpcParams } from '../lib/action-pow';
 import { encryptSpaceKeyForRecipient, deriveX25519Keys, ed25519PublicToX25519, hexToBytes, bytesToHex } from '../lib/x25519';
+import { isInIframe } from '../hooks/useParentRpcConfig';
 import './InviteModal.css';
 
 interface InviteModalProps {
   isOpen: boolean;
   onClose: () => void;
   spaceId: string;
+  /** 16-byte HEX space id — required for node-mode invite blobs (spaceId may be bech32). */
+  hexSpaceId?: string;
   spaceName?: string;
 }
 
-export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModalProps): JSX.Element | null {
+export function InviteModal({ isOpen, onClose, spaceId, hexSpaceId, spaceName }: InviteModalProps): JSX.Element | null {
   const { publicKey, keypair } = useStoredKeypair();
   const userPublicKeyHex = publicKey ? bytesToHex(publicKey) : undefined;
   const { getSpaceKey } = usePrivateSpaceKeys(userPublicKeyHex);
   const { invite: inviteToSpace, inviting } = useInviteToSpace();
+  const { createBlob } = useSpaceInvites();
   const { mine: mineInvitePow, state: inviteMiningState, progress: inviteMiningProgress, cancel: cancelInviteMining } = useActionPow();
+
+  // Node-managed mode (desktop shell): the node owns the space key, so we ask it to
+  // produce a shareable `swiminv1:` blob instead of doing local-key crypto.
+  const embedded = isInIframe();
 
   const [recipientAddress, setRecipientAddress] = useState('');
   const [message, setMessage] = useState('');
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Node-managed invite: the shareable blob the inviter sends out-of-band.
+  const [inviteBlob, setInviteBlob] = useState<string | null>(null);
 
   const modalRef = useRef<HTMLDivElement>(null);
   const previousActiveElement = useRef<HTMLElement | null>(null);
@@ -99,15 +109,35 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!keypair || !publicKey) {
-      setInviteError('No keypair available');
-      return;
-    }
-
-    // Validate recipient address
+    // Validate recipient address (needed in both modes).
     const recipientHex = recipientAddress.trim();
     if (!recipientHex || recipientHex.length !== 64) {
       setInviteError('Invalid recipient address (must be 64 hex characters)');
+      return;
+    }
+
+    // Node-managed mode (desktop app): the node wraps the space key for the invitee and
+    // returns a SELF-CONTAINED `swiminv1:...` blob. Instead of "sending" we produce a code
+    // the inviter shares out-of-band; the invitee redeems it to join. The blob RPC needs
+    // the 16-byte HEX space id (spaceId prop may be the sp1 bech32 form).
+    if (embedded) {
+      const blobSpaceId = hexSpaceId ?? spaceId;
+      setInviteError(null);
+      setSuccess(false);
+      setLoading(true);
+      try {
+        const blob = await createBlob(blobSpaceId, recipientHex);
+        setInviteBlob(blob);
+      } catch (err) {
+        setInviteError(err instanceof Error ? err.message : 'Failed to create invite');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (!keypair || !publicKey) {
+      setInviteError('No keypair available');
       return;
     }
 
@@ -193,13 +223,14 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
     } finally {
       setLoading(false);
     }
-  }, [keypair, publicKey, spaceId, recipientAddress, message, getSpaceKey, onClose, inviteToSpace, mineInvitePow]);
+  }, [keypair, publicKey, spaceId, recipientAddress, message, getSpaceKey, onClose, inviteToSpace, mineInvitePow, embedded, hexSpaceId, createBlob]);
 
   const handleClose = useCallback(() => {
     setRecipientAddress('');
     setMessage('');
     setInviteError(null);
     setSuccess(false);
+    setInviteBlob(null);
     onClose();
   }, [onClose]);
 
@@ -230,6 +261,35 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
           </button>
         </header>
 
+        {inviteBlob ? (
+          <div className="invite-form">
+            <p className="form-hint" style={{ marginBottom: '0.5rem' }}>
+              Share this invite code with the person you invited. They paste it into
+              <strong> Spaces → Join a private space</strong> to join. It contains the
+              space key encrypted just for them.
+            </p>
+            <textarea
+              className="form-textarea"
+              value={inviteBlob}
+              readOnly
+              rows={4}
+              onFocus={(e) => e.currentTarget.select()}
+              style={{ fontFamily: 'monospace', fontSize: '0.8rem', wordBreak: 'break-all' }}
+            />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => { navigator.clipboard?.writeText(inviteBlob); }}
+              >
+                Copy invite code
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={handleClose}>
+                Done
+              </button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleSubmit} className="invite-form">
           <div className="form-group">
             <label htmlFor="recipient">Recipient Address</label>
@@ -248,6 +308,7 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
             </small>
           </div>
 
+          {!embedded && (
           <div className="form-group">
             <label htmlFor="message">Message (optional)</label>
             <textarea
@@ -260,6 +321,7 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
               rows={3}
             />
           </div>
+          )}
 
           {isMining && (
             <div className="invite-mining" role="status" aria-live="polite">
@@ -303,10 +365,13 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
               className="btn btn-primary"
               disabled={isLoading || !recipientAddress.trim()}
             >
-              {isMining ? 'Mining...' : isLoading ? 'Sending...' : 'Send Invite'}
+              {embedded
+                ? (isLoading ? 'Creating…' : 'Create invite code')
+                : (isMining ? 'Mining...' : isLoading ? 'Sending...' : 'Send Invite')}
             </button>
           </div>
         </form>
+        )}
       </div>
     </div>
   );

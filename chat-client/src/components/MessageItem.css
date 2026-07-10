@@ -337,3 +337,19 @@
     background: transparent;
   }
 }
+
+/* Collapse toggle for long-form content cross-posted into a channel. */
+.message-show-more {
+  display: inline-block;
+  margin-left: 0.4em;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent, #5865f2);
+  font-size: 0.85em;
+  font-weight: 600;
+  cursor: pointer;
+}
+.message-show-more:hover {
+  text-decoration: underline;
+}

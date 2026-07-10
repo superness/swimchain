@@ -6,11 +6,12 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useThread, useReplies, useReplySubmit } from '../hooks/useRpc';
+import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { useReplyPow } from '../hooks/useActionPow';
+import { useSponsorship } from '../hooks/useSponsorship';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { PowProgress } from '../components/PowProgress';
 import { SpamBadge, ReportModal } from '../components/ReportModal';
@@ -61,13 +62,18 @@ function ReplyItem({
   reply,
   depth = 0,
   onReply,
+  decrypted = {},
 }: {
   reply: LocalReply;
   depth?: number;
   onReply: (parentId: string) => void;
+  /** Node-decrypted reply bodies keyed by reply id (private-space, node mode). */
+  decrypted?: Record<string, string>;
 }): JSX.Element {
   const maxDepth = 4;
   const actualDepth = Math.min(depth, maxDepth);
+  const displayContent = decrypted[reply.id]
+    ?? (isPrivateCiphertext(reply.content) ? '🔒 Encrypted — decrypting…' : reply.content);
 
   return (
     <div
@@ -88,7 +94,7 @@ function ReplyItem({
       </div>
 
       <div className="reply-content">
-        {reply.content || <span className="reply-empty">Content loading...</span>}
+        {displayContent || <span className="reply-empty">Content loading...</span>}
       </div>
 
       <div className="reply-actions">
@@ -109,6 +115,7 @@ function ReplyItem({
               reply={child}
               depth={depth + 1}
               onReply={onReply}
+              decrypted={decrypted}
             />
           ))}
         </div>
@@ -179,7 +186,15 @@ export function Post(): JSX.Element {
   const { thread: post, loading, error, fetching } = useThread(postId || '');
   const { replies, loading: repliesLoading, fetching: repliesFetching, refetch: refetchReplies } = useReplies(postId || '');
 
-  const { identity, hasValidIdentity } = useIdentityContext();
+  const { identity, hasValidIdentity, mode } = useIdentityContext();
+  // Node-managed private-space crypto (desktop mode): encrypt/decrypt via the node.
+  const { encryptForSpace, decryptForSpace } = usePrivateContent();
+  const privateSpaceIds = usePrivateSpaceIds(identity?.publicKey);
+  const [decryptedPost, setDecryptedPost] = useState<{ title: string; body: string } | null>(null);
+  const [decryptedReplies, setDecryptedReplies] = useState<Record<string, string>>({});
+  // Sponsorship gate (#8/#11): block replies BEFORE mining PoW if the identity is
+  // not sponsored, instead of wasting ~5s of PoW then failing with a generic error.
+  const { isSponsored } = useSponsorship();
   // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
   const { sign } = useFeedIdentity();
   const { isPostBlocked, isUserBlocked } = useBlocklist();
@@ -228,9 +243,28 @@ export function Post(): JSX.Element {
   const handleSubmitReply = useCallback(async (body: string) => {
     if (!replyingTo || !identity || !hasValidIdentity) return;
 
+    // Don't burn PoW for an identity the node will reject at the sponsorship gate.
+    if (isSponsored === false) {
+      setSubmitError('You need a sponsor before you can reply. Ask a member to sponsor you, or redeem an invite to get sponsored.');
+      return;
+    }
+
     setSubmitError(null);
     submittedRef.current = false;
-    replyBodyRef.current = body;
+
+    // Private space in node mode: encrypt the reply body via the node, then mine PoW
+    // over the CIPHERTEXT (submit_reply binds PoW to sha256(body)).
+    let finalBody = body;
+    if (mode === 'node' && post?.spaceId && privateSpaceIds.has(post.spaceId)) {
+      const cipher = await encryptForSpace(post.spaceId, body);
+      if (!cipher) {
+        setSubmitError('Could not encrypt your reply for this private space. Are you a member?');
+        return;
+      }
+      finalBody = cipher;
+    }
+
+    replyBodyRef.current = finalBody;
     replyParentRef.current = replyingTo;
 
     // Convert hex public key to Uint8Array for PoW
@@ -239,11 +273,11 @@ export function Post(): JSX.Element {
     );
 
     try {
-      await mineReply(body, publicKeyBytes, true /* testnet */);
+      await mineReply(finalBody, publicKeyBytes, true /* testnet */);
     } catch (err) {
       console.log('[Post] Reply mining ended:', err);
     }
-  }, [replyingTo, identity, hasValidIdentity, mineReply]);
+  }, [replyingTo, identity, hasValidIdentity, isSponsored, mineReply, mode, post?.spaceId, privateSpaceIds, encryptForSpace]);
 
   // Handle mining complete
   const handleMiningComplete = useCallback(async () => {
@@ -289,6 +323,44 @@ export function Post(): JSX.Element {
       handleMiningComplete();
     }
   }, [miningState, submitting, handleMiningComplete]);
+
+  // Decrypt the post body via the node when it's private-space ciphertext (node mode).
+  useEffect(() => {
+    if (mode !== 'node' || !post?.spaceId || !isPrivateCiphertext(post.content)) {
+      setDecryptedPost(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const plain = await decryptForSpace(post.spaceId as string, post.content as string);
+      if (cancelled || plain == null) return;
+      const i = plain.indexOf('\n\n');
+      setDecryptedPost(i === -1 ? { title: '', body: plain } : { title: plain.slice(0, i), body: plain.slice(i + 2) });
+    })();
+    return () => { cancelled = true; };
+  }, [mode, post?.spaceId, post?.content, decryptForSpace]);
+
+  // Decrypt private-space replies via the node (node mode), walking the reply tree.
+  useEffect(() => {
+    if (mode !== 'node' || !post?.spaceId) return;
+    const flat: LocalReply[] = [];
+    const walk = (items: LocalReply[]) => items.forEach(r => { flat.push(r); if (r.children) walk(r.children); });
+    walk(filteredReplies);
+    const pending = flat.filter(r => isPrivateCiphertext(r.content) && !decryptedReplies[r.id]);
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const updates: Record<string, string> = {};
+      for (const r of pending) {
+        const plain = await decryptForSpace(post.spaceId as string, r.content);
+        if (plain != null) updates[r.id] = plain;
+      }
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setDecryptedReplies(prev => ({ ...prev, ...updates }));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [filteredReplies, mode, post?.spaceId, decryptForSpace, decryptedReplies]);
 
   const isMining = miningState === 'mining';
 
@@ -363,7 +435,9 @@ export function Post(): JSX.Element {
       {/* Post Content */}
       <article className="post-detail">
         <header className="post-detail__header">
-          {post.title && <h1 className="post-detail__title">{post.title}</h1>}
+          {(decryptedPost?.title || post.title) && (
+            <h1 className="post-detail__title">{decryptedPost?.title || post.title}</h1>
+          )}
           <SpamBadge contentId={post.id ?? postId ?? ''} />
           <div className="post-detail__meta">
             <Link
@@ -391,7 +465,11 @@ export function Post(): JSX.Element {
         </header>
 
         <div className="post-detail__content">
-          {post.content}
+          {decryptedPost
+            ? decryptedPost.body
+            : isPrivateCiphertext(post.content)
+              ? <em>🔒 Encrypted — decrypting…</em>
+              : post.content}
         </div>
 
         <footer className="post-detail__footer">
@@ -471,6 +549,7 @@ export function Post(): JSX.Element {
                 <ReplyItem
                   reply={reply as unknown as LocalReply}
                   onReply={handleReply}
+                  decrypted={decryptedReplies}
                 />
 
                 {/* Reply composer for this reply */}
