@@ -249,6 +249,15 @@ export async function computePow(
       onProgress?.(attempts, elapsedMs, hashRate);
     }
 
+    // Yield a macrotask periodically so the browser can repaint and process input.
+    // This path has no Web Worker, so without yielding, a long mining run (e.g. a
+    // Post at testnet difficulty ≈ hundreds/thousands of hashes) freezes the whole
+    // UI — progress never updates and Cancel can't be clicked. Yielding keeps it
+    // responsive at a negligible throughput cost.
+    if (attempts % 8 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
     nonce++;
   }
 }

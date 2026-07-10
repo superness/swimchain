@@ -46,9 +46,15 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            read_per_minute: 100,
-            write_per_minute: 20,
-            admin_per_minute: 10,
+            // RPC is localhost-only (127.0.0.1 + cookie auth), so the only caller is
+            // the user's own app. These limits are a runaway-client backstop, not
+            // external-abuse defense — the old 100/min read cap was hit just by the
+            // clients' normal polling (status/peers/spaces/sponsorship/message lists,
+            // plus sign_message which is categorised Read), so navigating tripped
+            // "Rate limit exceeded for Read methods". Give generous headroom.
+            read_per_minute: 6000,
+            write_per_minute: 120,
+            admin_per_minute: 60,
             auth_failure_threshold: 10,
             auth_failure_window_secs: 300, // 5 minutes
             lockout_duration_secs: 300,    // 5 minutes

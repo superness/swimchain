@@ -139,6 +139,10 @@
 /* Messages container */
 .messages-container {
   flex: 1;
+  /* A flex child only scrolls if it may shrink below its content height. Without
+     min-height:0 it grows to fit all messages and overflows the viewport, so a long
+     thread's bottom (and the composer) get clipped with no way to scroll to them. */
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 16px 0;
