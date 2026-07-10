@@ -21,4 +21,18 @@ class MainActivity : TauriActivity() {
     }
     startForegroundService(Intent(this, NodeForegroundService::class.java))
   }
+
+  override fun onRequestPermissionsResult(
+    requestCode: Int,
+    permissions: Array<out String>,
+    grantResults: IntArray
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    // A notification enqueued before POST_NOTIFICATIONS was granted is never
+    // shown (Android 13+ drops it silently). Restart the service so
+    // onStartCommand re-posts it now that it is visible.
+    if (requestCode == 1 && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
+      startForegroundService(Intent(this, NodeForegroundService::class.java))
+    }
+  }
 }
