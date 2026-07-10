@@ -129,3 +129,40 @@ Plus `adb shell` curl of `127.0.0.1:19736` on-device.
   install.
 - `cargo-ndk` — to install.
 - Tauri v2 CLI with mobile support — to install/verify.
+
+## Implementation Notes (post-verification)
+
+Deviations found and accepted during implementation + emulator verification
+(tasks 4-7), recorded here rather than reflected back into the design above:
+
+- **Autostart replaced `node_start`/`node_stop` commands.** The node now
+  starts automatically from the Rust `setup()` hook on app launch instead of
+  being triggered by a shell-invoked command; there is no `node_stop` command
+  at all. The foreground service mirrors this — it starts with the activity
+  and is never explicitly stopped by the shell (see "not stopped on node
+  error" below).
+- **`get_rpc_cookie` became `get_rpc_auth`.** Instead of handing the shell a
+  raw cookie value to assemble into a Basic auth header, the Rust side reads
+  `.cookie` and returns the fully-formed `Basic <base64>` header string
+  (matching desktop-app's `get_rpc_auth`), so the shell has one fewer place
+  to get the encoding wrong.
+- **Foreground service is tied to activity lifetime, not node lifetime.**
+  `MainActivity.onCreate` starts `NodeForegroundService` unconditionally; it
+  is not started/stopped in step with `node_status`. The service uses
+  `START_NOT_STICKY` (not the originally-assumed sticky default): if Android
+  kills the process, a system-recreated service would otherwise advertise a
+  node that no longer exists, since the node runs in the same process and
+  dies with it. The activity itself restarts the service on relaunch.
+- **The service is not stopped when the node errors.** If `node_host::start`
+  fails, `last_error` is surfaced via the shell's status strip and the
+  notification tap now opens (or reopens) the app (`contentIntent`,
+  `FLAG_IMMUTABLE`), giving the user a path back in; this pair of mitigations
+  was judged sufficient instead of adding stop-on-error service teardown.
+- **`nodeAddress` added to the RPC config message.** Desktop-app's
+  `ClientFrame` sends `nodeAddress` (bech32m `cs1...` of the identity public
+  key, via `encode_address_from_pubkey`) in the `SWIMCHAIN_RPC_CONFIG`
+  postMessage so clients use node-managed signing instead of mining a
+  separate browser keypair. The mobile shell now does the same: `NodeHost`
+  stores the address at start, a `get_node_address` Tauri command exposes it,
+  and `App.tsx` includes it in the postMessage payload. `nodeDisplayName` is
+  omitted (optional field; the mobile shell has no display name to send).
