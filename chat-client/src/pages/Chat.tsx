@@ -8,6 +8,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ServerList } from '../components/ServerList';
 import { ChannelSidebar } from '../components/ChannelSidebar';
+import { CreateChannelModal } from '../components/CreateChannelModal';
 import { ChatArea } from '../components/ChatArea';
 import { NodeStatusBar } from '../components/NodeStatusBar';
 import { useToast } from '../components/Toast';
@@ -35,7 +36,7 @@ export function Chat() {
 
   // Fetch servers and channels
   const { servers, loading: serversLoading } = useServers();
-  const { channels, loading: channelsLoading, markRead: markChannelRead } = useChannels(serverId ?? '');
+  const { channels, loading: channelsLoading, markRead: markChannelRead, refetch: refetchChannels } = useChannels(serverId ?? '');
 
   // Get current server info
   const currentServer = servers.find(s => s.id === serverId);
@@ -62,6 +63,13 @@ export function Chat() {
 
   // Reply target state
   const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
+
+  // Create-channel modal (a channel is a thread inside the current server/space).
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const handleChannelCreated = useCallback(async (newChannelId: string) => {
+    await refetchChannels();
+    if (serverId) navigate(`/channels/${serverId}/${newChannelId}`);
+  }, [refetchChannels, serverId, navigate]);
 
   // Mobile navigation state
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -465,6 +473,16 @@ export function Chat() {
           }}
           channels={channels}
           currentChannelId={channelId}
+          onCreateChannel={() => setShowCreateChannel(true)}
+        />
+      )}
+
+      {serverId && (
+        <CreateChannelModal
+          isOpen={showCreateChannel}
+          onClose={() => setShowCreateChannel(false)}
+          serverId={serverId}
+          onCreated={handleChannelCreated}
         />
       )}
 
@@ -500,7 +518,7 @@ export function Chat() {
               <p>There are no channels yet. Create one to get started.</p>
               <button
                 className="create-channel-btn"
-                onClick={() => navigate(`/channels/${serverId}/new`)}
+                onClick={() => setShowCreateChannel(true)}
               >
                 Create Channel
               </button>

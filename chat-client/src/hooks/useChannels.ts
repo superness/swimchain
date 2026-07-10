@@ -159,7 +159,9 @@ export function useCreateChannel() {
     serverId: string,
     name: string,
     identityPublicKey: string,
-    signFn: (message: Uint8Array) => Uint8Array,
+    // Accept a sync (browser keypair) OR async (node sign_message RPC) signer so a
+    // channel can be created in node mode, where the node holds the key.
+    signFn: (message: Uint8Array) => Uint8Array | Promise<Uint8Array>,
     powParams: {
       pow_nonce: number;
       pow_difficulty: number;
@@ -180,7 +182,7 @@ export function useCreateChannel() {
       const signMessage = new TextEncoder().encode(
         `post:${serverId}:${name}::${powParams.timestamp}`
       );
-      const signature = signFn(signMessage);
+      const signature = await signFn(signMessage);
       const signatureHex = Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
 
       // Submit as a post (thread)

@@ -44,6 +44,8 @@ interface ChannelSidebarProps {
   channels: Channel[];
   currentChannelId?: string;
   onChannelSelect?: (channelId: string) => void;
+  /** Open the create-channel modal for the current server. */
+  onCreateChannel?: () => void;
 }
 
 /**
@@ -214,6 +216,7 @@ export function ChannelSidebar({
   channels,
   currentChannelId,
   onChannelSelect: _onChannelSelect,
+  onCreateChannel,
 }: ChannelSidebarProps) {
   const navigate = useNavigate();
   const { mode } = useChatIdentity();
@@ -270,7 +273,7 @@ export function ChannelSidebar({
             <p>No channels yet.</p>
             <button
               className="create-channel-btn"
-              onClick={() => navigate(`/channels/${server.id}/new`)}
+              onClick={() => onCreateChannel?.()}
             >
               Create a channel
             </button>
