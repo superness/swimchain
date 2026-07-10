@@ -115,16 +115,21 @@ export function RpcProvider({ children }: { children: ReactNode }) {
    * Build RPC config with identity for signature auth
    */
   const buildConfigWithIdentity = async (): Promise<RpcConfig> => {
-    let baseConfig: RpcConfig;
-
-    // Check for parent frame config first (desktop-app wrapper)
+    // Node-managed (embedded) mode: the node owns the single identity and the
+    // parent frame supplies Basic auth. Return that verbatim and NEVER attach a
+    // stored browser keypair — signature auth takes precedence over authHeader in
+    // rpc.ts, so a leftover browser identity would sign every RPC as the wrong
+    // identity instead of using the node's auth.
     const parentConfig = getParentConfig();
     if (parentConfig && isInIframe()) {
-      baseConfig = {
+      return {
         endpoint: parentConfig.rpcEndpoint,
         authHeader: parentConfig.rpcAuth,
       };
-    } else if (USE_REMOTE_SEED) {
+    }
+
+    let baseConfig: RpcConfig;
+    if (USE_REMOTE_SEED) {
       baseConfig = REMOTE_SEED_CONFIG;
     } else if (isInTauri()) {
       baseConfig = await getLocalConfigWithAuth('testnet');
@@ -132,7 +137,7 @@ export function RpcProvider({ children }: { children: ReactNode }) {
       baseConfig = LOCAL_CONFIG;
     }
 
-    // Load identity for signature auth
+    // Browser mode: attach the stored identity for signature auth.
     const identity = loadStoredIdentity();
     if (identity?.seed && identity?.publicKey) {
       return {
@@ -168,8 +173,11 @@ export function RpcProvider({ children }: { children: ReactNode }) {
       }, 5000);
     };
 
-    // Check for identity changes every second
+    // Check for identity changes every second (browser mode only). In embedded
+    // mode the node owns the identity, so watching localStorage would just cause
+    // pointless reconnects if a stale browser identity is present.
     identityCheckInterval = setInterval(() => {
+      if (isInIframe() && getParentConfig()) return;
       const currentIdentity = loadStoredIdentity();
       const currentSeed = currentIdentity?.seed ?? null;
 

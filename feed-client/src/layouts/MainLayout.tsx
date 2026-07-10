@@ -5,7 +5,7 @@
 
 import { type ReactNode, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { useIdentityContext } from '../providers/IdentityProvider';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { SponsorshipBanner } from '../components/SponsorshipBanner';
 import { NodeStatusBar } from '../components/NodeStatusBar';
 import '../styles/app.css';
@@ -19,7 +19,11 @@ interface MainLayoutProps {
  */
 function Header(): JSX.Element {
   const location = useLocation();
-  const { identity } = useIdentityContext();
+  // Unified identity: node mode has a usable identity (the node's) even with no
+  // browser identity, so gate the profile/settings actions on `hasIdentity` rather
+  // than the browser identity (which would wrongly show "Create Identity" in the
+  // desktop app). DMs need the X25519 seed the node doesn't expose → browser only.
+  const { mode, hasIdentity } = useFeedIdentity();
 
   return (
     <header className="app-header">
@@ -48,7 +52,7 @@ function Header(): JSX.Element {
           >
             Sponsorship
           </Link>
-          {identity && (
+          {mode === 'browser' && hasIdentity && (
             <Link
               to="/dm"
               className={`app-header__nav-link ${location.pathname === '/dm' ? 'app-header__nav-link--active' : ''}`}
@@ -59,7 +63,7 @@ function Header(): JSX.Element {
         </nav>
 
         <div className="app-header__actions">
-          {identity ? (
+          {hasIdentity ? (
             <>
               <Link to="/settings" className="app-header__action-btn" aria-label="Settings">
                 <span aria-hidden="true">⚙</span>
@@ -84,7 +88,7 @@ function Header(): JSX.Element {
  */
 function MobileNav(): JSX.Element {
   const location = useLocation();
-  const { identity } = useIdentityContext();
+  const { hasIdentity } = useFeedIdentity();
 
   return (
     <nav className="mobile-nav" aria-label="Mobile navigation">
@@ -109,7 +113,7 @@ function MobileNav(): JSX.Element {
         <span className="mobile-nav__icon" aria-hidden="true">🤝</span>
         <span className="mobile-nav__label">Sponsor</span>
       </Link>
-      {identity ? (
+      {hasIdentity ? (
         <Link
           to="/profile"
           className={`mobile-nav__link ${location.pathname === '/profile' ? 'mobile-nav__link--active' : ''}`}

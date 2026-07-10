@@ -10,8 +10,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useStoredIdentity } from '../hooks/useStoredIdentity';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useUserProfile, clearProfileCache } from '../hooks/useUserProfile';
 import { useRpc, usePostSubmit, useMediaUpload } from '../hooks/useRpc';
 import { usePostPow } from '../hooks/useActionPow';
@@ -30,9 +29,12 @@ import './Profile.css';
 
 export function ProfilePage(): JSX.Element {
   const { userPk: paramUserPk } = useParams<{ userPk?: string }>();
-  const { identity } = useStoredIdentity();
-  const { sign } = useStoredKeypair();
-  const myPk = identity?.publicKey;
+  // Identity + signer come from the unified feed identity: node mode uses the
+  // node's pubkey + sign_message RPC, browser mode uses the local keypair. Reading
+  // from useStoredIdentity/useStoredKeypair broke "your" profile in node mode
+  // (no browser keypair → myPk null → own profile never resolved, save dead-ended).
+  const { publicKey, sign, hasIdentity } = useFeedIdentity();
+  const myPk = publicKey ?? undefined;
   const { connected } = useRpc();
 
   // Determine whose profile we're viewing
@@ -124,7 +126,7 @@ export function ProfilePage(): JSX.Element {
 
   // Save profile - starts PoW mining process
   const handleSave = useCallback(async () => {
-    if (!connected || !myPk || !identity) {
+    if (!connected || !myPk || !hasIdentity) {
       setSaveError('Not connected or no identity');
       return;
     }
@@ -182,11 +184,11 @@ export function ProfilePage(): JSX.Element {
       setSaveError(err instanceof Error ? err.message : 'Failed to save profile');
       setSaveStep('idle');
     }
-  }, [connected, myPk, identity, displayName, bio, website, avatarFile, uploadImage, minePost]);
+  }, [connected, myPk, hasIdentity, displayName, bio, website, avatarFile, uploadImage, minePost]);
 
   // Handle mining completion - submit to network
   const handleMiningComplete = useCallback(async () => {
-    if (submittedRef.current || !solution || !myPk || !identity) return;
+    if (submittedRef.current || !solution || !myPk || !hasIdentity) return;
     submittedRef.current = true;
 
     const pending = pendingProfileRef.current;
@@ -255,7 +257,7 @@ export function ProfilePage(): JSX.Element {
     }
 
     pendingProfileRef.current = null;
-  }, [solution, myPk, identity, sign, submitPost, refetch, resetPow]);
+  }, [solution, myPk, hasIdentity, sign, submitPost, refetch, resetPow]);
 
   // Trigger submission when mining completes
   useEffect(() => {

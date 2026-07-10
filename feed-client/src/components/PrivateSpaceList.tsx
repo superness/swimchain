@@ -8,26 +8,48 @@
 import { useMemo } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
+import { usePrivateSpaces } from '../hooks/useRpc';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import './PrivateSpaceList.css';
 
 export function PrivateSpaceList(): JSX.Element | null {
   const { identity } = useIdentityContext();
-  const { listMyPrivateSpaces, loading } = usePrivateSpaceKeys(identity?.publicKey);
+  const { mode, publicKey: nodePublicKey } = useFeedIdentity();
+  const nodeMode = mode === 'node';
+
+  // Source of truth differs by mode: in node mode the node holds membership
+  // (managed create/redeem never touch IndexedDB), so read it from the node RPC.
+  // In browser mode the space keys + names live in IndexedDB. Both hooks are
+  // called unconditionally (rules of hooks); each bails when its id is absent.
+  const { listMyPrivateSpaces, loading: browserLoading } = usePrivateSpaceKeys(nodeMode ? undefined : identity?.publicKey);
+  const { spaces: nodeSpaces, loading: nodeLoading } = usePrivateSpaces(nodeMode ? (nodePublicKey ?? undefined) : undefined);
   const location = useLocation();
 
-  // Map spaces with display names (spaceName is stored decrypted in IndexedDB)
+  const loading = nodeMode ? nodeLoading : browserLoading;
+
+  // Map spaces with display names. Node mode: name is node-decrypted; navigate by
+  // the hex space id (the node accepts it for list + decrypt). Browser mode: the
+  // decrypted spaceName is stored in IndexedDB.
   const spaces = useMemo(() => {
+    if (nodeMode) {
+      return nodeSpaces.map((s) => ({
+        spaceId: s.spaceId,
+        name: s.name || `Space ${s.spaceId.substring(0, 12)}...`,
+        joinedAt: s.joinedAt,
+        invitedBy: '',
+      }));
+    }
     return listMyPrivateSpaces.map((space) => ({
       spaceId: space.spaceId,
       name: space.spaceName || `Space ${space.spaceId.substring(0, 12)}...`,
       joinedAt: space.joinedAt,
       invitedBy: space.invitedBy,
     }));
-  }, [listMyPrivateSpaces]);
+  }, [nodeMode, nodeSpaces, listMyPrivateSpaces]);
 
-  // Don't render if no identity
-  if (!identity) return null;
+  // Don't render if there's no usable identity in the active mode.
+  if (nodeMode ? !nodePublicKey : !identity) return null;
 
   if (loading) {
     return (

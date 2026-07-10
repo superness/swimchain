@@ -2388,6 +2388,8 @@ export function useIdentityName() {
 export interface PrivateSpaceInfo {
   spaceId: string;
   spaceIdBech32: string;
+  /** Node-decrypted space name (node-managed mode). */
+  name?: string;
   encryptedName?: string;
   role: 'admin' | 'moderator' | 'member';
   joinedAt: number;
@@ -2432,6 +2434,7 @@ export function usePrivateSpaces(userPublicKey?: string) {
         spaces: Array<{
           space_id: string;
           space_id_bech32: string;
+          name?: string;
           encrypted_name?: string;
           role: string;
           joined_at: number;
@@ -2443,6 +2446,7 @@ export function usePrivateSpaces(userPublicKey?: string) {
       setSpaces(result.spaces.map(s => ({
         spaceId: s.space_id,
         spaceIdBech32: s.space_id_bech32,
+        name: s.name ?? undefined,
         encryptedName: s.encrypted_name,
         role: s.role as 'admin' | 'moderator' | 'member',
         joinedAt: s.joined_at,
