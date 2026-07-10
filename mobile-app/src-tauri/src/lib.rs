@@ -77,6 +77,17 @@ fn get_rpc_endpoint() -> String {
     format!("http://127.0.0.1:{}", NETWORK.default_rpc_port())
 }
 
+/// The node identity's public address (cs1...), for desktop parity: without
+/// it the embedded feed falls into browser-identity mode and mines its own
+/// keypair in the WebView instead of using the node's.
+#[tauri::command]
+async fn get_node_address(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let node = state.node.lock().await;
+    node.as_ref()
+        .map(|host| host.address.clone())
+        .ok_or_else(|| "node not running".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -120,7 +131,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             node_status,
             get_rpc_auth,
-            get_rpc_endpoint
+            get_rpc_endpoint,
+            get_node_address
         ])
         .run(tauri::generate_context!())
         .expect("error while running swimchain mobile");

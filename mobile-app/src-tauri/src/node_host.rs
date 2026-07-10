@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use swimchain::identity::{
-    create_identity_with_difficulty, deserialize_portable, export_identity, import_identity,
-    serialize_portable,
+    create_identity_with_difficulty, deserialize_portable, encode_address_from_pubkey,
+    export_identity, import_identity, serialize_portable,
 };
 use swimchain::network::NetworkMode;
 use swimchain::node::{NodeConfig, NodeManager};
@@ -21,6 +21,10 @@ pub const IDENTITY_POW_DIFFICULTY: u8 = 20;
 pub struct NodeHost {
     manager: NodeManager,
     pub data_dir: PathBuf,
+    /// Bech32m address (cs1...) of the node's identity public key. Mirrors
+    /// desktop-app's ClientFrame `nodeAddress`, handed to the embedded feed
+    /// so it uses node-managed signing instead of mining its own keypair.
+    pub address: String,
 }
 
 /// Load the node identity from `<data_dir>/identity.enc`, creating it (plus a
@@ -101,6 +105,7 @@ pub async fn start_with_ports(
     swimchain::network::NetworkContext::set_mode(network);
 
     let keypair = ensure_identity(&data_dir, IDENTITY_POW_DIFFICULTY)?;
+    let address = encode_address_from_pubkey(&keypair.public_key);
 
     let mut config = NodeConfig::with_network_defaults(network);
     config.data_dir = data_dir.clone();
@@ -114,7 +119,11 @@ pub async fn start_with_ports(
         .start()
         .await
         .map_err(|e| format!("start node: {e}"))?;
-    Ok(NodeHost { manager, data_dir })
+    Ok(NodeHost {
+        manager,
+        data_dir,
+        address,
+    })
 }
 
 impl NodeHost {
@@ -221,6 +230,12 @@ mod tests {
         let mut host = start_with_ports(dir.clone(), NetworkMode::Regtest, 39735, 39736)
             .await
             .expect("node starts");
+
+        assert!(
+            host.address.starts_with("cs1"),
+            "node address should be a cs1... bech32m address, got: {}",
+            host.address
+        );
 
         // The RPC server writes .cookie on startup; poll briefly.
         let cookie = dir.join(".cookie");

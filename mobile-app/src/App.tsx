@@ -16,6 +16,7 @@ export default function App() {
   const [status, setStatus] = useState<NodeStatus | null>(null);
   const [rpcAuth, setRpcAuth] = useState<string | null>(null);
   const [rpcEndpoint, setRpcEndpoint] = useState<string | null>(null);
+  const [nodeAddress, setNodeAddress] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   // Poll node status every 2s.
@@ -37,14 +38,18 @@ export default function App() {
     };
   }, []);
 
-  // Once the node reports running, fetch RPC endpoint + cookie auth.
+  // Once the node reports running, fetch RPC endpoint + cookie auth + the
+  // node identity address (desktop parity: without nodeAddress the feed
+  // falls into browser-identity mode and mines its own keypair).
   useEffect(() => {
     if (!status?.running || rpcAuth) return;
     (async () => {
       const endpoint = await invoke<string>('get_rpc_endpoint');
       const auth = await invoke<string>('get_rpc_auth');
+      const address = await invoke<string>('get_node_address');
       setRpcEndpoint(endpoint);
       setRpcAuth(auth);
+      setNodeAddress(address);
     })().catch(console.error);
   }, [status, rpcAuth]);
 
@@ -57,7 +62,12 @@ export default function App() {
     if (!iframe) return;
     const send = () =>
       iframe.contentWindow?.postMessage(
-        { type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint, rpcAuth },
+        {
+          type: 'SWIMCHAIN_RPC_CONFIG',
+          rpcEndpoint,
+          rpcAuth,
+          ...(nodeAddress ? { nodeAddress } : {}),
+        },
         window.location.origin
       );
     iframe.addEventListener('load', send);
@@ -69,7 +79,7 @@ export default function App() {
       clearInterval(interval);
       clearTimeout(timeout);
     };
-  }, [rpcAuth, rpcEndpoint]);
+  }, [rpcAuth, rpcEndpoint, nodeAddress]);
 
   return (
     <div className="shell">
