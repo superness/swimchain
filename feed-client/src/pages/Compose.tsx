@@ -170,7 +170,9 @@ export function Compose(): JSX.Element {
     submittedRef.current = false;
 
     // Private space in node mode: encrypt the (title+body) with the space key via the
-    // node BEFORE mining, and submit as title="[Private]" + [PRIVATE:v1:...] body. PoW
+    // node BEFORE mining, and submit with an EMPTY title + [PRIVATE:v1:...] body. The
+    // empty title matches forum/chat so the stored body reads back as `\n\n<cipher>`
+    // and every client's stripTitleSeparator recovers the ciphertext identically. PoW
     // binds to sha256(finalTitle\n\nfinalBody), so we must mine over the CIPHERTEXT.
     let finalTitle = title;
     let finalBody = body;
@@ -180,7 +182,7 @@ export function Compose(): JSX.Element {
         setSubmitError('Could not encrypt for this private space. Are you a member?');
         return;
       }
-      finalTitle = '[Private]';
+      finalTitle = '';
       finalBody = cipher;
     }
 

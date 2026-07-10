@@ -5,7 +5,7 @@
 
 import { useState, useMemo, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useSpaceThreads, useSpaces, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext } from '../hooks/useRpc';
+import { useSpaceThreads, useSpaces, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext, stripTitleSeparator } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { InviteModal } from '../components/InviteModal';
@@ -131,7 +131,7 @@ export function SpaceView(): JSX.Element {
     (async () => {
       const updates: Record<string, { title: string; body: string }> = {};
       for (const t of pending) {
-        const plain = await decryptForSpace(spaceId, t.content as string);
+        const plain = await decryptForSpace(spaceId, stripTitleSeparator(t.content as string));
         if (plain != null) updates[t.id] = splitPrivate(plain);
       }
       if (!cancelled && Object.keys(updates).length > 0) {

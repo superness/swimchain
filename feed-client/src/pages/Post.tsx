@@ -6,7 +6,7 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext } from '../hooks/useRpc';
+import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext, stripTitleSeparator } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useBlocklist } from '../hooks/useBlocklist';
@@ -332,7 +332,7 @@ export function Post(): JSX.Element {
     }
     let cancelled = false;
     (async () => {
-      const plain = await decryptForSpace(post.spaceId as string, post.content as string);
+      const plain = await decryptForSpace(post.spaceId as string, stripTitleSeparator(post.content as string));
       if (cancelled || plain == null) return;
       const i = plain.indexOf('\n\n');
       setDecryptedPost(i === -1 ? { title: '', body: plain } : { title: plain.slice(0, i), body: plain.slice(i + 2) });
@@ -352,7 +352,7 @@ export function Post(): JSX.Element {
     (async () => {
       const updates: Record<string, string> = {};
       for (const r of pending) {
-        const plain = await decryptForSpace(post.spaceId as string, r.content);
+        const plain = await decryptForSpace(post.spaceId as string, stripTitleSeparator(r.content));
         if (plain != null) updates[r.id] = plain;
       }
       if (!cancelled && Object.keys(updates).length > 0) {

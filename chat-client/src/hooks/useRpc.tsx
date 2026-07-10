@@ -1774,9 +1774,17 @@ export function usePrivateSpaceIds(userPublicKey?: string): Set<string> {
     const fetchIds = async () => {
       try {
         const r = await rpc.call('get_my_private_spaces', { user: userPublicKey }) as {
-          spaces: Array<{ space_id: string }>;
+          spaces: Array<{ space_id: string; space_id_bech32?: string }>;
         };
-        if (!cancelled) setIds(new Set(r.spaces.map(s => s.space_id)));
+        // Index BOTH id forms (16-byte hex and bech32 sp1...) so membership
+        // detection works no matter which form a server/space is keyed by.
+        // Missing either form would let a private channel fall through to the
+        // plaintext send path — so this must cover both.
+        if (!cancelled) {
+          setIds(new Set(
+            r.spaces.flatMap(s => [s.space_id, s.space_id_bech32].filter(Boolean) as string[])
+          ));
+        }
       } catch {
         /* not fatal — treat as no private spaces */
       }

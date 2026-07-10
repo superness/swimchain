@@ -2703,9 +2703,16 @@ export function usePrivateSpaceIds(userPublicKey?: string) {
     (async () => {
       try {
         const r = await rpc.call('get_my_private_spaces', { user: userPublicKey }) as {
-          spaces: Array<{ space_id: string }>;
+          spaces: Array<{ space_id: string; space_id_bech32?: string }>;
         };
-        if (!cancelled) setIds(new Set(r.spaces.map(s => s.space_id)));
+        // Index BOTH id forms (hex + bech32) so membership checks match whichever
+        // form a compose target / rendered post is keyed by — the node accepts
+        // either, so the client must recognise either.
+        if (!cancelled) {
+          setIds(new Set(
+            r.spaces.flatMap(s => [s.space_id, s.space_id_bech32].filter(Boolean) as string[])
+          ));
+        }
       } catch {
         /* not fatal — treat as no private spaces */
       }
@@ -2716,9 +2723,22 @@ export function usePrivateSpaceIds(userPublicKey?: string) {
   return ids;
 }
 
+/**
+ * Posts are stored by the node as `${title}\n\n${body}`. Private posts are written
+ * with an empty title, so the stored body reads back as `\n\n[PRIVATE:v1:...]`.
+ * Strip that leading title-separator to recover the raw (cipher)text. Public posts
+ * (non-empty title) and already-stripped ciphertext are returned unchanged. Mirrors
+ * forum-client's usePrivateSpaceMessages so private content round-trips identically
+ * across clients. base64 ciphertext never contains `\n\n`, so this is unambiguous.
+ */
+export function stripTitleSeparator(text: string): string {
+  const sep = text.indexOf('\n\n');
+  return sep >= 0 ? text.slice(sep + 2) : text;
+}
+
 /** True if a body/title carries node-decryptable private-space ciphertext. */
 export function isPrivateCiphertext(text: string | null | undefined): boolean {
-  return typeof text === 'string' && text.startsWith('[PRIVATE:v1:');
+  return typeof text === 'string' && stripTitleSeparator(text).startsWith('[PRIVATE:v1:');
 }
 
 /**

@@ -1598,11 +1598,14 @@ impl RpcMethods {
             }
         };
 
-        // Validate space ID format
-        if !params.space_id.starts_with("sp1") {
+        // Validate space ID format. Accept both the bech32m `sp1...` form and hex —
+        // `decode_space_id` (below) is the real parser and handles both; this early
+        // check only rejects input that can't be a space id in either form, so
+        // clients aren't forced to convert to bech32 just to post.
+        if let Err(e) = decode_space_id(&params.space_id) {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
-                "Invalid space ID format (must start with sp1)",
+                &format!("Invalid space_id: {}", e),
                 id,
             );
         }
@@ -9924,15 +9927,14 @@ impl RpcMethods {
     }
 
     /// Parse a hex 16-byte space id from a request field.
-    fn parse_space_id_16(hex_str: &str) -> Result<[u8; 16], (RpcErrorCode, String)> {
-        let bytes = hex::decode(hex_str)
-            .map_err(|e| (RpcErrorCode::InvalidParams, format!("invalid space_id hex: {e}")))?;
-        bytes.try_into().map_err(|_| {
-            (
-                RpcErrorCode::InvalidParams,
-                "space_id must be 16 bytes".to_string(),
-            )
-        })
+    /// Parse a private-space id (16 bytes) from EITHER the bech32m `sp1...` form or
+    /// hex (8/32 chars), via the shared `decode_space_id`. Accepting both forms means
+    /// a client can use a single id form uniformly across every private-space RPC
+    /// (submit/list AND encrypt/decrypt/invite) instead of tracking which form each
+    /// call happens to want — removing a whole class of client-side id-mixup bugs.
+    fn parse_space_id_16(space_id: &str) -> Result<[u8; 16], (RpcErrorCode, String)> {
+        decode_space_id(space_id)
+            .map_err(|e| (RpcErrorCode::InvalidParams, format!("invalid space_id: {e}")))
     }
 
     /// Encrypt plaintext with a private space's key (node-managed mode). The client

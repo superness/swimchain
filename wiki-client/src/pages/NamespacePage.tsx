@@ -158,7 +158,7 @@ export function NamespacePage(): JSX.Element {
       </div>
 
       <div className="ns-page__toolbar">
-        <Link to={`/ns/${namespaceId}/page/new/edit`} className="wiki-btn wiki-btn--primary">
+        <Link to={`/ns/${namespaceId}/new`} className="wiki-btn wiki-btn--primary">
           + New Page
         </Link>
 
