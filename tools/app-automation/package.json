@@ -1,0 +1,14 @@
+{
+  "name": "swim-auto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Swimchain app automation: run node, serve bundled clients, drive UI, capture screenshots and console logs",
+  "bin": { "swim-auto": "./cli.js" },
+  "scripts": {
+    "test": "node --test test/",
+    "smoke": "node smoke.js"
+  },
+  "dependencies": {
+    "playwright": "^1.61.1"
+  }
+}
