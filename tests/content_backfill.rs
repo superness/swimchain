@@ -218,6 +218,65 @@ async fn full_block_response_backfills_missing_content_blocks() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn backfill_skips_revalidation_for_already_accepted_header() {
+    // Live failure this reproduces: the phone requested a historical block
+    // its accepted header chain already contained, and handle_blocks
+    // re-ran leader-election validation on it — REJECTED (rules had
+    // evolved since the block was mined), so the content never stored.
+    // A hash match against our own chain IS the acceptance proof; the
+    // fall-through must go straight to content storage.
+    use std::sync::Arc;
+    use swimchain::network::messages::BlocksPayload;
+    use swimchain::node::MessageRouter;
+    use swimchain::types::constants::MSG_BLOCKS;
+    use swimchain::types::Serialize as _;
+
+    let dir = tempdir().unwrap();
+    let store = Arc::new(ChainStore::open(dir.path().join("chain")).unwrap());
+
+    // Chain of 3: heights 0 and 1 complete, height 2 header-only. Height 2
+    // triggers parent/leader validation paths (they apply above height 1),
+    // and its creator/pow fixture data would never pass leader election.
+    let b0 = root_block(0, [0u8; 32], vec![]);
+    let h0 = store.put_root_block(&b0).unwrap();
+    store.index_height(0, h0).unwrap();
+    let b1 = root_block(1, h0, vec![]);
+    let h1 = store.put_root_block(&b1).unwrap();
+    store.index_height(1, h1).unwrap();
+
+    let sb = space_block(9);
+    let sb_hash = sb.hash();
+    let mut b2 = root_block(2, h1, vec![sb_hash]);
+    // Non-zero creator so leader-election validation (Check 4) actually
+    // runs — a zero creator is skipped as "legacy" and would make this
+    // test pass without exercising the revalidation-skip.
+    b2.block_creator = [0xEE; 32];
+    let h2 = store.put_root_block(&b2).unwrap();
+    store.index_height(2, h2).unwrap();
+    assert!(store.get_space_block(&sb_hash).unwrap().is_none());
+
+    let payload = BlocksPayload {
+        blocks: vec![full_block_entry(&b2, &[(sb.clone(), vec![])])],
+    }
+    .to_bytes();
+
+    let router = MessageRouter::builder()
+        .metrics(Arc::new(swimchain::node::NodeMetrics::new()))
+        .chain_store(store.clone())
+        .build();
+    router
+        .route(&[9u8; 32], MSG_BLOCKS, &[0u8; 32], &payload)
+        .await
+        .expect("route MSG_BLOCKS");
+
+    assert!(
+        store.get_space_block(&sb_hash).unwrap().is_some(),
+        "backfill for an already-accepted header must store content without \
+         re-running leader validation"
+    );
+}
+
 #[test]
 fn gap_scan_respects_cap() {
     let dir = tempdir().unwrap();

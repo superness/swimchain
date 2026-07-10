@@ -2967,6 +2967,13 @@ impl MessageRouter {
             let computed_hash = root_block.hash();
             let our_height = chain_store.get_latest_height().ok().flatten().unwrap_or(0);
 
+            // Set when the incoming block's hash matches a header our chain
+            // already accepted (content backfill). Hash equality IS the
+            // acceptance proof: re-running height/parent/leader validation
+            // would re-judge a historical block under current rules and can
+            // reject content for a block we already consider canonical.
+            let mut known_header_backfill = false;
+
             // Check 1: If we already have a block at this height, apply fork resolution
             if let Ok(Some(existing_hash)) = chain_store.get_root_hash_at_height(block_height) {
                 if existing_hash == computed_hash {
@@ -2987,6 +2994,7 @@ impl MessageRouter {
                     if !content_missing {
                         continue;
                     }
+                    known_header_backfill = true;
                     info!(
                         "[BACKFILL] Known header {} at height {} is missing claimed space/content blocks - storing content from full block",
                         hex::encode(&computed_hash[..8]),
@@ -3112,7 +3120,8 @@ impl MessageRouter {
             // Check 2: Block height must be at most our_height + 1
             // If too far ahead, store as orphan and request the missing parent BY HASH
             // (using prev_root_hash, which works even if peer's height_index is broken)
-            if block_height > our_height + 1 {
+            // Skipped for known-header backfill: the block is already in our chain.
+            if !known_header_backfill && block_height > our_height + 1 {
                 let prev_hash = root_block.prev_root_hash;
 
                 // Only request parent if it's not the zero hash and we don't have it
@@ -3259,7 +3268,11 @@ impl MessageRouter {
 
             // Check 3: For height > 1, prev_root_hash must reference an existing block
             // If we don't have the parent, store as orphan and request it (enables fork resolution)
-            if block_height > 1 {
+            // Skipped (with Check 4 inside it) for known-header backfill: hash
+            // equality with our accepted chain already proves parentage and
+            // leader validity as of acceptance; re-judging under current rules
+            // rejected historical blocks' content on fresh nodes.
+            if !known_header_backfill && block_height > 1 {
                 let prev_hash = root_block.prev_root_hash;
                 if prev_hash == [0u8; 32] {
                     warn!(
@@ -3407,8 +3420,11 @@ impl MessageRouter {
             }
 
             // Check 4: Leader election validation
-            // Skip for genesis blocks (height 0) and legacy blocks (block_creator is zero)
-            if block_height > 0 && root_block.block_creator != [0u8; 32] {
+            // Skip for genesis blocks (height 0) and legacy blocks (block_creator is zero).
+            // Also skipped for known-header backfill: hash equality with our accepted
+            // chain is the acceptance proof — re-judging a historical block's leader
+            // under current eligibility rules rejected its content on fresh nodes.
+            if !known_header_backfill && block_height > 0 && root_block.block_creator != [0u8; 32] {
                 // Get the previous block to determine prev_block_timestamp
                 let prev_hash = root_block.prev_root_hash;
                 let prev_block = chain_store.get_root_block(&prev_hash).ok().flatten();
