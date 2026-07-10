@@ -3,6 +3,7 @@
 // state survive client switches.
 const { chromium } = require('playwright');
 const { RingBuffer } = require('./ringbuffer');
+const path = require('path');
 
 function fmtLocation(loc) {
   if (!loc || !loc.url) return '';
@@ -22,6 +23,9 @@ class BrowserSession {
 
   async ensurePage() {
     if (this.page && !this.page.isClosed()) return this.page;
+    if (this.browser && !this.browser.isConnected()) {
+      this.browser = null;
+    }
     if (!this.browser) {
       this.browser = await chromium.launch({ headless: !this.headed });
     }
@@ -110,7 +114,7 @@ class BrowserSession {
     await this.requirePage()
       .locator(selector)
       .first()
-      .waitFor({ state: 'visible', timeout: timeout || this.defaultTimeout });
+      .waitFor({ state: 'visible', timeout: timeout ?? this.defaultTimeout });
   }
 
   async eval(js) {
@@ -121,6 +125,7 @@ class BrowserSession {
 
   async screenshot({ selector, out, fullPage } = {}) {
     const page = this.requirePage();
+    out = path.resolve(out);
     // Let renders settle so the picture reflects the latest action.
     await page.waitForTimeout(300);
     if (selector) {
