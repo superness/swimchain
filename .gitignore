@@ -65,3 +65,4 @@ docs/qa/package*.json
 /genesis-testnet/
 /node-genesis.log
 /.daemon-pids/swim-auto.log
+/target-test/
