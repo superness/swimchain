@@ -895,6 +895,14 @@ impl ChainStore {
 
     /// Register a space on-chain
     ///
+    /// Upgrade-only for names: several callers register spaces with
+    /// placeholder names ("Space <hex>", or empty on the gossip path), and a
+    /// blind overwrite erased real names learned via SPACE_META peer exchange
+    /// (a space reverted to its placeholder after every app restart on
+    /// mobile). A placeholder/empty incoming name never replaces an existing
+    /// real or encrypted name; everything else still overwrites. Private
+    /// spaces (empty `name` by design) pass through via `encrypted_name`.
+    ///
     /// # Errors
     ///
     /// Returns error if serialization or storage fails.
@@ -902,6 +910,18 @@ impl ChainStore {
         // Key is space_id (16 bytes) padded to 32 bytes
         let mut key = [0u8; 32];
         key[..16].copy_from_slice(&info.space_id);
+
+        let placeholder = format!("Space {}", hex::encode(&info.space_id[..4]));
+        let incoming_is_placeholder =
+            (info.name.is_empty() && info.encrypted_name.is_none()) || info.name == placeholder;
+        if incoming_is_placeholder {
+            if let Some(existing) = self.get_space(&info.space_id)? {
+                let existing_is_real = !existing.name.is_empty() && existing.name != placeholder;
+                if existing_is_real || existing.encrypted_name.is_some() {
+                    return Ok(());
+                }
+            }
+        }
 
         let data = bincode::serialize(info)?;
         let size = (32 + data.len()) as u64;

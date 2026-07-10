@@ -278,6 +278,62 @@ async fn backfill_skips_revalidation_for_already_accepted_header() {
 }
 
 #[test]
+fn placeholder_registration_never_clobbers_real_space_name() {
+    // On-device failure: a space's real name (learned via SPACE_META peer
+    // exchange) reverted to "Space <hex>" after app restart — several code
+    // paths register spaces with placeholder names and the registry accepted
+    // blind overwrites. register_space must be upgrade-only for names.
+    use swimchain::storage::SpaceInfo;
+
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path()).unwrap();
+
+    let space_id = [7u8; 16];
+    let real = SpaceInfo {
+        space_id,
+        name: "Minecraft".to_string(),
+        description: Some("wiki demo".to_string()),
+        creator: [1u8; 32],
+        created_at: 1_700_000_000,
+        pow_work: 4096,
+        is_private: false,
+        encrypted_name: None,
+        creator_encrypted_key: None,
+        key_version: 0,
+    };
+    store.register_space(&real).unwrap();
+
+    // A placeholder write (gossip/startup path) must NOT erase the real name.
+    let placeholder = SpaceInfo {
+        name: format!("Space {}", hex::encode(&space_id[..4])),
+        description: None,
+        ..real.clone()
+    };
+    store.register_space(&placeholder).unwrap();
+
+    let stored = store
+        .get_space(&space_id)
+        .unwrap()
+        .expect("space registered");
+    assert_eq!(
+        stored.name, "Minecraft",
+        "placeholder registration clobbered the real name"
+    );
+
+    // But a real-name update still goes through.
+    let renamed = SpaceInfo {
+        name: "Minecraft Wiki".to_string(),
+        ..real.clone()
+    };
+    store.register_space(&renamed).unwrap();
+    let stored = store.get_space(&space_id).unwrap().unwrap();
+    assert_eq!(
+        stored.name, "Minecraft Wiki",
+        "real-name updates must still apply"
+    );
+}
+
+#[test]
 fn gap_scan_respects_cap() {
     let dir = tempdir().unwrap();
     let store = ChainStore::open(dir.path()).unwrap();
