@@ -11,28 +11,28 @@ use std::sync::{Arc, RwLock};
 use log::{debug, info, warn};
 use tokio::sync::{broadcast, watch};
 
-use crate::blocks::BlockBuilder;
 use crate::blocklist::BlocklistStore;
+use crate::blocks::BlockBuilder;
+use crate::cli::search_index::SearchIndex;
 use crate::content::chunking::ChunkedContentStore;
 use crate::content::decay_integration::DecayIntegration;
 use crate::content::retrieval::{ContentRetrievalConfig, ContentRetrievalManager};
 use crate::dht::{DhtManager, NodeId as DhtNodeId};
+use crate::discovery::peer_branches::PeerBranchTracker;
 use crate::discovery::PeerStore;
-use crate::identity::KeyPair;
 use crate::engagement_graph::EngagementGraphStore;
+use crate::identity::KeyPair;
+use crate::rpc::{NodeRef, RpcMethods, RpcServer, RpcServerConfig};
 use crate::spam_attestation::SpamAttestationStore;
 use crate::sponsorship::storage::SponsorshipStore;
 use crate::storage::blob::BlobStore;
 use crate::storage::content::PersistentContentStore;
 use crate::storage::membership::MembershipStore;
 use crate::storage::{AggregationCache, ChainStore};
-use crate::sync::{ChainSyncer, SyncConfig, SyncState};
 use crate::sync::subscription::BranchSubscriptionManager;
-use crate::discovery::peer_branches::PeerBranchTracker;
+use crate::sync::{ChainSyncer, SyncConfig, SyncState};
 use crate::transport::{ConnectionDirection, LocalNodeInfo, PeerInfo, TcpTransport};
 use crate::types::network::{MessageEnvelope, MessageType};
-use crate::cli::search_index::SearchIndex;
-use crate::rpc::{RpcMethods, RpcServer, RpcServerConfig, NodeRef};
 use crate::VERSION;
 
 use super::config::NodeConfig;
@@ -44,7 +44,6 @@ use super::peer_connections::PeerConnectionPool;
 use super::router::MessageRouter;
 use super::state::{NodeState, NodeStatus};
 use super::tasks::BackgroundTaskRunner;
-
 
 /// Central node manager - orchestrates all subsystems
 ///
@@ -233,8 +232,7 @@ impl NodeManager {
         } else {
             warn!(
                 "Invalid state transition attempt: {:?} -> {:?}",
-                current,
-                new_state
+                current, new_state
             );
         }
     }
@@ -302,7 +300,10 @@ impl NodeManager {
                 info!("[INDEX] Space content index needs rebuilding, this may take a moment...");
                 match chain_store.rebuild_space_content_index() {
                     Ok(count) => {
-                        info!("[INDEX] Successfully indexed {} content items for fast lookup", count);
+                        info!(
+                            "[INDEX] Successfully indexed {} content items for fast lookup",
+                            count
+                        );
                     }
                     Err(e) => {
                         warn!("[INDEX] Failed to rebuild space content index: {}", e);
@@ -357,7 +358,10 @@ impl NodeManager {
                 self.content_store = Some(Arc::new(store));
             }
             Err(e) => {
-                warn!("Failed to open content store: {}. Reaction sync may be unavailable.", e);
+                warn!(
+                    "Failed to open content store: {}. Reaction sync may be unavailable.",
+                    e
+                );
             }
         }
 
@@ -392,21 +396,13 @@ impl NodeManager {
                                 let mut d = Vec::with_capacity(17);
                                 d.push(0);
                                 d.extend_from_slice(&sb[..16]);
-                                bech32::encode::<Bech32m>(
-                                    Hrp::parse("sp").expect("valid HRP"),
-                                    &d,
-                                )
-                                .unwrap_or_else(|_| hex::encode(&sb[..16]))
+                                bech32::encode::<Bech32m>(Hrp::parse("sp").expect("valid HRP"), &d)
+                                    .unwrap_or_else(|_| hex::encode(&sb[..16]))
                             };
                             crate::cli::search_index::IndexableContent {
-                                content_id: format!(
-                                    "sha256:{}",
-                                    hex::encode(item.content_id.0)
-                                ),
+                                content_id: format!("sha256:{}", hex::encode(item.content_id.0)),
                                 space_id,
-                                author: crate::crypto::address::encode_address(
-                                    &item.author_id,
-                                ),
+                                author: crate::crypto::address::encode_address(&item.author_id),
                                 title,
                                 body,
                                 heat: 100.0,
@@ -419,7 +415,10 @@ impl NodeManager {
                         }
                     }
                 }
-                info!("[SEARCH] Opened search index with {} documents", index.doc_count());
+                info!(
+                    "[SEARCH] Opened search index with {} documents",
+                    index.doc_count()
+                );
                 self.search_index = Some(Arc::new(RwLock::new(index)));
             }
             Err(e) => {
@@ -436,24 +435,34 @@ impl NodeManager {
                 if agg_cache.needs_rebuild().unwrap_or(true) {
                     info!("[AGGREGATION-CACHE] Rebuilding aggregation cache from blockchain...");
                     if let Err(e) = Self::rebuild_aggregation_cache(&agg_cache, &chain_store) {
-                        warn!("[AGGREGATION-CACHE] Failed to rebuild: {}. Will use fallback lookups.", e);
+                        warn!(
+                            "[AGGREGATION-CACHE] Failed to rebuild: {}. Will use fallback lookups.",
+                            e
+                        );
                     } else {
                         if let Err(e) = agg_cache.mark_rebuilt() {
                             warn!("[AGGREGATION-CACHE] Failed to mark rebuilt: {}", e);
                         }
                         let stats = agg_cache.stats();
-                        info!("[AGGREGATION-CACHE] Rebuilt with {} content entries, {} space entries",
-                              stats.content_entries, stats.space_entries);
+                        info!(
+                            "[AGGREGATION-CACHE] Rebuilt with {} content entries, {} space entries",
+                            stats.content_entries, stats.space_entries
+                        );
                     }
                 } else {
                     let stats = agg_cache.stats();
-                    debug!("[AGGREGATION-CACHE] Loaded {} content entries, {} space entries",
-                           stats.content_entries, stats.space_entries);
+                    debug!(
+                        "[AGGREGATION-CACHE] Loaded {} content entries, {} space entries",
+                        stats.content_entries, stats.space_entries
+                    );
                 }
                 self.aggregation_cache = Some(Arc::new(agg_cache));
             }
             Err(e) => {
-                warn!("[AGGREGATION-CACHE] Failed to open: {}. Using fallback lookups.", e);
+                warn!(
+                    "[AGGREGATION-CACHE] Failed to open: {}. Using fallback lookups.",
+                    e
+                );
             }
         }
 
@@ -463,8 +472,10 @@ impl NodeManager {
         // 4.5. Initialize content retrieval manager with sync blob store
         let sync_blob_path = self.config.data_dir.join("sync_blobs");
         std::fs::create_dir_all(&sync_blob_path).ok();
-        let sync_blob_store = Arc::new(BlobStore::new(&sync_blob_path)
-            .map_err(|e| NodeError::StorageOpen(sync_blob_path.clone(), e.to_string()))?);
+        let sync_blob_store = Arc::new(
+            BlobStore::new(&sync_blob_path)
+                .map_err(|e| NodeError::StorageOpen(sync_blob_path.clone(), e.to_string()))?,
+        );
 
         // Create chunked content store for large files (uses same blob store)
         let chunked_blob_path = self.config.data_dir.join("chunked_blobs");
@@ -486,29 +497,31 @@ impl NodeManager {
             self.config.data_dir.clone(),
             sync_blob_store.clone(),
             target_storage_bytes,
-        ).map_err(|e| NodeError::StorageOpen(self.config.data_dir.clone(), e.to_string()))?;
+        )
+        .map_err(|e| NodeError::StorageOpen(self.config.data_dir.clone(), e.to_string()))?;
         // Scan existing blobs and register them for decay tracking
         if let Err(e) = decay_integration.scan_and_register() {
             warn!("[DECAY] Failed to scan existing blobs: {}", e);
         }
-        info!("[DECAY] Decay integration initialized with {}MB target storage", self.config.storage_target_mb);
+        info!(
+            "[DECAY] Decay integration initialized with {}MB target storage",
+            self.config.storage_target_mb
+        );
 
         // 4.5.2. Initialize blocklist for CSAM/illegal content filtering
         // Wrapped in RwLock to allow network gossip handlers to store updates (C-BLOCKLIST-2)
         let blocklist_path = self.config.data_dir.join("blocklist");
         std::fs::create_dir_all(&blocklist_path).ok();
         match sled::open(&blocklist_path) {
-            Ok(blocklist_db) => {
-                match BlocklistStore::open(Arc::new(blocklist_db)) {
-                    Ok(blocklist) => {
-                        self.blocklist = Some(Arc::new(RwLock::new(blocklist)));
-                        info!("[BLOCKLIST] Blocklist store initialized");
-                    }
-                    Err(e) => {
-                        warn!("[BLOCKLIST] Failed to open blocklist store: {}", e);
-                    }
+            Ok(blocklist_db) => match BlocklistStore::open(Arc::new(blocklist_db)) {
+                Ok(blocklist) => {
+                    self.blocklist = Some(Arc::new(RwLock::new(blocklist)));
+                    info!("[BLOCKLIST] Blocklist store initialized");
                 }
-            }
+                Err(e) => {
+                    warn!("[BLOCKLIST] Failed to open blocklist store: {}", e);
+                }
+            },
             Err(e) => {
                 warn!("[BLOCKLIST] Failed to open blocklist database: {}", e);
             }
@@ -545,7 +558,10 @@ impl NodeManager {
                 info!("[ENGAGEMENT] Engagement graph store initialized");
             }
             Err(e) => {
-                warn!("[ENGAGEMENT] Failed to open engagement graph database: {}", e);
+                warn!(
+                    "[ENGAGEMENT] Failed to open engagement graph database: {}",
+                    e
+                );
             }
         }
 
@@ -571,22 +587,45 @@ impl NodeManager {
                 // Rebuild sponsorship tree from chain on startup
                 if let Some(ref chain_store) = self.chain_store {
                     if let Ok(Some(height)) = chain_store.get_latest_height() {
-                        info!("[SPONSORSHIP] Rebuilding sponsorship tree from chain (height {})", height);
+                        info!(
+                            "[SPONSORSHIP] Rebuilding sponsorship tree from chain (height {})",
+                            height
+                        );
                         let mut rebuilt_count = 0;
 
                         for h in 1..=height {
                             if let Ok(actions) = chain_store.get_actions_at_height(h) {
-                                info!("[SPONSORSHIP] Found {} actions at height {}", actions.len(), h);
+                                info!(
+                                    "[SPONSORSHIP] Found {} actions at height {}",
+                                    actions.len(),
+                                    h
+                                );
                                 for (_thread_id, _space_id, action, _branch) in actions {
                                     info!("[SPONSORSHIP] Action type: {:?}", action.action_type);
                                     if action.action_type == crate::blocks::ActionType::Sponsor {
                                         if let Some(sponsee_bytes) = action.content_hash {
-                                            let sponsor_pk = crate::types::identity::PublicKey::from_bytes(action.actor);
-                                            let sponsee_pk = crate::types::identity::PublicKey::from_bytes(sponsee_bytes);
+                                            let sponsor_pk =
+                                                crate::types::identity::PublicKey::from_bytes(
+                                                    action.actor,
+                                                );
+                                            let sponsee_pk =
+                                                crate::types::identity::PublicKey::from_bytes(
+                                                    sponsee_bytes,
+                                                );
 
                                             // Only add if doesn't already exist
-                                            if let Ok(false) = self.sponsorship_store.as_ref().unwrap().exists(&sponsee_pk) {
-                                                let depth = match self.sponsorship_store.as_ref().unwrap().get(&sponsor_pk) {
+                                            if let Ok(false) = self
+                                                .sponsorship_store
+                                                .as_ref()
+                                                .unwrap()
+                                                .exists(&sponsee_pk)
+                                            {
+                                                let depth = match self
+                                                    .sponsorship_store
+                                                    .as_ref()
+                                                    .unwrap()
+                                                    .get(&sponsor_pk)
+                                                {
                                                     Ok(Some(rec)) => rec.depth.saturating_add(1),
                                                     _ => 1,
                                                 };
@@ -605,7 +644,12 @@ impl NodeManager {
                                                     orphaned_at: None,
                                                 };
 
-                                                if let Err(e) = self.sponsorship_store.as_ref().unwrap().put(&stored) {
+                                                if let Err(e) = self
+                                                    .sponsorship_store
+                                                    .as_ref()
+                                                    .unwrap()
+                                                    .put(&stored)
+                                                {
                                                     warn!("[SPONSORSHIP] Failed to rebuild sponsorship for {}: {}",
                                                         hex::encode(sponsee_bytes), e);
                                                 } else {
@@ -619,7 +663,10 @@ impl NodeManager {
                         }
 
                         if rebuilt_count > 0 {
-                            info!("[SPONSORSHIP] Rebuilt {} sponsorships from chain", rebuilt_count);
+                            info!(
+                                "[SPONSORSHIP] Rebuilt {} sponsorships from chain",
+                                rebuilt_count
+                            );
                         }
                     }
                 }
@@ -653,9 +700,14 @@ impl NodeManager {
         // 4.5.4. Initialize fork registry (VISION §5)
         let fork_db = sled::open(self.config.data_dir.join("fork_store"))
             .map_err(|e| NodeError::StorageOpen(self.config.data_dir.clone(), e.to_string()))?;
-        let fork_store = Arc::new(crate::fork::ForkStore::open(Arc::new(fork_db))
-            .map_err(|e| NodeError::StorageOpen(self.config.data_dir.clone(), e.to_string()))?);
-        let fork_registry = Arc::new(crate::fork::ForkRegistry::new(fork_store, self.chain_store.clone()));
+        let fork_store = Arc::new(
+            crate::fork::ForkStore::open(Arc::new(fork_db))
+                .map_err(|e| NodeError::StorageOpen(self.config.data_dir.clone(), e.to_string()))?,
+        );
+        let fork_registry = Arc::new(crate::fork::ForkRegistry::new(
+            fork_store,
+            self.chain_store.clone(),
+        ));
         self.fork_registry = Some(fork_registry);
         info!("[FORK] Fork registry initialized");
 
@@ -665,7 +717,10 @@ impl NodeManager {
         // Use listen address; will be updated after transport binds
         let dht = Arc::new(DhtManager::new(dht_node_id, self.config.listen_addr));
         self.dht = Some(dht.clone());
-        info!("[DHT] Kademlia DHT initialized with node ID {:?}", dht_node_id);
+        info!(
+            "[DHT] Kademlia DHT initialized with node ID {:?}",
+            dht_node_id
+        );
 
         // 4.6. Initialize connection pool for message I/O
         let connection_pool = Arc::new(PeerConnectionPool::new());
@@ -690,7 +745,8 @@ impl NodeManager {
             if let Ok(Some(height)) = cs.get_latest_height() {
                 if let Ok(Some(tip_hash)) = cs.get_root_hash_at_height(height) {
                     // Get cumulative_pow from the tip block for fork resolution
-                    let cumulative_pow = cs.get_root_block(&tip_hash)
+                    let cumulative_pow = cs
+                        .get_root_block(&tip_hash)
                         .ok()
                         .flatten()
                         .map(|b| b.cumulative_pow)
@@ -698,18 +754,23 @@ impl NodeManager {
 
                     if let Ok(mut builder) = block_builder.write() {
                         builder.sync_chain_state(height, tip_hash, cumulative_pow);
-                        info!("[BLOCKS] Synced block builder to chain height {} (tip={})",
-                              height, hex::encode(&tip_hash[..8]));
+                        info!(
+                            "[BLOCKS] Synced block builder to chain height {} (tip={})",
+                            height,
+                            hex::encode(&tip_hash[..8])
+                        );
                     }
                 }
             }
         }
 
         self.block_builder = Some(block_builder.clone());
-        info!("[BLOCKS] Block builder initialized with difficulty target {}s (network={}, base={}s)",
-              block_difficulty_target,
-              crate::network::NetworkContext::mode(),
-              crate::blocks::INITIAL_DIFFICULTY);
+        info!(
+            "[BLOCKS] Block builder initialized with difficulty target {}s (network={}, base={}s)",
+            block_difficulty_target,
+            crate::network::NetworkContext::mode(),
+            crate::blocks::INITIAL_DIFFICULTY
+        );
 
         // 4.7.2. Resubmit recovered actions from chain repair to mempool
         if !recovered_actions.is_empty() {
@@ -728,9 +789,9 @@ impl NodeManager {
 
         // 4.8. Initialize branch-selective sync subsystems (BRANCH_SELECTIVE_SYNC.md)
         // Default storage budget: 10 GB for mobile-friendly nodes
-        let branch_subscription_manager = Arc::new(RwLock::new(
-            BranchSubscriptionManager::new(10 * 1024 * 1024 * 1024)
-        ));
+        let branch_subscription_manager = Arc::new(RwLock::new(BranchSubscriptionManager::new(
+            10 * 1024 * 1024 * 1024,
+        )));
         self.branch_subscription_manager = Some(branch_subscription_manager.clone());
         let peer_branch_tracker = Arc::new(RwLock::new(PeerBranchTracker::new()));
         self.peer_branch_tracker = Some(peer_branch_tracker.clone());
@@ -840,9 +901,19 @@ impl NodeManager {
         // 9. Start background tasks (with message routing for content sync)
         let mut tasks = BackgroundTaskRunner::new(self.shutdown_rx.clone());
 
-        if let (Some(ref cm), Some(ref transport), Some(ref pool), Some(ref router), Some(ref dht)) =
-            (&self.connection_manager, &self.transport, &self.connection_pool, &self.router, &self.dht)
-        {
+        if let (
+            Some(ref cm),
+            Some(ref transport),
+            Some(ref pool),
+            Some(ref router),
+            Some(ref dht),
+        ) = (
+            &self.connection_manager,
+            &self.transport,
+            &self.connection_pool,
+            &self.router,
+            &self.dht,
+        ) {
             // Use enhanced routing that enables full content sync
             // DHT provides network-wide content discovery per SPEC_07 Option C
             // If running as seed node, use short-term connections
@@ -870,18 +941,13 @@ impl NodeManager {
                 self.offer_store.clone(),
             );
             info!("[CONTENT-SYNC] Started background tasks with message routing, DHT, decay, block formation, and branch-selective sync");
-        } else if let (Some(ref cm), Some(ref transport)) = (&self.connection_manager, &self.transport) {
+        } else if let (Some(ref cm), Some(ref transport)) =
+            (&self.connection_manager, &self.transport)
+        {
             // Fallback to basic accept loop without routing
-            tasks.spawn_all_with_transport(
-                transport.clone(),
-                self.syncer.clone(),
-                cm.clone(),
-            );
+            tasks.spawn_all_with_transport(transport.clone(), self.syncer.clone(), cm.clone());
         } else {
-            tasks.spawn_all(
-                self.syncer.clone(),
-                self.connection_manager.clone(),
-            );
+            tasks.spawn_all(self.syncer.clone(), self.connection_manager.clone());
         }
         self.tasks = Some(tasks);
 
@@ -967,7 +1033,9 @@ impl NodeManager {
 
         // 9. Flush and drop peer store (releases sled lock)
         if let Some(peer_store) = self.peer_store.take() {
-            peer_store.flush().map_err(|e| NodeError::StorageWrite(e.to_string()))?;
+            peer_store
+                .flush()
+                .map_err(|e| NodeError::StorageWrite(e.to_string()))?;
             // Drop the Arc to release the sled database lock
             drop(peer_store);
         }
@@ -986,8 +1054,10 @@ impl NodeManager {
                     break;
                 }
                 if start.elapsed() > timeout {
-                    warn!("ChainStore still has {} references after {:?}, forcing drop",
-                          strong_count, timeout);
+                    warn!(
+                        "ChainStore still has {} references after {:?}, forcing drop",
+                        strong_count, timeout
+                    );
                     break;
                 }
                 // Yield to let other tasks finish
@@ -1063,8 +1133,10 @@ impl NodeManager {
                         // Use 5-second timeout for DNS peer connections to avoid blocking
                         match tokio::time::timeout(
                             std::time::Duration::from_secs(5),
-                            transport.connect(addr)
-                        ).await {
+                            transport.connect(addr),
+                        )
+                        .await
+                        {
                             Ok(Ok(conn)) => {
                                 info!("[BOOTSTRAP] Connected to DNS peer {}", addr);
                                 self.integrate_outbound_connection(conn).await;
@@ -1113,9 +1185,11 @@ impl NodeManager {
                             }
 
                             // Add to connection pool for message I/O
-                            if let (Some(ref pool), Some(ref router), Some(ref cm)) =
-                                (&self.connection_pool, &self.router, &self.connection_manager)
-                            {
+                            if let (Some(ref pool), Some(ref router), Some(ref cm)) = (
+                                &self.connection_pool,
+                                &self.router,
+                                &self.connection_manager,
+                            ) {
                                 let established = conn.is_established();
                                 let stream = conn.into_stream();
                                 let peer_conn = pool.add(stream, peer_id, established).await;
@@ -1126,7 +1200,10 @@ impl NodeManager {
                                     if let Err(e) = dht.on_node_seen(dht_id, remote_addr).await {
                                         warn!("[BOOTSTRAP] Failed to add seed to DHT: {:?}", e);
                                     } else {
-                                        info!("[BOOTSTRAP] Added seed {} to DHT routing table", hex::encode(&peer_id[..8]));
+                                        info!(
+                                            "[BOOTSTRAP] Added seed {} to DHT routing table",
+                                            hex::encode(&peer_id[..8])
+                                        );
                                     }
                                 }
 
@@ -1140,27 +1217,40 @@ impl NodeManager {
                                             let prefix_path = prefix_entry.path();
                                             if prefix_path.is_dir() {
                                                 if let Ok(files) = std::fs::read_dir(&prefix_path) {
-                                                    let prefix = prefix_path.file_name()
+                                                    let prefix = prefix_path
+                                                        .file_name()
                                                         .and_then(|f| f.to_str())
                                                         .unwrap_or("");
                                                     for file_entry in files.flatten() {
                                                         let file_path = file_entry.path();
                                                         if file_path.is_file() {
-                                                            let suffix = file_path.file_name()
+                                                            let suffix = file_path
+                                                                .file_name()
                                                                 .and_then(|f| f.to_str())
                                                                 .unwrap_or("");
-                                                            let full_hash_hex = format!("{}{}", prefix, suffix);
+                                                            let full_hash_hex =
+                                                                format!("{}{}", prefix, suffix);
 
-                                                            if let Ok(hash_bytes) = hex::decode(&full_hash_hex) {
+                                                            if let Ok(hash_bytes) =
+                                                                hex::decode(&full_hash_hex)
+                                                            {
                                                                 if hash_bytes.len() == 32 {
-                                                                    let mut content_hash = [0u8; 32];
-                                                                    content_hash.copy_from_slice(&hash_bytes);
+                                                                    let mut content_hash =
+                                                                        [0u8; 32];
+                                                                    content_hash.copy_from_slice(
+                                                                        &hash_bytes,
+                                                                    );
 
                                                                     let envelope = MessageEnvelope::new_fork_agnostic(
                                                                         MessageType::IHave,
                                                                         content_hash.to_vec(),
                                                                     );
-                                                                    if let Err(e) = pool.send_to(&peer_id, &envelope).await {
+                                                                    if let Err(e) = pool
+                                                                        .send_to(
+                                                                            &peer_id, &envelope,
+                                                                        )
+                                                                        .await
+                                                                    {
                                                                         warn!("[BOOTSTRAP] Failed to send I_HAVE: {}", e);
                                                                     } else {
                                                                         inventory_count += 1;
@@ -1174,16 +1264,18 @@ impl NodeManager {
                                         }
                                     }
                                     if inventory_count > 0 {
-                                        info!("[BOOTSTRAP] Sent {} I_HAVE messages to seed {}", inventory_count, hex::encode(&peer_id[..8]));
+                                        info!(
+                                            "[BOOTSTRAP] Sent {} I_HAVE messages to seed {}",
+                                            inventory_count,
+                                            hex::encode(&peer_id[..8])
+                                        );
                                     }
                                 }
 
                                 // Chain negotiation: Compare heights and sync if peer is ahead
                                 if let Some(ref cs) = self.chain_store {
-                                    let our_height = cs.get_latest_height()
-                                        .ok()
-                                        .flatten()
-                                        .unwrap_or(0);
+                                    let our_height =
+                                        cs.get_latest_height().ok().flatten().unwrap_or(0);
                                     let peer_height = info.start_height as u64;
 
                                     info!(
@@ -1193,7 +1285,8 @@ impl NodeManager {
 
                                     if peer_height > our_height {
                                         let start_height = our_height.saturating_add(1);
-                                        let end_height = peer_height.min(start_height.saturating_add(99));
+                                        let end_height =
+                                            peer_height.min(start_height.saturating_add(99));
 
                                         use crate::network::messages::GetBlocksPayload;
                                         use crate::types::serialize::Serialize;
@@ -1236,7 +1329,8 @@ impl NodeManager {
                                         router_clone,
                                         pool_clone,
                                         cm_clone,
-                                    ).await;
+                                    )
+                                    .await;
                                 });
 
                                 info!(
@@ -1273,11 +1367,9 @@ impl NodeManager {
 
             // Register with ConnectionManager
             if let Some(ref cm) = self.connection_manager {
-                if let Err(e) = cm.add_connection(
-                    peer_id,
-                    remote_addr,
-                    ConnectionDirection::Outbound,
-                ) {
+                if let Err(e) =
+                    cm.add_connection(peer_id, remote_addr, ConnectionDirection::Outbound)
+                {
                     warn!(
                         "[BOOTSTRAP] Failed to register outbound connection to {}: {}",
                         remote_addr, e
@@ -1287,9 +1379,11 @@ impl NodeManager {
             }
 
             // Add to connection pool
-            if let (Some(ref pool), Some(ref router), Some(ref cm)) =
-                (&self.connection_pool, &self.router, &self.connection_manager)
-            {
+            if let (Some(ref pool), Some(ref router), Some(ref cm)) = (
+                &self.connection_pool,
+                &self.router,
+                &self.connection_manager,
+            ) {
                 let established = conn.is_established();
                 let stream = conn.into_stream();
                 let peer_conn = pool.add(stream, peer_id, established).await;
@@ -1311,13 +1405,15 @@ impl NodeManager {
                             let prefix_path = prefix_entry.path();
                             if prefix_path.is_dir() {
                                 if let Ok(files) = std::fs::read_dir(&prefix_path) {
-                                    let prefix = prefix_path.file_name()
+                                    let prefix = prefix_path
+                                        .file_name()
                                         .and_then(|f| f.to_str())
                                         .unwrap_or("");
                                     for file_entry in files.flatten() {
                                         let file_path = file_entry.path();
                                         if file_path.is_file() {
-                                            let suffix = file_path.file_name()
+                                            let suffix = file_path
+                                                .file_name()
                                                 .and_then(|f| f.to_str())
                                                 .unwrap_or("");
                                             let full_hash_hex = format!("{}{}", prefix, suffix);
@@ -1327,12 +1423,18 @@ impl NodeManager {
                                                     let mut content_hash = [0u8; 32];
                                                     content_hash.copy_from_slice(&hash_bytes);
 
-                                                    let envelope = MessageEnvelope::new_fork_agnostic(
-                                                        MessageType::IHave,
-                                                        content_hash.to_vec(),
-                                                    );
-                                                    if let Err(e) = pool.send_to(&peer_id, &envelope).await {
-                                                        warn!("[BOOTSTRAP] Failed to send I_HAVE: {}", e);
+                                                    let envelope =
+                                                        MessageEnvelope::new_fork_agnostic(
+                                                            MessageType::IHave,
+                                                            content_hash.to_vec(),
+                                                        );
+                                                    if let Err(e) =
+                                                        pool.send_to(&peer_id, &envelope).await
+                                                    {
+                                                        warn!(
+                                                            "[BOOTSTRAP] Failed to send I_HAVE: {}",
+                                                            e
+                                                        );
                                                     } else {
                                                         inventory_count += 1;
                                                     }
@@ -1345,7 +1447,11 @@ impl NodeManager {
                         }
                     }
                     if inventory_count > 0 {
-                        info!("[BOOTSTRAP] Sent {} I_HAVE messages to peer {}", inventory_count, hex::encode(&peer_id[..8]));
+                        info!(
+                            "[BOOTSTRAP] Sent {} I_HAVE messages to peer {}",
+                            inventory_count,
+                            hex::encode(&peer_id[..8])
+                        );
                     }
                 }
 
@@ -1390,7 +1496,8 @@ impl NodeManager {
                         router_clone,
                         pool_clone,
                         cm_clone,
-                    ).await;
+                    )
+                    .await;
                 });
 
                 info!(
@@ -1418,7 +1525,7 @@ impl NodeManager {
             username: self.config.rpc_user.clone(),
             password: self.config.rpc_password.clone(),
             max_body_size: 1024 * 1024, // 1MB
-            tls: Default::default(), // TLS disabled by default for local development
+            tls: Default::default(),    // TLS disabled by default for local development
         };
 
         // Use content store from self (opened in initialize())
@@ -1435,7 +1542,9 @@ impl NodeManager {
             start_time: self.start_time.unwrap_or_else(std::time::Instant::now),
             network: self.config.network_mode.name().to_string(),
             node_id: hex::encode(self.node_id()),
-            p2p_port: self.transport.as_ref()
+            p2p_port: self
+                .transport
+                .as_ref()
                 .map(|t| t.local_addr().port())
                 .unwrap_or(self.config.network_mode.default_port()),
             rpc_port: self.config.rpc_port(),
@@ -1477,7 +1586,9 @@ impl NodeManager {
         let server = RpcServer::new(rpc_config, self.shutdown_rx.clone())
             .map_err(|e| NodeError::RpcError(e.to_string()))?;
 
-        let rpc_addr = server.start_with_events(methods, self.event_manager.clone()).await
+        let rpc_addr = server
+            .start_with_events(methods, self.event_manager.clone())
+            .await
             .map_err(|e| NodeError::RpcError(e.to_string()))?;
 
         self.rpc_addr = Some(rpc_addr);
@@ -1518,9 +1629,7 @@ impl NodeManager {
         // Iterate through all content blocks
         for result in chain_store.iter_content_blocks() {
             if let Ok(block) = result {
-                let space_id_16: [u8; 16] = block.space_id[..16]
-                    .try_into()
-                    .unwrap_or([0u8; 16]);
+                let space_id_16: [u8; 16] = block.space_id[..16].try_into().unwrap_or([0u8; 16]);
 
                 for action in &block.actions {
                     match action.action_type {
@@ -1584,13 +1693,17 @@ impl NodeManager {
         let mut space_aggs: HashMap<[u8; 16], SpaceAggregation> = HashMap::new();
 
         for (space_id, post_count) in space_post_counts {
-            let agg = space_aggs.entry(space_id).or_insert_with(SpaceAggregation::new);
+            let agg = space_aggs
+                .entry(space_id)
+                .or_insert_with(SpaceAggregation::new);
             agg.post_count = post_count;
             agg.total_content_count += post_count;
         }
 
         for (space_id, reply_count) in space_reply_counts {
-            let agg = space_aggs.entry(space_id).or_insert_with(SpaceAggregation::new);
+            let agg = space_aggs
+                .entry(space_id)
+                .or_insert_with(SpaceAggregation::new);
             agg.total_reply_count = reply_count;
             agg.total_content_count += reply_count;
         }
@@ -1610,7 +1723,15 @@ impl NodeManager {
     pub fn status(&self) -> NodeStatus {
         let state = self.state();
         let metrics = self.metrics.read().unwrap();
-        metrics.to_status(state, self.config.storage_target_mb)
+        let mut status = metrics.to_status(state, self.config.storage_target_mb);
+        // Peers: the ConnectionManager is the authoritative count. The
+        // metrics counter is event-driven and several connect paths
+        // (DNS-seed bootstrap, GETADDR reconnects) historically skipped it,
+        // reporting "0 peers" while connected and synced.
+        if let Some(ref cm) = self.connection_manager {
+            status.peers = cm.connection_count();
+        }
+        status
     }
 
     /// Get list of connected peers
@@ -1745,7 +1866,10 @@ impl NodeManager {
         // Check connection limits
         if let Some(cm) = &self.connection_manager {
             if !cm.can_connect_outbound() {
-                warn!("Cannot connect to {}: outbound connection limit reached", addr);
+                warn!(
+                    "Cannot connect to {}: outbound connection limit reached",
+                    addr
+                );
                 return Err(NodeError::ConnectionFailed(
                     addr,
                     crate::transport::TransportError::ConnectionClosed,
@@ -1778,9 +1902,11 @@ impl NodeManager {
             }
 
             // Add connection to pool for message I/O (if pool available)
-            if let (Some(pool), Some(router), Some(cm)) =
-                (&self.connection_pool, &self.router, &self.connection_manager)
-            {
+            if let (Some(pool), Some(router), Some(cm)) = (
+                &self.connection_pool,
+                &self.router,
+                &self.connection_manager,
+            ) {
                 // Extract the TcpStream for splitting into read/write halves
                 let established = conn.is_established();
                 let stream = conn.into_stream();
@@ -1793,15 +1919,14 @@ impl NodeManager {
                 // Chain negotiation: Compare heights and sync if peer is ahead
                 // This is the core blockchain sync - if peer has more blocks, request them immediately
                 if let Some(ref cs) = self.chain_store {
-                    let our_height = cs.get_latest_height()
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0);
+                    let our_height = cs.get_latest_height().ok().flatten().unwrap_or(0);
                     let peer_height = info.start_height as u64;
 
                     info!(
                         "[CHAIN-SYNC] Height comparison: our_height={}, peer_height={} (peer={})",
-                        our_height, peer_height, hex::encode(&peer_id[..8])
+                        our_height,
+                        peer_height,
+                        hex::encode(&peer_id[..8])
                     );
 
                     if peer_height > our_height {
@@ -1826,7 +1951,8 @@ impl NodeManager {
                         if let Err(e) = peer_conn.send(&envelope).await {
                             warn!(
                                 "[CHAIN-SYNC] Failed to send GETBLOCKS to outbound peer {}: {}",
-                                hex::encode(&peer_id[..8]), e
+                                hex::encode(&peer_id[..8]),
+                                e
                             );
                         } else {
                             info!(
@@ -1870,7 +1996,8 @@ impl NodeManager {
                     } else {
                         info!(
                             "[CHAIN-SYNC] Outbound peer {} at same height {} as us",
-                            hex::encode(&peer_id[..8]), our_height
+                            hex::encode(&peer_id[..8]),
+                            our_height
                         );
                     }
                 }
@@ -1887,7 +2014,8 @@ impl NodeManager {
                         router_clone,
                         pool_clone,
                         cm_clone,
-                    ).await;
+                    )
+                    .await;
                 });
 
                 info!(
@@ -1900,7 +2028,11 @@ impl NodeManager {
                 metrics.peer_connected();
             }
 
-            info!("Connected to peer {} ({})", addr, hex::encode(&peer_id[..8]));
+            info!(
+                "Connected to peer {} ({})",
+                addr,
+                hex::encode(&peer_id[..8])
+            );
         } else {
             warn!("Connected to {} but no peer info from handshake", addr);
         }
@@ -1913,7 +2045,10 @@ impl NodeManager {
     /// Removes the peer from the connection manager and updates metrics.
     pub async fn disconnect(&self, peer_id: &[u8; 32]) -> Result<(), NodeError> {
         if let Some(cm) = &self.connection_manager {
-            if cm.remove_connection(peer_id, DisconnectReason::Normal).is_some() {
+            if cm
+                .remove_connection(peer_id, DisconnectReason::Normal)
+                .is_some()
+            {
                 if let Ok(metrics) = self.metrics.write() {
                     metrics.peer_disconnected();
                 }
@@ -1994,6 +2129,38 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("min_peers"));
+    }
+
+    #[test]
+    fn status_peers_comes_from_connection_manager_not_metrics_counter() {
+        // Several connect paths (DNS-seed bootstrap, GETADDR reconnects)
+        // historically forgot to bump the hand-maintained metrics counter,
+        // showing "0 peers" while connected and synced. status() must report
+        // the ConnectionManager's authoritative count instead.
+        let config = NodeConfig::for_test(0);
+        let dir = tempfile::tempdir().unwrap();
+        let peer_store = Arc::new(crate::discovery::PeerStore::open(dir.path()).unwrap());
+        let mut node = NodeManager::new(config, test_keypair()).unwrap();
+
+        let cm = Arc::new(ConnectionManager::new(
+            ConnectionConfig::default(),
+            peer_store,
+        ));
+        // Register a connection WITHOUT touching metrics — as the buggy
+        // connect paths did.
+        cm.add_connection(
+            [7u8; 32],
+            "127.0.0.1:12345".parse().unwrap(),
+            ConnectionDirection::Outbound,
+        )
+        .unwrap();
+        node.connection_manager = Some(cm);
+
+        assert_eq!(
+            node.status().peers,
+            1,
+            "status().peers must reflect the ConnectionManager count"
+        );
     }
 
     #[test]
