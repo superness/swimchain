@@ -81,7 +81,11 @@ fn get_rpc_endpoint() -> String {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            env_logger::try_init().ok();
+            // Default to info so node lifecycle logs ([BOOTSTRAP], seed
+            // connections, RPC start) reach logcat; RUST_LOG still overrides.
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                .try_init()
+                .ok();
 
             let state = AppState {
                 node: Arc::new(Mutex::new(None)),
