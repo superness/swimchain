@@ -308,6 +308,15 @@ export function Chat() {
       return;
     }
 
+    // Gate on sponsorship BEFORE mining — the node rejects unsponsored engagements
+    // (SPEC_11), so mining first only wastes the user's time.
+    if (isSponsored === false) {
+      toast.error(
+        'You need a sponsor before you can react. Redeem an invite or request sponsorship — no proof-of-work is spent until then.'
+      );
+      return;
+    }
+
     try {
       const result = await submitEngagement(messageId, 5, identity.publicKey, signAsync, emojiCode);
 
@@ -320,7 +329,7 @@ export function Chat() {
       console.error('[Chat] Reaction error:', err);
       toast.error('Failed to submit reaction');
     }
-  }, [identity, hasIdentity, signAsync, submitEngagement, toast]);
+  }, [identity, hasIdentity, isSponsored, signAsync, submitEngagement, toast]);
 
   // Handle content report with PoW mining
   const handleReport = useCallback(async (contentId: string, reason: SpamReason): Promise<boolean> => {

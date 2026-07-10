@@ -6,6 +6,7 @@
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useThread, usePoolContribution, useReplies, useReactions } from '../hooks/useRpc';
+import { useSponsorship } from '../hooks/useSponsorship';
 import { ImageGallery } from '../components/ImageGallery';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
@@ -30,6 +31,7 @@ export function ThreadView(): JSX.Element {
   const { identity } = useIdentityContext();
   const { sign: nodeSign } = useNodeIdentity();
   const { contribute, contributing, progress, error: poolError } = usePoolContribution();
+  const { isSponsored } = useSponsorship();
   const { getPassphrase } = usePassphraseStore();
   const [contributionStatus, setContributionStatus] = useState<string | null>(null);
   const [contributionPhase, setContributionPhase] = useState<'idle' | 'connecting' | 'mining' | 'submitting' | 'done'>('idle');
@@ -125,6 +127,13 @@ export function ThreadView(): JSX.Element {
     if (!emojiCode) {
       console.error('[React] Unknown emoji:', emoji);
       setContributionStatus('Unknown reaction type');
+      return;
+    }
+
+    // Gate on sponsorship BEFORE mining — the node rejects unsponsored engagements
+    // (SPEC_11), so mining first only wastes proof-of-work.
+    if (isSponsored === false) {
+      setContributionStatus('You need a sponsor before you can react. Redeem an invite or request sponsorship first — no proof-of-work is spent until then.');
       return;
     }
 

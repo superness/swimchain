@@ -13,6 +13,7 @@ import { ReactionPicker, ReactionDisplay } from './ReactionPicker';
 import { UserProfileModal } from './UserProfileModal';
 import { ReportModal, SpamBadge } from './ReportModal';
 import { usePoolContribution } from '../hooks/useRpc';
+import { useSponsorship } from '../hooks/useSponsorship';
 import { useEngagementPow } from '../hooks/useActionPow';
 import { useStoredIdentity } from '../hooks/useStoredIdentity';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
@@ -134,6 +135,7 @@ export function FeedCard({
   // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
   const { sign } = useFeedIdentity();
   const { contribute, contributing } = usePoolContribution();
+  const { isSponsored } = useSponsorship();
   const { state: engagementPowState, mineEngagement, solution: engagementSolution, reset: resetEngagementPow } = useEngagementPow();
   const { block } = useBlocklist();
   const { success, info } = useToast();
@@ -163,6 +165,13 @@ export function FeedCard({
   const handleReact = useCallback(async (_emoji: string, _reactionType: ReactionType) => {
     if (!identity || isReacting) return;
 
+    // Gate on sponsorship BEFORE mining — the node rejects unsponsored engagements
+    // (SPEC_11), so mining first only wastes proof-of-work.
+    if (isSponsored === false) {
+      info('You need a sponsor before you can react. Redeem an invite or request sponsorship first — no proof-of-work is spent until then.');
+      return;
+    }
+
     setIsReacting(true);
     try {
       // Convert hex public key to Uint8Array
@@ -177,7 +186,7 @@ export function FeedCard({
       setIsReacting(false);
       resetEngagementPow();
     }
-  }, [identity, isReacting, item.id, mineEngagement, resetEngagementPow]);
+  }, [identity, isReacting, isSponsored, info, item.id, mineEngagement, resetEngagementPow]);
 
   // Handle engagement PoW completion
   const pendingReactionRef = useRef<ReactionType | null>(null);
