@@ -36,6 +36,10 @@ function RedirectToApp({ type }: RedirectToAppProps) {
     // dev server, so a URL redirect (localhost:5179) goes nowhere / hangs. Ask the
     // shell to switch to the forum client and route there, translating to forum's
     // native routes. Standalone browser: fall back to the deep-link URL.
+    // The search index returns content ids WITHOUT the `sha256:` prefix, but the
+    // node's content RPCs (get_content/get_replies) require it — restore it before
+    // navigating, or the thread view fails with -32006 "must start with sha256:".
+    const withSha256 = (id: string) => (id.startsWith('sha256:') ? id : `sha256:${id}`);
     if (window.parent !== window) {
       let forumPath = rawPath;
       if (rawPath.startsWith('/space/')) {
@@ -43,7 +47,7 @@ function RedirectToApp({ type }: RedirectToAppProps) {
         forumPath = rawPath.replace('/space/', '/spaces/');
       } else if (rawPath.startsWith('/thread/') && spaceId) {
         // forum threads need both ids: /spaces/<space>/thread/<thread>
-        const threadId = rawPath.slice('/thread/'.length);
+        const threadId = withSha256(rawPath.slice('/thread/'.length));
         forumPath = `/spaces/${spaceId}/thread/${threadId}`;
       } else if (rawPath.startsWith('/user/')) {
         forumPath = rawPath.replace('/user/', '/profile/');
@@ -53,7 +57,7 @@ function RedirectToApp({ type }: RedirectToAppProps) {
       window.parent.postMessage({ type: 'SWIMCHAIN_NAVIGATE', client: 'forum', path: forumPath }, '*');
     } else {
       let path = rawPath;
-      if (path.startsWith('/thread/')) path = path.replace('/thread/', '/post/');
+      if (path.startsWith('/thread/')) path = `/post/${withSha256(rawPath.slice('/thread/'.length))}`;
       if (path.startsWith('/user/')) path = path.replace('/user/', '/profile/');
       const targetUrl = import.meta.env.VITE_DEEP_LINK_URL || 'http://localhost:5179';
       window.location.href = targetUrl + path;
