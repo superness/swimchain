@@ -918,6 +918,11 @@ impl ChainStore {
             if let Some(existing) = self.get_space(&info.space_id)? {
                 let existing_is_real = !existing.name.is_empty() && existing.name != placeholder;
                 if existing_is_real || existing.encrypted_name.is_some() {
+                    log::info!(
+                        "[SPACE-REGISTRY] Kept existing name '{}' for {} (blocked placeholder write)",
+                        existing.name,
+                        hex::encode(&info.space_id[..4])
+                    );
                     return Ok(());
                 }
             }
@@ -926,7 +931,16 @@ impl ChainStore {
         let data = bincode::serialize(info)?;
         let size = (32 + data.len()) as u64;
         self.space_registry.insert(&key, data)?;
+        // Space registrations are rare and precious (a real name learned from
+        // a peer must survive an abrupt process kill on mobile) — flush
+        // synchronously instead of relying on the periodic background flush.
+        self.space_registry.flush()?;
         self.total_bytes.fetch_add(size, Ordering::Relaxed);
+        log::info!(
+            "[SPACE-REGISTRY] Wrote name '{}' for {}",
+            info.name,
+            hex::encode(&info.space_id[..4])
+        );
         Ok(())
     }
 
