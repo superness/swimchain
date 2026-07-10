@@ -1,6 +1,15 @@
 .create-offer-modal {
   max-width: 520px;
   width: 90%;
+  padding: 24px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.create-offer-modal .modal-header {
+  margin-bottom: 16px;
 }
 
 .create-offer-field {
@@ -12,7 +21,7 @@
   font-size: 0.9em;
   font-weight: 500;
   margin-bottom: 6px;
-  color: var(--color-text, #333);
+  color: var(--color-text-primary);
 }
 
 .create-offer-input {
@@ -22,13 +31,13 @@
   border-radius: 6px;
   font-family: inherit;
   font-size: 0.9em;
-  background: var(--color-bg, #fff);
-  color: var(--color-text, #333);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-primary);
 }
 
 .create-offer-input:focus {
   outline: none;
-  border-color: var(--color-primary, #2563eb);
+  border-color: var(--color-accent-primary);
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
 }
 
@@ -58,7 +67,7 @@
 
 .create-offer-radio-text {
   font-size: 0.9em;
-  color: var(--color-text, #333);
+  color: var(--color-text-primary);
 }
 
 .create-offer-checkbox {
@@ -67,11 +76,11 @@
   gap: 8px;
   cursor: pointer;
   font-size: 0.9em;
-  color: var(--color-text, #333);
+  color: var(--color-text-primary);
 }
 
 .create-offer-error {
-  background: var(--color-error-bg, #f8d7da);
+  background: var(--color-bg-tertiary);
   color: var(--color-error, #dc3545);
   padding: 10px;
   border-radius: 6px;
@@ -81,8 +90,8 @@
 
 @media (prefers-color-scheme: dark) {
   .create-offer-input {
-    background: var(--color-bg, #1e1e1e);
+    background: var(--color-bg-elevated);
     border-color: var(--color-border, #444);
-    color: var(--color-text, #eee);
+    color: var(--color-text-primary);
   }
 }

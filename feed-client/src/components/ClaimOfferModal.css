@@ -6,7 +6,7 @@
 }
 
 .claim-offer-info {
-  background: var(--bg-secondary, #f8f9fa);
+  background: var(--color-bg-secondary, #f8f9fa);
   border-radius: 8px;
   padding: 1rem;
   margin-bottom: 1.5rem;
@@ -25,13 +25,13 @@
 
 .claim-label {
   font-size: 0.875rem;
-  color: var(--text-secondary, #5a6169);
+  color: var(--color-text-secondary, #5a6169);
   min-width: 80px;
 }
 
 .claim-value {
   font-size: 0.875rem;
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
   font-weight: 500;
 }
 
@@ -50,7 +50,7 @@
   font-size: 0.875rem;
   font-weight: 500;
   margin-bottom: 0.5rem;
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
 }
 
 .claim-application-input {
@@ -66,24 +66,24 @@
 
 .claim-application-input:focus {
   outline: none;
-  border-color: var(--accent-color, #007bff);
+  border-color: var(--color-accent-primary, #007bff);
 }
 
 .claim-application-input:disabled {
-  background: var(--bg-disabled, #e9ecef);
+  background: var(--color-bg-tertiary, #e9ecef);
   cursor: not-allowed;
 }
 
 .claim-char-count {
   display: block;
   font-size: 0.75rem;
-  color: var(--text-muted, #6c757d);
+  color: var(--color-text-tertiary, #6c757d);
   text-align: right;
   margin-top: 0.25rem;
 }
 
 .claim-mining-progress {
-  background: var(--bg-secondary, #f8f9fa);
+  background: var(--color-bg-secondary, #f8f9fa);
   border-radius: 8px;
   padding: 1rem;
   margin-bottom: 1rem;
@@ -93,7 +93,7 @@
   font-size: 0.875rem;
   font-weight: 500;
   margin-bottom: 0.5rem;
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
 }
 
 .claim-mining-bar {
@@ -105,13 +105,13 @@
 
 .claim-mining-bar-fill {
   height: 100%;
-  background: var(--accent-color, #007bff);
+  background: var(--color-accent-primary, #007bff);
   transition: width 0.3s ease;
 }
 
 .claim-mining-attempts {
   font-size: 0.75rem;
-  color: var(--text-muted, #6c757d);
+  color: var(--color-text-tertiary, #6c757d);
   text-align: center;
   margin-top: 0.5rem;
 }
@@ -127,7 +127,7 @@
 
 .claim-disclaimer {
   font-size: 0.8rem;
-  color: var(--text-muted, #6c757d);
+  color: var(--color-text-tertiary, #6c757d);
   font-style: italic;
   margin: 0;
 }
@@ -136,7 +136,7 @@
 @media (prefers-color-scheme: dark) {
   .claim-offer-info,
   .claim-mining-progress {
-    background: var(--bg-secondary-dark, #2d2d2d);
+    background: var(--color-bg-secondary-dark, #2d2d2d);
   }
 
   .claim-offer-row {
@@ -146,7 +146,7 @@
   .claim-application-input {
     background: var(--bg-input-dark, #1e1e1e);
     border-color: var(--border-color-dark, #444);
-    color: var(--text-primary-dark, #e5e7eb);
+    color: var(--color-text-primary-dark, #e5e7eb);
   }
 
   .claim-mining-bar {

@@ -1,7 +1,7 @@
 /* SponsorshipStatus styles */
 
 .sponsorship-status {
-  background: var(--card-bg, #ffffff);
+  background: var(--color-bg-elevated, #ffffff);
   border: 1px solid var(--border-color, #e1e5eb);
   border-radius: 12px;
   padding: 1.5rem;
@@ -11,11 +11,11 @@
   margin: 0 0 1rem;
   font-size: 1.125rem;
   font-weight: 600;
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
 }
 
 .sponsorship-status__empty {
-  color: var(--text-muted, #6c757d);
+  color: var(--color-text-tertiary, #6c757d);
   font-style: italic;
 }
 
@@ -32,25 +32,25 @@
 }
 
 .sponsorship-status__label {
-  color: var(--text-secondary, #5a6169);
+  color: var(--color-text-secondary, #5a6169);
   min-width: 100px;
 }
 
 .sponsorship-status__value {
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
   font-weight: 500;
 }
 
 .sponsorship-status__value--active {
-  color: var(--success-color, #28a745);
+  color: var(--color-success, #28a745);
 }
 
 .sponsorship-status__value--not-sponsored {
-  color: var(--warning-text, #856404);
+  color: var(--color-warning, #856404);
 }
 
 .sponsorship-status__value--warn {
-  color: var(--warning-text, #856404);
+  color: var(--color-warning, #856404);
 }
 
 .sponsorship-status__value--error {
@@ -70,7 +70,7 @@
 
 .sponsorship-status__pubkey-label {
   font-size: 0.875rem;
-  color: var(--text-secondary, #5a6169);
+  color: var(--color-text-secondary, #5a6169);
   margin: 0 0 0.75rem;
 }
 
@@ -78,7 +78,7 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  background: var(--bg-secondary, #f8f9fa);
+  background: var(--color-bg-secondary, #f8f9fa);
   border-radius: 8px;
   padding: 0.75rem;
   margin-bottom: 0.75rem;
@@ -89,12 +89,12 @@
   font-family: monospace;
   font-size: 0.75rem;
   word-break: break-all;
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
 }
 
 .sponsorship-status__pubkey-hint {
   font-size: 0.8rem;
-  color: var(--text-muted, #6c757d);
+  color: var(--color-text-tertiary, #6c757d);
   margin: 0;
   font-style: italic;
 }
@@ -102,20 +102,20 @@
 /* Dark mode */
 @media (prefers-color-scheme: dark) {
   .sponsorship-status {
-    background: var(--card-bg-dark, #1e1e1e);
+    background: var(--color-bg-elevated-dark, #1e1e1e);
     border-color: var(--border-color-dark, #333);
   }
 
   .sponsorship-status h3 {
-    color: var(--text-primary-dark, #e5e7eb);
+    color: var(--color-text-primary-dark, #e5e7eb);
   }
 
   .sponsorship-status__label {
-    color: var(--text-secondary-dark, #9ca3af);
+    color: var(--color-text-secondary-dark, #9ca3af);
   }
 
   .sponsorship-status__value {
-    color: var(--text-primary-dark, #e5e7eb);
+    color: var(--color-text-primary-dark, #e5e7eb);
   }
 
   .sponsorship-status__pubkey-section {
@@ -123,10 +123,10 @@
   }
 
   .sponsorship-status__pubkey-box {
-    background: var(--bg-secondary-dark, #2d2d2d);
+    background: var(--color-bg-secondary-dark, #2d2d2d);
   }
 
   .sponsorship-status__pubkey-code {
-    color: var(--text-primary-dark, #e5e7eb);
+    color: var(--color-text-primary-dark, #e5e7eb);
   }
 }

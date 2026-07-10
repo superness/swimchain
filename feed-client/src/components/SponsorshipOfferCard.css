@@ -1,7 +1,7 @@
 /* SponsorshipOfferCard styles */
 
 .offer-card {
-  background: var(--card-bg, #ffffff);
+  background: var(--color-bg-elevated, #ffffff);
   border: 1px solid var(--border-color, #e1e5eb);
   border-radius: 12px;
   padding: 1.25rem;
@@ -10,13 +10,13 @@
 }
 
 .offer-card:hover {
-  border-color: var(--border-hover, #c0c5cc);
+  border-color: var(--color-border, #c0c5cc);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .offer-card--expired {
   opacity: 0.6;
-  background: var(--card-bg-muted, #f8f9fa);
+  background: var(--color-bg-secondary, #f8f9fa);
 }
 
 .offer-card__header {
@@ -30,7 +30,7 @@
 
 .offer-card__sponsor {
   font-size: 0.875rem;
-  color: var(--text-secondary, #5a6169);
+  color: var(--color-text-secondary, #5a6169);
 }
 
 .offer-card__type {
@@ -48,7 +48,7 @@
 
 .offer-card__type--probationary {
   background: var(--warning-bg, #fff3cd);
-  color: var(--warning-text, #856404);
+  color: var(--color-warning, #856404);
 }
 
 .offer-card__details {
@@ -65,17 +65,17 @@
 }
 
 .offer-card__label {
-  color: var(--text-secondary, #5a6169);
+  color: var(--color-text-secondary, #5a6169);
   min-width: 100px;
 }
 
 .offer-card__value {
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
   font-weight: 500;
 }
 
 .offer-card__value--pending {
-  color: var(--accent-color, #007bff);
+  color: var(--color-accent-primary, #007bff);
   font-weight: 600;
 }
 
@@ -91,7 +91,7 @@
 .offer-card__expired-label,
 .offer-card__full-label {
   font-size: 0.875rem;
-  color: var(--text-muted, #6c757d);
+  color: var(--color-text-tertiary, #6c757d);
   font-style: italic;
 }
 
@@ -112,21 +112,21 @@
 /* Dark mode support */
 @media (prefers-color-scheme: dark) {
   .offer-card {
-    background: var(--card-bg-dark, #1e1e1e);
+    background: var(--color-bg-elevated-dark, #1e1e1e);
     border-color: var(--border-color-dark, #333);
   }
 
   .offer-card--expired {
-    background: var(--card-bg-muted-dark, #161616);
+    background: var(--color-bg-secondary-dark, #161616);
   }
 
   .offer-card__sponsor,
   .offer-card__label {
-    color: var(--text-secondary-dark, #9ca3af);
+    color: var(--color-text-secondary-dark, #9ca3af);
   }
 
   .offer-card__value {
-    color: var(--text-primary-dark, #e5e7eb);
+    color: var(--color-text-primary-dark, #e5e7eb);
   }
 
   .offer-card__actions {

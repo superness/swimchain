@@ -14,7 +14,7 @@
   font-size: 0.875rem;
   font-weight: 500;
   margin-bottom: 0.5rem;
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
 }
 
 .create-offer-input {
@@ -28,18 +28,18 @@
 
 .create-offer-input:focus {
   outline: none;
-  border-color: var(--accent-color, #007bff);
+  border-color: var(--color-accent-primary, #007bff);
 }
 
 .create-offer-input:disabled {
-  background: var(--bg-disabled, #e9ecef);
+  background: var(--color-bg-tertiary, #e9ecef);
   cursor: not-allowed;
 }
 
 .create-offer-hint {
   display: block;
   font-size: 0.75rem;
-  color: var(--text-muted, #6c757d);
+  color: var(--color-text-tertiary, #6c757d);
   margin-top: 0.25rem;
 }
 
@@ -61,7 +61,7 @@
 }
 
 .create-offer-radio:hover {
-  border-color: var(--border-hover, #c0c5cc);
+  border-color: var(--color-border, #c0c5cc);
 }
 
 .create-offer-radio input[type="radio"] {
@@ -70,17 +70,17 @@
 }
 
 .create-offer-radio input[type="radio"]:checked + .create-offer-radio-text {
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
 }
 
 .create-offer-radio-text {
   font-size: 0.875rem;
-  color: var(--text-secondary, #5a6169);
+  color: var(--color-text-secondary, #5a6169);
   line-height: 1.5;
 }
 
 .create-offer-radio-text strong {
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
   display: block;
   margin-bottom: 0.25rem;
 }
@@ -91,7 +91,7 @@
   gap: 0.5rem;
   cursor: pointer;
   font-size: 0.875rem;
-  color: var(--text-primary, #212529);
+  color: var(--color-text-primary, #212529);
 }
 
 .create-offer-checkbox input[type="checkbox"] {
@@ -111,7 +111,7 @@
 
 .create-offer-warning {
   background: var(--warning-bg, #fff3cd);
-  color: var(--warning-text, #856404);
+  color: var(--color-warning, #856404);
   padding: 0.75rem 1rem;
   border-radius: 6px;
   font-size: 0.8rem;
@@ -123,7 +123,7 @@
   .create-offer-input {
     background: var(--bg-input-dark, #1e1e1e);
     border-color: var(--border-color-dark, #444);
-    color: var(--text-primary-dark, #e5e7eb);
+    color: var(--color-text-primary-dark, #e5e7eb);
   }
 
   .create-offer-radio {
@@ -131,14 +131,14 @@
   }
 
   .create-offer-radio:hover {
-    border-color: var(--border-hover-dark, #555);
+    border-color: var(--color-border-dark, #555);
   }
 
   .create-offer-radio-text {
-    color: var(--text-secondary-dark, #9ca3af);
+    color: var(--color-text-secondary-dark, #9ca3af);
   }
 
   .create-offer-radio-text strong {
-    color: var(--text-primary-dark, #e5e7eb);
+    color: var(--color-text-primary-dark, #e5e7eb);
   }
 }
