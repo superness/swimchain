@@ -108,8 +108,13 @@ export function NamespacePage(): JSX.Element {
       // as pages: Post type, or anything without a parent that isn't a reply.
       const pageItems = result.items.filter(
         (item) =>
-          item.content_type === 'Post' ||
-          (!item.parent_id && item.content_type !== 'Reply'),
+          (item.content_type === 'Post' ||
+            (!item.parent_id && item.content_type !== 'Reply')) &&
+          // Skip malformed entries whose content hash is a short (16-byte space/
+          // thread) id zero-padded to 32 bytes — they aren't real pages and open to
+          // "Content not found" (-32004). A real sha256 never has 12+ trailing zero
+          // bytes, so this only drops the padded artifacts.
+          !/0{24,}$/.test(item.content_id),
       );
       setPages(pageItems.map(mapToWikiPage));
     } catch (err) {

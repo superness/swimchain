@@ -11,6 +11,7 @@ import { ChannelSidebar } from '../components/ChannelSidebar';
 import { CreateChannelModal } from '../components/CreateChannelModal';
 import { ChatArea } from '../components/ChatArea';
 import { NodeStatusBar } from '../components/NodeStatusBar';
+import { SponsorshipBanner } from '../components/SponsorshipBanner';
 import { useToast } from '../components/Toast';
 import { useServers } from '../hooks/useServers';
 import { useChannels } from '../hooks/useChannels';
@@ -428,6 +429,10 @@ export function Chat() {
 
   return (
     <div className={`chat-layout ${mobileNavOpen ? 'mobile-nav-open' : ''}`}>
+      {/* Sponsorship onboarding: persistent banner when the identity isn't
+          sponsored yet (SPEC_11). Sits above the panel row in the flex column. */}
+      <SponsorshipBanner />
+
       {/* Mobile navigation toggle */}
       <button
         type="button"

@@ -1,0 +1,138 @@
+/**
+ * SponsorshipBanner styles — wiki LIGHT theme.
+ *
+ * Uses wiki's own design tokens (--wiki-* from styles/wiki.css) rather than the
+ * dark forum/feed banner colors. Styled as a MediaWiki-style warning notice: a
+ * warm amber tint with a colored left rule, sitting inline at the top of the
+ * content area on every page (including the page-edit surfaces).
+ */
+
+.wiki-sponsor-banner {
+  /* Warm amber notice that reads as a warning against wiki's white surface,
+     without clashing with the palette. Border/accent come from --wiki-warning. */
+  background: #fbf3e0;
+  border: 1px solid var(--wiki-warning);
+  border-left-width: 4px;
+  border-radius: 3px;
+  padding: 0.6rem 0.9rem;
+  margin: 0 0 1rem;
+  font-family: var(--wiki-font-ui);
+  color: var(--wiki-text);
+}
+
+.wiki-sponsor-banner__row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.wiki-sponsor-banner__icon {
+  flex-shrink: 0;
+  color: var(--wiki-warning);
+}
+
+.wiki-sponsor-banner__text {
+  flex: 1 1 auto;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.wiki-sponsor-banner__text strong {
+  font-weight: 600;
+}
+
+.wiki-sponsor-banner__text span {
+  color: var(--wiki-text-secondary);
+}
+
+.wiki-sponsor-banner__action {
+  flex-shrink: 0;
+  background: var(--wiki-warning);
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  padding: 0.35rem 0.8rem;
+  font-family: var(--wiki-font-ui);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.wiki-sponsor-banner__action:hover {
+  opacity: 0.9;
+}
+
+.wiki-sponsor-banner__details {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--wiki-border-light);
+}
+
+.wiki-sponsor-banner__steps {
+  margin: 0 0 0.6rem;
+  padding-left: 1.2rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--wiki-text-secondary);
+}
+
+.wiki-sponsor-banner__steps li {
+  margin-bottom: 0.25rem;
+}
+
+.wiki-sponsor-banner__pubkey {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.wiki-sponsor-banner__pubkey-label {
+  color: var(--wiki-text-muted);
+}
+
+.wiki-sponsor-banner__pubkey-code {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--wiki-font-mono);
+  font-size: 0.8rem;
+  background: var(--wiki-bg-code);
+  border: 1px solid var(--wiki-border-light);
+  border-radius: 3px;
+  padding: 0.15rem 0.4rem;
+  color: var(--wiki-text);
+}
+
+.wiki-sponsor-banner__copy {
+  flex-shrink: 0;
+  background: var(--wiki-bg-secondary);
+  color: var(--wiki-link);
+  border: 1px solid var(--wiki-border);
+  border-radius: 3px;
+  padding: 0.25rem 0.7rem;
+  font-family: var(--wiki-font-ui);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.wiki-sponsor-banner__copy:hover {
+  background: var(--wiki-border-light);
+}
+
+@media (max-width: 600px) {
+  .wiki-sponsor-banner__row {
+    flex-wrap: wrap;
+  }
+
+  .wiki-sponsor-banner__text {
+    flex: 1 1 100%;
+  }
+
+  .wiki-sponsor-banner__action {
+    margin-left: auto;
+  }
+}

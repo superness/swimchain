@@ -7,6 +7,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useState, type ReactNode } from 'react';
 import { WikiSidebar } from '../components/WikiSidebar';
 import { NodeStatusBar } from '../components/NodeStatusBar';
+import { SponsorshipBanner } from '../components/SponsorshipBanner';
 import { useWikiIdentity } from '../hooks/useWikiIdentity';
 
 interface WikiLayoutProps {
@@ -72,6 +73,7 @@ export function WikiLayout({ children }: WikiLayoutProps): JSX.Element {
 
         {/* Content */}
         <main id="wiki-main" className="wiki-content" tabIndex={-1}>
+          <SponsorshipBanner />
           {children}
         </main>
       </div>
