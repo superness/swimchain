@@ -60,14 +60,7 @@ export function IdentityProvider({ children }: IdentityProviderProps): JSX.Eleme
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const parsed = JSON.parse(stored) as StoredIdentity;
-        console.log('[Identity] Loaded from storage:', {
-          address: parsed.address,
-          hasSeed: Boolean(parsed.seed),
-          seedLength: parsed.seed?.length,
-        });
         setIdentityState(parsed);
-      } else {
-        console.log('[Identity] No identity in storage');
       }
     } catch (error) {
       console.error('[Identity] Failed to load:', error);
@@ -79,10 +72,6 @@ export function IdentityProvider({ children }: IdentityProviderProps): JSX.Eleme
   const setIdentity = useCallback((newIdentity: StoredIdentity) => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newIdentity));
-      console.log('[Identity] Saved:', {
-        address: newIdentity.address,
-        hasSeed: Boolean(newIdentity.seed),
-      });
       setIdentityState(newIdentity);
     } catch (error) {
       console.error('[Identity] Failed to save:', error);

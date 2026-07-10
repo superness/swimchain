@@ -400,7 +400,9 @@ export class SwimchainRpc {
       headers['Authorization'] = `Basic ${btoa(credentials)}`;
       logger.info('[RPC Auth] Using basic authentication');
     } else {
-      logger.info('[RPC Auth] No authentication configured - request will likely fail', {
+      // Not necessarily a failure: bootstrap calls like sign_message are sent before
+      // a signer is registered, and a localhost node allows those unauthenticated.
+      logger.debug('[RPC Auth] No signature or basic auth attached for this request', {
         method,
         hasKeypair: !!this.keypair,
         hasPublicKeyHex: !!this.publicKeyHex,

@@ -41,14 +41,15 @@ function truncateAddress(address: string): string {
 export const ReplyResult = memo(function ReplyResult({ result, searchTerms, searchPhrases }: ReplyResultProps) {
   const data = result.data as ReplyInfo;
 
-  // Highlight content
+  const bodyIsEncrypted = isEncryptedContent(data.body);
+  const threadTitleIsEncrypted = !!data.threadTitle && isEncryptedContent(data.threadTitle);
+
+  // Never surface raw ciphertext: encrypted private-space bodies show a placeholder.
   const contentParts = highlightToReactParts(
-    result.highlights.content || data.body.slice(0, 200),
+    bodyIsEncrypted ? 'This content is in a private space.' : (result.highlights.content || data.body.slice(0, 200)),
     searchTerms,
     searchPhrases
   );
-
-  const bodyIsEncrypted = isEncryptedContent(data.body);
 
   return (
     <article className="result-card reply-result" role="listitem">
@@ -61,7 +62,7 @@ export const ReplyResult = memo(function ReplyResult({ result, searchTerms, sear
         <div className="reply-context">
           <span className="context-label">in</span>
           <Link to={`/thread/${data.threadId}?space=${data.spaceId}`} className="context-link">
-            "{data.threadTitle}"
+            "{threadTitleIsEncrypted ? 'Encrypted content' : data.threadTitle}"
           </Link>
         </div>
       )}

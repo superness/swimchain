@@ -41,21 +41,22 @@ function truncateAddress(address: string): string {
 export const ThreadResult = memo(function ThreadResult({ result, searchTerms, searchPhrases }: ThreadResultProps) {
   const data = result.data as ThreadInfo;
 
-  // Highlight title and content
+  const bodyIsEncrypted = isEncryptedContent(data.body);
+  const titleIsEncrypted = isEncryptedContent(data.title);
+
+  // Never surface raw ciphertext in results: private-space content the searcher
+  // can't decrypt shows a placeholder instead of the [PRIVATE:…]/[ENCRYPTED:…] blob.
   const titleParts = highlightToReactParts(
-    result.highlights.title || data.title,
+    titleIsEncrypted ? 'Encrypted content' : (result.highlights.title || data.title),
     searchTerms,
     searchPhrases
   );
 
   const contentParts = highlightToReactParts(
-    result.highlights.content || data.body.slice(0, 200),
+    bodyIsEncrypted ? 'This content is in a private space.' : (result.highlights.content || data.body.slice(0, 200)),
     searchTerms,
     searchPhrases
   );
-
-  const bodyIsEncrypted = isEncryptedContent(data.body);
-  const titleIsEncrypted = isEncryptedContent(data.title);
 
   return (
     <article className="result-card thread-result" role="listitem">

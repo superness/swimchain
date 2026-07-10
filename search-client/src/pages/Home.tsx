@@ -74,7 +74,7 @@ export function Home() {
           <code>author:alice</code>
           <code>type:thread</code>
           <code>"exact phrase"</code>
-          <code>after:2024-01-01</code>
+          <code>after:{new Date().getFullYear() - 1}-01-01</code>
         </div>
 
         {/* Trending / suggested searches */}

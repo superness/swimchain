@@ -54,7 +54,6 @@ export function WikiPageEdit(): JSX.Element {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [summary, setSummary] = useState('');
-  const [tags, setTags] = useState('');
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [miningState, setMiningState] = useState<MiningState>('idle');
   const [progress, setProgress] = useState<MiningProgress>({ attempts: 0, elapsedMs: 0, hashRate: 0 });
@@ -335,18 +334,6 @@ export function WikiPageEdit(): JSX.Element {
               <p style={{ color: 'var(--wiki-text-muted)' }}>Preview will appear here...</p>
             )}
           </div>
-        </div>
-
-        {/* Tags input */}
-        <div className="wiki-editor__field">
-          <label>Tags (comma-separated):</label>
-          <input
-            type="text"
-            placeholder="e.g. protocol, governance, specs"
-            value={tags}
-            onChange={(e) => setTags(e.target.value)}
-            disabled={isBusy}
-          />
         </div>
 
         {/* Edit summary */}
