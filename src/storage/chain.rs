@@ -145,7 +145,6 @@ pub struct SpaceInfo {
     pub pow_work: u64,
 
     // === Private Space Fields ===
-
     /// Is this a private/encrypted space?
     /// Private spaces have encrypted content and membership management
     #[serde(default)]
@@ -335,7 +334,11 @@ impl ChainStore {
             "[CHAIN] Storing ContentBlock hash={}, actions={}, space_metadata={}",
             hex::encode(&hash[..8]),
             block.actions.len(),
-            if block.space_metadata.is_some() { "PRESENT" } else { "NONE" }
+            if block.space_metadata.is_some() {
+                "PRESENT"
+            } else {
+                "NONE"
+            }
         );
         let data = bincode::serialize(block)?;
         let size = (32 + data.len()) as u64;
@@ -354,26 +357,31 @@ impl ChainStore {
             if let Some(content_hash) = action.content_hash {
                 // For replies, look up the parent's space_id to ensure correct indexing
                 // This fixes a bug where replies were indexed under parent's content_hash instead of parent's space
-                let space_id_16: [u8; 16] = if matches!(action.action_type, crate::blocks::ActionType::Reply) {
-                    if let Some(parent_hash) = action.parent_id {
-                        // Look up parent's space_id from existing index
-                        if let Ok(Some(parent_entry_data)) = self.content_metadata_index.get(&parent_hash) {
-                            if let Ok(parent_entry) = bincode::deserialize::<ContentIndexEntry>(&parent_entry_data) {
-                                parent_entry.space_id
+                let space_id_16: [u8; 16] =
+                    if matches!(action.action_type, crate::blocks::ActionType::Reply) {
+                        if let Some(parent_hash) = action.parent_id {
+                            // Look up parent's space_id from existing index
+                            if let Ok(Some(parent_entry_data)) =
+                                self.content_metadata_index.get(&parent_hash)
+                            {
+                                if let Ok(parent_entry) =
+                                    bincode::deserialize::<ContentIndexEntry>(&parent_entry_data)
+                                {
+                                    parent_entry.space_id
+                                } else {
+                                    block_space_id_16
+                                }
                             } else {
+                                // Parent not indexed yet - use block's space_id
+                                // This is a fallback; ideally parent should already be indexed
                                 block_space_id_16
                             }
                         } else {
-                            // Parent not indexed yet - use block's space_id
-                            // This is a fallback; ideally parent should already be indexed
                             block_space_id_16
                         }
                     } else {
                         block_space_id_16
-                    }
-                } else {
-                    block_space_id_16
-                };
+                    };
 
                 // Create space content index key: space_id(16) || timestamp(8, big-endian)
                 let mut index_key = [0u8; 24];
@@ -413,20 +421,23 @@ impl ChainStore {
                 };
 
                 let entry_data = bincode::serialize(&entry)?;
-                self.content_metadata_index.insert(&content_hash, entry_data)?;
+                self.content_metadata_index
+                    .insert(&content_hash, entry_data)?;
 
                 // === Author content index for feed-style queries ===
                 // Key = author_pk(32) || timestamp(8, big-endian), Value = content_hash(32)
                 let mut author_key = [0u8; 40];
                 author_key[..32].copy_from_slice(&action.actor);
                 author_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                self.author_content_index.insert(&author_key, &content_hash)?;
+                self.author_content_index
+                    .insert(&author_key, &content_hash)?;
 
                 // === Content-type specific indexes for O(log n) queries at scale ===
                 match action.action_type {
                     crate::blocks::ActionType::Post => {
                         // Index post by space: Key = space_id(16) || timestamp(8) → content_hash
-                        self.posts_by_space_index.insert(&index_key, &content_hash)?;
+                        self.posts_by_space_index
+                            .insert(&index_key, &content_hash)?;
                     }
                     crate::blocks::ActionType::Reply => {
                         // Index reply by parent: Key = parent_hash(32) || timestamp(8) → content_hash
@@ -434,7 +445,8 @@ impl ChainStore {
                             let mut reply_key = [0u8; 40];
                             reply_key[..32].copy_from_slice(&parent);
                             reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                            self.replies_by_parent_index.insert(&reply_key, &content_hash)?;
+                            self.replies_by_parent_index
+                                .insert(&reply_key, &content_hash)?;
                         }
                     }
                     crate::blocks::ActionType::CreateSpace => {
@@ -450,7 +462,8 @@ impl ChainStore {
                             edit_key[..32].copy_from_slice(&original_id);
                             edit_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
                             // Reuse replies_by_parent_index for edits (edit is like a special reply to original)
-                            self.replies_by_parent_index.insert(&edit_key, &content_hash)?;
+                            self.replies_by_parent_index
+                                .insert(&edit_key, &content_hash)?;
                         }
                     }
                     // Private space actions will be indexed via MembershipStore
@@ -547,6 +560,45 @@ impl ChainStore {
             }
             None => Ok(None),
         }
+    }
+
+    /// Find heights whose root blocks claim space blocks that are missing locally.
+    ///
+    /// After headers-first sync a node holds root-block headers whose
+    /// `space_block_hashes` were never downloaded — spaces then show
+    /// placeholder names and zero posts. The sync loop uses this scan to
+    /// request those heights as full blocks (content backfill). Scans from
+    /// genesis upward and stops after `max` gap heights so the per-tick cost
+    /// stays bounded.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn find_content_gap_heights(&self, max: usize) -> Result<Vec<u64>, StorageError> {
+        let mut gaps = Vec::new();
+        let Some(tip) = self.get_latest_height()? else {
+            return Ok(gaps);
+        };
+
+        for height in 0..=tip {
+            if gaps.len() >= max {
+                break;
+            }
+            let Some(hash) = self.get_root_hash_at_height(height)? else {
+                continue;
+            };
+            let Some(root) = self.get_root_block(&hash)? else {
+                continue;
+            };
+            for space_hash in &root.space_block_hashes {
+                if self.get_space_block(space_hash)?.is_none() {
+                    gaps.push(height);
+                    break;
+                }
+            }
+        }
+
+        Ok(gaps)
     }
 
     /// Index a root block by height
@@ -790,13 +842,14 @@ impl ChainStore {
     ///
     /// Returns an iterator over all root blocks stored in the chain.
     /// Useful for enumerating spaces from space_blocks in each root block.
-    pub fn iter_root_blocks(
-        &self,
-    ) -> impl Iterator<Item = Result<RootBlock, StorageError>> + '_ {
+    pub fn iter_root_blocks(&self) -> impl Iterator<Item = Result<RootBlock, StorageError>> + '_ {
         self.root_blocks.iter().map(|result| {
             result.map_err(StorageError::from).and_then(|(_, data)| {
                 bincode::deserialize(&data).map_err(|e| {
-                    StorageError::SerializationError(format!("Failed to deserialize root block: {}", e))
+                    StorageError::SerializationError(format!(
+                        "Failed to deserialize root block: {}",
+                        e
+                    ))
                 })
             })
         })
@@ -812,7 +865,10 @@ impl ChainStore {
         self.content_blocks.iter().map(|result| {
             result.map_err(StorageError::from).and_then(|(_, data)| {
                 bincode::deserialize(&data).map_err(|e| {
-                    StorageError::SerializationError(format!("Failed to deserialize content block: {}", e))
+                    StorageError::SerializationError(format!(
+                        "Failed to deserialize content block: {}",
+                        e
+                    ))
                 })
             })
         })
@@ -898,7 +954,10 @@ impl ChainStore {
         self.space_registry.iter().map(|result| {
             result.map_err(StorageError::from).and_then(|(_, data)| {
                 bincode::deserialize(&data).map_err(|e| {
-                    StorageError::SerializationError(format!("Failed to deserialize space info: {}", e))
+                    StorageError::SerializationError(format!(
+                        "Failed to deserialize space info: {}",
+                        e
+                    ))
                 })
             })
         })
@@ -950,7 +1009,9 @@ impl ChainStore {
         &self,
         content_hash: &[u8; 32],
     ) -> Result<Option<[u8; 32]>, StorageError> {
-        Ok(self.get_content_metadata(content_hash)?.map(|entry| entry.author))
+        Ok(self
+            .get_content_metadata(content_hash)?
+            .map(|entry| entry.author))
     }
 
     /// Get content for a space, ordered by timestamp (newest first)
@@ -984,13 +1045,12 @@ impl ChainStore {
             let (key, content_hash_bytes) = result?;
 
             // Parse content hash
-            let content_hash: [u8; 32] = content_hash_bytes
-                .as_ref()
-                .try_into()
-                .map_err(|_| StorageError::CorruptedData {
+            let content_hash: [u8; 32] = content_hash_bytes.as_ref().try_into().map_err(|_| {
+                StorageError::CorruptedData {
                     expected: "32 bytes for content hash".to_string(),
                     actual: format!("{} bytes", content_hash_bytes.len()),
-                })?;
+                }
+            })?;
 
             // Skip offset items
             if skipped < offset {
@@ -1047,13 +1107,12 @@ impl ChainStore {
         for result in self.posts_by_space_index.scan_prefix(&prefix).rev() {
             let (_, content_hash_bytes) = result?;
 
-            let content_hash: [u8; 32] = content_hash_bytes
-                .as_ref()
-                .try_into()
-                .map_err(|_| StorageError::CorruptedData {
+            let content_hash: [u8; 32] = content_hash_bytes.as_ref().try_into().map_err(|_| {
+                StorageError::CorruptedData {
                     expected: "32 bytes for content hash".to_string(),
                     actual: format!("{} bytes", content_hash_bytes.len()),
-                })?;
+                }
+            })?;
 
             // Skip offset items
             if skipped < offset {
@@ -1096,13 +1155,12 @@ impl ChainStore {
         for result in self.replies_by_parent_index.scan_prefix(parent_hash) {
             let (_, content_hash_bytes) = result?;
 
-            let content_hash: [u8; 32] = content_hash_bytes
-                .as_ref()
-                .try_into()
-                .map_err(|_| StorageError::CorruptedData {
+            let content_hash: [u8; 32] = content_hash_bytes.as_ref().try_into().map_err(|_| {
+                StorageError::CorruptedData {
                     expected: "32 bytes for content hash".to_string(),
                     actual: format!("{} bytes", content_hash_bytes.len()),
-                })?;
+                }
+            })?;
 
             // Skip offset items
             if skipped < offset {
@@ -1130,7 +1188,10 @@ impl ChainStore {
     ///
     /// Returns error if database read fails.
     pub fn count_replies(&self, parent_hash: &[u8; 32]) -> Result<usize, StorageError> {
-        let count = self.replies_by_parent_index.scan_prefix(parent_hash).count();
+        let count = self
+            .replies_by_parent_index
+            .scan_prefix(parent_hash)
+            .count();
         Ok(count)
     }
 
@@ -1218,13 +1279,12 @@ impl ChainStore {
         for result in self.author_content_index.scan_prefix(author).rev() {
             let (_, content_hash_bytes) = result?;
 
-            let content_hash: [u8; 32] = content_hash_bytes
-                .as_ref()
-                .try_into()
-                .map_err(|_| StorageError::CorruptedData {
+            let content_hash: [u8; 32] = content_hash_bytes.as_ref().try_into().map_err(|_| {
+                StorageError::CorruptedData {
                     expected: "32 bytes for content hash".to_string(),
                     actual: format!("{} bytes", content_hash_bytes.len()),
-                })?;
+                }
+            })?;
 
             // Get metadata for this content
             if let Some(metadata) = self.get_content_metadata(&content_hash)? {
@@ -1349,7 +1409,8 @@ impl ChainStore {
 
             self.space_content_index.insert(&index_key, &content_hash)?;
             // Also add to posts-only index
-            self.posts_by_space_index.insert(&index_key, &content_hash)?;
+            self.posts_by_space_index
+                .insert(&index_key, &content_hash)?;
 
             let parent_hash = action.parent_id.unwrap_or([0u8; 32]);
             let entry = ContentIndexEntry {
@@ -1361,13 +1422,15 @@ impl ChainStore {
             };
 
             let entry_data = bincode::serialize(&entry)?;
-            self.content_metadata_index.insert(&content_hash, entry_data)?;
+            self.content_metadata_index
+                .insert(&content_hash, entry_data)?;
 
             // Author content index: Key = author_pk(32) || timestamp(8) → content_hash
             let mut author_key = [0u8; 40];
             author_key[..32].copy_from_slice(&action.actor);
             author_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-            self.author_content_index.insert(&author_key, &content_hash)?;
+            self.author_content_index
+                .insert(&author_key, &content_hash)?;
 
             indexed += 1;
         }
@@ -1379,7 +1442,9 @@ impl ChainStore {
             // For replies, look up parent's space_id to ensure correct indexing
             let space_id_16: [u8; 16] = if let Some(parent_hash) = action.parent_id {
                 if let Ok(Some(parent_entry_data)) = self.content_metadata_index.get(&parent_hash) {
-                    if let Ok(parent_entry) = bincode::deserialize::<ContentIndexEntry>(&parent_entry_data) {
+                    if let Ok(parent_entry) =
+                        bincode::deserialize::<ContentIndexEntry>(&parent_entry_data)
+                    {
                         parent_entry.space_id
                     } else {
                         block_space_id_16
@@ -1406,7 +1471,8 @@ impl ChainStore {
                 let mut reply_key = [0u8; 40];
                 reply_key[..32].copy_from_slice(&parent_hash);
                 reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                self.replies_by_parent_index.insert(&reply_key, &content_hash)?;
+                self.replies_by_parent_index
+                    .insert(&reply_key, &content_hash)?;
             }
 
             let entry = ContentIndexEntry {
@@ -1418,13 +1484,15 @@ impl ChainStore {
             };
 
             let entry_data = bincode::serialize(&entry)?;
-            self.content_metadata_index.insert(&content_hash, entry_data)?;
+            self.content_metadata_index
+                .insert(&content_hash, entry_data)?;
 
             // Author content index: Key = author_pk(32) || timestamp(8) → content_hash
             let mut author_key = [0u8; 40];
             author_key[..32].copy_from_slice(&action.actor);
             author_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-            self.author_content_index.insert(&author_key, &content_hash)?;
+            self.author_content_index
+                .insert(&author_key, &content_hash)?;
 
             indexed += 1;
         }
@@ -1757,23 +1825,25 @@ impl ChainStore {
             let (height_bytes, hash_bytes) = result?;
 
             // Parse height
-            let height_arr: [u8; 8] = height_bytes
-                .as_ref()
-                .try_into()
-                .map_err(|_| StorageError::CorruptedData {
-                    expected: "8 bytes for height".to_string(),
-                    actual: format!("{} bytes", height_bytes.len()),
-                })?;
+            let height_arr: [u8; 8] =
+                height_bytes
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| StorageError::CorruptedData {
+                        expected: "8 bytes for height".to_string(),
+                        actual: format!("{} bytes", height_bytes.len()),
+                    })?;
             let height = u64::from_be_bytes(height_arr);
 
             // Parse hash
-            let hash: BlockHash = hash_bytes
-                .as_ref()
-                .try_into()
-                .map_err(|_| StorageError::CorruptedData {
-                    expected: "32 bytes for hash".to_string(),
-                    actual: format!("{} bytes", hash_bytes.len()),
-                })?;
+            let hash: BlockHash =
+                hash_bytes
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| StorageError::CorruptedData {
+                        expected: "32 bytes for hash".to_string(),
+                        actual: format!("{} bytes", hash_bytes.len()),
+                    })?;
 
             // Get the root block
             if let Some(block) = self.get_root_block(&hash)? {
@@ -2481,12 +2551,13 @@ impl ChainStore {
         match self.finalized_actions.get(action_hash)? {
             Some(height_bytes) => {
                 if height_bytes.len() == 8 {
-                    let height = u64::from_be_bytes(
-                        height_bytes.as_ref().try_into().map_err(|_| StorageError::CorruptedData {
-                            expected: "8 bytes for height".to_string(),
-                            actual: format!("{} bytes", height_bytes.len()),
-                        })?
-                    );
+                    let height =
+                        u64::from_be_bytes(height_bytes.as_ref().try_into().map_err(|_| {
+                            StorageError::CorruptedData {
+                                expected: "8 bytes for height".to_string(),
+                                actual: format!("{} bytes", height_bytes.len()),
+                            }
+                        })?);
                     Ok(Some(height))
                 } else {
                     Err(StorageError::CorruptedData {
@@ -2502,8 +2573,13 @@ impl ChainStore {
     /// Mark an action as finalized at a specific block height
     ///
     /// This should be called when storing a block to track which actions have been included.
-    pub fn mark_action_finalized(&self, action_hash: &[u8; 32], height: u64) -> Result<(), StorageError> {
-        self.finalized_actions.insert(action_hash, &height.to_be_bytes())?;
+    pub fn mark_action_finalized(
+        &self,
+        action_hash: &[u8; 32],
+        height: u64,
+    ) -> Result<(), StorageError> {
+        self.finalized_actions
+            .insert(action_hash, &height.to_be_bytes())?;
         Ok(())
     }
 
@@ -2589,7 +2665,11 @@ impl ChainStore {
         count += height_removed;
 
         if count > 0 {
-            log::info!("[CHAIN] Unmarked {} finalized actions at height {}", count, height);
+            log::info!(
+                "[CHAIN] Unmarked {} finalized actions at height {}",
+                count,
+                height
+            );
         }
         Ok(count)
     }
@@ -2624,7 +2704,11 @@ impl ChainStore {
         }
 
         if count > 0 {
-            log::debug!("[CHAIN] Cleared {} stale finalized actions at height {}", count, height);
+            log::debug!(
+                "[CHAIN] Cleared {} stale finalized actions at height {}",
+                count,
+                height
+            );
         }
         Ok(count)
     }
@@ -2637,7 +2721,15 @@ impl ChainStore {
     pub fn get_actions_at_height(
         &self,
         height: u64,
-    ) -> Result<Vec<([u8; 32], [u8; 32], crate::blocks::action::Action, crate::blocks::BranchPath)>, StorageError> {
+    ) -> Result<
+        Vec<(
+            [u8; 32],
+            [u8; 32],
+            crate::blocks::action::Action,
+            crate::blocks::BranchPath,
+        )>,
+        StorageError,
+    > {
         use crate::blocks::BranchPath;
 
         let root_hash = match self.get_root_hash_at_height(height)? {
@@ -2686,7 +2778,15 @@ impl ChainStore {
     pub fn rollback_block_at_height(
         &self,
         height: u64,
-    ) -> Result<Vec<([u8; 32], [u8; 32], crate::blocks::action::Action, crate::blocks::BranchPath)>, StorageError> {
+    ) -> Result<
+        Vec<(
+            [u8; 32],
+            [u8; 32],
+            crate::blocks::action::Action,
+            crate::blocks::BranchPath,
+        )>,
+        StorageError,
+    > {
         use crate::blocks::builder::BlockBuilder;
 
         let current_tip = self.get_latest_height()?.unwrap_or(0);
@@ -2717,7 +2817,15 @@ impl ChainStore {
     fn rollback_single_height(
         &self,
         height: u64,
-    ) -> Result<Vec<([u8; 32], [u8; 32], crate::blocks::action::Action, crate::blocks::BranchPath)>, StorageError> {
+    ) -> Result<
+        Vec<(
+            [u8; 32],
+            [u8; 32],
+            crate::blocks::action::Action,
+            crate::blocks::BranchPath,
+        )>,
+        StorageError,
+    > {
         use crate::blocks::builder::BlockBuilder;
 
         let root_hash = match self.get_root_hash_at_height(height)? {
@@ -2895,7 +3003,17 @@ impl ChainStore {
     /// This is called when validate_chain() finds corruption.
     /// Rolls back all blocks from (last_valid_height + 1) to tip.
     /// Returns the orphaned actions for mempool resubmission.
-    pub fn repair_chain(&self) -> Result<Vec<([u8; 32], [u8; 32], crate::blocks::action::Action, crate::blocks::BranchPath)>, StorageError> {
+    pub fn repair_chain(
+        &self,
+    ) -> Result<
+        Vec<(
+            [u8; 32],
+            [u8; 32],
+            crate::blocks::action::Action,
+            crate::blocks::BranchPath,
+        )>,
+        StorageError,
+    > {
         let last_valid = self.validate_chain()?;
         let tip_height = self.get_latest_height()?.unwrap_or(0);
 

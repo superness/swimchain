@@ -9,71 +9,116 @@ use std::time::Instant;
 use log::{debug, info, warn};
 
 use super::RouteError;
+use crate::attribution::{AttributionQueryPayload, AttributionResponsePayload};
+use crate::blocklist::gossip::{
+    entry_from_update, parse_blocklist_message, BlocklistGossip, BlocklistMessage,
+    MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
+};
+use crate::blocks::validation::validate_reply_parents;
 use crate::cli::search_index::{IndexableContent, SearchIndex};
 use crate::content::decay_integration::DecayIntegration;
 use crate::content::retrieval::ContentRetrievalManager;
+use crate::crypto::signature::verify as ed25519_verify;
+use crate::dht::constants::{
+    MSG_DHT_FIND_NODE, MSG_DHT_FIND_VALUE, MSG_DHT_NODES, MSG_DHT_PING, MSG_DHT_PONG,
+    MSG_DHT_PROVIDERS, MSG_DHT_STORE, MSG_DHT_STORE_ACK,
+};
 use crate::dht::{DhtManager, DhtMessage, DhtMessageType, NodeId as DhtNodeId};
-use crate::dht::constants::{MSG_DHT_PING, MSG_DHT_PONG, MSG_DHT_FIND_NODE, MSG_DHT_NODES, MSG_DHT_FIND_VALUE, MSG_DHT_PROVIDERS, MSG_DHT_STORE, MSG_DHT_STORE_ACK};
+use crate::discovery::peer_branches::PeerBranchTracker;
 use crate::discovery::PeerStore;
-use crate::attribution::{AttributionQueryPayload, AttributionResponsePayload};
+use crate::engagement_graph::{EngagementGraphStore, EngagementType};
 use crate::network::messages::{
     BlockAnnouncePayload, BlockDataPayload, BlocksPayload, DataPayload, GetBlockPayload,
-    GetBlocksPayload, GetBlocksLocatorPayload, GetHeadersLocatorPayload, GetPayload, GossipPayload,
+    GetBlocksLocatorPayload, GetBlocksPayload, GetHeadersLocatorPayload, GetPayload, GossipPayload,
     HeadersPayload, IHavePayload, InvItem, InvPayload, NotFoundPayload, PoolAnnouncePayload,
     PoolContributionPayload, PoolStatusPayload, SerializedBlock, SpaceHealthQueryPayload,
     SpaceHealthResponsePayload, WhoHasPayload, WireAddr,
 };
-use crate::types::serialize::{Deserialize, Serialize};
+use crate::node::peer_connections::PeerConnectionPool;
 use crate::node::NodeMetrics;
+use crate::spam_attestation::{
+    aggregate_attestations, validate_attestation, CounterAttestation, CounterAttestationState,
+    SpamAttestation, SpamAttestationStore, StoredSpamAttestation,
+};
+use crate::sponsorship::offer_store::OfferStore;
+use crate::sponsorship::storage::SponsorshipStore;
+use crate::sponsorship::wire::{
+    deserialize_claim, deserialize_claim_response, deserialize_offer, serialize_offer,
+    ClaimResponseType,
+};
 use crate::storage::blob::ContentBlobHash;
 use crate::storage::chain::ChainStore;
 use crate::storage::content::PersistentContentStore;
 use crate::storage::AggregationCache;
+use crate::sync::subscription::BranchSubscriptionManager;
+use crate::types::constants::{
+    // Limits
+    MAX_ADDRS_PER_MESSAGE,
+    // Message types
+    MSG_ACTION_ANNOUNCE,
+    MSG_ADDR,
+    MSG_ALERT,
+    MSG_ATTRIBUTION_QUERY,
+    MSG_ATTRIBUTION_RESPONSE,
+    MSG_BLOCKS,
+    MSG_BLOCK_ANNOUNCE,
+    MSG_BLOCK_DATA,
+    MSG_BRANCH_ANNOUNCE,
+    MSG_BRANCH_INVENTORY,
+    MSG_CHAINSTATUS,
+    MSG_CONTRIBUTION_ATTEST,
+    MSG_CONTRIBUTION_CLAIM,
+    MSG_COUNTER_ATTESTATION,
+    MSG_DATA,
+    MSG_DATA_CONTENT,
+    MSG_FORKANNOUNCE,
+    MSG_FORKINFO,
+    MSG_FORKQUERY,
+    MSG_GET,
+    MSG_GETADDR,
+    MSG_GETBLOCKS,
+    // Branch-Selective Sync
+    MSG_GETBLOCKS_BRANCH,
+    MSG_GETBLOCKS_LOCATOR,
+    MSG_GETDATA,
+    MSG_GETHEADERS,
+    MSG_GETHEADERS_LOCATOR,
+    MSG_GETMEMPOOL,
+    MSG_GET_BLOCK,
+    // Space Name Resolution (Bug #4)
+    MSG_GET_SPACE_META,
+    MSG_GOSSIP,
+    MSG_HEADERS,
+    MSG_INV,
+    MSG_I_HAVE,
+    MSG_LEVEL_QUERY,
+    MSG_LEVEL_RESPONSE,
+    MSG_NOTFOUND,
+    MSG_NOTFOUND_CONTENT,
+    MSG_PING,
+    MSG_PONG,
+    MSG_POOL_ANNOUNCE,
+    MSG_POOL_CONTRIBUTION,
+    MSG_POOL_STATUS,
+    MSG_REJECT,
+    MSG_SPACE_HEALTH_QUERY,
+    MSG_SPACE_HEALTH_RESPONSE,
+    MSG_SPACE_META,
+    MSG_SPAM_ATTESTATION,
+    MSG_SUBSCRIBE_BRANCH,
+    MSG_UNSUBSCRIBE_BRANCH,
+    MSG_VERACK,
+    MSG_VERSION,
+    MSG_WHO_HAS,
+    WIRE_ADDRESS_SIZE,
+};
+use crate::types::constants::{
+    MSG_SPONSORSHIP_CLAIM_RESPONSE, MSG_SPONSORSHIP_OFFER, MSG_SPONSORSHIP_OFFER_CLAIM,
+    MSG_SPONSORSHIP_OFFER_LIST, MSG_SPONSORSHIP_OFFER_QUERY,
+};
 use crate::types::content::{ContentId, Reaction, ReactionType};
 use crate::types::identity::{IdentityId, PublicKey, Signature};
-use crate::crypto::signature::verify as ed25519_verify;
-use crate::types::constants::{
-    // Message types
-    MSG_ACTION_ANNOUNCE, MSG_ADDR, MSG_ALERT, MSG_ATTRIBUTION_QUERY, MSG_ATTRIBUTION_RESPONSE,
-    MSG_BLOCKS, MSG_BLOCK_ANNOUNCE, MSG_BLOCK_DATA, MSG_CHAINSTATUS, MSG_CONTRIBUTION_ATTEST, MSG_GETMEMPOOL,
-    MSG_CONTRIBUTION_CLAIM, MSG_COUNTER_ATTESTATION, MSG_DATA, MSG_DATA_CONTENT, MSG_FORKANNOUNCE,
-    MSG_FORKINFO, MSG_FORKQUERY, MSG_GET, MSG_GETADDR, MSG_GETBLOCKS, MSG_GETBLOCKS_LOCATOR,
-    MSG_GETDATA, MSG_GETHEADERS, MSG_GETHEADERS_LOCATOR, MSG_GET_BLOCK, MSG_GOSSIP, MSG_HEADERS,
-    MSG_I_HAVE, MSG_INV, MSG_LEVEL_QUERY, MSG_LEVEL_RESPONSE, MSG_NOTFOUND, MSG_NOTFOUND_CONTENT,
-    MSG_PING, MSG_PONG, MSG_POOL_ANNOUNCE, MSG_POOL_CONTRIBUTION, MSG_POOL_STATUS, MSG_REJECT,
-    MSG_SPACE_HEALTH_QUERY, MSG_SPACE_HEALTH_RESPONSE, MSG_SPAM_ATTESTATION, MSG_VERACK,
-    MSG_VERSION, MSG_WHO_HAS,
-    // Branch-Selective Sync
-    MSG_GETBLOCKS_BRANCH, MSG_SUBSCRIBE_BRANCH, MSG_UNSUBSCRIBE_BRANCH,
-    MSG_BRANCH_ANNOUNCE, MSG_BRANCH_INVENTORY,
-    // Space Name Resolution (Bug #4)
-    MSG_GET_SPACE_META, MSG_SPACE_META,
-    // Limits
-    MAX_ADDRS_PER_MESSAGE, WIRE_ADDRESS_SIZE,
-};
-use crate::blocklist::gossip::{
-    BlocklistGossip, MSG_BLOCKLIST_UPDATE, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_REQUEST,
-    parse_blocklist_message, BlocklistMessage, entry_from_update,
-};
-use crate::sync::subscription::BranchSubscriptionManager;
-use crate::discovery::peer_branches::PeerBranchTracker;
-use crate::blocks::validation::validate_reply_parents;
-use crate::node::peer_connections::PeerConnectionPool;
-use crate::spam_attestation::{
-    SpamAttestation, SpamAttestationStore, CounterAttestation, CounterAttestationState,
-    aggregate_attestations, validate_attestation, StoredSpamAttestation,
-};
-use crate::engagement_graph::{EngagementGraphStore, EngagementType};
-use crate::sponsorship::storage::SponsorshipStore;
-use crate::sponsorship::offer_store::OfferStore;
-use crate::sponsorship::wire::{
-    deserialize_offer, deserialize_claim, deserialize_claim_response,
-    serialize_offer, ClaimResponseType,
-};
-use crate::types::constants::{
-    MSG_SPONSORSHIP_OFFER, MSG_SPONSORSHIP_OFFER_CLAIM, MSG_SPONSORSHIP_CLAIM_RESPONSE,
-    MSG_SPONSORSHIP_OFFER_QUERY, MSG_SPONSORSHIP_OFFER_LIST,
-};
+use crate::types::serialize::{Deserialize, Serialize};
 
 /// Orphan block entry: block data waiting for its parent to arrive
 #[derive(Clone)]
@@ -283,7 +328,8 @@ impl MessageRouter {
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
         // For backwards compatibility, route without peer address
-        self.route_with_addr(peer_id, message_type, fork_id, payload, None).await
+        self.route_with_addr(peer_id, message_type, fork_id, payload, None)
+            .await
     }
 
     /// Route a message to the appropriate handler with optional peer address
@@ -317,8 +363,11 @@ impl MessageRouter {
 
             // === Legacy Inventory (deprecated) ===
             MSG_DATA | MSG_NOTFOUND | MSG_GOSSIP => {
-                debug!("[ROUTE] Received deprecated message type 0x{:02x} from {}",
-                       message_type, hex::encode(&peer_id[..8]));
+                debug!(
+                    "[ROUTE] Received deprecated message type 0x{:02x} from {}",
+                    message_type,
+                    hex::encode(&peer_id[..8])
+                );
                 Ok(None) // Silently ignore deprecated messages
             }
 
@@ -331,8 +380,14 @@ impl MessageRouter {
 
             // === Social Layer (SPEC_09) ===
             // Level/contribution/attestation messages removed - level system deprecated
-            MSG_CONTRIBUTION_CLAIM | MSG_CONTRIBUTION_ATTEST | MSG_LEVEL_QUERY | MSG_LEVEL_RESPONSE => {
-                debug!("[ROUTE] Level system message type 0x{:02x} ignored (system removed)", message_type);
+            MSG_CONTRIBUTION_CLAIM
+            | MSG_CONTRIBUTION_ATTEST
+            | MSG_LEVEL_QUERY
+            | MSG_LEVEL_RESPONSE => {
+                debug!(
+                    "[ROUTE] Level system message type 0x{:02x} ignored (system removed)",
+                    message_type
+                );
                 Ok(None)
             }
             MSG_SPACE_HEALTH_QUERY => self.handle_space_health_query(peer_id, payload).await,
@@ -389,16 +444,17 @@ impl MessageRouter {
             MSG_SPACE_META => self.handle_space_meta(peer_id, payload).await,
 
             // === Chain Status (not yet implemented) ===
-            MSG_GETHEADERS | MSG_CHAINSTATUS => {
-                Err(RouteError::SubsystemUnavailable("chain_sync"))
-            }
+            MSG_GETHEADERS | MSG_CHAINSTATUS => Err(RouteError::SubsystemUnavailable("chain_sync")),
 
             // === DHT (Kademlia) - SPEC_06 §3.8 ===
             MSG_DHT_PING => self.handle_dht_ping(peer_id, payload, peer_addr).await,
             MSG_DHT_PONG => self.handle_dht_pong(peer_id, payload, peer_addr).await,
             MSG_DHT_FIND_NODE => self.handle_dht_find_node(peer_id, payload, peer_addr).await,
             MSG_DHT_NODES => self.handle_dht_nodes(peer_id, payload, peer_addr).await,
-            MSG_DHT_FIND_VALUE => self.handle_dht_find_value(peer_id, payload, peer_addr).await,
+            MSG_DHT_FIND_VALUE => {
+                self.handle_dht_find_value(peer_id, payload, peer_addr)
+                    .await
+            }
             MSG_DHT_PROVIDERS => self.handle_dht_providers(peer_id, payload, peer_addr).await,
             MSG_DHT_STORE => self.handle_dht_store(peer_id, payload, peer_addr).await,
             MSG_DHT_STORE_ACK => self.handle_dht_store_ack(peer_id, payload, peer_addr).await,
@@ -410,9 +466,16 @@ impl MessageRouter {
             // === Sponsorship Offers (SPEC_11 §3.11) ===
             MSG_SPONSORSHIP_OFFER => self.handle_sponsorship_offer(peer_id, payload).await,
             MSG_SPONSORSHIP_OFFER_CLAIM => self.handle_sponsorship_claim(peer_id, payload).await,
-            MSG_SPONSORSHIP_CLAIM_RESPONSE => self.handle_sponsorship_claim_response(peer_id, payload).await,
-            MSG_SPONSORSHIP_OFFER_QUERY => self.handle_sponsorship_offer_query(peer_id, payload).await,
-            MSG_SPONSORSHIP_OFFER_LIST => self.handle_sponsorship_offer_list(peer_id, payload).await,
+            MSG_SPONSORSHIP_CLAIM_RESPONSE => {
+                self.handle_sponsorship_claim_response(peer_id, payload)
+                    .await
+            }
+            MSG_SPONSORSHIP_OFFER_QUERY => {
+                self.handle_sponsorship_offer_query(peer_id, payload).await
+            }
+            MSG_SPONSORSHIP_OFFER_LIST => {
+                self.handle_sponsorship_offer_list(peer_id, payload).await
+            }
 
             // === Unknown ===
             _ => Err(RouteError::UnknownMessageType(message_type)),
@@ -473,7 +536,11 @@ impl MessageRouter {
         if let Some((sent_at, expected_peer)) = pending.get(&nonce) {
             if *expected_peer == *peer_id {
                 let rtt_ms = sent_at.elapsed().as_millis();
-                debug!("PONG received from peer {} with RTT {}ms", hex::encode(peer_id), rtt_ms);
+                debug!(
+                    "PONG received from peer {} with RTT {}ms",
+                    hex::encode(peer_id),
+                    rtt_ms
+                );
                 // Only remove if peer matches
                 pending.remove(&nonce);
             }
@@ -602,7 +669,10 @@ impl MessageRouter {
             }
             info!("[ADDR] Stored {} of {} received addresses", stored, count);
         } else {
-            debug!("[ADDR] Received {} addresses but PeerStore not available", count);
+            debug!(
+                "[ADDR] Received {} addresses but PeerStore not available",
+                count
+            );
         }
 
         Ok(None)
@@ -702,7 +772,8 @@ impl MessageRouter {
                             pending.retain(|_, (ts, _)| now.duration_since(*ts).as_secs() < 60);
 
                             // Add or update the entry for this content
-                            pending.entry(hash_bytes)
+                            pending
+                                .entry(hash_bytes)
                                 .and_modify(|(ts, peers)| {
                                     *ts = now;
                                     if !peers.contains(peer_id) {
@@ -723,7 +794,8 @@ impl MessageRouter {
                         // Respond with I_HAVE including the known provider's peer_id
                         // so the requester knows who to connect to
                         let known_provider = known_peers[0]; // Use first known provider
-                        let i_have_payload = IHavePayload::with_provider(hash_bytes, known_provider);
+                        let i_have_payload =
+                            IHavePayload::with_provider(hash_bytes, known_provider);
                         info!(
                             "[CONTENT-SYNC] Responding I_HAVE for {} (not connected to provider {}, passing info to requester {})",
                             hex::encode(&hash_bytes[..8]),
@@ -796,15 +868,16 @@ impl MessageRouter {
         let is_wanted = content_mgr.on_i_have(&i_have, *peer_id);
 
         // Check if we have pending WHO_HAS relays for this content - forward I_HAVE to waiting peers
-        let pending_peers: Vec<[u8; 32]> = if let Ok(mut pending) = self.pending_who_has_relay.write() {
-            if let Some((_, peers)) = pending.remove(&i_have.hash) {
-                peers
+        let pending_peers: Vec<[u8; 32]> =
+            if let Ok(mut pending) = self.pending_who_has_relay.write() {
+                if let Some((_, peers)) = pending.remove(&i_have.hash) {
+                    peers
+                } else {
+                    vec![]
+                }
             } else {
                 vec![]
-            }
-        } else {
-            vec![]
-        };
+            };
 
         if !pending_peers.is_empty() {
             if let Some(pool) = &self.connection_pool {
@@ -952,7 +1025,8 @@ impl MessageRouter {
 
                 // Check if we know any peers that have this content and try to relay GET
                 // This includes both the original provider AND relay peers who told us about it
-                let known_peers = content_mgr.get_peers_with_content(&ContentBlobHash::from_bytes(hash_bytes));
+                let known_peers =
+                    content_mgr.get_peers_with_content(&ContentBlobHash::from_bytes(hash_bytes));
 
                 if !known_peers.is_empty() {
                     info!(
@@ -962,17 +1036,21 @@ impl MessageRouter {
 
                     // Try to relay GET to any known peer that we're connected to
                     if let Some(pool) = &self.connection_pool {
-                        let get_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
-                            crate::types::network::MessageType::Get,
-                            hash_bytes.to_vec(),
-                        );
+                        let get_envelope =
+                            crate::types::network::MessageEnvelope::new_fork_agnostic(
+                                crate::types::network::MessageType::Get,
+                                hash_bytes.to_vec(),
+                            );
 
                         for known_peer in &known_peers {
                             let hex_known = hex::encode(&known_peer[..8]);
                             if pool.send_to(known_peer, &get_envelope).await.is_ok() {
                                 // Record in pending relay cache so when we receive DATA, we forward to original requester
                                 if let Ok(mut cache) = self.pending_who_has_relay.write() {
-                                    cache.insert(hash_bytes, (std::time::Instant::now(), vec![*peer_id]));
+                                    cache.insert(
+                                        hash_bytes,
+                                        (std::time::Instant::now(), vec![*peer_id]),
+                                    );
                                 }
 
                                 info!(
@@ -1038,7 +1116,8 @@ impl MessageRouter {
         hash_bytes.copy_from_slice(&payload[..32]);
         let expected_hash = ContentBlobHash::from_bytes(hash_bytes);
 
-        let length = u32::from_le_bytes([payload[32], payload[33], payload[34], payload[35]]) as usize;
+        let length =
+            u32::from_le_bytes([payload[32], payload[33], payload[34], payload[35]]) as usize;
 
         if payload.len() < 36 + length {
             return Err(RouteError::PayloadTooSmall {
@@ -1123,11 +1202,16 @@ impl MessageRouter {
                 // Try to deserialize as ContentItem and extract indexable fields
                 if let Some(ref search_index) = self.search_index {
                     // Try to deserialize the content as a ContentItem
-                    if let Ok(item) = bincode::deserialize::<crate::types::content::ContentItem>(data) {
+                    if let Ok(item) =
+                        bincode::deserialize::<crate::types::content::ContentItem>(data)
+                    {
                         // Extract title and body from body_inline (format: "title\n\nbody")
                         let (title, body) = if let Some(ref body_inline) = item.body_inline {
                             if let Some(idx) = body_inline.find("\n\n") {
-                                (body_inline[..idx].to_string(), body_inline[idx + 2..].to_string())
+                                (
+                                    body_inline[..idx].to_string(),
+                                    body_inline[idx + 2..].to_string(),
+                                )
                             } else {
                                 // No title, just body
                                 (String::new(), body_inline.clone())
@@ -1182,7 +1266,8 @@ impl MessageRouter {
 
                 // Check if there are peers waiting for this content (relay scenario)
                 // If we were acting as a relay for a GET request, forward DATA to the requester
-                let waiting_peers = self.pending_who_has_relay
+                let waiting_peers = self
+                    .pending_who_has_relay
                     .write()
                     .ok()
                     .and_then(|mut cache| cache.remove(&hash_bytes));
@@ -1191,10 +1276,11 @@ impl MessageRouter {
                     if let Some(pool) = &self.connection_pool {
                         // Forward the DATA_CONTENT to each waiting peer
                         for waiting_peer in &peers {
-                            let data_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
-                                crate::types::network::MessageType::DataContent,
-                                payload.to_vec(), // Forward the original payload
-                            );
+                            let data_envelope =
+                                crate::types::network::MessageEnvelope::new_fork_agnostic(
+                                    crate::types::network::MessageType::DataContent,
+                                    payload.to_vec(), // Forward the original payload
+                                );
                             if pool.send_to(waiting_peer, &data_envelope).await.is_ok() {
                                 info!(
                                     "[CONTENT-SYNC] Relayed DATA_CONTENT for {} to waiting peer {}",
@@ -1279,8 +1365,9 @@ impl MessageRouter {
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
         // Parse the space health query
-        let query = SpaceHealthQueryPayload::from_bytes(payload)
-            .ok_or_else(|| RouteError::DeserializationError("Invalid SPACE_HEALTH_QUERY payload".to_string()))?;
+        let query = SpaceHealthQueryPayload::from_bytes(payload).ok_or_else(|| {
+            RouteError::DeserializationError("Invalid SPACE_HEALTH_QUERY payload".to_string())
+        })?;
 
         info!(
             "[SPACE_HEALTH] Query from {} for space {}",
@@ -1301,8 +1388,9 @@ impl MessageRouter {
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
         // Parse the space health response
-        let response = SpaceHealthResponsePayload::from_bytes(payload)
-            .ok_or_else(|| RouteError::DeserializationError("Invalid SPACE_HEALTH_RESPONSE payload".to_string()))?;
+        let response = SpaceHealthResponsePayload::from_bytes(payload).ok_or_else(|| {
+            RouteError::DeserializationError("Invalid SPACE_HEALTH_RESPONSE payload".to_string())
+        })?;
 
         info!(
             "[SPACE_HEALTH] Response from {} for space {}: health_score={} active_swimmers={}",
@@ -1323,8 +1411,9 @@ impl MessageRouter {
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
         // Parse the attribution query
-        let query = AttributionQueryPayload::from_bytes(payload)
-            .map_err(|e| RouteError::DeserializationError(format!("Invalid ATTRIBUTION_QUERY: {}", e)))?;
+        let query = AttributionQueryPayload::from_bytes(payload).map_err(|e| {
+            RouteError::DeserializationError(format!("Invalid ATTRIBUTION_QUERY: {}", e))
+        })?;
 
         info!(
             "[ATTRIBUTION] Query from {} for content {}",
@@ -1345,8 +1434,9 @@ impl MessageRouter {
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
         // Parse the attribution response
-        let response = AttributionResponsePayload::from_bytes(payload)
-            .map_err(|e| RouteError::DeserializationError(format!("Invalid ATTRIBUTION_RESPONSE: {}", e)))?;
+        let response = AttributionResponsePayload::from_bytes(payload).map_err(|e| {
+            RouteError::DeserializationError(format!("Invalid ATTRIBUTION_RESPONSE: {}", e))
+        })?;
 
         info!(
             "[ATTRIBUTION] Response from {} for content {}: {} contributors, {} total PoW",
@@ -1389,7 +1479,10 @@ impl MessageRouter {
 
         warn!(
             "Received REJECT from peer {}: type=0x{:02x} code={} reason={}",
-            hex::encode(peer_id), rejected_type, code, reason
+            hex::encode(peer_id),
+            rejected_type,
+            code,
+            reason
         );
 
         Ok(None)
@@ -1422,7 +1515,11 @@ impl MessageRouter {
 
         warn!(
             "Received ALERT from peer {}: id={} priority={} expires={} message={}",
-            hex::encode(peer_id), hex::encode(&alert_id[..8]), priority, expires, message
+            hex::encode(peer_id),
+            hex::encode(&alert_id[..8]),
+            priority,
+            expires,
+            message
         );
 
         Ok(None)
@@ -1470,7 +1567,8 @@ impl MessageRouter {
                 Ok(None) => {
                     // We don't have this block. Check if it has higher cumulative PoW than our tip.
                     // If so, we need to do a locator sync to get the full chain from this peer.
-                    let our_tip_pow = chain_store.get_best_tip_block()
+                    let our_tip_pow = chain_store
+                        .get_best_tip_block()
                         .ok()
                         .flatten()
                         .map(|b| b.cumulative_pow)
@@ -1491,10 +1589,11 @@ impl MessageRouter {
 
                             // Send directly to this peer via connection pool
                             if let Some(ref pool) = self.connection_pool {
-                                let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
-                                    crate::types::network::MessageType::GetBlocksLocator,
-                                    request.to_bytes(),
-                                );
+                                let envelope =
+                                    crate::types::network::MessageEnvelope::new_fork_agnostic(
+                                        crate::types::network::MessageType::GetBlocksLocator,
+                                        request.to_bytes(),
+                                    );
 
                                 if let Err(e) = pool.send_to(peer_id, &envelope).await {
                                     warn!(
@@ -1504,7 +1603,10 @@ impl MessageRouter {
                                     );
                                     // Fall back to requesting just this block
                                     let get_block = GetBlockPayload::new(announce.block_hash);
-                                    return Ok(Some((MSG_GET_BLOCK, get_block.to_bytes().to_vec())));
+                                    return Ok(Some((
+                                        MSG_GET_BLOCK,
+                                        get_block.to_bytes().to_vec(),
+                                    )));
                                 } else {
                                     info!(
                                         "[BLOCK] Sent GETBLOCKS_LOCATOR to peer {} to fetch heavier chain",
@@ -1554,12 +1656,11 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let request = GetBlockPayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::PayloadTooSmall {
+        let request =
+            GetBlockPayload::from_bytes(payload).ok_or_else(|| RouteError::PayloadTooSmall {
                 expected: GetBlockPayload::SIZE,
                 actual: payload.len(),
-            }
-        })?;
+            })?;
 
         debug!(
             "[BLOCK] Received GET_BLOCK from peer {}: hash={}",
@@ -1666,12 +1767,11 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let block_data = BlockDataPayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::PayloadTooSmall {
+        let block_data =
+            BlockDataPayload::from_bytes(payload).ok_or_else(|| RouteError::PayloadTooSmall {
                 expected: BlockDataPayload::MIN_SIZE,
                 actual: payload.len(),
-            }
-        })?;
+            })?;
 
         info!(
             "[BLOCK] Received BLOCK_DATA from peer {}: hash={} root={} bytes, {} space blocks, {} content blocks",
@@ -1691,14 +1791,14 @@ impl MessageRouter {
         };
 
         // Deserialize and store the root block
-        let root_block: crate::blocks::RootBlock = match bincode::deserialize(&block_data.root_block)
-        {
-            Ok(block) => block,
-            Err(e) => {
-                warn!("[BLOCK] Failed to deserialize root block: {}", e);
-                return Err(RouteError::DeserializationError(format!("{}", e)));
-            }
-        };
+        let root_block: crate::blocks::RootBlock =
+            match bincode::deserialize(&block_data.root_block) {
+                Ok(block) => block,
+                Err(e) => {
+                    warn!("[BLOCK] Failed to deserialize root block: {}", e);
+                    return Err(RouteError::DeserializationError(format!("{}", e)));
+                }
+            };
 
         // Verify the block hash matches
         let computed_hash = root_block.hash();
@@ -1799,18 +1899,31 @@ impl MessageRouter {
                             // Return orphaned actions to mempool
                             if let Some(ref bb) = self.block_builder {
                                 if let Ok(mut builder) = bb.write() {
-                                    for (thread_id, space_id, action, branch_path) in orphaned_actions {
+                                    for (thread_id, space_id, action, branch_path) in
+                                        orphaned_actions
+                                    {
                                         // Skip actions that are in the new winning block
                                         // (they'll be marked as finalized when we store the new block)
-                                        builder.add_action(thread_id, space_id, action, branch_path);
+                                        builder.add_action(
+                                            thread_id,
+                                            space_id,
+                                            action,
+                                            branch_path,
+                                        );
                                     }
                                     info!("[REORG] Returned orphaned actions to mempool");
                                 }
                             }
                         }
                         Err(e) => {
-                            warn!("[REORG] Failed to rollback block at height {}: {}", block_height, e);
-                            return Err(RouteError::StorageError(format!("rollback failed: {}", e)));
+                            warn!(
+                                "[REORG] Failed to rollback block at height {}: {}",
+                                block_height, e
+                            );
+                            return Err(RouteError::StorageError(format!(
+                                "rollback failed: {}",
+                                e
+                            )));
                         }
                     }
                     // Continue to store the winning block below
@@ -1893,10 +2006,15 @@ impl MessageRouter {
                     block_height
                 );
                 return Err(RouteError::InvalidData(
-                    "non-genesis block has null prev_root_hash".to_string()
+                    "non-genesis block has null prev_root_hash".to_string(),
                 ));
             }
-            if chain_store.get_root_block(&prev_hash).ok().flatten().is_none() {
+            if chain_store
+                .get_root_block(&prev_hash)
+                .ok()
+                .flatten()
+                .is_none()
+            {
                 // Missing parent block - store as orphan and request parent
                 info!(
                     "[ORPHAN] Block {} at height {} references unknown prev_root_hash {} - storing as orphan",
@@ -1919,7 +2037,8 @@ impl MessageRouter {
                     let orphan_list = orphans.entry(prev_hash).or_insert_with(Vec::new);
                     if orphan_list.len() < 100 {
                         // Check if we already have this orphan
-                        let already_have = orphan_list.iter().any(|o| o.block_hash == computed_hash);
+                        let already_have =
+                            orphan_list.iter().any(|o| o.block_hash == computed_hash);
                         if !already_have {
                             orphan_list.push(orphan);
                             info!(
@@ -1929,7 +2048,10 @@ impl MessageRouter {
                             );
                         }
                     } else {
-                        warn!("[ORPHAN] Too many orphans waiting for {}, dropping new orphan", hex::encode(&prev_hash[..8]));
+                        warn!(
+                            "[ORPHAN] Too many orphans waiting for {}, dropping new orphan",
+                            hex::encode(&prev_hash[..8])
+                        );
                     }
                 }
 
@@ -1990,17 +2112,30 @@ impl MessageRouter {
                 // (which is the parent of the incoming block)
                 let mut height_to_check = current_tip.height;
                 while height_to_check > 0 {
-                    if let Ok(Some(hash_at_height)) = chain_store.get_root_hash_at_height(height_to_check) {
+                    if let Ok(Some(hash_at_height)) =
+                        chain_store.get_root_hash_at_height(height_to_check)
+                    {
                         // Check if this is the common ancestor (parent of incoming block)
                         if hash_at_height == incoming_parent {
-                            info!("[REORG] Found common ancestor at height {} ({})", height_to_check, hex::encode(&hash_at_height[..8]));
+                            info!(
+                                "[REORG] Found common ancestor at height {} ({})",
+                                height_to_check,
+                                hex::encode(&hash_at_height[..8])
+                            );
                             break;
                         }
                         // Unmark actions from this orphaned block
                         if let Err(e) = chain_store.unmark_actions_at_height(height_to_check) {
-                            warn!("[REORG] Failed to unmark actions at height {}: {}", height_to_check, e);
+                            warn!(
+                                "[REORG] Failed to unmark actions at height {}: {}",
+                                height_to_check, e
+                            );
                         } else {
-                            info!("[REORG] Unmarked finalized actions at height {} (block {})", height_to_check, hex::encode(&hash_at_height[..8]));
+                            info!(
+                                "[REORG] Unmarked finalized actions at height {} (block {})",
+                                height_to_check,
+                                hex::encode(&hash_at_height[..8])
+                            );
                         }
                     }
                     height_to_check = height_to_check.saturating_sub(1);
@@ -2012,10 +2147,16 @@ impl MessageRouter {
         // a previous failed attempt. This handles the case where content blocks were
         // partially processed but the root block was never fully accepted.
         if let Err(e) = chain_store.unmark_actions_at_height(block_height) {
-            debug!("[BLOCK] Failed to unmark stale actions at height {}: {}", block_height, e);
+            debug!(
+                "[BLOCK] Failed to unmark stale actions at height {}: {}",
+                block_height, e
+            );
         } else {
             // Only log if we actually unmarked something
-            debug!("[BLOCK] Cleared any stale finalized actions at incoming height {}", block_height);
+            debug!(
+                "[BLOCK] Cleared any stale finalized actions at incoming height {}",
+                block_height
+            );
         }
 
         // Collect all content IDs from this block data (for in-block parent references)
@@ -2058,7 +2199,11 @@ impl MessageRouter {
             info!(
                 "[BLOCK-SYNC] ContentBlock: {} actions, space_metadata={}",
                 content_block.actions.len(),
-                if content_block.space_metadata.is_some() { "PRESENT" } else { "NONE" }
+                if content_block.space_metadata.is_some() {
+                    "PRESENT"
+                } else {
+                    "NONE"
+                }
             );
             if let Some(ref metadata) = content_block.space_metadata {
                 for action in &content_block.actions {
@@ -2163,7 +2308,9 @@ impl MessageRouter {
                 warn!("[BLOCK] Failed to store content block: {}", e);
             } else {
                 // Mark all actions in this content block as finalized
-                if let Err(e) = chain_store.mark_content_block_actions_finalized(&content_block, block_height) {
+                if let Err(e) =
+                    chain_store.mark_content_block_actions_finalized(&content_block, block_height)
+                {
                     warn!("[BLOCK] Failed to mark actions as finalized: {}", e);
                 }
                 // Extract and store reactions from Engage actions
@@ -2184,7 +2331,9 @@ impl MessageRouter {
         // IMPORTANT: We use WHO_HAS/I_HAVE discovery instead of blindly sending GET to the
         // block sender, because the sender may have also synced the block and not have the blobs.
         // The original content creator (who has the blobs) will respond to WHO_HAS with I_HAVE.
-        if let (Some(ref content_mgr), Some(ref pool)) = (&self.content_retrieval, &self.connection_pool) {
+        if let (Some(ref content_mgr), Some(ref pool)) =
+            (&self.content_retrieval, &self.connection_pool)
+        {
             let mut missing_hashes: Vec<[u8; 32]> = Vec::new();
 
             // Collect content hashes we don't have locally (text content)
@@ -2198,8 +2347,11 @@ impl MessageRouter {
             // Also collect media hashes from actions (images/attachments)
             for action in &actions_in_block {
                 for media_ref in &action.media_refs {
-                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(media_ref.media_hash);
-                    if !content_mgr.has_content(&blob_hash) && !missing_hashes.contains(&media_ref.media_hash) {
+                    let blob_hash =
+                        crate::storage::blob::ContentBlobHash::from_bytes(media_ref.media_hash);
+                    if !content_mgr.has_content(&blob_hash)
+                        && !missing_hashes.contains(&media_ref.media_hash)
+                    {
                         missing_hashes.push(media_ref.media_hash);
                     }
                 }
@@ -2217,17 +2369,19 @@ impl MessageRouter {
                 // If block sender has it, they'll respond immediately via I_HAVE.
                 // If not, other peers who have it will respond.
                 for content_hash in &missing_hashes {
-                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                    let blob_hash =
+                        crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
                     // Mark as wanted so when I_HAVE arrives, we auto-fetch
                     content_mgr.mark_wanted(&blob_hash);
                 }
 
                 // Broadcast WHO_HAS to all connected peers for discovery
                 for content_hash in missing_hashes {
-                    let who_has_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
-                        crate::types::network::MessageType::WhoHas,
-                        content_hash.to_vec(),
-                    );
+                    let who_has_envelope =
+                        crate::types::network::MessageEnvelope::new_fork_agnostic(
+                            crate::types::network::MessageType::WhoHas,
+                            content_hash.to_vec(),
+                        );
 
                     let sent = pool.broadcast(&who_has_envelope).await;
                     if sent > 0 {
@@ -2398,7 +2552,10 @@ impl MessageRouter {
                 );
 
                 // Process the orphan using inline logic (not recursive call)
-                match self.process_orphan_block_data(&orphan.from_peer, &orphan.data).await {
+                match self
+                    .process_orphan_block_data(&orphan.from_peer, &orphan.data)
+                    .await
+                {
                     Ok(Some(stored_hash)) => {
                         info!(
                             "[ORPHAN] Successfully processed orphan block {}",
@@ -2452,12 +2609,11 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<[u8; 32]>, RouteError> {
-        let block_data = BlockDataPayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::PayloadTooSmall {
+        let block_data =
+            BlockDataPayload::from_bytes(payload).ok_or_else(|| RouteError::PayloadTooSmall {
                 expected: BlockDataPayload::MIN_SIZE,
                 actual: payload.len(),
-            }
-        })?;
+            })?;
 
         let chain_store = match &self.chain_store {
             Some(store) => store,
@@ -2498,7 +2654,12 @@ impl MessageRouter {
             if prev_hash == [0u8; 32] {
                 return Err(RouteError::InvalidData("null prev_root_hash".to_string()));
             }
-            if chain_store.get_root_block(&prev_hash).ok().flatten().is_none() {
+            if chain_store
+                .get_root_block(&prev_hash)
+                .ok()
+                .flatten()
+                .is_none()
+            {
                 // Still missing parent - re-orphan it
                 let orphan = OrphanBlock {
                     data: payload.to_vec(),
@@ -2510,7 +2671,8 @@ impl MessageRouter {
                 if let Ok(mut orphans) = self.orphan_blocks.write() {
                     let orphan_list = orphans.entry(prev_hash).or_insert_with(Vec::new);
                     if orphan_list.len() < 100 {
-                        let already_have = orphan_list.iter().any(|o| o.block_hash == computed_hash);
+                        let already_have =
+                            orphan_list.iter().any(|o| o.block_hash == computed_hash);
                         if !already_have {
                             orphan_list.push(orphan);
                         }
@@ -2525,7 +2687,9 @@ impl MessageRouter {
 
         // Store content and space blocks (simplified - just store, no full validation)
         for content_bytes in &block_data.content_blocks {
-            if let Ok(content_block) = bincode::deserialize::<crate::blocks::ContentBlock>(content_bytes) {
+            if let Ok(content_block) =
+                bincode::deserialize::<crate::blocks::ContentBlock>(content_bytes)
+            {
                 // Collect content hashes and media refs for blob fetching
                 for action in &content_block.actions {
                     if let Some(content_hash) = action.content_hash {
@@ -2536,12 +2700,14 @@ impl MessageRouter {
                     }
                 }
                 let _ = chain_store.put_content_block(&content_block);
-                let _ = chain_store.mark_content_block_actions_finalized(&content_block, block_height);
+                let _ =
+                    chain_store.mark_content_block_actions_finalized(&content_block, block_height);
             }
         }
 
         for space_bytes in &block_data.space_blocks {
-            if let Ok(space_block) = bincode::deserialize::<crate::blocks::SpaceBlock>(space_bytes) {
+            if let Ok(space_block) = bincode::deserialize::<crate::blocks::SpaceBlock>(space_bytes)
+            {
                 let _ = chain_store.put_space_block(&space_block);
             }
         }
@@ -2554,7 +2720,9 @@ impl MessageRouter {
 
         // CRITICAL: Fetch missing content blobs for orphan block.
         // This mirrors the blob fetching logic in handle_block_data.
-        if let (Some(ref content_mgr), Some(ref pool)) = (&self.content_retrieval, &self.connection_pool) {
+        if let (Some(ref content_mgr), Some(ref pool)) =
+            (&self.content_retrieval, &self.connection_pool)
+        {
             let mut missing_hashes: Vec<[u8; 32]> = Vec::new();
 
             for content_hash in all_content_hashes {
@@ -2573,16 +2741,18 @@ impl MessageRouter {
 
                 // Mark content as wanted so when I_HAVE arrives, we auto-fetch
                 for content_hash in &missing_hashes {
-                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                    let blob_hash =
+                        crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
                     content_mgr.mark_wanted(&blob_hash);
                 }
 
                 // Broadcast WHO_HAS to all connected peers for discovery
                 for content_hash in missing_hashes {
-                    let who_has_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
-                        crate::types::network::MessageType::WhoHas,
-                        content_hash.to_vec(),
-                    );
+                    let who_has_envelope =
+                        crate::types::network::MessageEnvelope::new_fork_agnostic(
+                            crate::types::network::MessageType::WhoHas,
+                            content_hash.to_vec(),
+                        );
 
                     let _ = pool.broadcast(&who_has_envelope).await;
                 }
@@ -2603,9 +2773,8 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let request = GetBlocksPayload::from_bytes(payload).map_err(|e| {
-            RouteError::DeserializationError(format!("GetBlocksPayload: {}", e))
-        })?;
+        let request = GetBlocksPayload::from_bytes(payload)
+            .map_err(|e| RouteError::DeserializationError(format!("GetBlocksPayload: {}", e)))?;
 
         info!(
             "[BLOCK] Received GETBLOCKS from peer {}: heights {}..{} max={}",
@@ -2650,7 +2819,10 @@ impl MessageRouter {
             let root_bytes = match bincode::serialize(&root_block) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    warn!("[BLOCK] Failed to serialize root block at height {}: {}", height, e);
+                    warn!(
+                        "[BLOCK] Failed to serialize root block at height {}: {}",
+                        height, e
+                    );
                     continue;
                 }
             };
@@ -2682,14 +2854,18 @@ impl MessageRouter {
 
                             // Serialize content blocks
                             for content_hash in &space_block.content_block_hashes {
-                                if let Ok(Some(content_block)) = chain_store.get_content_block(content_hash) {
+                                if let Ok(Some(content_block)) =
+                                    chain_store.get_content_block(content_hash)
+                                {
                                     debug!(
                                         "[BLOCK-SEND] Sending ContentBlock with {} actions, space_metadata={}",
                                         content_block.actions.len(),
                                         if content_block.space_metadata.is_some() { "PRESENT" } else { "NONE" }
                                     );
                                     if let Ok(content_bytes) = bincode::serialize(&content_block) {
-                                        full_data.extend_from_slice(&(content_bytes.len() as u32).to_le_bytes());
+                                        full_data.extend_from_slice(
+                                            &(content_bytes.len() as u32).to_le_bytes(),
+                                        );
                                         full_data.extend_from_slice(&content_bytes);
                                     }
                                 }
@@ -2731,9 +2907,8 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let blocks_data = BlocksPayload::from_bytes(payload).map_err(|e| {
-            RouteError::DeserializationError(format!("BlocksPayload: {}", e))
-        })?;
+        let blocks_data = BlocksPayload::from_bytes(payload)
+            .map_err(|e| RouteError::DeserializationError(format!("BlocksPayload: {}", e)))?;
 
         info!(
             "[BLOCK] Received BLOCKS from peer {}: {} blocks",
@@ -2768,18 +2943,23 @@ impl MessageRouter {
             offset += 4;
 
             if offset + root_len > data.len() {
-                warn!("[BLOCK] Root block length {} exceeds data size {}", root_len, data.len());
+                warn!(
+                    "[BLOCK] Root block length {} exceeds data size {}",
+                    root_len,
+                    data.len()
+                );
                 continue;
             }
 
             // Deserialize root block
-            let root_block: crate::blocks::RootBlock = match bincode::deserialize(&data[offset..offset + root_len]) {
-                Ok(block) => block,
-                Err(e) => {
-                    warn!("[BLOCK] Failed to deserialize root block: {}", e);
-                    continue;
-                }
-            };
+            let root_block: crate::blocks::RootBlock =
+                match bincode::deserialize(&data[offset..offset + root_len]) {
+                    Ok(block) => block,
+                    Err(e) => {
+                        warn!("[BLOCK] Failed to deserialize root block: {}", e);
+                        continue;
+                    }
+                };
             offset += root_len;
 
             // VALIDATION: Check block height is valid before storing
@@ -2790,8 +2970,22 @@ impl MessageRouter {
             // Check 1: If we already have a block at this height, apply fork resolution
             if let Ok(Some(existing_hash)) = chain_store.get_root_hash_at_height(block_height) {
                 if existing_hash == computed_hash {
-                    // Same block, already have it - skip
-                    continue;
+                    // Same block, already have it — but after headers-first sync we
+                    // can hold the header WITHOUT its space/content blocks. Only skip
+                    // if nothing the header claims is missing; otherwise fall through
+                    // so the space/content parsing below backfills the gap.
+                    let content_missing = root_block
+                        .space_block_hashes
+                        .iter()
+                        .any(|h| chain_store.get_space_block(h).ok().flatten().is_none());
+                    if !content_missing {
+                        continue;
+                    }
+                    info!(
+                        "[BACKFILL] Known header {} at height {} is missing claimed space blocks - storing content from full block",
+                        hex::encode(&computed_hash[..8]),
+                        block_height
+                    );
                 } else {
                     // Different block at same height - FORK RESOLUTION
                     // Priority: 1) Higher cumulative_pow wins, 2) Lower hash wins (tiebreaker)
@@ -2863,15 +3057,25 @@ impl MessageRouter {
                                 // Return orphaned actions to mempool
                                 if let Some(ref bb) = self.block_builder {
                                     if let Ok(mut builder) = bb.write() {
-                                        for (thread_id, space_id, action, branch_path) in orphaned_actions {
-                                            builder.add_action(thread_id, space_id, action, branch_path);
+                                        for (thread_id, space_id, action, branch_path) in
+                                            orphaned_actions
+                                        {
+                                            builder.add_action(
+                                                thread_id,
+                                                space_id,
+                                                action,
+                                                branch_path,
+                                            );
                                         }
                                         info!("[REORG] Returned orphaned actions to mempool");
                                     }
                                 }
                             }
                             Err(e) => {
-                                warn!("[REORG] Failed to rollback block at height {}: {}", block_height, e);
+                                warn!(
+                                    "[REORG] Failed to rollback block at height {}: {}",
+                                    block_height, e
+                                );
                                 continue;
                             }
                         }
@@ -2906,52 +3110,81 @@ impl MessageRouter {
                 let prev_hash = root_block.prev_root_hash;
 
                 // Only request parent if it's not the zero hash and we don't have it
-                if prev_hash != [0u8; 32] && chain_store.get_root_block(&prev_hash).ok().flatten().is_none() {
+                if prev_hash != [0u8; 32]
+                    && chain_store
+                        .get_root_block(&prev_hash)
+                        .ok()
+                        .flatten()
+                        .is_none()
+                {
                     // Convert BLOCKS entry format to BlockDataPayload format for orphan storage
                     // This allows process_orphan_block_data to handle it correctly
                     let mut block_data_payload = BlockDataPayload::new(computed_hash);
-                    block_data_payload.root_block = bincode::serialize(&root_block).unwrap_or_default();
+                    block_data_payload.root_block =
+                        bincode::serialize(&root_block).unwrap_or_default();
 
                     // Parse space/content blocks from BLOCKS format and add to payload
                     let mut parse_offset = offset; // offset is already past the root block
                     if parse_offset + 4 <= data.len() {
                         let space_count = u32::from_le_bytes([
-                            data[parse_offset], data[parse_offset + 1],
-                            data[parse_offset + 2], data[parse_offset + 3]
+                            data[parse_offset],
+                            data[parse_offset + 1],
+                            data[parse_offset + 2],
+                            data[parse_offset + 3],
                         ]) as usize;
                         parse_offset += 4;
 
                         for _ in 0..space_count {
-                            if parse_offset + 4 > data.len() { break; }
+                            if parse_offset + 4 > data.len() {
+                                break;
+                            }
                             let space_len = u32::from_le_bytes([
-                                data[parse_offset], data[parse_offset + 1],
-                                data[parse_offset + 2], data[parse_offset + 3]
+                                data[parse_offset],
+                                data[parse_offset + 1],
+                                data[parse_offset + 2],
+                                data[parse_offset + 3],
                             ]) as usize;
                             parse_offset += 4;
-                            if parse_offset + space_len > data.len() { break; }
+                            if parse_offset + space_len > data.len() {
+                                break;
+                            }
 
                             // Store space block bytes
-                            block_data_payload.space_blocks.push(data[parse_offset..parse_offset + space_len].to_vec());
+                            block_data_payload
+                                .space_blocks
+                                .push(data[parse_offset..parse_offset + space_len].to_vec());
                             parse_offset += space_len;
 
                             // Parse content blocks for this space
-                            if parse_offset + 4 > data.len() { break; }
+                            if parse_offset + 4 > data.len() {
+                                break;
+                            }
                             let content_count = u32::from_le_bytes([
-                                data[parse_offset], data[parse_offset + 1],
-                                data[parse_offset + 2], data[parse_offset + 3]
+                                data[parse_offset],
+                                data[parse_offset + 1],
+                                data[parse_offset + 2],
+                                data[parse_offset + 3],
                             ]) as usize;
                             parse_offset += 4;
 
                             for _ in 0..content_count {
-                                if parse_offset + 4 > data.len() { break; }
+                                if parse_offset + 4 > data.len() {
+                                    break;
+                                }
                                 let content_len = u32::from_le_bytes([
-                                    data[parse_offset], data[parse_offset + 1],
-                                    data[parse_offset + 2], data[parse_offset + 3]
+                                    data[parse_offset],
+                                    data[parse_offset + 1],
+                                    data[parse_offset + 2],
+                                    data[parse_offset + 3],
                                 ]) as usize;
                                 parse_offset += 4;
-                                if parse_offset + content_len > data.len() { break; }
+                                if parse_offset + content_len > data.len() {
+                                    break;
+                                }
 
-                                block_data_payload.content_blocks.push(data[parse_offset..parse_offset + content_len].to_vec());
+                                block_data_payload
+                                    .content_blocks
+                                    .push(data[parse_offset..parse_offset + content_len].to_vec());
                                 parse_offset += content_len;
                             }
                         }
@@ -2969,7 +3202,8 @@ impl MessageRouter {
                     if let Ok(mut orphans) = self.orphan_blocks.write() {
                         let orphan_list = orphans.entry(prev_hash).or_insert_with(Vec::new);
                         if orphan_list.len() < 100 {
-                            let already_have = orphan_list.iter().any(|o| o.block_hash == computed_hash);
+                            let already_have =
+                                orphan_list.iter().any(|o| o.block_hash == computed_hash);
                             if !already_have {
                                 orphan_list.push(orphan);
                                 info!(
@@ -3030,7 +3264,12 @@ impl MessageRouter {
                     continue;
                 }
 
-                if chain_store.get_root_block(&prev_hash).ok().flatten().is_none() {
+                if chain_store
+                    .get_root_block(&prev_hash)
+                    .ok()
+                    .flatten()
+                    .is_none()
+                {
                     // Parent not found - this could be from a competing fork
                     // Store as orphan and request the parent for fork resolution
                     info!(
@@ -3042,44 +3281,67 @@ impl MessageRouter {
 
                     // Build BlockDataPayload for orphan storage
                     let mut block_data_payload = BlockDataPayload::new(computed_hash);
-                    block_data_payload.root_block = bincode::serialize(&root_block).unwrap_or_default();
+                    block_data_payload.root_block =
+                        bincode::serialize(&root_block).unwrap_or_default();
 
                     // Parse remaining data for space/content blocks
                     let mut parse_offset = offset;
                     if parse_offset + 4 <= data.len() {
                         let space_count = u32::from_le_bytes([
-                            data[parse_offset], data[parse_offset + 1],
-                            data[parse_offset + 2], data[parse_offset + 3]
+                            data[parse_offset],
+                            data[parse_offset + 1],
+                            data[parse_offset + 2],
+                            data[parse_offset + 3],
                         ]) as usize;
                         parse_offset += 4;
 
                         for _ in 0..space_count {
-                            if parse_offset + 4 > data.len() { break; }
+                            if parse_offset + 4 > data.len() {
+                                break;
+                            }
                             let space_len = u32::from_le_bytes([
-                                data[parse_offset], data[parse_offset + 1],
-                                data[parse_offset + 2], data[parse_offset + 3]
+                                data[parse_offset],
+                                data[parse_offset + 1],
+                                data[parse_offset + 2],
+                                data[parse_offset + 3],
                             ]) as usize;
                             parse_offset += 4;
-                            if parse_offset + space_len > data.len() { break; }
-                            block_data_payload.space_blocks.push(data[parse_offset..parse_offset + space_len].to_vec());
+                            if parse_offset + space_len > data.len() {
+                                break;
+                            }
+                            block_data_payload
+                                .space_blocks
+                                .push(data[parse_offset..parse_offset + space_len].to_vec());
                             parse_offset += space_len;
 
-                            if parse_offset + 4 > data.len() { break; }
+                            if parse_offset + 4 > data.len() {
+                                break;
+                            }
                             let content_count = u32::from_le_bytes([
-                                data[parse_offset], data[parse_offset + 1],
-                                data[parse_offset + 2], data[parse_offset + 3]
+                                data[parse_offset],
+                                data[parse_offset + 1],
+                                data[parse_offset + 2],
+                                data[parse_offset + 3],
                             ]) as usize;
                             parse_offset += 4;
 
                             for _ in 0..content_count {
-                                if parse_offset + 4 > data.len() { break; }
+                                if parse_offset + 4 > data.len() {
+                                    break;
+                                }
                                 let content_len = u32::from_le_bytes([
-                                    data[parse_offset], data[parse_offset + 1],
-                                    data[parse_offset + 2], data[parse_offset + 3]
+                                    data[parse_offset],
+                                    data[parse_offset + 1],
+                                    data[parse_offset + 2],
+                                    data[parse_offset + 3],
                                 ]) as usize;
                                 parse_offset += 4;
-                                if parse_offset + content_len > data.len() { break; }
-                                block_data_payload.content_blocks.push(data[parse_offset..parse_offset + content_len].to_vec());
+                                if parse_offset + content_len > data.len() {
+                                    break;
+                                }
+                                block_data_payload
+                                    .content_blocks
+                                    .push(data[parse_offset..parse_offset + content_len].to_vec());
                                 parse_offset += content_len;
                             }
                         }
@@ -3097,7 +3359,8 @@ impl MessageRouter {
                     if let Ok(mut orphans) = self.orphan_blocks.write() {
                         let orphan_list = orphans.entry(prev_hash).or_insert_with(Vec::new);
                         if orphan_list.len() < 100 {
-                            let already_have = orphan_list.iter().any(|o| o.block_hash == computed_hash);
+                            let already_have =
+                                orphan_list.iter().any(|o| o.block_hash == computed_hash);
                             if !already_have {
                                 orphan_list.push(orphan);
                                 info!(
@@ -3152,20 +3415,28 @@ impl MessageRouter {
                     // Try to parse the first space block to extract space_id
                     if temp_offset + 4 <= data.len() {
                         let space_count = u32::from_le_bytes([
-                            data[temp_offset], data[temp_offset + 1],
-                            data[temp_offset + 2], data[temp_offset + 3]
+                            data[temp_offset],
+                            data[temp_offset + 1],
+                            data[temp_offset + 2],
+                            data[temp_offset + 3],
                         ]) as usize;
                         temp_offset += 4;
 
                         if space_count > 0 && temp_offset + 4 <= data.len() {
                             let space_len = u32::from_le_bytes([
-                                data[temp_offset], data[temp_offset + 1],
-                                data[temp_offset + 2], data[temp_offset + 3]
+                                data[temp_offset],
+                                data[temp_offset + 1],
+                                data[temp_offset + 2],
+                                data[temp_offset + 3],
                             ]) as usize;
                             temp_offset += 4;
 
                             if temp_offset + space_len <= data.len() {
-                                if let Ok(space_block) = bincode::deserialize::<crate::blocks::SpaceBlock>(&data[temp_offset..temp_offset + space_len]) {
+                                if let Ok(space_block) =
+                                    bincode::deserialize::<crate::blocks::SpaceBlock>(
+                                        &data[temp_offset..temp_offset + space_len],
+                                    )
+                                {
                                     first_space_id.copy_from_slice(&space_block.space_id[..16]);
                                 }
                             }
@@ -3219,7 +3490,12 @@ impl MessageRouter {
             let mut parsed_content_blocks = Vec::new();
 
             if offset + 4 <= data.len() {
-                let space_count = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                let space_count = u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]) as usize;
                 offset += 4;
 
                 for _ in 0..space_count {
@@ -3228,7 +3504,12 @@ impl MessageRouter {
                     }
 
                     // Read space block length
-                    let space_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                    let space_len = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]) as usize;
                     offset += 4;
 
                     if offset + space_len > data.len() {
@@ -3237,7 +3518,9 @@ impl MessageRouter {
                     }
 
                     // Deserialize space block (but don't store yet)
-                    if let Ok(space_block) = bincode::deserialize::<crate::blocks::SpaceBlock>(&data[offset..offset + space_len]) {
+                    if let Ok(space_block) = bincode::deserialize::<crate::blocks::SpaceBlock>(
+                        &data[offset..offset + space_len],
+                    ) {
                         parsed_space_blocks.push(space_block);
                     }
                     offset += space_len;
@@ -3246,7 +3529,12 @@ impl MessageRouter {
                     if offset + 4 > data.len() {
                         break;
                     }
-                    let content_count = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                    let content_count = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]) as usize;
                     offset += 4;
 
                     // Parse content blocks (but don't store yet)
@@ -3255,7 +3543,12 @@ impl MessageRouter {
                             break;
                         }
 
-                        let content_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                        let content_len = u32::from_le_bytes([
+                            data[offset],
+                            data[offset + 1],
+                            data[offset + 2],
+                            data[offset + 3],
+                        ]) as usize;
                         offset += 4;
 
                         if offset + content_len > data.len() {
@@ -3264,7 +3557,9 @@ impl MessageRouter {
                         }
 
                         // Deserialize content block (but don't store yet)
-                        if let Ok(content_block) = bincode::deserialize::<crate::blocks::ContentBlock>(&data[offset..offset + content_len]) {
+                        if let Ok(content_block) = bincode::deserialize::<crate::blocks::ContentBlock>(
+                            &data[offset..offset + content_len],
+                        ) {
                             parsed_content_blocks.push(content_block);
                         }
                         offset += content_len;
@@ -3292,10 +3587,12 @@ impl MessageRouter {
                     for action in &content_block.actions {
                         if action.action_type == crate::blocks::ActionType::CreateSpace {
                             let creator_bytes = action.actor;
-                            let creator_pk = crate::types::identity::PublicKey::from_bytes(creator_bytes);
+                            let creator_pk =
+                                crate::types::identity::PublicKey::from_bytes(creator_bytes);
 
                             let is_sponsored_on_chain = ss.exists(&creator_pk).unwrap_or(false);
-                            let is_sponsored_in_block = identities_sponsored_in_block.contains(&creator_bytes);
+                            let is_sponsored_in_block =
+                                identities_sponsored_in_block.contains(&creator_bytes);
 
                             if !is_sponsored_on_chain && !is_sponsored_in_block {
                                 warn!(
@@ -3391,7 +3688,9 @@ impl MessageRouter {
                     warn!("[BLOCK] Failed to store content block: {}", e);
                 } else {
                     // Mark actions as finalized
-                    if let Err(e) = chain_store.mark_content_block_actions_finalized(content_block, block_height) {
+                    if let Err(e) = chain_store
+                        .mark_content_block_actions_finalized(content_block, block_height)
+                    {
                         warn!("[BLOCK] Failed to mark actions as finalized: {}", e);
                     }
                     content_count_total += 1;
@@ -3449,9 +3748,12 @@ impl MessageRouter {
         // We need to request the blobs so users can view the content.
         //
         // This mirrors the blob fetching logic in handle_block_data.
-        if let (Some(ref content_mgr), Some(ref pool)) = (&self.content_retrieval, &self.connection_pool) {
+        if let (Some(ref content_mgr), Some(ref pool)) =
+            (&self.content_retrieval, &self.connection_pool)
+        {
             let mut missing_hashes: Vec<[u8; 32]> = Vec::new();
-            let mut seen_hashes: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+            let mut seen_hashes: std::collections::HashSet<[u8; 32]> =
+                std::collections::HashSet::new();
 
             // Re-parse blocks to collect content hashes we need to fetch
             for serialized in &blocks_data.blocks {
@@ -3467,33 +3769,68 @@ impl MessageRouter {
 
                 // Parse space blocks and content blocks
                 if offset + 4 <= data.len() {
-                    let space_count = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                    let space_count = u32::from_le_bytes([
+                        data[offset],
+                        data[offset + 1],
+                        data[offset + 2],
+                        data[offset + 3],
+                    ]) as usize;
                     offset += 4;
 
                     for _ in 0..space_count {
-                        if offset + 4 > data.len() { break; }
-                        let space_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                        if offset + 4 > data.len() {
+                            break;
+                        }
+                        let space_len = u32::from_le_bytes([
+                            data[offset],
+                            data[offset + 1],
+                            data[offset + 2],
+                            data[offset + 3],
+                        ]) as usize;
                         offset += 4 + space_len;
 
-                        if offset + 4 > data.len() { break; }
-                        let content_count = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                        if offset + 4 > data.len() {
+                            break;
+                        }
+                        let content_count = u32::from_le_bytes([
+                            data[offset],
+                            data[offset + 1],
+                            data[offset + 2],
+                            data[offset + 3],
+                        ]) as usize;
                         offset += 4;
 
                         for _ in 0..content_count {
-                            if offset + 4 > data.len() { break; }
-                            let content_len = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]) as usize;
+                            if offset + 4 > data.len() {
+                                break;
+                            }
+                            let content_len = u32::from_le_bytes([
+                                data[offset],
+                                data[offset + 1],
+                                data[offset + 2],
+                                data[offset + 3],
+                            ]) as usize;
                             offset += 4;
 
-                            if offset + content_len > data.len() { break; }
+                            if offset + content_len > data.len() {
+                                break;
+                            }
 
                             // Parse content block to extract content hashes
-                            if let Ok(content_block) = bincode::deserialize::<crate::blocks::ContentBlock>(&data[offset..offset + content_len]) {
+                            if let Ok(content_block) =
+                                bincode::deserialize::<crate::blocks::ContentBlock>(
+                                    &data[offset..offset + content_len],
+                                )
+                            {
                                 for action in &content_block.actions {
                                     // Collect content_hash (text content)
                                     if let Some(content_hash) = action.content_hash {
                                         if !seen_hashes.contains(&content_hash) {
                                             seen_hashes.insert(content_hash);
-                                            let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(content_hash);
+                                            let blob_hash =
+                                                crate::storage::blob::ContentBlobHash::from_bytes(
+                                                    content_hash,
+                                                );
                                             if !content_mgr.has_content(&blob_hash) {
                                                 missing_hashes.push(content_hash);
                                             }
@@ -3503,7 +3840,10 @@ impl MessageRouter {
                                     for media_ref in &action.media_refs {
                                         if !seen_hashes.contains(&media_ref.media_hash) {
                                             seen_hashes.insert(media_ref.media_hash);
-                                            let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(media_ref.media_hash);
+                                            let blob_hash =
+                                                crate::storage::blob::ContentBlobHash::from_bytes(
+                                                    media_ref.media_hash,
+                                                );
                                             if !content_mgr.has_content(&blob_hash) {
                                                 missing_hashes.push(media_ref.media_hash);
                                             }
@@ -3525,16 +3865,18 @@ impl MessageRouter {
 
                 // Mark content as wanted so when I_HAVE arrives, we auto-fetch
                 for content_hash in &missing_hashes {
-                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                    let blob_hash =
+                        crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
                     content_mgr.mark_wanted(&blob_hash);
                 }
 
                 // Broadcast WHO_HAS to all connected peers for discovery
                 for content_hash in missing_hashes {
-                    let who_has_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
-                        crate::types::network::MessageType::WhoHas,
-                        content_hash.to_vec(),
-                    );
+                    let who_has_envelope =
+                        crate::types::network::MessageEnvelope::new_fork_agnostic(
+                            crate::types::network::MessageType::WhoHas,
+                            content_hash.to_vec(),
+                        );
 
                     let sent = pool.broadcast(&who_has_envelope).await;
                     if sent > 0 {
@@ -3717,12 +4059,9 @@ impl MessageRouter {
             };
 
             // Record the engagement
-            if let Err(e) = engagement_graph.record_engagement(
-                &engager,
-                &author,
-                engagement_type,
-                timestamp,
-            ) {
+            if let Err(e) =
+                engagement_graph.record_engagement(&engager, &author, engagement_type, timestamp)
+            {
                 warn!(
                     "[ENGAGEMENT] Failed to record {} from {} to {}: {}",
                     engagement_type.as_str(),
@@ -3832,8 +4171,10 @@ impl MessageRouter {
                 crate::blocks::ActionType::Sponsor => {
                     if let Some(sponsee_bytes) = action.content_hash {
                         let sponsor_bytes = action.actor;
-                        let sponsee_pk = crate::types::identity::PublicKey::from_bytes(sponsee_bytes);
-                        let sponsor_pk = crate::types::identity::PublicKey::from_bytes(sponsor_bytes);
+                        let sponsee_pk =
+                            crate::types::identity::PublicKey::from_bytes(sponsee_bytes);
+                        let sponsor_pk =
+                            crate::types::identity::PublicKey::from_bytes(sponsor_bytes);
 
                         // Phase 0 validation: Verify sponsor signature
                         // Signature message = sponsee_pubkey(32) || timestamp(8 BE)
@@ -3863,7 +4204,9 @@ impl MessageRouter {
                         // Phase 0 validation: Verify sponsor is Active in SponsorshipStore
                         match sponsorship_store.get(&sponsor_pk) {
                             Ok(Some(sponsor_record)) => {
-                                if sponsor_record.status != crate::sponsorship::types::SponsorshipStatus::Active {
+                                if sponsor_record.status
+                                    != crate::sponsorship::types::SponsorshipStatus::Active
+                                {
                                     log::warn!(
                                         "[BLOCK] Sponsor {} is not Active (status={:?}) — skipping",
                                         hex::encode(&sponsor_bytes[..8]),
@@ -3882,7 +4225,8 @@ impl MessageRouter {
                             Err(e) => {
                                 log::warn!(
                                     "[BLOCK] Failed to look up sponsor {}: {}",
-                                    hex::encode(&sponsor_bytes[..8]), e
+                                    hex::encode(&sponsor_bytes[..8]),
+                                    e
                                 );
                                 continue;
                             }
@@ -3890,12 +4234,13 @@ impl MessageRouter {
 
                         // Phase 0 validation: Verify claimant PoW (non-zero work)
                         if action.pow_work > 0 {
-                            use sha2::{Sha256, Digest};
+                            use sha2::{Digest, Sha256};
                             let mut pow_input = Vec::with_capacity(40);
                             pow_input.extend_from_slice(&action.pow_target);
                             pow_input.extend_from_slice(&action.pow_nonce.to_le_bytes());
                             let pow_hash = Sha256::digest(&pow_input);
-                            let actual_zeros = pow_hash.iter().take_while(|&&b| b == 0).count() as u64;
+                            let actual_zeros =
+                                pow_hash.iter().take_while(|&&b| b == 0).count() as u64;
                             if actual_zeros < action.pow_work {
                                 log::warn!(
                                     "[BLOCK] Sponsor action PoW claimed {} but actual {} — skipping",
@@ -3915,7 +4260,9 @@ impl MessageRouter {
                             }
                             Ok(false) => {
                                 let depth = match sponsorship_store.get(&sponsor_pk) {
-                                    Ok(Some(sponsor_record)) => sponsor_record.depth.saturating_add(1),
+                                    Ok(Some(sponsor_record)) => {
+                                        sponsor_record.depth.saturating_add(1)
+                                    }
                                     _ => 1,
                                 };
 
@@ -3936,7 +4283,8 @@ impl MessageRouter {
                                 if let Err(e) = sponsorship_store.put(&stored) {
                                     log::warn!(
                                         "[BLOCK] Failed to store sponsorship for {}: {}",
-                                        hex::encode(&sponsee_bytes[..8]), e
+                                        hex::encode(&sponsee_bytes[..8]),
+                                        e
                                     );
                                 } else {
                                     log::info!(
@@ -3948,16 +4296,15 @@ impl MessageRouter {
                                 }
                             }
                             Err(e) => {
-                                log::warn!(
-                                    "[BLOCK] Failed to check sponsorship existence: {}", e
-                                );
+                                log::warn!("[BLOCK] Failed to check sponsorship existence: {}", e);
                             }
                         }
                     }
                 }
                 crate::blocks::ActionType::GenesisRegister => {
                     if let Some(genesis_bytes) = action.content_hash {
-                        let genesis_pk = crate::types::identity::PublicKey::from_bytes(genesis_bytes);
+                        let genesis_pk =
+                            crate::types::identity::PublicKey::from_bytes(genesis_bytes);
 
                         // Validation (a): actor must equal content_hash (self-registration)
                         if action.actor != genesis_bytes {
@@ -4028,7 +4375,8 @@ impl MessageRouter {
                                 if let Err(e) = sponsorship_store.put(&stored) {
                                     log::warn!(
                                         "[BLOCK] Failed to store genesis identity {}: {}",
-                                        hex::encode(&genesis_bytes[..8]), e
+                                        hex::encode(&genesis_bytes[..8]),
+                                        e
                                     );
                                 } else {
                                     log::info!(
@@ -4039,7 +4387,8 @@ impl MessageRouter {
                             }
                             Err(e) => {
                                 log::warn!(
-                                    "[BLOCK] Failed to check genesis identity existence: {}", e
+                                    "[BLOCK] Failed to check genesis identity existence: {}",
+                                    e
                                 );
                             }
                         }
@@ -4104,7 +4453,10 @@ impl MessageRouter {
         let blocks = match chain_store.get_blocks_from_height(start_height, request.max_blocks) {
             Ok(blocks) => blocks,
             Err(e) => {
-                warn!("[LOCATOR] Failed to get blocks from height {}: {}", start_height, e);
+                warn!(
+                    "[LOCATOR] Failed to get blocks from height {}: {}",
+                    start_height, e
+                );
                 return Err(RouteError::StorageError(format!("{}", e)));
             }
         };
@@ -4129,7 +4481,10 @@ impl MessageRouter {
             let root_bytes = match bincode::serialize(&root_block) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    warn!("[LOCATOR] Failed to serialize block at height {}: {}", root_block.height, e);
+                    warn!(
+                        "[LOCATOR] Failed to serialize block at height {}: {}",
+                        root_block.height, e
+                    );
                     continue;
                 }
             };
@@ -4159,9 +4514,13 @@ impl MessageRouter {
 
                         // Serialize content blocks
                         for content_hash in &space_block.content_block_hashes {
-                            if let Ok(Some(content_block)) = chain_store.get_content_block(content_hash) {
+                            if let Ok(Some(content_block)) =
+                                chain_store.get_content_block(content_hash)
+                            {
                                 if let Ok(content_bytes) = bincode::serialize(&content_block) {
-                                    full_data.extend_from_slice(&(content_bytes.len() as u32).to_le_bytes());
+                                    full_data.extend_from_slice(
+                                        &(content_bytes.len() as u32).to_le_bytes(),
+                                    );
                                     full_data.extend_from_slice(&content_bytes);
                                 }
                             }
@@ -4240,7 +4599,10 @@ impl MessageRouter {
         let blocks = match chain_store.get_blocks_from_height(start_height, request.max_headers) {
             Ok(blocks) => blocks,
             Err(e) => {
-                warn!("[HEADERS] Failed to get blocks from height {}: {}", start_height, e);
+                warn!(
+                    "[HEADERS] Failed to get blocks from height {}: {}",
+                    start_height, e
+                );
                 return Err(RouteError::StorageError(format!("{}", e)));
             }
         };
@@ -4251,7 +4613,9 @@ impl MessageRouter {
         }
 
         // Build response with just headers (RootBlocks serialized without content)
-        let mut response = HeadersPayload { headers: Vec::new() };
+        let mut response = HeadersPayload {
+            headers: Vec::new(),
+        };
         let mut total_bytes = 0usize;
 
         for root_block in blocks {
@@ -4259,7 +4623,10 @@ impl MessageRouter {
             let header_bytes = match bincode::serialize(&root_block) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    warn!("[HEADERS] Failed to serialize header at height {}: {}", root_block.height, e);
+                    warn!(
+                        "[HEADERS] Failed to serialize header at height {}: {}",
+                        root_block.height, e
+                    );
                     continue;
                 }
             };
@@ -4270,7 +4637,9 @@ impl MessageRouter {
             }
 
             total_bytes += header_bytes.len();
-            response.headers.push(SerializedBlock { data: header_bytes });
+            response
+                .headers
+                .push(SerializedBlock { data: header_bytes });
         }
 
         info!(
@@ -4293,9 +4662,8 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let headers_data = HeadersPayload::from_bytes(payload).map_err(|e| {
-            RouteError::DeserializationError(format!("HeadersPayload: {}", e))
-        })?;
+        let headers_data = HeadersPayload::from_bytes(payload)
+            .map_err(|e| RouteError::DeserializationError(format!("HeadersPayload: {}", e)))?;
 
         info!(
             "[HEADERS] Received {} headers from peer {}",
@@ -4353,13 +4721,19 @@ impl MessageRouter {
 
             // Store just the header (as a root block without space/content blocks)
             if let Err(e) = chain_store.put_root_block(header) {
-                warn!("[HEADERS] Failed to store header at height {}: {}", header.height, e);
+                warn!(
+                    "[HEADERS] Failed to store header at height {}: {}",
+                    header.height, e
+                );
                 continue;
             }
 
             let hash = header.hash();
             if let Err(e) = chain_store.index_height(header.height, hash) {
-                warn!("[HEADERS] Failed to index header at height {}: {}", header.height, e);
+                warn!(
+                    "[HEADERS] Failed to index header at height {}: {}",
+                    header.height, e
+                );
             }
 
             stored_count += 1;
@@ -4411,9 +4785,14 @@ impl MessageRouter {
 
         // Check if we already have this pool (read lock)
         {
-            let pm_read = pool_manager.read().map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
+            let pm_read = pool_manager
+                .read()
+                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
             if pm_read.get_pool(&announce.pool_id).is_some() {
-                debug!("[POOL] Already have pool {}, ignoring", hex::encode(&announce.pool_id[..8]));
+                debug!(
+                    "[POOL] Already have pool {}, ignoring",
+                    hex::encode(&announce.pool_id[..8])
+                );
                 return Ok(None);
             }
         }
@@ -4427,14 +4806,20 @@ impl MessageRouter {
 
         // Only create if pool hasn't expired
         if announce.window_end > now_ms {
-            let mut pm_write = pool_manager.write().map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-            let new_pool_id = pm_write.create_pool(announce.target_content, announce.creator, now_ms);
+            let mut pm_write = pool_manager
+                .write()
+                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
+            let new_pool_id =
+                pm_write.create_pool(announce.target_content, announce.creator, now_ms);
             info!(
                 "[POOL] Created pool {} from announcement",
                 hex::encode(&new_pool_id[..8])
             );
         } else {
-            debug!("[POOL] Pool {} already expired, ignoring", hex::encode(&announce.pool_id[..8]));
+            debug!(
+                "[POOL] Pool {} already expired, ignoring",
+                hex::encode(&announce.pool_id[..8])
+            );
         }
 
         // Forward the announcement to other peers (gossip propagation)
@@ -4498,15 +4883,26 @@ impl MessageRouter {
         let config = crate::crypto::action_pow::ForkPoWConfig::default();
 
         // Add contribution to pool (validation happens inside)
-        let mut pm_write = pool_manager.write().map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
+        let mut pm_write = pool_manager
+            .write()
+            .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
 
-        match pm_write.add_contribution(contribution.pool_id, internal_contribution, now_ms, &config) {
+        match pm_write.add_contribution(
+            contribution.pool_id,
+            internal_contribution,
+            now_ms,
+            &config,
+        ) {
             Ok(()) => {
                 // Check if pool completed after adding contribution
                 match pm_write.check_completion(contribution.pool_id) {
                     Ok(result) => {
                         match result {
-                            crate::content::pool::CompletionResult::Completed { total_pow, contributor_count, .. } => {
+                            crate::content::pool::CompletionResult::Completed {
+                                total_pow,
+                                contributor_count,
+                                ..
+                            } => {
                                 info!(
                                     "[POOL] Pool {} completed! total_pow={}s contributors={}",
                                     hex::encode(&contribution.pool_id[..8]),
@@ -4517,14 +4913,18 @@ impl MessageRouter {
                                 // Trigger decay reset if we have decay integration
                                 if let Some(ref decay) = self.decay_integration {
                                     if let Some(pool) = pm_write.get_pool(&contribution.pool_id) {
-                                        let blob_hash = ContentBlobHash::from_bytes(pool.target_content);
+                                        let blob_hash =
+                                            ContentBlobHash::from_bytes(pool.target_content);
                                         if let Err(e) = decay.on_engagement(&blob_hash) {
                                             warn!("[POOL] Failed to record engagement: {}", e);
                                         }
                                     }
                                 }
                             }
-                            crate::content::pool::CompletionResult::Incomplete { current, required } => {
+                            crate::content::pool::CompletionResult::Incomplete {
+                                current,
+                                required,
+                            } => {
                                 debug!(
                                     "[POOL] Pool {} now at {}/{}s",
                                     hex::encode(&contribution.pool_id[..8]),
@@ -4533,7 +4933,10 @@ impl MessageRouter {
                                 );
                             }
                             crate::content::pool::CompletionResult::Expired => {
-                                debug!("[POOL] Pool {} has expired", hex::encode(&contribution.pool_id[..8]));
+                                debug!(
+                                    "[POOL] Pool {} has expired",
+                                    hex::encode(&contribution.pool_id[..8])
+                                );
                             }
                         }
                     }
@@ -4561,12 +4964,11 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let status_msg = PoolStatusPayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::PayloadTooSmall {
+        let status_msg =
+            PoolStatusPayload::from_bytes(payload).ok_or_else(|| RouteError::PayloadTooSmall {
                 expected: PoolStatusPayload::SIZE,
                 actual: payload.len(),
-            }
-        })?;
+            })?;
 
         // If status=0, this is a query
         if status_msg.status == 0 {
@@ -4584,7 +4986,9 @@ impl MessageRouter {
             };
 
             // Look up the pool (read lock)
-            let pm_read = pool_manager.read().map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
+            let pm_read = pool_manager
+                .read()
+                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
             if let Some(pool) = pm_read.get_pool(&status_msg.pool_id) {
                 let status_code = match pool.status {
                     crate::content::pool::PoolStatus::Open => 1,
@@ -4637,10 +5041,10 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        use crate::network::messages::ActionAnnouncePayload;
         use crate::blocks::action::Action;
-        use crate::blocks::builder::BlockBuilder;
         use crate::blocks::branch_path::BranchPath;
+        use crate::blocks::builder::BlockBuilder;
+        use crate::network::messages::ActionAnnouncePayload;
 
         let announce = ActionAnnouncePayload::from_bytes(payload).ok_or_else(|| {
             RouteError::PayloadTooSmall {
@@ -4655,7 +5059,8 @@ impl MessageRouter {
             Err(e) => {
                 warn!(
                     "[MEMPOOL] Failed to deserialize action from peer {}: {:?}",
-                    hex::encode(&peer_id[..8]), e
+                    hex::encode(&peer_id[..8]),
+                    e
                 );
                 return Ok(None);
             }
@@ -4689,9 +5094,9 @@ impl MessageRouter {
 
         // Check if we already have this action in mempool
         {
-            let bb_read = block_builder.read().map_err(|_| {
-                RouteError::SubsystemUnavailable("block_builder lock poisoned")
-            })?;
+            let bb_read = block_builder
+                .read()
+                .map_err(|_| RouteError::SubsystemUnavailable("block_builder lock poisoned"))?;
             if bb_read.has_action(&action_hash) {
                 debug!(
                     "[MEMPOOL] Already have action {} from peer {}, ignoring",
@@ -4704,9 +5109,9 @@ impl MessageRouter {
 
         // Add to block builder
         let added = {
-            let mut bb_write = block_builder.write().map_err(|_| {
-                RouteError::SubsystemUnavailable("block_builder lock poisoned")
-            })?;
+            let mut bb_write = block_builder
+                .write()
+                .map_err(|_| RouteError::SubsystemUnavailable("block_builder lock poisoned"))?;
 
             let added = bb_write.add_action(
                 announce.thread_id,
@@ -4734,8 +5139,7 @@ impl MessageRouter {
             if let Some(ref events) = self.event_manager {
                 use crate::blocks::action::ActionType;
 
-                let space_id_16: [u8; 16] =
-                    announce.space_id[..16].try_into().unwrap_or([0u8; 16]);
+                let space_id_16: [u8; 16] = announce.space_id[..16].try_into().unwrap_or([0u8; 16]);
                 let space_id_str = encode_space_id_bech32(&space_id_16);
                 let thread_id_str = format!("sha256:{}", hex::encode(announce.thread_id));
                 let author_str = hex::encode(action.actor);
@@ -4782,7 +5186,9 @@ impl MessageRouter {
         // 2. Form blocks that include the content (as block leader)
         // 3. Propagate complete content to other peers
         if added {
-            if let (Some(ref content_mgr), Some(ref pool)) = (&self.content_retrieval, &self.connection_pool) {
+            if let (Some(ref content_mgr), Some(ref pool)) =
+                (&self.content_retrieval, &self.connection_pool)
+            {
                 let mut missing_hashes: Vec<[u8; 32]> = Vec::new();
 
                 // Check if we have the text content blob
@@ -4795,8 +5201,11 @@ impl MessageRouter {
 
                 // Check if we have the media blobs
                 for media_ref in &action.media_refs {
-                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(media_ref.media_hash);
-                    if !content_mgr.has_content(&blob_hash) && !missing_hashes.contains(&media_ref.media_hash) {
+                    let blob_hash =
+                        crate::storage::blob::ContentBlobHash::from_bytes(media_ref.media_hash);
+                    if !content_mgr.has_content(&blob_hash)
+                        && !missing_hashes.contains(&media_ref.media_hash)
+                    {
                         missing_hashes.push(media_ref.media_hash);
                     }
                 }
@@ -4810,16 +5219,18 @@ impl MessageRouter {
 
                     // Mark content as wanted and broadcast WHO_HAS to discover providers
                     for content_hash in &missing_hashes {
-                        let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
+                        let blob_hash =
+                            crate::storage::blob::ContentBlobHash::from_bytes(*content_hash);
                         content_mgr.mark_wanted(&blob_hash);
                     }
 
                     // Broadcast WHO_HAS to all connected peers
                     for content_hash in missing_hashes {
-                        let who_has_envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
-                            crate::types::network::MessageType::WhoHas,
-                            content_hash.to_vec(),
-                        );
+                        let who_has_envelope =
+                            crate::types::network::MessageEnvelope::new_fork_agnostic(
+                                crate::types::network::MessageType::WhoHas,
+                                content_hash.to_vec(),
+                            );
                         let sent = pool.broadcast(&who_has_envelope).await;
                         debug!(
                             "[BLOB-GOSSIP] Sent WHO_HAS for blob {} to {} peers",
@@ -4892,7 +5303,8 @@ impl MessageRouter {
                 if let Err(e) = connection_pool.send_to(&other_peer_id, &envelope).await {
                     debug!(
                         "[MEMPOOL] Failed to forward action to peer {}: {}",
-                        hex::encode(&other_peer_id[..8]), e
+                        hex::encode(&other_peer_id[..8]),
+                        e
                     );
                 }
             }
@@ -4928,9 +5340,9 @@ impl MessageRouter {
 
         // Get all pending action hashes
         let action_hashes: Vec<[u8; 32]> = {
-            let bb_read = block_builder.read().map_err(|_| {
-                RouteError::SubsystemUnavailable("block_builder lock poisoned")
-            })?;
+            let bb_read = block_builder
+                .read()
+                .map_err(|_| RouteError::SubsystemUnavailable("block_builder lock poisoned"))?;
             bb_read.get_pending_action_hashes()
         };
 
@@ -4993,9 +5405,9 @@ impl MessageRouter {
         let mut missing_actions: Vec<InvItem> = Vec::new();
 
         {
-            let bb_read = block_builder.read().map_err(|_| {
-                RouteError::SubsystemUnavailable("block_builder lock poisoned")
-            })?;
+            let bb_read = block_builder
+                .read()
+                .map_err(|_| RouteError::SubsystemUnavailable("block_builder lock poisoned"))?;
             let known_hashes: std::collections::HashSet<[u8; 32]> =
                 bb_read.get_pending_action_hashes().into_iter().collect();
 
@@ -5025,7 +5437,9 @@ impl MessageRouter {
         );
 
         // Request missing actions via GETDATA
-        let getdata_payload = InvPayload { items: missing_actions };
+        let getdata_payload = InvPayload {
+            items: missing_actions,
+        };
         Ok(Some((MSG_GETDATA, getdata_payload.to_bytes())))
     }
 
@@ -5038,9 +5452,9 @@ impl MessageRouter {
         peer_id: &[u8; 32],
         payload: &[u8],
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        use crate::blocks::action::Action;
         use crate::network::messages::{ActionAnnouncePayload, InvPayload};
         use crate::types::serialize::Deserialize;
-        use crate::blocks::action::Action;
 
         let getdata = InvPayload::from_bytes(payload).map_err(|e| {
             RouteError::DeserializationError(format!("Failed to parse GETDATA payload: {:?}", e))
@@ -5077,9 +5491,9 @@ impl MessageRouter {
 
             // Look up the action in our mempool
             let action_data = {
-                let bb_read = block_builder.read().map_err(|_| {
-                    RouteError::SubsystemUnavailable("block_builder lock poisoned")
-                })?;
+                let bb_read = block_builder
+                    .read()
+                    .map_err(|_| RouteError::SubsystemUnavailable("block_builder lock poisoned"))?;
                 bb_read.get_pending_action_by_hash(&item.hash)
             };
 
@@ -5137,7 +5551,10 @@ impl MessageRouter {
             let mut bb_write = match block_builder.write() {
                 Ok(b) => b,
                 Err(e) => {
-                    warn!("[BLOCKS] Failed to acquire write lock for block formation: {}", e);
+                    warn!(
+                        "[BLOCKS] Failed to acquire write lock for block formation: {}",
+                        e
+                    );
                     return;
                 }
             };
@@ -5167,7 +5584,11 @@ impl MessageRouter {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
-            bb_write.build_root_block(now, block_creator, self.sponsorship_store.as_ref().map(|s| s.as_ref()))
+            bb_write.build_root_block(
+                now,
+                block_creator,
+                self.sponsorship_store.as_ref().map(|s| s.as_ref()),
+            )
         };
 
         let root_hash = root.hash();
@@ -5189,7 +5610,9 @@ impl MessageRouter {
                     warn!("[BLOCKS] Failed to store content block: {}", e);
                 } else {
                     // Mark all actions as finalized so duplicate blocks from other nodes are rejected
-                    if let Err(e) = store.mark_content_block_actions_finalized(content_block, block_height) {
+                    if let Err(e) =
+                        store.mark_content_block_actions_finalized(content_block, block_height)
+                    {
                         warn!("[BLOCKS] Failed to mark actions as finalized: {}", e);
                     }
                 }
@@ -5278,7 +5701,11 @@ impl MessageRouter {
 
         let update = match message {
             BlocklistMessage::Update(u) => u,
-            _ => return Err(RouteError::DeserializationError("Expected Update".to_string())),
+            _ => {
+                return Err(RouteError::DeserializationError(
+                    "Expected Update".to_string(),
+                ))
+            }
         };
 
         info!(
@@ -5300,7 +5727,10 @@ impl MessageRouter {
         {
             let store = blocklist.read().unwrap();
             if store.is_blocked(&update.content_hash) {
-                debug!("[BLOCKLIST] Already have blocked hash {}", hex::encode(&update.content_hash[..8]));
+                debug!(
+                    "[BLOCKLIST] Already have blocked hash {}",
+                    hex::encode(&update.content_hash[..8])
+                );
                 return Ok(None);
             }
         }
@@ -5344,7 +5774,10 @@ impl MessageRouter {
                         hex::encode(&update.content_hash[..8]),
                         e
                     );
-                    return Err(RouteError::HandlerError(format!("blocklist store error: {}", e)));
+                    return Err(RouteError::HandlerError(format!(
+                        "blocklist store error: {}",
+                        e
+                    )));
                 }
             }
         }
@@ -5413,7 +5846,11 @@ impl MessageRouter {
 
         let sync = match message {
             BlocklistMessage::Sync(s) => s,
-            _ => return Err(RouteError::DeserializationError("Expected Sync".to_string())),
+            _ => {
+                return Err(RouteError::DeserializationError(
+                    "Expected Sync".to_string(),
+                ))
+            }
         };
 
         info!(
@@ -5471,7 +5908,11 @@ impl MessageRouter {
 
         let request = match message {
             BlocklistMessage::Request(r) => r,
-            _ => return Err(RouteError::DeserializationError("Expected Request".to_string())),
+            _ => {
+                return Err(RouteError::DeserializationError(
+                    "Expected Request".to_string(),
+                ))
+            }
         };
 
         info!(
@@ -5531,15 +5972,21 @@ impl MessageRouter {
         // Convert peer_id to DhtNodeId and get peer address
         let sender_id = DhtNodeId::from_bytes(*peer_id);
         // Use actual peer address if available, otherwise placeholder
-        let sender_addr = peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let sender_addr =
+            peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
 
-        if let Some(response) = dht.handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
+        if let Some(response) = dht
+            .handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
                 ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-            }).await
+            })
+            .await
             .map_err(|e| RouteError::HandlerError(e.to_string()))?
         {
             let response_bytes = response.to_bytes();
-            debug!("[DHT] Responding to PING from peer {}", hex::encode(&peer_id[..8]));
+            debug!(
+                "[DHT] Responding to PING from peer {}",
+                hex::encode(&peer_id[..8])
+            );
             return Ok(Some((MSG_DHT_PONG, response_bytes)));
         }
 
@@ -5562,14 +6009,19 @@ impl MessageRouter {
             .map_err(|e| RouteError::DeserializationError(e.to_string()))?;
 
         let sender_id = DhtNodeId::from_bytes(*peer_id);
-        let sender_addr = peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let sender_addr =
+            peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
 
         dht.handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
-                ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-            }).await
-            .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+            ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
+        })
+        .await
+        .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
-        debug!("[DHT] Received PONG from peer {}", hex::encode(&peer_id[..8]));
+        debug!(
+            "[DHT] Received PONG from peer {}",
+            hex::encode(&peer_id[..8])
+        );
         Ok(None)
     }
 
@@ -5589,15 +6041,21 @@ impl MessageRouter {
             .map_err(|e| RouteError::DeserializationError(e.to_string()))?;
 
         let sender_id = DhtNodeId::from_bytes(*peer_id);
-        let sender_addr = peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let sender_addr =
+            peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
 
-        if let Some(response) = dht.handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
+        if let Some(response) = dht
+            .handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
                 ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-            }).await
+            })
+            .await
             .map_err(|e| RouteError::HandlerError(e.to_string()))?
         {
             let response_bytes = response.to_bytes();
-            debug!("[DHT] Responding to FIND_NODE from peer {}", hex::encode(&peer_id[..8]));
+            debug!(
+                "[DHT] Responding to FIND_NODE from peer {}",
+                hex::encode(&peer_id[..8])
+            );
             return Ok(Some((MSG_DHT_NODES, response_bytes)));
         }
 
@@ -5620,15 +6078,20 @@ impl MessageRouter {
             .map_err(|e| RouteError::DeserializationError(e.to_string()))?;
 
         let sender_id = DhtNodeId::from_bytes(*peer_id);
-        let sender_addr = peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let sender_addr =
+            peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
 
         // Process nodes response (adds nodes to routing table)
         dht.handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
-                ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-            }).await
-            .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+            ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
+        })
+        .await
+        .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
-        debug!("[DHT] Processed NODES from peer {}", hex::encode(&peer_id[..8]));
+        debug!(
+            "[DHT] Processed NODES from peer {}",
+            hex::encode(&peer_id[..8])
+        );
         Ok(None)
     }
 
@@ -5648,11 +6111,14 @@ impl MessageRouter {
             .map_err(|e| RouteError::DeserializationError(e.to_string()))?;
 
         let sender_id = DhtNodeId::from_bytes(*peer_id);
-        let sender_addr = peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let sender_addr =
+            peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
 
-        if let Some(response) = dht.handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
+        if let Some(response) = dht
+            .handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
                 ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-            }).await
+            })
+            .await
             .map_err(|e| RouteError::HandlerError(e.to_string()))?
         {
             // Response could be PROVIDERS or NODES (fallback)
@@ -5661,7 +6127,10 @@ impl MessageRouter {
                 DhtMessage::Nodes { .. } => (MSG_DHT_NODES, response.to_bytes()),
                 _ => return Ok(None),
             };
-            debug!("[DHT] Responding to FIND_VALUE from peer {}", hex::encode(&peer_id[..8]));
+            debug!(
+                "[DHT] Responding to FIND_VALUE from peer {}",
+                hex::encode(&peer_id[..8])
+            );
             return Ok(Some((msg_type, response_bytes)));
         }
 
@@ -5684,15 +6153,20 @@ impl MessageRouter {
             .map_err(|e| RouteError::DeserializationError(e.to_string()))?;
 
         let sender_id = DhtNodeId::from_bytes(*peer_id);
-        let sender_addr = peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let sender_addr =
+            peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
 
         // Store provider records
         dht.handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
-                ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-            }).await
-            .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+            ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
+        })
+        .await
+        .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
-        debug!("[DHT] Processed PROVIDERS from peer {}", hex::encode(&peer_id[..8]));
+        debug!(
+            "[DHT] Processed PROVIDERS from peer {}",
+            hex::encode(&peer_id[..8])
+        );
         Ok(None)
     }
 
@@ -5712,15 +6186,21 @@ impl MessageRouter {
             .map_err(|e| RouteError::DeserializationError(e.to_string()))?;
 
         let sender_id = DhtNodeId::from_bytes(*peer_id);
-        let sender_addr = peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let sender_addr =
+            peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
 
-        if let Some(response) = dht.handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
+        if let Some(response) = dht
+            .handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
                 ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-            }).await
+            })
+            .await
             .map_err(|e| RouteError::HandlerError(e.to_string()))?
         {
             let response_bytes = response.to_bytes();
-            debug!("[DHT] Responding to STORE from peer {}", hex::encode(&peer_id[..8]));
+            debug!(
+                "[DHT] Responding to STORE from peer {}",
+                hex::encode(&peer_id[..8])
+            );
             return Ok(Some((MSG_DHT_STORE_ACK, response_bytes)));
         }
 
@@ -5743,14 +6223,19 @@ impl MessageRouter {
             .map_err(|e| RouteError::DeserializationError(e.to_string()))?;
 
         let sender_id = DhtNodeId::from_bytes(*peer_id);
-        let sender_addr = peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        let sender_addr =
+            peer_addr.unwrap_or_else(|| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
 
         dht.handle_message(msg, sender_id, sender_addr, |pubkey, msg, sig| {
-                ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-            }).await
-            .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+            ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
+        })
+        .await
+        .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
-        debug!("[DHT] Processed STORE_ACK from peer {}", hex::encode(&peer_id[..8]));
+        debug!(
+            "[DHT] Processed STORE_ACK from peer {}",
+            hex::encode(&peer_id[..8])
+        );
         Ok(None)
     }
 
@@ -5771,8 +6256,9 @@ impl MessageRouter {
         };
 
         // Deserialize the attestation
-        let attestation = SpamAttestation::from_bytes(payload)
-            .ok_or_else(|| RouteError::DeserializationError("Invalid spam attestation".to_string()))?;
+        let attestation = SpamAttestation::from_bytes(payload).ok_or_else(|| {
+            RouteError::DeserializationError("Invalid spam attestation".to_string())
+        })?;
 
         // Get current time for validation
         let current_time = std::time::SystemTime::now()
@@ -5785,7 +6271,8 @@ impl MessageRouter {
         // The attestation is stored and aggregation handles threshold logic
 
         // Check if already attested by this attester
-        if store.has_attestation(&attestation.content_hash, &attestation.attester)
+        if store
+            .has_attestation(&attestation.content_hash, &attestation.attester)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?
         {
             debug!(
@@ -5807,15 +6294,22 @@ impl MessageRouter {
             is_deduplicated: false,
         };
 
-        store.put_attestation(&stored)
+        store
+            .put_attestation(&stored)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
         // Check if threshold is now reached
-        let attestations = store.get_attestations_for_content(&attestation.content_hash)
+        let attestations = store
+            .get_attestations_for_content(&attestation.content_hash)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
-        let counter_state = store.get_counter_state(&attestation.content_hash)
+        let counter_state = store
+            .get_counter_state(&attestation.content_hash)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
-        let aggregation = aggregate_attestations(attestation.content_hash, &attestations, counter_state.is_cleared);
+        let aggregation = aggregate_attestations(
+            attestation.content_hash,
+            &attestations,
+            counter_state.is_cleared,
+        );
 
         if aggregation.should_accelerate_decay {
             info!(
@@ -5853,8 +6347,9 @@ impl MessageRouter {
         };
 
         // Deserialize the counter-attestation
-        let counter = CounterAttestation::from_bytes(payload)
-            .ok_or_else(|| RouteError::DeserializationError("Invalid counter-attestation".to_string()))?;
+        let counter = CounterAttestation::from_bytes(payload).ok_or_else(|| {
+            RouteError::DeserializationError("Invalid counter-attestation".to_string())
+        })?;
 
         // Get current time for validation
         let current_time = std::time::SystemTime::now()
@@ -5863,7 +6358,8 @@ impl MessageRouter {
             .unwrap_or(0);
 
         // Get current counter state
-        let mut state = store.get_counter_state(&counter.content_hash)
+        let mut state = store
+            .get_counter_state(&counter.content_hash)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
         // Already cleared?
@@ -5876,10 +6372,12 @@ impl MessageRouter {
         }
 
         // Add counter-attestation
-        let threshold_reached = state.add_counter_attester(counter.counter_attester, counter.timestamp);
+        let threshold_reached =
+            state.add_counter_attester(counter.counter_attester, counter.timestamp);
 
         // Store updated state
-        store.put_counter_state(&state)
+        store
+            .put_counter_state(&state)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
         if threshold_reached {
@@ -5918,7 +6416,10 @@ impl MessageRouter {
 
         // Need at least offer bytes + TTL
         if payload.is_empty() {
-            return Err(RouteError::PayloadTooSmall { expected: 1, actual: 0 });
+            return Err(RouteError::PayloadTooSmall {
+                expected: 1,
+                actual: 0,
+            });
         }
 
         // TTL is the last byte
@@ -5926,11 +6427,13 @@ impl MessageRouter {
         let offer_bytes = &payload[..payload.len() - 1];
 
         // Deserialize the offer
-        let offer = deserialize_offer(offer_bytes)
-            .map_err(|e| RouteError::DeserializationError(format!("Failed to deserialize offer: {}", e)))?;
+        let offer = deserialize_offer(offer_bytes).map_err(|e| {
+            RouteError::DeserializationError(format!("Failed to deserialize offer: {}", e))
+        })?;
 
         // Check if we already have this offer (dedup)
-        if offer_store.offer_exists(&offer.offer_id)
+        if offer_store
+            .offer_exists(&offer.offer_id)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?
         {
             debug!(
@@ -5944,15 +6447,16 @@ impl MessageRouter {
         // Validate offer signature using creation format
         // Need to reconstruct the creation parameters from the offer
         let expires_days = ((offer.expires_at - offer.created_at) / 86400) as u32;
-        let sig_msg = crate::sponsorship::types::PublicSponsorshipOffer::signature_message_for_creation(
-            offer.sponsor.as_bytes(),
-            offer.max_sponsees,
-            &offer.offer_type,
-            expires_days,
-            offer.requirements.min_pow_difficulty,
-            offer.requirements.application_required,
-            offer.created_at,
-        );
+        let sig_msg =
+            crate::sponsorship::types::PublicSponsorshipOffer::signature_message_for_creation(
+                offer.sponsor.as_bytes(),
+                offer.max_sponsees,
+                &offer.offer_type,
+                expires_days,
+                offer.requirements.min_pow_difficulty,
+                offer.requirements.application_required,
+                offer.created_at,
+            );
         if !ed25519_verify(&offer.sponsor, &sig_msg, &offer.signature) {
             warn!(
                 "[SPONSORSHIP] Invalid signature on offer {} from {}",
@@ -6030,11 +6534,13 @@ impl MessageRouter {
         };
 
         // Deserialize the claim
-        let claim = deserialize_claim(payload)
-            .map_err(|e| RouteError::DeserializationError(format!("Failed to deserialize claim: {}", e)))?;
+        let claim = deserialize_claim(payload).map_err(|e| {
+            RouteError::DeserializationError(format!("Failed to deserialize claim: {}", e))
+        })?;
 
         // Check if we have this offer
-        let _offer = match offer_store.get_offer(&claim.offer_id)
+        let _offer = match offer_store
+            .get_offer(&claim.offer_id)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?
         {
             Some(o) => o,
@@ -6068,7 +6574,10 @@ impl MessageRouter {
                     hex::encode(&claim.offer_id[..8])
                 );
             }
-            Err(e) if e.to_string().contains("DuplicateClaim") || e.to_string().contains("already") => {
+            Err(e)
+                if e.to_string().contains("DuplicateClaim")
+                    || e.to_string().contains("already") =>
+            {
                 debug!("[SPONSORSHIP] Duplicate claim, ignoring");
             }
             Err(e) => {
@@ -6092,11 +6601,13 @@ impl MessageRouter {
             None => return Err(RouteError::SubsystemUnavailable("offer_store")),
         };
 
-        let response = deserialize_claim_response(payload)
-            .map_err(|e| RouteError::DeserializationError(format!("Failed to deserialize claim response: {}", e)))?;
+        let response = deserialize_claim_response(payload).map_err(|e| {
+            RouteError::DeserializationError(format!("Failed to deserialize claim response: {}", e))
+        })?;
 
         // Get the offer to verify it exists
-        let _offer = match offer_store.get_offer(&response.offer_id)
+        let _offer = match offer_store
+            .get_offer(&response.offer_id)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?
         {
             Some(o) => o,
@@ -6112,12 +6623,15 @@ impl MessageRouter {
         match response.response_type {
             ClaimResponseType::Approved => {
                 // Get and update claim with approval
-                let claim = offer_store.get_claim(&response.offer_id, &response.claimant)
+                let claim = offer_store
+                    .get_claim(&response.offer_id, &response.claimant)
                     .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
-                if let (Some(mut claim), Some(approval_sig)) = (claim, response.approval_signature) {
+                if let (Some(mut claim), Some(approval_sig)) = (claim, response.approval_signature)
+                {
                     claim.sponsor_approval = Some(approval_sig);
-                    offer_store.update_claim(&claim)
+                    offer_store
+                        .update_claim(&claim)
                         .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
                     info!(
@@ -6160,7 +6674,8 @@ impl MessageRouter {
             .unwrap_or(0);
 
         // Get active offers (limit to prevent DoS)
-        let offers = offer_store.list_active_offers(current_time)
+        let offers = offer_store
+            .list_active_offers(current_time)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
         // Build response: count(2 LE) + (len(2) + offer_bytes)*
@@ -6169,8 +6684,8 @@ impl MessageRouter {
         response.extend_from_slice(&count.to_le_bytes());
 
         for offer in offers.into_iter().take(50) {
-            let offer_bytes = serialize_offer(&offer)
-                .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+            let offer_bytes =
+                serialize_offer(&offer).map_err(|e| RouteError::HandlerError(e.to_string()))?;
             let len = (offer_bytes.len() as u16).to_le_bytes();
             response.extend_from_slice(&len);
             response.extend_from_slice(&offer_bytes);
@@ -6200,7 +6715,10 @@ impl MessageRouter {
         };
 
         if payload.len() < 2 {
-            return Err(RouteError::PayloadTooSmall { expected: 2, actual: payload.len() });
+            return Err(RouteError::PayloadTooSmall {
+                expected: 2,
+                actual: payload.len(),
+            });
         }
 
         let count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
@@ -6289,9 +6807,10 @@ impl MessageRouter {
         );
 
         // Get chain store - required for block retrieval
-        let chain_store = self.chain_store.as_ref().ok_or_else(|| {
-            RouteError::SubsystemUnavailable("chain_store")
-        })?;
+        let chain_store = self
+            .chain_store
+            .as_ref()
+            .ok_or_else(|| RouteError::SubsystemUnavailable("chain_store"))?;
 
         // Query blocks in height range
         let end_height = if request.end_height == u64::MAX {
@@ -6485,9 +7004,8 @@ impl MessageRouter {
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
         use crate::network::messages::{BranchAnnouncePayload, GetBlocksBranchPayload};
 
-        let announce = BranchAnnouncePayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::DeserializationError("BranchAnnouncePayload".to_string())
-        })?;
+        let announce = BranchAnnouncePayload::from_bytes(payload)
+            .ok_or_else(|| RouteError::DeserializationError("BranchAnnouncePayload".to_string()))?;
 
         info!(
             "[BRANCH] Received BRANCH_ANNOUNCE from peer {}: space={} branch_depth={} height={} content_count={}",
@@ -6614,9 +7132,8 @@ impl MessageRouter {
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
         use crate::network::messages::{GetSpaceMetaPayload, SpaceMetaPayload};
 
-        let req = GetSpaceMetaPayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::DeserializationError("GetSpaceMetaPayload".to_string())
-        })?;
+        let req = GetSpaceMetaPayload::from_bytes(payload)
+            .ok_or_else(|| RouteError::DeserializationError("GetSpaceMetaPayload".to_string()))?;
 
         debug!(
             "[SPACE-META] Received GET_SPACE_META from peer {} for space {}",
@@ -6680,9 +7197,8 @@ impl MessageRouter {
     ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
         use crate::network::messages::SpaceMetaPayload;
 
-        let meta = SpaceMetaPayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::DeserializationError("SpaceMetaPayload".to_string())
-        })?;
+        let meta = SpaceMetaPayload::from_bytes(payload)
+            .ok_or_else(|| RouteError::DeserializationError("SpaceMetaPayload".to_string()))?;
 
         debug!(
             "[SPACE-META] Received SPACE_META from peer {} for space {} name='{}'",
@@ -6868,7 +7384,10 @@ impl MessageRouterBuilder {
     }
 
     /// Set the pool manager for engagement pools
-    pub fn pool_manager(mut self, pool_manager: Arc<RwLock<crate::content::pool::PoolManager>>) -> Self {
+    pub fn pool_manager(
+        mut self,
+        pool_manager: Arc<RwLock<crate::content::pool::PoolManager>>,
+    ) -> Self {
         self.pool_manager = Some(pool_manager);
         self
     }
@@ -6892,7 +7411,10 @@ impl MessageRouterBuilder {
     }
 
     /// Set the block builder for mempool (pending actions)
-    pub fn block_builder(mut self, builder: Arc<RwLock<crate::blocks::builder::BlockBuilder>>) -> Self {
+    pub fn block_builder(
+        mut self,
+        builder: Arc<RwLock<crate::blocks::builder::BlockBuilder>>,
+    ) -> Self {
         self.block_builder = Some(builder);
         self
     }

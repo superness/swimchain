@@ -24,11 +24,11 @@ use tokio::time::{interval, MissedTickBehavior};
 use crate::blocks::BlockBuilder;
 use crate::content::decay_integration::DecayIntegration;
 use crate::dht::{DhtManager, DhtMessage, NodeId as DhtNodeId};
+use crate::discovery::peer_branches::PeerBranchTracker;
 use crate::network::messages::{GetBlocksPayload, PingPongPayload};
 use crate::sponsorship::offer_store::OfferStore;
-use crate::sync::ChainSyncer;
 use crate::sync::subscription::BranchSubscriptionManager;
-use crate::discovery::peer_branches::PeerBranchTracker;
+use crate::sync::ChainSyncer;
 use crate::transport::{ConnectionDirection, TcpTransport};
 use crate::types::network::{MessageEnvelope, MessageType};
 use crate::types::serialize::Serialize;
@@ -209,7 +209,10 @@ impl BackgroundTaskRunner {
             // Track whether we've done initial header sync
             let mut initial_headers_fetched = false;
 
-            info!("[SYNC-LOOP] Started with headers-first sync ({}s interval)", SYNC_INTERVAL_SECS);
+            info!(
+                "[SYNC-LOOP] Started with headers-first sync ({}s interval)",
+                SYNC_INTERVAL_SECS
+            );
 
             loop {
                 tokio::select! {
@@ -304,6 +307,46 @@ impl BackgroundTaskRunner {
                                 our_height
                             );
                         }
+
+                        // Content backfill: headers-first sync leaves root headers whose
+                        // space/content blocks were never downloaded — spaces then show
+                        // placeholder names and zero posts. Locator sync can't repair this
+                        // (the tip already matches, so peers answer "synced"). Request the
+                        // gap heights as full blocks; peers only hold non-decayed content,
+                        // so the network itself bounds what comes back.
+                        match store.find_content_gap_heights(64) {
+                            Ok(gaps) if !gaps.is_empty() => {
+                                let start = *gaps.first().unwrap_or(&0);
+                                let end = *gaps.last().unwrap_or(&start);
+                                info!(
+                                    "[SYNC-LOOP] Content backfill: {} gap heights in {}..{}, requesting full blocks",
+                                    gaps.len(),
+                                    start,
+                                    end
+                                );
+                                let backfill = GetBlocksPayload {
+                                    start_height: start,
+                                    end_height: end,
+                                    include_content: true,
+                                    max_blocks: 64,
+                                };
+                                let backfill_envelope =
+                                    crate::types::network::MessageEnvelope::new_fork_agnostic(
+                                        crate::types::network::MessageType::GetBlocks,
+                                        backfill.to_bytes(),
+                                    );
+                                if let Some(peer_id) = peer_ids.first() {
+                                    if let Ok(()) = connection_pool.send_to(peer_id, &backfill_envelope).await {
+                                        info!(
+                                            "[SYNC-LOOP] Sent GETBLOCKS backfill to peer {}",
+                                            hex::encode(&peer_id[..8])
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => warn!("[SYNC-LOOP] Content gap scan failed: {}", e),
+                        }
                     }
                 }
             }
@@ -334,7 +377,10 @@ impl BackgroundTaskRunner {
             let mut ticker = interval(Duration::from_secs(BRANCH_SYNC_INTERVAL_SECS));
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-            info!("[BRANCH-SYNC] Started branch-selective sync ({}s interval)", BRANCH_SYNC_INTERVAL_SECS);
+            info!(
+                "[BRANCH-SYNC] Started branch-selective sync ({}s interval)",
+                BRANCH_SYNC_INTERVAL_SECS
+            );
 
             loop {
                 tokio::select! {
@@ -445,7 +491,10 @@ impl BackgroundTaskRunner {
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
             let mut tick_count: u64 = 0;
 
-            debug!("Decay tick started ({}s interval)", DECAY_TICK_INTERVAL_SECS);
+            debug!(
+                "Decay tick started ({}s interval)",
+                DECAY_TICK_INTERVAL_SECS
+            );
 
             loop {
                 tokio::select! {
@@ -1520,7 +1569,8 @@ impl BackgroundTaskRunner {
             connection_pool,
             connection_manager,
             None, // No idle timeout by default
-        ).await
+        )
+        .await
     }
 
     /// Message reading loop with optional idle timeout
@@ -1544,8 +1594,11 @@ impl BackgroundTaskRunner {
                     Ok(result) => result,
                     Err(_) => {
                         // Timeout - close connection
-                        info!("[MSG-LOOP] Idle timeout ({}s) for peer {}, disconnecting",
-                            timeout.as_secs(), peer_id_hex);
+                        info!(
+                            "[MSG-LOOP] Idle timeout ({}s) for peer {}, disconnecting",
+                            timeout.as_secs(),
+                            peer_id_hex
+                        );
                         break;
                     }
                 }
@@ -1564,12 +1617,7 @@ impl BackgroundTaskRunner {
 
                     // Route the message
                     match router
-                        .route(
-                            &peer_id,
-                            msg_type_u8,
-                            &envelope.fork_id,
-                            &envelope.payload,
-                        )
+                        .route(&peer_id, msg_type_u8, &envelope.fork_id, &envelope.payload)
                         .await
                     {
                         Ok(Some((response_type, response_data))) => {
@@ -1610,10 +1658,7 @@ impl BackgroundTaskRunner {
                             debug!("[MSG-LOOP] No response needed for msg from {}", peer_id_hex);
                         }
                         Err(e) => {
-                            warn!(
-                                "[MSG-LOOP] Route error for msg from {}: {}",
-                                peer_id_hex, e
-                            );
+                            warn!("[MSG-LOOP] Route error for msg from {}: {}", peer_id_hex, e);
                             // Continue processing - don't drop connection on route errors
                         }
                     }
@@ -2105,7 +2150,10 @@ impl BackgroundTaskRunner {
         self.spawn_availability_announcer();
         self.spawn_cache_cleanup();
 
-        info!("Started {} background tasks (with accept loop)", self.handles.len());
+        info!(
+            "Started {} background tasks (with accept loop)",
+            self.handles.len()
+        );
     }
 
     /// Spawns all background tasks with full message routing
@@ -2191,7 +2239,13 @@ impl BackgroundTaskRunner {
         // Spawn block formation task for block-based propagation (SPEC_08)
         // Forms blocks when cumulative PoW threshold is met AND leader election passes
         if let Some(bb) = block_builder {
-            self.spawn_block_formation(bb, connection_pool.clone(), chain_store.clone(), node_identity, sponsorship_store.clone());
+            self.spawn_block_formation(
+                bb,
+                connection_pool.clone(),
+                chain_store.clone(),
+                node_identity,
+                sponsorship_store.clone(),
+            );
         }
 
         if let Some(s) = syncer {
@@ -2213,7 +2267,11 @@ impl BackgroundTaskRunner {
 
         self.spawn_peer_maintenance(connection_manager.clone());
 
-        self.spawn_keepalive(connection_manager, connection_pool.clone(), chain_store.clone());
+        self.spawn_keepalive(
+            connection_manager,
+            connection_pool.clone(),
+            chain_store.clone(),
+        );
 
         // Sponsorship offer sync - queries peers for offers during initial sync (SPEC_11 §5.1)
         // This ensures new nodes receive existing offers that were created before they joined
@@ -2225,7 +2283,10 @@ impl BackgroundTaskRunner {
         self.spawn_availability_announcer();
         self.spawn_cache_cleanup();
 
-        info!("Started {} background tasks (with DHT peer discovery)", self.handles.len());
+        info!(
+            "Started {} background tasks (with DHT peer discovery)",
+            self.handles.len()
+        );
     }
 }
 
