@@ -49,7 +49,6 @@ export function RequireIdentity({ children }: RequireIdentityProps): JSX.Element
 
   // Browser mode: require a valid browser-keypair identity.
   if (!hasIdentity) {
-    console.log('[RequireIdentity] No valid browser identity, redirecting to /identity');
     return <Navigate to="/identity" state={{ from: location }} replace />;
   }
 

@@ -51,12 +51,6 @@ if (typeof window !== 'undefined') {
     }
 
     if (event.data?.type === 'SWIMCHAIN_RPC_CONFIG') {
-      console.log('[ParentConfig] Received RPC config from parent:', {
-        endpoint: event.data.rpcEndpoint,
-        hasAuth: !!event.data.rpcAuth,
-        origin: event.origin,
-      });
-
       parentConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,

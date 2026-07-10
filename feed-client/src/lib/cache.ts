@@ -362,7 +362,6 @@ export async function clearDecryptedMediaCache(): Promise<void> {
           request.onerror = () => reject(request.error);
         }
       });
-      console.log(`[Cache] Cleared ${keysToDelete.length} decrypted media entries`);
     }
   } catch (err) {
     console.warn('[Cache] Failed to clear decrypted media:', err);

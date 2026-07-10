@@ -157,7 +157,6 @@ export function CreatePrivateSpace(): JSX.Element {
       });
 
       if (result) {
-        console.log('Private space created:', result.spaceId);
 
         // Store the space key locally
         await storeSpaceKey(

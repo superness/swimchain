@@ -49,7 +49,6 @@ function loadPreferences(userPkHex: string): FeedPreferences {
 
     // Migration: handle old versions if needed
     if (parsed.version !== CURRENT_VERSION) {
-      console.log('[FeedPrefs] Migrating from version', parsed.version, 'to', CURRENT_VERSION);
       // Currently only version 1, so no migration needed
     }
 
@@ -155,7 +154,6 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
     if (prefsKey) {
       const prefs = loadPreferences(prefsKey);
       setPreferences(prefs);
-      console.log('[FeedPrefs] Loaded preferences for', prefsKey.substring(0, 16) + '...');
     } else {
       setPreferences(getDefaultPreferences());
     }

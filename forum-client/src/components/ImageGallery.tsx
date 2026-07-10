@@ -79,7 +79,6 @@ export function ImageGallery({
             if (!encryptionPassphrase) {
               // No passphrase - mark as locked
               locked.add(ref.mediaHash);
-              console.log('[ImageGallery] Encrypted image without passphrase:', ref.mediaHash.substring(0, 12));
               continue;
             }
 
@@ -98,7 +97,6 @@ export function ImageGallery({
               const cacheKey = `${ref.mediaHash}:decrypted`;
               const cached = await getMediaFromCache(cacheKey);
               if (cached) {
-                console.log('[ImageGallery] Decrypted cache hit:', ref.mediaHash.substring(0, 12));
                 urls.set(ref.mediaHash, `data:${cached.mediaType};base64,${cached.data}`);
                 continue;
               }
@@ -124,7 +122,6 @@ export function ImageGallery({
 
               // Create data URL
               urls.set(ref.mediaHash, `data:${originalType};base64,${decryptedBase64}`);
-              console.log('[ImageGallery] Decrypted image:', ref.mediaHash.substring(0, 12));
             } catch (decryptErr) {
               console.error('[ImageGallery] Failed to decrypt:', ref.mediaHash, decryptErr);
               locked.add(ref.mediaHash);

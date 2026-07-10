@@ -108,7 +108,6 @@ export function PrivateSpaceList(): JSX.Element {
       });
 
       if (result) {
-        console.log('Invite accepted, space:', result.spaceId);
 
         // 3. Decrypt the space key using our X25519 secret key
         const encryptedKeyBytes = hexToBytes(invite.encryptedSpaceKey);
@@ -166,8 +165,6 @@ export function PrivateSpaceList(): JSX.Element {
         signature: bytesToHex(signature),
         timestamp,
       });
-
-      console.log('Invite declined:', invite.inviteHash);
 
       // Refresh invites list
       await refetchInvites();

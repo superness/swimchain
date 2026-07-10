@@ -216,7 +216,6 @@ export class SwimchainRpc {
   setRemoteSigner(publicKeyHex: string, signFn: RemoteSignFunction): void {
     this.remotePublicKeyHex = publicKeyHex;
     this.remoteSignFn = signFn;
-    console.log('[RPC] Remote signer configured for identity:', publicKeyHex.substring(0, 16) + '...');
   }
 
   /**
@@ -260,28 +259,13 @@ export class SwimchainRpc {
       headers['X-CS-Identity'] = this.publicKeyHex;
       headers['X-CS-Timestamp'] = timestamp;
       headers['X-CS-Signature'] = signatureHex;
-
-      // Debug logging
-      console.log('[RPC Auth] Using signature authentication', {
-        method,
-        identity: this.publicKeyHex.substring(0, 16) + '...',
-        timestamp,
-        paramsJson,
-        paramsHash: paramsHashHex,
-        message,
-        signatureLength: signatureHex.length,
-      });
     } else if (this.authHeader) {
       // Use raw auth header (e.g., from parent frame via SWIMCHAIN_RPC_CONFIG)
       headers['Authorization'] = this.authHeader;
-      console.log('[RPC Auth] Using provided auth header');
     } else if (this.auth) {
       // Fall back to basic auth
       const credentials = `${this.auth.username}:${this.auth.password}`;
       headers['Authorization'] = `Basic ${btoa(credentials)}`;
-      console.log('[RPC Auth] Using basic authentication');
-    } else {
-      console.log('[RPC Auth] No authentication configured - request will likely fail');
     }
 
     const controller = new AbortController();
@@ -291,16 +275,12 @@ export class SwimchainRpc {
     }, this.timeout);
 
     try {
-      console.log('[RPC] Sending request:', { method, endpoint: this.endpoint, timeout: this.timeout });
-
       const response = await fetch(this.endpoint, {
         method: 'POST',
         headers,
         body: JSON.stringify(request),
         signal: controller.signal,
       });
-
-      console.log('[RPC] Got response:', { method, status: response.status });
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);

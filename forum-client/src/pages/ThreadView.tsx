@@ -113,7 +113,6 @@ export function ThreadView(): JSX.Element {
   // Handle reaction - accepts emoji string from ContentStatus
   const handleReact = async (emoji: string) => {
     if (!threadId || !identity) {
-      console.log('[React] Missing required data:', { threadId, hasIdentity: !!identity });
       setContributionStatus('Please create an identity first');
       return;
     }
@@ -134,7 +133,6 @@ export function ThreadView(): JSX.Element {
 
     // Use a moderate 10s contribution per reaction
     const seconds = 10;
-    console.log(`[React] Contributing ${seconds}s to thread ${threadId} with emoji ${emoji} (code ${emojiCode})`);
 
     try {
       // Use node signing - nodeSign returns Uint8Array | null

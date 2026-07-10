@@ -475,7 +475,6 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
     if (!skipCache) {
       const memoryCached = getFromMemory<Space[]>(CACHE_KEY);
       if (memoryCached) {
-        console.log('[Spaces] Memory cache hit');
         setSpaces(memoryCached);
         setLoading(false);
         return;
@@ -484,7 +483,6 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       // Check localStorage cache (persists across refreshes)
       const storageCached = getFromStorage<Space[]>(CACHE_KEY);
       if (storageCached) {
-        console.log('[Spaces] Storage cache hit');
         setSpaces(storageCached);
         setInMemory(CACHE_KEY, storageCached, 5 * 60 * 1000); // Also populate memory
         setLoading(false);
@@ -517,7 +515,6 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       // Cache the result
       setInMemory(CACHE_KEY, transformedSpaces, 5 * 60 * 1000); // 5 min memory
       setInStorage(CACHE_KEY, transformedSpaces, 30 * 60 * 1000); // 30 min storage
-      console.log('[Spaces] Cached', transformedSpaces.length, 'spaces');
 
       setSpaces(transformedSpaces);
       setError(null);
@@ -533,7 +530,6 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
         .filter(id => !spaceNamesAsked.has(id));
 
       if (placeholderIds.length > 0) {
-        console.log('[Spaces] Resolving names for', placeholderIds.length, 'placeholders');
         placeholderIds.forEach(id => {
           spaceNamesAsked.add(id);
           rpc.resolveSpaceName(id).catch(err =>
@@ -555,11 +551,9 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
   }, [rpc, connected, authReady]);
 
   useEffect(() => {
-    console.log('[useSpaces] useEffect triggered:', { connected, authReady });
     if (connected && authReady) {
       // Clear any previous errors from unauthenticated requests
       setError(null);
-      console.log('[useSpaces] Calling refetch (auth ready)');
       refetch();
     } else {
       console.log('[useSpaces] NOT calling refetch:', { connected, authReady });
@@ -726,7 +720,6 @@ export function useSpaceThreads(spaceId: string, options?: { offset?: number; li
   const limit = options?.limit ?? 50;
 
   const refetch = useCallback(async (skipCache = false) => {
-    console.log('[useSpaceThreads] refetch called for space:', spaceId, 'offset:', offset, 'limit:', limit);
 
     // Import cache functions
     const { getFromMemory, setInMemory } = await import('../lib/cache');
@@ -736,7 +729,6 @@ export function useSpaceThreads(spaceId: string, options?: { offset?: number; li
     if (!skipCache) {
       const cached = getFromMemory<{ threads: Thread[]; total: number }>(CACHE_KEY);
       if (cached) {
-        console.log('[useSpaceThreads] Cache hit:', cached.threads.length, 'threads');
         setThreads(cached.threads);
         setTotal(cached.total);
         setLoading(false);
@@ -747,24 +739,19 @@ export function useSpaceThreads(spaceId: string, options?: { offset?: number; li
     }
 
     if (!rpc) {
-      console.log('[useSpaceThreads] Bailing - no rpc client');
       setLoading(false);
       return;
     }
     if (!connected || !authReady) {
-      console.log('[useSpaceThreads] Bailing - not connected or auth not ready yet. Will retry when ready.');
       // Don't set loading=false so UI shows loading state
       return;
     }
 
-    console.log('[useSpaceThreads] Fetching posts for space:', spaceId, 'offset:', offset);
     if (!skipCache) setLoading(true);
     try {
       // Use listSpacePosts which filters for Posts at the database level
       // This is more efficient than listSpaceContent + client-side filter
       const result = await rpc.listSpacePosts(spaceId, { offset, limit });
-
-      console.log('[useSpaceThreads] Got', result.items.length, 'posts, total:', result.total);
 
       // All items should be Posts now (filtered by server)
       const topLevelPosts = result.items;
@@ -784,19 +771,14 @@ export function useSpaceThreads(spaceId: string, options?: { offset?: number; li
         .map(item => item.content_id)
         .filter(id => !pendingRequestsRef.current.has(id)); // Don't re-request pending items
 
-      console.log('[useSpaceThreads] Posts:', topLevelPosts.length, 'Missing:', missingContentIds.length);
-      console.log('[useSpaceThreads] Bodies:', topLevelPosts.map(p => ({ id: p.content_id.slice(0, 16), body: p.body === null ? 'NULL' : p.body === undefined ? 'UNDEF' : p.body.slice(0, 20) + '...' })));
-
       if (missingContentIds.length > 0) {
-        console.log('[useSpaceThreads] Found', missingContentIds.length, 'items with missing body, requesting from network');
         setFetching(true);
 
         // Request all missing content in parallel
         const requestPromises = missingContentIds.map(async (contentId) => {
           pendingRequestsRef.current.add(contentId);
           try {
-            const requestResult = await rpc.requestContent(contentId);
-            console.log('[useSpaceThreads] Requested', contentId.substring(0, 16) + '...', ':', requestResult.status);
+            await rpc.requestContent(contentId);
             return { contentId, success: true };
           } catch (err) {
             console.warn('[useSpaceThreads] Failed to request', contentId, ':', err);
@@ -812,7 +794,6 @@ export function useSpaceThreads(spaceId: string, options?: { offset?: number; li
 
         const pollForContent = async () => {
           if (pollCount >= maxPolls) {
-            console.log('[useSpaceThreads] Stopped polling after', maxPolls * 2, 'seconds - marking as unavailable');
             setFetching(false);
             // Mark remaining missing content as unavailable and update UI
             missingContentIds.forEach(id => {
@@ -855,13 +836,11 @@ export function useSpaceThreads(spaceId: string, options?: { offset?: number; li
             setThreads(updatedThreads);
 
             if (stillMissing.length === 0) {
-              console.log('[useSpaceThreads] All content arrived!');
               setFetching(false);
               missingContentIds.forEach(id => pendingRequestsRef.current.delete(id));
               return;
             }
 
-            console.log('[useSpaceThreads] Still waiting for', stillMissing.length, 'items (poll', pollCount, '/', maxPolls, ')');
             await pollForContent();
           } catch (pollErr) {
             console.warn('[useSpaceThreads] Poll error:', pollErr);
@@ -882,7 +861,6 @@ export function useSpaceThreads(spaceId: string, options?: { offset?: number; li
 
   // Log when connection state changes for debugging
   useEffect(() => {
-    console.log('[useSpaceThreads] Connection state changed - rpc:', !!rpc, 'connected:', connected, 'authReady:', authReady, 'spaceId:', spaceId);
     if (connected && authReady && rpc && spaceId) {
       console.log('[useSpaceThreads] *** Should now fetch content for space:', spaceId);
     }
@@ -921,7 +899,6 @@ export function useThread(contentId: string): {
       let poolData;
       try {
         poolData = await rpc.getPoolForContent(contentId);
-        console.log('[useThread] Refetch pool data:', poolData);
       } catch { /* Pool data not available */ }
       setThread(contentToThread(content, poolData));
     } catch (err) {
@@ -949,7 +926,6 @@ export function useThread(contentId: string): {
         let poolData;
         try {
           poolData = await rpc.getPoolForContent(contentId);
-          console.log('[useThread] Pool data:', poolData);
         } catch (poolErr) {
           console.log('[useThread] Failed to get pool data:', poolErr);
         }
@@ -962,13 +938,11 @@ export function useThread(contentId: string): {
 
         // If content not found, try to request from network
         if (errorMessage.includes('not found') || errorMessage.includes('Content not found')) {
-          console.log('[useThread] Content not found locally, requesting from network:', contentId);
           setFetching(true);
 
           try {
             // Request content from network
             const requestResult = await rpc.requestContent(contentId);
-            console.log('[useThread] Request result:', requestResult);
 
             if (requestResult.status === 'found_locally') {
               // Content was already available - retry get
@@ -1103,9 +1077,6 @@ export function usePoolContribution() {
         nonceSpace,
       };
 
-      console.log('[Engage] Starting Argon2id PoW mining:', { difficulty, timestamp, emoji });
-
-      const startTime = Date.now();
       const solution = await computePow(
         challenge,
         TESTNET_CONFIG,
@@ -1113,11 +1084,6 @@ export function usePoolContribution() {
           setProgress({ attempts, elapsedMs });
         },
       );
-
-      console.log('[Engage] Mining complete:', {
-        nonce: solution.nonce.toString(),
-        elapsedMs: Date.now() - startTime,
-      });
 
       // Sign the engagement
       const signMessage = new TextEncoder().encode(
@@ -1138,8 +1104,6 @@ export function usePoolContribution() {
         timestamp,
         emoji,
       });
-
-      console.log('[Engage] Submit result:', result);
 
       // Engagement is successful if either the decay was reset or the reaction was stored
       // (reaction might not store if duplicate, but engaged can still succeed)
@@ -1234,8 +1198,6 @@ export function usePostSubmit() {
         mediaRefs,
       });
 
-      console.log('[Post] Submit result:', result);
-
       return {
         success: true,
         contentId: result.content_id,
@@ -1313,7 +1275,6 @@ async function compressImage(file: File, targetBytes: number): Promise<File> {
           const compressedFile = new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), {
             type: 'image/jpeg',
           });
-          console.log(`[Compress] ${file.size} -> ${blob.size} bytes (${Math.round(blob.size / file.size * 100)}%)`);
           resolve(compressedFile);
           return;
         }
@@ -1475,7 +1436,6 @@ export function useMediaUpload() {
     try {
       // Compress the image
       const compressedFile = await compressImage(file, COMPRESSION_TARGET_BYTES);
-      console.log(`[Media] Compressed ${(file.size / 1024).toFixed(0)}KB -> ${(compressedFile.size / 1024).toFixed(0)}KB`);
 
       // Read as base64
       const base64 = await new Promise<string>((resolve, reject) => {
@@ -1553,7 +1513,6 @@ export function useMediaUpload() {
 
       // Encrypt the image bytes
       const encryptedBytes = await encryptMedia(arrayBuffer, passphrase);
-      console.log(`[Media] Encrypted ${file.size} -> ${encryptedBytes.length} bytes`);
 
       // Convert to base64 for upload
       const base64 = bytesToBase64(encryptedBytes);
@@ -1614,14 +1573,12 @@ export function useMediaUpload() {
 
       // Compress the image first
       const compressedFile = await compressImage(file, COMPRESSION_TARGET_BYTES);
-      console.log(`[Media] Compressed ${(file.size / 1024).toFixed(0)}KB -> ${(compressedFile.size / 1024).toFixed(0)}KB`);
 
       // Read as ArrayBuffer
       const arrayBuffer = await compressedFile.arrayBuffer();
 
       // Encrypt the compressed bytes
       const encryptedBytes = await encryptMedia(arrayBuffer, passphrase);
-      console.log(`[Media] Encrypted ${compressedFile.size} -> ${encryptedBytes.length} bytes`);
 
       // Convert to base64
       const base64 = bytesToBase64(encryptedBytes);
@@ -1670,7 +1627,6 @@ export function useMediaUpload() {
     // Check cache first (IndexedDB - permanent storage)
     const cached = await getMediaFromCache(mediaHash);
     if (cached) {
-      console.log('[Media] Cache hit:', mediaHash.substring(0, 12));
       return `data:${cached.mediaType};base64,${cached.data}`;
     }
 
@@ -1681,7 +1637,6 @@ export function useMediaUpload() {
 
       // Cache the result for future loads
       await setMediaInCache(mediaHash, result.data, result.media_type);
-      console.log('[Media] Cached:', mediaHash.substring(0, 12));
 
       // Return as data URL for direct use in img src
       return `data:${result.media_type};base64,${result.data}`;
@@ -1762,8 +1717,6 @@ export function useReplySubmit() {
         signature: signatureHex,
         timestamp: powParams.timestamp,
       });
-
-      console.log('[Reply] Submit result:', result);
 
       return {
         success: true,
@@ -1849,8 +1802,6 @@ export function useEditSubmit() {
         timestamp: powParams.timestamp,
       });
 
-      console.log('[Edit] Submit result:', result);
-
       return {
         success: true,
         contentId: result.content_id,
@@ -1892,7 +1843,6 @@ export function useReplies(contentId: string) {
 
     try {
       const result = await rpc.getReplies(contentId);
-      console.log('[Replies] Fetched:', result.replies.length, 'replies');
 
       // Convert flat replies to tree structure, passing unavailable content IDs
       const replyTree = buildReplyTree(result.replies, contentId, unavailableContentRef.current);
@@ -1918,15 +1868,13 @@ export function useReplies(contentId: string) {
         .map(r => r.content_id);
 
       if (emptyBodyReplies.length > 0) {
-        console.log('[Replies] Requesting', emptyBodyReplies.length, 'replies with empty bodies from network');
         setFetching(true);
 
         // Request all missing content in parallel
         const requestPromises = emptyBodyReplies.slice(0, 20).map(async (cid) => {
           pendingRequestsRef.current.add(cid);
           try {
-            const requestResult = await rpc.requestContent(cid);
-            console.log('[Replies] Requested', cid.substring(0, 16) + '...', ':', requestResult.status);
+            await rpc.requestContent(cid);
             return { cid, success: true };
           } catch (err) {
             console.warn('[Replies] Failed to request', cid, ':', err);
@@ -1942,7 +1890,6 @@ export function useReplies(contentId: string) {
 
         const pollForContent = async () => {
           if (pollCount >= maxPolls) {
-            console.log('[Replies] Stopped polling after', maxPolls * 2, 'seconds - marking as unavailable');
             setFetching(false);
             // Mark remaining empty replies as unavailable
             emptyBodyReplies.forEach(id => {
@@ -1976,13 +1923,11 @@ export function useReplies(contentId: string) {
             setReplies(updatedTree);
 
             if (stillEmpty.length === 0) {
-              console.log('[Replies] All content arrived!');
               setFetching(false);
               emptyBodyReplies.forEach(id => pendingRequestsRef.current.delete(id));
               return;
             }
 
-            console.log('[Replies] Still waiting for', stillEmpty.length, 'items (poll', pollCount, '/', maxPolls, ')');
             await pollForContent();
           } catch (pollErr) {
             console.warn('[Replies] Poll error:', pollErr);
@@ -2162,7 +2107,6 @@ export function useReactions(contentId: string) {
 
     try {
       const result = await rpc.getReactions(contentId);
-      console.log('[Reactions] Fetched:', result);
 
       // Also try to get user's own reactions if we have an identity
       const identity = loadStoredIdentity();
@@ -2254,7 +2198,6 @@ export function useSpamStatus(contentId: string) {
       });
     } catch (err) {
       // Content might not have any spam reports yet - that's OK
-      console.log('[SpamStatus] No spam data:', err);
       setStatus({
         isFlagged: false,
         attestationCount: 0,
@@ -2328,8 +2271,6 @@ export function useSpamReport() {
         nonceSpace,
       };
 
-      console.log('[SpamReport] Starting PoW mining:', { difficulty, reason });
-
       const solution = await computePow(
         challenge,
         TESTNET_CONFIG,
@@ -2360,8 +2301,6 @@ export function useSpamReport() {
         signature: signatureHex,
         timestamp,
       });
-
-      console.log('[SpamReport] Submit result:', result);
 
       return {
         success: result.stored,
@@ -2416,8 +2355,6 @@ export function useSpamReport() {
         nonceSpace,
       };
 
-      console.log('[DefendContent] Starting PoW mining:', { difficulty });
-
       const solution = await computePow(
         challenge,
         TESTNET_CONFIG,
@@ -2445,8 +2382,6 @@ export function useSpamReport() {
         signature: signatureHex,
         timestamp,
       });
-
-      console.log('[DefendContent] Submit result:', result);
 
       return {
         success: result.stored,
@@ -3318,9 +3253,7 @@ export function useSearch(query: string, types?: ('space' | 'thread')[]): {
 
   const refetch = useCallback(async () => {
     // Search requires authentication, so wait for authReady
-    console.log('[Search] refetch called - rpc:', !!rpc, 'connected:', connected, 'authReady:', authReady);
     if (!rpc || !connected || !authReady) {
-      console.log('[Search] Skipping search - auth not ready');
       setResults([]);
       setTotal(0);
       setLoading(false);

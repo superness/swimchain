@@ -100,13 +100,6 @@ export function ReplyComposer({
     // or the threadId (for top-level replies to the main post)
     const targetParentId = parentId || threadId;
 
-    console.log('[Reply] Submitting to network:', {
-      threadId,
-      parentId: targetParentId,
-      contentLength: contentRef.current.length,
-      powParams,
-    });
-
     // Use node signing - nodeSign returns Uint8Array | null
     const signFn = async (message: Uint8Array): Promise<Uint8Array> => {
       const sig = await nodeSign(message);
@@ -124,7 +117,6 @@ export function ReplyComposer({
       );
 
       if (result.success && result.contentId) {
-        console.log('[Reply] Successfully submitted:', result.contentId);
         setContent('');
         contentRef.current = '';
         reset();

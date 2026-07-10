@@ -168,10 +168,6 @@ export function RpcProvider({ children }: { children: ReactNode }) {
 
     const parentConfig = getParentConfig();
     if (parentConfig && isInIframe()) {
-      console.log('[RPC] Using parent frame config:', {
-        endpoint: parentConfig.rpcEndpoint,
-        hasAuth: !!parentConfig.rpcAuth,
-      });
       baseConfig = {
         endpoint: parentConfig.rpcEndpoint,
         authHeader: parentConfig.rpcAuth,
@@ -211,25 +207,17 @@ export function RpcProvider({ children }: { children: ReactNode }) {
     const autoConnect = async () => {
       // Skip auto-connect if we already have a connection (from HMR)
       if (hmrState.rpc && hmrState.connected) {
-        console.log('[RPC] Skipping auto-connect - already connected via HMR state');
         return;
       }
 
-      console.log('[RPC] Connecting to local node...');
-
       if (await doConnect()) {
-        console.log('[RPC] Connected to local node');
         return;
       }
 
       // Connection failed - user needs to start their node
-      console.log('[RPC] Could not connect to local node');
-      console.log('[RPC] Make sure your Swimchain node is running: sw node start --testnet');
-
       // Retry every 5 seconds
       retryInterval = setInterval(async () => {
         if (await doConnect()) {
-          console.log('[RPC] Connected to local node');
           if (retryInterval) clearInterval(retryInterval);
         }
       }, 5000);
@@ -265,22 +253,17 @@ export function RpcProvider({ children }: { children: ReactNode }) {
     // If running in iframe, wait for parent config before connecting.
     // The parent frame (desktop-app) sends config via postMessage after iframe loads.
     if (isInIframe() && !getParentConfig()) {
-      console.log('[RPC] In iframe without parent config - waiting for postMessage...');
-
       const handleParentConfig = () => {
-        console.log('[RPC] Parent config received, connecting...');
         if (retryInterval) {
           clearInterval(retryInterval);
           retryInterval = null;
         }
         doConnect().then(success => {
           if (success) {
-            console.log('[RPC] Connected with parent-provided config');
+            // connected with parent-provided config
           } else {
-            console.log('[RPC] Failed to connect with parent config, will retry...');
             retryInterval = setInterval(async () => {
               if (await doConnect()) {
-                console.log('[RPC] Connected to node via parent config');
                 if (retryInterval) clearInterval(retryInterval);
               }
             }, 5000);
@@ -321,7 +304,6 @@ export function RpcProvider({ children }: { children: ReactNode }) {
       rpc.setRemoteSigner(publicKeyHex, signFn);
       setAuthReady(true);
       hmrState.authReady = true;
-      console.log('[RPC] Remote signer configured for node identity - auth is now ready');
     } else {
       console.warn('[RPC] Cannot set remote signer - RPC not connected');
     }
@@ -636,7 +618,6 @@ export function useThread(contentId: string): {
       let poolData;
       try {
         poolData = await rpc.getPoolForContent(contentId);
-        console.log('[useThread] Refetch pool data:', poolData);
       } catch { /* Pool data not available */ }
       setThread(contentToThread(content, poolData));
     } catch (err) {
@@ -664,7 +645,6 @@ export function useThread(contentId: string): {
         let poolData;
         try {
           poolData = await rpc.getPoolForContent(contentId);
-          console.log('[useThread] Pool data:', poolData);
         } catch (poolErr) {
           console.log('[useThread] Failed to get pool data:', poolErr);
         }
@@ -677,13 +657,11 @@ export function useThread(contentId: string): {
 
         // If content not found, try to request from network
         if (errorMessage.includes('not found') || errorMessage.includes('Content not found')) {
-          console.log('[useThread] Content not found locally, requesting from network:', contentId);
           setFetching(true);
 
           try {
             // Request content from network
             const requestResult = await rpc.requestContent(contentId);
-            console.log('[useThread] Request result:', requestResult);
 
             if (requestResult.status === 'found_locally') {
               // Content was already available - retry get
@@ -818,9 +796,6 @@ export function usePoolContribution() {
         nonceSpace,
       };
 
-      console.log('[Engage] Starting Argon2id PoW mining:', { difficulty, timestamp, emoji });
-
-      const startTime = Date.now();
       const solution = await computePow(
         challenge,
         TESTNET_CONFIG,
@@ -828,11 +803,6 @@ export function usePoolContribution() {
           setProgress({ attempts, elapsedMs });
         },
       );
-
-      console.log('[Engage] Mining complete:', {
-        nonce: solution.nonce.toString(),
-        elapsedMs: Date.now() - startTime,
-      });
 
       // Sign the engagement
       const signMessage = new TextEncoder().encode(
@@ -856,8 +826,6 @@ export function usePoolContribution() {
         timestamp,
         emoji,
       });
-
-      console.log('[Engage] Submit result:', result);
 
       // Engagement is successful if either the decay was reset or the reaction was stored
       // (reaction might not store if duplicate, but engaged can still succeed)
@@ -946,8 +914,6 @@ export function usePostSubmit() {
         timestamp: powParams.timestamp,
       });
 
-      console.log('[Post] Submit result:', result);
-
       return {
         success: true,
         contentId: result.content_id,
@@ -1030,8 +996,6 @@ export function useReplySubmit() {
         mediaRefs,
       });
 
-      console.log('[Reply] Submit result:', result);
-
       return {
         success: true,
         contentId: result.content_id,
@@ -1069,7 +1033,6 @@ export function useReplies(contentId: string) {
 
     try {
       const result = await rpc.getReplies(contentId);
-      console.log('[Replies] Fetched:', result);
 
       // Convert flat replies to tree structure
       const replyTree = buildReplyTree(result.replies, contentId);
@@ -1229,7 +1192,6 @@ export function useReactions(contentId: string) {
 
     try {
       const result = await rpc.getReactions(contentId);
-      console.log('[Reactions] Fetched:', result);
 
       // Also try to get user's own reactions if we have an identity
       const identity = loadStoredIdentity();
@@ -1531,8 +1493,6 @@ export function useMediaUpload() {
         mediaType: file.type,
       });
 
-      console.log('[Media] Upload result:', result);
-
       return {
         success: result.success,
         result: {
@@ -1571,7 +1531,6 @@ export function useMediaUpload() {
     try {
       // Compress the image
       const compressedFile = await compressImage(file, COMPRESSION_TARGET_BYTES);
-      console.log(`[Media] Compressed ${(file.size / 1024).toFixed(0)}KB -> ${(compressedFile.size / 1024).toFixed(0)}KB`);
 
       // Read as base64
       const base64 = await new Promise<string>((resolve, reject) => {
@@ -1594,8 +1553,6 @@ export function useMediaUpload() {
         data: base64,
         mediaType: compressedFile.type,
       });
-
-      console.log('[Media] Upload result:', result);
 
       return {
         success: result.success,

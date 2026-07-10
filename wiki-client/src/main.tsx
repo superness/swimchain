@@ -25,7 +25,6 @@ ReactDOM.createRoot(rootElement).render(
     <ErrorBoundary>
       <SwimchainProvider
         fallback={<WaveLoader fullScreen size="large" text="Loading Swimchain Wiki..." />}
-        onLoad={() => console.log('Swimchain WASM loaded')}
         onError={(err) => console.error('WASM initialization failed:', err)}
       >
         <RpcProvider>

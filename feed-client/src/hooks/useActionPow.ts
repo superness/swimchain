@@ -98,20 +98,8 @@ export function useActionPow(): UseActionPowResult {
       const difficulty = getDifficulty(actionType, isTestnet);
       const config = getConfig(isTestnet);
 
-      console.log('[ActionPow] Starting mining', {
-        actionType: ActionType[actionType],
-        difficulty,
-        config,
-        contentLength: content.length,
-      });
-
       // Create challenge
       const challenge = await createChallenge(actionType, content, authorPubkey, difficulty);
-
-      console.log('[ActionPow] Challenge created', {
-        timestamp: challenge.timestamp,
-        nonceSpace: Array.from(challenge.nonceSpace).map(b => b.toString(16).padStart(2, '0')).join(''),
-      });
 
       // Mine solution
       const result = await computePow(
@@ -122,11 +110,6 @@ export function useActionPow(): UseActionPowResult {
         },
         () => cancelledRef.current,
       );
-
-      console.log('[ActionPow] Mining complete', {
-        nonce: result.nonce.toString(),
-        attempts: progress.attempts,
-      });
 
       setSolution(result);
       setState('complete');

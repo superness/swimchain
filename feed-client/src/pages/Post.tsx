@@ -274,8 +274,8 @@ export function Post(): JSX.Element {
 
     try {
       await mineReply(finalBody, publicKeyBytes, true /* testnet */);
-    } catch (err) {
-      console.log('[Post] Reply mining ended:', err);
+    } catch {
+      // Mining aborted or failed
     }
   }, [replyingTo, identity, hasValidIdentity, isSponsored, mineReply, mode, post?.spaceId, privateSpaceIds, encryptForSpace]);
 
@@ -302,7 +302,6 @@ export function Post(): JSX.Element {
       );
 
       if (result.success) {
-        console.log('[Post] Reply submitted:', result.contentId);
         setReplyingTo(null);
         reset();
         refetchReplies();

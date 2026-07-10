@@ -146,8 +146,6 @@ export function CreatePrivateSpace(): JSX.Element {
         throw new Error('Space creation failed: no space ID returned');
       }
 
-      console.log('Private space created:', result.spaceId);
-
       // Store the space key locally
       await storeSpaceKey(
         result.spaceId,

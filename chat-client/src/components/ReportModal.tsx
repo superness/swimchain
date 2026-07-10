@@ -103,7 +103,6 @@ export function ReportModal({ contentId, onClose, onSubmit }: ReportModalProps) 
         }
       } else {
         // No submit handler - just show success for now
-        console.log('[ReportModal] Report submitted:', contentId, selectedReason);
         setResult('success');
       }
     } catch (err) {

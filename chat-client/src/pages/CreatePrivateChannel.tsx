@@ -114,7 +114,6 @@ export function CreatePrivateChannel(): JSX.Element {
       const encryptedName = await encryptSpaceName(name, channelKey);
 
       // Mine PoW for channel creation
-      console.log('[CreatePrivateChannel] Mining PoW...');
       const authorPubkeyBytes = hexToBytes(userPublicKeyHex);
       const powSolution = await mineChannelCreation(name, authorPubkeyBytes, true);
       const powParams = solutionToRpcParams(powSolution);
@@ -140,8 +139,6 @@ export function CreatePrivateChannel(): JSX.Element {
       });
 
       if (result) {
-        console.log('[CreatePrivateChannel] Channel created:', result.channelId);
-
         // Store the channel key locally for decryption
         await storeChannelKey(
           result.channelId,

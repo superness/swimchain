@@ -167,14 +167,11 @@ export function Chat() {
       const mediaRefs: Array<{ mediaHash: string; mediaType: string; sizeBytes: number }> = [];
 
       if (attachments && attachments.length > 0) {
-        console.log('[Chat] Uploading', attachments.length, 'image(s)...');
-
         for (const file of attachments) {
           // Try direct upload first, compress if too large
           let uploadResult = await uploadImage(file);
 
           if (!uploadResult.success && uploadResult.needsCompression) {
-            console.log('[Chat] Image too large, compressing...', file.name);
             uploadResult = await compressAndUpload(file);
           }
 
@@ -184,15 +181,12 @@ export function Chat() {
               mediaType: uploadResult.result.mediaType,
               sizeBytes: uploadResult.result.sizeBytes,
             });
-            console.log('[Chat] Uploaded:', uploadResult.result.mediaHash);
           } else {
             console.error('[Chat] Failed to upload image:', file.name);
             toast.warning(`Failed to upload ${file.name}`);
             // Continue with other images
           }
         }
-
-        console.log('[Chat] Uploaded', mediaRefs.length, 'image(s)');
       }
 
       // Encrypt content if this is a private channel.
@@ -202,7 +196,6 @@ export function Chat() {
         // encrypt BEFORE mining, so PoW binds to the ciphertext. All-or-nothing —
         // if encryption fails we abort rather than leak plaintext into a private channel.
         if (isPrivateServer && serverId) {
-          console.log('[Chat] Encrypting message via node for private channel...');
           const cipher = await encryptForSpace(serverId, content);
           if (!cipher) {
             failPendingMessage(tempId);
@@ -215,21 +208,16 @@ export function Chat() {
         // Browser mode: local E2E channel key (unchanged).
         const channelKey = channelId ? getChannelKey(channelId) : null;
         if (channelKey) {
-          console.log('[Chat] Encrypting message for private channel...');
           messageContent = await encryptWithChannelKey(content, channelKey);
         }
       }
 
       // Mine PoW for reply action
-      console.log('[Chat] Mining PoW for reply...');
-
       // Get author pubkey bytes from identity
       const authorPubkey = publicKeyBytes ?? hexToBytes(identity.publicKey);
 
       // Mine the reply PoW
       const powSolution = await mineReply(messageContent, authorPubkey, true);
-
-      console.log('[Chat] PoW complete, sending message...');
 
       // Convert solution to RPC params
       const powParams = solutionToRpcParams(powSolution);
@@ -239,7 +227,6 @@ export function Chat() {
       const result = await sendMessage(messageContent, signAsync, powParams, mediaRefs.length > 0 ? mediaRefs : undefined);
 
       if (result.success && result.messageId) {
-        console.log('[Chat] Message sent successfully:', result.messageId);
         confirmPendingMessage(tempId, result.messageId);
         setReplyTargetId(null);
       } else {
@@ -321,7 +308,6 @@ export function Chat() {
     }
 
     try {
-      console.log('[Chat] Mining engagement PoW for reaction:', emoji, 'on', messageId);
       const result = await submitEngagement(messageId, 5, identity.publicKey, signAsync, emojiCode);
 
       if (result.success) {
@@ -337,8 +323,6 @@ export function Chat() {
 
   // Handle content report with PoW mining
   const handleReport = useCallback(async (contentId: string, reason: SpamReason): Promise<boolean> => {
-    console.log('[Chat] Report submitted:', contentId, reason);
-
     // Find the message to get author info
     const reportedMessage = messages.find(m => m.id === contentId);
 
@@ -353,8 +337,6 @@ export function Chat() {
           const contentHashBytes = hexToBytes(contentHashHex);
           const authorBytes = hexToBytes(identity.publicKey);
 
-          console.log('[Chat] Mining PoW for spam report...');
-
           // Mine using the hook (drives reportMiningState/reportMiningProgress for the overlay)
           const solution = await mineReportPow(
             ActionType.SpamAttestation, // SPEC_12: higher difficulty for spam reports
@@ -364,7 +346,6 @@ export function Chat() {
           );
 
           const powParams = toRpcParams(solution);
-          console.log('[Chat] Report PoW complete, nonce:', solution.nonce.toString());
 
           // Sign the attestation with nonce included
           const timestamp = Math.floor(Date.now() / 1000);
@@ -387,7 +368,6 @@ export function Chat() {
             signature: bytesToHexLocal(signature),
             timestamp,
           });
-          console.log('[Chat] Spam attestation submitted to network');
         } catch (rpcErr) {
           // RPC method may not exist yet or other error - log locally for now
           console.warn('[Chat] Spam attestation failed, logged locally:', rpcErr);
@@ -398,7 +378,6 @@ export function Chat() {
       if (reportedMessage && reason === 'harassment') {
         // Auto-block for harassment reports
         block(reportedMessage.authorId, 'user', `Reported for ${reason}`);
-        console.log('[Chat] Auto-blocked user for harassment:', reportedMessage.authorId);
         toast.info('User blocked for harassment.');
       }
 

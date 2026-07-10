@@ -201,8 +201,8 @@ export function Compose(): JSX.Element {
     // Start mining with Argon2id action PoW
     try {
       await minePost(postContent, publicKeyBytes, true /* testnet */);
-    } catch (err) {
-      console.log('[Compose] Mining ended:', err);
+    } catch {
+      // Mining aborted or failed
     }
   }, [title, body, hasValidIdentity, identity, selectedSpace, images, minePost, isSponsored, mode, privateSpaceIds, encryptForSpace]);
 
@@ -228,13 +228,6 @@ export function Compose(): JSX.Element {
       size_bytes: img.sizeBytes,
     }));
 
-    console.log('[Compose] Submitting to network:', {
-      spaceId: selectedSpace,
-      titleLength: titleRef.current.length,
-      bodyLength: bodyRef.current.length,
-      imageCount: mediaRefs.length,
-    });
-
     try {
       const result = await submitPost(
         selectedSpace,
@@ -247,7 +240,6 @@ export function Compose(): JSX.Element {
       );
 
       if (result.success && result.contentId) {
-        console.log('[Compose] Successfully submitted:', result.contentId);
         success('Post created successfully!');
         navigate(`/post/${result.contentId}`);
       } else {

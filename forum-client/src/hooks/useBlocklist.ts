@@ -154,7 +154,6 @@ export function useBlocklist(): UseBlocklistResult {
     };
 
     saveBlocklist(newBlocklist);
-    console.log(`[Blocklist] Blocked ${type}: ${id}`);
   }, [blocklist, saveBlocklist]);
 
   const unblock = useCallback((id: string, type: BlockType) => {
@@ -166,7 +165,6 @@ export function useBlocklist(): UseBlocklistResult {
     };
 
     saveBlocklist(newBlocklist);
-    console.log(`[Blocklist] Unblocked ${type}: ${id}`);
   }, [blocklist, saveBlocklist]);
 
   const getBlocked = useCallback((type: BlockType): BlockedItem[] => {
@@ -175,7 +173,6 @@ export function useBlocklist(): UseBlocklistResult {
 
   const clearAll = useCallback(() => {
     saveBlocklist(createEmptyBlocklist());
-    console.log('[Blocklist] Cleared all blocks');
   }, [saveBlocklist]);
 
   const filterBlocked = useCallback(<T extends { id: string; author?: string }>(

@@ -213,7 +213,6 @@ export function InviteModal({ isOpen, onClose, spaceId, spaceName }: InviteModal
       });
 
       if (result) {
-        console.log('[InviteModal] Invite sent:', result.inviteHash);
         setSuccess(true);
         setRecipientAddress('');
         setMessage('');

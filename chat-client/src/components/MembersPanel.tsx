@@ -111,7 +111,6 @@ export function MembersPanel({
       const newKeyVersion = keyVersion + 1;
 
       // 3. Mine PoW for the kick action.
-      console.log('[MembersPanel] Mining PoW for kick...');
       const powSolution = await mineKickPow(
         ActionType.Engage,
         hexToBytes(target.member),

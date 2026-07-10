@@ -235,14 +235,6 @@ export function NewThread(): JSX.Element {
         size_bytes: img.sizeBytes,
       }));
 
-      console.log('[NewThread] Submitting to network:', {
-        spaceId,
-        titleLength: titleRef.current.length,
-        bodyLength: bodyRef.current.length,
-        imageCount: mediaRefs.length,
-        powParams,
-      });
-
       const result = await submitPost(
         spaceId,
         titleRef.current,
@@ -254,7 +246,6 @@ export function NewThread(): JSX.Element {
       );
 
       if (result.success && result.contentId) {
-        console.log('[NewThread] Successfully submitted:', result.contentId);
         // Navigate to the new thread
         navigate(`/spaces/${spaceId}/thread/${result.contentId}`);
       } else {
@@ -264,7 +255,6 @@ export function NewThread(): JSX.Element {
       }
     } catch (err) {
       // Mining cancelled or failed - error state is handled by hook
-      console.log('[NewThread] Mining ended:', err);
       if (!submittedRef.current) {
         setSubmitError(err instanceof Error ? err.message : 'Mining failed');
       }

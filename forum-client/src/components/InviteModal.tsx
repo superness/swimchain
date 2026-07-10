@@ -176,7 +176,6 @@ export function InviteModal({ isOpen, onClose, spaceId, hexSpaceId, spaceName }:
       const signature = keypair.sign(signatureMessage);
 
       // Mine PoW for the invite action
-      console.log('[InviteModal] Mining PoW for invite...');
       const inviteeBytes = hexToBytes(recipientHex);
       const powSolution = await mineInvitePow(
         ActionType.Invite,
@@ -185,7 +184,6 @@ export function InviteModal({ isOpen, onClose, spaceId, hexSpaceId, spaceName }:
         true, // isTestnet
       );
       const powParams = solutionToRpcParams(powSolution);
-      console.log('[InviteModal] PoW complete, nonce:', powSolution.nonce.toString());
 
       // Send invite via RPC with real PoW
       const result = await inviteToSpace({
@@ -203,7 +201,6 @@ export function InviteModal({ isOpen, onClose, spaceId, hexSpaceId, spaceName }:
       });
 
       if (result) {
-        console.log('Invite sent:', result.inviteHash);
         setSuccess(true);
         setRecipientAddress('');
         setMessage('');

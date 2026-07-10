@@ -235,7 +235,6 @@ export function ProfilePage(): JSX.Element {
       );
 
       if (result.success) {
-        console.log('[Profile] Successfully updated profile');
         clearProfileCache(myPk);
         await refetch();
 

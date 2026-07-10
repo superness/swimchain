@@ -177,7 +177,6 @@ export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteM
       );
 
       // Mine PoW for the invite action
-      console.log('[InviteModal] Mining PoW for invite...');
       const inviteeBytes = hexToBytes(recipientHex);
       const authorPubkey = hexToBytes(identity.publicKey);
       const powSolution = await mineInvitePow(
@@ -189,7 +188,6 @@ export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteM
 
       const { solutionToRpcParams: toRpcParams } = await import('@swimchain/frontend');
       const powParams = toRpcParams(powSolution);
-      console.log('[InviteModal] PoW complete, nonce:', powSolution.nonce.toString());
 
       // Sign the invite
       const timestamp = Math.floor(Date.now() / 1000);
@@ -215,7 +213,6 @@ export function InviteModal({ isOpen, onClose, channelId, channelName }: InviteM
       });
 
       if (result) {
-        console.log('[InviteModal] Invite sent:', result.inviteHash);
         setSuccess(true);
         setRecipientAddress('');
         setMessage('');

@@ -91,8 +91,6 @@ export function useStoredKeypair(): UseStoredKeypairResult {
       keypairRef.current = newKeypair;
       setKeypair(newKeypair);
       setError(null);
-
-      console.log('[useStoredKeypair] Created keypair from stored identity');
     } catch (err) {
       console.error('[useStoredKeypair] Failed to create keypair:', err);
       setError(err instanceof Error ? err.message : 'Failed to create keypair');
