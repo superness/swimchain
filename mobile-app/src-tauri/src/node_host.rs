@@ -94,6 +94,12 @@ pub async fn start_with_ports(
     p2p_port: u16,
     rpc_port: u16,
 ) -> Result<NodeHost, String> {
+    // The process-global network context defaults to Mainnet and gates the
+    // wire-protocol magic bytes (framing rejects mismatches) plus PoW/block
+    // threshold scaling. The CLI sets it in main (src/bin/cs.rs); we must do
+    // the same or the testnet seed resets our handshake as cross-network.
+    swimchain::network::NetworkContext::set_mode(network);
+
     let keypair = ensure_identity(&data_dir, IDENTITY_POW_DIFFICULTY)?;
 
     let mut config = NodeConfig::with_network_defaults(network);
