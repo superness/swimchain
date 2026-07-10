@@ -16,12 +16,12 @@
 .no-identity h1 {
   margin: 0 0 0.5rem 0;
   font-size: 1.5rem;
-  color: var(--text-primary, #111827);
+  color: var(--color-text-primary, #111827);
 }
 
 .no-identity p {
   margin: 0 0 1.5rem 0;
-  color: var(--text-muted, #6b7280);
+  color: var(--color-text-tertiary, #6b7280);
 }
 
 .page-header {
@@ -35,20 +35,20 @@
   display: flex;
   align-items: center;
   gap: 0.25rem;
-  color: var(--text-muted, #6b7280);
+  color: var(--color-text-tertiary, #6b7280);
   text-decoration: none;
   font-size: 0.875rem;
   transition: color 0.15s ease;
 }
 
 .back-link:hover {
-  color: var(--text-primary, #111827);
+  color: var(--color-text-primary, #111827);
 }
 
 .page-header h1 {
   margin: 0;
   font-size: 1.5rem;
-  color: var(--text-primary, #111827);
+  color: var(--color-text-primary, #111827);
 }
 
 .create-form {
@@ -66,66 +66,66 @@
 .form-group label {
   font-size: 0.875rem;
   font-weight: 500;
-  color: var(--text-primary, #111827);
+  color: var(--color-text-primary, #111827);
 }
 
 .form-input {
   padding: 0.75rem 1rem;
   font-size: 1rem;
-  color: var(--text-primary, #111827);
-  background: var(--surface-1, #ffffff);
-  border: 1px solid var(--border, #e5e7eb);
+  color: var(--color-text-primary, #111827);
+  background: var(--color-bg-1, #ffffff);
+  border: 1px solid var(--color-border, #e5e7eb);
   border-radius: 0.5rem;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .form-input:focus {
   outline: none;
-  border-color: var(--primary, #6366f1);
-  box-shadow: 0 0 0 3px var(--primary-light, rgba(99, 102, 241, 0.1));
+  border-color: var(--color-accent-primary, #6366f1);
+  box-shadow: 0 0 0 3px var(--color-accent-tertiary, rgba(99, 102, 241, 0.1));
 }
 
 .form-input:disabled {
-  background: var(--surface-2, #f3f4f6);
+  background: var(--color-bg-2, #f3f4f6);
   cursor: not-allowed;
 }
 
 .form-hint {
   font-size: 0.75rem;
-  color: var(--text-muted, #6b7280);
+  color: var(--color-text-tertiary, #6b7280);
 }
 
 .privacy-notice {
   display: flex;
   gap: 0.75rem;
   padding: 1rem;
-  background: var(--primary-light, rgba(99, 102, 241, 0.1));
+  background: var(--color-accent-tertiary, rgba(99, 102, 241, 0.1));
   border-radius: 0.5rem;
 }
 
 .privacy-notice svg {
   flex-shrink: 0;
-  color: var(--primary, #6366f1);
+  color: var(--color-accent-primary, #6366f1);
 }
 
 .privacy-notice strong {
   display: block;
   font-size: 0.875rem;
-  color: var(--primary-dark, #4f46e5);
+  color: var(--color-accent-secondary, #4f46e5);
   margin-bottom: 0.25rem;
 }
 
 .privacy-notice p {
   margin: 0;
   font-size: 0.8125rem;
-  color: var(--text-secondary, #4b5563);
+  color: var(--color-text-secondary, #4b5563);
   line-height: 1.4;
 }
 
 .form-error {
   padding: 0.75rem 1rem;
-  background: var(--error-bg, #fef2f2);
-  color: var(--error-text, #dc2626);
+  background: var(--color-bg-tertiary, #fef2f2);
+  color: var(--color-error, #dc2626);
   border-radius: 0.5rem;
   font-size: 0.875rem;
 }
@@ -151,13 +151,13 @@
 }
 
 .btn-primary {
-  background: var(--primary, #6366f1);
+  background: var(--color-accent-primary, #6366f1);
   color: white;
   border: none;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--primary-dark, #4f46e5);
+  background: var(--color-accent-secondary, #4f46e5);
 }
 
 .btn-primary:disabled {
@@ -167,11 +167,11 @@
 
 .btn-ghost {
   background: transparent;
-  color: var(--text-secondary, #4b5563);
-  border: 1px solid var(--border, #e5e7eb);
+  color: var(--color-text-secondary, #4b5563);
+  border: 1px solid var(--color-border, #e5e7eb);
 }
 
 .btn-ghost:hover {
-  background: var(--surface-2, #f3f4f6);
-  border-color: var(--border-dark, #d1d5db);
+  background: var(--color-bg-2, #f3f4f6);
+  border-color: var(--color-border-strong, #d1d5db);
 }

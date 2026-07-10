@@ -1668,9 +1668,10 @@ export function useCreatePrivateChannel() {
       }) as { space_id: string; space_id_bech32: string; broadcast: boolean };
       return { channelId: result.space_id, channelIdBech32: result.space_id_bech32 };
     } catch (err) {
-      console.error('[CreatePrivateChannel] Managed create failed:', err);
+      // Surface the node's real error (e.g. "Identity is not sponsored…") instead of
+      // returning null, which showed a useless "no channel ID returned".
       setError(err instanceof Error ? err.message : 'Failed to create private channel');
-      return null;
+      throw err;
     } finally {
       setCreating(false);
     }

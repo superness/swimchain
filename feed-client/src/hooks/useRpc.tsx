@@ -2085,10 +2085,19 @@ export function useSpamReport() {
         },
       );
 
-      // Sign the report
-      const signMessage = new TextEncoder().encode(
-        `spam:${contentId}:${reason}:${solution.nonce}:${timestamp}`
-      );
+      // Sign the report over the EXACT bytes the node verifies (SPEC_12):
+      // "SPAM_ATTESTATION" || content_hash(32) || reason(1) || timestamp(8, LE).
+      // Signing a `spam:...` STRING here never matched, so reports failed node
+      // verification with -32602 "signature verification failed".
+      const REASON_U8: Record<string, number> = {
+        advertising: 1, repetitive: 2, off_topic: 3, harassment: 4, illegal_content: 5,
+      };
+      const label = new TextEncoder().encode('SPAM_ATTESTATION');
+      const signMessage = new Uint8Array(label.length + 32 + 1 + 8);
+      signMessage.set(label, 0);
+      signMessage.set(contentHashBytes, label.length);
+      signMessage[label.length + 32] = REASON_U8[String(reason).toLowerCase()] ?? 0;
+      new DataView(signMessage.buffer).setBigUint64(label.length + 33, BigInt(timestamp), true);
       const signature = await signFn(signMessage);
       if (!signature) {
         throw new Error('Failed to sign spam report');
@@ -2539,9 +2548,11 @@ export function useCreatePrivateSpace() {
       }) as { space_id: string; space_id_bech32: string; broadcast: boolean };
       return { spaceId: result.space_id, spaceIdBech32: result.space_id_bech32 };
     } catch (err) {
-      console.error('[CreatePrivateSpace] Managed create failed:', err);
+      // Surface the node's real error (e.g. "Identity is not sponsored…") to the
+      // caller instead of returning null, which made the UI show a useless generic
+      // "Space creation failed: no space ID returned".
       setError(err instanceof Error ? err.message : 'Failed to create private space');
-      return null;
+      throw err;
     } finally {
       setCreating(false);
     }

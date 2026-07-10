@@ -347,18 +347,26 @@ export function Chat() {
 
           const powParams = toRpcParams(solution);
 
-          // Sign the attestation with nonce included
+          // Sign over the EXACT bytes the node verifies (SPEC_12):
+          // "SPAM_ATTESTATION" || content_hash(32) || reason(1) || timestamp(8, LE).
+          // Signing a `spam:...` STRING never matched → -32602 signature failure.
           const timestamp = Math.floor(Date.now() / 1000);
-          const signatureMessage = new TextEncoder().encode(
-            `spam:${contentId}:${reason.toLowerCase()}:${solution.nonce}:${timestamp}`
-          );
+          const REASON_U8: Record<string, number> = {
+            advertising: 1, repetitive: 2, off_topic: 3, harassment: 4, illegal_content: 5,
+          };
+          const label = new TextEncoder().encode('SPAM_ATTESTATION');
+          const signatureMessage = new Uint8Array(label.length + 32 + 1 + 8);
+          signatureMessage.set(label, 0);
+          signatureMessage.set(contentHashBytes, label.length);
+          signatureMessage[label.length + 32] = REASON_U8[reason.toLowerCase()] ?? 0;
+          new DataView(signatureMessage.buffer).setBigUint64(label.length + 33, BigInt(timestamp), true);
           const signature = await signAsync(signatureMessage);
           if (!signature) {
             throw new Error('Failed to sign spam report');
           }
 
           await rpc.call('submit_spam_attestation', {
-            content_id: contentId,
+            content_id: contentHashHex,
             attester_id: identity.publicKey,
             reason: reason.toLowerCase(),
             pow_nonce: powParams.pow_nonce,

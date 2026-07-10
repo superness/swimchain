@@ -158,6 +158,13 @@ export function NodeStatusBar({ onSettingsClick }: NodeStatusBarProps): JSX.Elem
     }
   };
 
+  // Embedded in the desktop shell: the shell renders the real status bar, so this
+  // per-client one must never render — otherwise it doubles up and, while probing
+  // Tauri, flashes "Checking…" and shifts the whole UI up under the header.
+  let embedded = false;
+  try { embedded = window.self !== window.top; } catch { embedded = true; }
+  if (embedded) return null;
+
   // Don't render if not in Tauri or still checking
   if (isTauriAvailable === false) {
     return null;
