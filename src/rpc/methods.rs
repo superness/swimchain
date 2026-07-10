@@ -8267,6 +8267,15 @@ impl RpcMethods {
             }
         };
 
+        // Reporting affects the network — spam attestations accelerate content decay —
+        // so it requires the same standing as posting. Otherwise unsponsored throwaway
+        // identities are free spam-report abuse: each is its own sponsor-tree root, so a
+        // handful reach the attestation threshold at only PoW cost, defeating the
+        // sponsor-tree Sybil resistance.
+        if let Err(response) = self.check_identity_sponsored(attester_id, &id) {
+            return response;
+        }
+
         let reason_str = match params.get("reason").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => {

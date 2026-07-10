@@ -13,6 +13,7 @@ import { hexToBytes, solutionToRpcParams } from '@swimchain/frontend';
 import { useCreateChannel } from '../hooks/useChannels';
 import { usePostPow } from '../hooks/useActionPow';
 import { useChatIdentity } from '../hooks/useChatIdentity';
+import { useIsSponsored } from '../hooks/useIsSponsored';
 import { useToast } from './Toast';
 import './InviteModal.css';
 
@@ -27,6 +28,7 @@ export function CreateChannelModal({ isOpen, onClose, serverId, onCreated }: Cre
   const { identity, sign, publicKeyBytes, hasIdentity } = useChatIdentity();
   const { createChannel, creating } = useCreateChannel();
   const { minePost, state: miningState, progress, cancel } = usePostPow();
+  const isSponsored = useIsSponsored();
   const toast = useToast();
 
   const [name, setName] = useState('');
@@ -50,6 +52,12 @@ export function CreateChannelModal({ isOpen, onClose, serverId, onCreated }: Cre
     }
     if (!hasIdentity || !identity?.publicKey) {
       setError('No identity available');
+      return;
+    }
+    // Gate on sponsorship BEFORE mining — the node rejects channel creation from
+    // unsponsored identities (SPEC_11), so mining first only wastes the user's time.
+    if (isSponsored === false) {
+      setError('You need a sponsor before you can create a channel. Redeem an invite or request sponsorship first — no proof-of-work is spent until then.');
       return;
     }
     setError(null);
@@ -78,7 +86,7 @@ export function CreateChannelModal({ isOpen, onClose, serverId, onCreated }: Cre
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create channel');
     }
-  }, [name, hasIdentity, identity, publicKeyBytes, minePost, createChannel, serverId, sign, toast, onCreated, onClose]);
+  }, [name, hasIdentity, identity, publicKeyBytes, isSponsored, minePost, createChannel, serverId, sign, toast, onCreated, onClose]);
 
   if (!isOpen) return null;
 

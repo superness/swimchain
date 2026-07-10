@@ -459,6 +459,8 @@ export function Chat() {
         aria-hidden="true"
       />
 
+      {/* Horizontal panel row (fills height, bounds the message scroll). */}
+      <div className="chat-body">
       {/* Server list (left sidebar) */}
       <ServerList
         servers={servers.map(s => ({
@@ -537,6 +539,9 @@ export function Chat() {
           )}
         </div>
       )}
+
+      </div>
+      {/* end .chat-body */}
 
       {/* Mining progress overlay */}
       {mining && (

@@ -4,15 +4,28 @@
 
 .chat-layout {
   display: flex;
-  flex-wrap: wrap;
+  /* Column: the horizontal panels live in .chat-body (which fills the height and
+     bounds the scroll), and the status bar sits below it. The old flex-wrap:wrap
+     let the panel row GROW to its content height, so long message threads pushed
+     the composer + bottom off-screen with no way to scroll (measured: .chat-area
+     became 3656px in a 600px viewport). A column with a min-height:0 body fixes it. */
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
 }
 
-/* NodeStatusBar positioning */
+/* The horizontal panel row: server list + channel sidebar + chat area. */
+.chat-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+
+/* NodeStatusBar sits at the bottom of the column at its natural height. */
 .chat-layout > .node-status-bar {
-  flex: 0 0 100%;
-  order: 99; /* Always at the bottom */
+  flex: 0 0 auto;
 }
 
 /* No channel selected states */
@@ -225,8 +238,8 @@
   }
 
   /* Sidebars hidden by default on mobile */
-  .chat-layout > .server-list,
-  .chat-layout > .channel-sidebar {
+  .chat-body > .server-list,
+  .chat-body > .channel-sidebar {
     position: fixed;
     top: 0;
     bottom: 0;
@@ -235,17 +248,17 @@
     transition: transform 0.25s ease;
   }
 
-  .chat-layout > .server-list {
+  .chat-body > .server-list {
     left: 0;
   }
 
-  .chat-layout > .channel-sidebar {
+  .chat-body > .channel-sidebar {
     left: 72px;
   }
 
   /* Show sidebars when mobile nav is open */
-  .chat-layout.mobile-nav-open > .server-list,
-  .chat-layout.mobile-nav-open > .channel-sidebar {
+  .chat-layout.mobile-nav-open .server-list,
+  .chat-layout.mobile-nav-open .channel-sidebar {
     transform: translateX(0);
   }
 
@@ -255,7 +268,7 @@
   }
 
   /* Chat area takes full width on mobile */
-  .chat-layout > .chat-area {
+  .chat-body > .chat-area {
     width: 100%;
     padding-top: 56px; /* Space for mobile nav toggle */
   }
