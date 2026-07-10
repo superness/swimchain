@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- The WebView (origin http://tauri.localhost) calls the node's RPC at
+         http://127.0.0.1:19736. Android blocks cleartext HTTP by default
+         (API 28+), so permit it for loopback only. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
