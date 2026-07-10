@@ -1,0 +1,42 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-family: system-ui, sans-serif;
+}
+
+.status-strip {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  padding-top: calc(6px + env(safe-area-inset-top));
+  font-size: 12px;
+  background: #10141a;
+  color: #9fb4c8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-strip .err {
+  color: #ff7a7a;
+}
+
+.client-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+}
+
+.boot {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  color: #667;
+}
