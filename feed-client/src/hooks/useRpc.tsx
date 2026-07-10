@@ -24,6 +24,11 @@ const REMOTE_SEED_CONFIG = TESTNET_SEED_SF;
 // Storage key for identity (must match useStoredIdentity)
 const IDENTITY_STORAGE_KEY = 'swimchain-identity';
 
+// Tracks space IDs we've already queried via resolve_space_name this session.
+// Prevents re-querying every refetch while a peer is still mid-response.
+// (Same lazy display-driven pattern as forum-client's Bug #4 fix.)
+const spaceNamesAsked = new Set<string>();
+
 /**
  * Load stored identity from localStorage
  */
@@ -408,6 +413,30 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
 
       setSpaces(transformedSpaces);
       setError(null);
+
+      // Resolve placeholder names lazily (Bug #4, same pattern as forum-client).
+      // Server returns names like "Space 000be491" when the content block carrying
+      // the real name hasn't reached us yet. Fire targeted GET_SPACE_META queries
+      // to peers and re-fetch once if any peer responds.
+      const PLACEHOLDER = /^Space [0-9a-f]{8}$/;
+      const placeholderIds = transformedSpaces
+        .filter(s => PLACEHOLDER.test(s.name))
+        .map(s => s.id)
+        .filter(id => !spaceNamesAsked.has(id));
+
+      if (placeholderIds.length > 0) {
+        placeholderIds.forEach(id => {
+          spaceNamesAsked.add(id);
+          rpc.resolveSpaceName(id).catch(err =>
+            console.warn('[Spaces] resolveSpaceName failed for', id, err)
+          );
+        });
+        // Re-fetch once after peers have had a chance to respond.
+        setTimeout(() => {
+          // skipCache=true so we hit the server, not the just-cached placeholders.
+          refetch(true).catch(() => undefined);
+        }, 1500);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch spaces');
       // Keep existing spaces on error

@@ -496,6 +496,16 @@ export class SwimchainRpc {
     });
   }
 
+  async resolveSpaceName(spaceId: string): Promise<{
+    space_id: string;
+    name: string | null;
+    status: 'local' | 'queried';
+    peers_asked?: number;
+    message?: string;
+  }> {
+    return this.call('resolve_space_name', { space_id: spaceId });
+  }
+
   async listSpaceContent(
     spaceId: string,
     options?: { limit?: number; offset?: number; sort?: 'recent' | 'hot' | 'top' }
