@@ -562,14 +562,15 @@ impl ChainStore {
         }
     }
 
-    /// Find heights whose root blocks claim space blocks that are missing locally.
+    /// Find heights whose root blocks claim space or content blocks that are
+    /// missing locally.
     ///
     /// After headers-first sync a node holds root-block headers whose
-    /// `space_block_hashes` were never downloaded — spaces then show
-    /// placeholder names and zero posts. The sync loop uses this scan to
-    /// request those heights as full blocks (content backfill). Scans from
-    /// genesis upward and stops after `max` gap heights so the per-tick cost
-    /// stays bounded.
+    /// space blocks — or the content blocks inside them, which carry space
+    /// names and posts — were never downloaded; spaces then show placeholder
+    /// names and zero posts. The sync loop uses this scan to request those
+    /// heights as full blocks (content backfill). Scans from genesis upward
+    /// and stops after `max` gap heights so the per-tick cost stays bounded.
     ///
     /// # Errors
     ///
@@ -590,10 +591,24 @@ impl ChainStore {
             let Some(root) = self.get_root_block(&hash)? else {
                 continue;
             };
-            for space_hash in &root.space_block_hashes {
-                if self.get_space_block(space_hash)?.is_none() {
-                    gaps.push(height);
-                    break;
+            'spaces: for space_hash in &root.space_block_hashes {
+                match self.get_space_block(space_hash)? {
+                    None => {
+                        gaps.push(height);
+                        break 'spaces;
+                    }
+                    Some(space_block) => {
+                        // Space block present, but the content blocks it
+                        // claims (which carry space names and posts) may
+                        // still be missing — the gap actually observed on
+                        // fresh nodes.
+                        for content_hash in &space_block.content_block_hashes {
+                            if self.get_content_block(content_hash)?.is_none() {
+                                gaps.push(height);
+                                break 'spaces;
+                            }
+                        }
+                    }
                 }
             }
         }

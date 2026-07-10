@@ -38,6 +38,32 @@ fn root_block(height: u64, prev: [u8; 32], space_hashes: Vec<[u8; 32]>) -> RootB
 }
 
 #[test]
+fn detects_heights_with_missing_content_blocks() {
+    // The deeper gap seen on real devices: space blocks synced, but the
+    // content blocks they claim (which carry space names and posts) absent.
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path()).unwrap();
+
+    let missing_content_hash = [42u8; 32];
+    let mut sb = space_block(1);
+    sb.content_block_hashes = vec![missing_content_hash];
+    sb.content_block_count = 1;
+    let sb_hash = sb.hash();
+
+    let b0 = root_block(0, [0u8; 32], vec![sb_hash]);
+    let h0 = store.put_root_block(&b0).unwrap();
+    store.index_height(0, h0).unwrap();
+    store.put_space_block(&sb).unwrap(); // space block IS stored
+
+    let gaps = store.find_content_gap_heights(16).unwrap();
+    assert_eq!(
+        gaps,
+        vec![0],
+        "height 0 has its space block but not the claimed content block"
+    );
+}
+
+#[test]
 fn detects_heights_with_missing_space_blocks() {
     let dir = tempdir().unwrap();
     let store = ChainStore::open(dir.path()).unwrap();
@@ -72,18 +98,23 @@ fn detects_heights_with_missing_space_blocks() {
 /// block + content count (+ len-prefixed content blocks).
 fn full_block_entry(
     root: &RootBlock,
-    spaces: &[SpaceBlock],
+    spaces: &[(SpaceBlock, Vec<swimchain::blocks::ContentBlock>)],
 ) -> swimchain::network::messages::SerializedBlock {
     let root_bytes = bincode::serialize(root).unwrap();
     let mut data = Vec::new();
     data.extend_from_slice(&(root_bytes.len() as u32).to_le_bytes());
     data.extend_from_slice(&root_bytes);
     data.extend_from_slice(&(spaces.len() as u32).to_le_bytes());
-    for sb in spaces {
+    for (sb, contents) in spaces {
         let space_bytes = bincode::serialize(sb).unwrap();
         data.extend_from_slice(&(space_bytes.len() as u32).to_le_bytes());
         data.extend_from_slice(&space_bytes);
-        data.extend_from_slice(&0u32.to_le_bytes()); // content block count
+        data.extend_from_slice(&(contents.len() as u32).to_le_bytes());
+        for cb in contents {
+            let content_bytes = bincode::serialize(cb).unwrap();
+            data.extend_from_slice(&(content_bytes.len() as u32).to_le_bytes());
+            data.extend_from_slice(&content_bytes);
+        }
     }
     swimchain::network::messages::SerializedBlock { data }
 }
@@ -110,7 +141,7 @@ async fn full_block_response_backfills_content_for_known_header() {
 
     // A peer answers a backfill request with the SAME block in full format.
     let payload = BlocksPayload {
-        blocks: vec![full_block_entry(&b0, &[sb.clone()])],
+        blocks: vec![full_block_entry(&b0, &[(sb.clone(), vec![])])],
     }
     .to_bytes();
 
@@ -127,6 +158,63 @@ async fn full_block_response_backfills_content_for_known_header() {
         store.get_space_block(&sb_hash).unwrap().is_some(),
         "space block from a full-block response must be stored even though \
          the root header was already known (content backfill)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn full_block_response_backfills_missing_content_blocks() {
+    use std::sync::Arc;
+    use swimchain::blocks::ContentBlock;
+    use swimchain::network::messages::BlocksPayload;
+    use swimchain::node::MessageRouter;
+    use swimchain::types::constants::MSG_BLOCKS;
+    use swimchain::types::Serialize as _;
+
+    let dir = tempdir().unwrap();
+    let store = Arc::new(ChainStore::open(dir.path().join("chain")).unwrap());
+
+    // The on-device state: root header AND space block synced, but the
+    // content block the space claims (space name, posts) is absent.
+    let cb = ContentBlock {
+        thread_root_id: [3u8; 32],
+        space_id: [1u8; 32],
+        actions: vec![],
+        merkle_root: [0u8; 32],
+        prev_content_hash: None,
+        timestamp: 1_700_000_000,
+        total_pow: 10,
+        branch_path: swimchain::blocks::BranchPath::default(),
+        space_metadata: None,
+    };
+    let cb_hash = cb.hash();
+    let mut sb = space_block(1);
+    sb.content_block_hashes = vec![cb_hash];
+    sb.content_block_count = 1;
+    let sb_hash = sb.hash();
+    let b0 = root_block(0, [0u8; 32], vec![sb_hash]);
+    let h0 = store.put_root_block(&b0).unwrap();
+    store.index_height(0, h0).unwrap();
+    store.put_space_block(&sb).unwrap();
+    assert!(store.get_content_block(&cb_hash).unwrap().is_none());
+
+    let payload = BlocksPayload {
+        blocks: vec![full_block_entry(&b0, &[(sb.clone(), vec![cb.clone()])])],
+    }
+    .to_bytes();
+
+    let router = MessageRouter::builder()
+        .metrics(Arc::new(swimchain::node::NodeMetrics::new()))
+        .chain_store(store.clone())
+        .build();
+    router
+        .route(&[9u8; 32], MSG_BLOCKS, &[0u8; 32], &payload)
+        .await
+        .expect("route MSG_BLOCKS");
+
+    assert!(
+        store.get_content_block(&cb_hash).unwrap().is_some(),
+        "content block from a full-block response must be stored even though \
+         the root header and space block were already known"
     );
 }
 

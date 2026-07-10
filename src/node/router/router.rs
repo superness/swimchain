@@ -2974,15 +2974,21 @@ impl MessageRouter {
                     // can hold the header WITHOUT its space/content blocks. Only skip
                     // if nothing the header claims is missing; otherwise fall through
                     // so the space/content parsing below backfills the gap.
-                    let content_missing = root_block
-                        .space_block_hashes
-                        .iter()
-                        .any(|h| chain_store.get_space_block(h).ok().flatten().is_none());
+                    let content_missing = root_block.space_block_hashes.iter().any(|h| {
+                        match chain_store.get_space_block(h).ok().flatten() {
+                            None => true,
+                            // Space block present but the content blocks it
+                            // claims (space names, posts) may still be absent.
+                            Some(sb) => sb.content_block_hashes.iter().any(|ch| {
+                                chain_store.get_content_block(ch).ok().flatten().is_none()
+                            }),
+                        }
+                    });
                     if !content_missing {
                         continue;
                     }
                     info!(
-                        "[BACKFILL] Known header {} at height {} is missing claimed space blocks - storing content from full block",
+                        "[BACKFILL] Known header {} at height {} is missing claimed space/content blocks - storing content from full block",
                         hex::encode(&computed_hash[..8]),
                         block_height
                     );
