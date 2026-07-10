@@ -1067,6 +1067,15 @@ impl ChainStore {
                 }
             })?;
 
+            // Skip malformed entries whose "hash" is a short (16-byte space/thread) id
+            // zero-padded to 32 bytes. These aren't real content — fetching them 404s
+            // (-32004) and they surfaced as an "(untitled)" wiki page that couldn't be
+            // opened. A real SHA-256 content hash effectively never has its entire lower
+            // 16 bytes zero (~2^-128), so this only drops the padded artifacts.
+            if content_hash[16..].iter().all(|&b| b == 0) {
+                continue;
+            }
+
             // Skip offset items
             if skipped < offset {
                 skipped += 1;
