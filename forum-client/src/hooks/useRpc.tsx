@@ -2325,8 +2325,12 @@ export function useSpamReport() {
       };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to submit spam report';
+      // A duplicate report is a benign no-op: you already reported this content.
+      // Treat it as success so a double-click shows "reported", not a scary error.
+      if (/already exists/i.test(errorMessage)) {
+        return { success: true, thresholdReached: false };
+      }
       setError(errorMessage);
-      console.error('[SpamReport] Error:', err);
       return { success: false, thresholdReached: false };
     } finally {
       setSubmitting(false);
