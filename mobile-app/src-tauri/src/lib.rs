@@ -92,11 +92,16 @@ async fn get_node_address(state: tauri::State<'_, AppState>) -> Result<String, S
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Default to info so node lifecycle logs ([BOOTSTRAP], seed
-            // connections, RPC start) reach logcat; RUST_LOG still overrides.
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-                .try_init()
-                .ok();
+            // Default to warn globally, info for our own modules, so node
+            // lifecycle logs ([BOOTSTRAP], seed connections, RPC start) reach
+            // logcat without dependency crates flooding it (same scoping the
+            // CLI uses). RUST_LOG still overrides.
+            env_logger::Builder::from_env(
+                env_logger::Env::default()
+                    .default_filter_or("warn,swimchain=info,swimchain_mobile_lib=info"),
+            )
+            .try_init()
+            .ok();
 
             let state = AppState {
                 node: Arc::new(Mutex::new(None)),
