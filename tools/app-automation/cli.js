@@ -55,17 +55,27 @@ async function ensureDaemon(headed) {
   if (await daemonAlive()) return;
   const daemonArgs = [path.join(__dirname, 'daemon.js')];
   if (headed) daemonArgs.push('--headed');
+  const pidsDir = path.join(CFG.ROOT, '.daemon-pids');
+  fs.mkdirSync(pidsDir, { recursive: true });
+  const logPath = path.join(pidsDir, 'swim-auto.log');
+  const fd = fs.openSync(logPath, 'a');
   const child = spawn(process.execPath, daemonArgs, {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', fd, fd],
     windowsHide: true,
   });
+  fs.closeSync(fd); // the child keeps its own copy of the fd
   child.unref();
   for (let i = 0; i < 50; i++) {
     if (await daemonAlive()) return;
     await new Promise(r => setTimeout(r, 200));
   }
-  throw new Error(`daemon did not start on port ${CFG.CONTROL_PORT}`);
+  let tail = '';
+  try {
+    const lines = fs.readFileSync(logPath, 'utf8').split('\n');
+    tail = lines.slice(-16).join('\n');
+  } catch {}
+  throw new Error(`daemon did not start on port ${CFG.CONTROL_PORT}\n--- swim-auto.log tail ---\n${tail}`);
 }
 
 async function call(endpoint, body) {
@@ -111,7 +121,8 @@ function runNodeControl(argv) {
     cwd: CFG.ROOT,
     stdio: 'inherit',
   });
-  return r.status || 0;
+  if (r.error) throw r.error;
+  return r.status ?? 1;
 }
 
 const HELP = `swim-auto — swimchain app automation (daemon + CLI)

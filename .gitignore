@@ -61,5 +61,6 @@ docs/qa/node_modules/
 docs/qa/package*.json
 
 # Local node data dirs (identity keys, chain state)
-genesis/
-genesis-testnet/
+/genesis/
+/genesis-testnet/
+/node-genesis.log

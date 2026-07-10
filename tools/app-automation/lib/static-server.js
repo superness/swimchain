@@ -43,7 +43,7 @@ function candidatesFor(urlPath, clientDirs) {
   if (rest && !rest.endsWith('/')) candidates.push(rest);
   // Deep-route asset rewrite: **/assets/<file> -> assets/<file>
   const assetIdx = rest.lastIndexOf('assets/');
-  if (assetIdx > 0) candidates.push(rest.slice(assetIdx));
+  if (assetIdx > 0 && rest[assetIdx - 1] === '/') candidates.push(rest.slice(assetIdx));
   candidates.push('index.html'); // SPA fallback
   return { clientDir, candidates };
 }
@@ -76,12 +76,19 @@ function startStaticServer({ port, clientsDir, clients }) {
     const resolved = candidatesFor(urlPath, clientDirs);
     if (resolved) {
       for (const candidate of resolved.candidates) {
-        const filePath = path.join(clientsDir, resolved.clientDir, candidate);
-        if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-          const type = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
-          res.writeHead(200, { 'Content-Type': type });
-          fs.createReadStream(filePath).pipe(res);
-          return;
+        try {
+          const filePath = path.join(clientsDir, resolved.clientDir, candidate);
+          if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+            const type = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+            res.writeHead(200, { 'Content-Type': type });
+            fs.createReadStream(filePath)
+              .on('error', () => res.destroy())
+              .pipe(res);
+            return;
+          }
+        } catch {
+          // Treat a race (file removed/replaced between checks) as a miss and try the next candidate.
+          continue;
         }
       }
     }

@@ -38,6 +38,9 @@ Run `node tools/app-automation/cli.js help` for the full command list.
 - The **CLI** (`cli.js`) talks to the daemon on :8897 and auto-starts it.
   `--headed` launches a visible browser. `--shot` on any action command
   screenshots after acting.
+- The control API on :8897 is unauthenticated and includes `/eval` (arbitrary
+  JS execution in the page) — it binds 127.0.0.1 only and must never be
+  exposed beyond localhost.
 - Clients are served standalone (not in the Tauri iframe) and fall back to
   `http://127.0.0.1:19736` (local testnet RPC) per `useRpc.tsx`.
 - Node lifecycle delegates to `scripts/daemon-control.js`.
