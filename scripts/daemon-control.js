@@ -193,7 +193,10 @@ async function startNode() {
 
     log('blue', 'Starting swimchain node...');
 
-    const binaryPath = path.join(CONFIG.projectRoot, CONFIG.node.binary);
+    let binaryPath = path.join(CONFIG.projectRoot, CONFIG.node.binary);
+    if (process.platform === 'win32' && !fs.existsSync(binaryPath) && fs.existsSync(`${binaryPath}.exe`)) {
+        binaryPath = `${binaryPath}.exe`;
+    }
     if (!fs.existsSync(binaryPath)) {
         log('red', `Binary not found: ${binaryPath}`);
         log('yellow', 'Run: cargo build --release');
