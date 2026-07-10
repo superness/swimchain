@@ -1,6 +1,6 @@
 [workspace]
 members = [".", "swimchain-wasm"]
-exclude = ["desktop-app/src-tauri", "tools/dns-seeder"]
+exclude = ["desktop-app/src-tauri", "tools/dns-seeder", "mobile-app/src-tauri"]
 
 [package]
 name = "swimchain"
@@ -71,6 +71,14 @@ argon2 = "0.5"
 chacha20poly1305 = "0.10"
 zeroize = { version = "1.8", features = ["derive"] }
 base64 = "0.22"
+
+# Private-space E2E encryption (node-side, interop-exact with the JS clients).
+# NaCl-style box uses the RAW X25519 DH output as the XSalsa20-Poly1305 key (no
+# HSalsa20 kdf), so we use crypto_secretbox directly rather than crypto_box.
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+curve25519-dalek = "4"
+crypto_secretbox = "0.1"
+aes-gcm = "0.10"
 
 # LRU cache (H-BLOCK-1 - bounded seen_actions)
 lru = "0.12"
