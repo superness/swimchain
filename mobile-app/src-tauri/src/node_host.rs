@@ -45,6 +45,20 @@ pub fn ensure_identity(data_dir: &Path, pow_difficulty: u8) -> Result<KeyPair, S
         return Ok(keypair);
     }
 
+    // Fail closed: an identity without its passphrase is unrecoverable here,
+    // and regenerating would silently discard it. (The reverse — a passphrase
+    // without an identity — is a harmless leftover from a crashed first run,
+    // since identity.pass is written before identity.enc; regenerating both
+    // below is safe.)
+    if id_path.exists() {
+        return Err(format!(
+            "identity.enc exists at {} but its passphrase file identity.pass is missing; \
+             refusing to overwrite the identity — manual intervention needed \
+             (restore identity.pass or move identity.enc aside)",
+            id_path.display()
+        ));
+    }
+
     let pass: String = {
         use rand::Rng;
         rand::thread_rng()
@@ -56,9 +70,12 @@ pub fn ensure_identity(data_dir: &Path, pow_difficulty: u8) -> Result<KeyPair, S
     let (keypair, proof) = create_identity_with_difficulty(pow_difficulty);
     let portable = export_identity(&keypair, Some(&proof), &pass)
         .map_err(|e| format!("encrypt identity: {e}"))?;
+    // Write the passphrase first: if we crash between the two writes, a lone
+    // identity.pass is a safe leftover (no identity existed yet), whereas a
+    // lone identity.enc would be an unrecoverable identity.
+    std::fs::write(&pass_path, &pass).map_err(|e| format!("write passphrase: {e}"))?;
     std::fs::write(&id_path, serialize_portable(&portable))
         .map_err(|e| format!("write identity: {e}"))?;
-    std::fs::write(&pass_path, &pass).map_err(|e| format!("write passphrase: {e}"))?;
     Ok(keypair)
 }
 
@@ -141,6 +158,48 @@ mod tests {
             kp2.public_key.as_bytes(),
             "second call must load the same identity, not create a new one"
         );
+        assert!(dir.join("identity.enc").exists());
+        assert!(dir.join("identity.pass").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn identity_enc_without_pass_errors() {
+        let dir = temp_dir("enc-no-pass");
+        ensure_identity(&dir, 4).expect("create identity");
+
+        let enc_before = std::fs::read(dir.join("identity.enc")).expect("read enc");
+        std::fs::remove_file(dir.join("identity.pass")).expect("delete pass");
+
+        let result = ensure_identity(&dir, 4);
+        assert!(
+            result.is_err(),
+            "identity.enc without identity.pass must fail closed, not regenerate"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("identity.pass"),
+            "error should name the missing file: {err}"
+        );
+
+        let enc_after = std::fs::read(dir.join("identity.enc")).expect("read enc after");
+        assert_eq!(
+            enc_before, enc_after,
+            "identity.enc must not be overwritten on the error path"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pass_without_enc_regenerates() {
+        let dir = temp_dir("pass-no-enc");
+        ensure_identity(&dir, 4).expect("create identity");
+
+        std::fs::remove_file(dir.join("identity.enc")).expect("delete enc");
+
+        // A passphrase without an identity is a leftover from a crashed first
+        // run; no identity ever existed, so regenerating is safe.
+        ensure_identity(&dir, 4).expect("pass-only leftover should regenerate");
         assert!(dir.join("identity.enc").exists());
         assert!(dir.join("identity.pass").exists());
         let _ = std::fs::remove_dir_all(&dir);
