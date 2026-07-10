@@ -5,7 +5,7 @@
   "description": "Swimchain app automation: run node, serve bundled clients, drive UI, capture screenshots and console logs",
   "bin": { "swim-auto": "./cli.js" },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "smoke": "node smoke.js"
   },
   "dependencies": {
