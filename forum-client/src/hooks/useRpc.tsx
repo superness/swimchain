@@ -2246,51 +2246,59 @@ export function useSpamReport() {
     setProgress({ attempts: 0, elapsedMs: 0 });
 
     try {
-      const { hexToBytes, bytesToHex, computePow, ActionType, TESTNET_DIFFICULTY, TESTNET_CONFIG } = await import('../lib/action-pow');
+      const { hexToBytes, bytesToHex } = await import('../lib/action-pow');
 
       // Parse content ID
       const contentHashHex = contentId.startsWith('sha256:') ? contentId.slice(7) : contentId;
       const contentHashBytes = hexToBytes(contentHashHex);
 
-      // Generate nonce space
-      const nonceSpace = new Uint8Array(8);
-      crypto.getRandomValues(nonceSpace);
-      const nonceSpaceHex = bytesToHex(nonceSpace);
-
-      // Use Engage difficulty for spam reports (same cost as engagement)
-      const authorBytes = hexToBytes(identityPublicKey);
+      const attesterBytes = hexToBytes(identityPublicKey); // 32-byte attester pubkey
       const timestamp = Math.floor(Date.now() / 1000);
-      const difficulty = TESTNET_DIFFICULTY[ActionType.Engage];
-
-      const challenge = {
-        actionType: ActionType.Engage,
-        contentHash: contentHashBytes,
-        authorId: authorBytes,
-        timestamp,
-        difficulty,
-        nonceSpace,
-      };
-
-      const solution = await computePow(
-        challenge,
-        TESTNET_CONFIG,
-        (attempts, elapsedMs) => {
-          setProgress({ attempts, elapsedMs });
-        },
-      );
-
-      // Sign the report over the EXACT bytes the node verifies (SPEC_12):
-      // "SPAM_ATTESTATION" || content_hash(32) || reason(1) || timestamp(8, LE).
-      // Signing a `spam:...` STRING here never matched, so every report failed
-      // node verification with -32602 "signature verification failed".
       const REASON_U8: Record<string, number> = {
         advertising: 1, repetitive: 2, off_topic: 3, harassment: 4, illegal_content: 5,
       };
+      const reasonByte = REASON_U8[String(reason).toLowerCase()] ?? 0;
+
+      // Spam-attestation PoW (SPEC_12): find a u64 nonce so that
+      //   sha256(pow_message || nonce_LE) has >= 12 leading ZERO BITS,
+      // where pow_message = content_hash(32) || attester(32) || reason(1) || timestamp(8 LE).
+      // The old code mined Argon2id over an unrelated action challenge, so the node
+      // recomputed 0 leading zeros -> -32602 "required 12 ... got 0". sha256 at 12
+      // bits is ~4096 attempts (fast); difficulty is a fixed constant, not per-network.
+      const POW_DIFFICULTY = 12;
+      const powMessage = new Uint8Array(32 + 32 + 1 + 8);
+      powMessage.set(contentHashBytes, 0);
+      powMessage.set(attesterBytes, 32);
+      powMessage[64] = reasonByte;
+      new DataView(powMessage.buffer).setBigUint64(65, BigInt(timestamp), true);
+
+      const powBuf = new Uint8Array(powMessage.length + 8);
+      powBuf.set(powMessage, 0);
+      const powNonceView = new DataView(powBuf.buffer, powMessage.length, 8);
+      const leadingZeroBits = (h: Uint8Array): number => {
+        let c = 0;
+        for (const b of h) { if (b === 0) { c += 8; } else { c += Math.clz32(b) - 24; break; } }
+        return c;
+      };
+      let powNonce = 0n;
+      let powHashBytes = new Uint8Array(32);
+      let attempts = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        powNonceView.setBigUint64(0, powNonce, true);
+        powHashBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', powBuf));
+        if (leadingZeroBits(powHashBytes) >= POW_DIFFICULTY) break;
+        powNonce++;
+        if (++attempts % 256 === 0) setProgress({ attempts, elapsedMs: 0 });
+      }
+
+      // Sign the report over the EXACT bytes the node verifies (SPEC_12):
+      // "SPAM_ATTESTATION" || content_hash(32) || reason(1) || timestamp(8, LE).
       const label = new TextEncoder().encode('SPAM_ATTESTATION');
       const signMessage = new Uint8Array(label.length + 32 + 1 + 8);
       signMessage.set(label, 0);
       signMessage.set(contentHashBytes, label.length);
-      signMessage[label.length + 32] = REASON_U8[reason] ?? 0;
+      signMessage[label.length + 32] = reasonByte;
       new DataView(signMessage.buffer).setBigUint64(label.length + 33, BigInt(timestamp), true);
       const signature = await Promise.resolve(signFn(signMessage));
       if (!signature) {
@@ -2303,10 +2311,10 @@ export function useSpamReport() {
         contentId: contentHashHex,
         attesterId: identityPublicKey,
         reason,
-        powNonce: Number(solution.nonce),
-        powDifficulty: difficulty,
-        powNonceSpace: nonceSpaceHex,
-        powHash: solution.hash ? bytesToHex(solution.hash) : '',
+        powNonce: Number(powNonce),
+        powDifficulty: POW_DIFFICULTY,
+        powNonceSpace: '0000000000000000',
+        powHash: bytesToHex(powHashBytes),
         signature: signatureHex,
         timestamp,
       });

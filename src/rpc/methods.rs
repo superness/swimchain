@@ -8357,11 +8357,26 @@ impl RpcMethods {
             }
         };
 
-        // Get current time
-        let timestamp = std::time::SystemTime::now()
+        // Use the CLIENT's timestamp — the one it signed and mined the PoW over.
+        // Using the server clock instead made signing_message/pow_message differ from
+        // what the client produced whenever the two clocks crossed a second boundary,
+        // so reports failed verification (-32602) nondeterministically. Bound it to a
+        // freshness window so a stale/pre-mined attestation can't be replayed.
+        let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
+        let timestamp = params
+            .get("timestamp")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(now);
+        if timestamp > now.saturating_add(120) || timestamp < now.saturating_sub(600) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid timestamp: must be within ~10 minutes of the current time",
+                id,
+            );
+        }
 
         // Check for duplicate
         if store.has_attestation(&content_hash, &attester).unwrap_or(false) {
