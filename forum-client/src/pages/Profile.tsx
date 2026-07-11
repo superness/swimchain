@@ -27,11 +27,12 @@ import {
 import { bytesToHex } from '../lib/x25519';
 import './Profile.css';
 
-// Validate that a string is a valid hex public key (64 hex chars)
+// A valid user id for a profile: a 64-char hex pubkey OR a cs1… address. Profile
+// links use the address form; get_user_profile resolves both. (Guards against template
+// junk like "{userId}".)
 function isValidPublicKey(pk: string | undefined): pk is string {
   if (!pk) return false;
-  // Must be 64 hex characters
-  return /^[0-9a-fA-F]{64}$/.test(pk);
+  return /^[0-9a-fA-F]{64}$/.test(pk) || /^cs1[a-z0-9]{20,}$/i.test(pk);
 }
 
 export function ProfilePage(): JSX.Element {

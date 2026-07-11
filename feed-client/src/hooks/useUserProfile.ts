@@ -12,8 +12,6 @@ import {
   ProfileInfo,
   AvatarInfo,
   getProfileSpaceId,
-  decodeProfileInfo,
-  decodeAvatarInfo,
   createEmptyProfile,
 } from '../lib/profile';
 
@@ -50,51 +48,37 @@ export function useUserProfile(userPk: string | undefined) {
     setError(null);
 
     try {
-      const profileSpaceId = getProfileSpaceId(pk);
+      // Use the node's get_user_profile RPC: it accepts a hex pubkey OR a cs1 address
+      // (profile URLs are addresses), derives the profile space from the hex pubkey, and
+      // decodes the [PROFILE_INFO]/[PROFILE_AVATAR] segments correctly.
+      const res = (await rpc.call('get_user_profile', { user_id: pk })) as {
+        display_name?: string;
+        bio?: string;
+        website?: string;
+        avatar_url?: string;
+        avatar_content_id?: string;
+        updated_at?: number;
+      } | null;
 
-      // Try to fetch posts from the profile space
-      // This will return empty if the space doesn't exist (user hasn't set up profile)
-      const result = await rpc.call('list_posts_for_space', {
-        space_id: profileSpaceId,
-        offset: 0,
-        limit: 10, // Profile shouldn't have many posts
-        include_replies: false,
-      }) as {
-        items: Array<{
-          content_id: string;
-          author: string;
-          body?: string;
-          created_at: number;
-        }>;
-        total: number;
-      };
-
-      // Parse profile data from posts
-      let info: ProfileInfo | null = null;
-      let avatar: AvatarInfo | null = null;
-
-      for (const post of result.items) {
-        if (!post.body) continue;
-
-        // Check for profile info
-        const profileInfo = decodeProfileInfo(post.body);
-        if (profileInfo && (!info || profileInfo.updatedAt > info.updatedAt)) {
-          info = profileInfo;
-        }
-
-        // Check for avatar
-        const avatarInfo = decodeAvatarInfo(post.body);
-        if (avatarInfo && (!avatar || avatarInfo.updatedAt > avatar.updatedAt)) {
-          avatar = avatarInfo;
-        }
-      }
+      const info: ProfileInfo | null = res
+        ? {
+            displayName: res.display_name,
+            bio: res.bio,
+            website: res.website,
+            updatedAt: res.updated_at ?? 0,
+          }
+        : null;
+      const avatarId = res?.avatar_content_id || res?.avatar_url;
+      const avatar: AvatarInfo | null = avatarId
+        ? { contentId: avatarId, format: 'png', updatedAt: res?.updated_at ?? 0 }
+        : null;
 
       const userProfile: UserProfile = {
         userPk: pk,
-        profileSpaceId,
+        profileSpaceId: getProfileSpaceId(pk),
         info,
         avatar,
-        exists: result.total > 0,
+        exists: !!res && (!!info?.displayName || !!info?.bio || !!info?.website || !!avatar),
       };
 
       // Update cache
@@ -162,34 +146,34 @@ export function useUserProfiles(userPks: string[]) {
       const batch = uncached.slice(i, i + batchSize);
       await Promise.all(batch.map(async (pk) => {
         try {
-          const profileSpaceId = getProfileSpaceId(pk);
-          const result = await rpc.call('list_posts_for_space', {
-            space_id: profileSpaceId,
-            offset: 0,
-            limit: 10,
-            include_replies: false,
-          }) as {
-            items: Array<{ body?: string }>;
-            total: number;
-          };
+          const res = (await rpc.call('get_user_profile', { user_id: pk })) as {
+            display_name?: string;
+            bio?: string;
+            website?: string;
+            avatar_url?: string;
+            avatar_content_id?: string;
+            updated_at?: number;
+          } | null;
 
-          let info: ProfileInfo | null = null;
-          let avatar: AvatarInfo | null = null;
-
-          for (const post of result.items) {
-            if (!post.body) continue;
-            const profileInfo = decodeProfileInfo(post.body);
-            if (profileInfo) info = profileInfo;
-            const avatarInfo = decodeAvatarInfo(post.body);
-            if (avatarInfo) avatar = avatarInfo;
-          }
+          const info: ProfileInfo | null = res
+            ? {
+                displayName: res.display_name,
+                bio: res.bio,
+                website: res.website,
+                updatedAt: res.updated_at ?? 0,
+              }
+            : null;
+          const avatarId = res?.avatar_content_id || res?.avatar_url;
+          const avatar: AvatarInfo | null = avatarId
+            ? { contentId: avatarId, format: 'png', updatedAt: res?.updated_at ?? 0 }
+            : null;
 
           const profile: UserProfile = {
             userPk: pk,
-            profileSpaceId,
+            profileSpaceId: getProfileSpaceId(pk),
             info,
             avatar,
-            exists: result.total > 0,
+            exists: !!res && (!!info?.displayName || !!info?.bio || !!info?.website || !!avatar),
           };
 
           profileCache.set(pk, { profile, timestamp: Date.now() });
