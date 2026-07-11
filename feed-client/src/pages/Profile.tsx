@@ -48,7 +48,8 @@ export function ProfilePage(): JSX.Element {
   // PoW and submission hooks
   const { state: powState, minePost, cancel: cancelMining, progress, reset: resetPow, solution } = usePostPow();
   const { submitPost, submitting, error: submitRpcError } = usePostSubmit();
-  const { uploadImage } = useMediaUpload();
+  const { uploadImage, getMediaUrl } = useMediaUpload();
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const { isSponsored } = useSponsorship();
 
   // Edit mode state
@@ -320,6 +321,26 @@ export function ProfilePage(): JSX.Element {
   const avatarColor = getAvatarColor(targetPk);
   const initials = getAvatarInitials(profile?.info?.displayName, targetPk);
 
+  // Fetch the stored avatar image (getMedia returns base64 → data URL). The
+  // profile post only carries the avatar's content id; the bytes live in the
+  // media store and must be fetched separately.
+  const avatarContentId = profile?.avatar?.contentId;
+  useEffect(() => {
+    let alive = true;
+    if (!avatarContentId) {
+      setAvatarUrl(null);
+      return;
+    }
+    // content_id is "sha256:<hex>"; getMedia wants the raw hash.
+    const hash = avatarContentId.startsWith('sha256:')
+      ? avatarContentId.slice('sha256:'.length)
+      : avatarContentId;
+    getMediaUrl(hash)
+      .then(url => { if (alive) setAvatarUrl(url); })
+      .catch(() => { if (alive) setAvatarUrl(null); });
+    return () => { alive = false; };
+  }, [avatarContentId, getMediaUrl]);
+
   return (
     <div className="profile-page">
       {/* Banner */}
@@ -339,8 +360,8 @@ export function ProfilePage(): JSX.Element {
         <div className="profile-avatar-wrapper">
           {isEditing ? (
             <div className="avatar-edit-wrapper">
-              {avatarPreview ? (
-                <img src={avatarPreview} alt="Avatar preview" className="avatar-preview" />
+              {(avatarPreview || avatarUrl) ? (
+                <img src={avatarPreview || avatarUrl!} alt="Avatar preview" className="avatar-preview" />
               ) : (
                 <div
                   className="profile-avatar"
@@ -370,6 +391,8 @@ export function ProfilePage(): JSX.Element {
                 disabled={isSaving}
               />
             </div>
+          ) : avatarUrl ? (
+            <img src={avatarUrl} alt="Avatar" className="profile-avatar profile-avatar--img" />
           ) : (
             <div
               className="profile-avatar"

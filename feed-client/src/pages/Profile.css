@@ -68,6 +68,10 @@
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
 }
 
+.profile-avatar--img {
+  object-fit: cover;
+}
+
 .avatar-edit-wrapper {
   position: relative;
   width: 80px;
