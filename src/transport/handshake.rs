@@ -233,6 +233,10 @@ fn parse_version_payload(
     // per identity, ephemeral per session.
     let node_id: [u8; 32] = Sha256::digest(payload.public_key).into();
 
+    // The peer's VERSION carries a `receiver_addr` = the address they observed US as
+    // (the source of our connection). For a NAT'd node this is its public endpoint.
+    let observed_external_addr = payload.receiver_addr.to_socket_addr();
+
     Ok(PeerInfo {
         node_id,
         protocol_version: payload.protocol_version,
@@ -243,6 +247,7 @@ fn parse_version_payload(
         nonce: payload.nonce,
         remote_addr,
         timestamp: payload.timestamp,
+        observed_external_addr,
     })
 }
 
@@ -317,6 +322,7 @@ mod tests {
             nonce: 67890,
             remote_addr: "127.0.0.1:9735".parse().unwrap(),
             timestamp: 0,
+            observed_external_addr: None,
         };
 
         // Different nonce, same version = OK
@@ -335,6 +341,7 @@ mod tests {
             nonce: 12345, // Same as our nonce
             remote_addr: "127.0.0.1:9735".parse().unwrap(),
             timestamp: 0,
+            observed_external_addr: None,
         };
 
         // Same nonce = self-connection
@@ -354,6 +361,7 @@ mod tests {
             nonce: 67890,
             remote_addr: "127.0.0.1:9735".parse().unwrap(),
             timestamp: 0,
+            observed_external_addr: None,
         };
 
         let result = validate_version(&peer_info, 12345);

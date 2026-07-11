@@ -13,7 +13,7 @@ use tokio_socks::tcp::Socks5Stream;
 
 use super::connection::Connection;
 use super::handshake::{perform_inbound_handshake, perform_outbound_handshake};
-use super::peer::LocalNodeInfo;
+use super::peer::{LocalNodeInfo, PeerInfo};
 use super::TransportError;
 
 /// TCP transport for peer-to-peer connections
@@ -35,6 +35,38 @@ pub struct TcpTransport {
     /// instead of a direct `TcpStream::connect`, hiding the node's real IP.
     /// When `None`, dials are direct (behavior unchanged from before).
     proxy: Option<SocketAddr>,
+    /// Our learned public endpoint (NAT reflection). Peers report the address they
+    /// observed us as in their VERSION `receiver_addr`; once we see a stable public
+    /// one we advertise it instead of our undialable 0.0.0.0/LAN listen address, so
+    /// the seed relays a dialable endpoint and other NAT'd nodes can reach us.
+    /// Never adopted when a proxy is set (SWIM-PRIV-2 — must not leak the real IP).
+    external_addr: Arc<RwLock<Option<SocketAddr>>>,
+}
+
+/// True if `addr` is a globally-routable public address worth advertising — excludes
+/// loopback, private (RFC1918), link-local, unspecified, and multicast ranges.
+fn is_public_addr(addr: &SocketAddr) -> bool {
+    use std::net::IpAddr;
+    match addr.ip() {
+        IpAddr::V4(ip) => {
+            !ip.is_loopback()
+                && !ip.is_private()
+                && !ip.is_link_local()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                && !ip.is_broadcast()
+                // CGNAT 100.64.0.0/10 is not publicly dialable.
+                && !(ip.octets()[0] == 100 && (ip.octets()[1] & 0xc0) == 0x40)
+        }
+        IpAddr::V6(ip) => {
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                && !ip.is_multicast()
+                // Unique-local fc00::/7 and link-local fe80::/10.
+                && (ip.segments()[0] & 0xfe00) != 0xfc00
+                && (ip.segments()[0] & 0xffc0) != 0xfe80
+        }
+    }
 }
 
 impl TcpTransport {
@@ -52,7 +84,48 @@ impl TcpTransport {
             local_info,
             active_nonces: Arc::new(RwLock::new(HashSet::new())),
             proxy: None,
+            external_addr: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// The address we advertise to peers in the VERSION handshake. Prefer a learned
+    /// public endpoint (NAT reflection); otherwise fall back to the resolved listen
+    /// address. Proxied nodes always advertise unspecified (SWIM-PRIV-2).
+    async fn advertised_addr(&self) -> SocketAddr {
+        if self.proxy.is_some() {
+            return unspecified_like(self.local_addr);
+        }
+        if let Some(ext) = *self.external_addr.read().await {
+            return ext;
+        }
+        resolve_advertised_addr(self.local_addr)
+    }
+
+    /// Adopt the public endpoint a peer observed us as, if it's globally routable and
+    /// new. Never runs for proxied nodes (must not leak the real IP).
+    async fn adopt_observed(&self, peer_info: &PeerInfo) {
+        if self.proxy.is_some() {
+            return;
+        }
+        if let Some(obs) = peer_info.observed_external_addr {
+            if is_public_addr(&obs) {
+                let mut ext = self.external_addr.write().await;
+                if *ext != Some(obs) {
+                    log::info!(
+                        "[NAT] Learned public endpoint {} (was {:?}) — will advertise it",
+                        obs,
+                        *ext
+                    );
+                    *ext = Some(obs);
+                }
+            }
+        }
+    }
+
+    /// Our learned public endpoint, if any (for re-announcing to peers).
+    #[must_use]
+    pub async fn external_addr(&self) -> Option<SocketAddr> {
+        *self.external_addr.read().await
     }
 
     /// Configure a SOCKS5 proxy for outbound dials (SWIM-PRIV-2).
@@ -99,8 +172,9 @@ impl TcpTransport {
         let our_nonce = generate_nonce();
 
         let mut conn = Connection::new_inbound(stream, remote_addr, our_nonce);
+        let advertised = self.advertised_addr().await;
         let peer_info =
-            perform_inbound_handshake(&mut conn, &self.local_info, resolve_advertised_addr(self.local_addr)).await?;
+            perform_inbound_handshake(&mut conn, &self.local_info, advertised).await?;
 
         // Check for duplicate nonce
         {
@@ -110,6 +184,9 @@ impl TcpTransport {
             }
             nonces.insert(peer_info.nonce);
         }
+
+        // Learn our public endpoint from what this peer observed (NAT reflection).
+        self.adopt_observed(&peer_info).await;
 
         Ok(conn)
     }
@@ -127,14 +204,10 @@ impl TcpTransport {
 
         let mut conn = Connection::new_outbound(stream, addr, our_nonce);
 
-        // When dialing through a proxy we must not advertise our real listen
-        // address in the VERSION handshake, or peers would learn the IP the
-        // proxy is meant to hide. Advertise an unspecified address instead.
-        let advertised_addr = if self.proxy.is_some() {
-            unspecified_like(self.local_addr)
-        } else {
-            resolve_advertised_addr(self.local_addr)
-        };
+        // Advertise our best-known address: a learned public endpoint if we have one,
+        // else the resolved listen address — or unspecified when proxied (the helper
+        // handles the SWIM-PRIV-2 proxy case so the real IP never leaks).
+        let advertised_addr = self.advertised_addr().await;
         let peer_info =
             perform_outbound_handshake(&mut conn, &self.local_info, advertised_addr).await?;
 
@@ -146,6 +219,9 @@ impl TcpTransport {
             }
             nonces.insert(peer_info.nonce);
         }
+
+        // Learn our public endpoint from what this peer observed (NAT reflection).
+        self.adopt_observed(&peer_info).await;
 
         Ok(conn)
     }
@@ -375,6 +451,45 @@ mod tests {
         assert_eq!(unspecified_like(v4), "0.0.0.0:0".parse().unwrap());
         let v6: SocketAddr = "[2001:db8::1]:9735".parse().unwrap();
         assert_eq!(unspecified_like(v6), "[::]:0".parse().unwrap());
+    }
+
+    #[test]
+    fn is_public_addr_classification() {
+        // Public — worth advertising.
+        assert!(is_public_addr(&"8.8.8.8:9735".parse().unwrap()));
+        assert!(is_public_addr(&"167.71.241.252:9735".parse().unwrap()));
+        assert!(is_public_addr(&"[2606:4700:4700::1111]:9735".parse().unwrap()));
+        // Non-public — must never be adopted as our external endpoint.
+        assert!(!is_public_addr(&"127.0.0.1:9735".parse().unwrap()));
+        assert!(!is_public_addr(&"192.168.1.10:9735".parse().unwrap()));
+        assert!(!is_public_addr(&"10.0.0.5:9735".parse().unwrap()));
+        assert!(!is_public_addr(&"172.16.3.4:9735".parse().unwrap()));
+        assert!(!is_public_addr(&"169.254.1.1:9735".parse().unwrap()));
+        assert!(!is_public_addr(&"100.64.0.1:9735".parse().unwrap())); // CGNAT
+        assert!(!is_public_addr(&"0.0.0.0:9735".parse().unwrap()));
+        assert!(!is_public_addr(&"[fe80::1]:9735".parse().unwrap()));
+        assert!(!is_public_addr(&"[::1]:9735".parse().unwrap()));
+    }
+
+    #[test]
+    fn compact_addr_to_socket_addr_decodes() {
+        use crate::network::CompactAddr;
+        // IPv4-mapped ::ffff:203.0.113.7
+        let mut a = [0u8; 16];
+        a[10] = 0xff;
+        a[11] = 0xff;
+        a[12..16].copy_from_slice(&[203, 0, 113, 7]);
+        let v4 = CompactAddr { transport: 0x01, address: a, port: 19735, services: 0 };
+        assert_eq!(v4.to_socket_addr(), "203.0.113.7:19735".parse().ok());
+
+        // Native IPv6
+        let v6bytes = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x42).octets();
+        let v6 = CompactAddr { transport: 0x01, address: v6bytes, port: 5000, services: 0 };
+        assert_eq!(v6.to_socket_addr(), "[2001:db8::42]:5000".parse().ok());
+
+        // Zero/unspecified → None
+        let zero = CompactAddr { transport: 0x01, address: [0u8; 16], port: 0, services: 0 };
+        assert_eq!(zero.to_socket_addr(), None);
     }
 
     #[test]

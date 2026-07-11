@@ -28,6 +28,10 @@ pub struct PeerInfo {
     pub remote_addr: SocketAddr,
     /// Timestamp from VERSION message
     pub timestamp: u64,
+    /// The public address the PEER observed US as (their VERSION's `receiver_addr`).
+    /// This is how a NAT'd node learns its own external endpoint (SPEC_06 discovery /
+    /// NAT reflection). None if the peer reported nothing dialable.
+    pub observed_external_addr: Option<SocketAddr>,
 }
 
 /// Local node information for VERSION message construction
@@ -102,6 +106,7 @@ mod tests {
             nonce: 0xdeadbeef,
             remote_addr: "127.0.0.1:9735".parse().unwrap(),
             timestamp: 1700000000,
+            observed_external_addr: None,
         };
 
         assert_eq!(peer.protocol_version, 1);

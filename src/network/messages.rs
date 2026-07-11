@@ -36,6 +36,32 @@ impl Default for CompactAddr {
     }
 }
 
+impl CompactAddr {
+    /// Decode the 16-byte address + port into a `SocketAddr`. An IPv4-mapped IPv6
+    /// address (`::ffff:a.b.c.d`) decodes back to IPv4. Returns None for the
+    /// unspecified/zero address (nothing dialable).
+    #[must_use]
+    pub fn to_socket_addr(&self) -> Option<std::net::SocketAddr> {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+        if self.address == [0u8; 16] || self.port == 0 {
+            return None;
+        }
+        // IPv4-mapped IPv6: first 10 bytes 0, then 0xff 0xff, then 4 IPv4 octets.
+        let ip = if self.address[..10] == [0u8; 10] && self.address[10] == 0xff && self.address[11] == 0xff
+        {
+            IpAddr::V4(Ipv4Addr::new(
+                self.address[12],
+                self.address[13],
+                self.address[14],
+                self.address[15],
+            ))
+        } else {
+            IpAddr::V6(Ipv6Addr::from(self.address))
+        };
+        Some(SocketAddr::new(ip, self.port))
+    }
+}
+
 /// Wire address for ADDR message (75 bytes) (SPEC_06 §5.2.3)
 ///
 /// Wire format:

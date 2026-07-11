@@ -114,6 +114,30 @@ fn wire_addr_to_socket_addr(wire_addr: &crate::network::messages::WireAddr) -> O
     }
 }
 
+/// Encode a `SocketAddr` as a `WireAddr` for an ADDR message (inverse of
+/// `wire_addr_to_socket_addr`): IPv4 → transport 0x01 with raw octets in the first 4
+/// bytes; IPv6 → transport 0x02 with the 16 address bytes.
+fn socket_addr_to_wire(addr: SocketAddr, last_seen: u32) -> crate::network::messages::WireAddr {
+    let mut w = crate::network::messages::WireAddr {
+        transport: 0x01,
+        address: [0u8; 64],
+        port: addr.port(),
+        services: 0,
+        last_seen,
+    };
+    match addr.ip() {
+        IpAddr::V4(v4) => {
+            w.transport = 0x01;
+            w.address[0..4].copy_from_slice(&v4.octets());
+        }
+        IpAddr::V6(v6) => {
+            w.transport = 0x02;
+            w.address[0..16].copy_from_slice(&v6.octets());
+        }
+    }
+    w
+}
+
 // ============================================================================
 // BackgroundTaskRunner
 // ============================================================================
@@ -1223,6 +1247,30 @@ impl BackgroundTaskRunner {
 
                             if sent > 0 {
                                 info!("[GETADDR-DISCOVERY] Sent GETADDR to {} peers", sent);
+                            }
+
+                            // NAT reflection: re-announce our learned public endpoint so
+                            // the seed relays a DIALABLE address. During the initial
+                            // handshake we could only advertise our stale 0.0.0.0/LAN
+                            // address (we hadn't been told our public one yet), so peers
+                            // learned an undialable endpoint. Now that we know it, push it.
+                            if let Some(ext) = transport.external_addr().await {
+                                use crate::network::messages::AddrPayload;
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs() as u32)
+                                    .unwrap_or(0);
+                                let addr_payload = AddrPayload {
+                                    addresses: vec![socket_addr_to_wire(ext, now)],
+                                };
+                                let addr_env = MessageEnvelope::new_fork_agnostic(
+                                    MessageType::Addr,
+                                    addr_payload.to_bytes(),
+                                );
+                                for peer_id in peer_ids.iter().take(3) {
+                                    let _ = connection_pool.send_to(peer_id, &addr_env).await;
+                                }
+                                info!("[NAT] Re-announced public endpoint {} to peers", ext);
                             }
                         }
                     }

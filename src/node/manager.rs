@@ -1774,6 +1774,7 @@ impl NodeManager {
                         nonce: 0,
                         remote_addr: handle.remote_addr,
                         timestamp: 0,
+                        observed_external_addr: None,
                     })
                     .collect()
             })
