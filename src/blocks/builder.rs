@@ -65,6 +65,7 @@ pub const MAX_ACTIONS_PER_SPACE: usize = 2_000;
 
 /// Pending thread with accumulated actions
 #[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PendingThread {
     /// Thread root ID
     thread_id: ThreadId,
@@ -122,6 +123,11 @@ pub struct BlockBuilder {
     space_action_counts: HashMap<SpaceId, usize>,
     /// Total action count for enforcing MAX_MEMPOOL_ACTIONS (H-BLOCK-2)
     total_action_count: usize,
+    /// Optional on-disk mempool file. When set, the pending thread map is
+    /// written (atomic + flushed) after every mutation so pending actions
+    /// survive restart and keep propagating until mined. `None` disables
+    /// persistence (unit tests, minimal modes).
+    persist_path: Option<std::path::PathBuf>,
 }
 
 impl BlockBuilder {
@@ -142,6 +148,7 @@ impl BlockBuilder {
             action_locations: HashMap::new(),
             space_action_counts: HashMap::new(),
             total_action_count: 0,
+            persist_path: None,
         }
     }
 
@@ -164,6 +171,7 @@ impl BlockBuilder {
             action_locations: HashMap::new(),
             space_action_counts: HashMap::new(),
             total_action_count: 0,
+            persist_path: None,
         }
     }
 
@@ -172,6 +180,73 @@ impl BlockBuilder {
         self.current_height = height;
         self.prev_root_hash = tip_hash;
         self.prev_cumulative_pow = cumulative_pow;
+    }
+
+    /// Enable on-disk mempool persistence at `path`, loading any existing file.
+    ///
+    /// After this call every mutation writes the pending set to disk, and the
+    /// pending actions from a prior run are restored (with all derived indexes
+    /// rebuilt). Call once at startup.
+    pub fn set_persistence(&mut self, path: std::path::PathBuf) {
+        self.persist_path = Some(path);
+        self.load_persisted();
+    }
+
+    /// Load and restore the pending thread map from disk, rebuilding the
+    /// derived indexes (seen_actions, locations, per-space/total counts).
+    fn load_persisted(&mut self) {
+        let Some(ref path) = self.persist_path else { return };
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(_) => return, // no file yet
+        };
+        let threads: HashMap<ThreadId, PendingThread> = match bincode::deserialize(&data) {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("[MEMPOOL] Failed to parse persisted mempool: {}", e);
+                return;
+            }
+        };
+
+        self.threads = threads;
+        self.action_locations.clear();
+        self.space_action_counts.clear();
+        self.total_action_count = 0;
+        for thread in self.threads.values() {
+            for (idx, action) in thread.actions.iter().enumerate() {
+                let hash = Self::action_hash(action);
+                self.seen_actions.put(hash, ());
+                self.action_locations.insert(hash, (thread.thread_id, idx));
+                *self.space_action_counts.entry(thread.space_id).or_insert(0) += 1;
+                self.total_action_count += 1;
+            }
+        }
+        log::info!(
+            "[MEMPOOL] Restored {} pending actions across {} threads from disk",
+            self.total_action_count,
+            self.threads.len()
+        );
+    }
+
+    /// Persist the pending thread map to disk (atomic + flushed). Best-effort:
+    /// a failure is logged, never fatal to the action that triggered it.
+    fn persist(&self) {
+        let Some(ref path) = self.persist_path else { return };
+        let data = match bincode::serialize(&self.threads) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("[MEMPOOL] Failed to serialize mempool: {}", e);
+                return;
+            }
+        };
+        let tmp = path.with_extension("tmp");
+        if let Err(e) = std::fs::write(&tmp, &data) {
+            log::warn!("[MEMPOOL] Failed to write mempool tmp: {}", e);
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            log::warn!("[MEMPOOL] Failed to rename mempool file: {}", e);
+        }
     }
 
     /// Compute a unique hash for an action (for deduplication)
@@ -393,6 +468,7 @@ impl BlockBuilder {
         *self.space_action_counts.entry(space_id).or_insert(0) += 1;
         self.total_action_count += 1;
 
+        self.persist();
         true
     }
 
@@ -547,6 +623,7 @@ impl BlockBuilder {
         *self.space_action_counts.entry(space_id).or_insert(0) += 1;
         self.total_action_count += 1;
 
+        self.persist();
         true
     }
 
@@ -840,6 +917,10 @@ impl BlockBuilder {
         self.total_action_count = 0;
         self.action_locations.clear();
 
+        // Mempool drained into the block — persist the now-empty set so a
+        // restart doesn't resurrect already-mined actions.
+        self.persist();
+
         (root_block, space_blocks, all_content_blocks)
     }
 
@@ -875,6 +956,7 @@ impl BlockBuilder {
         self.action_locations.clear();
         self.space_action_counts.clear();
         self.total_action_count = 0;
+        self.persist();
     }
 
     /// Get difficulty target
@@ -1026,6 +1108,9 @@ impl BlockBuilder {
             self.threads.remove(&thread_id);
         }
 
+        if removed > 0 {
+            self.persist();
+        }
         removed
     }
 
@@ -1115,6 +1200,41 @@ mod tests {
         assert_eq!(builder.difficulty_target(), 30);
         assert_eq!(builder.pending_action_count(), 0);
         assert_eq!(builder.pending_thread_count(), 0);
+    }
+
+    #[test]
+    fn mempool_survives_reload_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mempool.bin");
+
+        // Build a mempool with two actions and persist as we go.
+        {
+            let mut builder = BlockBuilder::new(30);
+            builder.set_persistence(path.clone());
+            assert!(builder.add_action([10u8; 32], [11u8; 32], make_test_action(5), BranchPath::root()));
+            assert!(builder.add_action([12u8; 32], [13u8; 32], make_test_action(7), BranchPath::root()));
+            assert_eq!(builder.pending_action_count(), 2);
+        }
+
+        // A fresh builder pointed at the same file recovers the pending set.
+        let mut reloaded = BlockBuilder::new(30);
+        reloaded.set_persistence(path.clone());
+        assert_eq!(reloaded.pending_action_count(), 2, "pending actions restored from disk");
+        assert_eq!(reloaded.pending_thread_count(), 2);
+
+        // Dedup index rebuilt: re-adding a restored action is rejected.
+        let restored = reloaded.get_pending_actions();
+        let (tid, sid, action) = restored[0].clone();
+        assert!(
+            !reloaded.add_action(tid, sid, action, BranchPath::root()),
+            "seen_actions must be rebuilt so a restored action is not re-added"
+        );
+
+        // Draining the mempool (block formation / clear) persists empty.
+        reloaded.clear();
+        let mut after_clear = BlockBuilder::new(30);
+        after_clear.set_persistence(path);
+        assert_eq!(after_clear.pending_action_count(), 0, "drained mempool persisted as empty");
     }
 
     #[test]

@@ -740,6 +740,13 @@ impl NodeManager {
             .scaled_block_difficulty(crate::blocks::INITIAL_DIFFICULTY);
         let block_builder = Arc::new(RwLock::new(BlockBuilder::new(block_difficulty_target)));
 
+        // Enable mempool persistence: pending actions (posts, reactions,
+        // sponsorship claims) survive restart and keep propagating until mined.
+        // Per-network data dir, so each network keeps its own mempool file.
+        if let Ok(mut builder) = block_builder.write() {
+            builder.set_persistence(self.config.data_dir.join("mempool.bin"));
+        }
+
         // Sync BlockBuilder with chain state so new blocks continue from current height
         if let Some(ref cs) = self.chain_store {
             if let Ok(Some(height)) = cs.get_latest_height() {

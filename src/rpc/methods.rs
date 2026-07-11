@@ -3159,35 +3159,14 @@ impl RpcMethods {
             );
         }
 
-        // Persist the reaction to the content store immediately (flushed), not
-        // only when a block later forms. On a quiet testnet a single reaction
-        // may never meet the block threshold, and the in-memory mempool is lost
-        // on app restart — so reactions vanished on restart. The windowed
-        // add_reaction_windowed makes this idempotent with the block-apply path
-        // (a stack within the live window is rejected there, no double count).
-        let mut reaction_stored = false;
-        if let (Some(rtype), Some(ref content_store)) = (
-            params.emoji.and_then(reaction_type_from_code),
-            &self.node.content_store,
-        ) {
-            let now_ms = crate::crypto::current_timestamp() * 1000;
-            let reaction = Reaction {
-                content_id: ContentId::from_bytes(content_bytes),
-                reactor_id: IdentityId::from_bytes(author_bytes),
-                reaction_type: rtype,
-                timestamp: now_ms,
-                signature: crate::types::identity::Signature::from_bytes([0u8; 64]),
-            };
-            match content_store.add_reaction_windowed(&reaction, now_ms) {
-                Ok(stored) => {
-                    reaction_stored = stored;
-                    let _ = content_store.flush();
-                }
-                Err(e) => warn!("[ENGAGE] Failed to persist reaction: {}", e),
-            }
-        }
-        info!("[ENGAGE] Processing emoji: {:?} (persisted={})",
-              params.emoji, reaction_stored);
+        // Reactions are NOT materialized into the content store here. They ride
+        // the canonical pipeline: mempool (now persisted to disk, survives
+        // restart) → gossip → block → apply. get_reactions counts the persisted
+        // mempool + the store, so a submitted reaction shows immediately and
+        // exactly once. (Earlier this wrote optimistically to the store, which
+        // double-counted against the pending mempool entry.)
+        let reaction_stored = false;
+        info!("[ENGAGE] Processing emoji: {:?}", params.emoji);
 
         // Record engagement to reset decay timer
         let mut engagement_recorded = false;
@@ -6634,17 +6613,23 @@ impl RpcMethods {
             }
         };
 
-        // Validate user_id is valid hex
-        if user_id.len() != 64 || hex::decode(user_id).is_err() {
+        // Accept EITHER a 32-byte hex pubkey or a cs1 address (forum profile URLs use
+        // addresses; chat author_id is an address for still-pending content). The
+        // profile space derives from the lowercase hex pubkey, so normalize first.
+        let user_id_norm: String = if user_id.len() == 64 && hex::decode(user_id).is_ok() {
+            user_id.to_lowercase()
+        } else if let Ok(pk) = crate::crypto::address::decode_address_to_pubkey(user_id) {
+            hex::encode(pk.0)
+        } else {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
-                "Invalid user_id: must be 32-byte hex (64 characters)",
+                "Invalid user_id: must be 32-byte hex or a cs1 address",
                 id,
             );
-        }
+        };
 
         // Calculate profile space ID (first 16 bytes of SHA256("profile:v1:<user_id_lowercase>"))
-        let preimage = format!("profile:v1:{}", user_id.to_lowercase());
+        let preimage = format!("profile:v1:{}", user_id_norm);
         let profile_space_hash = crate::crypto::sha256(preimage.as_bytes());
         let profile_space_id: [u8; 16] = {
             let mut arr = [0u8; 16];
