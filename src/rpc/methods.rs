@@ -5811,30 +5811,27 @@ impl RpcMethods {
             }
         };
 
-        // Parse user_id (32-byte hex)
-        let author_bytes: [u8; 32] = match hex::decode(&params.user_id) {
-            Ok(bytes) if bytes.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&bytes);
-                arr
-            }
-            Ok(bytes) => {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    &format!("user_id must be 32 bytes, got {}", bytes.len()),
-                    id,
-                );
-            }
-            Err(e) => {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    &format!("Invalid user_id hex: {}", e),
-                    id,
-                );
-            }
+        // Accept EITHER a 32-byte hex pubkey OR a cs1 address. Feed items carry
+        // the author as a cs1 address, so "View Posts" passes an address; hex
+        // comes from profile pages. Same normalization get_user_profile uses.
+        let author_bytes: [u8; 32] = if params.user_id.len() == 64
+            && hex::decode(&params.user_id).map(|b| b.len() == 32).unwrap_or(false)
+        {
+            let bytes = hex::decode(&params.user_id).unwrap();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            arr
+        } else if let Ok(pk) = crate::crypto::address::decode_address_to_pubkey(&params.user_id) {
+            pk.0
+        } else {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid user_id: must be 32-byte hex or a cs1 address",
+                id,
+            );
         };
 
-        debug!("[GET_USER_POSTS] Looking for content by user: {}", &params.user_id[..16]);
+        debug!("[GET_USER_POSTS] Looking for content by user: {}", &params.user_id[..params.user_id.len().min(16)]);
 
         let mut items: Vec<ContentSummary> = Vec::new();
         let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
