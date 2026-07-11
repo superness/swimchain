@@ -13,9 +13,7 @@
 use sled::{Db, Tree};
 
 use crate::sponsorship::error::SponsorshipError;
-use crate::sponsorship::types::{
-    PublicSponsorshipOffer, SponsorshipClaim, SponsorshipOfferType,
-};
+use crate::sponsorship::types::{PublicSponsorshipOffer, SponsorshipClaim, SponsorshipOfferType};
 use crate::types::identity::PublicKey;
 
 /// Public sponsorship offer storage backed by sled
@@ -76,6 +74,10 @@ impl OfferStore {
 
         // Initialize claimed count to 0
         self.claimed_counts.insert(key, &[0u8])?;
+
+        // Offers must survive process kills (mobile force-stop): sled's
+        // background flush has been observed not to persist there.
+        self.db.flush()?;
 
         Ok(())
     }
@@ -149,9 +151,9 @@ impl OfferStore {
 
             // Extract offer_id from key (last 16 bytes)
             if key.len() == 48 {
-                let offer_id: [u8; 16] = key[32..48].try_into().map_err(|_| {
-                    SponsorshipError::StorageError("invalid by_sponsor key".into())
-                })?;
+                let offer_id: [u8; 16] = key[32..48]
+                    .try_into()
+                    .map_err(|_| SponsorshipError::StorageError("invalid by_sponsor key".into()))?;
 
                 if let Some(offer) = self.get_offer(&offer_id)? {
                     offers.push(offer);
@@ -254,6 +256,9 @@ impl OfferStore {
 
         let value = bincode::serialize(claim)?;
         self.claims.insert(key, value)?;
+
+        // Claims must survive process kills (mobile force-stop).
+        self.db.flush()?;
 
         Ok(())
     }
@@ -451,7 +456,7 @@ impl OfferStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sponsorship::types::{SponsorshipRequirements};
+    use crate::sponsorship::types::SponsorshipRequirements;
     use crate::types::identity::{IdentityCreationProof, Signature};
     use tempfile::TempDir;
 
@@ -522,10 +527,7 @@ mod tests {
         store.create_offer(&offer1).unwrap();
         let result = store.create_offer(&offer2);
 
-        assert!(matches!(
-            result,
-            Err(SponsorshipError::InvalidInvariant(_))
-        ));
+        assert!(matches!(result, Err(SponsorshipError::InvalidInvariant(_))));
     }
 
     #[test]
@@ -580,16 +582,12 @@ mod tests {
         assert_eq!(store.get_claimed_count(&offer.offer_id).unwrap(), 0);
 
         // Increment
-        let new_count = store
-            .increment_claimed_count(&offer.offer_id, 5)
-            .unwrap();
+        let new_count = store.increment_claimed_count(&offer.offer_id, 5).unwrap();
         assert_eq!(new_count, 1);
         assert_eq!(store.get_claimed_count(&offer.offer_id).unwrap(), 1);
 
         // Increment again
-        let new_count = store
-            .increment_claimed_count(&offer.offer_id, 5)
-            .unwrap();
+        let new_count = store.increment_claimed_count(&offer.offer_id, 5).unwrap();
         assert_eq!(new_count, 2);
     }
 
@@ -714,7 +712,9 @@ mod tests {
             .unwrap()
             .is_some());
 
-        store.remove_claim(&claim.offer_id, &claim.claimant).unwrap();
+        store
+            .remove_claim(&claim.offer_id, &claim.claimant)
+            .unwrap();
 
         assert!(store
             .get_claim(&claim.offer_id, &claim.claimant)
@@ -760,7 +760,9 @@ mod tests {
         let mut full_offer = make_test_offer([3u8; 32], [3u8; 16]);
         full_offer.max_sponsees = 1;
         store.create_offer(&full_offer).unwrap();
-        store.increment_claimed_count(&full_offer.offer_id, 1).unwrap();
+        store
+            .increment_claimed_count(&full_offer.offer_id, 1)
+            .unwrap();
 
         let active = store.list_active_offers(current_time).unwrap();
         assert_eq!(active.len(), 1);
@@ -819,12 +821,16 @@ mod tests {
         store.create_offer(&attester_req).unwrap();
 
         // Newcomer can do difficulty 15
-        let offers = store.get_offers_for_newcomer(15, None, current_time).unwrap();
+        let offers = store
+            .get_offers_for_newcomer(15, None, current_time)
+            .unwrap();
         assert_eq!(offers.len(), 1);
         assert_eq!(offers[0].offer_id, [1u8; 16]);
 
         // Newcomer with difficulty 20+ can access both non-attester offers
-        let offers = store.get_offers_for_newcomer(25, None, current_time).unwrap();
+        let offers = store
+            .get_offers_for_newcomer(25, None, current_time)
+            .unwrap();
         assert_eq!(offers.len(), 2);
 
         // Newcomer with attester

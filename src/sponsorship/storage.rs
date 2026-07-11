@@ -61,6 +61,12 @@ impl SponsorshipStore {
             self.add_to_sponsee_list(sponsor, &sponsorship.sponsored_identity)?;
         }
 
+        // Sponsorships are rare, precious writes: flush synchronously. On
+        // mobile the process is routinely hard-killed (force-stop/swipe) and
+        // sled's background flush has been observed not to persist writes
+        // there — an approved sponsorship silently vanished on app restart.
+        self.db.flush()?;
+
         Ok(())
     }
 
@@ -79,7 +85,8 @@ impl SponsorshipStore {
         let sponsee_bytes = *sponsee.as_bytes();
         if !sponsees.contains(&sponsee_bytes) {
             sponsees.push(sponsee_bytes);
-            self.by_sponsor.insert(key, bincode::serialize(&sponsees)?)?;
+            self.by_sponsor
+                .insert(key, bincode::serialize(&sponsees)?)?;
         }
         Ok(())
     }
@@ -572,9 +579,9 @@ impl SponsorshipStore {
         &self,
         identity: &PublicKey,
     ) -> Result<LinearChainMetrics, SponsorshipError> {
-        let sponsorship = self.get(identity)?.ok_or_else(|| {
-            SponsorshipError::StorageError("identity not found".into())
-        })?;
+        let sponsorship = self
+            .get(identity)?
+            .ok_or_else(|| SponsorshipError::StorageError("identity not found".into()))?;
 
         let direct_sponsee_count = self.count_sponsees(identity)?;
         let (subtree_breadth, max_subtree_depth) = self.calculate_subtree_metrics(identity)?;
@@ -694,9 +701,7 @@ mod tests {
         assert_eq!(retrieved_sponsor, PublicKey::from_bytes(sponsor));
 
         // Genesis has no sponsor
-        let genesis_sponsor = store
-            .get_sponsor(&PublicKey::from_bytes(sponsor))
-            .unwrap();
+        let genesis_sponsor = store.get_sponsor(&PublicKey::from_bytes(sponsor)).unwrap();
         assert!(genesis_sponsor.is_none());
     }
 
@@ -715,9 +720,7 @@ mod tests {
                 .unwrap();
         }
 
-        let sponsees = store
-            .get_sponsees(&PublicKey::from_bytes(sponsor))
-            .unwrap();
+        let sponsees = store.get_sponsees(&PublicKey::from_bytes(sponsor)).unwrap();
         assert_eq!(sponsees.len(), 3);
 
         // Verify all sponsees are present
@@ -735,7 +738,9 @@ mod tests {
         store.put(&make_genesis_sponsorship(sponsor)).unwrap();
 
         assert_eq!(
-            store.count_sponsees(&PublicKey::from_bytes(sponsor)).unwrap(),
+            store
+                .count_sponsees(&PublicKey::from_bytes(sponsor))
+                .unwrap(),
             0
         );
 
@@ -746,7 +751,9 @@ mod tests {
         }
 
         assert_eq!(
-            store.count_sponsees(&PublicKey::from_bytes(sponsor)).unwrap(),
+            store
+                .count_sponsees(&PublicKey::from_bytes(sponsor))
+                .unwrap(),
             3
         );
     }
@@ -763,7 +770,9 @@ mod tests {
         let id4 = [4u8; 32];
 
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        store.put(&make_regular_sponsorship(id1, genesis, 1)).unwrap();
+        store
+            .put(&make_regular_sponsorship(id1, genesis, 1))
+            .unwrap();
         store.put(&make_regular_sponsorship(id2, id1, 2)).unwrap();
         store.put(&make_regular_sponsorship(id3, id2, 3)).unwrap();
         store.put(&make_regular_sponsorship(id4, id3, 4)).unwrap();
@@ -869,10 +878,7 @@ mod tests {
         store.put(&make_genesis_sponsorship([1u8; 32])).unwrap();
 
         let result = store.update_contribution_score(&identity, 1001);
-        assert!(matches!(
-            result,
-            Err(SponsorshipError::InvalidInvariant(_))
-        ));
+        assert!(matches!(result, Err(SponsorshipError::InvalidInvariant(_))));
     }
 
     #[test]
@@ -956,9 +962,7 @@ mod tests {
             .unwrap();
 
         // Should still only have one sponsee
-        let sponsees = store
-            .get_sponsees(&PublicKey::from_bytes(sponsor))
-            .unwrap();
+        let sponsees = store.get_sponsees(&PublicKey::from_bytes(sponsor)).unwrap();
         assert_eq!(sponsees.len(), 1);
     }
 
@@ -1077,7 +1081,9 @@ mod tests {
         let regular = [2u8; 32];
 
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        store.put(&make_regular_sponsorship(regular, genesis, 1)).unwrap();
+        store
+            .put(&make_regular_sponsorship(regular, genesis, 1))
+            .unwrap();
 
         // Regular identity can be revoked
         let identity = PublicKey::from_bytes(regular);
@@ -1153,7 +1159,9 @@ mod tests {
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
 
         for i in 1..=5 {
-            store.put(&make_regular_sponsorship([i; 32], genesis, 1)).unwrap();
+            store
+                .put(&make_regular_sponsorship([i; 32], genesis, 1))
+                .unwrap();
         }
 
         // From genesis: 5 descendants, max depth 1
