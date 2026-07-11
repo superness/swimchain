@@ -7749,18 +7749,24 @@ impl RpcMethods {
             crate::types::content::ReactionCounts::new()
         };
 
-        // Add pending engagements from BlockBuilder mempool
-        // These are reactions that haven't been included in a block yet
+        // Add pending engagements from BlockBuilder mempool (reactions not yet
+        // in a block). Dedupe per (actor, emoji): a user holds at most one live
+        // reaction per emoji, so a burst of pending same-emoji engagements from
+        // one actor counts once — matching the persistent windowed count and
+        // preventing a client loop from inflating the display.
         if let Some(ref block_builder) = self.node.block_builder {
             if let Ok(bb_read) = block_builder.read() {
+                let mut seen: std::collections::HashSet<([u8; 32], u8)> =
+                    std::collections::HashSet::new();
                 let pending_actions = bb_read.get_pending_actions();
                 for (_thread_id, _pending_space_id, action) in pending_actions {
-                    // Check if this is an Engage action targeting our content
                     if action.action_type == crate::blocks::action::ActionType::Engage {
                         if let Some(target_hash) = action.content_hash {
                             if target_hash == content_id_bytes {
-                                // Add to the appropriate reaction count
                                 if let Some(emoji_code) = action.emoji {
+                                    if !seen.insert((action.actor, emoji_code)) {
+                                        continue; // same actor+emoji already counted
+                                    }
                                     match emoji_code {
                                         1 => reaction_counts.heart += 1,
                                         2 => reaction_counts.thumbs_up += 1,

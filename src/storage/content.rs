@@ -18,6 +18,14 @@ use crate::types::identity::IdentityId;
 /// Inline content threshold (SPEC_07: ≤1KB inline, >1KB in blob store)
 pub const INLINE_THRESHOLD: usize = 1024;
 
+/// A reaction stays "live" for 5 days, then decays. Reactions never receive
+/// their own keep-alive (nothing engages a reaction), so a reaction only ever
+/// ages out — the live set is self-cleaning. While a user's reaction of a given
+/// emoji is live, they cannot stack the same emoji on the same content; once it
+/// decays they may add it again to renew the post's keep-alive. See
+/// docs/superpowers/specs/2026-07-11-decaying-reactions-design.md.
+pub const REACTION_LIFETIME_MS: u64 = 5 * 24 * 60 * 60 * 1000;
+
 /// Persistent content storage using sled + filesystem
 pub struct PersistentContentStore {
     db: Db,
@@ -394,17 +402,41 @@ impl PersistentContentStore {
         key
     }
 
-    /// Add a reaction from a user to content
+    /// Add a reaction from a user to content (decaying, non-stacking).
     ///
-    /// Reactions can stack - users can contribute work multiple times with the same emoji.
-    /// Each reaction increments the count.
+    /// A user holds at most one live reaction per (content, emoji). Adding the
+    /// same emoji again while the existing one is still within
+    /// `REACTION_LIFETIME_MS` is rejected (`Ok(false)`) with no state change.
+    /// Once it has decayed, re-adding refreshes the timestamp (renews
+    /// keep-alive). Different emojis from the same user are always accepted.
+    /// Reaction records are stored per (content, reactor, type) with their
+    /// timestamp so counts can be computed over the live window.
     ///
     /// # Errors
     ///
     /// Returns error if storage operation fails.
-    pub fn add_reaction(&self, reaction: &Reaction) -> Result<bool, StorageError> {
-        // Always increment the count - reactions stack to allow continuous work contribution
-        self.increment_reaction_count(&reaction.content_id, reaction.reaction_type)?;
+    pub fn add_reaction_windowed(
+        &self,
+        reaction: &Reaction,
+        now_ms: u64,
+    ) -> Result<bool, StorageError> {
+        let key = Self::reaction_key(
+            &reaction.content_id,
+            &reaction.reactor_id,
+            reaction.reaction_type,
+        );
+
+        // Reject a stacked same-emoji reaction while the existing one is live.
+        if let Some(data) = self.reactions_tree.get(&key)? {
+            let existing: Reaction = bincode::deserialize(&data)?;
+            if now_ms.saturating_sub(existing.timestamp) < REACTION_LIFETIME_MS {
+                return Ok(false);
+            }
+        }
+
+        // Upsert the timestamped record (refreshes on renew after decay).
+        let data = bincode::serialize(reaction)?;
+        self.reactions_tree.insert(&key, data)?;
 
         info!(
             "[STORAGE] Added reaction {} from {:?} to {:?}",
@@ -414,6 +446,16 @@ impl PersistentContentStore {
         );
 
         Ok(true)
+    }
+
+    /// Legacy entry point kept for callers that don't thread a clock; uses the
+    /// reaction's own timestamp as "now". Prefer `add_reaction_windowed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if storage operation fails.
+    pub fn add_reaction(&self, reaction: &Reaction) -> Result<bool, StorageError> {
+        self.add_reaction_windowed(reaction, reaction.timestamp)
     }
 
     /// Remove a reaction from a user
@@ -572,15 +614,36 @@ impl PersistentContentStore {
     ///
     /// Returns error if read fails.
     pub fn get_reaction_counts(&self, content_id: &ContentId) -> Result<ReactionCounts, StorageError> {
-        let key = content_id.0;
+        let now_ms = crate::crypto::current_timestamp() * 1000;
+        self.get_reaction_counts_at(content_id, now_ms)
+    }
 
-        match self.reaction_counts_tree.get(&key)? {
-            Some(data) => {
-                let counts: ReactionCounts = bincode::deserialize(&data)?;
-                Ok(counts)
+    /// Reaction counts over the live window as of `now_ms`.
+    ///
+    /// Counts each (reactor, emoji) at most once and excludes reactions older
+    /// than `REACTION_LIFETIME_MS` — so a count is "distinct users currently
+    /// keeping this alive with that emoji", and decayed reactions (including
+    /// old stacked/flood records) drop off automatically.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if a read or deserialize fails.
+    pub fn get_reaction_counts_at(
+        &self,
+        content_id: &ContentId,
+        now_ms: u64,
+    ) -> Result<ReactionCounts, StorageError> {
+        let mut counts = ReactionCounts::new();
+        for result in self.reactions_tree.scan_prefix(content_id.0) {
+            let (_, data) = result?;
+            let reaction: Reaction = bincode::deserialize(&data)?;
+            if now_ms.saturating_sub(reaction.timestamp) < REACTION_LIFETIME_MS {
+                // The reaction_key is unique per (content, reactor, type), so
+                // each live reaction contributes exactly one to its emoji.
+                counts.increment(reaction.reaction_type);
             }
-            None => Ok(ReactionCounts::new()),
         }
+        Ok(counts)
     }
 
     /// Get all reactions for a content item (for detailed view)
@@ -756,6 +819,105 @@ mod tests {
 
         let retrieved = store.get(&content.content_id).unwrap().unwrap();
         assert_eq!(retrieved.content_id, content.content_id);
+    }
+
+    fn make_reaction(
+        content: [u8; 32],
+        reactor: [u8; 32],
+        rtype: ReactionType,
+        timestamp_ms: u64,
+    ) -> Reaction {
+        Reaction {
+            content_id: ContentId::from_bytes(content),
+            reactor_id: IdentityId::from_bytes(reactor),
+            reaction_type: rtype,
+            timestamp: timestamp_ms,
+            signature: Signature::from_bytes([0u8; 64]),
+        }
+    }
+
+    #[test]
+    fn same_emoji_cannot_stack_while_live() {
+        let dir = tempdir().unwrap();
+        let store =
+            PersistentContentStore::open(dir.path().join("db"), dir.path().join("blobs")).unwrap();
+        let cid = ContentId::from_bytes([9u8; 32]);
+        let now = 10_000_000_000u64;
+
+        // First heart accepted.
+        assert!(store
+            .add_reaction_windowed(&make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now), now)
+            .unwrap());
+        // Same user, same emoji, still within the 5-day window → rejected, no double count.
+        assert!(!store
+            .add_reaction_windowed(
+                &make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now + 1000),
+                now + 1000
+            )
+            .unwrap());
+
+        let counts = store.get_reaction_counts_at(&cid, now + 2000).unwrap();
+        assert_eq!(counts.heart, 1, "one user's heart counts once, not twice");
+    }
+
+    #[test]
+    fn different_emojis_from_same_user_both_count() {
+        let dir = tempdir().unwrap();
+        let store =
+            PersistentContentStore::open(dir.path().join("db"), dir.path().join("blobs")).unwrap();
+        let cid = ContentId::from_bytes([9u8; 32]);
+        let now = 10_000_000_000u64;
+
+        assert!(store
+            .add_reaction_windowed(&make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now), now)
+            .unwrap());
+        assert!(store
+            .add_reaction_windowed(&make_reaction([9u8; 32], [1u8; 32], ReactionType::Fire, now), now)
+            .unwrap());
+
+        let counts = store.get_reaction_counts_at(&cid, now).unwrap();
+        assert_eq!(counts.heart, 1);
+        assert_eq!(counts.fire, 1);
+    }
+
+    #[test]
+    fn same_emoji_reactable_again_after_decay() {
+        let dir = tempdir().unwrap();
+        let store =
+            PersistentContentStore::open(dir.path().join("db"), dir.path().join("blobs")).unwrap();
+        let cid = ContentId::from_bytes([9u8; 32]);
+        let now = 10_000_000_000u64;
+        let after = now + REACTION_LIFETIME_MS + 1;
+
+        assert!(store
+            .add_reaction_windowed(&make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now), now)
+            .unwrap());
+        // The original reaction has decayed → not counted.
+        assert_eq!(store.get_reaction_counts_at(&cid, after).unwrap().heart, 0);
+        // And the same emoji may be added again (renew keep-alive).
+        assert!(store
+            .add_reaction_windowed(
+                &make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, after),
+                after
+            )
+            .unwrap());
+        assert_eq!(store.get_reaction_counts_at(&cid, after).unwrap().heart, 1);
+    }
+
+    #[test]
+    fn distinct_users_each_add_one_to_count() {
+        let dir = tempdir().unwrap();
+        let store =
+            PersistentContentStore::open(dir.path().join("db"), dir.path().join("blobs")).unwrap();
+        let cid = ContentId::from_bytes([9u8; 32]);
+        let now = 10_000_000_000u64;
+
+        for u in 1u8..=3 {
+            assert!(store
+                .add_reaction_windowed(&make_reaction([9u8; 32], [u; 32], ReactionType::Thinking, now), now)
+                .unwrap());
+        }
+        assert_eq!(store.get_reaction_counts_at(&cid, now).unwrap().thinking, 3);
     }
 
     #[test]

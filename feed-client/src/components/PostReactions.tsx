@@ -58,6 +58,12 @@ export function PostReactions({ contentId, reactions: reactionsProp, compact = f
       info('You need a sponsor before you can react. Redeem an invite or request sponsorship first — no proof-of-work is spent until then.');
       return;
     }
+    // Already have a live reaction of this emoji — the node would reject a
+    // stack (one live reaction per emoji, 5-day decay), so don't waste PoW.
+    if (reactions?.userReactions?.includes(REACTION_CODE_MAP[type])) {
+      info('You already reacted with this emoji — it stays live for 5 days.');
+      return;
+    }
     inFlightRef.current = true;
     setBusy(true);
     try {
