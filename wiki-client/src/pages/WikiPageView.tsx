@@ -4,14 +4,16 @@
  */
 
 import { useParams, Link } from 'react-router-dom';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useWikiPage } from '../hooks/useWikiPage';
 import { useWikiNamespaces } from '../hooks/useWikiNamespaces';
 import { usePageEngagement } from '../hooks/usePageEngagement';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { useIsSponsored } from '../hooks/useIsSponsored';
+import { useRpc } from '../hooks/useRpc';
 import { renderMarkdown } from '../lib/markdown';
 import { parseWikiLinks } from '../lib/wikilinks';
+import { markMediaImages, resolveMediaImages } from '../lib/mediaImages';
 import { extractTableOfContents } from '../lib/toc';
 import { ReportModal, ReportButton, SpamBadge } from '../components/ReportModal';
 import type { TableOfContentsItem } from '../types/wiki';
@@ -61,8 +63,28 @@ export function WikiPageView(): JSX.Element {
   const { namespaceId, pageId } = useParams<{ namespaceId: string; pageId: string }>();
   const { data: page, loading, error } = useWikiPage(pageId ?? null);
   const { data: namespaces } = useWikiNamespaces();
+  const { rpc } = useRpc();
   const [activeTocId] = useState<string | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
+
+  // Container for the rendered page body, so we can resolve node-hosted images in it.
+  const contentRef = useRef<HTMLDivElement>(null);
+  // Fetch image bytes from the node's blob store and return a data: URL (get_media has
+  // no HTTP route). Used to resolve `![alt](swim:<hash>)` images in page content.
+  const getMediaUrl = useCallback(
+    async (hash: string): Promise<string | null> => {
+      if (!rpc) return null;
+      try {
+        const r = await rpc.call<{ media_type: string; data: string }>('get_media', {
+          media_hash: hash,
+        });
+        return `data:${r.media_type};base64,${r.data}`;
+      } catch {
+        return null;
+      }
+    },
+    [rpc],
+  );
 
   // "Keep alive" engagement — resets the page's decay (SPEC_02).
   const { engage, engaging } = usePageEngagement();
@@ -96,11 +118,22 @@ export function WikiPageView(): JSX.Element {
     // Step 2: Convert [[wiki links]] to anchors (no existing pages list yet)
     const htmlWithLinks = parseWikiLinks(rawHtml, []);
 
-    // Step 3: Extract table of contents from rendered HTML
-    const tocItems = extractTableOfContents(htmlWithLinks);
+    // Step 3: Rewrite node-media images (`swim:<hash>`) so they resolve via get_media
+    // once mounted, instead of the browser trying to load an unloadable ref.
+    const htmlWithMedia = markMediaImages(htmlWithLinks);
 
-    return { renderedHtml: htmlWithLinks, toc: tocItems };
+    // Step 4: Extract table of contents from rendered HTML
+    const tocItems = extractTableOfContents(htmlWithMedia);
+
+    return { renderedHtml: htmlWithMedia, toc: tocItems };
   }, [page?.content]);
+
+  // Resolve node-hosted images (data-swim) by fetching their bytes via get_media.
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container || !rpc) return;
+    resolveMediaImages(container, getMediaUrl).catch(() => {});
+  }, [renderedHtml, rpc, getMediaUrl]);
 
   // Decay status
   const decay = page ? decayInfo(page.decayProbability) : null;
@@ -205,6 +238,7 @@ export function WikiPageView(): JSX.Element {
 
             {/* Rendered page content */}
             <div
+              ref={contentRef}
               className="wiki-page-content"
               dangerouslySetInnerHTML={{ __html: renderedHtml }}
             />

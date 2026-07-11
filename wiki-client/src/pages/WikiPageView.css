@@ -93,3 +93,11 @@
 .wiki-engage-btn:hover:not(:disabled) { background: rgba(88, 101, 242, 0.1); }
 .wiki-engage-btn:disabled { opacity: 0.6; cursor: default; }
 .wiki-engage-msg { font-size: 0.8rem; color: var(--text-muted, #949ba4); }
+
+/* Node-hosted images embedded in page content (![alt](swim:<hash>)). */
+.wiki-page-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.5rem 0;
+}
