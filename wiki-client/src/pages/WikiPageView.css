@@ -78,3 +78,18 @@
 .wiki-link-missing:hover {
   text-decoration: underline;
 }
+
+/* "Keep alive" engagement button */
+.wiki-engage-btn {
+  padding: 2px 10px;
+  border: 1px solid var(--accent, #5865f2);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--accent, #5865f2);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.wiki-engage-btn:hover:not(:disabled) { background: rgba(88, 101, 242, 0.1); }
+.wiki-engage-btn:disabled { opacity: 0.6; cursor: default; }
+.wiki-engage-msg { font-size: 0.8rem; color: var(--text-muted, #949ba4); }

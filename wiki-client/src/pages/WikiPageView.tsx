@@ -7,6 +7,9 @@ import { useParams, Link } from 'react-router-dom';
 import { useMemo, useState } from 'react';
 import { useWikiPage } from '../hooks/useWikiPage';
 import { useWikiNamespaces } from '../hooks/useWikiNamespaces';
+import { usePageEngagement } from '../hooks/usePageEngagement';
+import { useNodeIdentity } from '../hooks/useNodeIdentity';
+import { useIsSponsored } from '../hooks/useIsSponsored';
 import { renderMarkdown } from '../lib/markdown';
 import { parseWikiLinks } from '../lib/wikilinks';
 import { extractTableOfContents } from '../lib/toc';
@@ -60,6 +63,22 @@ export function WikiPageView(): JSX.Element {
   const { data: namespaces } = useWikiNamespaces();
   const [activeTocId] = useState<string | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
+
+  // "Keep alive" engagement — resets the page's decay (SPEC_02).
+  const { engage, engaging } = usePageEngagement();
+  const { identity, sign } = useNodeIdentity();
+  const isSponsored = useIsSponsored();
+  const [engageMsg, setEngageMsg] = useState<string | null>(null);
+  const handleEngage = async () => {
+    setEngageMsg(null);
+    if (!pageId || !identity?.publicKey) return;
+    if (isSponsored === false) {
+      setEngageMsg('You need a sponsor before you can engage.');
+      return;
+    }
+    const ok = await engage(pageId, identity.publicKey, sign);
+    setEngageMsg(ok ? 'Kept alive! Decay reset.' : 'Engagement failed — try again.');
+  };
 
   // Find namespace name
   const namespaceName = useMemo(() => {
@@ -154,6 +173,16 @@ export function WikiPageView(): JSX.Element {
                   {decay.label}: {decay.text} alive
                 </span>
               )}
+              <button
+                type="button"
+                className="wiki-engage-btn"
+                onClick={handleEngage}
+                disabled={engaging}
+                title="Engage to reset this page's decay and keep it alive"
+              >
+                {engaging ? 'Keeping alive…' : '♥ Keep alive'}
+              </button>
+              {engageMsg && <span className="wiki-engage-msg">{engageMsg}</span>}
               {pageId && <SpamBadge contentId={pageId} />}
               <ReportButton onReport={() => setShowReportModal(true)} />
             </div>
