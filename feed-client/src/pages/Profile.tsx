@@ -64,11 +64,13 @@ export function ProfilePage(): JSX.Element {
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
 
-  // Refs for data needed after PoW completes
+  // Refs for data needed after PoW completes.
+  // postBody is the EXACT body that was mined over — the PoW challenge binds
+  // to the content, so submission must send these same bytes (mining over
+  // profile text but submitting avatar+text made the node reject with
+  // 'PoW verification failed' whenever an avatar was set).
   const pendingProfileRef = useRef<{
-    profileInfo: ProfileInfo;
-    avatarContentId?: string;
-    avatarFormat?: string;
+    postBody: string;
   } | null>(null);
   const submittedRef = useRef(false);
 
@@ -173,15 +175,22 @@ export function ProfilePage(): JSX.Element {
         }
       }
 
-      // Store data for use after mining completes
-      pendingProfileRef.current = {
-        profileInfo,
-        avatarContentId,
-        avatarFormat,
-      };
+      // Build the FINAL post body (avatar section included) BEFORE mining —
+      // the PoW binds to the content, so what we mine must be what we submit.
+      let postBody = encodeProfileInfo(profileInfo);
+      if (avatarContentId && avatarFormat) {
+        const avatarInfo = encodeAvatarInfo({
+          contentId: avatarContentId,
+          format: avatarFormat,
+          updatedAt: Date.now(),
+        });
+        postBody = `${avatarInfo}\n---\n${postBody}`;
+      }
 
-      // Build content for PoW (profile info as the "post" content)
-      const content = encodeProfileInfo(profileInfo);
+      // Store the exact mined body for submission after mining completes
+      pendingProfileRef.current = { postBody };
+
+      const content = postBody;
 
       // Convert hex public key to Uint8Array
       const publicKeyBytes = new Uint8Array(
@@ -222,25 +231,11 @@ export function ProfilePage(): JSX.Element {
         return sign(message);
       };
 
-      // Build the post body combining avatar and profile info
-      // For profile space, we post info as the body (no title needed)
-      let postBody = encodeProfileInfo(pending.profileInfo);
-
-      // If we have an avatar, include it in the profile info
-      if (pending.avatarContentId && pending.avatarFormat) {
-        const avatarInfo = encodeAvatarInfo({
-          contentId: pending.avatarContentId,
-          format: pending.avatarFormat,
-          updatedAt: Date.now(),
-        });
-        // Combine avatar and profile info (avatar first, then profile)
-        postBody = `${avatarInfo}\n---\n${postBody}`;
-      }
-
+      // Submit the EXACT body that was mined over (PoW binds to content).
       const result = await submitPost(
         profileSpaceId,
         '', // No title for profile posts
-        postBody,
+        pending.postBody,
         myPk,
         asyncSign,
         powParams,
