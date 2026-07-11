@@ -5,7 +5,7 @@
  * Includes sorting options, search, and the create post FAB.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { FeedList } from '../components/FeedList';
 import { CreatePostFAB } from '../components/CreatePostFAB';
 import { SearchBar } from '../components/SearchBar';
@@ -34,10 +34,23 @@ export function Feed(): JSX.Element {
   } = useFeed({ sortOrder, filter, searchQuery });
 
   const {
+    preferences,
+    loading: prefsLoading,
     savePost,
     unsavePost,
     savedPostIds,
   } = useFeedPreferences();
+
+  // Apply the saved "Default Sort Order" once preferences load (before the user
+  // touches the Recent/Hot tabs). Without this the setting was inert — the feed
+  // always opened on 'recent'.
+  const appliedDefaultSort = useRef(false);
+  useEffect(() => {
+    if (!prefsLoading && !appliedDefaultSort.current) {
+      appliedDefaultSort.current = true;
+      setSortOrder(preferences.sortOrder);
+    }
+  }, [prefsLoading, preferences.sortOrder]);
 
   const handleSavePost = useCallback((postId: string) => {
     savePost(postId);
@@ -152,6 +165,7 @@ export function Feed(): JSX.Element {
           onUnsavePost={handleUnsavePost}
           savedPosts={savedPostIds}
           emptyStateType={emptyStateType}
+          compact={preferences.compactMode}
         />
       </main>
 

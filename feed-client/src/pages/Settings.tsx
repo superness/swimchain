@@ -79,23 +79,6 @@ export function Settings(): JSX.Element {
 
             <div className="settings-item">
               <div className="settings-item__info">
-                <label htmlFor="show-engagements" className="settings-item__label">Show Engagement Activity</label>
-                <p className="settings-item__description">Show when people react to posts</p>
-              </div>
-              <label className="settings-toggle">
-                <input
-                  id="show-engagements"
-                  type="checkbox"
-                  checked={preferences.showEngagementsInFeed}
-                  onChange={(e) => handleToggle('showEngagementsInFeed', e.target.checked)}
-                  disabled={loading}
-                />
-                <span className="settings-toggle__slider" />
-              </label>
-            </div>
-
-            <div className="settings-item">
-              <div className="settings-item__info">
                 <span className="settings-item__label">Default Sort Order</span>
                 <p className="settings-item__description">How posts are sorted when you open the feed</p>
               </div>

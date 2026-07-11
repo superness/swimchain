@@ -295,9 +295,14 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
         activeSources.users
       );
 
-      // Filter out blocked content and blocked authors
+      // Filter out blocked content/authors, and — unless "Show Replies in Feed" is
+      // on — reply items (the feed fetches posts + replies together; without this the
+      // toggle did nothing and replies always showed).
       const unblockedItems = filterBlocked(
-        allItems.filter(item => !isSpaceBlocked(item.spaceId)),
+        allItems.filter(item =>
+          !isSpaceBlocked(item.spaceId) &&
+          (preferences.showRepliesInFeed || item.type !== 'reply')
+        ),
         'post',
         { alsoFilterByAuthor: true }
       );
@@ -321,7 +326,7 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [connected, prefsLoading, activeSources, fetchFromSources, sortOrder, filterBlocked, isSpaceBlocked]);
+  }, [connected, prefsLoading, activeSources, fetchFromSources, sortOrder, preferences.showRepliesInFeed, filterBlocked, isSpaceBlocked]);
 
   /**
    * Load more items (pagination)
