@@ -53,6 +53,30 @@ export interface AvatarInfo {
 }
 
 /**
+ * Poster reputation summary (SPEC_12 §3.4/§4.5).
+ *
+ * A public, informational trust signal derived from community spam attestations
+ * and time-based recovery. It carries NO protocol privileges — a high score never
+ * makes posting cheaper or content longer-lived; it only reflects standing.
+ */
+export interface Reputation {
+  /** Reputation score (base 100; decays on spam flags, recovers over time) */
+  score: number;
+  /** Effect tier name (Trusted / Normal / Watched / Restricted / Untrusted) */
+  effect: string;
+  /** Display badge for the effect tier */
+  badge: string;
+  /** Identity age in days */
+  ageDays: number;
+  /** Net spam flags received (received minus countered) */
+  netSpamFlags: number;
+  /** Whether the identity has any illegal-content flags */
+  hasIllegalFlags: boolean;
+  /** Total posts created */
+  totalPosts: number;
+}
+
+/**
  * Full user profile (combined info + avatar)
  */
 export interface UserProfile {
@@ -64,6 +88,8 @@ export interface UserProfile {
   info: ProfileInfo | null;
   /** Avatar information */
   avatar: AvatarInfo | null;
+  /** Poster reputation (trust signal), null when unavailable */
+  reputation: Reputation | null;
   /** Whether this profile exists on-chain */
   exists: boolean;
 }
@@ -207,6 +233,26 @@ export function createEmptyProfile(userPk: string): UserProfile {
     profileSpaceId: getProfileSpaceId(userPk),
     info: null,
     avatar: null,
+    reputation: null,
     exists: false,
+  };
+}
+
+/**
+ * Parse a reputation object from a get_user_profile RPC response.
+ * Returns null if the field is absent or malformed.
+ */
+export function parseReputation(raw: unknown): Reputation | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.score !== 'number') return null;
+  return {
+    score: r.score,
+    effect: typeof r.effect === 'string' ? r.effect : 'Normal',
+    badge: typeof r.badge === 'string' ? r.badge : '',
+    ageDays: typeof r.age_days === 'number' ? r.age_days : 0,
+    netSpamFlags: typeof r.net_spam_flags === 'number' ? r.net_spam_flags : 0,
+    hasIllegalFlags: r.has_illegal_flags === true,
+    totalPosts: typeof r.total_posts === 'number' ? r.total_posts : 0,
   };
 }

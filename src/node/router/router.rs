@@ -36,6 +36,7 @@ use crate::network::messages::{
 };
 use crate::node::peer_connections::PeerConnectionPool;
 use crate::node::{BehavioralBranchingMode, NodeMetrics};
+use crate::reputation::ReputationStore;
 use crate::spam_attestation::{
     aggregate_attestations, validate_attestation, CounterAttestation, CounterAttestationState,
     SpamAttestation, SpamAttestationStore, StoredSpamAttestation,
@@ -207,6 +208,9 @@ pub struct MessageRouter {
 
     /// Spam attestation store for community flagging (SPEC_12 §3)
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5). Fed from the
+    /// attestation-processing path when spam thresholds are reached/cleared.
+    reputation_store: Option<Arc<ReputationStore>>,
     membership_store: Option<Arc<crate::storage::membership::MembershipStore>>,
     /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
     /// Used to recognize DM requests addressed to us.
@@ -272,6 +276,7 @@ impl MessageRouter {
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            reputation_store: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
@@ -316,6 +321,7 @@ impl MessageRouter {
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            reputation_store: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
@@ -6723,6 +6729,23 @@ impl MessageRouter {
         // In production, this would be looked up from the chain
         let sponsor_tree_root = attestation.attester;
 
+        // Snapshot whether this content was already flagged BEFORE this attestation,
+        // so the author's reputation is penalized only on the first threshold crossing.
+        let counter_state_pre = store
+            .get_counter_state(&attestation.content_hash)
+            .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+        let was_flagged = {
+            let prior = store
+                .get_attestations_for_content(&attestation.content_hash)
+                .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+            aggregate_attestations(
+                attestation.content_hash,
+                &prior,
+                counter_state_pre.is_cleared,
+            )
+            .should_accelerate_decay
+        };
+
         // Store the attestation
         let stored = StoredSpamAttestation {
             attestation: attestation.clone(),
@@ -6748,6 +6771,10 @@ impl MessageRouter {
         );
 
         if aggregation.should_accelerate_decay {
+            // First crossing: decay the content author's identity-level reputation.
+            if !was_flagged {
+                self.record_spam_flag_for_content(&attestation.content_hash, current_time);
+            }
             info!(
                 "[SPAM] Content {} flagged by {} independent trees (threshold reached)",
                 hex::encode(&attestation.content_hash[..8]),
@@ -6817,6 +6844,9 @@ impl MessageRouter {
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
         if threshold_reached {
+            // Spam flag cleared: credit the content author's reputation with fast
+            // recovery (SPEC_12 §4.5). Only on the crossing.
+            self.record_counter_for_content(&counter.content_hash, counter.timestamp);
             info!(
                 "[SPAM] Content {} cleared by {} counter-attestations",
                 hex::encode(&counter.content_hash[..8]),
@@ -6832,6 +6862,42 @@ impl MessageRouter {
         }
 
         Ok(None)
+    }
+
+    /// Decay the reputation of the author of `content_hash` on a spam-flag threshold
+    /// crossing (SPEC_12 §3.4). Resolves the author via the content store; a no-op if
+    /// either store is unavailable or the content is not held locally. Reputation is
+    /// only ever LOWERED here — it grants no protocol privileges.
+    pub(crate) fn record_spam_flag_for_content(&self, content_hash: &[u8; 32], timestamp: u64) {
+        let (rep_store, content_store) = match (&self.reputation_store, &self.content_store) {
+            (Some(r), Some(c)) => (r, c),
+            _ => return,
+        };
+        let content_id = crate::types::content::ContentId::from_bytes(*content_hash);
+        let author = match content_store.get(&content_id) {
+            Ok(Some(item)) => item.author_id.0,
+            _ => return,
+        };
+        if let Err(e) = rep_store.record_spam_flag(&author, timestamp) {
+            warn!("[REPUTATION] Failed to record spam flag: {}", e);
+        }
+    }
+
+    /// Credit fast reputation recovery to the author of `content_hash` when its spam
+    /// flag is cleared by counter-attestations (SPEC_12 §4.5). No-op if unavailable.
+    pub(crate) fn record_counter_for_content(&self, content_hash: &[u8; 32], timestamp: u64) {
+        let (rep_store, content_store) = match (&self.reputation_store, &self.content_store) {
+            (Some(r), Some(c)) => (r, c),
+            _ => return,
+        };
+        let content_id = crate::types::content::ContentId::from_bytes(*content_hash);
+        let author = match content_store.get(&content_id) {
+            Ok(Some(item)) => item.author_id.0,
+            _ => return,
+        };
+        if let Err(e) = rep_store.record_counter(&author, timestamp) {
+            warn!("[REPUTATION] Failed to record counter recovery: {}", e);
+        }
     }
 
     // ========== Sponsorship Offer Handlers (SPEC_11 §3.11) ==========
@@ -7727,6 +7793,7 @@ pub struct MessageRouterBuilder {
     content_store: Option<Arc<PersistentContentStore>>,
     block_builder: Option<Arc<RwLock<crate::blocks::builder::BlockBuilder>>>,
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    reputation_store: Option<Arc<ReputationStore>>,
     membership_store: Option<Arc<crate::storage::membership::MembershipStore>>,
     /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
     /// Used to recognize DM requests addressed to us.
@@ -7762,6 +7829,7 @@ impl MessageRouterBuilder {
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            reputation_store: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
@@ -7879,6 +7947,12 @@ impl MessageRouterBuilder {
         self
     }
 
+    /// Set the identity-level poster reputation store (SPEC_12 §3.4/§4.5)
+    pub fn reputation_store(mut self, store: Arc<ReputationStore>) -> Self {
+        self.reputation_store = Some(store);
+        self
+    }
+
     /// Set the membership store for private-space / DM request handling (SPEC_11)
     pub fn membership_store(
         mut self,
@@ -7985,6 +8059,7 @@ impl MessageRouterBuilder {
             content_store: self.content_store,
             block_builder: self.block_builder,
             spam_attestation_store: self.spam_attestation_store,
+            reputation_store: self.reputation_store,
             membership_store: self.membership_store,
             identity_pubkey: self.identity_pubkey,
             hole_punch_tx: self.hole_punch_tx,
@@ -8023,6 +8098,7 @@ impl MessageRouterBuilder {
             content_store: self.content_store,
             block_builder: self.block_builder,
             spam_attestation_store: self.spam_attestation_store,
+            reputation_store: self.reputation_store,
             membership_store: self.membership_store,
             identity_pubkey: self.identity_pubkey,
             hole_punch_tx: self.hole_punch_tx,

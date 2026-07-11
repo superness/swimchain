@@ -22,6 +22,7 @@ use crate::discovery::peer_branches::PeerBranchTracker;
 use crate::discovery::PeerStore;
 use crate::engagement_graph::EngagementGraphStore;
 use crate::identity::KeyPair;
+use crate::reputation::ReputationStore;
 use crate::rpc::{NodeRef, RpcMethods, RpcServer, RpcServerConfig};
 use crate::spam_attestation::SpamAttestationStore;
 use crate::sponsorship::storage::SponsorshipStore;
@@ -94,6 +95,8 @@ pub struct NodeManager {
     dht: Option<Arc<DhtManager>>,
     aggregation_cache: Option<Arc<AggregationCache>>,
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5).
+    reputation_store: Option<Arc<ReputationStore>>,
     membership_store: Option<Arc<MembershipStore>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     offer_store: Option<Arc<crate::sponsorship::offer_store::OfferStore>>,
@@ -165,6 +168,7 @@ impl NodeManager {
             dht: None,
             aggregation_cache: None,
             spam_attestation_store: None,
+            reputation_store: None,
             membership_store: None,
             sponsorship_store: None,
             offer_store: None,
@@ -544,6 +548,24 @@ impl NodeManager {
             }
         }
 
+        // 4.5.3a. Initialize identity-level poster reputation store (SPEC_12 §3.4/§4.5).
+        // Fed from the attestation-processing path: when community spam attestations
+        // reach threshold, the content author's reputation decays; it recovers over
+        // time and on counter-attestation. Reputation is informational/defensive only —
+        // it never reduces PoW cost, extends decay, or raises rate limits.
+        let reputation_path = self.config.data_dir.join("reputation");
+        std::fs::create_dir_all(&reputation_path).ok();
+        match crate::storage::open_db(&reputation_path) {
+            Ok(reputation_db) => {
+                let reputation_store = Arc::new(ReputationStore::open(reputation_db));
+                self.reputation_store = Some(reputation_store);
+                info!("[REPUTATION] Poster reputation store initialized");
+            }
+            Err(e) => {
+                warn!("[REPUTATION] Failed to open reputation database: {}", e);
+            }
+        }
+
         // Wrap decay_integration in Arc after spam store is wired
         let decay_integration = Arc::new(decay_integration);
         self.decay_integration = Some(decay_integration.clone());
@@ -844,6 +866,9 @@ impl NodeManager {
         }
         if let Some(ref spam_store) = self.spam_attestation_store {
             router_builder = router_builder.spam_attestation_store(spam_store.clone());
+        }
+        if let Some(ref reputation_store) = self.reputation_store {
+            router_builder = router_builder.reputation_store(reputation_store.clone());
         }
         if let Some(ref membership_store) = self.membership_store {
             router_builder = router_builder.membership_store(membership_store.clone());
@@ -1642,6 +1667,7 @@ impl NodeManager {
             dht: self.dht.clone(),
             aggregation_cache: self.aggregation_cache.clone(),
             spam_attestation_store: self.spam_attestation_store.clone(),
+            reputation_store: self.reputation_store.clone(),
             membership_store: self.membership_store.clone(),
             sponsorship_store: self.sponsorship_store.clone(),
             offer_store: self.offer_store.clone(),

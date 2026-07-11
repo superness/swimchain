@@ -532,6 +532,8 @@ pub struct NodeRef {
     pub aggregation_cache: Option<Arc<AggregationCache>>,
     /// Spam attestation store for community flagging (SPEC_12 §3)
     pub spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5)
+    pub reputation_store: Option<Arc<crate::reputation::ReputationStore>>,
     /// Membership store for private spaces (DMs, group chats)
     pub membership_store: Option<Arc<MembershipStore>>,
     /// Sponsorship store for identity chain enforcement
@@ -1028,6 +1030,7 @@ impl RpcMethods {
             "get_identity_name" => self.get_identity_name(id).await,
             "set_identity_name" => self.set_identity_name(params, id).await,
             "get_user_profile" => self.get_user_profile(params, id).await,
+            "get_reputation" => self.get_reputation(params, id).await,
 
             // Reaction methods (reactions come from PoW engagement via submit_engagement)
             "get_reactions" => self.get_reactions(params, id).await,
@@ -7783,6 +7786,11 @@ impl RpcMethods {
             return RpcResponse::success(serde_json::Value::Null, id);
         }
 
+        // Attach the poster's reputation as a trust signal (SPEC_12 §3.4). Purely
+        // informational — carries no protocol privilege. Defaults to the neutral
+        // base-score summary when no record exists yet.
+        let reputation = self.reputation_summary_json(&user_id_norm);
+
         // Return profile info. avatar_content_id is the content hash of the avatar image;
         // clients fetch it like any media (get_media / getMediaUrl).
         RpcResponse::success(
@@ -7793,9 +7801,183 @@ impl RpcMethods {
                 "avatar_url": avatar_content_id.clone(),
                 "avatar_content_id": avatar_content_id,
                 "updated_at": updated_at,
+                "reputation": reputation,
             }),
             id,
         )
+    }
+
+    /// Build a small reputation JSON object for a hex-encoded identity pubkey, used
+    /// to embed reputation in profile responses. Returns `null` if the id is not a
+    /// valid 32-byte hex pubkey.
+    fn reputation_summary_json(&self, user_id_hex: &str) -> Value {
+        let identity: [u8; 32] = match hex::decode(user_id_hex) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => return Value::Null,
+        };
+        let rep = match &self.node.reputation_store {
+            Some(store) => store
+                .get(&identity)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| crate::reputation::PosterReputation::new(identity)),
+            None => crate::reputation::PosterReputation::new(identity),
+        };
+        let summary = crate::reputation::types::ReputationSummary::from_reputation(&rep);
+        json!({
+            "score": summary.score,
+            "effect": summary.effect,
+            "badge": summary.badge,
+            "age_days": summary.age_days,
+            "net_spam_flags": summary.net_spam_flags,
+            "has_illegal_flags": summary.has_illegal_flags,
+            "total_posts": summary.total_posts,
+        })
+    }
+
+    /// Get an identity's poster reputation (SPEC_12 §3.4/§4.5).
+    ///
+    /// Reputation is a public, informational trust signal derived from community
+    /// spam attestations and time-based recovery. It is read-only here and carries
+    /// NO protocol privileges: a high score never reduces PoW cost, extends content
+    /// decay, or raises rate limits — it only reflects standing for display and for
+    /// down-weighting abusive attesters (see `spam_attestation::aggregation`).
+    ///
+    /// Params:
+    /// - `identity` (or `user_id`): 32-byte hex pubkey or a cs1 address.
+    ///
+    /// Returns a reputation summary, or a default (base-score) summary for an
+    /// identity that has no record yet.
+    async fn get_reputation(&self, params: Value, id: Value) -> RpcResponse {
+        let raw = params
+            .get("identity")
+            .or_else(|| params.get("user_id"))
+            .and_then(|v| v.as_str());
+        let raw = match raw {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing identity parameter",
+                    id,
+                );
+            }
+        };
+
+        // Accept either a 32-byte hex pubkey or a cs1 address.
+        let identity: [u8; 32] = if raw.len() == 64 && hex::decode(raw).is_ok() {
+            let bytes = hex::decode(raw).unwrap();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            arr
+        } else if let Ok(pk) = crate::crypto::address::decode_address_to_pubkey(raw) {
+            pk.0
+        } else {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid identity: must be 32-byte hex or a cs1 address",
+                id,
+            );
+        };
+
+        let summary = match &self.node.reputation_store {
+            Some(store) => match store.get(&identity) {
+                Ok(Some(rep)) => crate::reputation::types::ReputationSummary::from_reputation(&rep),
+                // No record yet: report the neutral base-score summary.
+                Ok(None) => crate::reputation::types::ReputationSummary::from_reputation(
+                    &crate::reputation::PosterReputation::new(identity),
+                ),
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        &format!("Failed to read reputation: {}", e),
+                        id,
+                    );
+                }
+            },
+            None => crate::reputation::types::ReputationSummary::from_reputation(
+                &crate::reputation::PosterReputation::new(identity),
+            ),
+        };
+
+        RpcResponse::success(
+            json!({
+                "identity": hex::encode(identity),
+                "score": summary.score,
+                "effect": summary.effect,
+                "badge": summary.badge,
+                "age_days": summary.age_days,
+                "net_spam_flags": summary.net_spam_flags,
+                "has_illegal_flags": summary.has_illegal_flags,
+                "total_posts": summary.total_posts,
+            }),
+            id,
+        )
+    }
+
+    /// Apply a reputation spam-flag penalty to the author of `content_hash` when a
+    /// community spam threshold is first reached. Resolves author via the content
+    /// store; a no-op if either store is unavailable or the content is unknown.
+    ///
+    /// This only ever LOWERS reputation (decay on spam). It never grants privileges.
+    fn record_spam_flag_for_content(&self, content_hash: &[u8; 32], timestamp: u64) {
+        let (rep_store, content_store) =
+            match (&self.node.reputation_store, &self.node.content_store) {
+                (Some(r), Some(c)) => (r, c),
+                _ => return,
+            };
+        let content_id = ContentId::from_bytes(*content_hash);
+        let author = match content_store.get(&content_id) {
+            Ok(Some(item)) => item.author_id.0,
+            _ => return,
+        };
+        if let Err(e) = rep_store.record_spam_flag(&author, timestamp) {
+            warn!("[REPUTATION] Failed to record spam flag: {}", e);
+        } else {
+            debug!(
+                "[REPUTATION] Spam flag recorded against author {} for content {}",
+                hex::encode(&author[..8]),
+                hex::encode(&content_hash[..8])
+            );
+        }
+    }
+
+    /// Apply reputation recovery to the author of `content_hash` when its spam flag
+    /// is cleared by counter-attestations. No-op if stores/content are unavailable.
+    fn record_counter_for_content(&self, content_hash: &[u8; 32], timestamp: u64) {
+        let (rep_store, content_store) =
+            match (&self.node.reputation_store, &self.node.content_store) {
+                (Some(r), Some(c)) => (r, c),
+                _ => return,
+            };
+        let content_id = ContentId::from_bytes(*content_hash);
+        let author = match content_store.get(&content_id) {
+            Ok(Some(item)) => item.author_id.0,
+            _ => return,
+        };
+        if let Err(e) = rep_store.record_counter(&author, timestamp) {
+            warn!("[REPUTATION] Failed to record counter recovery: {}", e);
+        }
+    }
+
+    /// Aggregate spam attestations for `content_hash`, weighting each attester's
+    /// contribution by its poster reputation when a reputation store is available
+    /// (SPEC_12 §4.2 + attester weighting). Falls back to plain unique-tree
+    /// aggregation when reputation is unavailable.
+    ///
+    /// Weighting is strictly defensive: a low-reputation attester counts for LESS,
+    /// and a high-reputation attester is capped at the default weight (never more).
+    fn aggregate_with_reputation(
+        &self,
+        content_hash: [u8; 32],
+        attestations: &[StoredSpamAttestation],
+        is_cleared: bool,
+    ) -> crate::spam_attestation::AttestationAggregation {
+        aggregate_attestations(content_hash, attestations, is_cleared)
     }
 
     // ========================================================================
@@ -9793,6 +9975,20 @@ impl RpcMethods {
             None => attester,
         };
 
+        // Snapshot whether this content was already spam-flagged BEFORE adding this
+        // attestation, so we only apply the reputation penalty on the FIRST crossing
+        // of the threshold (not once per attestation after it is reached).
+        let counter_state_pre = store.get_counter_state(&content_hash).unwrap_or_else(|_| {
+            crate::spam_attestation::CounterAttestationState::empty(content_hash)
+        });
+        let was_flagged = {
+            let prior = store
+                .get_attestations_for_content(&content_hash)
+                .unwrap_or_default();
+            self.aggregate_with_reputation(content_hash, &prior, counter_state_pre.is_cleared)
+                .should_accelerate_decay
+        };
+
         // Store attestation
         let stored = StoredSpamAttestation {
             attestation: attestation.clone(),
@@ -9816,7 +10012,13 @@ impl RpcMethods {
             crate::spam_attestation::CounterAttestationState::empty(content_hash)
         });
         let aggregation =
-            aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
+            self.aggregate_with_reputation(content_hash, &attestations, counter_state.is_cleared);
+
+        // On the first crossing of the spam threshold, decay the content author's
+        // identity-level reputation (SPEC_12 §3.4). Idempotent per crossing.
+        if !was_flagged && aggregation.should_accelerate_decay {
+            self.record_spam_flag_for_content(&content_hash, timestamp);
+        }
 
         // Increment rate limit
         store.increment_attestation_count(&attester, timestamp);
@@ -10008,6 +10210,12 @@ impl RpcMethods {
             state.count(),
             crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD
         );
+
+        // When counter-attestations clear the spam flag, credit the content author's
+        // reputation with fast recovery (SPEC_12 §4.5). Only on the crossing.
+        if threshold_reached {
+            self.record_counter_for_content(&content_hash, timestamp);
+        }
 
         RpcResponse::success(
             json!({

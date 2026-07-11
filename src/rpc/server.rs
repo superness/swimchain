@@ -473,6 +473,7 @@ async fn handle_request(
         "get_identity_level",
         "get_identity_name",
         "get_user_profile",
+        "get_reputation", // public trust signal (SPEC_12 §3.4), read-only
         // Sponsorship actions - these contain verifiable signatures in params
         "create_sponsorship_offer",
         "cancel_sponsorship_offer",

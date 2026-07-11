@@ -13,6 +13,7 @@ import {
   AvatarInfo,
   getProfileSpaceId,
   createEmptyProfile,
+  parseReputation,
 } from '../lib/profile';
 
 /** Cache profiles to avoid repeated fetches */
@@ -58,6 +59,7 @@ export function useUserProfile(userPk: string | undefined) {
         avatar_url?: string;
         avatar_content_id?: string;
         updated_at?: number;
+        reputation?: unknown;
       } | null;
 
       const info: ProfileInfo | null = res
@@ -78,6 +80,7 @@ export function useUserProfile(userPk: string | undefined) {
         profileSpaceId: getProfileSpaceId(pk),
         info,
         avatar,
+        reputation: parseReputation(res?.reputation),
         exists: !!res && (!!info?.displayName || !!info?.bio || !!info?.website || !!avatar),
       };
 
@@ -153,6 +156,7 @@ export function useUserProfiles(userPks: string[]) {
             avatar_url?: string;
             avatar_content_id?: string;
             updated_at?: number;
+            reputation?: unknown;
           } | null;
 
           const info: ProfileInfo | null = res
@@ -173,6 +177,7 @@ export function useUserProfiles(userPks: string[]) {
             profileSpaceId: getProfileSpaceId(pk),
             info,
             avatar,
+            reputation: parseReputation(res?.reputation),
             exists: !!res && (!!info?.displayName || !!info?.bio || !!info?.website || !!avatar),
           };
 
