@@ -190,7 +190,11 @@ export function ProfilePage(): JSX.Element {
       // Store the exact mined body for submission after mining completes
       pendingProfileRef.current = { postBody };
 
-      const content = postBody;
+      // The node reconstructs the PoW content as `${title}\n\n${body}`
+      // (submit_post), and profile posts have an empty title — mine over the
+      // same "\n\n"-prefixed string or the challenge hash won't match.
+      // (Same construction Compose uses for regular posts.)
+      const content = `\n\n${postBody}`;
 
       // Convert hex public key to Uint8Array
       const publicKeyBytes = new Uint8Array(
