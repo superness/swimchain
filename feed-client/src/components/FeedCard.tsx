@@ -5,7 +5,7 @@
  * engagement metrics, and action buttons.
  */
 
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import type { FeedItem, ReactionType } from '../types/feed';
 import { ImageGallery, ImageThumbnailIndicator } from './ImageGallery';
@@ -191,8 +191,12 @@ export function FeedCard({
   // Handle engagement PoW completion
   const pendingReactionRef = useRef<ReactionType | null>(null);
 
-  // Watch for engagement PoW completion and submit
-  useMemo(() => {
+  // Watch for engagement PoW completion and submit.
+  // MUST be useEffect, not useMemo: this block calls setState
+  // (setIsReacting/resetEngagementPow), and useMemo runs during render —
+  // setState-in-render is React error #301 (crashed on reacting when the
+  // PoW state hit the error/cancelled branch).
+  useEffect(() => {
     if (engagementPowState === 'complete' && engagementSolution && identity && sign) {
       const submitReaction = async () => {
         try {

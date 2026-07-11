@@ -20,6 +20,9 @@ function getStorageKey(userPkHex: string): string {
   return `${STORAGE_KEY_PREFIX}${userPkHex}`;
 }
 
+/** Same-document event fired whenever any hook instance saves preferences. */
+const PREFS_CHANGED_EVENT = 'swimchain:feed-preferences-changed';
+
 /**
  * Default preferences for new users
  */
@@ -160,10 +163,24 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
     setLoading(false);
   }, [prefsKey, identityLoading]);
 
+  // Cross-instance sync: each useFeedPreferences() call holds its own state,
+  // so Settings toggling "Compact Mode" never reached the Feed page's copy
+  // until an app restart. localStorage 'storage' events don't fire in the
+  // same document, so saves broadcast a custom event and every instance
+  // reloads.
+  useEffect(() => {
+    if (!prefsKey) return;
+    const onChanged = () => setPreferences(loadPreferences(prefsKey));
+    window.addEventListener(PREFS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(PREFS_CHANGED_EVENT, onChanged);
+  }, [prefsKey]);
+
   // Helper to save preferences
   const persist = useCallback((newPrefs: FeedPreferences) => {
     if (prefsKey) {
       savePreferences(prefsKey, newPrefs);
+      // Notify sibling hook instances (Feed page, nav, etc.) in this document.
+      window.dispatchEvent(new CustomEvent(PREFS_CHANGED_EVENT));
     } else {
       console.warn('[FeedPrefs] No identity or node address - cannot persist preferences');
     }
