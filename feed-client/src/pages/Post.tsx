@@ -6,7 +6,7 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext, stripTitleSeparator } from '../hooks/useRpc';
+import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext, stripTitleSeparator, useMediaUpload } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useBlocklist } from '../hooks/useBlocklist';
@@ -15,6 +15,7 @@ import { useSponsorship } from '../hooks/useSponsorship';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { PowProgress } from '../components/PowProgress';
 import { SpamBadge, ReportModal } from '../components/ReportModal';
+import { ImageGallery } from '../components/ImageGallery';
 import './Post.css';
 
 // Use the Reply type from types, but re-define for clarity in this component
@@ -185,6 +186,7 @@ export function Post(): JSX.Element {
 
   const { thread: post, loading, error, fetching } = useThread(postId || '');
   const { replies, loading: repliesLoading, fetching: repliesFetching, refetch: refetchReplies } = useReplies(postId || '');
+  const { getMediaUrl } = useMediaUpload();
 
   const { identity, hasValidIdentity, mode } = useIdentityContext();
   // Node-managed private-space crypto (desktop mode): encrypt/decrypt via the node.
@@ -470,6 +472,15 @@ export function Post(): JSX.Element {
               ? <em>🔒 Encrypted — decrypting…</em>
               : post.content}
         </div>
+
+        {/* Attached images (the detail page previously never rendered media) */}
+        {post.mediaRefs && post.mediaRefs.length > 0 && (
+          <ImageGallery
+            mediaRefs={post.mediaRefs}
+            thumbnailMode={false}
+            getMediaUrl={getMediaUrl}
+          />
+        )}
 
         <footer className="post-detail__footer">
           <button
