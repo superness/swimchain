@@ -839,6 +839,13 @@ pub struct SpaceSummary {
     /// app client (wiki-client, etc.) shows only spaces whose `app` equals its own.
     #[serde(default)]
     pub app: Option<String>,
+    /// True if this is a real public space (has an on-chain space block) whose NAME this
+    /// node hasn't learned yet — e.g. it synced the space from a peer but only the creator
+    /// had the name metadata. `name` is `null` in that case. The node does NOT auto-fetch
+    /// the name; a client may call `resolve_space_name` on demand to fill it in. `app` is
+    /// also unknown until the name resolves.
+    #[serde(default)]
+    pub name_unresolved: bool,
 }
 
 /// list_spaces result

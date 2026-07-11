@@ -567,6 +567,14 @@ pub struct NodeRef {
     /// by the (small) number of spaces. `space_id_16 -> (computed_at, count)`.
     pub space_count_cache:
         std::sync::Mutex<std::collections::HashMap<[u8; 16], (std::time::Instant, usize)>>,
+    /// Short-TTL cache of per-content reply counts. `count_all_replies` recursively walks a
+    /// post's ENTIRE reply subtree; the list endpoints call it once per item and the feed polls
+    /// them repeatedly, so an uncached read is O(items x reply-tree) of sled scanning — it
+    /// pegged every core on nodes that had synced a lot of content (the aggregation cache is
+    /// only populated for locally-submitted replies, not synced ones). `content_hash ->
+    /// (computed_at, count)`.
+    pub reply_count_cache:
+        std::sync::Mutex<std::collections::HashMap<[u8; 32], (std::time::Instant, usize)>>,
 }
 
 /// RPC method dispatcher
@@ -610,6 +618,36 @@ impl RpcMethods {
             .unwrap()
             .insert(*space_id_16, (std::time::Instant::now(), count));
         count
+    }
+
+    /// Per-content reply count (chain only) with a short-TTL cache. `count_all_replies`
+    /// recursively walks a post's whole reply subtree; the list endpoints need it per item and
+    /// the feed polls them repeatedly, so without a cache a single feed load is
+    /// O(items x reply-tree) of sled scanning — it pegged every core on nodes with a lot of
+    /// synced content. Mirrors [`Self::cached_space_content_count`]. Returns 0 when there is no
+    /// chain store. Callers add pending-mempool replies separately.
+    fn cached_reply_count(&self, content_hash: &[u8; 32]) -> u64 {
+        const COUNT_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+        {
+            let guard = self.node.reply_count_cache.lock().unwrap();
+            if let Some((at, count)) = guard.get(content_hash) {
+                if at.elapsed() < COUNT_TTL {
+                    return *count as u64;
+                }
+            }
+        }
+        let count = self
+            .node
+            .chain_store
+            .as_ref()
+            .and_then(|cs| cs.count_all_replies(content_hash).ok())
+            .unwrap_or(0);
+        self.node
+            .reply_count_cache
+            .lock()
+            .unwrap()
+            .insert(*content_hash, (std::time::Instant::now(), count));
+        count as u64
     }
 
     /// Gossip a *self-originated* action to peers with origin obfuscation
@@ -3933,13 +3971,8 @@ impl RpcMethods {
             let reply_count = {
                 let mut count = 0u64;
 
-                // Count ALL replies recursively from chain index
-                if let Some(ref chain_store) = self.node.chain_store {
-                    count += chain_store
-                        .count_all_replies(&content_hash)
-                        .map(|c| c as u64)
-                        .unwrap_or(0);
-                }
+                // Count ALL replies recursively from chain index (short-TTL cached)
+                count += self.cached_reply_count(&content_hash);
 
                 // Count pending replies from mempool (recursive)
                 if let Some(ref block_builder) = self.node.block_builder {
@@ -4271,13 +4304,8 @@ impl RpcMethods {
                 let reply_count = {
                     let mut count = 0u64;
 
-                    // Count ALL replies recursively from chain index
-                    if let Some(ref chain_store) = self.node.chain_store {
-                        count += chain_store
-                            .count_all_replies(&content_hash)
-                            .map(|c| c as u64)
-                            .unwrap_or(0);
-                    }
+                    // Count ALL replies recursively from chain index (short-TTL cached)
+                    count += self.cached_reply_count(&content_hash);
 
                     // Count pending replies from mempool (recursive)
                     if let Some(ref block_builder) = self.node.block_builder {
@@ -4909,6 +4937,12 @@ impl RpcMethods {
         let mut space_stats: HashMap<[u8; 16], (String, Option<String>, u64, u64, u64)> =
             HashMap::new();
         // space_id_16 -> (name, description, creator_timestamp, post_count, last_activity)
+        // Space ids that have an on-chain space block or CreateSpace action — i.e. real
+        // public spaces (not profile/derived spaces). Used to distinguish "public space we
+        // synced but haven't learned the name of yet" (expose as name_unresolved) from
+        // genuinely nameless system spaces (hide).
+        let mut has_space_block: std::collections::HashSet<[u8; 16]> =
+            std::collections::HashSet::new();
 
         // Source 0: Space blocks in the chain (spaces are on-chain, no content fetch needed)
         if let Some(ref chain_store) = self.node.chain_store {
@@ -4944,6 +4978,8 @@ impl RpcMethods {
                                         0, // post_count - will be calculated from content blocks
                                         root_block.timestamp, // last_activity from block
                                     ));
+                                    // Real public space (on-chain space block) — may need name resolution.
+                                    has_space_block.insert(space_16);
                                 }
                                 Ok(None) => {
                                     warn!(
@@ -5052,6 +5088,9 @@ impl RpcMethods {
                             0,                // post_count
                             action.timestamp, // last_activity
                         ));
+                        // Real public space (pending CreateSpace) — a placeholder name here
+                        // just means we don't have the name locally yet.
+                        has_space_block.insert(space_16);
                         log::debug!(
                             "[LIST_SPACES] Found pending CreateSpace in mempool for space {}",
                             hex::encode(&space_16[..4])
@@ -5090,16 +5129,22 @@ impl RpcMethods {
                             .unwrap_or(resolved_name)
                     };
 
-                    // Public browse shows ONLY real, named public spaces. Private channels and
-                    // DM spaces register with an EMPTY name (their real name is encrypted), and
-                    // profile/derived/unregistered spaces get an auto-generated "Space <8 hex>"
-                    // placeholder — hide all of those. (is_private alone is unreliable here:
-                    // block-sync re-registration can reset it.)
+                    // Private channels and DM spaces register with an EMPTY name (their real
+                    // name is encrypted) — always hide those. A "Space <8 hex>" placeholder
+                    // means we know the space id but not its name. If it's a real public space
+                    // (has an on-chain space block), we synced it from a peer but only the
+                    // creator had the name — expose it flagged `name_unresolved` so the CLIENT
+                    // can resolve it on demand (the node never auto-fetches). Otherwise
+                    // (profile/derived, no space block) hide it.
                     let trimmed = final_name.trim();
                     let is_placeholder = trimmed.len() == 14
                         && trimmed.starts_with("Space ")
                         && trimmed[6..].chars().all(|c| c.is_ascii_hexdigit());
-                    if trimmed.is_empty() || is_placeholder {
+                    if trimmed.is_empty() {
+                        return None;
+                    }
+                    let name_unresolved = is_placeholder;
+                    if is_placeholder && !has_space_block.contains(&space_id_16) {
                         return None;
                     }
 
@@ -5115,8 +5160,14 @@ impl RpcMethods {
                         } else {
                             None
                         },
-                        name: Some(final_name),
+                        // Unresolved spaces report a null name (client resolves on demand).
+                        name: if name_unresolved {
+                            None
+                        } else {
+                            Some(final_name)
+                        },
                         app,
+                        name_unresolved,
                     })
                 },
             )
@@ -5769,11 +5820,8 @@ impl RpcMethods {
                         let reply_count = {
                             let mut count = 0u64;
 
-                            // Count ALL replies recursively (including nested replies)
-                            count += chain_store
-                                .count_all_replies(&content_hash)
-                                .map(|c| c as u64)
-                                .unwrap_or(0);
+                            // Count ALL replies recursively (including nested replies), cached
+                            count += self.cached_reply_count(&content_hash);
 
                             // Count pending replies from mempool (recursive)
                             if let Some(ref block_builder) = self.node.block_builder {
@@ -6432,11 +6480,8 @@ impl RpcMethods {
                         let reply_count = {
                             let mut count = 0u64;
 
-                            // Count ALL replies recursively (including nested replies)
-                            count += chain_store
-                                .count_all_replies(&content_hash)
-                                .map(|c| c as u64)
-                                .unwrap_or(0);
+                            // Count ALL replies recursively (including nested replies), cached
+                            count += self.cached_reply_count(&content_hash);
 
                             // Count pending replies from mempool (recursive)
                             if let Some(ref block_builder) = self.node.block_builder {
@@ -6925,11 +6970,8 @@ impl RpcMethods {
                             ("active".to_string(), 1.0, false, None, None, created_at_ms)
                         };
 
-                        // Get reply count
-                        let reply_count = chain_store
-                            .count_all_replies(&content_hash)
-                            .map(|c| c as u64)
-                            .unwrap_or(0);
+                        // Get reply count (short-TTL cached)
+                        let reply_count = self.cached_reply_count(&content_hash);
 
                         // Get media_refs from content_store if available
                         let media_refs: Vec<MediaRefResult> =
