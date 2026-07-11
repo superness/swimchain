@@ -14,6 +14,7 @@ import { UserProfileModal } from './UserProfileModal';
 import { ReportModal, SpamBadge } from './ReportModal';
 import { useMediaUpload } from '../hooks/useRpc';
 import { useUserProfile } from '../hooks/useUserProfile';
+import { getAvatarColor } from '../lib/profile';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { useToast } from './Toast';
 import './FeedCard.css';
@@ -56,18 +57,6 @@ function getInitials(name?: string, address?: string): string {
     return address.substring(0, 2).toUpperCase();
   }
   return '??';
-}
-
-/**
- * Generate a consistent color from a string
- */
-function getAvatarColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) {
-    hash = id.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const hue = hash % 360;
-  return `hsl(${hue}, 60%, 45%)`;
 }
 
 /**
