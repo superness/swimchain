@@ -4529,7 +4529,16 @@ impl RpcMethods {
             };
 
             if let Some(entries) = tantivy_results {
-                // Convert Tantivy results to JSON response format
+                // Convert Tantivy results to JSON response format.
+                //
+                // SEARCH PARITY (SPEC_08 §5 / branch partitioning): the Tantivy
+                // index is a GLOBAL metadata index — it is fed from every synced
+                // content record regardless of branch subscription (see the
+                // DATA_CONTENT handler in node/router) and is never pruned when
+                // local blobs decay. Hits may therefore reference content this
+                // node no longer (or never) hosts; `hosted: false` tells clients
+                // to resolve the hit via `request_content` (view-to-host
+                // on-demand fetch) instead of `get_content`.
                 for entry in entries {
                     // Parse title and body from snippet (Tantivy stores the full body)
                     let (title, body_preview) = if entry.title.is_empty() {
@@ -4548,10 +4557,40 @@ impl RpcMethods {
                         entry.space_id.clone()
                     };
 
+                    // Is the content locally available (metadata store or blob layer)?
+                    let hosted = {
+                        let id_hex = entry.content_id.replace("sha256:", "");
+                        match hex::decode(&id_hex).ok().filter(|b| b.len() == 32) {
+                            Some(bytes) => {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&bytes);
+                                let in_store = self
+                                    .node
+                                    .content_store
+                                    .as_ref()
+                                    .and_then(|cs| {
+                                        cs.get(&crate::types::content::ContentId::from_bytes(arr))
+                                            .ok()
+                                            .flatten()
+                                    })
+                                    .is_some();
+                                let in_blobs = self
+                                    .node
+                                    .content_retrieval
+                                    .as_ref()
+                                    .map(|mgr| mgr.has_content(&ContentBlobHash::from_bytes(arr)))
+                                    .unwrap_or(false);
+                                in_store || in_blobs
+                            }
+                            None => false,
+                        }
+                    };
+
                     results.push(serde_json::json!({
                         "id": entry.content_id.replace("sha256:", ""),
                         "type": "thread",
                         "score": entry.score as f64,
+                        "hosted": hosted,
                         "highlights": {
                             "content": body_preview,
                             "name": if !entry.title.is_empty() { Some(&entry.title) } else { None }

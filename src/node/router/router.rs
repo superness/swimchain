@@ -1265,8 +1265,18 @@ impl MessageRouter {
                     }
                 }
 
-                // Index the content for full-text search if possible
-                // Try to deserialize as ContentItem and extract indexable fields
+                // Index the content for full-text search if possible.
+                // Try to deserialize as ContentItem and extract indexable fields.
+                //
+                // SEARCH PARITY INVARIANT (branch partitioning, SPEC_08 §5):
+                // this is the ingestion point of the GLOBAL metadata index.
+                // Every text record that arrives via block sync is indexed here
+                // REGARDLESS of branch subscription, and index documents are
+                // never removed when the local blob later decays or the branch
+                // is unhosted. That keeps Tantivy search results identical
+                // across nodes; hits in unhosted branches resolve through
+                // `request_content` (view-to-host on-demand fetch). Do NOT
+                // gate this on subscription state.
                 if let Some(ref search_index) = self.search_index {
                     // Try to deserialize the content as a ContentItem
                     if let Ok(item) =
@@ -2455,6 +2465,15 @@ impl MessageRouter {
         // CRITICAL: Fetch missing content blobs for actions in this block.
         // Block sync only transfers content_hash references, not the actual blob data.
         // We need to request the blobs so users can view the content.
+        //
+        // SEARCH PARITY INVARIANT (branch partitioning, SPEC_08 §5): chain
+        // records carry NO inline text — post text travels as a serialized
+        // ContentItem blob referenced by the action's 32-byte content_hash.
+        // Text-record fetching here must therefore stay subscription-AGNOSTIC:
+        // fetching (and indexing, in the DATA_CONTENT handler) every text
+        // record is what makes the search index global. Branch subscriptions
+        // may bound long-term blob HOSTING (decay/pruning of unhosted
+        // branches), but never which records get fetched-and-indexed.
         //
         // IMPORTANT: We use WHO_HAS/I_HAVE discovery instead of blindly sending GET to the
         // block sender, because the sender may have also synced the block and not have the blobs.
