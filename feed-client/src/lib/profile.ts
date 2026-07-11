@@ -108,23 +108,36 @@ export function encodeProfileInfo(info: ProfileInfo): string {
 }
 
 /**
+ * Extract and parse a `[MARKER]{json}` segment from a post body.
+ *
+ * Handles the two storage realities that broke exact-prefix matching:
+ * - the node stores bodies as title + double-newline + body (empty-title
+ *   profile posts carry a leading double newline), and
+ * - avatar updates write a COMBINED body: avatar segment, a "---" separator
+ *   line, then the info segment - so each decoder must find its own segment
+ *   and must not feed the separator/next segment into JSON.parse.
+ */
+function decodeMarkedSegment<T>(body: string, markerType: string): T | null {
+  const marker = `[${markerType}]`;
+  for (const segment of body.split(/\n---\n/)) {
+    const trimmed = segment.replace(/^\s+/, '').replace(/\s+$/, '');
+    if (!trimmed.startsWith(marker)) {
+      continue;
+    }
+    try {
+      return JSON.parse(trimmed.slice(marker.length)) as T;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * Decode profile info from a post body
  */
 export function decodeProfileInfo(body: string): ProfileInfo | null {
-  // The node stores post bodies as title + double-newline + body; profile
-  // posts have an empty title, so stored bodies carry a leading double
-  // newline - trim before matching the marker.
-  const trimmed = body.replace(/^\s+/, '');
-  if (!trimmed.startsWith(`[${PROFILE_INFO_TYPE}]`)) {
-    return null;
-  }
-
-  try {
-    const json = trimmed.slice(PROFILE_INFO_TYPE.length + 2);
-    return JSON.parse(json) as ProfileInfo;
-  } catch {
-    return null;
-  }
+  return decodeMarkedSegment<ProfileInfo>(body, PROFILE_INFO_TYPE);
 }
 
 /**
@@ -138,18 +151,7 @@ export function encodeAvatarInfo(avatar: AvatarInfo): string {
  * Decode avatar info from a post body
  */
 export function decodeAvatarInfo(body: string): AvatarInfo | null {
-  // Same leading-double-newline trim as decodeProfileInfo (empty-title storage).
-  const trimmed = body.replace(/^\s+/, '');
-  if (!trimmed.startsWith(`[${PROFILE_AVATAR_TYPE}]`)) {
-    return null;
-  }
-
-  try {
-    const json = trimmed.slice(PROFILE_AVATAR_TYPE.length + 2);
-    return JSON.parse(json) as AvatarInfo;
-  } catch {
-    return null;
-  }
+  return decodeMarkedSegment<AvatarInfo>(body, PROFILE_AVATAR_TYPE);
 }
 
 /**
