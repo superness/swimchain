@@ -4,10 +4,13 @@
  * Displays user profile information when clicking on a user's avatar or name.
  */
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useUserProfile } from '../hooks/useUserProfile';
 import { UserAvatar } from './UserAvatar';
 import { useBlocklist } from '../hooks/useBlocklist';
+import { useDm } from '../hooks/useDm';
+import { useChatIdentity } from '../hooks/useChatIdentity';
 import './UserProfileModal.css';
 
 interface UserProfileModalProps {
@@ -39,9 +42,28 @@ export function UserProfileModal({
 }: UserProfileModalProps): JSX.Element {
   const { profile, loading } = useUserProfile(userId);
   const { isUserBlocked, block, unblock } = useBlocklist();
+  const { sendRequest } = useDm();
+  const { identity } = useChatIdentity();
+  const navigate = useNavigate();
+  const [starting, setStarting] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
 
   const isBlocked = isUserBlocked(userId);
+  // Don't offer "Message" on your own profile.
+  const ul = userId.toLowerCase();
+  const isSelf =
+    ul === identity?.publicKey?.toLowerCase() || ul === identity?.address?.toLowerCase();
+
+  const handleMessage = useCallback(async () => {
+    if (starting) return;
+    setStarting(true);
+    const spaceId = await sendRequest(userId);
+    setStarting(false);
+    if (spaceId) {
+      onClose();
+      navigate('/channels/@me/' + spaceId);
+    }
+  }, [starting, sendRequest, userId, onClose, navigate]);
 
   // Close on escape
   useEffect(() => {
@@ -162,6 +184,15 @@ export function UserProfileModal({
 
       {/* Actions */}
       <div className="profile-modal-actions">
+        {!isSelf && (
+          <button
+            className="profile-action-btn message"
+            onClick={handleMessage}
+            disabled={starting}
+          >
+            {starting ? 'Starting…' : '💬 Message'}
+          </button>
+        )}
         <button
           className={`profile-action-btn ${isBlocked ? 'unblock' : 'block'}`}
           onClick={handleBlock}

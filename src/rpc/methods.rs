@@ -2441,6 +2441,33 @@ impl RpcMethods {
                 })
             });
 
+            // Media attachments (images) — mirror submit_post so replies carry them too.
+            let action_media_refs: Vec<crate::blocks::action::ActionMediaRef> = params
+                .media_refs
+                .iter()
+                .filter_map(|mr| {
+                    let hash_bytes = hex::decode(&mr.media_hash).ok()?;
+                    if hash_bytes.len() != 32 {
+                        return None;
+                    }
+                    let mut hash_arr = [0u8; 32];
+                    hash_arr.copy_from_slice(&hash_bytes);
+                    let media_type = match mr.media_type.as_str() {
+                        "image/jpeg" => crate::blocks::action::ActionMediaRef::TYPE_JPEG,
+                        "image/png" => crate::blocks::action::ActionMediaRef::TYPE_PNG,
+                        "image/gif" => crate::blocks::action::ActionMediaRef::TYPE_GIF,
+                        "image/webp" => crate::blocks::action::ActionMediaRef::TYPE_WEBP,
+                        _ => return None,
+                    };
+                    Some(crate::blocks::action::ActionMediaRef::new(
+                        hash_arr,
+                        media_type,
+                        mr.size_bytes,
+                    ))
+                })
+                .take(crate::blocks::action::MAX_MEDIA_REFS)
+                .collect();
+
             let action = Action {
                 action_type: crate::blocks::ActionType::Reply,
                 actor: author_bytes,
@@ -2453,7 +2480,7 @@ impl RpcMethods {
                 signature: signature_bytes_arr,
                 emoji: None,
                 display_name: self.node.identity_name.read().await.clone(),
-                media_refs: vec![], // Replies don't support media attachments yet
+                media_refs: action_media_refs,
                 replaces_pending,
             };
 
@@ -2502,7 +2529,9 @@ impl RpcMethods {
 
         // Create and store ContentItem in content store (so get_replies works)
         if let Some(ref content_store) = self.node.content_store {
-            use crate::types::content::{ContentItem, ContentType, ContentId, SpaceId};
+            use crate::types::content::{
+                ContentHash, ContentItem, ContentType, ContentId, MediaRef, MediaType, SpaceId,
+            };
             use crate::types::identity::{IdentityId, Signature};
 
             // Create Signature from bytes
@@ -2513,6 +2542,34 @@ impl RpcMethods {
                 }
             }
             let signature = Signature::from_bytes(sig_arr);
+
+            // Parse media_refs so the stored reply references its uploaded images
+            // (get_replies returns these; without them the client shows no picture).
+            let media_refs: Vec<MediaRef> = params
+                .media_refs
+                .iter()
+                .filter_map(|mr| {
+                    let hash_bytes = hex::decode(&mr.media_hash).ok()?;
+                    if hash_bytes.len() != 32 {
+                        return None;
+                    }
+                    let mut hash_arr = [0u8; 32];
+                    hash_arr.copy_from_slice(&hash_bytes);
+                    let media_type = match mr.media_type.as_str() {
+                        "image/jpeg" => MediaType::ImageJpeg,
+                        "image/png" => MediaType::ImagePng,
+                        "image/gif" => MediaType::ImageGif,
+                        "image/webp" => MediaType::ImageWebp,
+                        _ => return None,
+                    };
+                    Some(MediaRef {
+                        media_hash: ContentHash::from_bytes(hash_arr),
+                        media_type,
+                        size_bytes: mr.size_bytes,
+                        inline_preview: None,
+                    })
+                })
+                .collect();
 
             let now = params.timestamp;
             let content_item = ContentItem {
@@ -2527,7 +2584,7 @@ impl RpcMethods {
                 content_hash: None,
                 content_size: Some(params.body.len() as u32),
                 content_type_mime: Some("text/plain".to_string()),
-                media_refs: vec![],
+                media_refs,
                 pin_state: None,
                 engagement_count: 0,
                 signature,
@@ -6989,7 +7046,7 @@ impl RpcMethods {
     /// - replies: Array of direct replies
     /// - total_count: Total number of replies
     async fn get_replies(&self, params: Value, id: Value) -> RpcResponse {
-        use super::types::{GetRepliesParams, GetRepliesResult, ReplyInfo};
+        use super::types::{GetRepliesParams, GetRepliesResult, MediaRefResult, ReplyInfo};
 
         let params: GetRepliesParams = match serde_json::from_value(params) {
             Ok(p) => p,
@@ -7078,16 +7135,35 @@ impl RpcMethods {
                 Err(_) => continue,
             };
 
-            // Get body and display_name from content store
-            let (body, display_name) = if let Some(store) = content_store {
+            // Get body, display_name, and attached media from content store.
+            let (body, display_name, media_refs) = if let Some(store) = content_store {
                 let content_id = crate::types::content::ContentId::from_bytes(reply_hash);
                 if let Ok(Some(item)) = store.get(&content_id) {
-                    (item.body_inline.unwrap_or_default(), item.display_name)
+                    let mrefs: Vec<MediaRefResult> = item
+                        .media_refs
+                        .iter()
+                        .map(|mr| MediaRefResult {
+                            media_hash: hex::encode(mr.media_hash.as_bytes()),
+                            media_type: match mr.media_type {
+                                crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                                crate::types::content::MediaType::ImagePng => "image/png",
+                                crate::types::content::MediaType::ImageGif => "image/gif",
+                                crate::types::content::MediaType::ImageWebp => "image/webp",
+                            }
+                            .to_string(),
+                            size_bytes: mr.size_bytes,
+                        })
+                        .collect();
+                    (item.body_inline.unwrap_or_default(), item.display_name, mrefs)
                 } else {
-                    (store.get_body_by_hash(&reply_hash).unwrap_or(None).unwrap_or_default(), None)
+                    (
+                        store.get_body_by_hash(&reply_hash).unwrap_or(None).unwrap_or_default(),
+                        None,
+                        Vec::new(),
+                    )
                 }
             } else {
-                (String::new(), None)
+                (String::new(), None, Vec::new())
             };
 
             // Count children (we always count, even if not fetching them)
@@ -7106,6 +7182,7 @@ impl RpcMethods {
                 depth,
                 child_count,
                 display_name,
+                media_refs,
             });
 
             // Check for limit
@@ -7210,6 +7287,24 @@ impl RpcMethods {
                             .unwrap_or_default()
                             .as_millis() as u64;
 
+                        // Media on a still-pending (mempool) reply comes from the action.
+                        let media_refs: Vec<MediaRefResult> = action
+                            .media_refs
+                            .iter()
+                            .map(|amr| MediaRefResult {
+                                media_hash: hex::encode(amr.media_hash),
+                                media_type: match amr.media_type {
+                                    crate::blocks::action::ActionMediaRef::TYPE_JPEG => "image/jpeg",
+                                    crate::blocks::action::ActionMediaRef::TYPE_PNG => "image/png",
+                                    crate::blocks::action::ActionMediaRef::TYPE_GIF => "image/gif",
+                                    crate::blocks::action::ActionMediaRef::TYPE_WEBP => "image/webp",
+                                    _ => "image/jpeg",
+                                }
+                                .to_string(),
+                                size_bytes: amr.size_bytes,
+                            })
+                            .collect();
+
                         all_replies.push(ReplyInfo {
                             content_id: reply_id,
                             author_id,
@@ -7220,6 +7315,7 @@ impl RpcMethods {
                             depth,
                             child_count: 0,
                             display_name: action.display_name.clone(),
+                            media_refs,
                         });
 
                         known_hashes.insert(*reply_hash);
@@ -8975,9 +9071,24 @@ impl RpcMethods {
             }
         };
 
+        // Hide special-purpose spaces from the normal private-channel list — they aren't
+        // channels people join and have their own UI: the user's own profile space
+        // (sha256("profile:v1:<pk>")) and any DM space they participate in.
+        let profile_space_id: [u8; 16] = {
+            let preimage = format!("profile:v1:{}", params.user.to_lowercase());
+            let h = crate::crypto::sha256(preimage.as_bytes());
+            let mut a = [0u8; 16];
+            a.copy_from_slice(&h[..16]);
+            a
+        };
+        let dm_space_ids = membership_store.get_dm_space_ids(&user_pk).unwrap_or_default();
+
         // Build space info for each space
         let mut spaces: Vec<PrivateSpaceInfo> = Vec::new();
         for space_id in space_ids {
+            if space_id == profile_space_id || dm_space_ids.contains(&space_id) {
+                continue;
+            }
             // Get member record for role info
             let member = membership_store.get_member(&space_id, &user_pk).ok().flatten();
             let role = member.as_ref().map(|m| match m.role {

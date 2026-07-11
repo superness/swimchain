@@ -766,6 +766,7 @@ fn reply(config: &CliConfig, parent: &str, body: &str, no_pow: bool) -> Result<(
                 pow_hash: hex::encode(solution.hash),
                 signature: hex::encode(signature.as_bytes()),
                 timestamp: solution.challenge.timestamp,  // Use PoW challenge timestamp
+                media_refs: Vec::new(),  // CLI replies don't attach media
                 replaces_pending: None,  // CLI doesn't support RIM yet
             };
 

@@ -13,7 +13,8 @@ import {
 
 export interface UseDmResult {
   dms: DmEntry[];
-  sendRequest: (target: string) => Promise<boolean>;
+  /** Start a DM. Resolves the DM space id on success, or false on failure. */
+  sendRequest: (target: string) => Promise<string | false>;
   acceptRequest: (spaceId: string, other: string) => Promise<boolean>;
   declineRequest: (spaceId: string, other: string) => Promise<boolean>;
   markRead: (spaceId: string) => void;
@@ -133,7 +134,7 @@ export function useDm(): UseDmResult {
   );
 
   const sendRequest = useCallback(
-    async (target: string): Promise<boolean> => {
+    async (target: string): Promise<string | false> => {
       if (!rpc || !connected || !myPubKey) return false;
       const t = target.trim();
 
@@ -149,7 +150,7 @@ export function useDm(): UseDmResult {
             createdAt: Date.now(),
             unreadCount: 0,
           });
-          return true;
+          return res.space_id;
         } catch {
           return false;
         }
@@ -198,10 +199,10 @@ export function useDm(): UseDmResult {
           timestamp: ts,
         });
         put({ otherPk: t, spaceId: sid, status: 'pending_sent', createdAt: Date.now(), unreadCount: 0 });
-        return true;
+        return sid;
       } catch {
         put({ otherPk: t, spaceId: sid, status: 'pending_sent', createdAt: Date.now(), unreadCount: 0 });
-        return true;
+        return sid;
       }
     },
     [rpc, connected, myPubKey, isNode, browserIdentity, browserSign, put]

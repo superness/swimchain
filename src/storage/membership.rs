@@ -538,6 +538,40 @@ impl MembershipStore {
         Ok(requests)
     }
 
+    /// Collect every DM space id this user participates in (as requester or recipient),
+    /// across all statuses. Used to hide DM spaces from the normal private-space list —
+    /// a DM is not a channel people join, it has its own UI.
+    pub fn get_dm_space_ids(
+        &self,
+        user_pk: &[u8; 32],
+    ) -> Result<std::collections::HashSet<[u8; 16]>, StorageError> {
+        let mut out = std::collections::HashSet::new();
+        // Sent (primary key = requester||recipient, so prefix = user).
+        for result in self.dm_requests.scan_prefix(user_pk) {
+            let (_, data) = result?;
+            let rec: DMRequestRecord = bincode::deserialize(&data)?;
+            if &rec.requester_pk == user_pk {
+                if let Some(sid) = rec.space_id {
+                    out.insert(sid);
+                }
+            }
+        }
+        // Received (reverse index = recipient||requester).
+        for result in self.dm_requests_by_recipient.scan_prefix(user_pk) {
+            let (key, _) = result?;
+            if key.len() >= 64 {
+                let mut requester = [0u8; 32];
+                requester.copy_from_slice(&key[32..64]);
+                if let Some(rec) = self.get_dm_request(&requester, user_pk)? {
+                    if let Some(sid) = rec.space_id {
+                        out.insert(sid);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Check if a DM request exists between two users
     pub fn dm_request_exists(
         &self,

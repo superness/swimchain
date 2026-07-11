@@ -140,6 +140,21 @@
   transition: background-color 0.15s;
 }
 
+.profile-action-btn.message {
+  background: var(--accent, #5865f2);
+  border: none;
+  color: #fff;
+}
+
+.profile-action-btn.message:hover {
+  background: #4752c4;
+}
+
+.profile-action-btn.message:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .profile-action-btn.block {
   background: transparent;
   border: 1px solid var(--status-danger, #ed4245);

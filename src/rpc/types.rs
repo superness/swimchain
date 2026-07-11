@@ -345,6 +345,9 @@ pub struct SubmitReplyParams {
     pub signature: String,
     /// Timestamp
     pub timestamp: u64,
+    /// Attached media (images) — same shape as submit_post so replies carry pictures.
+    #[serde(default)]
+    pub media_refs: Vec<MediaRefParam>,
     /// Replace-In-Mempool: hash of pending action to replace (32-byte hex)
     #[serde(default)]
     pub replaces_pending: Option<String>,
@@ -782,6 +785,9 @@ pub struct ReplyInfo {
     /// Author's display name (if provided when reply was created)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Attached media (images) on this reply.
+    #[serde(default)]
+    pub media_refs: Vec<MediaRefResult>,
 }
 
 /// get_replies result
