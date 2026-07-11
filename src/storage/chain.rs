@@ -1264,20 +1264,31 @@ impl ChainStore {
         let mut total = 0usize;
         let mut stack: Vec<[u8; 32]> = vec![*parent_hash];
 
+        // Cycle guard: the reply index is untrusted (built from synced,
+        // possibly-malformed content), so a self- or mutually-referential reply
+        // would otherwise make this walk loop FOREVER — spinning a core and
+        // growing `stack` without bound (observed pegging every core on mobile).
+        // Expand each node at most once, and count each distinct reply once.
+        let mut visited: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        visited.insert(*parent_hash);
+
         while let Some(current) = stack.pop() {
             // Get direct children of current node
             for result in self.replies_by_parent_index.scan_prefix(&current) {
                 // Key format: [parent_hash (32 bytes)][timestamp (8 bytes)]
                 // Value: reply_hash (32 bytes)
                 let (_key, value) = result?;
-                total += 1;
 
                 // The reply hash is in the VALUE, not the key
                 if value.len() == 32 {
                     let mut reply_hash = [0u8; 32];
                     reply_hash.copy_from_slice(&value);
-                    // Add this reply to stack to count its children
-                    stack.push(reply_hash);
+                    // Skip replies already seen so a cycle can neither inflate
+                    // the count nor loop; recurse into genuinely new ones.
+                    if visited.insert(reply_hash) {
+                        total += 1;
+                        stack.push(reply_hash);
+                    }
                 }
             }
         }

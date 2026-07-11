@@ -1653,6 +1653,7 @@ impl NodeManager {
             origin_privacy: self.config.origin_privacy(),
             space_list_cache: std::sync::Mutex::new(None),
             space_count_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            reply_count_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
 
         // Create RPC methods
