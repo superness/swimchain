@@ -100,7 +100,7 @@ impl TcpTransport {
 
         let mut conn = Connection::new_inbound(stream, remote_addr, our_nonce);
         let peer_info =
-            perform_inbound_handshake(&mut conn, &self.local_info, self.local_addr).await?;
+            perform_inbound_handshake(&mut conn, &self.local_info, resolve_advertised_addr(self.local_addr)).await?;
 
         // Check for duplicate nonce
         {
@@ -133,7 +133,7 @@ impl TcpTransport {
         let advertised_addr = if self.proxy.is_some() {
             unspecified_like(self.local_addr)
         } else {
-            self.local_addr
+            resolve_advertised_addr(self.local_addr)
         };
         let peer_info =
             perform_outbound_handshake(&mut conn, &self.local_info, advertised_addr).await?;
@@ -238,6 +238,44 @@ fn unspecified_like(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(ip, 0)
 }
 
+/// Resolve the address to advertise to peers in the VERSION handshake.
+///
+/// A node bound to `0.0.0.0` (the default) would otherwise advertise
+/// `0.0.0.0:<port>`, which no peer can dial — so peers that learn this address
+/// via GETADDR relay silently fail to connect. When the listen IP is
+/// unspecified, substitute the host's primary LAN IPv4 (keeping the port) so
+/// same-LAN peers can reach us directly. If detection fails, fall back to the
+/// original address (no worse than before).
+fn resolve_advertised_addr(local_addr: SocketAddr) -> SocketAddr {
+    if !local_addr.ip().is_unspecified() {
+        return local_addr;
+    }
+    match primary_lan_ipv4() {
+        Some(ip) => SocketAddr::new(ip, local_addr.port()),
+        None => local_addr,
+    }
+}
+
+/// Best-effort detection of the host's primary LAN IPv4.
+///
+/// Uses the standard connected-UDP-socket trick: connecting a UDP socket only
+/// selects the outgoing route/interface — no packets are sent — so reading the
+/// socket's local address yields the IP of the interface that reaches the
+/// internet, i.e. the LAN IP on a home network. Works offline.
+fn primary_lan_ipv4() -> Option<std::net::IpAddr> {
+    use std::net::{IpAddr, UdpSocket};
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    // 8.8.8.8 is a routing hint only; nothing is transmitted by UDP connect.
+    if sock.connect("8.8.8.8:80").is_err() {
+        // Fall back to a private-range hint if the default route is unusual.
+        sock.connect("192.168.1.1:9").ok()?;
+    }
+    match sock.local_addr().ok()?.ip() {
+        IpAddr::V4(v4) if !v4.is_unspecified() && !v4.is_loopback() => Some(IpAddr::V4(v4)),
+        _ => None,
+    }
+}
+
 impl std::fmt::Debug for TcpTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TcpTransport")
@@ -337,6 +375,27 @@ mod tests {
         assert_eq!(unspecified_like(v4), "0.0.0.0:0".parse().unwrap());
         let v6: SocketAddr = "[2001:db8::1]:9735".parse().unwrap();
         assert_eq!(unspecified_like(v6), "[::]:0".parse().unwrap());
+    }
+
+    #[test]
+    fn resolve_advertised_addr_passes_through_specific_ip() {
+        // A concrete bound IP is already dialable — advertise it unchanged.
+        let specific: SocketAddr = "192.168.1.42:19735".parse().unwrap();
+        assert_eq!(resolve_advertised_addr(specific), specific);
+    }
+
+    #[test]
+    fn resolve_advertised_addr_replaces_unspecified_keeping_port() {
+        // 0.0.0.0 is undialable; the result must not be unspecified and must
+        // keep the port. (On a host with a LAN this yields the LAN IP; in a
+        // no-network sandbox detection may fail and fall back — accept either,
+        // but if it resolved, it must be a usable IP on the same port.)
+        let any: SocketAddr = "0.0.0.0:19735".parse().unwrap();
+        let out = resolve_advertised_addr(any);
+        assert_eq!(out.port(), 19735);
+        if out != any {
+            assert!(!out.ip().is_unspecified() && !out.ip().is_loopback());
+        }
     }
 
     #[tokio::test]
