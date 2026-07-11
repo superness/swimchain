@@ -1731,6 +1731,14 @@ impl NodeManager {
         if let Some(ref cm) = self.connection_manager {
             status.peers = cm.connection_count();
         }
+        // Chain height: same disease — the metrics counter is only bumped by
+        // some ingest paths (sync/backfill skip it), showing "height 0" on a
+        // synced node. The chain store is the authoritative height.
+        if let Some(ref cs) = self.chain_store {
+            if let Ok(Some(height)) = cs.get_latest_height() {
+                status.chain_height = height;
+            }
+        }
         status
     }
 
@@ -2160,6 +2168,43 @@ mod tests {
             node.status().peers,
             1,
             "status().peers must reflect the ConnectionManager count"
+        );
+    }
+
+    #[test]
+    fn status_chain_height_comes_from_chain_store_not_metrics_counter() {
+        // Same disease as the peers counter: metrics.chain_height is
+        // event-maintained and the sync/backfill paths don't bump it, so the
+        // status strip showed "height 0" on a synced node. status() must
+        // report the chain store's authoritative height.
+        use crate::blocks::RootBlock;
+
+        let config = NodeConfig::for_test(0);
+        let mut node = NodeManager::new(config, test_keypair()).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::storage::ChainStore::open(dir.path()).unwrap();
+        let block = RootBlock {
+            version: 1,
+            prev_root_hash: [0u8; 32],
+            timestamp: 1_700_000_000,
+            merkle_root: [0u8; 32],
+            space_block_hashes: vec![],
+            space_block_count: 0,
+            total_pow: 10,
+            cumulative_pow: 10,
+            difficulty_target: 30,
+            height: 9,
+            block_creator: [0u8; 32],
+        };
+        let hash = store.put_root_block(&block).unwrap();
+        store.index_height(9, hash).unwrap();
+        node.chain_store = Some(Arc::new(store));
+
+        assert_eq!(
+            node.status().chain_height,
+            9,
+            "status().chain_height must reflect the chain store"
         );
     }
 
