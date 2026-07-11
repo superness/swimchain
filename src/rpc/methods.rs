@@ -13185,28 +13185,40 @@ impl RpcMethods {
             .unwrap_or([0u8; 32]);
 
         // Validate claimant PoW: sha256(pow_nonce_space || pow_nonce) must have
-        // sufficient leading zero bytes meeting the offer's min_pow_difficulty
-        // (or a minimum of 1 if the offer specifies 0)
+        // sufficient leading zero BITS meeting the offer's min_pow_difficulty
+        // (or a minimum of 1 if the offer specifies 0). Difficulty is measured
+        // in bits everywhere else in the protocol (identity PoW, action PoW,
+        // offer_validation::count_leading_zero_bits) — this check previously
+        // counted zero BYTES, making it 8x stricter than the block-level
+        // validation of the same offer field and rejecting honest claims.
         {
             use sha2::{Sha256, Digest};
             let min_difficulty = if offer.requirements.min_pow_difficulty > 0 {
-                offer.requirements.min_pow_difficulty as usize
+                offer.requirements.min_pow_difficulty as u32
             } else {
-                1 // Network minimum: at least 1 leading zero byte
+                1 // Network minimum: at least 1 leading zero bit
             };
 
             let mut pow_input = Vec::with_capacity(40);
             pow_input.extend_from_slice(&pow_nonce_space_bytes);
             pow_input.extend_from_slice(&params.pow_nonce.to_le_bytes());
             let computed_hash = Sha256::digest(&pow_input);
-            let actual_zeros = computed_hash.iter().take_while(|&&b| b == 0).count();
+            let mut actual_zero_bits = 0u32;
+            for byte in computed_hash.iter() {
+                if *byte == 0 {
+                    actual_zero_bits += 8;
+                } else {
+                    actual_zero_bits += byte.leading_zeros();
+                    break;
+                }
+            }
 
-            if actual_zeros < min_difficulty {
+            if actual_zero_bits < min_difficulty {
                 return RpcResponse::error(
                     RpcErrorCode::InvalidParams,
                     &format!(
-                        "Insufficient proof-of-work: need {} leading zero bytes, got {}",
-                        min_difficulty, actual_zeros
+                        "Insufficient proof-of-work: need {} leading zero bits, got {}",
+                        min_difficulty, actual_zero_bits
                     ),
                     id,
                 );
