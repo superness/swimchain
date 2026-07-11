@@ -7977,7 +7977,24 @@ impl RpcMethods {
         attestations: &[StoredSpamAttestation],
         is_cleared: bool,
     ) -> crate::spam_attestation::AttestationAggregation {
-        aggregate_attestations(content_hash, attestations, is_cleared)
+        match &self.node.reputation_store {
+            Some(store) => {
+                let weight_of = |attester: &[u8; 32]| -> f64 {
+                    // Absent record => neutral base score (fresh identity).
+                    let score = store
+                        .get_score(attester)
+                        .unwrap_or(crate::reputation::score::REPUTATION_BASE_SCORE);
+                    crate::reputation::score::attester_weight(score)
+                };
+                crate::spam_attestation::aggregate_attestations_weighted(
+                    content_hash,
+                    attestations,
+                    is_cleared,
+                    weight_of,
+                )
+            }
+            None => aggregate_attestations(content_hash, attestations, is_cleared),
+        }
     }
 
     // ========================================================================
