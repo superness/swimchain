@@ -1651,6 +1651,8 @@ impl NodeManager {
             pool_manager: self.pool_manager.clone(),
             event_manager: Some(self.event_manager.clone()),
             origin_privacy: self.config.origin_privacy(),
+            space_list_cache: std::sync::Mutex::new(None),
+            space_count_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         });
 
         // Create RPC methods

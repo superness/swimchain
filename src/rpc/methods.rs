@@ -557,6 +557,16 @@ pub struct NodeRef {
     /// Gossip origin-privacy settings (SWIM-PRIV-1). Controls whether/how
     /// self-originated actions are delayed/stem-relayed on their first announce.
     pub origin_privacy: crate::node::OriginPrivacyConfig,
+    /// Short-TTL cache of the fully-computed `list_spaces` result (all spaces, sorted, with
+    /// app tags). `list_spaces` does full chain + content-store scans to build this; the feed
+    /// polls it rapidly, which otherwise pegs every core. Pagination is applied per-request
+    /// from the cached list. `(computed_at, full_sorted_spaces)`.
+    pub space_list_cache: std::sync::Mutex<Option<(std::time::Instant, Vec<SpaceSummary>)>>,
+    /// Short-TTL cache of per-space content counts (`list_space_content` total). The count is
+    /// a prefix scan over a space's items and the feed calls it per space repeatedly; bounded
+    /// by the (small) number of spaces. `space_id_16 -> (computed_at, count)`.
+    pub space_count_cache:
+        std::sync::Mutex<std::collections::HashMap<[u8; 16], (std::time::Instant, usize)>>,
 }
 
 /// RPC method dispatcher
@@ -573,6 +583,33 @@ impl RpcMethods {
     /// Get the network mode (mainnet, testnet, regtest)
     pub fn network(&self) -> &str {
         &self.node.network
+    }
+
+    /// Per-space content count with a short-TTL cache. `count_content_in_space` is a prefix
+    /// scan over the space's items; the feed calls `list_space_content` per space repeatedly,
+    /// so cache the total for a few seconds to keep those calls cheap.
+    fn cached_space_content_count(&self, space_id_16: &[u8; 16]) -> usize {
+        const COUNT_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+        {
+            let guard = self.node.space_count_cache.lock().unwrap();
+            if let Some((at, count)) = guard.get(space_id_16) {
+                if at.elapsed() < COUNT_TTL {
+                    return *count;
+                }
+            }
+        }
+        let count = self
+            .node
+            .chain_store
+            .as_ref()
+            .and_then(|cs| cs.count_content_in_space(space_id_16).ok())
+            .unwrap_or(0);
+        self.node
+            .space_count_cache
+            .lock()
+            .unwrap()
+            .insert(*space_id_16, (std::time::Instant::now(), count));
+        count
     }
 
     /// Gossip a *self-originated* action to peers with origin obfuscation
@@ -4844,6 +4881,30 @@ impl RpcMethods {
             }
         };
 
+        // Fast path: serve from the short-TTL cache. Building the list below does full
+        // chain + content-store scans, and the feed polls this rapidly — without the cache
+        // that pegs every core and RPC stops responding. Pagination is applied per-request.
+        const SPACE_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+        {
+            let guard = self.node.space_list_cache.lock().unwrap();
+            if let Some((computed_at, ref full)) = *guard {
+                if computed_at.elapsed() < SPACE_LIST_TTL {
+                    let total = full.len();
+                    let page: Vec<_> = full
+                        .iter()
+                        .skip(params.offset)
+                        .take(params.limit)
+                        .cloned()
+                        .collect();
+                    let result = ListSpacesResult {
+                        spaces: page,
+                        total,
+                    };
+                    return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                }
+            }
+        }
+
         use std::collections::HashMap;
         let mut space_stats: HashMap<[u8; 16], (String, Option<String>, u64, u64, u64)> =
             HashMap::new();
@@ -4857,7 +4918,7 @@ impl RpcMethods {
                 match result {
                     Ok(root_block) => {
                         root_block_count += 1;
-                        info!("[LIST_SPACES] Found root block at height {} with {} space_block_hashes",
+                        debug!("[LIST_SPACES] Found root block at height {} with {} space_block_hashes",
                               root_block.height, root_block.space_block_hashes.len());
                         // Iterate over space block hashes and fetch each space block
                         for space_block_hash in &root_block.space_block_hashes {
@@ -4868,7 +4929,7 @@ impl RpcMethods {
                                     let mut space_16: [u8; 16] = [0u8; 16];
                                     space_16.copy_from_slice(&space_block.space_id[..16]);
 
-                                    info!(
+                                    debug!(
                                         "[LIST_SPACES] Found space {} in block {}",
                                         hex::encode(&space_16[..4]),
                                         root_block.height
@@ -4905,7 +4966,7 @@ impl RpcMethods {
                     }
                 }
             }
-            info!(
+            debug!(
                 "[LIST_SPACES] Scanned {} root blocks, found {} space blocks",
                 root_block_count, space_block_count
             );
@@ -5068,6 +5129,11 @@ impl RpcMethods {
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => a.name.cmp(&b.name),
         });
+
+        // Cache the fully-computed, sorted list so rapid follow-up calls (the feed) skip the
+        // full scans above for SPACE_LIST_TTL. Pagination is applied per-request below.
+        *self.node.space_list_cache.lock().unwrap() =
+            Some((std::time::Instant::now(), spaces.clone()));
 
         // total reflects the public spaces actually returned (after hiding private/system).
         let total = spaces.len();
@@ -5538,10 +5604,9 @@ impl RpcMethods {
             // Use the new indexed method (O(log n) instead of O(n) full table scan)
             match chain_store.get_content_for_space(&space_id_16, fetch_limit, params.offset) {
                 Ok(indexed_content) => {
-                    // Get total count for pagination (this is still O(n) but can be cached)
-                    total = chain_store
-                        .count_content_in_space(&space_id_16)
-                        .unwrap_or(0);
+                    // Total count for pagination — short-TTL cached (the feed calls this per
+                    // space repeatedly; the raw count is a prefix scan over the space's items).
+                    total = self.cached_space_content_count(&space_id_16);
 
                     for (content_hash, metadata) in indexed_content {
                         let content_id = format!("sha256:{}", hex::encode(&content_hash));
