@@ -1976,6 +1976,51 @@ impl MessageRouter {
         // Check 2: Block height must be at most our_height + 1 (no gaps in chain)
         // If block is too far ahead, request missing intermediate blocks via GETBLOCKS
         if block_height > our_height + 1 {
+            // If this block is heavier than our canonical tip, the gap may be a
+            // FORK that diverged BELOW our tip, not simple lag. A height-range
+            // backfill from our_height+1 can never cross a below-tip fork point
+            // (the intermediate blocks it fetches reference ancestors we never
+            // ask for, so they stay orphans forever — the "stuck at height 12"
+            // bug). Escalate to a locator sync: the peer finds our true common
+            // ancestor and streams the heavier chain contiguously from there.
+            let our_tip_pow = chain_store
+                .get_best_tip_block()
+                .ok()
+                .flatten()
+                .map(|b| b.cumulative_pow)
+                .unwrap_or(0);
+            if root_block.cumulative_pow > our_tip_pow {
+                if let (Some(pool), Ok(locator_hashes)) =
+                    (self.connection_pool.as_ref(), chain_store.generate_locator())
+                {
+                    let request = GetBlocksLocatorPayload::new(locator_hashes, 50);
+                    let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                        crate::types::network::MessageType::GetBlocksLocator,
+                        request.to_bytes(),
+                    );
+                    match pool.send_to(peer_id, &envelope).await {
+                        Ok(()) => {
+                            info!(
+                                "[BLOCK] Block {} (height {}, pow {}) heavier than our tip (pow {}) and {} ahead - sent GETBLOCKS_LOCATOR to fetch the fork from its common ancestor",
+                                hex::encode(&computed_hash[..8]),
+                                block_height,
+                                root_block.cumulative_pow,
+                                our_tip_pow,
+                                block_height - our_height,
+                            );
+                            return Ok(None);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "[BLOCK] Failed to send GETBLOCKS_LOCATOR to peer {}: {} - falling back to range backfill",
+                                hex::encode(&peer_id[..8]),
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
             info!(
                 "[BLOCK] Block {} at height {} is ahead of our height {} - requesting backfill",
                 hex::encode(&computed_hash[..8]),

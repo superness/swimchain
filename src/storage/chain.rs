@@ -1692,18 +1692,39 @@ impl ChainStore {
         let block_hash = block.hash();
 
         if self.is_heavier_than_best_tip(block)? {
-            log::info!(
-                "[CHAIN] New best tip: height={}, hash={}, cumulative_pow={}",
-                block.height,
-                hex::encode(&block_hash[..8]),
-                block.cumulative_pow
-            );
-            self.set_best_tip(&block_hash)?;
-
-            // Update height index to point to this block (canonical chain)
-            self.index_height(block.height, block_hash)?;
-
-            Ok(true)
+            // Make this block canonical by rewriting the height index along its
+            // ENTIRE ancestry back to the common ancestor — not just its own
+            // height. The single-height update used previously left the index
+            // inconsistent whenever the heavier block descended from a fork
+            // point BELOW our current tip (the block's height became canonical
+            // while its ancestors still pointed at the losing fork), so a node
+            // that had built a minority fork could never adopt the heavier
+            // chain and stayed stuck forever.
+            match self.make_canonical(block)? {
+                Some(orphaned) => {
+                    log::info!(
+                        "[CHAIN] New best tip: height={}, hash={}, cumulative_pow={} ({} blocks reorged out)",
+                        block.height,
+                        hex::encode(&block_hash[..8]),
+                        block.cumulative_pow,
+                        orphaned.len()
+                    );
+                    Ok(true)
+                }
+                None => {
+                    // Heavier than our tip, but its ancestry is not fully
+                    // present yet. Adopting now would corrupt the height index,
+                    // so defer: the block stays in raw storage and adoption
+                    // happens once the missing ancestors arrive (e.g. via a
+                    // locator sync).
+                    log::debug!(
+                        "[CHAIN] Heavier block {} (height {}) deferred: ancestry incomplete",
+                        hex::encode(&block_hash[..8]),
+                        block.height
+                    );
+                    Ok(false)
+                }
+            }
         } else {
             // Block is valid but not heavier - store it but don't update canonical chain
             log::debug!(
@@ -1714,6 +1735,91 @@ impl ChainStore {
             );
             Ok(false)
         }
+    }
+
+    /// Remove a single height's entry from the canonical height index.
+    fn remove_height_index(&self, height: u64) -> Result<(), StorageError> {
+        let key = height.to_be_bytes();
+        self.height_index.remove(&key)?;
+        Ok(())
+    }
+
+    /// Make `new_tip` the canonical chain tip, rewriting the height index along
+    /// its full ancestry back to the common ancestor with the current canonical
+    /// chain.
+    ///
+    /// This is the deep-reorg primitive. It walks `new_tip`'s ancestry via
+    /// `prev_root_hash` collecting every height that must be reassigned, until
+    /// it reaches a block that is already canonical at its height (the common
+    /// ancestor) or the new chain's genesis. It only mutates storage once it
+    /// knows the whole ancestry is present.
+    ///
+    /// Returns:
+    /// * `Ok(Some(orphaned))` — reorg applied; `orphaned` are the old canonical
+    ///   block hashes displaced from the height index.
+    /// * `Ok(None)` — the ancestry is not fully present in storage yet, so
+    ///   NOTHING was mutated. The caller should defer until the missing
+    ///   ancestors arrive.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if a database operation fails.
+    fn make_canonical(&self, new_tip: &RootBlock) -> Result<Option<Vec<BlockHash>>, StorageError> {
+        // Phase 1 (read-only): collect the new chain's (height, hash) pairs from
+        // the tip down to the common ancestor. Abort WITHOUT mutating if any
+        // ancestor block is missing.
+        let mut new_chain: Vec<(u64, BlockHash)> = Vec::new();
+        let mut cursor = new_tip.clone();
+        loop {
+            let height = cursor.height;
+            let hash = cursor.hash();
+
+            // Already canonical at its height → common ancestor reached.
+            if self.get_root_hash_at_height(height)? == Some(hash) {
+                break;
+            }
+
+            new_chain.push((height, hash));
+
+            // Reached the new chain's genesis without meeting our canonical
+            // chain — the whole chain is its own ancestry (shared genesis on an
+            // isolated network), so treat genesis as the ancestor and stop.
+            if cursor.prev_root_hash == [0u8; 32] {
+                break;
+            }
+
+            cursor = match self.get_root_block(&cursor.prev_root_hash)? {
+                Some(b) => b,
+                None => return Ok(None), // ancestry incomplete — defer, no mutation
+            };
+        }
+
+        // Phase 2 (mutate): the ancestry is complete, apply the reorg.
+        let mut orphaned: Vec<BlockHash> = Vec::new();
+
+        // Any old canonical blocks strictly above the new tip's height are
+        // orphaned and their index entries must be truncated, otherwise
+        // get_latest_height() would keep reporting the stale higher height.
+        let old_height = self.get_latest_height()?.unwrap_or(0);
+        for height in (new_tip.height + 1)..=old_height {
+            if let Some(old_hash) = self.get_root_hash_at_height(height)? {
+                orphaned.push(old_hash);
+                self.remove_height_index(height)?;
+            }
+        }
+
+        // Reassign every height along the new chain, recording displaced blocks.
+        for (height, hash) in &new_chain {
+            if let Some(old_hash) = self.get_root_hash_at_height(*height)? {
+                if old_hash != *hash {
+                    orphaned.push(old_hash);
+                }
+            }
+            self.index_height(*height, *hash)?;
+        }
+
+        self.set_best_tip(&new_tip.hash())?;
+        Ok(Some(orphaned))
     }
 
     /// Store a root block and update canonical chain if heavier
@@ -1764,96 +1870,21 @@ impl ChainStore {
         let current_tip = match self.get_best_tip_block()? {
             Some(tip) => tip,
             None => {
-                // No current tip, just set the new one
-                self.set_best_tip(&new_tip.hash())?;
-                self.index_height(new_tip.height, new_tip.hash())?;
-                return Ok(vec![]);
+                // No current tip — make_canonical handles first-block indexing.
+                return Ok(self.make_canonical(new_tip)?.unwrap_or_default());
             }
         };
 
-        // If new tip is not heavier, no reorg needed
+        // If new tip is not heavier, no reorg needed.
         if new_tip.cumulative_pow <= current_tip.cumulative_pow {
             return Ok(vec![]);
         }
 
-        log::warn!(
-            "[CHAIN] REORG: old_tip height={} pow={}, new_tip height={} pow={}",
-            current_tip.height,
-            current_tip.cumulative_pow,
-            new_tip.height,
-            new_tip.cumulative_pow
-        );
-
-        // Collect orphaned block hashes (blocks from old chain that won't be in new chain)
-        let mut orphaned = Vec::new();
-
-        // Walk back from current tip to find orphaned blocks
-        // We'll update height index as we go
-        let mut old_block = current_tip.clone();
-        let mut new_block = new_tip.clone();
-
-        // First, bring both chains to the same height
-        while new_block.height > old_block.height {
-            // Update height index to point to new chain block
-            self.index_height(new_block.height, new_block.hash())?;
-
-            // Walk back on new chain
-            if new_block.prev_root_hash == [0u8; 32] {
-                break;
-            }
-            new_block = match self.get_root_block(&new_block.prev_root_hash)? {
-                Some(b) => b,
-                None => break,
-            };
-        }
-
-        while old_block.height > new_block.height {
-            // This block is orphaned
-            orphaned.push(old_block.hash());
-
-            // Walk back on old chain
-            if old_block.prev_root_hash == [0u8; 32] {
-                break;
-            }
-            old_block = match self.get_root_block(&old_block.prev_root_hash)? {
-                Some(b) => b,
-                None => break,
-            };
-        }
-
-        // Now walk back both chains until we find common ancestor
-        while old_block.hash() != new_block.hash() {
-            // Old block is orphaned
-            orphaned.push(old_block.hash());
-
-            // Update height index to point to new chain block
-            self.index_height(new_block.height, new_block.hash())?;
-
-            // Walk back both chains
-            if old_block.prev_root_hash == [0u8; 32] || new_block.prev_root_hash == [0u8; 32] {
-                break;
-            }
-
-            old_block = match self.get_root_block(&old_block.prev_root_hash)? {
-                Some(b) => b,
-                None => break,
-            };
-            new_block = match self.get_root_block(&new_block.prev_root_hash)? {
-                Some(b) => b,
-                None => break,
-            };
-        }
-
-        // Set new best tip
-        self.set_best_tip(&new_tip.hash())?;
-
-        log::info!(
-            "[CHAIN] REORG complete: {} blocks orphaned, common ancestor at height {}",
-            orphaned.len(),
-            new_block.height
-        );
-
-        Ok(orphaned)
+        // Delegate to the connectivity-guarded reorg. Unlike the previous
+        // implementation this refuses to rewrite a partial ancestry (returning
+        // an empty vec until the full fork is present) rather than corrupting
+        // the height index mid-walk.
+        Ok(self.make_canonical(new_tip)?.unwrap_or_default())
     }
 
     /// Get root blocks in a height range
@@ -3288,6 +3319,156 @@ mod tests {
 
         let indexed_hash = store.get_root_hash_at_height(42).unwrap();
         assert_eq!(indexed_hash, Some(hash));
+    }
+
+    /// Build a root block linked to `prev`, tagged so that two forks produce
+    /// distinct hashes at the same height.
+    fn linked_block(height: u64, prev: BlockHash, cumulative_pow: u64, fork_tag: u8) -> RootBlock {
+        let mut b = create_test_root_block(height, prev);
+        b.cumulative_pow = cumulative_pow;
+        b.total_pow = cumulative_pow;
+        b.block_creator = [fork_tag; 32];
+        b
+    }
+
+    /// Build a chain of `heights` blocks starting from `start_prev`, returning
+    /// them in ascending order. `pow_base` is added to the height for
+    /// cumulative_pow so a fork can be made strictly heavier.
+    fn build_chain(
+        start_prev: BlockHash,
+        start_height: u64,
+        count: u64,
+        pow_base: u64,
+        fork_tag: u8,
+    ) -> Vec<RootBlock> {
+        let mut blocks = Vec::new();
+        let mut prev = start_prev;
+        for i in 0..count {
+            let height = start_height + i;
+            let b = linked_block(height, prev, pow_base + height, fork_tag);
+            prev = b.hash();
+            blocks.push(b);
+        }
+        blocks
+    }
+
+    // A node on a minority fork must adopt a heavier fork that diverged BELOW
+    // its current tip, once that fork's blocks are present. Regression test for
+    // the stuck-at-height-12 bug: previously update_best_tip_if_heavier only
+    // reindexed the incoming block's own height, leaving the ancestry pointing
+    // at the losing fork so the reorg never took.
+    #[test]
+    fn test_deep_reorg_below_tip_adopts_heavier_chain() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        // Shared history heights 0..=5.
+        let shared = build_chain([0u8; 32], 0, 6, 0, 0x11);
+        for b in &shared {
+            store.put_root_block_with_fork_resolution(b).unwrap();
+        }
+        let fork_point = shared.last().unwrap().hash();
+        let fork_point_height = 5;
+
+        // Fork A: heights 6..=12, canonical (stored via fork resolution).
+        let fork_a = build_chain(fork_point, 6, 7, 0, 0xAA);
+        for b in &fork_a {
+            store.put_root_block_with_fork_resolution(b).unwrap();
+        }
+        assert_eq!(store.get_latest_height().unwrap(), Some(12));
+        assert_eq!(
+            store.get_root_hash_at_height(12).unwrap(),
+            Some(fork_a.last().unwrap().hash())
+        );
+
+        // Fork B: heights 6..=16, heavier (pow_base 1000). Store 6..=15 as RAW
+        // only — present but not canonical, exactly the state after a locator
+        // sync delivers the fork's ancestry.
+        let fork_b = build_chain(fork_point, 6, 11, 1000, 0xBB);
+        for b in &fork_b[..fork_b.len() - 1] {
+            store.put_root_block(b).unwrap();
+        }
+        // Height index is still entirely fork A at this point.
+        assert_eq!(
+            store.get_root_hash_at_height(10).unwrap(),
+            Some(fork_a[10 - 6].hash())
+        );
+
+        // Now the fork B tip (height 16) arrives via fork resolution → deep reorg.
+        let (_, is_new_tip) = store
+            .put_root_block_with_fork_resolution(fork_b.last().unwrap())
+            .unwrap();
+        assert!(is_new_tip, "heavier fork tip should become canonical");
+
+        // Canonical chain is now fork B from the fork point up to 16.
+        assert_eq!(store.get_latest_height().unwrap(), Some(16));
+        assert_eq!(
+            store.get_best_tip_block().unwrap().unwrap().hash(),
+            fork_b.last().unwrap().hash()
+        );
+        for (i, b) in fork_b.iter().enumerate() {
+            let h = 6 + i as u64;
+            assert_eq!(
+                store.get_root_hash_at_height(h).unwrap(),
+                Some(b.hash()),
+                "height {h} should point at fork B"
+            );
+        }
+        // Shared history below the fork point is untouched.
+        assert_eq!(
+            store.get_root_hash_at_height(fork_point_height).unwrap(),
+            Some(fork_point)
+        );
+        // Every canonical height links to its parent — no broken chain.
+        for h in 1..=16u64 {
+            let hash = store.get_root_hash_at_height(h).unwrap().unwrap();
+            let block = store.get_root_block(&hash).unwrap().unwrap();
+            let parent = store.get_root_hash_at_height(h - 1).unwrap().unwrap();
+            assert_eq!(block.prev_root_hash, parent, "height {h} parent mismatch");
+        }
+    }
+
+    // A heavier block whose ancestry is NOT yet present must NOT be adopted —
+    // adopting it would corrupt the height index. It stays deferred until the
+    // ancestors arrive.
+    #[test]
+    fn test_deep_reorg_defers_when_ancestry_missing() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let shared = build_chain([0u8; 32], 0, 6, 0, 0x11);
+        for b in &shared {
+            store.put_root_block_with_fork_resolution(b).unwrap();
+        }
+        let fork_point = shared.last().unwrap().hash();
+        let fork_a = build_chain(fork_point, 6, 7, 0, 0xAA);
+        for b in &fork_a {
+            store.put_root_block_with_fork_resolution(b).unwrap();
+        }
+
+        // Heavier fork B tip, but its ancestry (6..=15) is absent.
+        let fork_b = build_chain(fork_point, 6, 11, 1000, 0xBB);
+        let (_, is_new_tip) = store
+            .put_root_block_with_fork_resolution(fork_b.last().unwrap())
+            .unwrap();
+
+        assert!(!is_new_tip, "must not adopt a fork with missing ancestry");
+        // Canonical chain is unchanged — still fork A at height 12.
+        assert_eq!(store.get_latest_height().unwrap(), Some(12));
+        assert_eq!(
+            store.get_root_hash_at_height(12).unwrap(),
+            Some(fork_a.last().unwrap().hash())
+        );
+
+        // Once the ancestry is delivered, feeding the tip again adopts fork B.
+        for b in &fork_b[..fork_b.len() - 1] {
+            store.put_root_block(b).unwrap();
+        }
+        let (_, is_new_tip) = store
+            .put_root_block_with_fork_resolution(fork_b.last().unwrap())
+            .unwrap();
+        assert!(is_new_tip, "adopts once ancestry is present");
+        assert_eq!(store.get_latest_height().unwrap(), Some(16));
     }
 
     #[test]
