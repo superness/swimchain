@@ -441,12 +441,16 @@ impl ChainStore {
                     }
                     crate::blocks::ActionType::Reply => {
                         // Index reply by parent: Key = parent_hash(32) || timestamp(8) → content_hash
+                        // Never index content as a reply to ITSELF: a self-parent entry makes the
+                        // reply-tree walk (count_all_replies) cycle forever.
                         if let Some(parent) = action.parent_id {
-                            let mut reply_key = [0u8; 40];
-                            reply_key[..32].copy_from_slice(&parent);
-                            reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                            self.replies_by_parent_index
-                                .insert(&reply_key, &content_hash)?;
+                            if parent != content_hash {
+                                let mut reply_key = [0u8; 40];
+                                reply_key[..32].copy_from_slice(&parent);
+                                reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                                self.replies_by_parent_index
+                                    .insert(&reply_key, &content_hash)?;
+                            }
                         }
                     }
                     crate::blocks::ActionType::CreateSpace => {
@@ -457,13 +461,18 @@ impl ChainStore {
                     }
                     crate::blocks::ActionType::Edit => {
                         // Index edit by original content: Key = parent_hash(32) || timestamp(8) → new content_hash
+                        // Skip self-referential edits (original == this content): a self-parent
+                        // entry makes count_all_replies cycle forever. This is the observed
+                        // source of the mobile CPU peg (self-parenting wiki content).
                         if let Some(original_id) = action.parent_id {
-                            let mut edit_key = [0u8; 40];
-                            edit_key[..32].copy_from_slice(&original_id);
-                            edit_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                            // Reuse replies_by_parent_index for edits (edit is like a special reply to original)
-                            self.replies_by_parent_index
-                                .insert(&edit_key, &content_hash)?;
+                            if original_id != content_hash {
+                                let mut edit_key = [0u8; 40];
+                                edit_key[..32].copy_from_slice(&original_id);
+                                edit_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                                // Reuse replies_by_parent_index for edits (edit is like a special reply to original)
+                                self.replies_by_parent_index
+                                    .insert(&edit_key, &content_hash)?;
+                            }
                         }
                     }
                     // Private space actions will be indexed via MembershipStore
@@ -1288,6 +1297,16 @@ impl ChainStore {
                     if visited.insert(reply_hash) {
                         total += 1;
                         stack.push(reply_hash);
+                    } else {
+                        // Cyclic (or duplicate) edge in the reply index — the walk
+                        // would otherwise loop here. The write path now rejects
+                        // self-parenting entries; older indexes may still carry
+                        // them until re-sync, so this is debug-level, not a warn.
+                        log::debug!(
+                            "[REPLY-CYCLE] reply {} re-encountered under parent {} (cyclic reply index)",
+                            hex::encode(reply_hash),
+                            hex::encode(current)
+                        );
                     }
                 }
             }
