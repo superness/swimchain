@@ -13,9 +13,6 @@ use tokio::sync::{broadcast, RwLock};
 use crate::blocklist::{BlocklistEntry, BlocklistReason, BlocklistStore};
 use crate::blocks::{Action, BranchPath};
 use crate::content::decay_integration::DecayIntegration;
-use crate::content::pool::{
-    compute_pool_pow_target, CompletionResult, PoolContribution, PoolError, PoolManager,
-};
 use crate::content::retrieval::ContentRetrievalManager;
 use crate::crypto::action_pow::{
     compute_pow, verify_pow, ActionType, ForkPoWConfig, PoWChallenge, PoWSolution,
@@ -552,8 +549,6 @@ pub struct NodeRef {
     pub identity_name: Arc<RwLock<Option<String>>>,
     /// Full-text search index (Tantivy) for content search
     pub search_index: Option<Arc<std::sync::RwLock<SearchIndex>>>,
-    /// Pool manager for engagement pool operations (shared with the message router)
-    pub pool_manager: Option<Arc<std::sync::RwLock<PoolManager>>>,
     /// Event manager for publishing real-time WebSocket events (H-RPC-2)
     pub event_manager: Option<Arc<crate::rpc::events::EventManager>>,
     /// Gossip origin-privacy settings (SWIM-PRIV-1). Controls whether/how
@@ -1037,12 +1032,6 @@ impl RpcMethods {
             "get_user_reactions" => self.get_user_reactions(params, id).await,
             "get_chain_engagements" => self.get_chain_engagements(params, id).await,
             "rebuild_reactions" => self.rebuild_reactions(id).await,
-
-            // Engagement pool methods
-            "create_pool" => self.create_pool(params, id).await,
-            "contribute_to_pool" => self.contribute_to_pool(params, id).await,
-            "get_pool_info" => self.get_pool_info(params, id).await,
-            "get_pool_for_content" => self.get_pool_for_content(params, id).await,
 
             // Fork methods
             "create_fork" => self.create_fork(params, id).await,
@@ -8223,7 +8212,6 @@ impl RpcMethods {
         };
 
         // Get pool manager
-        let pool_manager = match &self.node.pool_manager {
             Some(pm) => pm,
             None => {
                 return RpcResponse::error(
@@ -8241,7 +8229,6 @@ impl RpcMethods {
 
         // Compute the expected PoW target for this pool (SPEC_03 §7.4)
         let expected_target = {
-            let pm = match pool_manager.read() {
                 Ok(pm) => pm,
                 Err(_) => {
                     return RpcResponse::error(
@@ -8286,7 +8273,6 @@ impl RpcMethods {
 
         let config = ForkPoWConfig::default();
         let result = {
-            let mut pm = match pool_manager.write() {
                 Ok(pm) => pm,
                 Err(_) => {
                     return RpcResponse::error(
@@ -8311,7 +8297,6 @@ impl RpcMethods {
                 // Pool completed: reset the content's decay timer (mirrors router behavior)
                 if pool_complete {
                     if let Some(ref decay) = self.node.decay_integration {
-                        let target_content = pool_manager
                             .read()
                             .ok()
                             .and_then(|pm| pm.get_pool(&pool_id_bytes).map(|p| p.target_content));

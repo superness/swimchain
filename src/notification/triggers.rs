@@ -27,9 +27,6 @@ pub struct TriggerSources {
 
     /// Space health manager for space health notifications
     pub space_health_manager: Option<Arc<crate::space_health::SpaceHealthManager>>,
-
-    /// Attribution manager for content risk notifications
-    pub attribution_manager: Option<Arc<crate::attribution::AttributionManager>>,
 }
 
 impl TriggerSources {
@@ -53,15 +50,6 @@ impl TriggerSources {
         manager: Arc<crate::space_health::SpaceHealthManager>,
     ) -> Self {
         self.space_health_manager = Some(manager);
-        self
-    }
-
-    /// Builder method to add attribution manager.
-    pub fn with_attribution_manager(
-        mut self,
-        manager: Arc<crate::attribution::AttributionManager>,
-    ) -> Self {
-        self.attribution_manager = Some(manager);
         self
     }
 }
@@ -204,17 +192,17 @@ pub fn detect_space_health(
             health_score,
             space_name,
         },
-        message: format!("🏊 {} could use some help (health: {}%)", name, health_score),
+        message: format!(
+            "🏊 {} could use some help (health: {}%)",
+            name, health_score
+        ),
     })
 }
 
 /// Detect content risk trigger.
 ///
 /// Returns a trigger event if user has content about to decay.
-pub fn detect_content_risk(
-    content_count: u32,
-    days_remaining: u16,
-) -> Option<TriggerEvent> {
+pub fn detect_content_risk(content_count: u32, days_remaining: u16) -> Option<TriggerEvent> {
     if content_count == 0 || days_remaining >= CONTENT_RISK_THRESHOLD {
         return None;
     }
@@ -496,7 +484,10 @@ mod tests {
     #[test]
     fn test_contribution_thanks() {
         let event = detect_contribution_thanks(50, 10, None).unwrap();
-        assert_eq!(event.notification_type, NotificationType::ContributionThanks);
+        assert_eq!(
+            event.notification_type,
+            NotificationType::ContributionThanks
+        );
         assert!(event.message.contains("50"));
         assert!(event.message.contains("this week"));
     }
@@ -525,7 +516,10 @@ mod tests {
     fn test_trigger_event_to_notification() {
         let event = TriggerEvent {
             notification_type: NotificationType::Streak,
-            context: NotificationContext::Streak { days: 7, milestone: 7 },
+            context: NotificationContext::Streak {
+                days: 7,
+                milestone: 7,
+            },
             message: "🔥 7-day streak!".to_string(),
         };
 
@@ -542,6 +536,5 @@ mod tests {
         // level_manager removed (level system deprecated)
         assert!(sources.achievement_service.is_none());
         assert!(sources.space_health_manager.is_none());
-        assert!(sources.attribution_manager.is_none());
     }
 }

@@ -65,7 +65,7 @@ impl SubscriptionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::events::{ContentEvent, NetworkEvent, PoolEvent};
+    use crate::api::events::{ContentEvent, NetworkEvent};
     use crate::types::content::{ContentId, SpaceId};
     use crate::types::identity::IdentityId;
 
@@ -94,10 +94,7 @@ mod tests {
         let mut rx2 = manager.subscribe();
         let mut rx3 = manager.subscribe();
 
-        let event = ApiEvent::Pool(PoolEvent::PoolCreated {
-            pool_id: [1u8; 32],
-            content_id: ContentId::from_bytes([2u8; 32]),
-        });
+        let event = ApiEvent::Network(NetworkEvent::PeerConnected { peer_count: 3 });
         manager.send(event);
 
         assert!(rx1.try_recv().is_ok());

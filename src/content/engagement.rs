@@ -1,8 +1,7 @@
 //! Engagement processing (SPEC_02 §4.2)
 //!
 //! Processes engagement records (REPLY, QUOTE, ENGAGE) and updates content decay state.
-//! - REPLY and QUOTE reset the decay timer
-//! - ENGAGE uses pooled PoW system (SPEC_03 §7)
+//! Every engagement is an individual proof-of-work action that resets the decay timer.
 
 use crate::content::decay::calculate_decay_state;
 use crate::types::constants::ENGAGEMENT_FUTURE_TOLERANCE_MS;
@@ -15,22 +14,6 @@ pub enum EngagementResult {
     Accepted,
     /// Engagement rejected
     Rejected(EngagementRejection),
-    /// ENGAGE type - pool is pending completion
-    PoolPending {
-        /// Pool identifier
-        pool_id: [u8; 32],
-        /// Current accumulated PoW in seconds
-        current: u64,
-        /// Required total PoW in seconds
-        required: u64,
-    },
-    /// Pool completed - decay timer reset for all contributors
-    PoolCompleted {
-        /// Pool identifier
-        pool_id: [u8; 32],
-        /// List of contributor public keys
-        contributors: Vec<[u8; 32]>,
-    },
 }
 
 /// Reasons an engagement can be rejected
@@ -86,39 +69,13 @@ pub fn process_engagement(
             EngagementResult::Accepted
         }
         EngagementType::Engage => {
-            // Direct engagement (reactions) - resets decay timer like other engagement types
-            // Pools are deprecated - engagements go directly through submit_engagement RPC
+            // Direct engagement (reactions) resets the decay timer like other engagement types.
+            // Every engagement is an individual PoW action submitted via the submit_engagement RPC.
             content.engagement_count = content.engagement_count.saturating_add(1);
             content.last_engagement = effective_timestamp;
             EngagementResult::Accepted
         }
     }
-}
-
-/// Process a pool completion event
-///
-/// Called when an engagement pool completes (total PoW reaches 60s).
-/// Resets the content's decay timer and credits all contributors.
-///
-/// # Arguments
-/// * `content` - Mutable reference to the content item
-/// * `pool_id` - The completed pool's identifier
-/// * `completion_time_ms` - Unix timestamp when pool completed (milliseconds)
-/// * `contributors` - List of contributor public keys
-pub fn on_pool_complete(
-    content: &mut ContentItem,
-    _pool_id: [u8; 32],
-    completion_time_ms: u64,
-    contributors: &[[u8; 32]],
-) {
-    // Reset decay timer to completion time
-    content.last_engagement = completion_time_ms;
-
-    // Credit all contributors (increment engagement count)
-    // Each contribution counts as an engagement
-    content.engagement_count = content
-        .engagement_count
-        .saturating_add(contributors.len() as u32);
 }
 
 #[cfg(test)]
@@ -215,33 +172,6 @@ mod tests {
         assert_eq!(result, EngagementResult::Accepted);
         assert_eq!(content.last_engagement, engagement_time);
         assert_eq!(content.engagement_count, 1);
-    }
-
-    #[test]
-    fn test_on_pool_complete() {
-        let now = 100_000_000_u64;
-        let mut content = make_test_content(now, now);
-        let pool_id = [1u8; 32];
-        let completion_time = now + 5_000_000;
-        let contributors = vec![[1u8; 32], [2u8; 32], [3u8; 32]];
-
-        on_pool_complete(&mut content, pool_id, completion_time, &contributors);
-
-        assert_eq!(content.last_engagement, completion_time);
-        assert_eq!(content.engagement_count, 3);
-    }
-
-    #[test]
-    fn test_on_pool_complete_saturates() {
-        let now = 100_000_000_u64;
-        let mut content = make_test_content(now, now);
-        content.engagement_count = u32::MAX - 1;
-        let pool_id = [1u8; 32];
-        let contributors = vec![[1u8; 32], [2u8; 32], [3u8; 32]];
-
-        on_pool_complete(&mut content, pool_id, now + 1000, &contributors);
-
-        assert_eq!(content.engagement_count, u32::MAX); // Saturated, not overflowed
     }
 
     #[test]

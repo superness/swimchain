@@ -5,9 +5,8 @@
 use std::sync::{Arc, RwLock};
 
 use crate::api::error::ApiError;
-use crate::api::types::{ContentResponse, PoolSummary, SyncStatusResponse};
+use crate::api::types::{ContentResponse, SyncStatusResponse};
 use crate::content::decay::calculate_decay_state;
-use crate::content::pool::PoolManager;
 use crate::storage::StorageManager;
 use crate::types::constants::{DECAY_THRESHOLD, HALF_LIFE_SECS};
 use crate::types::content::ContentId;
@@ -15,7 +14,6 @@ use crate::types::content::ContentId;
 /// Handler for query (read) operations
 pub struct QueryHandler {
     storage: Arc<RwLock<StorageManager>>,
-    pool_manager: Option<Arc<RwLock<PoolManager>>>,
     half_life_secs: u64,
 }
 
@@ -25,16 +23,8 @@ impl QueryHandler {
     pub fn new(storage: Arc<RwLock<StorageManager>>) -> Self {
         Self {
             storage,
-            pool_manager: None,
             half_life_secs: HALF_LIFE_SECS,
         }
-    }
-
-    /// Configure with a pool manager for pool queries
-    #[must_use]
-    pub fn with_pool_manager(mut self, pm: Arc<RwLock<PoolManager>>) -> Self {
-        self.pool_manager = Some(pm);
-        self
     }
 
     /// Configure with a custom half-life for testing
@@ -47,7 +37,7 @@ impl QueryHandler {
     /// Get content with decay state information
     ///
     /// Returns the content item along with computed decay state, including
-    /// survival probability, hours until decay, and associated pool info.
+    /// survival probability and hours until decay.
     ///
     /// # Errors
     ///
@@ -81,16 +71,12 @@ impl QueryHandler {
             decay.is_decayed,
         );
 
-        // Get pool info if pool manager is available
-        let pool = self.get_pool_for_content(&item.content_id, current_time_ms);
-
         Ok(ContentResponse {
             item,
             survival_probability: decay.survival_probability,
             is_decayed: decay.is_decayed,
             is_protected: decay.is_protected,
             hours_until_decay,
-            pool,
         })
     }
 
@@ -116,21 +102,6 @@ impl QueryHandler {
             let hours = (ratio.log2() * self.half_life_secs as f64 / 3600.0).max(0.0);
             Some(hours as u64)
         }
-    }
-
-    /// Get pool info for content if available
-    fn get_pool_for_content(
-        &self,
-        content_id: &ContentId,
-        current_time_ms: u64,
-    ) -> Option<PoolSummary> {
-        self.pool_manager.as_ref().and_then(|pm| {
-            let content_hash = content_id.as_bytes();
-            pm.read()
-                .ok()?
-                .get_pool_info_for_content(content_hash, current_time_ms)
-                .map(PoolSummary::from)
-        })
     }
 
     /// Get sync status (placeholder for now)

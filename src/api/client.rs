@@ -14,7 +14,6 @@ use crate::api::events::ApiEvent;
 use crate::api::queries::QueryHandler;
 use crate::api::subscription::SubscriptionManager;
 use crate::api::types::{ContentResponse, SyncStatusResponse};
-use crate::content::pool::PoolManager;
 use crate::identity::PortableIdentity;
 use crate::storage::StorageManager;
 use crate::types::content::{ContentId, SpaceId};
@@ -156,7 +155,6 @@ impl ApiClient {
 #[derive(Default)]
 pub struct ApiClientBuilder {
     storage: Option<Arc<RwLock<StorageManager>>>,
-    pool_manager: Option<Arc<RwLock<PoolManager>>>,
     identity: Option<PortableIdentity>,
     config: Option<ApiConfig>,
     use_test_pow: bool,
@@ -167,13 +165,6 @@ impl ApiClientBuilder {
     #[must_use]
     pub fn storage(mut self, storage: Arc<RwLock<StorageManager>>) -> Self {
         self.storage = Some(storage);
-        self
-    }
-
-    /// Set the pool manager (optional)
-    #[must_use]
-    pub fn pool_manager(mut self, pm: Arc<RwLock<PoolManager>>) -> Self {
-        self.pool_manager = Some(pm);
         self
     }
 
@@ -210,10 +201,7 @@ impl ApiClientBuilder {
 
         let config = self.config.unwrap_or_default();
 
-        let mut query_handler = QueryHandler::new(storage);
-        if let Some(pm) = self.pool_manager {
-            query_handler = query_handler.with_pool_manager(pm);
-        }
+        let query_handler = QueryHandler::new(storage);
 
         let mut command_handler = if self.use_test_pow {
             CommandHandler::with_test_config()
@@ -331,7 +319,6 @@ mod tests {
     #[test]
     fn test_builder_with_all_options() {
         let storage = create_test_storage();
-        let pool_manager = Arc::new(RwLock::new(PoolManager::new()));
 
         let (keypair, proof) = crate::identity::create_identity_with_difficulty(4);
         let identity =
@@ -341,7 +328,6 @@ mod tests {
 
         let result = ApiClient::builder()
             .storage(storage)
-            .pool_manager(pool_manager)
             .identity(identity)
             .config(config)
             .use_test_pow()

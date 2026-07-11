@@ -30,9 +30,8 @@ use crate::engagement_graph::{EngagementGraphStore, EngagementType};
 use crate::network::messages::{
     BlockAnnouncePayload, BlockDataPayload, BlocksPayload, DataPayload, GetBlockPayload,
     GetBlocksLocatorPayload, GetBlocksPayload, GetHeadersLocatorPayload, GetPayload, GossipPayload,
-    HeadersPayload, IHavePayload, InvItem, InvPayload, NotFoundPayload, PoolAnnouncePayload,
-    PoolContributionPayload, PoolStatusPayload, SerializedBlock, SpaceHealthQueryPayload,
-    SpaceHealthResponsePayload, WhoHasPayload, WireAddr,
+    HeadersPayload, IHavePayload, InvItem, InvPayload, NotFoundPayload, SerializedBlock,
+    SpaceHealthQueryPayload, SpaceHealthResponsePayload, WhoHasPayload, WireAddr,
 };
 use crate::node::peer_connections::PeerConnectionPool;
 use crate::node::{BehavioralBranchingMode, NodeMetrics};
@@ -102,9 +101,6 @@ use crate::types::constants::{
     MSG_NOTFOUND_CONTENT,
     MSG_PING,
     MSG_PONG,
-    MSG_POOL_ANNOUNCE,
-    MSG_POOL_CONTRIBUTION,
-    MSG_POOL_STATUS,
     MSG_REJECT,
     MSG_SPACE_HEALTH_QUERY,
     MSG_SPACE_HEALTH_RESPONSE,
@@ -196,8 +192,6 @@ pub struct MessageRouter {
     /// requirement; all other keys still require the attestation threshold.
     trusted_blocklist_keys: std::collections::HashSet<[u8; 32]>,
 
-    /// Pool manager for engagement pools (SPEC_03 §7, SPEC_08 §3.3)
-    pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
 
     /// Connection pool for block relay broadcasting
     connection_pool: Option<Arc<PeerConnectionPool>>,
@@ -276,7 +270,6 @@ impl MessageRouter {
             blocklist: None,
             blocklist_gossip: None,
             trusted_blocklist_keys: std::collections::HashSet::new(),
-            pool_manager: None,
             connection_pool: None,
             dht: None,
             content_store: None,
@@ -322,7 +315,6 @@ impl MessageRouter {
             blocklist: None,
             blocklist_gossip: None,
             trusted_blocklist_keys: std::collections::HashSet::new(),
-            pool_manager: None,
             connection_pool: None,
             dht: None,
             content_store: None,
@@ -459,9 +451,6 @@ impl MessageRouter {
             MSG_GETBLOCKS_LOCATOR => self.handle_getblocks_locator(peer_id, payload).await,
 
             // === Pool Gossip (SPEC_03 §7, SPEC_08 §3.3) ===
-            MSG_POOL_ANNOUNCE => self.handle_pool_announce(peer_id, payload).await,
-            MSG_POOL_CONTRIBUTION => self.handle_pool_contribution(peer_id, payload).await,
-            MSG_POOL_STATUS => self.handle_pool_status(peer_id, payload).await,
 
             // === Direct Messages (managed DM propagation) ===
             MSG_DM_REQUEST_ANNOUNCE => self.handle_dm_request_announce(peer_id, payload).await,
@@ -4901,284 +4890,6 @@ impl MessageRouter {
         Ok(None)
     }
 
-    // ========== Pool Gossip Handlers (SPEC_03 §7, SPEC_08 §3.3) ==========
-
-    /// Handle POOL_ANNOUNCE - receive and store pool announcement
-    ///
-    /// When a peer announces a new engagement pool, we store it locally
-    /// so users can discover and contribute to it.
-    ///
-    /// Payload format: PoolAnnouncePayload (176 bytes)
-    async fn handle_pool_announce(
-        &self,
-        peer_id: &[u8; 32],
-        payload: &[u8],
-    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let announce = PoolAnnouncePayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::PayloadTooSmall {
-                expected: PoolAnnouncePayload::SIZE,
-                actual: payload.len(),
-            }
-        })?;
-
-        info!(
-            "[POOL] Received POOL_ANNOUNCE from peer {}: pool={} content={} required={}s",
-            hex::encode(&peer_id[..8]),
-            hex::encode(&announce.pool_id[..8]),
-            hex::encode(&announce.target_content[..8]),
-            announce.required_pow
-        );
-
-        let pool_manager = match &self.pool_manager {
-            Some(pm) => pm,
-            None => {
-                debug!("[POOL] No pool manager configured, ignoring announcement");
-                return Err(RouteError::SubsystemUnavailable("pool_manager"));
-            }
-        };
-
-        // Check if we already have this pool (read lock)
-        {
-            let pm_read = pool_manager
-                .read()
-                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-            if pm_read.get_pool(&announce.pool_id).is_some() {
-                debug!(
-                    "[POOL] Already have pool {}, ignoring",
-                    hex::encode(&announce.pool_id[..8])
-                );
-                return Ok(None);
-            }
-        }
-
-        // Create the pool from the announcement
-        // Note: In a full implementation, we would verify the signature
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        // Only create if pool hasn't expired
-        if announce.window_end > now_ms {
-            let mut pm_write = pool_manager
-                .write()
-                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-            let new_pool_id =
-                pm_write.create_pool(announce.target_content, announce.creator, now_ms);
-            info!(
-                "[POOL] Created pool {} from announcement",
-                hex::encode(&new_pool_id[..8])
-            );
-        } else {
-            debug!(
-                "[POOL] Pool {} already expired, ignoring",
-                hex::encode(&announce.pool_id[..8])
-            );
-        }
-
-        // Forward the announcement to other peers (gossip propagation)
-        // This would be done via the gossip manager if configured
-
-        Ok(None)
-    }
-
-    /// Handle POOL_CONTRIBUTION - receive and add contribution to pool
-    ///
-    /// When a peer contributes PoW to a pool, we validate and add it.
-    /// If the pool completes, we trigger decay reset for the content.
-    ///
-    /// Payload format: PoolContributionPayload (192 bytes)
-    async fn handle_pool_contribution(
-        &self,
-        peer_id: &[u8; 32],
-        payload: &[u8],
-    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let contribution = PoolContributionPayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::PayloadTooSmall {
-                expected: PoolContributionPayload::SIZE,
-                actual: payload.len(),
-            }
-        })?;
-
-        info!(
-            "[POOL] Received POOL_CONTRIBUTION from peer {}: pool={} contributor={} work={}s",
-            hex::encode(&peer_id[..8]),
-            hex::encode(&contribution.pool_id[..8]),
-            hex::encode(&contribution.contributor[..8]),
-            contribution.pow_work
-        );
-
-        let pool_manager = match &self.pool_manager {
-            Some(pm) => pm,
-            None => {
-                debug!("[POOL] No pool manager configured, ignoring contribution");
-                return Err(RouteError::SubsystemUnavailable("pool_manager"));
-            }
-        };
-
-        // Convert to internal PoolContribution type
-        let internal_contribution = crate::content::pool::PoolContribution {
-            contributor: contribution.contributor,
-            pow_nonce: contribution.pow_nonce,
-            pow_work: contribution.pow_work,
-            pow_target: contribution.pow_target,
-            timestamp: contribution.timestamp,
-            signature: contribution.signature,
-            nonce_space: contribution.nonce_space,
-            emoji: None, // Network gossip doesn't carry emoji (yet)
-        };
-
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        // Default PoW config for validation
-        let config = crate::crypto::action_pow::ForkPoWConfig::default();
-
-        // Add contribution to pool (validation happens inside)
-        let mut pm_write = pool_manager
-            .write()
-            .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-
-        match pm_write.add_contribution(
-            contribution.pool_id,
-            internal_contribution,
-            now_ms,
-            &config,
-        ) {
-            Ok(()) => {
-                // Check if pool completed after adding contribution
-                match pm_write.check_completion(contribution.pool_id) {
-                    Ok(result) => {
-                        match result {
-                            crate::content::pool::CompletionResult::Completed {
-                                total_pow,
-                                contributor_count,
-                                ..
-                            } => {
-                                info!(
-                                    "[POOL] Pool {} completed! total_pow={}s contributors={}",
-                                    hex::encode(&contribution.pool_id[..8]),
-                                    total_pow,
-                                    contributor_count
-                                );
-
-                                // Trigger decay reset if we have decay integration
-                                if let Some(ref decay) = self.decay_integration {
-                                    if let Some(pool) = pm_write.get_pool(&contribution.pool_id) {
-                                        let blob_hash =
-                                            ContentBlobHash::from_bytes(pool.target_content);
-                                        if let Err(e) = decay.on_engagement(&blob_hash) {
-                                            warn!("[POOL] Failed to record engagement: {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                            crate::content::pool::CompletionResult::Incomplete {
-                                current,
-                                required,
-                            } => {
-                                debug!(
-                                    "[POOL] Pool {} now at {}/{}s",
-                                    hex::encode(&contribution.pool_id[..8]),
-                                    current,
-                                    required
-                                );
-                            }
-                            crate::content::pool::CompletionResult::Expired => {
-                                debug!(
-                                    "[POOL] Pool {} has expired",
-                                    hex::encode(&contribution.pool_id[..8])
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[POOL] Failed to check completion: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("[POOL] Failed to add contribution: {}", e);
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Handle POOL_STATUS - query or receive pool status
-    ///
-    /// If status=0, this is a query - respond with current pool state.
-    /// Otherwise, this is a status update from a peer.
-    ///
-    /// Payload format: PoolStatusPayload (43 bytes)
-    async fn handle_pool_status(
-        &self,
-        peer_id: &[u8; 32],
-        payload: &[u8],
-    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let status_msg =
-            PoolStatusPayload::from_bytes(payload).ok_or_else(|| RouteError::PayloadTooSmall {
-                expected: PoolStatusPayload::SIZE,
-                actual: payload.len(),
-            })?;
-
-        // If status=0, this is a query
-        if status_msg.status == 0 {
-            info!(
-                "[POOL] Received POOL_STATUS query from peer {}: pool={}",
-                hex::encode(&peer_id[..8]),
-                hex::encode(&status_msg.pool_id[..8])
-            );
-
-            let pool_manager = match &self.pool_manager {
-                Some(pm) => pm,
-                None => {
-                    return Err(RouteError::SubsystemUnavailable("pool_manager"));
-                }
-            };
-
-            // Look up the pool (read lock)
-            let pm_read = pool_manager
-                .read()
-                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-            if let Some(pool) = pm_read.get_pool(&status_msg.pool_id) {
-                let status_code = match pool.status {
-                    crate::content::pool::PoolStatus::Open => 1,
-                    crate::content::pool::PoolStatus::Completed => 2,
-                    crate::content::pool::PoolStatus::Expired => 3,
-                };
-
-                let total_pow: u64 = pool.contributions.iter().map(|c| c.pow_work).sum();
-
-                let response = PoolStatusPayload::response(
-                    status_msg.pool_id,
-                    status_code,
-                    total_pow,
-                    pool.contributions.len() as u16,
-                );
-
-                return Ok(Some((MSG_POOL_STATUS, response.to_bytes().to_vec())));
-            } else {
-                // Pool not found - return NOTFOUND
-                return Ok(Some((MSG_NOTFOUND, status_msg.pool_id.to_vec())));
-            }
-        }
-
-        // Otherwise this is a status update - just log it
-        info!(
-            "[POOL] Received POOL_STATUS update from peer {}: pool={} status={} pow={}s contributors={}",
-            hex::encode(&peer_id[..8]),
-            hex::encode(&status_msg.pool_id[..8]),
-            status_msg.status,
-            status_msg.total_pow,
-            status_msg.contributor_count
-        );
-
-        Ok(None)
-    }
-
     // ========== Mempool Gossip Handlers ==========
 
     /// Handle ACTION_ANNOUNCE - receive pending action from peer and add to mempool
@@ -7942,7 +7653,6 @@ pub struct MessageRouterBuilder {
     blocklist: Option<Arc<RwLock<crate::blocklist::BlocklistStore>>>,
     blocklist_gossip: Option<Arc<RwLock<BlocklistGossip>>>,
     trusted_blocklist_keys: std::collections::HashSet<[u8; 32]>,
-    pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
     connection_pool: Option<Arc<PeerConnectionPool>>,
     dht: Option<Arc<DhtManager>>,
     content_store: Option<Arc<PersistentContentStore>>,
@@ -7979,7 +7689,6 @@ impl MessageRouterBuilder {
             blocklist: None,
             blocklist_gossip: None,
             trusted_blocklist_keys: std::collections::HashSet::new(),
-            pool_manager: None,
             connection_pool: None,
             dht: None,
             content_store: None,
@@ -8067,14 +7776,6 @@ impl MessageRouterBuilder {
         self
     }
 
-    /// Set the pool manager for engagement pools
-    pub fn pool_manager(
-        mut self,
-        pool_manager: Arc<RwLock<crate::content::pool::PoolManager>>,
-    ) -> Self {
-        self.pool_manager = Some(pool_manager);
-        self
-    }
 
     /// Set the connection pool for block relay broadcasting
     pub fn connection_pool(mut self, pool: Arc<PeerConnectionPool>) -> Self {
@@ -8216,7 +7917,6 @@ impl MessageRouterBuilder {
             blocklist: self.blocklist,
             blocklist_gossip: self.blocklist_gossip,
             trusted_blocklist_keys: self.trusted_blocklist_keys,
-            pool_manager: self.pool_manager,
             connection_pool: self.connection_pool,
             dht: self.dht,
             content_store: self.content_store,
@@ -8256,7 +7956,6 @@ impl MessageRouterBuilder {
             blocklist: self.blocklist,
             blocklist_gossip: self.blocklist_gossip,
             trusted_blocklist_keys: self.trusted_blocklist_keys,
-            pool_manager: self.pool_manager,
             connection_pool: self.connection_pool,
             dht: self.dht,
             content_store: self.content_store,

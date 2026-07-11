@@ -199,20 +199,6 @@ pub const MAX_BLOCK_ACTIONS: usize = 1000;
 /// Maximum block size in bytes (SPEC_08 §3.1)
 pub const MAX_BLOCK_SIZE: usize = 1_048_576; // 1 MB
 
-// === SPEC_03/SPEC_08: Engagement Pools ===
-
-/// Pool window duration in seconds (10 minutes) (SPEC_03 §6.4)
-pub const POOL_WINDOW_SECS: u64 = 600;
-
-/// Pool window duration in milliseconds (SPEC_03 §6.4)
-pub const POOL_WINDOW_MS: u64 = 600_000;
-
-/// Total PoW required per engagement pool in seconds (SPEC_03 §6.4)
-pub const POOL_REQUIRED_POW_SECS: u64 = 60;
-
-/// Minimum contribution per pool entry in seconds (SPEC_03 §6.4)
-pub const MIN_CONTRIBUTION_SECS: u64 = 1;
-
 // === SPEC_06: Chain Sync (§4.5) ===
 
 /// Sync check interval in seconds (SPEC_06 §4.5)
@@ -596,20 +582,6 @@ pub const MSG_SPONSORSHIP_OFFER_QUERY: u8 = 0x4C;
 /// SPONSORSHIP_OFFER_LIST message type - response to offer query (SPEC_11 §5.1)
 /// Response containing matching sponsorship offers.
 pub const MSG_SPONSORSHIP_OFFER_LIST: u8 = 0x4D;
-
-// === Pool Gossip Protocol (SPEC_03 §7, SPEC_08 §3.3) ===
-
-/// POOL_ANNOUNCE message type - announce a new engagement pool
-/// Sent when a user creates a pool to save decaying content.
-pub const MSG_POOL_ANNOUNCE: u8 = 0x90;
-
-/// POOL_CONTRIBUTION message type - submit a PoW contribution to a pool
-/// Sent by users to add their PoW work to an existing pool.
-pub const MSG_POOL_CONTRIBUTION: u8 = 0x91;
-
-/// POOL_STATUS message type - query or update pool status
-/// Used to request the current state of a pool.
-pub const MSG_POOL_STATUS: u8 = 0x92;
 
 // === Mempool Gossip Protocol ===
 

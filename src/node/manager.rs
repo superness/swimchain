@@ -104,7 +104,6 @@ pub struct NodeManager {
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
     peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
-    pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
 
     /// Shared event manager for real-time WebSocket events (H-RPC-2).
     /// Shared between the message router (gossip ingestion) and the RPC server.
@@ -176,7 +175,6 @@ impl NodeManager {
             branch_subscription_manager: None,
             peer_branch_tracker: None,
             search_index: None,
-            pool_manager: None,
             event_manager: Arc::new(crate::rpc::EventManager::new()),
             state: Arc::new(RwLock::new(NodeState::Stopped)),
             sync_state: Arc::new(tokio::sync::RwLock::new(SyncState::Idle)),
@@ -839,11 +837,6 @@ impl NodeManager {
         self.peer_branch_tracker = Some(peer_branch_tracker.clone());
         info!("[BRANCH-SYNC] Branch subscription manager and peer tracker initialized");
 
-        // 4.8. Initialize engagement pool manager (SPEC_03 §7, SPEC_08 §3.3)
-        // Shared between the message router (network gossip) and RPC methods
-        let pool_manager = Arc::new(RwLock::new(crate::content::pool::PoolManager::new()));
-        self.pool_manager = Some(pool_manager.clone());
-
         // 4.8. Initialize message router with all subsystems
         let metrics = Arc::new(NodeMetrics::new());
         // Layer 2 NAT traversal: channel from the router's HOLE_PUNCH_INTRO handler to
@@ -858,7 +851,6 @@ impl NodeManager {
             .decay_integration(decay_integration.clone()) // For decay tracking
             .connection_pool(connection_pool.clone()) // For block relay broadcasting
             .hole_punch_tx(hole_punch_tx) // Layer 2 NAT traversal (hole-punch dial outlet)
-            .pool_manager(pool_manager) // For engagement pool gossip
             .branch_subscription_manager(branch_subscription_manager) // For branch-selective sync
             .peer_branch_tracker(peer_branch_tracker); // For tracking peer branches
 
@@ -1696,7 +1688,6 @@ impl NodeManager {
             shutdown_tx: rpc_shutdown_tx,
             identity_name: Arc::new(tokio::sync::RwLock::new(self.config.identity_name.clone())),
             search_index: self.search_index.clone(),
-            pool_manager: self.pool_manager.clone(),
             event_manager: Some(self.event_manager.clone()),
             origin_privacy: self.config.origin_privacy(),
             space_list_cache: std::sync::Mutex::new(None),

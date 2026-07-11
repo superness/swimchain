@@ -349,17 +349,17 @@ pub fn validate_action_pow(action: &Action) -> Result<(), ValidationError> {
         ActionType::Post => 1,        // Posts must have some PoW
         ActionType::Reply => 1,       // Replies must have some PoW
         ActionType::CreateSpace => 1, // Space creation requires PoW
-        ActionType::Engage => 0,      // Engagements can have pooled/zero work
+        ActionType::Engage => 0,      // Engagements may carry zero work
         ActionType::Edit => 1,        // Edits must have some PoW
         // Private space actions have lighter PoW requirements
-        ActionType::Invite => 1,      // Invites need basic PoW
-        ActionType::Leave => 0,       // Leaving is free
-        ActionType::Kick => 1,        // Kicks need basic PoW
+        ActionType::Invite => 1,       // Invites need basic PoW
+        ActionType::Leave => 0,        // Leaving is free
+        ActionType::Kick => 1,         // Kicks need basic PoW
         ActionType::RevokeInvite => 0, // Revoking is free
-        ActionType::KeyRotation => 1, // Key rotation needs PoW
-        ActionType::DMRequest => 1,   // DM requests need PoW (anti-spam)
-        ActionType::AcceptDM => 0,    // Accepting is free
-        ActionType::DeclineDM => 0,   // Declining is free
+        ActionType::KeyRotation => 1,  // Key rotation needs PoW
+        ActionType::DMRequest => 1,    // DM requests need PoW (anti-spam)
+        ActionType::AcceptDM => 0,     // Accepting is free
+        ActionType::DeclineDM => 0,    // Declining is free
         // Sponsorship actions don't require PoW
         ActionType::Sponsor => 0,
         ActionType::GenesisRegister => 0,
@@ -418,7 +418,10 @@ pub fn validate_content_block(
 /// 2. Or in this same block (parent is being added in the same batch)
 ///
 /// This prevents orphan replies from being accepted into the chain.
-pub fn validate_reply_parents<F>(block: &ContentBlock, parent_exists: F) -> Result<(), ValidationError>
+pub fn validate_reply_parents<F>(
+    block: &ContentBlock,
+    parent_exists: F,
+) -> Result<(), ValidationError>
 where
     F: Fn(&[u8; 32]) -> bool,
 {
@@ -744,7 +747,7 @@ mod tests {
         let root_block = RootBlock::from_space_blocks(
             &[space_block.clone()],
             [0u8; 32],
-            0,    // prev_cumulative_pow
+            0, // prev_cumulative_pow
             1000,
             30, // 30s difficulty
             1,

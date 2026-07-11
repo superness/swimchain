@@ -12,7 +12,9 @@ use crate::crypto::action_pow::{difficulty, ActionType, ForkPoWConfig, PoWChalle
 use crate::crypto::signature::sign_content;
 use crate::identity::decrypt_private_key;
 use crate::network::NetworkContext;
-use crate::rpc::{RpcClient, RpcClientConfig, SubmitPostParams, SubmitReplyParams, SubmitEngagementParams};
+use crate::rpc::{
+    RpcClient, RpcClientConfig, SubmitEngagementParams, SubmitPostParams, SubmitReplyParams,
+};
 use crate::storage::blob::ContentBlobHash;
 use crate::storage::content::PersistentContentStore;
 use crate::types::constants::HALF_LIFE_SECS;
@@ -98,8 +100,9 @@ pub enum PostCmd {
     /// Engage a post to help it persist
     #[command(
         about = "Contribute PoW to help content persist",
-        long_about = "Mines proof-of-work and contributes to a post's engagement pool. \
-                      The pool needs 60s total PoW to persist content past decay. \
+        long_about = "Mines proof-of-work to engage with a post. Each engagement is an \
+                      individual PoW action that resets the content's decay timer, helping it \
+                      persist past decay. \
                       Optionally add an emoji reaction: heart, thumbsup, thumbsdown, laugh, thinking, mindblown, fire, swimming.",
         after_help = "EXAMPLES:\n  sw post engage sha256:xxx --seconds 5\n  sw post engage sha256:xxx --emoji heart"
     )]
@@ -327,12 +330,15 @@ pub fn import_synced_content(config: &CliConfig, content_id: &[u8; 32]) -> Resul
     // Store in persistent content store (ignore already exists)
     match content_store.put(&content_item) {
         Ok(()) => {
-            content_store.flush()
+            content_store
+                .flush()
                 .map_err(|e| CliError::Other(format!("Failed to flush content store: {e}")))?;
             Ok(true)
         }
         Err(e) if e.to_string().contains("already exists") => Ok(false),
-        Err(e) => Err(CliError::Other(format!("Failed to import synced content: {e}"))),
+        Err(e) => Err(CliError::Other(format!(
+            "Failed to import synced content: {e}"
+        ))),
     }
 }
 
@@ -355,7 +361,8 @@ fn create_rpc_client(config: &CliConfig) -> Result<RpcClient> {
             // Fall back to network default port
             let network_mode = NetworkContext::mode();
             let rpc_port = network_mode.default_rpc_port();
-            let addr = format!("127.0.0.1:{}", rpc_port).parse()
+            let addr = format!("127.0.0.1:{}", rpc_port)
+                .parse()
                 .map_err(|e| CliError::Other(format!("Invalid RPC address: {}", e)))?;
             RpcClientConfig {
                 addr,
@@ -364,8 +371,12 @@ fn create_rpc_client(config: &CliConfig) -> Result<RpcClient> {
         }
     };
 
-    let cookie = fs::read_to_string(data_dir.join(".cookie"))
-        .map_err(|e| CliError::Other(format!("Failed to read RPC cookie: {}. Is the node running?", e)))?;
+    let cookie = fs::read_to_string(data_dir.join(".cookie")).map_err(|e| {
+        CliError::Other(format!(
+            "Failed to read RPC cookie: {}. Is the node running?",
+            e
+        ))
+    })?;
 
     let rpc_config = RpcClientConfig {
         cookie: Some(cookie),
@@ -400,7 +411,11 @@ pub fn execute(cmd: PostCmd, config: &CliConfig) -> Result<()> {
             body,
             no_pow,
         } => reply(config, &parent, &body, no_pow),
-        PostCmd::View { content_id, fetch, json } => view(config, &content_id, fetch, json),
+        PostCmd::View {
+            content_id,
+            fetch,
+            json,
+        } => view(config, &content_id, fetch, json),
         PostCmd::Engage {
             content_id,
             seconds,
@@ -472,13 +487,11 @@ fn create(config: &CliConfig, space: &str, title: &str, body: &str, no_pow: bool
     let pow_config = match network_mode {
         crate::network::NetworkMode::Regtest => ForkPoWConfig::test(),
         crate::network::NetworkMode::Testnet => ForkPoWConfig::testnet(),
-        crate::network::NetworkMode::Mainnet => {
-            match config.pow_parallelism {
-                2 => ForkPoWConfig::mobile(),
-                4 => ForkPoWConfig::production(),
-                _ => ForkPoWConfig::production(),
-            }
-        }
+        crate::network::NetworkMode::Mainnet => match config.pow_parallelism {
+            2 => ForkPoWConfig::mobile(),
+            4 => ForkPoWConfig::production(),
+            _ => ForkPoWConfig::production(),
+        },
     };
 
     // Mine PoW with cancellation support
@@ -569,12 +582,16 @@ fn create(config: &CliConfig, space: &str, title: &str, body: &str, no_pow: bool
                 pow_nonce_space: hex::encode(_solution.challenge.nonce_space),
                 pow_hash: hex::encode(_solution.hash),
                 signature: hex::encode(signature.as_bytes()),
-                timestamp: _solution.challenge.timestamp,  // Use PoW challenge timestamp
-                media_refs: vec![],  // CLI doesn't support media attachments yet
-                replaces_pending: None,  // CLI doesn't support RIM yet
+                timestamp: _solution.challenge.timestamp, // Use PoW challenge timestamp
+                media_refs: vec![], // CLI doesn't support media attachments yet
+                replaces_pending: None, // CLI doesn't support RIM yet
             };
 
-            match rpc_client.call("submit_post", serde_json::to_value(&submit_params).map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?) {
+            match rpc_client.call(
+                "submit_post",
+                serde_json::to_value(&submit_params)
+                    .map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?,
+            ) {
                 Ok(response) => {
                     if response.is_error() {
                         println!();
@@ -583,7 +600,8 @@ fn create(config: &CliConfig, space: &str, title: &str, body: &str, no_pow: bool
                             println!("  {}", err.message);
                         }
                     } else {
-                        let recipients = response.result
+                        let recipients = response
+                            .result
                             .and_then(|r| r.get("recipients").and_then(|v| v.as_u64()))
                             .unwrap_or(0);
                         println!();
@@ -670,13 +688,11 @@ fn reply(config: &CliConfig, parent: &str, body: &str, no_pow: bool) -> Result<(
     let pow_config = match network_mode {
         crate::network::NetworkMode::Regtest => ForkPoWConfig::test(),
         crate::network::NetworkMode::Testnet => ForkPoWConfig::testnet(),
-        crate::network::NetworkMode::Mainnet => {
-            match config.pow_parallelism {
-                2 => ForkPoWConfig::mobile(),
-                4 => ForkPoWConfig::production(),
-                _ => ForkPoWConfig::production(),
-            }
-        }
+        crate::network::NetworkMode::Mainnet => match config.pow_parallelism {
+            2 => ForkPoWConfig::mobile(),
+            4 => ForkPoWConfig::production(),
+            _ => ForkPoWConfig::production(),
+        },
     };
 
     // Mine PoW with cancellation support
@@ -725,7 +741,7 @@ fn reply(config: &CliConfig, parent: &str, body: &str, no_pow: bool) -> Result<(
         content_id: ContentId::from_bytes(content_hash_array),
         content_type: ContentType::Reply,
         author_id: IdentityId::from_bytes(portable.public_key),
-        space_id: SpaceId::from_bytes([0u8; 32]),  // Replies inherit space from parent
+        space_id: SpaceId::from_bytes([0u8; 32]), // Replies inherit space from parent
         parent_id: Some(ContentId::from_bytes(parent_bytes)),
         created_at: now,
         last_engagement: now,
@@ -747,7 +763,8 @@ fn reply(config: &CliConfig, parent: &str, body: &str, no_pow: bool) -> Result<(
     let store = open_content_store(config)?;
     match store.put(&content_item) {
         Ok(()) => {
-            store.flush()
+            store
+                .flush()
                 .map_err(|e| CliError::Other(format!("Failed to flush content store: {e}")))?;
 
             // Note: We don't write to sync_blobs here - the RPC submit_reply call
@@ -765,12 +782,16 @@ fn reply(config: &CliConfig, parent: &str, body: &str, no_pow: bool) -> Result<(
                 pow_nonce_space: hex::encode(solution.challenge.nonce_space),
                 pow_hash: hex::encode(solution.hash),
                 signature: hex::encode(signature.as_bytes()),
-                timestamp: solution.challenge.timestamp,  // Use PoW challenge timestamp
-                media_refs: Vec::new(),  // CLI replies don't attach media
-                replaces_pending: None,  // CLI doesn't support RIM yet
+                timestamp: solution.challenge.timestamp, // Use PoW challenge timestamp
+                media_refs: Vec::new(),                  // CLI replies don't attach media
+                replaces_pending: None,                  // CLI doesn't support RIM yet
             };
 
-            match rpc_client.call("submit_reply", serde_json::to_value(&submit_params).map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?) {
+            match rpc_client.call(
+                "submit_reply",
+                serde_json::to_value(&submit_params)
+                    .map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?,
+            ) {
                 Ok(response) => {
                     if response.is_error() {
                         println!();
@@ -779,7 +800,8 @@ fn reply(config: &CliConfig, parent: &str, body: &str, no_pow: bool) -> Result<(
                             println!("  {}", err.message);
                         }
                     } else {
-                        let recipients = response.result
+                        let recipients = response
+                            .result
                             .and_then(|r| r.get("recipients").and_then(|v| v.as_u64()))
                             .unwrap_or(0);
                         println!();
@@ -839,12 +861,19 @@ fn fetch_and_view(
     };
 
     let response = rpc_client
-        .call("request_content", serde_json::to_value(&request_params).map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?)
+        .call(
+            "request_content",
+            serde_json::to_value(&request_params)
+                .map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?,
+        )
         .map_err(|e| CliError::Other(format!("RPC error: {e}")))?;
 
     if response.is_error() {
         if let Some(err) = response.error {
-            return Err(CliError::Other(format!("Network request failed: {}", err.message)));
+            return Err(CliError::Other(format!(
+                "Network request failed: {}",
+                err.message
+            )));
         }
         return Err(CliError::Other("Network request failed".to_string()));
     }
@@ -864,8 +893,10 @@ fn fetch_and_view(
         }
         "requested" | "discovering" => {
             // Wait for content to arrive with polling
-            println!("Request sent to {} peers. Waiting for response...",
-                response.result
+            println!(
+                "Request sent to {} peers. Waiting for response...",
+                response
+                    .result
                     .as_ref()
                     .and_then(|r| r.get("recipients"))
                     .and_then(|v| v.as_u64())
@@ -911,7 +942,10 @@ fn fetch_and_view(
             println!();
         }
         _ => {
-            return Err(CliError::Other(format!("Unexpected response status: {}", status)));
+            return Err(CliError::Other(format!(
+                "Unexpected response status: {}",
+                status
+            )));
         }
     }
 
@@ -949,7 +983,11 @@ fn display_content(content_id: &str, content: &ContentItem, json_output: bool) -
 
     // Format author ID
     let author_hex = hex::encode(content.author_id.as_bytes());
-    let author_short = format!("sw1{}...{}", &author_hex[..4], &author_hex[author_hex.len() - 4..]);
+    let author_short = format!(
+        "sw1{}...{}",
+        &author_hex[..4],
+        &author_hex[author_hex.len() - 4..]
+    );
 
     // Calculate time ago
     let now = current_timestamp();
@@ -969,7 +1007,7 @@ fn display_content(content_id: &str, content: &ContentItem, json_output: bool) -
     let decay_state = calculate_decay_state(content, current_time_ms, HALF_LIFE_SECS);
     let heat = decay_state.survival_probability * 100.0;
 
-    // Get engagement pool stats
+    // Get engagement stats (each engagement is an individual PoW action)
     let pool_seconds = content.engagement_count as u32;
     let pool_contributors = if content.engagement_count > 0 { 1 } else { 0 };
 
@@ -997,7 +1035,10 @@ fn display_content(content_id: &str, content: &ContentItem, json_output: bool) -
             println!();
         }
         if pool_seconds > 0 {
-            println!("Pool: {}s from {} contributors", pool_seconds, pool_contributors);
+            println!(
+                "Engagements: {} from {} contributors",
+                pool_seconds, pool_contributors
+            );
         }
         println!("Created: {}", content.created_at);
     }
@@ -1078,7 +1119,11 @@ fn view(config: &CliConfig, content_id: &str, fetch: bool, json_output: bool) ->
 
     // Format author ID
     let author_hex = hex::encode(content.author_id.as_bytes());
-    let author_short = format!("sw1{}...{}", &author_hex[..4], &author_hex[author_hex.len() - 4..]);
+    let author_short = format!(
+        "sw1{}...{}",
+        &author_hex[..4],
+        &author_hex[author_hex.len() - 4..]
+    );
 
     // Calculate time ago
     let now = current_timestamp();
@@ -1104,7 +1149,7 @@ fn view(config: &CliConfig, content_id: &str, fetch: bool, json_output: bool) ->
     let decay_state = calculate_decay_state(&content, current_time_ms, HALF_LIFE_SECS);
     let heat = decay_state.survival_probability * 100.0;
 
-    // Get engagement pool stats (currently only local engagement count)
+    // Get engagement stats (currently only local engagement count)
     let pool_seconds = content.engagement_count as u32;
     let pool_contributors = if content.engagement_count > 0 { 1 } else { 0 };
 
@@ -1133,7 +1178,10 @@ fn view(config: &CliConfig, content_id: &str, fetch: bool, json_output: bool) ->
         }
         println!("Replies: {}", replies);
         if pool_seconds > 0 {
-            println!("Pool: {}s from {} contributors", pool_seconds, pool_contributors);
+            println!(
+                "Engagements: {} from {} contributors",
+                pool_seconds, pool_contributors
+            );
         }
         println!("Created: {}", content.created_at);
     }
@@ -1263,13 +1311,11 @@ fn engage(
     let pow_config = match network_mode {
         crate::network::NetworkMode::Regtest => ForkPoWConfig::test(),
         crate::network::NetworkMode::Testnet => ForkPoWConfig::testnet(),
-        crate::network::NetworkMode::Mainnet => {
-            match config.pow_parallelism {
-                2 => ForkPoWConfig::mobile(),
-                4 => ForkPoWConfig::production(),
-                _ => ForkPoWConfig::production(),
-            }
-        }
+        crate::network::NetworkMode::Mainnet => match config.pow_parallelism {
+            2 => ForkPoWConfig::mobile(),
+            4 => ForkPoWConfig::production(),
+            _ => ForkPoWConfig::production(),
+        },
     };
 
     // Mine PoW with cancellation support
@@ -1328,7 +1374,11 @@ fn engage(
         emoji: emoji_value,
     };
 
-    let result = rpc_client.call("submit_engagement", serde_json::to_value(&submit_params).map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?);
+    let result = rpc_client.call(
+        "submit_engagement",
+        serde_json::to_value(&submit_params)
+            .map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?,
+    );
 
     match result {
         Ok(response) => {
@@ -1340,8 +1390,14 @@ fn engage(
 
             // Extract values from response result
             let (engaged, reaction_stored) = if let Some(result) = response.result {
-                let engaged = result.get("engaged").and_then(|v| v.as_bool()).unwrap_or(false);
-                let reaction_stored = result.get("reaction_stored").and_then(|v| v.as_bool()).unwrap_or(false);
+                let engaged = result
+                    .get("engaged")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let reaction_stored = result
+                    .get("reaction_stored")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 (engaged, reaction_stored)
             } else {
                 (false, false)
@@ -1365,13 +1421,27 @@ fn engage(
                 );
                 println!("Contributed:  {}s", seconds);
                 if let Some(e) = emoji_display {
-                    println!("Reaction:     {} {}", e, if reaction_stored { "(stored)" } else { "(already exists)" });
+                    println!(
+                        "Reaction:     {} {}",
+                        e,
+                        if reaction_stored {
+                            "(stored)"
+                        } else {
+                            "(already exists)"
+                        }
+                    );
                 }
-                println!("Decay timer:  {}", if engaged { "reset" } else { "unchanged" });
+                println!(
+                    "Decay timer:  {}",
+                    if engaged { "reset" } else { "unchanged" }
+                );
             }
         }
         Err(e) => {
-            return Err(CliError::Other(format!("Failed to submit engagement: {}", e)));
+            return Err(CliError::Other(format!(
+                "Failed to submit engagement: {}",
+                e
+            )));
         }
     }
 
@@ -1379,7 +1449,12 @@ fn engage(
 }
 
 /// List all local content
-fn list_content(config: &CliConfig, limit: usize, content_type_filter: Option<&str>, json_output: bool) -> Result<()> {
+fn list_content(
+    config: &CliConfig,
+    limit: usize,
+    content_type_filter: Option<&str>,
+    json_output: bool,
+) -> Result<()> {
     // Get current timestamp
     let now = current_timestamp();
 
@@ -1436,7 +1511,11 @@ fn list_content(config: &CliConfig, limit: usize, content_type_filter: Option<&s
 
             // Format author ID
             let author_hex = hex::encode(item.author_id.as_bytes());
-            let author_short = format!("sw1{}...{}", &author_hex[..4], &author_hex[author_hex.len() - 4..]);
+            let author_short = format!(
+                "sw1{}...{}",
+                &author_hex[..4],
+                &author_hex[author_hex.len() - 4..]
+            );
 
             // Calculate heat
             let decay_state = calculate_decay_state(&item, now, HALF_LIFE_SECS);
@@ -1501,7 +1580,11 @@ fn list_content(config: &CliConfig, limit: usize, content_type_filter: Option<&s
 
                 println!("{}{}", type_badge, item.title);
                 println!("  {} • {} • Heat: {:.0}%", item.author, time_ago, item.heat);
-                println!("  Space: {} • ID: {}", short_address(&item.space_id), short_address(&item.content_id));
+                println!(
+                    "  Space: {} • ID: {}",
+                    short_address(&item.space_id),
+                    short_address(&item.content_id)
+                );
                 println!();
             }
         }
@@ -1511,7 +1594,11 @@ fn list_content(config: &CliConfig, limit: usize, content_type_filter: Option<&s
 }
 
 /// Try to get content via RPC (when node is running)
-fn try_rpc_get_content(config: &CliConfig, content_id: &str, fetch: bool) -> std::result::Result<crate::rpc::types::GetContentResult, ()> {
+fn try_rpc_get_content(
+    config: &CliConfig,
+    content_id: &str,
+    fetch: bool,
+) -> std::result::Result<crate::rpc::types::GetContentResult, ()> {
     use crate::rpc::{RpcClient, RpcClientConfig};
 
     // Try to create config from data dir (reads .rpc_addr file)

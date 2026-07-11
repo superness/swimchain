@@ -3,7 +3,7 @@
 //! Actions represent individual operations within content blocks:
 //! - POST: Create a new thread
 //! - REPLY: Reply to existing content
-//! - ENGAGE: Express engagement with content (via pooled PoW)
+//! - ENGAGE: Express engagement with content (individual PoW action)
 
 use crate::crypto::sha256;
 use serde_big_array::BigArray;
@@ -51,7 +51,11 @@ pub struct ActionMediaRef {
 impl ActionMediaRef {
     /// Create a new media reference
     pub fn new(media_hash: [u8; 32], media_type: u8, size_bytes: u32) -> Self {
-        Self { media_hash, media_type, size_bytes }
+        Self {
+            media_hash,
+            media_type,
+            size_bytes,
+        }
     }
 
     /// Media type constants
@@ -71,14 +75,13 @@ pub enum ActionType {
     Post = 0x01,
     /// Reply to existing content
     Reply = 0x02,
-    /// Engage with content (from pool)
+    /// Engage with content (individual PoW action)
     Engage = 0x03,
     /// Edit existing content (only original author can edit)
     /// parent_id = original content hash, content_hash = new content hash
     Edit = 0x04,
 
     // === Private Space Actions ===
-
     /// Invite user to existing private space
     /// content_hash = InvitePayload hash, parent_id = space_id
     Invite = 0x05,
@@ -105,7 +108,6 @@ pub enum ActionType {
     DeclineDM = 0x0C,
 
     // === Sponsorship Actions (SPEC_11 Phase 6) ===
-
     /// On-chain sponsorship record
     /// actor = sponsor pubkey, content_hash = sponsee pubkey
     Sponsor = 0x0D,
@@ -376,33 +378,6 @@ impl Action {
         }
     }
 
-    /// Create ENGAGE action from pool contribution
-    ///
-    /// # Arguments
-    /// * `contribution` - Pool contribution with PoW proof
-    /// * `target_content` - Hash of content being engaged with
-    pub fn from_pool_contribution(
-        contribution: &crate::content::pool::PoolContribution,
-        target_content: [u8; 32],
-    ) -> Self {
-        Self {
-            action_type: ActionType::Engage,
-            actor: contribution.contributor,
-            // Convert milliseconds to seconds
-            timestamp: contribution.timestamp / 1000,
-            content_hash: Some(target_content),
-            parent_id: None,
-            pow_nonce: contribution.pow_nonce,
-            pow_work: contribution.pow_work,
-            pow_target: contribution.pow_target,
-            signature: contribution.signature,
-            emoji: contribution.emoji,
-            display_name: None,
-            media_refs: vec![],
-            replaces_pending: None,
-        }
-    }
-
     /// Create a new EDIT action (modify existing content)
     ///
     /// Only the original author can edit their content.
@@ -644,7 +619,8 @@ impl Action {
             // media_type: 1 byte
             buf[ref_offset + 32] = media_ref.media_type;
             // size_bytes: 4 bytes (big-endian)
-            buf[ref_offset + 33..ref_offset + 37].copy_from_slice(&media_ref.size_bytes.to_be_bytes());
+            buf[ref_offset + 33..ref_offset + 37]
+                .copy_from_slice(&media_ref.size_bytes.to_be_bytes());
         }
         offset += MAX_MEDIA_REFS * MEDIA_REF_SERIALIZED_SIZE; // 148 bytes
 
@@ -682,11 +658,9 @@ impl Action {
         offset += 32;
 
         // timestamp: 8 bytes (big-endian)
-        let timestamp = u64::from_be_bytes(
-            data[offset..offset + 8]
-                .try_into()
-                .map_err(|_| ActionError::DeserializationError("Invalid timestamp bytes".to_string()))?,
-        );
+        let timestamp = u64::from_be_bytes(data[offset..offset + 8].try_into().map_err(|_| {
+            ActionError::DeserializationError("Invalid timestamp bytes".to_string())
+        })?);
         offset += 8;
 
         // content_hash: 32 bytes
@@ -710,19 +684,15 @@ impl Action {
         offset += 32;
 
         // pow_nonce: 8 bytes (big-endian)
-        let pow_nonce = u64::from_be_bytes(
-            data[offset..offset + 8]
-                .try_into()
-                .map_err(|_| ActionError::DeserializationError("Invalid pow_nonce bytes".to_string()))?,
-        );
+        let pow_nonce = u64::from_be_bytes(data[offset..offset + 8].try_into().map_err(|_| {
+            ActionError::DeserializationError("Invalid pow_nonce bytes".to_string())
+        })?);
         offset += 8;
 
         // pow_work: 8 bytes (big-endian)
-        let pow_work = u64::from_be_bytes(
-            data[offset..offset + 8]
-                .try_into()
-                .map_err(|_| ActionError::DeserializationError("Invalid pow_work bytes".to_string()))?,
-        );
+        let pow_work = u64::from_be_bytes(data[offset..offset + 8].try_into().map_err(|_| {
+            ActionError::DeserializationError("Invalid pow_work bytes".to_string())
+        })?);
         offset += 8;
 
         // pow_target: 32 bytes
@@ -779,11 +749,10 @@ impl Action {
             let media_type = data[ref_offset + 32];
 
             // size_bytes: 4 bytes (big-endian)
-            let size_bytes = u32::from_be_bytes(
-                data[ref_offset + 33..ref_offset + 37]
-                    .try_into()
-                    .map_err(|_| ActionError::DeserializationError("Invalid media size_bytes".to_string()))?,
-            );
+            let size_bytes =
+                u32::from_be_bytes(data[ref_offset + 33..ref_offset + 37].try_into().map_err(
+                    |_| ActionError::DeserializationError("Invalid media size_bytes".to_string()),
+                )?);
 
             media_refs.push(ActionMediaRef {
                 media_hash,
@@ -853,7 +822,10 @@ impl Action {
     /// Check if this is a sponsorship action (Sponsor or GenesisRegister)
     #[must_use]
     pub fn is_sponsorship(&self) -> bool {
-        matches!(self.action_type, ActionType::Sponsor | ActionType::GenesisRegister)
+        matches!(
+            self.action_type,
+            ActionType::Sponsor | ActionType::GenesisRegister
+        )
     }
 
     /// Get the sponsee pubkey for a Sponsor action
@@ -921,14 +893,20 @@ mod tests {
         assert_eq!(ActionType::try_from(0x05).unwrap(), ActionType::Invite);
         assert_eq!(ActionType::try_from(0x06).unwrap(), ActionType::Leave);
         assert_eq!(ActionType::try_from(0x07).unwrap(), ActionType::Kick);
-        assert_eq!(ActionType::try_from(0x08).unwrap(), ActionType::RevokeInvite);
+        assert_eq!(
+            ActionType::try_from(0x08).unwrap(),
+            ActionType::RevokeInvite
+        );
         assert_eq!(ActionType::try_from(0x09).unwrap(), ActionType::KeyRotation);
         assert_eq!(ActionType::try_from(0x0A).unwrap(), ActionType::DMRequest);
         assert_eq!(ActionType::try_from(0x0B).unwrap(), ActionType::AcceptDM);
         assert_eq!(ActionType::try_from(0x0C).unwrap(), ActionType::DeclineDM);
         // Sponsorship actions
         assert_eq!(ActionType::try_from(0x0D).unwrap(), ActionType::Sponsor);
-        assert_eq!(ActionType::try_from(0x0E).unwrap(), ActionType::GenesisRegister);
+        assert_eq!(
+            ActionType::try_from(0x0E).unwrap(),
+            ActionType::GenesisRegister
+        );
         assert!(ActionType::try_from(0x0F).is_err());
         assert!(ActionType::try_from(0xFF).is_err());
     }
@@ -938,7 +916,14 @@ mod tests {
         let original_id = [0xaa; 32];
         let new_content = [0xbb; 32];
         let action = Action::new_edit(
-            [1u8; 32], 1000, original_id, new_content, 42, 15, [3u8; 32], [4u8; 64],
+            [1u8; 32],
+            1000,
+            original_id,
+            new_content,
+            42,
+            15,
+            [3u8; 32],
+            [4u8; 64],
         );
         assert_eq!(action.action_type, ActionType::Edit);
         assert!(action.is_edit());
@@ -1033,7 +1018,16 @@ mod tests {
 
     #[test]
     fn test_new_engage() {
-        let action = Action::new_engage([1u8; 32], 1000, [2u8; 32], 42, 20, [3u8; 32], [4u8; 64], Some(1));
+        let action = Action::new_engage(
+            [1u8; 32],
+            1000,
+            [2u8; 32],
+            42,
+            20,
+            [3u8; 32],
+            [4u8; 64],
+            Some(1),
+        );
         assert_eq!(action.action_type, ActionType::Engage);
         assert!(action.content_hash.is_some());
         assert!(action.parent_id.is_none());
@@ -1044,7 +1038,8 @@ mod tests {
     #[test]
     fn test_new_create_space() {
         let space_id = [0xab; 32];
-        let action = Action::new_create_space([1u8; 32], 1000, space_id, 42, 60, [3u8; 32], [4u8; 64]);
+        let action =
+            Action::new_create_space([1u8; 32], 1000, space_id, 42, 60, [3u8; 32], [4u8; 64]);
         assert_eq!(action.action_type, ActionType::CreateSpace);
         assert!(action.is_create_space());
         assert!(!action.is_thread_root());

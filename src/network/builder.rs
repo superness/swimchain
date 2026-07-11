@@ -256,11 +256,8 @@ impl Message {
                     envelope.message_type
                 )))
             }
-            // Pool and mempool messages are handled at the router level
-            MessageType::PoolAnnounce
-            | MessageType::PoolContribution
-            | MessageType::PoolStatus
-            | MessageType::ActionAnnounce
+            // Mempool messages are handled at the router level
+            MessageType::ActionAnnounce
             | MessageType::GetMempool
             | MessageType::DmRequestAnnounce
             | MessageType::DmAcceptAnnounce
