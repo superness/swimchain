@@ -2210,11 +2210,45 @@ impl RpcMethods {
         let media_bytes = match blob_store.get(&blob_hash) {
             Ok(bytes) => bytes,
             Err(_) => {
-                return RpcResponse::error(
-                    RpcErrorCode::ContentNotFound,
-                    "Media not found",
-                    id,
-                );
+                // Not stored locally — the image likely belongs to a remote post whose
+                // blob hasn't synced yet. Actively request it from peers (mark wanted +
+                // broadcast WHO_HAS; I_HAVE → auto-GET stores it), then poll briefly so
+                // it loads on first view instead of showing a permanent placeholder.
+                if let (Some(ref mgr), Some(ref pool)) =
+                    (&self.node.content_retrieval, &self.node.connection_pool)
+                {
+                    use crate::types::network::{MessageEnvelope, MessageType};
+                    mgr.mark_wanted(&blob_hash);
+                    let env = MessageEnvelope::new_fork_agnostic(
+                        MessageType::WhoHas,
+                        hash_bytes.to_vec(),
+                    );
+                    let _ = pool.broadcast(&env).await;
+                    let mut found: Option<Vec<u8>> = None;
+                    for _ in 0..25 {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        if let Ok(bytes) = blob_store.get(&blob_hash) {
+                            found = Some(bytes);
+                            break;
+                        }
+                    }
+                    match found {
+                        Some(bytes) => bytes,
+                        None => {
+                            return RpcResponse::error(
+                                RpcErrorCode::ContentNotFound,
+                                "Media not available yet (requested from peers — try again shortly)",
+                                id,
+                            );
+                        }
+                    }
+                } else {
+                    return RpcResponse::error(
+                        RpcErrorCode::ContentNotFound,
+                        "Media not found",
+                        id,
+                    );
+                }
             }
         };
 
