@@ -12,7 +12,7 @@ import { ImageGallery, ImageThumbnailIndicator } from './ImageGallery';
 import { ReactionPicker, ReactionDisplay } from './ReactionPicker';
 import { UserProfileModal } from './UserProfileModal';
 import { ReportModal, SpamBadge } from './ReportModal';
-import { usePoolContribution } from '../hooks/useRpc';
+import { usePoolContribution, useMediaUpload } from '../hooks/useRpc';
 import { useSponsorship } from '../hooks/useSponsorship';
 import { useEngagementPow } from '../hooks/useActionPow';
 import { useStoredIdentity } from '../hooks/useStoredIdentity';
@@ -156,10 +156,10 @@ export function FeedCard({
     }
   }, [isSaved, item.id, onSave, onUnsave, success, info]);
 
-  // Get media URL from hash - uses the RPC media endpoint
-  const getMediaUrl = useCallback(async (hash: string): Promise<string | null> => {
-    return `/api/media/${hash}`;
-  }, []);
+  // Get media URL from hash via the getMedia RPC (base64 data URL, cached).
+  // The old `/api/media/<hash>` path only works behind the web gateway, so
+  // images never loaded in the desktop/mobile app (no such HTTP endpoint).
+  const { getMediaUrl } = useMediaUpload();
 
   // Handle reaction with PoW
   const handleReact = useCallback(async (_emoji: string, _reactionType: ReactionType) => {
