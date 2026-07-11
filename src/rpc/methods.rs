@@ -1688,27 +1688,42 @@ impl RpcMethods {
             }
         };
 
-        // Validate space exists on-chain before allowing posts
-        if let Some(ref chain_store) = self.node.chain_store {
-            match chain_store.space_exists(&space_id_16) {
-                Ok(true) => {
-                    // Space exists, proceed
-                }
-                Ok(false) => {
-                    return RpcResponse::error(
-                        RpcErrorCode::SpaceNotFound,
-                        &format!("Space {} does not exist. Create it first with 'space create'.", params.space_id),
-                        id,
-                    );
-                }
-                Err(e) => {
-                    warn!("Failed to check space existence: {}", e);
-                    // On error, fail closed - require space to be verifiable
-                    return RpcResponse::error(
-                        RpcErrorCode::InternalError,
-                        &format!("Failed to verify space existence: {}", e),
-                        id,
-                    );
+        // Validate space exists on-chain before allowing posts.
+        //
+        // Exception: a user's own PROFILE space. Profile space IDs are
+        // deterministic (sha256("profile:v1:<author_pk_hex>")[..16], matching
+        // feed-client's getProfileSpaceId) and can never be created via
+        // create_space, which derives space IDs from the PoW hash — so the
+        // first profile post must be allowed to materialize the space (the
+        // block builder creates the space block from the action's space_id,
+        // exactly as for any other space).
+        let is_own_profile_space = {
+            let preimage = format!("profile:v1:{}", params.author_id.to_lowercase());
+            let hash = crate::crypto::sha256(preimage.as_bytes());
+            hash[..16] == space_id_16
+        };
+        if !is_own_profile_space {
+            if let Some(ref chain_store) = self.node.chain_store {
+                match chain_store.space_exists(&space_id_16) {
+                    Ok(true) => {
+                        // Space exists, proceed
+                    }
+                    Ok(false) => {
+                        return RpcResponse::error(
+                            RpcErrorCode::SpaceNotFound,
+                            &format!("Space {} does not exist. Create it first with 'space create'.", params.space_id),
+                            id,
+                        );
+                    }
+                    Err(e) => {
+                        warn!("Failed to check space existence: {}", e);
+                        // On error, fail closed - require space to be verifiable
+                        return RpcResponse::error(
+                            RpcErrorCode::InternalError,
+                            &format!("Failed to verify space existence: {}", e),
+                            id,
+                        );
+                    }
                 }
             }
         }

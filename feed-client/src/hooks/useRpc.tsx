@@ -1024,9 +1024,9 @@ export function usePostSubmit() {
       media_type: string;
       size_bytes: number;
     }>
-  ): Promise<{ success: boolean; contentId: string | null }> => {
+  ): Promise<{ success: boolean; contentId: string | null; error?: string }> => {
     if (!rpc || !connected) {
-      return { success: false, contentId: null };
+      return { success: false, contentId: null, error: 'Not connected to node' };
     }
 
     setSubmitting(true);
@@ -1066,7 +1066,9 @@ export function usePostSubmit() {
       const errorMessage = err instanceof Error ? err.message : 'Failed to submit post';
       setError(errorMessage);
       console.error('[Post] Submit error:', err);
-      return { success: false, contentId: null };
+      // Surface the reason to callers - a generic 'failed' hides actionable
+      // node errors (insufficient PoW, space missing, not sponsored...).
+      return { success: false, contentId: null, error: errorMessage };
     } finally {
       setSubmitting(false);
     }

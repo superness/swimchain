@@ -255,7 +255,7 @@ export function ProfilePage(): JSX.Element {
         setSaveStep('idle');
         resetPow();
       } else {
-        setSaveError('Failed to submit profile update');
+        setSaveError(result.error ?? 'Failed to submit profile update');
         setSaveStep('idle');
         resetPow();
       }
