@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSpamReport, useSpamStatus, type SpamReason } from '../hooks/useSpamAttestation';
 import { useWikiIdentity } from '../hooks/useWikiIdentity';
+import { useIsSponsored } from '../hooks/useIsSponsored';
 import './ReportModal.css';
 
 interface ReportModalProps {
@@ -28,6 +29,8 @@ const SPAM_REASONS: { value: SpamReason; title: string; desc: string }[] = [
 export function ReportModal({ contentId, onClose }: ReportModalProps): JSX.Element {
   const [selectedReason, setSelectedReason] = useState<SpamReason | null>(null);
   const [result, setResult] = useState<'success' | 'error' | null>(null);
+  const [guardError, setGuardError] = useState<string | null>(null);
+  const isSponsored = useIsSponsored();
   const { status, refetch: refetchStatus } = useSpamStatus(contentId);
   const { reportSpam, defendContent, submitting, progress, error } = useSpamReport();
   const identity = useWikiIdentity();
@@ -104,6 +107,13 @@ export function ReportModal({ contentId, onClose }: ReportModalProps): JSX.Eleme
 
   const handleReport = async () => {
     if (!selectedReason || !hasIdentity || !identity.publicKey) return;
+    // Reporting is a spam attestation — the node requires a sponsor (SPEC_12), so gate
+    // BEFORE mining instead of wasting ~seconds of PoW only to be rejected.
+    setGuardError(null);
+    if (isSponsored === false) {
+      setGuardError('You need a sponsor before you can report — no proof-of-work is spent until then.');
+      return;
+    }
 
     const { success } = await reportSpam(contentId, selectedReason, identity.publicKey, signFn);
 
@@ -117,6 +127,11 @@ export function ReportModal({ contentId, onClose }: ReportModalProps): JSX.Eleme
 
   const handleDefend = async () => {
     if (!hasIdentity || !identity.publicKey) return;
+    setGuardError(null);
+    if (isSponsored === false) {
+      setGuardError('You need a sponsor before you can attest — no proof-of-work is spent until then.');
+      return;
+    }
 
     const { success } = await defendContent(contentId, identity.publicKey, signFn);
 
@@ -231,6 +246,8 @@ export function ReportModal({ contentId, onClose }: ReportModalProps): JSX.Eleme
             Report
           </button>
         </div>
+
+        {guardError && <p className="report-identity-hint" style={{ color: 'var(--danger, #ed4245)' }}>{guardError}</p>}
 
         {!hasIdentity && identity.mode !== 'node' && (
           <p className="report-identity-hint">

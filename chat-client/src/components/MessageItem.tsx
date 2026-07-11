@@ -4,12 +4,14 @@
  * Discord-style message with avatar, author, timestamp, and reactions.
  */
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import './MessageItem.css';
 import { ReportButton, ReportModal, type SpamReason } from './ReportModal';
 import { BlockButton } from './BlockButton';
 import { ImageGallery } from './ImageGallery';
 import { UserProfileModal } from './UserProfileModal';
+import { useUserProfile } from '../hooks/useUserProfile';
+import { useMediaUpload } from '../hooks/useRpc';
 
 export interface MediaRef {
   mediaHash: string;
@@ -172,7 +174,25 @@ export function MessageItem({
       : message.content;
   const avatarRef = useRef<HTMLDivElement>(null);
 
-  const displayName = getDisplayName(message.authorId, message.authorName);
+  // Resolve the author's profile (name + avatar) so the thread shows their chosen
+  // username and picture inline — not just inside the details popup. Cached per author.
+  const { profile: authorProfile } = useUserProfile(message.authorId);
+  const { getMediaUrl: resolveMedia } = useMediaUpload();
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const avatarContentId = authorProfile?.info?.avatarUrl;
+  useEffect(() => {
+    if (!avatarContentId) { setAvatarUrl(null); return; }
+    let alive = true;
+    resolveMedia(avatarContentId.replace(/^sha256:/, ''))
+      .then(u => { if (alive) setAvatarUrl(u); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [avatarContentId, resolveMedia]);
+
+  const displayName = getDisplayName(
+    message.authorId,
+    authorProfile?.info?.displayName ?? message.authorName
+  );
   const authorColor = getAuthorColor(message.authorId);
   const initials = getInitials(displayName);
 
@@ -213,15 +233,15 @@ export function MessageItem({
           <div
             ref={avatarRef}
             className="message-avatar clickable"
-            style={{ backgroundColor: authorColor }}
+            style={{ backgroundColor: avatarUrl || message.authorAvatar ? undefined : authorColor }}
             onClick={() => setShowProfileModal(true)}
             onKeyDown={(e) => e.key === 'Enter' && setShowProfileModal(true)}
             role="button"
             tabIndex={0}
             aria-label={`View ${displayName}'s profile`}
           >
-            {message.authorAvatar ? (
-              <img src={message.authorAvatar} alt="" />
+            {avatarUrl || message.authorAvatar ? (
+              <img src={avatarUrl || message.authorAvatar} alt="" />
             ) : (
               <span>{initials.toUpperCase()}</span>
             )}

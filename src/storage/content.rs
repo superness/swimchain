@@ -637,7 +637,17 @@ impl PersistentContentStore {
         for result in self.reactions_tree.scan_prefix(content_id.0) {
             let (_, data) = result?;
             let reaction: Reaction = bincode::deserialize(&data)?;
-            if now_ms.saturating_sub(reaction.timestamp) < REACTION_LIFETIME_MS {
+            // Normalize the stored timestamp to milliseconds. Legacy reactions were
+            // materialized with the action's SECONDS timestamp (~1.7e9), while the
+            // window is in ms (~1.7e12); without this every old reaction reads as
+            // decayed and counts come back empty. A value below 1e12 can only be
+            // seconds (1e12 ms is year 2001), so scale those up.
+            let ts_ms = if reaction.timestamp < 1_000_000_000_000 {
+                reaction.timestamp.saturating_mul(1000)
+            } else {
+                reaction.timestamp
+            };
+            if now_ms.saturating_sub(ts_ms) < REACTION_LIFETIME_MS {
                 // The reaction_key is unique per (content, reactor, type), so
                 // each live reaction contributes exactly one to its emoji.
                 counts.increment(reaction.reaction_type);
