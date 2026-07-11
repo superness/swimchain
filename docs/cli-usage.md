@@ -8,7 +8,7 @@ The `sw` command-line tool is your interface to the Chainsocial decentralized so
 
 ```bash
 # Clone the repository
-git clone https://github.com/swimchain/swimchain.git
+git clone https://github.com/superness/swimchain.git
 cd swimchain
 
 # Build and install

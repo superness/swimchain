@@ -34,7 +34,7 @@
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/swimchain/swimchain"
+    "url": "https://github.com/superness/swimchain"
   },
   "engines": {
     "node": ">=18.0.0"

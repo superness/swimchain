@@ -30,10 +30,13 @@
 //! - `node` - Node management (start, stop, status, peers)
 
 use clap::{CommandFactory, Parser, Subcommand};
-use swimchain::cli::commands::{block, branch, completions, config, fork, identity, node, post, search, space, sponsor, sync, test};
+use std::path::PathBuf;
+use swimchain::cli::commands::{
+    block, branch, completions, config, fork, identity, node, post, search, space, sponsor, sync,
+    test,
+};
 use swimchain::cli::CliConfig;
 use swimchain::network::{NetworkContext, NetworkMode};
-use std::path::PathBuf;
 
 /// Swimchain CLI client
 #[derive(Parser)]
@@ -44,7 +47,7 @@ use std::path::PathBuf;
     about = "CLI client for the Swimchain decentralized social network",
     long_about = "A command-line interface for creating identities, managing spaces, \
                   posting content, and synchronizing with the Swimchain network.\n\n\
-                  For more information, visit https://github.com/swimchain/swimchain",
+                  For more information, visit https://github.com/superness/swimchain",
     after_help = "GETTING STARTED:\n  \
                   1. Create an identity: sw identity create\n  \
                   2. Create or join a space: sw space create --name \"My Space\"\n  \

@@ -174,7 +174,7 @@ export function Settings(): JSX.Element {
               <a href="https://docs.swimchain.io" target="_blank" rel="noopener noreferrer">
                 Documentation
               </a>
-              <a href="https://github.com/swimchain" target="_blank" rel="noopener noreferrer">
+              <a href="https://github.com/superness/swimchain" target="_blank" rel="noopener noreferrer">
                 GitHub
               </a>
             </div>

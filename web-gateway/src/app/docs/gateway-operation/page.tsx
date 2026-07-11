@@ -45,8 +45,8 @@ export default function GatewayOperationDocsPage() {
 
         <h3>1. Clone the repository</h3>
         <pre className="code-block">
-{`git clone https://github.com/swimchain/web-gateway.git
-cd web-gateway`}
+{`git clone https://github.com/superness/swimchain.git
+cd swimchain/web-gateway`}
         </pre>
 
         <h3>2. Configure environment</h3>
@@ -279,8 +279,8 @@ X-RateLimit-Reset: 1705312200`}
           For help operating a gateway:
         </p>
         <ul>
-          <li><a href="https://github.com/swimchain/web-gateway/issues">GitHub Issues</a></li>
-          <li><a href="https://github.com/swimchain/web-gateway/discussions">GitHub Discussions</a></li>
+          <li><a href="https://github.com/superness/swimchain/issues">GitHub Issues</a></li>
+          <li><a href="https://github.com/superness/swimchain/discussions">GitHub Discussions</a></li>
         </ul>
       </section>
     </div>

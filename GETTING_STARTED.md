@@ -46,7 +46,7 @@ npm --version
 
 ```bash
 # Clone the repository
-git clone https://github.com/swimchain/swimchain.git
+git clone https://github.com/superness/swimchain.git
 cd swimchain
 
 # Build the CLI and node in release mode

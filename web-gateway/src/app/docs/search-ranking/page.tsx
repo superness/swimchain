@@ -185,12 +185,12 @@ export default function SearchRankingDocsPage() {
         </p>
         <ul>
           <li>
-            <a href="https://github.com/swimchain/web-gateway/blob/main/src/lib/search/ranking.ts">
+            <a href="https://github.com/superness/swimchain/blob/main/web-gateway/src/lib/search/ranking.ts">
               ranking.ts - Score calculation
             </a>
           </li>
           <li>
-            <a href="https://github.com/swimchain/web-gateway/blob/main/src/lib/search/normalize.ts">
+            <a href="https://github.com/superness/swimchain/blob/main/web-gateway/src/lib/search/normalize.ts">
               normalize.ts - Factor normalization
             </a>
           </li>
