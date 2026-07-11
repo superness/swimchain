@@ -111,12 +111,16 @@ export function encodeProfileInfo(info: ProfileInfo): string {
  * Decode profile info from a post body
  */
 export function decodeProfileInfo(body: string): ProfileInfo | null {
-  if (!body.startsWith(`[${PROFILE_INFO_TYPE}]`)) {
+  // The node stores post bodies as title + double-newline + body; profile
+  // posts have an empty title, so stored bodies carry a leading double
+  // newline - trim before matching the marker.
+  const trimmed = body.replace(/^\s+/, '');
+  if (!trimmed.startsWith(`[${PROFILE_INFO_TYPE}]`)) {
     return null;
   }
 
   try {
-    const json = body.slice(PROFILE_INFO_TYPE.length + 2);
+    const json = trimmed.slice(PROFILE_INFO_TYPE.length + 2);
     return JSON.parse(json) as ProfileInfo;
   } catch {
     return null;
@@ -134,12 +138,14 @@ export function encodeAvatarInfo(avatar: AvatarInfo): string {
  * Decode avatar info from a post body
  */
 export function decodeAvatarInfo(body: string): AvatarInfo | null {
-  if (!body.startsWith(`[${PROFILE_AVATAR_TYPE}]`)) {
+  // Same leading-double-newline trim as decodeProfileInfo (empty-title storage).
+  const trimmed = body.replace(/^\s+/, '');
+  if (!trimmed.startsWith(`[${PROFILE_AVATAR_TYPE}]`)) {
     return null;
   }
 
   try {
-    const json = body.slice(PROFILE_AVATAR_TYPE.length + 2);
+    const json = trimmed.slice(PROFILE_AVATAR_TYPE.length + 2);
     return JSON.parse(json) as AvatarInfo;
   } catch {
     return null;

@@ -288,11 +288,16 @@ export async function computePow(
       };
     }
 
-    // Progress callback every 10 attempts (Argon2id is slow)
-    if (attempts % 10 === 0) {
+    // Progress + yield EVERY attempt: hash-wasm's Argon2id computes
+    // synchronously on the main thread, so without an explicit yield the
+    // event loop starves and React never repaints — the mining UI showed a
+    // frozen counter for the whole run. One update per attempt is only a few
+    // per second (each Argon2id call is 100ms+).
+    {
       const elapsedMs = Date.now() - startTime;
-      const hashRate = (attempts / elapsedMs) * 1000;
+      const hashRate = (attempts / Math.max(elapsedMs, 1)) * 1000;
       onProgress?.(attempts, elapsedMs, hashRate);
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
 
     nonce++;
