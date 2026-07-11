@@ -867,8 +867,13 @@ impl RpcMethods {
             "get_space_members" => self.get_space_members(params, id).await,
             "get_my_private_spaces" => self.get_my_private_spaces(params, id).await,
             "get_pending_dm_requests" => self.get_pending_dm_requests(params, id).await,
+            "get_sent_dm_requests" => self.get_sent_dm_requests(params, id).await,
+            "encode_address" => self.encode_address(params, id).await,
             "request_dm" => self.request_dm(params, id).await,
+            "request_dm_managed" => self.request_dm_managed(params, id).await,
             "accept_dm" => self.accept_dm(params, id).await,
+            "accept_dm_managed" => self.accept_dm_managed(params, id).await,
+            "decline_dm_managed" => self.decline_dm_managed(params, id).await,
             "decline_dm" => self.decline_dm(params, id).await,
 
             // Search methods
@@ -9095,6 +9100,90 @@ impl RpcMethods {
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
+    /// List DM requests SENT by a user (as requester), with their current status.
+    /// Lets the requester's client learn when a recipient has accepted (so it can flip
+    /// a "pending" DM to an active conversation).
+    /// Encode a 32-byte ed25519 public key (hex) as its canonical cs1… address.
+    /// Lets clients show a friendly address for a peer they only know by pubkey.
+    async fn encode_address(&self, params: Value, id: Value) -> RpcResponse {
+        let pk_hex = match params.get("pubkey").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Missing pubkey", id)
+            }
+        };
+        let pk: [u8; 32] = match hex::decode(pk_hex) {
+            Ok(b) if b.len() == 32 => b.try_into().unwrap(),
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid pubkey: must be 32-byte hex",
+                    id,
+                )
+            }
+        };
+        let address = crate::crypto::address::encode_address_from_pubkey(
+            &crate::types::identity::PublicKey(pk),
+        );
+        RpcResponse::success(serde_json::json!({ "address": address }), id)
+    }
+
+    async fn get_sent_dm_requests(&self, params: Value, id: Value) -> RpcResponse {
+        let user_hex = match params.get("user").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Missing user parameter", id)
+            }
+        };
+        let user_pk: [u8; 32] = match hex::decode(&user_hex) {
+            Ok(b) if b.len() == 32 => b.try_into().unwrap(),
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid user: must be 32-byte hex",
+                    id,
+                )
+            }
+        };
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                )
+            }
+        };
+        let sent = match membership_store.get_sent_dm_requests(&user_pk) {
+            Ok(v) => v,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get sent DM requests: {}", e),
+                    id,
+                )
+            }
+        };
+        let requests: Vec<Value> = sent
+            .into_iter()
+            .map(|r| {
+                let status = match r.status {
+                    crate::storage::membership::DMRequestStatus::Pending => "pending",
+                    crate::storage::membership::DMRequestStatus::Accepted => "accepted",
+                    crate::storage::membership::DMRequestStatus::Declined => "declined",
+                };
+                serde_json::json!({
+                    "recipient": hex::encode(r.recipient_pk),
+                    "status": status,
+                    "space_id": r.space_id.map(hex::encode),
+                    "created_at": r.created_at,
+                })
+            })
+            .collect();
+        RpcResponse::success(serde_json::json!({ "requests": requests }), id)
+    }
+
     /// Send a DM request to another user
     ///
     /// Creates a pending DM request that the recipient can accept or decline.
@@ -9252,6 +9341,201 @@ impl RpcMethods {
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
+    /// Node-managed DM request (desktop path): the node owns the identity seed, so it
+    /// does ALL the crypto — derives the deterministic DM space, generates + wraps the
+    /// space key for the recipient, signs the canonical request, mines the anti-spam
+    /// PoW, registers the space locally so the sender can already post, and broadcasts
+    /// a `DmRequestAnnounce` so the request reaches the recipient's node. The client
+    /// only sends the recipient's pubkey.
+    async fn request_dm_managed(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::crypto::private_space::{
+            encrypt_space_name, generate_space_key, wrap_space_key_for,
+        };
+        use crate::crypto::{leading_zeros, pow_hash, sha256};
+        use crate::network::messages::{DmRequestAnnouncePayload, DM_REQUEST_POW_DIFFICULTY};
+
+        let recipient_hex = match params.get("recipient").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing recipient parameter",
+                    id,
+                )
+            }
+        };
+        // Accept either 32-byte hex or a cs1… bech32 address (what users actually paste).
+        let recipient: [u8; 32] = match hex::decode(&recipient_hex) {
+            Ok(b) if b.len() == 32 => b.try_into().unwrap(),
+            _ => match crate::crypto::address::decode_address_to_pubkey(&recipient_hex) {
+                Ok(pk) => pk.0,
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid recipient: must be 32-byte hex or a cs1 address",
+                        id,
+                    )
+                }
+            },
+        };
+        let me = self.node.keypair.public_key.0;
+        if recipient == me {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Cannot DM yourself",
+                id,
+            );
+        }
+
+        // DMs are participation — same sponsorship gate as posting.
+        if let Err(response) = self.check_identity_sponsored(&hex::encode(me), &id) {
+            return response;
+        }
+
+        let seed_slice = self.node.keypair.private_key.seed();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_slice[..32]);
+
+        // Deterministic DM space id (symmetric in the two pubkeys) so both sides agree.
+        let mut sorted = [me, recipient];
+        sorted.sort();
+        let preimage = format!(
+            "dm:v1:{}:{}",
+            hex::encode(sorted[0]),
+            hex::encode(sorted[1])
+        );
+        let sh = sha256(preimage.as_bytes());
+        let mut space_id = [0u8; 16];
+        space_id.copy_from_slice(&sh[..16]);
+
+        // DM space key, wrapped for self (so we can read) and for the recipient (the
+        // key_share the request carries — only they can unwrap it).
+        let space_key = generate_space_key();
+        let self_wrap = match wrap_space_key_for(&space_key, &me, &seed) {
+            Ok(k) => k,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to wrap DM key: {}", e),
+                    id,
+                )
+            }
+        };
+        let recipient_wrap = match wrap_space_key_for(&space_key, &recipient, &seed) {
+            Ok(k) => k,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to wrap DM key for recipient: {}", e),
+                    id,
+                )
+            }
+        };
+        let key_share: [u8; 72] = match recipient_wrap.as_slice().try_into() {
+            Ok(a) => a,
+            Err(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Unexpected wrapped-key size",
+                    id,
+                )
+            }
+        };
+
+        let timestamp = crate::crypto::current_timestamp();
+        let encrypted_name = encrypt_space_name("Direct message", &space_key);
+
+        // Register the DM space locally + add self as admin member so the requester can
+        // post/read immediately (content syncs via normal block sync).
+        let space_info = crate::storage::chain::SpaceInfo {
+            space_id,
+            name: String::new(),
+            description: None,
+            creator: me,
+            created_at: timestamp,
+            pow_work: 1,
+            is_private: true,
+            encrypted_name: Some(encrypted_name),
+            creator_encrypted_key: Some(self_wrap.clone()),
+            key_version: 0,
+        };
+        if let Some(ref chain_store) = self.node.chain_store {
+            let _ = chain_store.register_space(&space_info);
+        }
+        if let Some(ref membership_store) = self.node.membership_store {
+            let member = crate::storage::membership::MemberRecord {
+                member_pk: me,
+                role: crate::storage::membership::MemberRole::Admin,
+                joined_at: timestamp,
+                invited_by: [0u8; 32],
+                encrypted_space_key: self_wrap,
+                key_version: 0,
+            };
+            let _ = membership_store.add_member(&space_id, &member);
+        }
+
+        // Build the self-authenticating request: sign the canonical message, then mine
+        // the anti-spam PoW (fixed 12-bit sha256, ~4096 hashes).
+        let mut payload = DmRequestAnnouncePayload {
+            requester: me,
+            recipient,
+            key_share,
+            timestamp,
+            pow_nonce: 0,
+            signature: [0u8; 64],
+        };
+        payload.signature = ed25519_sign(&self.node.keypair.private_key, &payload.signing_message()).0;
+        let pow_pre = payload.pow_message();
+        let mut nonce: u64 = 0;
+        loop {
+            let mut inp = pow_pre.clone();
+            inp.extend_from_slice(&nonce.to_le_bytes());
+            if leading_zeros(&pow_hash(&inp)) >= u32::from(DM_REQUEST_POW_DIFFICULTY) {
+                break;
+            }
+            nonce = nonce.wrapping_add(1);
+        }
+        payload.pow_nonce = nonce;
+
+        // Record the outgoing request locally (pending) and broadcast it.
+        if let Some(ref membership_store) = self.node.membership_store {
+            let request_hash =
+                sha256(&[&me[..], &recipient[..], &timestamp.to_le_bytes()].concat());
+            let record = crate::storage::membership::DMRequestRecord {
+                request_hash,
+                requester_pk: me,
+                recipient_pk: recipient,
+                requester_key_share: recipient_wrap,
+                created_at: timestamp,
+                status: crate::storage::membership::DMRequestStatus::Pending,
+                space_id: Some(space_id),
+            };
+            let _ = membership_store.add_dm_request(&record);
+        }
+
+        let mut broadcast = false;
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::types::network::{MessageEnvelope, MessageType};
+            let envelope = MessageEnvelope::new_fork_agnostic(
+                MessageType::DmRequestAnnounce,
+                payload.to_bytes().to_vec(),
+            );
+            let sent = pool.broadcast(&envelope).await;
+            broadcast = sent > 0;
+            info!("[DM] Broadcast managed DM request to {} peers", sent);
+        }
+
+        RpcResponse::success(
+            serde_json::json!({
+                "space_id": hex::encode(space_id),
+                "space_id_bech32": encode_space_id(&space_id),
+                "recipient": hex::encode(recipient),
+                "broadcast": broadcast,
+            }),
+            id,
+        )
+    }
+
     /// Accept a DM request from another user
     ///
     /// Completes the key exchange and creates the DM space.
@@ -9405,6 +9689,258 @@ impl RpcMethods {
             broadcast: false,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Accept a DM request using the node-held identity (desktop / node-managed mode).
+    ///
+    /// The node unwraps the space key that the requester sealed for us, re-wraps it for
+    /// our own membership record, registers the DM space, and marks the request accepted.
+    /// After this, both parties are members of the same deterministic DM space and can
+    /// exchange encrypted content through normal private-space sync — no client crypto.
+    async fn accept_dm_managed(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::crypto::private_space::{
+            encrypt_space_name, unwrap_space_key, wrap_space_key_for,
+        };
+
+        let requester_hex = match params.get("requester").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing requester parameter",
+                    id,
+                )
+            }
+        };
+        let requester_pk: [u8; 32] = match hex::decode(&requester_hex) {
+            Ok(b) if b.len() == 32 => b.try_into().unwrap(),
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid requester: must be 32-byte hex",
+                    id,
+                )
+            }
+        };
+
+        let me = self.node.keypair.public_key.0;
+        let seed_slice = self.node.keypair.private_key.seed();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_slice[..32]);
+
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                )
+            }
+        };
+
+        // Look up the pending request addressed to us.
+        let request = match membership_store.get_dm_request(&requester_pk, &me) {
+            Ok(Some(req)) => req,
+            Ok(None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "No pending DM request found from this user",
+                    id,
+                )
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get DM request: {}", e),
+                    id,
+                )
+            }
+        };
+
+        // Unwrap the space key the requester sealed for us (invited_by = requester).
+        let space_key = match unwrap_space_key(
+            &request.requester_key_share,
+            &requester_pk,
+            &me,
+            &seed,
+        ) {
+            Ok(k) => k,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to unwrap DM key: {}", e),
+                    id,
+                )
+            }
+        };
+
+        // Deterministic DM space id (identical derivation on both sides).
+        let mut sorted = [requester_pk, me];
+        sorted.sort();
+        let preimage = format!(
+            "dm:v1:{}:{}",
+            hex::encode(sorted[0]),
+            hex::encode(sorted[1])
+        );
+        let sh = crate::crypto::sha256(preimage.as_bytes());
+        let mut space_id = [0u8; 16];
+        space_id.copy_from_slice(&sh[..16]);
+
+        // Re-wrap the key for our own membership so we can read/post going forward.
+        let self_wrap = match wrap_space_key_for(&space_key, &me, &seed) {
+            Ok(k) => k,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to wrap DM key: {}", e),
+                    id,
+                )
+            }
+        };
+
+        let timestamp = crate::crypto::current_timestamp();
+        let encrypted_name = encrypt_space_name("Direct message", &space_key);
+
+        // Register the DM space locally + add ourselves as an admin member.
+        let space_info = crate::storage::chain::SpaceInfo {
+            space_id,
+            name: String::new(),
+            description: None,
+            creator: requester_pk,
+            created_at: request.created_at,
+            pow_work: 1,
+            is_private: true,
+            encrypted_name: Some(encrypted_name),
+            creator_encrypted_key: None,
+            key_version: 0,
+        };
+        if let Some(ref chain_store) = self.node.chain_store {
+            let _ = chain_store.register_space(&space_info);
+        }
+        // Store a SELF-wrap (invited_by = 0) so node_space_key unwraps it against our
+        // own key — exactly how create_private_space_managed records the creator's key.
+        let member = crate::storage::membership::MemberRecord {
+            member_pk: me,
+            role: crate::storage::membership::MemberRole::Admin,
+            joined_at: timestamp,
+            invited_by: [0u8; 32],
+            encrypted_space_key: self_wrap,
+            key_version: 0,
+        };
+        if let Err(e) = membership_store.add_member(&space_id, &member) {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to add self as DM member: {}", e),
+                id,
+            );
+        }
+
+        // Mark the request accepted (records the resolved space_id).
+        if let Err(e) = membership_store.update_dm_request_status(
+            &requester_pk,
+            &me,
+            crate::storage::membership::DMRequestStatus::Accepted,
+            Some(space_id),
+        ) {
+            warn!("[DM] Failed to update DM request status: {}", e);
+        }
+
+        info!(
+            "[DM] Accepted managed DM request from {} -> space {}",
+            hex::encode(&requester_pk[..8]),
+            hex::encode(space_id)
+        );
+
+        // Tell the requester (and the network) we accepted, so their node flips the
+        // request from Pending to Accepted. Signed by us; no PoW (they only act on it
+        // if they hold a matching outgoing request).
+        let mut accept = crate::network::messages::DmAcceptAnnouncePayload {
+            requester: requester_pk,
+            acceptor: me,
+            timestamp,
+            signature: [0u8; 64],
+        };
+        accept.signature =
+            ed25519_sign(&self.node.keypair.private_key, &accept.signing_message()).0;
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::types::network::{MessageEnvelope, MessageType};
+            let envelope = MessageEnvelope::new_fork_agnostic(
+                MessageType::DmAcceptAnnounce,
+                accept.to_bytes().to_vec(),
+            );
+            let sent = pool.broadcast(&envelope).await;
+            info!("[DM] Broadcast DM acceptance to {} peers", sent);
+        }
+
+        RpcResponse::success(
+            serde_json::json!({
+                "space_id": hex::encode(space_id),
+                "space_id_bech32": encode_space_id(&space_id),
+                "requester": requester_hex,
+            }),
+            id,
+        )
+    }
+
+    /// Decline a DM request using the node-held identity (desktop / node-managed mode).
+    /// Marks our incoming request Declined and tells the requester (signed announcement)
+    /// so their client can drop the pending DM.
+    async fn decline_dm_managed(&self, params: Value, id: Value) -> RpcResponse {
+        let requester_hex = match params.get("requester").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing requester parameter",
+                    id,
+                )
+            }
+        };
+        let requester_pk: [u8; 32] = match hex::decode(&requester_hex) {
+            Ok(b) if b.len() == 32 => b.try_into().unwrap(),
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid requester: must be 32-byte hex",
+                    id,
+                )
+            }
+        };
+        let me = self.node.keypair.public_key.0;
+
+        if let Some(ref membership_store) = self.node.membership_store {
+            let _ = membership_store.update_dm_request_status(
+                &requester_pk,
+                &me,
+                crate::storage::membership::DMRequestStatus::Declined,
+                None,
+            );
+        }
+
+        let timestamp = crate::crypto::current_timestamp();
+        let mut decline = crate::network::messages::DmDeclineAnnouncePayload {
+            requester: requester_pk,
+            decliner: me,
+            timestamp,
+            signature: [0u8; 64],
+        };
+        decline.signature =
+            ed25519_sign(&self.node.keypair.private_key, &decline.signing_message()).0;
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::types::network::{MessageEnvelope, MessageType};
+            let envelope = MessageEnvelope::new_fork_agnostic(
+                MessageType::DmDeclineAnnounce,
+                decline.to_bytes().to_vec(),
+            );
+            let sent = pool.broadcast(&envelope).await;
+            info!("[DM] Broadcast DM decline to {} peers", sent);
+        }
+
+        RpcResponse::success(
+            serde_json::json!({ "requester": requester_hex, "declined": true }),
+            id,
+        )
     }
 
     /// Decline a DM request from another user

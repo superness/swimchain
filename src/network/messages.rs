@@ -1733,8 +1733,9 @@ pub struct DmRequestAnnouncePayload {
     pub requester: [u8; 32],
     /// Intended recipient ed25519 public key.
     pub recipient: [u8; 32],
-    /// The DM space key wrapped for the recipient (X25519), so only they can open it.
-    pub key_share: [u8; 32],
+    /// The DM space key wrapped for the recipient — NaCl box `nonce(24) || sealed(48)`
+    /// = 72 bytes — so only the recipient (with their seed) can open it.
+    pub key_share: [u8; 72],
     /// Unix seconds when the request was created (bounds replay + PoW freshness).
     pub timestamp: u64,
     /// PoW nonce satisfying the difficulty target above.
@@ -1748,13 +1749,13 @@ pub struct DmRequestAnnouncePayload {
 pub const DM_REQUEST_POW_DIFFICULTY: u8 = 12;
 
 impl DmRequestAnnouncePayload {
-    /// Wire size: 32 + 32 + 32 + 8 + 8 + 64 = 176 bytes.
-    pub const SIZE: usize = 32 + 32 + 32 + 8 + 8 + 64;
+    /// Wire size: 32 + 32 + 72 + 8 + 8 + 64 = 216 bytes.
+    pub const SIZE: usize = 32 + 32 + 72 + 8 + 8 + 64;
 
     /// The bytes the `requester` signs (ed25519).
     #[must_use]
     pub fn signing_message(&self) -> Vec<u8> {
-        let mut m = Vec::with_capacity(13 + 32 + 32 + 32 + 8);
+        let mut m = Vec::with_capacity(13 + 32 + 32 + 72 + 8);
         m.extend_from_slice(b"DM_REQUEST_V1");
         m.extend_from_slice(&self.requester);
         m.extend_from_slice(&self.recipient);
@@ -1780,10 +1781,10 @@ impl DmRequestAnnouncePayload {
         let mut b = [0u8; Self::SIZE];
         b[0..32].copy_from_slice(&self.requester);
         b[32..64].copy_from_slice(&self.recipient);
-        b[64..96].copy_from_slice(&self.key_share);
-        b[96..104].copy_from_slice(&self.timestamp.to_le_bytes());
-        b[104..112].copy_from_slice(&self.pow_nonce.to_le_bytes());
-        b[112..176].copy_from_slice(&self.signature);
+        b[64..136].copy_from_slice(&self.key_share);
+        b[136..144].copy_from_slice(&self.timestamp.to_le_bytes());
+        b[144..152].copy_from_slice(&self.pow_nonce.to_le_bytes());
+        b[152..216].copy_from_slice(&self.signature);
         b
     }
 
@@ -1797,12 +1798,12 @@ impl DmRequestAnnouncePayload {
         requester.copy_from_slice(&bytes[0..32]);
         let mut recipient = [0u8; 32];
         recipient.copy_from_slice(&bytes[32..64]);
-        let mut key_share = [0u8; 32];
-        key_share.copy_from_slice(&bytes[64..96]);
-        let timestamp = u64::from_le_bytes(bytes[96..104].try_into().ok()?);
-        let pow_nonce = u64::from_le_bytes(bytes[104..112].try_into().ok()?);
+        let mut key_share = [0u8; 72];
+        key_share.copy_from_slice(&bytes[64..136]);
+        let timestamp = u64::from_le_bytes(bytes[136..144].try_into().ok()?);
+        let pow_nonce = u64::from_le_bytes(bytes[144..152].try_into().ok()?);
         let mut signature = [0u8; 64];
-        signature.copy_from_slice(&bytes[112..176]);
+        signature.copy_from_slice(&bytes[152..216]);
         Some(Self {
             requester,
             recipient,
@@ -1826,6 +1827,155 @@ impl DmRequestAnnouncePayload {
         }
         // Signature
         let pubkey = crate::types::identity::PublicKey(self.requester);
+        let sig = crate::types::identity::Signature(self.signature);
+        crate::crypto::signature::verify(&pubkey, &self.signing_message(), &sig)
+    }
+}
+
+/// Announcement that a DM request was accepted, propagated back to the original
+/// requester so their node can flip the request from Pending to Accepted. Signed by
+/// the acceptor. No PoW: a receiving node only acts on it if it holds a matching
+/// outgoing Pending request to this acceptor, so it can't be used to spam.
+///
+/// Canonical signed message (ed25519 by `acceptor`):
+///   b"DM_ACCEPT_V1" || requester || acceptor || timestamp(8 LE)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DmAcceptAnnouncePayload {
+    /// The original requester (recipient of this announcement).
+    pub requester: [u8; 32],
+    /// The acceptor (signer) ed25519 public key.
+    pub acceptor: [u8; 32],
+    /// Unix seconds when accepted (bounds replay).
+    pub timestamp: u64,
+    /// Acceptor's signature over the canonical message.
+    pub signature: [u8; 64],
+}
+
+impl DmAcceptAnnouncePayload {
+    /// Wire size: 32 + 32 + 8 + 64 = 136 bytes.
+    pub const SIZE: usize = 32 + 32 + 8 + 64;
+
+    /// The bytes the `acceptor` signs (ed25519).
+    #[must_use]
+    pub fn signing_message(&self) -> Vec<u8> {
+        let mut m = Vec::with_capacity(12 + 32 + 32 + 8);
+        m.extend_from_slice(b"DM_ACCEPT_V1");
+        m.extend_from_slice(&self.requester);
+        m.extend_from_slice(&self.acceptor);
+        m.extend_from_slice(&self.timestamp.to_le_bytes());
+        m
+    }
+
+    /// Serialize to bytes.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut b = [0u8; Self::SIZE];
+        b[0..32].copy_from_slice(&self.requester);
+        b[32..64].copy_from_slice(&self.acceptor);
+        b[64..72].copy_from_slice(&self.timestamp.to_le_bytes());
+        b[72..136].copy_from_slice(&self.signature);
+        b
+    }
+
+    /// Deserialize from bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::SIZE {
+            return None;
+        }
+        let mut requester = [0u8; 32];
+        requester.copy_from_slice(&bytes[0..32]);
+        let mut acceptor = [0u8; 32];
+        acceptor.copy_from_slice(&bytes[32..64]);
+        let timestamp = u64::from_le_bytes(bytes[64..72].try_into().ok()?);
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&bytes[72..136]);
+        Some(Self {
+            requester,
+            acceptor,
+            timestamp,
+            signature,
+        })
+    }
+
+    /// Verify the acceptor's signature over the canonical message.
+    #[must_use]
+    pub fn verify(&self) -> bool {
+        let pubkey = crate::types::identity::PublicKey(self.acceptor);
+        let sig = crate::types::identity::Signature(self.signature);
+        crate::crypto::signature::verify(&pubkey, &self.signing_message(), &sig)
+    }
+}
+
+/// Announcement that a DM request was declined, propagated back to the requester so
+/// their node marks the request Declined (and their client can drop it). Signed by the
+/// decliner; no PoW (a node only acts on it if it holds a matching outgoing request).
+///
+/// Canonical signed message (ed25519 by `decliner`):
+///   b"DM_DECLINE_V1" || requester || decliner || timestamp(8 LE)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DmDeclineAnnouncePayload {
+    /// The original requester (recipient of this announcement).
+    pub requester: [u8; 32],
+    /// The decliner (signer) ed25519 public key.
+    pub decliner: [u8; 32],
+    /// Unix seconds when declined (bounds replay).
+    pub timestamp: u64,
+    /// Decliner's signature over the canonical message.
+    pub signature: [u8; 64],
+}
+
+impl DmDeclineAnnouncePayload {
+    /// Wire size: 32 + 32 + 8 + 64 = 136 bytes.
+    pub const SIZE: usize = 32 + 32 + 8 + 64;
+
+    /// The bytes the `decliner` signs (ed25519).
+    #[must_use]
+    pub fn signing_message(&self) -> Vec<u8> {
+        let mut m = Vec::with_capacity(13 + 32 + 32 + 8);
+        m.extend_from_slice(b"DM_DECLINE_V1");
+        m.extend_from_slice(&self.requester);
+        m.extend_from_slice(&self.decliner);
+        m.extend_from_slice(&self.timestamp.to_le_bytes());
+        m
+    }
+
+    /// Serialize to bytes.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut b = [0u8; Self::SIZE];
+        b[0..32].copy_from_slice(&self.requester);
+        b[32..64].copy_from_slice(&self.decliner);
+        b[64..72].copy_from_slice(&self.timestamp.to_le_bytes());
+        b[72..136].copy_from_slice(&self.signature);
+        b
+    }
+
+    /// Deserialize from bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::SIZE {
+            return None;
+        }
+        let mut requester = [0u8; 32];
+        requester.copy_from_slice(&bytes[0..32]);
+        let mut decliner = [0u8; 32];
+        decliner.copy_from_slice(&bytes[32..64]);
+        let timestamp = u64::from_le_bytes(bytes[64..72].try_into().ok()?);
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&bytes[72..136]);
+        Some(Self {
+            requester,
+            decliner,
+            timestamp,
+            signature,
+        })
+    }
+
+    /// Verify the decliner's signature over the canonical message.
+    #[must_use]
+    pub fn verify(&self) -> bool {
+        let pubkey = crate::types::identity::PublicKey(self.decliner);
         let sig = crate::types::identity::Signature(self.signature);
         crate::crypto::signature::verify(&pubkey, &self.signing_message(), &sig)
     }

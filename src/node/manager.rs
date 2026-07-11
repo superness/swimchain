@@ -833,6 +833,11 @@ impl NodeManager {
         if let Some(ref spam_store) = self.spam_attestation_store {
             router_builder = router_builder.spam_attestation_store(spam_store.clone());
         }
+        if let Some(ref membership_store) = self.membership_store {
+            router_builder = router_builder.membership_store(membership_store.clone());
+        }
+        router_builder =
+            router_builder.identity_pubkey(*self.keypair.public_key.as_bytes());
         if let Some(ref engagement_graph) = self.engagement_graph {
             router_builder = router_builder.engagement_graph(engagement_graph.clone());
         }

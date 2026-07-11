@@ -7,6 +7,6 @@ return<div className="dm-panel"><div className="dm-panel-header" onClick={()=>se
 {!c&&<div className="dm-panel-body"><button className="dm-new-btn" onClick={onStartDm}>+ New DM</button>
 {pendingReceived.map(e=><div key={e.otherPk} className="dm-request-item"><span>{truncateAddress(e.otherPk)}</span><div><button className="dm-accept-btn" onClick={()=>acceptRequest(e.spaceId,e.otherPk)} aria-label="Accept DM request">✓</button><button className="dm-decline-btn" onClick={()=>declineRequest(e.spaceId,e.otherPk)} aria-label="Decline DM request">✕</button></div></div>)}
 {activeDms.map(e=><div key={e.otherPk} className={'dm-conv-item'+(e.unreadCount>0?' dm-unread':'')} onClick={()=>h(e)} role="button" tabIndex={0}><span>{truncateAddress(e.otherPk)}{e.unreadCount>0&&<span className="dm-unread-dot"/>}</span></div>)}
-{pendingSent.map(e=><div key={e.otherPk} className="dm-conv-item dm-pending"><span>{truncateAddress(e.otherPk)}<em> Pending</em></span></div>)}
+{pendingSent.map(e=><div key={e.otherPk} className="dm-conv-item dm-pending" onClick={()=>onSelectDm(e.spaceId,e.otherPk)} role="button" tabIndex={0}><span>{truncateAddress(e.otherPk)}<em> Pending</em></span></div>)}
 {!pendingReceived.length&&!activeDms.length&&!pendingSent.length&&<div className="dm-empty">No DMs yet</div>}
 </div>}</div>;};

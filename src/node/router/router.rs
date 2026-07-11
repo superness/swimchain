@@ -56,6 +56,9 @@ use crate::types::constants::{
     MAX_ADDRS_PER_MESSAGE,
     // Message types
     MSG_ACTION_ANNOUNCE,
+    MSG_DM_ACCEPT_ANNOUNCE,
+    MSG_DM_DECLINE_ANNOUNCE,
+    MSG_DM_REQUEST_ANNOUNCE,
     MSG_ADDR,
     MSG_ALERT,
     MSG_ATTRIBUTION_QUERY,
@@ -147,6 +150,10 @@ pub struct MessageRouter {
     /// Pending ping requests: nonce -> (sent_at, expected_peer_id)
     pending_pings: RwLock<HashMap<u64, (Instant, [u8; 32])>>,
 
+    /// Seen DM-request signatures (first 32 bytes) for gossip loop-prevention.
+    /// A DM request is re-flooded at most once per node.
+    seen_dm_requests: RwLock<std::collections::HashSet<[u8; 32]>>,
+
     /// Pending WHO_HAS relay requests: content_hash -> (timestamp, Vec<requester_peer_id>)
     /// When we receive I_HAVE for content we relayed WHO_HAS for, we forward I_HAVE to these peers
     pending_who_has_relay: RwLock<HashMap<[u8; 32], (Instant, Vec<[u8; 32]>)>>,
@@ -194,6 +201,10 @@ pub struct MessageRouter {
 
     /// Spam attestation store for community flagging (SPEC_12 §3)
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    membership_store: Option<Arc<crate::storage::membership::MembershipStore>>,
+    /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
+    /// Used to recognize DM requests addressed to us.
+    identity_pubkey: Option<[u8; 32]>,
 
     /// Engagement graph for tracking who engages with whom
     engagement_graph: Option<Arc<EngagementGraphStore>>,
@@ -233,6 +244,7 @@ impl MessageRouter {
         Self {
             metrics,
             pending_pings: RwLock::new(HashMap::new()),
+            seen_dm_requests: RwLock::new(std::collections::HashSet::new()),
             pending_who_has_relay: RwLock::new(HashMap::new()),
             orphan_blocks: RwLock::new(HashMap::new()),
             content_retrieval: None,
@@ -248,6 +260,8 @@ impl MessageRouter {
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            membership_store: None,
+            identity_pubkey: None,
             engagement_graph: None,
             sponsorship_store: None,
             offer_store: None,
@@ -273,6 +287,7 @@ impl MessageRouter {
         Self {
             metrics,
             pending_pings: RwLock::new(HashMap::new()),
+            seen_dm_requests: RwLock::new(std::collections::HashSet::new()),
             pending_who_has_relay: RwLock::new(HashMap::new()),
             orphan_blocks: RwLock::new(HashMap::new()),
             content_retrieval,
@@ -288,6 +303,8 @@ impl MessageRouter {
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            membership_store: None,
+            identity_pubkey: None,
             engagement_graph: None,
             sponsorship_store: None,
             offer_store: None,
@@ -418,6 +435,11 @@ impl MessageRouter {
             MSG_POOL_ANNOUNCE => self.handle_pool_announce(peer_id, payload).await,
             MSG_POOL_CONTRIBUTION => self.handle_pool_contribution(peer_id, payload).await,
             MSG_POOL_STATUS => self.handle_pool_status(peer_id, payload).await,
+
+            // === Direct Messages (managed DM propagation) ===
+            MSG_DM_REQUEST_ANNOUNCE => self.handle_dm_request_announce(peer_id, payload).await,
+            MSG_DM_ACCEPT_ANNOUNCE => self.handle_dm_accept_announce(peer_id, payload).await,
+            MSG_DM_DECLINE_ANNOUNCE => self.handle_dm_decline_announce(peer_id, payload).await,
 
             // === Mempool Gossip ===
             MSG_ACTION_ANNOUNCE => self.handle_action_announce(peer_id, payload).await,
@@ -5340,6 +5362,252 @@ impl MessageRouter {
         Ok(None)
     }
 
+    /// Handle an incoming DM request announcement (managed DM propagation).
+    ///
+    /// A DM request is self-authenticating: it carries an Ed25519 signature over its
+    /// canonical message plus an anti-spam PoW. We verify both before trusting it.
+    /// If we are the recipient we store it as a pending DM request (surfaced via
+    /// `get_pending_dm_requests`). Regardless, we re-flood it to our other peers so it
+    /// reaches the recipient across multiple hops — deduped by signature so it can't loop.
+    async fn handle_dm_request_announce(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        use crate::network::messages::DmRequestAnnouncePayload;
+
+        let announce = DmRequestAnnouncePayload::from_bytes(payload).ok_or_else(|| {
+            RouteError::PayloadTooSmall {
+                expected: DmRequestAnnouncePayload::SIZE,
+                actual: payload.len(),
+            }
+        })?;
+
+        // Reject anything not correctly signed with a valid anti-spam PoW.
+        if !announce.verify() {
+            warn!(
+                "[DM] Dropping DM request with invalid signature/PoW from peer {}",
+                hex::encode(&peer_id[..8])
+            );
+            return Ok(None);
+        }
+
+        // Gossip loop-prevention: key on the signature (unique per request). If we've
+        // already processed this exact request, drop it silently.
+        let mut dedup_key = [0u8; 32];
+        dedup_key.copy_from_slice(&announce.signature[..32]);
+        {
+            let mut seen = self.seen_dm_requests.write().unwrap();
+            if !seen.insert(dedup_key) {
+                return Ok(None);
+            }
+            // Bound memory: this is best-effort loop-prevention, not a durable ledger.
+            if seen.len() > 10_000 {
+                seen.clear();
+                seen.insert(dedup_key);
+            }
+        }
+
+        // If we are the recipient, persist it as a pending request.
+        if self.identity_pubkey == Some(announce.recipient) {
+            if let Some(ref membership_store) = self.membership_store {
+                match membership_store.dm_request_exists(&announce.requester, &announce.recipient) {
+                    Ok(true) => {
+                        debug!("[DM] Duplicate DM request already stored, skipping");
+                    }
+                    _ => {
+                        let request_hash = crate::crypto::sha256(
+                            &[
+                                &announce.requester[..],
+                                &announce.recipient[..],
+                                &announce.timestamp.to_le_bytes(),
+                            ]
+                            .concat(),
+                        );
+                        let record = crate::storage::membership::DMRequestRecord {
+                            request_hash,
+                            requester_pk: announce.requester,
+                            recipient_pk: announce.recipient,
+                            requester_key_share: announce.key_share.to_vec(),
+                            created_at: announce.timestamp,
+                            status: crate::storage::membership::DMRequestStatus::Pending,
+                            space_id: None,
+                        };
+                        if let Err(e) = membership_store.add_dm_request(&record) {
+                            warn!("[DM] Failed to store incoming DM request: {}", e);
+                        } else {
+                            info!(
+                                "[DM] Stored incoming DM request from {}",
+                                hex::encode(&announce.requester[..8])
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Re-flood to our other peers (excluding the sender) so multi-hop delivery works.
+        if let Some(ref connection_pool) = self.connection_pool {
+            let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                crate::types::network::MessageType::DmRequestAnnounce,
+                payload.to_vec(),
+            );
+            let _ = connection_pool.broadcast_except(&envelope, peer_id).await;
+        }
+
+        Ok(None)
+    }
+
+    /// Handle an incoming DM acceptance announcement.
+    ///
+    /// Verifies the acceptor's signature, and — if we are the original requester and
+    /// hold a matching pending request — flips it to Accepted (recording the resolved
+    /// DM space id). Re-floods so it reaches us across hops. The matching-request check
+    /// means an unsolicited accept is simply ignored, so no PoW is needed.
+    async fn handle_dm_accept_announce(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        use crate::network::messages::DmAcceptAnnouncePayload;
+
+        let announce = DmAcceptAnnouncePayload::from_bytes(payload).ok_or_else(|| {
+            RouteError::PayloadTooSmall {
+                expected: DmAcceptAnnouncePayload::SIZE,
+                actual: payload.len(),
+            }
+        })?;
+
+        if !announce.verify() {
+            warn!(
+                "[DM] Dropping DM accept with invalid signature from peer {}",
+                hex::encode(&peer_id[..8])
+            );
+            return Ok(None);
+        }
+
+        // Loop-prevention (shared seen-set with request announces; signatures are unique).
+        let mut dedup_key = [0u8; 32];
+        dedup_key.copy_from_slice(&announce.signature[..32]);
+        {
+            let mut seen = self.seen_dm_requests.write().unwrap();
+            if !seen.insert(dedup_key) {
+                return Ok(None);
+            }
+            if seen.len() > 10_000 {
+                seen.clear();
+                seen.insert(dedup_key);
+            }
+        }
+
+        // If we are the requester, flip our outgoing request to Accepted.
+        if self.identity_pubkey == Some(announce.requester) {
+            if let Some(ref membership_store) = self.membership_store {
+                // Recompute the deterministic DM space id (identical on both sides).
+                let mut sorted = [announce.requester, announce.acceptor];
+                sorted.sort();
+                let preimage = format!(
+                    "dm:v1:{}:{}",
+                    hex::encode(sorted[0]),
+                    hex::encode(sorted[1])
+                );
+                let sh = crate::crypto::sha256(preimage.as_bytes());
+                let mut space_id = [0u8; 16];
+                space_id.copy_from_slice(&sh[..16]);
+
+                match membership_store.update_dm_request_status(
+                    &announce.requester,
+                    &announce.acceptor,
+                    crate::storage::membership::DMRequestStatus::Accepted,
+                    Some(space_id),
+                ) {
+                    Ok(true) => info!(
+                        "[DM] Request to {} was accepted",
+                        hex::encode(&announce.acceptor[..8])
+                    ),
+                    _ => debug!("[DM] Accept for a request we don't hold; ignoring"),
+                }
+            }
+        }
+
+        // Re-flood to our other peers so it reaches the requester across hops.
+        if let Some(ref connection_pool) = self.connection_pool {
+            let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                crate::types::network::MessageType::DmAcceptAnnounce,
+                payload.to_vec(),
+            );
+            let _ = connection_pool.broadcast_except(&envelope, peer_id).await;
+        }
+
+        Ok(None)
+    }
+
+    /// Handle an incoming DM decline announcement. Mirrors the accept handler: verify
+    /// the decliner's signature and, if we're the requester holding a matching request,
+    /// mark it Declined. Re-flood so it reaches the requester across hops.
+    async fn handle_dm_decline_announce(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        use crate::network::messages::DmDeclineAnnouncePayload;
+
+        let announce = DmDeclineAnnouncePayload::from_bytes(payload).ok_or_else(|| {
+            RouteError::PayloadTooSmall {
+                expected: DmDeclineAnnouncePayload::SIZE,
+                actual: payload.len(),
+            }
+        })?;
+
+        if !announce.verify() {
+            warn!(
+                "[DM] Dropping DM decline with invalid signature from peer {}",
+                hex::encode(&peer_id[..8])
+            );
+            return Ok(None);
+        }
+
+        let mut dedup_key = [0u8; 32];
+        dedup_key.copy_from_slice(&announce.signature[..32]);
+        {
+            let mut seen = self.seen_dm_requests.write().unwrap();
+            if !seen.insert(dedup_key) {
+                return Ok(None);
+            }
+            if seen.len() > 10_000 {
+                seen.clear();
+                seen.insert(dedup_key);
+            }
+        }
+
+        if self.identity_pubkey == Some(announce.requester) {
+            if let Some(ref membership_store) = self.membership_store {
+                match membership_store.update_dm_request_status(
+                    &announce.requester,
+                    &announce.decliner,
+                    crate::storage::membership::DMRequestStatus::Declined,
+                    None,
+                ) {
+                    Ok(true) => info!(
+                        "[DM] Request to {} was declined",
+                        hex::encode(&announce.decliner[..8])
+                    ),
+                    _ => debug!("[DM] Decline for a request we don't hold; ignoring"),
+                }
+            }
+        }
+
+        if let Some(ref connection_pool) = self.connection_pool {
+            let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                crate::types::network::MessageType::DmDeclineAnnounce,
+                payload.to_vec(),
+            );
+            let _ = connection_pool.broadcast_except(&envelope, peer_id).await;
+        }
+
+        Ok(None)
+    }
+
     /// Handle GETMEMPOOL request - respond with INV of all pending actions
     ///
     /// When a peer connects or wants to sync mempools, they send GETMEMPOOL.
@@ -7313,6 +7581,10 @@ pub struct MessageRouterBuilder {
     content_store: Option<Arc<PersistentContentStore>>,
     block_builder: Option<Arc<RwLock<crate::blocks::builder::BlockBuilder>>>,
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    membership_store: Option<Arc<crate::storage::membership::MembershipStore>>,
+    /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
+    /// Used to recognize DM requests addressed to us.
+    identity_pubkey: Option<[u8; 32]>,
     engagement_graph: Option<Arc<EngagementGraphStore>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     offer_store: Option<Arc<OfferStore>>,
@@ -7343,6 +7615,8 @@ impl MessageRouterBuilder {
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            membership_store: None,
+            identity_pubkey: None,
             engagement_graph: None,
             sponsorship_store: None,
             offer_store: None,
@@ -7447,6 +7721,22 @@ impl MessageRouterBuilder {
         self
     }
 
+    /// Set the membership store for private-space / DM request handling (SPEC_11)
+    pub fn membership_store(
+        mut self,
+        store: Arc<crate::storage::membership::MembershipStore>,
+    ) -> Self {
+        self.membership_store = Some(store);
+        self
+    }
+
+    /// Set this node's raw Ed25519 identity public key (used to recognize DM requests
+    /// addressed to us — distinct from the SHA-256 network node_id).
+    pub fn identity_pubkey(mut self, pubkey: [u8; 32]) -> Self {
+        self.identity_pubkey = Some(pubkey);
+        self
+    }
+
     /// Set the engagement graph for tracking who engages with whom
     pub fn engagement_graph(mut self, graph: Arc<EngagementGraphStore>) -> Self {
         self.engagement_graph = Some(graph);
@@ -7520,6 +7810,7 @@ impl MessageRouterBuilder {
         MessageRouter {
             metrics,
             pending_pings: RwLock::new(HashMap::new()),
+            seen_dm_requests: RwLock::new(std::collections::HashSet::new()),
             pending_who_has_relay: RwLock::new(HashMap::new()),
             orphan_blocks: RwLock::new(HashMap::new()),
             content_retrieval: self.content_retrieval,
@@ -7535,6 +7826,8 @@ impl MessageRouterBuilder {
             content_store: self.content_store,
             block_builder: self.block_builder,
             spam_attestation_store: self.spam_attestation_store,
+            membership_store: self.membership_store,
+            identity_pubkey: self.identity_pubkey,
             engagement_graph: self.engagement_graph,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,
@@ -7554,6 +7847,7 @@ impl MessageRouterBuilder {
         Ok(MessageRouter {
             metrics,
             pending_pings: RwLock::new(HashMap::new()),
+            seen_dm_requests: RwLock::new(std::collections::HashSet::new()),
             pending_who_has_relay: RwLock::new(HashMap::new()),
             orphan_blocks: RwLock::new(HashMap::new()),
             content_retrieval: self.content_retrieval,
@@ -7569,6 +7863,8 @@ impl MessageRouterBuilder {
             content_store: self.content_store,
             block_builder: self.block_builder,
             spam_attestation_store: self.spam_attestation_store,
+            membership_store: self.membership_store,
+            identity_pubkey: self.identity_pubkey,
             engagement_graph: self.engagement_graph,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,

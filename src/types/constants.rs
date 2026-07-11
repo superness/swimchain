@@ -627,3 +627,16 @@ pub const MSG_GETMEMPOOL: u8 = 0x94;
 /// Response to MSG_GETMEMPOOL containing hashes of pending actions.
 /// Receiver can request missing actions via MSG_GETDATA.
 pub const MSG_MEMPOOL_INV: u8 = 0x95;
+
+/// DM_REQUEST_ANNOUNCE message type - gossip a direct-message request to peers.
+/// Self-authenticating (Ed25519 signature + anti-spam PoW); re-flooded until it
+/// reaches the recipient, whose node stores it as a pending DM request.
+pub const MSG_DM_REQUEST_ANNOUNCE: u8 = 0x96;
+
+/// DM_ACCEPT_ANNOUNCE message type - propagate a DM acceptance back to the requester.
+/// Signed by the acceptor; the requester's node flips its pending request to Accepted.
+pub const MSG_DM_ACCEPT_ANNOUNCE: u8 = 0x97;
+
+/// DM_DECLINE_ANNOUNCE message type - propagate a DM decline back to the requester.
+/// Signed by the decliner; the requester's node marks its pending request Declined.
+pub const MSG_DM_DECLINE_ANNOUNCE: u8 = 0x98;

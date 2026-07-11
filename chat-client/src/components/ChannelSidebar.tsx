@@ -12,7 +12,6 @@ import { DmPanel } from './DmPanel';
 import { StartDmModal } from './StartDmModal';
 import { PrivateChannelsSection } from './PrivateChannelsSection';
 import { NodePrivateChannelActions } from './NodePrivateChannelActions';
-import { useChatIdentity } from '../hooks/useChatIdentity';
 import './ChannelSidebar.css';
 
 export interface Channel {
@@ -219,7 +218,6 @@ export function ChannelSidebar({
   onCreateChannel,
 }: ChannelSidebarProps) {
   const navigate = useNavigate();
-  const { mode } = useChatIdentity();
   const [showDmModal, setShowDmModal] = useState(false);
   const handleSelectDm = useCallback((spaceId: string) => {
     navigate('/channels/@me/' + spaceId);
@@ -280,14 +278,11 @@ export function ChannelSidebar({
           </div>
         )}
 
-        {/* Direct Messages panel (browser mode only — DMs need the X25519 seed the
-            node doesn't expose, so hide the UI entirely when the node owns identity). */}
-        {mode !== 'node' && (
-          <>
-            <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
-            {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
-          </>
-        )}
+        {/* Direct Messages panel. Works in both modes: node mode uses the managed
+            request/accept RPCs (the node holds the key + does the crypto/PoW), browser
+            mode uses the local seed. */}
+        <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
+        {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
 
         {/* Private channels: invites inbox + my private channels (browser mode) */}
         <PrivateChannelsSection />

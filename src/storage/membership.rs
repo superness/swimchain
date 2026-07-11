@@ -495,6 +495,25 @@ impl MembershipStore {
         }
     }
 
+    /// Get all DM requests SENT by a user (as requester), any status. The primary
+    /// `dm_requests` key is `requester||recipient`, so a prefix scan on our own pubkey
+    /// yields our outgoing requests — used to learn when a recipient has accepted.
+    pub fn get_sent_dm_requests(
+        &self,
+        requester_pk: &[u8; 32],
+    ) -> Result<Vec<DMRequestRecord>, StorageError> {
+        let mut out = Vec::new();
+        for result in self.dm_requests.scan_prefix(requester_pk) {
+            let (_, data) = result?;
+            let record: DMRequestRecord = bincode::deserialize(&data)?;
+            // scan_prefix on a 32-byte prefix can't over-match a 64-byte key, but guard anyway.
+            if &record.requester_pk == requester_pk {
+                out.push(record);
+            }
+        }
+        Ok(out)
+    }
+
     /// Get all pending DM requests for a user (as recipient)
     pub fn get_pending_dm_requests(
         &self,

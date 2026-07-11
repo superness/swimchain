@@ -275,7 +275,13 @@ pub enum MessageType {
     /// Direct-message request announcement — propagate a pending DM request so it
     /// reaches the recipient's node (SPEC: DM delivery). Carries its own PoW +
     /// signature so receiving nodes can verify it without trusting the relay.
-    DmRequestAnnounce = 0x95,
+    DmRequestAnnounce = 0x96,
+    /// Direct-message acceptance announcement — propagate back to the original
+    /// requester so their node flips the request to Accepted. Signed by the acceptor.
+    DmAcceptAnnounce = 0x97,
+    /// Direct-message decline announcement — propagate back to the original requester
+    /// so their node marks the request Declined. Signed by the decliner.
+    DmDeclineAnnounce = 0x98,
 
     // DHT (Kademlia) - SPEC_06 §3.8
     /// DHT ping (liveness check)
@@ -390,7 +396,9 @@ impl TryFrom<u8> for MessageType {
             // Mempool gossip
             0x93 => Ok(MessageType::ActionAnnounce),
             0x94 => Ok(MessageType::GetMempool),
-            0x95 => Ok(MessageType::DmRequestAnnounce),
+            0x96 => Ok(MessageType::DmRequestAnnounce),
+            0x97 => Ok(MessageType::DmAcceptAnnounce),
+            0x98 => Ok(MessageType::DmDeclineAnnounce),
             // DHT messages
             0x80 => Ok(MessageType::DhtPing),
             0x81 => Ok(MessageType::DhtPong),

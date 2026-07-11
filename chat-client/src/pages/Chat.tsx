@@ -8,6 +8,7 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ServerList } from '../components/ServerList';
 import { ChannelSidebar } from '../components/ChannelSidebar';
+import { DmHomeSidebar } from '../components/DmHomeSidebar';
 import { CreateChannelModal } from '../components/CreateChannelModal';
 import { ChatArea } from '../components/ChatArea';
 import { NodeStatusBar } from '../components/NodeStatusBar';
@@ -484,8 +485,8 @@ export function Chat() {
         currentServerId={serverId}
       />
 
-      {/* Channel sidebar */}
-      {currentServer && (
+      {/* Channel sidebar (in a server) OR the Direct Messages home sidebar (@me). */}
+      {currentServer ? (
         <ChannelSidebar
           server={{
             id: currentServer.id,
@@ -497,6 +498,8 @@ export function Chat() {
           currentChannelId={channelId}
           onCreateChannel={() => setShowCreateChannel(true)}
         />
+      ) : (
+        <DmHomeSidebar />
       )}
 
       {serverId && (
@@ -533,6 +536,11 @@ export function Chat() {
             <div className="loading-state">
               <div className="loading-spinner" />
               <p>Loading channels...</p>
+            </div>
+          ) : !currentServer ? (
+            <div className="empty-server">
+              <h2>Direct Messages</h2>
+              <p>Pick a conversation from the sidebar, or start a new one with “+ New DM”.</p>
             </div>
           ) : channels.length === 0 ? (
             <div className="empty-server">
