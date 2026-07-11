@@ -5,7 +5,6 @@
 import { type ReactNode, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { NodeStatusBar } from '../components/NodeStatusBar';
-import { useWikiIdentity } from '../hooks/useWikiIdentity';
 import './MainLayout.css';
 
 interface MainLayoutProps {
@@ -14,9 +13,6 @@ interface MainLayoutProps {
 
 export function MainLayout({ children }: MainLayoutProps): JSX.Element {
   const location = useLocation();
-  // Node-wide centralized identity: when embedded in the desktop shell the node
-  // owns the single identity, so hide wiki's own per-client identity entry point.
-  const { mode } = useWikiIdentity();
 
   useEffect(() => {
     const main = document.getElementById('main-content');
@@ -31,9 +27,6 @@ export function MainLayout({ children }: MainLayoutProps): JSX.Element {
         <nav className="main-layout__nav" aria-label="Main navigation">
           <Link to="/" className={`main-layout__nav-link ${location.pathname === '/' ? 'main-layout__nav-link--active' : ''}`}>Home</Link>
           <Link to="/search" className={`main-layout__nav-link ${location.pathname === '/search' ? 'main-layout__nav-link--active' : ''}`}>Search</Link>
-          {mode !== 'node' && (
-            <Link to="/identity" className={`main-layout__nav-link ${location.pathname === '/identity' ? 'main-layout__nav-link--active' : ''}`}>Identity</Link>
-          )}
         </nav>
       </header>
       <main id="main-content" className="main-layout__content" tabIndex={-1}>{children}</main>

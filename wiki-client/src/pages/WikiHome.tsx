@@ -7,7 +7,6 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { useWikiNamespaces } from '../hooks/useWikiNamespaces';
 import { useRecentChanges } from '../hooks/useRecentChanges';
-import { useWikiIdentity } from '../hooks/useWikiIdentity';
 import './WikiHome.css';
 
 function formatTimeAgo(unixSeconds: number): string {
@@ -36,9 +35,6 @@ export function WikiHome(): JSX.Element {
   const { data: namespaces, loading: nsLoading, error: nsError } = useWikiNamespaces();
   const { data: recentChanges, loading: rcLoading, error: rcError } = useRecentChanges(30);
   const [searchQuery, setSearchQuery] = useState('');
-  // Node-wide centralized identity: hide the per-client identity entry point when
-  // embedded in the desktop shell (the node owns the single identity).
-  const { mode } = useWikiIdentity();
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,9 +154,6 @@ export function WikiHome(): JSX.Element {
       {/* Quick links */}
       <div className="wiki-home__links">
         <Link to="/search" className="wiki-btn">Search the wiki</Link>
-        {mode !== 'node' && (
-          <Link to="/identity" className="wiki-btn">Manage identity</Link>
-        )}
       </div>
     </div>
   );

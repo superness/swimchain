@@ -9,8 +9,6 @@
  *   /ns/:id/page/:pageId/history = Revision history
  *   /ns/:id/page/:pageId/discuss = Discussion (talk page)
  *   /search = Wiki search
- *   /identity = Identity management
- *   /settings = Settings
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
@@ -24,7 +22,6 @@ import { WikiPageEdit } from './pages/WikiPageEdit';
 import { RevisionHistory } from './pages/RevisionHistory';
 import { Discussion } from './pages/Discussion';
 import { WikiSearch } from './pages/WikiSearch';
-import { IdentityPage } from './pages/IdentityPage';
 
 export function App(): JSX.Element {
   return (
@@ -54,9 +51,6 @@ export function App(): JSX.Element {
 
               {/* Search */}
               <Route path="/search" element={<WikiSearch />} />
-
-              {/* Identity management */}
-              <Route path="/identity" element={<IdentityPage />} />
 
               {/* Catch-all */}
               <Route path="*" element={<Navigate to="/" replace />} />

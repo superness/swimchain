@@ -431,7 +431,7 @@ export function Discussion(): JSX.Element {
 
         {!identity.hasIdentity && identity.mode !== 'node' && (
           <div className="disc-page__identity-notice">
-            <Link to="/identity">Create or load an identity</Link> to participate in discussions.
+            Create or load an identity to participate in discussions.
           </div>
         )}
 

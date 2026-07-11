@@ -17,7 +17,6 @@ interface QuickLink {
 const QUICK_LINKS: QuickLink[] = [
   { label: 'Home', path: '/' },
   { label: 'Search', path: '/search' },
-  { label: 'My Identity', path: '/identity' },
 ];
 
 export function WikiSidebar(): JSX.Element {

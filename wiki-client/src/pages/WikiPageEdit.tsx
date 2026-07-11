@@ -415,7 +415,7 @@ export function WikiPageEdit(): JSX.Element {
 
         {!identity.hasIdentity && identity.mode !== 'node' && (
           <p className="wiki-editor__hint wiki-editor__hint--warn">
-            You need an <Link to="/identity">identity</Link> to create or edit pages.
+            You need an identity to create or edit pages.
           </p>
         )}
 
