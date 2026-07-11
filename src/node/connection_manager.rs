@@ -720,7 +720,9 @@ fn wire_addr_to_socket_addr(wire_addr: &crate::network::messages::WireAddr) -> O
 }
 
 /// Convert SocketAddr to WireAddr for peer store
-fn socket_addr_to_wire_addr(addr: &SocketAddr) -> Option<crate::network::messages::WireAddr> {
+pub(crate) fn socket_addr_to_wire_addr(
+    addr: &SocketAddr,
+) -> Option<crate::network::messages::WireAddr> {
     use crate::network::messages::WireAddr;
     use std::time::{SystemTime, UNIX_EPOCH};
 

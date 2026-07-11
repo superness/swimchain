@@ -9,11 +9,9 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::addr_handler::AddrHandler;
 use super::error::DiscoveryError;
-use super::mdns::MdnsDiscovery;
 use super::peer_entry::PeerEntry;
 use super::peer_exchange::PeerExchange;
 use super::peer_key::PeerKey;
@@ -106,53 +104,6 @@ impl DiscoveryManager {
         }
 
         Ok(result)
-    }
-
-    /// Discover peers via mDNS on the local network (Layer 1)
-    ///
-    /// This performs a one-shot mDNS query for `_swimchain._tcp.local` services
-    /// and returns any discovered peers as WireAddrs.
-    ///
-    /// Note: This is an async operation that requires a tokio runtime.
-    pub async fn discover_mdns(&self) -> Result<Vec<WireAddr>, DiscoveryError> {
-        self.discover_mdns_with_timeout(Duration::from_secs(5)).await
-    }
-
-    /// Discover peers via mDNS with a custom timeout
-    pub async fn discover_mdns_with_timeout(
-        &self,
-        timeout: Duration,
-    ) -> Result<Vec<WireAddr>, DiscoveryError> {
-        let mdns = MdnsDiscovery::new();
-        let peers = mdns.discover_with_timeout(timeout).await?;
-
-        // Convert to WireAddrs and add to peer store
-        let mut result = Vec::new();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        for peer in peers {
-            let wire_addr = peer.to_wire_addr();
-            let entry = PeerEntry::new(wire_addr.clone(), now);
-
-            // Add to peer store (ignore errors - peer may already exist)
-            let _ = self.peer_store.put(&entry);
-
-            result.push(wire_addr);
-        }
-
-        Ok(result)
-    }
-
-    /// Create a new mDNS discovery service
-    ///
-    /// Returns an MdnsDiscovery instance that can be used for continuous
-    /// discovery in a background task.
-    #[must_use]
-    pub fn create_mdns_discovery(&self) -> MdnsDiscovery {
-        MdnsDiscovery::new()
     }
 
     /// Handle an incoming GETADDR request

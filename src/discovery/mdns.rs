@@ -1,321 +1,128 @@
 //! mDNS peer discovery (SPEC_06 §4.1 - Layer 1)
 //!
-//! This module implements LAN-based peer discovery using multicast DNS.
-//! Service name: `_swimchain._tcp.local`
+//! Zero-configuration LAN peer discovery via multicast DNS. Each node both
+//! ADVERTISES its P2P endpoint as a `_swimchain._tcp.local` service and
+//! BROWSES for other nodes' services, so two nodes on the same LAN find each
+//! other with no seed and no manual configuration.
 //!
-//! mDNS is Layer 1 in the discovery stack, providing zero-configuration
-//! peer discovery for nodes on the same local network.
+//! Discovered peer socket addresses are reported on a channel; the node feeds
+//! them into its PeerStore so the normal outbound-dial loop connects to them.
+//!
+//! Uses `mdns-sd`, which is a full responder (advertise) + browser. Android
+//! requires a held `WifiManager.MulticastLock` for multicast to be received;
+//! that is acquired in the mobile app's native layer.
 
-use std::net::IpAddr;
-use std::pin::pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::net::{IpAddr, SocketAddr};
 
-use futures::stream::StreamExt;
-use log::{debug, info, warn};
+use log::{debug, info};
+use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use tokio::sync::mpsc;
-
-use crate::network::messages::WireAddr;
-use crate::types::constants::DEFAULT_PORT;
 
 use super::error::DiscoveryError;
 
-/// mDNS service name for Swimchain nodes
-pub const MDNS_SERVICE_NAME: &str = "_swimchain._tcp.local";
-
-/// Default mDNS query interval (30 seconds)
-pub const MDNS_QUERY_INTERVAL_SECS: u64 = 30;
-
-/// Maximum peers to return from a single discovery round
-pub const MDNS_MAX_PEERS_PER_ROUND: usize = 16;
-
-/// A discovered peer from mDNS
-#[derive(Debug, Clone)]
-pub struct MdnsDiscoveredPeer {
-    /// IP address of the discovered peer
-    pub addr: IpAddr,
-    /// Port (from SRV record or default)
-    pub port: u16,
-    /// Instance name (hostname or custom name)
-    pub instance_name: String,
-}
-
-impl MdnsDiscoveredPeer {
-    /// Convert to WireAddr for use with discovery manager
-    #[must_use]
-    pub fn to_wire_addr(&self) -> WireAddr {
-        let mut address = [0u8; 64];
-        match self.addr {
-            IpAddr::V4(ipv4) => {
-                let octets = ipv4.octets();
-                address[0] = octets[0];
-                address[1] = octets[1];
-                address[2] = octets[2];
-                address[3] = octets[3];
-            }
-            IpAddr::V6(ipv6) => {
-                let octets = ipv6.octets();
-                address[..16].copy_from_slice(&octets);
-            }
-        }
-
-        let transport = match self.addr {
-            IpAddr::V4(_) => 0x01, // TCPv4
-            IpAddr::V6(_) => 0x02, // TCPv6
-        };
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as u32;
-
-        WireAddr {
-            transport,
-            address,
-            port: self.port,
-            services: 0x01, // Full node service
-            last_seen: now,
-        }
-    }
-}
-
-/// mDNS discovery service
+/// mDNS service type for Swimchain nodes.
 ///
-/// Runs periodic queries for `_swimchain._tcp.local` services on the LAN
-/// and reports discovered peers via a channel.
-pub struct MdnsDiscovery {
-    /// Channel sender for discovered peers
-    discovered_tx: mpsc::Sender<MdnsDiscoveredPeer>,
-    /// Channel receiver for discovered peers
-    discovered_rx: Option<mpsc::Receiver<MdnsDiscoveredPeer>>,
-    /// Shutdown flag
-    shutdown: Arc<AtomicBool>,
+/// The trailing dot is required by `mdns-sd`.
+pub const MDNS_SERVICE_TYPE: &str = "_swimchain._tcp.local.";
+
+/// A running mDNS advertiser + browser.
+///
+/// Keep this alive for the lifetime of the node; dropping it unregisters the
+/// service and stops browsing.
+pub struct MdnsService {
+    daemon: ServiceDaemon,
+    fullname: String,
 }
 
-impl MdnsDiscovery {
-    /// Create a new mDNS discovery service
-    #[must_use]
-    pub fn new() -> Self {
+impl MdnsService {
+    /// Start advertising this node and browsing for LAN peers.
+    ///
+    /// - `node_id` gives a stable, unique instance name so multiple nodes on
+    ///   one host (or repeated restarts) don't collide.
+    /// - `port` is our P2P listen port, published in the SRV record.
+    ///
+    /// Returns the service handle and a receiver of discovered peer socket
+    /// addresses (our own advertisement is filtered out).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the mDNS daemon cannot start, the service cannot be
+    /// registered, or browsing cannot begin.
+    pub fn start(
+        node_id: &[u8; 32],
+        port: u16,
+    ) -> Result<(Self, mpsc::Receiver<SocketAddr>), DiscoveryError> {
+        let daemon =
+            ServiceDaemon::new().map_err(|e| DiscoveryError::MdnsError(e.to_string()))?;
+
+        let instance = hex::encode(&node_id[..8]);
+        let host_name = format!("{instance}.local.");
+
+        // Advertise. enable_addr_auto() fills in this host's active interface
+        // addresses (and keeps them current as interfaces change), so we don't
+        // have to hand-pick the LAN IP.
+        let info = ServiceInfo::new(
+            MDNS_SERVICE_TYPE,
+            &instance,
+            &host_name,
+            "",
+            port,
+            &[] as &[(&str, &str)],
+        )
+        .map_err(|e| DiscoveryError::MdnsError(e.to_string()))?
+        .enable_addr_auto();
+
+        let fullname = info.get_fullname().to_string();
+        daemon
+            .register(info)
+            .map_err(|e| DiscoveryError::MdnsError(e.to_string()))?;
+        info!("[mDNS] advertising '{instance}' on port {port} as {MDNS_SERVICE_TYPE}");
+
+        let browse_rx = daemon
+            .browse(MDNS_SERVICE_TYPE)
+            .map_err(|e| DiscoveryError::MdnsError(e.to_string()))?;
+
         let (tx, rx) = mpsc::channel(64);
-        Self {
-            discovered_tx: tx,
-            discovered_rx: Some(rx),
-            shutdown: Arc::new(AtomicBool::new(false)),
-        }
-    }
+        let our_fullname = fullname.clone();
 
-    /// Take the receiver for discovered peers
-    ///
-    /// This can only be called once. Returns None on subsequent calls.
-    pub fn take_receiver(&mut self) -> Option<mpsc::Receiver<MdnsDiscoveredPeer>> {
-        self.discovered_rx.take()
-    }
-
-    /// Get a clone of the shutdown flag
-    #[must_use]
-    pub fn shutdown_flag(&self) -> Arc<AtomicBool> {
-        self.shutdown.clone()
-    }
-
-    /// Signal the discovery service to stop
-    pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Release);
-    }
-
-    /// Run a single discovery query
-    ///
-    /// Returns discovered peers from the current round.
-    pub async fn discover_once(&self) -> Result<Vec<MdnsDiscoveredPeer>, DiscoveryError> {
-        self.discover_with_timeout(Duration::from_secs(5)).await
-    }
-
-    /// Run a discovery query with custom timeout
-    pub async fn discover_with_timeout(
-        &self,
-        timeout: Duration,
-    ) -> Result<Vec<MdnsDiscoveredPeer>, DiscoveryError> {
-        let mut peers = Vec::new();
-
-        // Create mDNS stream
-        let stream = match mdns::discover::all(MDNS_SERVICE_NAME, timeout) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("mDNS discover failed: {}", e);
-                return Err(DiscoveryError::MdnsError(e.to_string()));
-            }
-        };
-
-        // Pin the stream for async iteration
-        let mut stream = pin!(stream.listen());
-
-        // Process responses until timeout or max peers
-        while let Some(result) = stream.next().await {
-            if self.shutdown.load(Ordering::Acquire) {
-                break;
-            }
-
-            match result {
-                Ok(response) => {
-                    // Extract IP addresses from A/AAAA records
-                    for record in response.records() {
-                        let (addr, port) = match &record.kind {
-                            mdns::RecordKind::A(ipv4) => {
-                                (IpAddr::V4(*ipv4), DEFAULT_PORT)
-                            }
-                            mdns::RecordKind::AAAA(ipv6) => {
-                                (IpAddr::V6(*ipv6), DEFAULT_PORT)
-                            }
-                            mdns::RecordKind::SRV { port, target, .. } => {
-                                // SRV record - extract port, need to resolve target
-                                debug!("mDNS SRV: target={} port={}", target, port);
-                                continue; // Skip SRV for now, we get IP from A/AAAA
-                            }
-                            _ => continue,
-                        };
-
-                        // Skip loopback and link-local
-                        if addr.is_loopback() {
+        // mdns-sd delivers browse events on a flume channel with a blocking
+        // recv(); run it on a dedicated OS thread and forward resolved peers.
+        std::thread::Builder::new()
+            .name("mdns-browse".into())
+            .spawn(move || {
+                while let Ok(event) = browse_rx.recv() {
+                    let ServiceEvent::ServiceResolved(info) = event else {
+                        continue;
+                    };
+                    // Never dial ourselves.
+                    if info.get_fullname() == our_fullname {
+                        continue;
+                    }
+                    let peer_port = info.get_port();
+                    for ip in info.get_addresses() {
+                        // Only IPv4 LAN dialing for now (matches transport).
+                        let IpAddr::V4(v4) = ip else { continue };
+                        if v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() {
                             continue;
                         }
-                        if let IpAddr::V4(v4) = addr {
-                            if v4.is_link_local() {
-                                continue;
-                            }
-                        }
-
-                        let peer = MdnsDiscoveredPeer {
-                            addr,
-                            port,
-                            instance_name: record.name.clone(),
-                        };
-
-                        debug!("mDNS discovered peer: {:?}", peer);
-
-                        // Send to channel (non-blocking)
-                        let _ = self.discovered_tx.try_send(peer.clone());
-
-                        // Add to result
-                        if !peers.iter().any(|p: &MdnsDiscoveredPeer| p.addr == peer.addr) {
-                            peers.push(peer);
-                        }
-
-                        if peers.len() >= MDNS_MAX_PEERS_PER_ROUND {
-                            break;
+                        let addr = SocketAddr::new(IpAddr::V4(*v4), peer_port);
+                        debug!("[mDNS] resolved peer {} at {addr}", info.get_fullname());
+                        if tx.blocking_send(addr).is_err() {
+                            return; // receiver dropped -> node shutting down
                         }
                     }
                 }
-                Err(e) => {
-                    debug!("mDNS response error: {}", e);
-                }
-            }
+                debug!("[mDNS] browse channel closed");
+            })
+            .map_err(|e| DiscoveryError::MdnsError(format!("spawn browse thread: {e}")))?;
 
-            if peers.len() >= MDNS_MAX_PEERS_PER_ROUND {
-                break;
-            }
-        }
-
-        if !peers.is_empty() {
-            info!("mDNS discovered {} peers on LAN", peers.len());
-        }
-
-        Ok(peers)
-    }
-
-    /// Run continuous discovery loop
-    ///
-    /// Queries for peers every `interval` seconds and sends discovered
-    /// peers to the channel.
-    pub async fn run_discovery_loop(self, interval: Duration) {
-        info!(
-            "Starting mDNS discovery loop (service: {}, interval: {}s)",
-            MDNS_SERVICE_NAME,
-            interval.as_secs()
-        );
-
-        let mut ticker = tokio::time::interval(interval);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            ticker.tick().await;
-
-            if self.shutdown.load(Ordering::Acquire) {
-                info!("mDNS discovery loop shutting down");
-                break;
-            }
-
-            match self.discover_once().await {
-                Ok(peers) => {
-                    debug!("mDNS round complete: {} peers found", peers.len());
-                }
-                Err(e) => {
-                    warn!("mDNS discovery round failed: {}", e);
-                }
-            }
-        }
+        Ok((Self { daemon, fullname }, rx))
     }
 }
 
-impl Default for MdnsDiscovery {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::Ipv4Addr;
-
-    #[test]
-    fn test_service_name() {
-        assert_eq!(MDNS_SERVICE_NAME, "_swimchain._tcp.local");
-    }
-
-    #[test]
-    fn test_mdns_discovered_peer_to_wire_addr_v4() {
-        let peer = MdnsDiscoveredPeer {
-            addr: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
-            port: 9735,
-            instance_name: "test-node".to_string(),
-        };
-
-        let wire = peer.to_wire_addr();
-        assert_eq!(wire.transport, 0x01); // TCPv4
-        assert_eq!(wire.address[0], 192);
-        assert_eq!(wire.address[1], 168);
-        assert_eq!(wire.address[2], 1);
-        assert_eq!(wire.address[3], 100);
-        assert_eq!(wire.port, 9735);
-        assert_eq!(wire.services, 0x01);
-    }
-
-    #[test]
-    fn test_mdns_discovered_peer_to_wire_addr_v6() {
-        let peer = MdnsDiscoveredPeer {
-            addr: IpAddr::V6("::1".parse().unwrap()),
-            port: 9736,
-            instance_name: "test-node-v6".to_string(),
-        };
-
-        let wire = peer.to_wire_addr();
-        assert_eq!(wire.transport, 0x02); // TCPv6
-        assert_eq!(wire.port, 9736);
-    }
-
-    #[test]
-    fn test_mdns_discovery_new() {
-        let mut discovery = MdnsDiscovery::new();
-        assert!(!discovery.shutdown.load(Ordering::Acquire));
-        assert!(discovery.take_receiver().is_some());
-        assert!(discovery.take_receiver().is_none()); // Second call returns None
-    }
-
-    #[test]
-    fn test_mdns_discovery_shutdown() {
-        let discovery = MdnsDiscovery::new();
-        assert!(!discovery.shutdown.load(Ordering::Acquire));
-        discovery.shutdown();
-        assert!(discovery.shutdown.load(Ordering::Acquire));
+impl Drop for MdnsService {
+    fn drop(&mut self) {
+        let _ = self.daemon.unregister(&self.fullname);
+        let _ = self.daemon.shutdown();
     }
 }

@@ -46,7 +46,7 @@ pub mod seed_list;
 pub use addr_handler::AddrHandler;
 pub use error::DiscoveryError;
 pub use manager::{DiscoveryManager, MaintenanceStats};
-pub use mdns::{MdnsDiscoveredPeer, MdnsDiscovery, MDNS_SERVICE_NAME};
+pub use mdns::{MdnsService, MDNS_SERVICE_TYPE};
 pub use peer_branches::{BranchCoverageSummary, PeerBranchInfo, PeerBranchTracker};
 pub use peer_entry::PeerEntry;
 pub use peer_exchange::PeerExchange;

@@ -107,8 +107,9 @@ tokio-tungstenite = "0.24"
 # for Android from a Windows host (no Ninja generator / NDK toolchain file).
 rustls-pemfile = "2.1"
 
-# mDNS discovery (M-DHT-3 - LAN peer discovery)
-mdns = "3.0"
+# mDNS discovery (M-DHT-3 - LAN peer discovery). mdns-sd both advertises a
+# service (responder) AND browses, which the query-only `mdns` crate cannot do.
+mdns-sd = "0.11"
 
 # Parallel computation (M-IDENTITY-1 - Multi-threaded PoW mining)
 rayon = "1.10"

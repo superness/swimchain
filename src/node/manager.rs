@@ -908,6 +908,52 @@ impl NodeManager {
         self.transport = Some(transport_arc.clone());
         info!("Listening on {}", actual_addr);
 
+        // 6.5. mDNS LAN discovery (SPEC_06 §4.1 Layer 1): advertise our P2P
+        // endpoint and browse for other nodes on the local network. Discovered
+        // peers are added to the PeerStore so the outbound-dial loop connects to
+        // them — zero-config node-to-node on a LAN, no seed required. Disabled
+        // in proxy-only mode (local discovery would leak our real address).
+        if !self.config.proxy_only {
+            match crate::discovery::MdnsService::start(&self.node_id(), actual_addr.port()) {
+                Ok((mdns, mut discovered_rx)) => {
+                    let peer_store = self.peer_store.clone();
+                    let mut shutdown = self.shutdown_rx.clone();
+                    tokio::spawn(async move {
+                        // Hold the service so advertising/browsing stay alive for
+                        // the task's lifetime; dropping it unregisters mDNS.
+                        let _mdns = mdns;
+                        loop {
+                            tokio::select! {
+                                _ = shutdown.changed() => break,
+                                maybe = discovered_rx.recv() => {
+                                    let Some(addr) = maybe else { break };
+                                    let (Some(store), Some(wire)) = (
+                                        peer_store.as_ref(),
+                                        super::connection_manager::socket_addr_to_wire_addr(&addr),
+                                    ) else {
+                                        continue;
+                                    };
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+                                    let mut entry =
+                                        crate::discovery::PeerEntry::new(wire, now);
+                                    // mDNS proves the peer is up right now.
+                                    entry.record_success(now);
+                                    if store.put(&entry).is_ok() {
+                                        info!("[mDNS] discovered LAN peer {addr}, added to peer store");
+                                    }
+                                }
+                            }
+                        }
+                        debug!("[mDNS] discovery task stopped");
+                    });
+                }
+                Err(e) => warn!("[mDNS] failed to start LAN discovery: {e}"),
+            }
+        }
+
         // 7. Bootstrap peers
         self.bootstrap_peers().await?;
 

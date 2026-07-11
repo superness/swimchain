@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 
@@ -14,11 +16,39 @@ import android.os.IBinder
  * Holds a dataSync foreground notification so Android keeps this process -
  * and the in-process swimchain node - alive when the app is backgrounded.
  * The service does no work itself; the node runs in the shared app process.
+ *
+ * It also holds a Wi-Fi MulticastLock: Android's Wi-Fi driver drops inbound
+ * multicast packets by default, which would stop the node's mDNS LAN discovery
+ * (`_swimchain._tcp.local`) from ever receiving peer announcements. The lock is
+ * held for the node's lifetime and released in onDestroy.
  */
 class NodeForegroundService : Service() {
+    private var multicastLock: WifiManager.MulticastLock? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun acquireMulticastLock() {
+        if (multicastLock?.isHeld == true) return
+        try {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            multicastLock = wifi.createMulticastLock("swimchain-mdns").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (e: Exception) {
+            // mDNS just won't receive on this device; the node still works via
+            // seed/DHT discovery.
+        }
+    }
+
+    override fun onDestroy() {
+        multicastLock?.let { if (it.isHeld) it.release() }
+        multicastLock = null
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        acquireMulticastLock()
         val channelId = "swimchain_node"
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
