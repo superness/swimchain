@@ -86,6 +86,15 @@ pub const BRANCH_SYNC_INTERVAL_SECS: u64 = 45;
 /// Per SPEC_11 §5.1: Query peers for available sponsorship offers during initial sync
 pub const SPONSORSHIP_OFFER_SYNC_INTERVAL_SECS: u64 = 120;
 
+/// Hole-punch coordination interval (Layer 2 NAT traversal). Every 30s a well-connected
+/// node re-introduces its NAT'd peers to each other. Frequent enough that peers reconnect
+/// quickly after a NAT mapping expires, cheap enough to not spam (see MAX_PEERS cap).
+pub const HOLE_PUNCH_COORD_INTERVAL_SECS: u64 = 30;
+
+/// Cap on peers considered per coordination round. Bounds the O(n^2) pairwise
+/// introductions (10 peers → at most 45 pairs / 90 intro messages per round).
+pub const HOLE_PUNCH_MAX_PEERS: usize = 10;
+
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -1276,6 +1285,203 @@ impl BackgroundTaskRunner {
                     }
                 }
             }
+        });
+
+        self.handles.push(handle);
+    }
+
+    /// Spawn the hole-punch dialer task (Layer 2 NAT traversal).
+    ///
+    /// Consumes dial requests the router produces when it receives a HOLE_PUNCH_INTRO,
+    /// and attempts an outbound connect to the introduced peer's public endpoint. When
+    /// the other introduced peer dials us at the same moment, the two simultaneous
+    /// outbound SYNs punch both NAT mappings. On success the connection is registered and
+    /// a message loop is spawned, exactly like a peer discovered via GETADDR.
+    ///
+    /// Best-effort: a failed dial (expected for symmetric NATs — that's Layer 3's job) is
+    /// logged at debug and dropped. Disabled entirely when a SOCKS5 proxy is configured
+    /// (SWIM-PRIV-2 — hole-punching is meaningless over Tor and would just waste dials).
+    pub fn spawn_hole_punch_dialer(
+        &mut self,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<super::router::HolePunchRequest>,
+        transport: Arc<TcpTransport>,
+        router: Arc<MessageRouter>,
+        connection_pool: Arc<PeerConnectionPool>,
+        connection_manager: Arc<ConnectionManager>,
+    ) {
+        let mut shutdown = self.shutdown_rx.clone();
+
+        let handle = tokio::spawn(async move {
+            // SWIM-PRIV-2: never hole-punch when proxied.
+            if transport.proxy().is_some() {
+                debug!("[NAT] Hole-punch dialer disabled (SOCKS5 proxy configured)");
+                return;
+            }
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        if *shutdown.borrow() {
+                            break;
+                        }
+                    }
+                    maybe = rx.recv() => {
+                        let (endpoint, target_node_id) = match maybe {
+                            Some(req) => req,
+                            None => break, // router (sender) dropped
+                        };
+
+                        // Might have connected since the router queued this.
+                        if connection_pool.get(&target_node_id).await.is_some() {
+                            continue;
+                        }
+
+                        match transport.connect(endpoint).await {
+                            Ok(conn) => {
+                                let peer_id = match conn.peer_info() {
+                                    Some(info) => info.node_id,
+                                    None => {
+                                        debug!(
+                                            "[NAT] Hole-punch connect to {} had no peer_info",
+                                            endpoint
+                                        );
+                                        continue;
+                                    }
+                                };
+
+                                // Register (dedups if we raced into a duplicate).
+                                if let Err(e) = connection_manager.add_connection(
+                                    peer_id,
+                                    endpoint,
+                                    ConnectionDirection::Outbound,
+                                ) {
+                                    debug!(
+                                        "[NAT] Hole-punch to {}: already connected / register failed: {}",
+                                        endpoint, e
+                                    );
+                                    continue;
+                                }
+
+                                let established = conn.is_established();
+                                let stream = conn.into_stream();
+                                let peer_conn =
+                                    connection_pool.add(stream, peer_id, established).await;
+
+                                info!(
+                                    "[NAT] Hole-punch to {} SUCCEEDED ({})",
+                                    endpoint,
+                                    hex::encode(&peer_id[..8])
+                                );
+
+                                let router_clone = router.clone();
+                                let pool_clone = connection_pool.clone();
+                                let cm_clone = connection_manager.clone();
+                                tokio::spawn(async move {
+                                    Self::message_read_loop(
+                                        peer_conn,
+                                        peer_id,
+                                        router_clone,
+                                        pool_clone,
+                                        cm_clone,
+                                    )
+                                    .await;
+                                });
+                            }
+                            Err(e) => {
+                                debug!("[NAT] Hole-punch dial to {} failed: {}", endpoint, e);
+                            }
+                        }
+                    }
+                }
+            }
+            debug!("[NAT] Hole-punch dialer stopped");
+        });
+
+        self.handles.push(handle);
+    }
+
+    /// Spawn the hole-punch coordinator task (Layer 2 NAT traversal).
+    ///
+    /// Periodically introduces our connected peers to each other so NAT'd peers can form
+    /// direct connections. For each pair (A, B) of peers whose observed endpoints are
+    /// public and dialable, we tell A about B and B about A back-to-back, so both dial
+    /// within milliseconds — the near-simultaneous timing a TCP hole-punch needs.
+    ///
+    /// Any well-connected node can introduce, but this matters in practice for a public
+    /// seed both NAT'd peers reach. A node with fewer than two public-endpoint peers is a
+    /// no-op. Disabled when proxied (SWIM-PRIV-2). Receivers dedup against peers they are
+    /// already connected to, so re-introducing every round is cheap and self-healing.
+    pub fn spawn_hole_punch_coordinator(
+        &mut self,
+        transport: Arc<TcpTransport>,
+        connection_pool: Arc<PeerConnectionPool>,
+    ) {
+        use crate::network::messages::HolePunchIntroPayload;
+        use crate::transport::is_public_addr;
+
+        let mut shutdown = self.shutdown_rx.clone();
+
+        let handle = tokio::spawn(async move {
+            if transport.proxy().is_some() {
+                debug!("[NAT] Hole-punch coordinator disabled (SOCKS5 proxy configured)");
+                return;
+            }
+            let mut ticker = interval(Duration::from_secs(HOLE_PUNCH_COORD_INTERVAL_SECS));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => {
+                        if *shutdown.borrow() {
+                            break;
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        // Peers with a public, dialable endpoint. Capped to bound the
+                        // O(n^2) pairwise introductions.
+                        let peers: Vec<([u8; 32], SocketAddr)> = connection_pool
+                            .peer_endpoints()
+                            .await
+                            .into_iter()
+                            .filter(|(_, addr)| is_public_addr(addr))
+                            .take(HOLE_PUNCH_MAX_PEERS)
+                            .collect();
+
+                        if peers.len() < 2 {
+                            continue;
+                        }
+
+                        let mut intros = 0usize;
+                        for i in 0..peers.len() {
+                            for j in (i + 1)..peers.len() {
+                                let (a_id, a_addr) = peers[i];
+                                let (b_id, b_addr) = peers[j];
+
+                                // Tell A about B, and B about A.
+                                let to_a = MessageEnvelope::new_fork_agnostic(
+                                    MessageType::HolePunchIntro,
+                                    HolePunchIntroPayload::new(b_id, b_addr).to_bytes().to_vec(),
+                                );
+                                let to_b = MessageEnvelope::new_fork_agnostic(
+                                    MessageType::HolePunchIntro,
+                                    HolePunchIntroPayload::new(a_id, a_addr).to_bytes().to_vec(),
+                                );
+                                let _ = connection_pool.send_to(&a_id, &to_a).await;
+                                let _ = connection_pool.send_to(&b_id, &to_b).await;
+                                intros += 1;
+                            }
+                        }
+
+                        if intros > 0 {
+                            info!(
+                                "[NAT] Sent {} hole-punch introduction(s) across {} peers",
+                                intros,
+                                peers.len()
+                            );
+                        }
+                    }
+                }
+            }
+            debug!("[NAT] Hole-punch coordinator stopped");
         });
 
         self.handles.push(handle);

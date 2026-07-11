@@ -19,6 +19,7 @@ pub mod state;
 
 pub use connection::Connection;
 pub use error::TransportError;
+pub(crate) use listener::is_public_addr;
 pub use listener::TcpTransport;
 pub use peer::{LocalNodeInfo, PeerEvent, PeerInfo};
 pub use state::{ConnectionDirection, ConnectionState};

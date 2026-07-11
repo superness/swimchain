@@ -811,6 +811,10 @@ impl NodeManager {
 
         // 4.8. Initialize message router with all subsystems
         let metrics = Arc::new(NodeMetrics::new());
+        // Layer 2 NAT traversal: channel from the router's HOLE_PUNCH_INTRO handler to
+        // the hole-punch dialer task (the router has no transport handle to dial itself).
+        let (hole_punch_tx, hole_punch_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::node::router::HolePunchRequest>();
         let mut router_builder = MessageRouter::builder()
             .metrics(metrics.clone())
             .event_manager(self.event_manager.clone()) // For real-time WS events (H-RPC-2)
@@ -818,6 +822,7 @@ impl NodeManager {
             .data_dir(self.config.data_dir.clone()) // For multi-hop propagation
             .decay_integration(decay_integration.clone()) // For decay tracking
             .connection_pool(connection_pool.clone()) // For block relay broadcasting
+            .hole_punch_tx(hole_punch_tx) // Layer 2 NAT traversal (hole-punch dial outlet)
             .pool_manager(pool_manager) // For engagement pool gossip
             .branch_subscription_manager(branch_subscription_manager) // For branch-selective sync
             .peer_branch_tracker(peer_branch_tracker); // For tracking peer branches
@@ -843,8 +848,7 @@ impl NodeManager {
         if let Some(ref membership_store) = self.membership_store {
             router_builder = router_builder.membership_store(membership_store.clone());
         }
-        router_builder =
-            router_builder.identity_pubkey(*self.keypair.public_key.as_bytes());
+        router_builder = router_builder.identity_pubkey(*self.keypair.public_key.as_bytes());
         if let Some(ref engagement_graph) = self.engagement_graph {
             router_builder = router_builder.engagement_graph(engagement_graph.clone());
         }
@@ -953,6 +957,18 @@ impl NodeManager {
                 self.offer_store.clone(),
             );
             info!("[CONTENT-SYNC] Started background tasks with message routing, DHT, decay, block formation, and branch-selective sync");
+
+            // Layer 2 NAT traversal: hole-punch dialer (consumes intros routed from
+            // HOLE_PUNCH_INTRO) + coordinator (introduces our NAT'd peers to each other).
+            tasks.spawn_hole_punch_dialer(
+                hole_punch_rx,
+                transport.clone(),
+                router.clone(),
+                pool.clone(),
+                cm.clone(),
+            );
+            tasks.spawn_hole_punch_coordinator(transport.clone(), pool.clone());
+            info!("[NAT] Hole-punch coordinator + dialer started (Layer 2)");
         } else if let (Some(ref cm), Some(ref transport)) =
             (&self.connection_manager, &self.transport)
         {

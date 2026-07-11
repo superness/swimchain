@@ -640,3 +640,10 @@ pub const MSG_DM_ACCEPT_ANNOUNCE: u8 = 0x97;
 /// DM_DECLINE_ANNOUNCE message type - propagate a DM decline back to the requester.
 /// Signed by the decliner; the requester's node marks its pending request Declined.
 pub const MSG_DM_DECLINE_ANNOUNCE: u8 = 0x98;
+
+/// HOLE_PUNCH_INTRO message type - a well-connected node (typically the seed)
+/// introduces two NAT'd peers to each other for Layer 2 NAT traversal. The receiver
+/// attempts an outbound dial to the advertised endpoint; a simultaneous dial from the
+/// other side punches both NAT mappings. Advisory only (no auth beyond "a connected
+/// peer suggested this address"); a bad intro just wastes one failed connect.
+pub const MSG_HOLE_PUNCH_INTRO: u8 = 0x99;

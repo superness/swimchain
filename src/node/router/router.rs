@@ -56,9 +56,6 @@ use crate::types::constants::{
     MAX_ADDRS_PER_MESSAGE,
     // Message types
     MSG_ACTION_ANNOUNCE,
-    MSG_DM_ACCEPT_ANNOUNCE,
-    MSG_DM_DECLINE_ANNOUNCE,
-    MSG_DM_REQUEST_ANNOUNCE,
     MSG_ADDR,
     MSG_ALERT,
     MSG_ATTRIBUTION_QUERY,
@@ -74,6 +71,9 @@ use crate::types::constants::{
     MSG_COUNTER_ATTESTATION,
     MSG_DATA,
     MSG_DATA_CONTENT,
+    MSG_DM_ACCEPT_ANNOUNCE,
+    MSG_DM_DECLINE_ANNOUNCE,
+    MSG_DM_REQUEST_ANNOUNCE,
     MSG_FORKANNOUNCE,
     MSG_FORKINFO,
     MSG_FORKQUERY,
@@ -92,6 +92,7 @@ use crate::types::constants::{
     MSG_GET_SPACE_META,
     MSG_GOSSIP,
     MSG_HEADERS,
+    MSG_HOLE_PUNCH_INTRO,
     MSG_INV,
     MSG_I_HAVE,
     MSG_LEVEL_QUERY,
@@ -143,6 +144,11 @@ struct OrphanBlock {
 /// Routes messages to appropriate handlers based on message type.
 /// Supports optional subsystems - if a subsystem is not provided,
 /// messages for that subsystem will return `SubsystemUnavailable`.
+/// A dial request forwarded from a HOLE_PUNCH_INTRO to the hole-punch dialer task:
+/// `(endpoint_to_dial, target_node_id)`. The router itself cannot dial (no transport
+/// handle), so it hands the endpoint off over this channel to a task that can.
+pub type HolePunchRequest = (std::net::SocketAddr, [u8; 32]);
+
 pub struct MessageRouter {
     /// Node metrics for recording routing statistics
     metrics: Arc<NodeMetrics>,
@@ -206,6 +212,11 @@ pub struct MessageRouter {
     /// Used to recognize DM requests addressed to us.
     identity_pubkey: Option<[u8; 32]>,
 
+    /// Outlet for HOLE_PUNCH_INTRO dial requests (Layer 2 NAT traversal). When we
+    /// receive an intro for a peer we're not already connected to, we forward its
+    /// endpoint here for the dialer task to attempt a hole-punch connect.
+    hole_punch_tx: Option<tokio::sync::mpsc::UnboundedSender<HolePunchRequest>>,
+
     /// Engagement graph for tracking who engages with whom
     engagement_graph: Option<Arc<EngagementGraphStore>>,
 
@@ -262,6 +273,7 @@ impl MessageRouter {
             spam_attestation_store: None,
             membership_store: None,
             identity_pubkey: None,
+            hole_punch_tx: None,
             engagement_graph: None,
             sponsorship_store: None,
             offer_store: None,
@@ -305,6 +317,7 @@ impl MessageRouter {
             spam_attestation_store: None,
             membership_store: None,
             identity_pubkey: None,
+            hole_punch_tx: None,
             engagement_graph: None,
             sponsorship_store: None,
             offer_store: None,
@@ -440,6 +453,9 @@ impl MessageRouter {
             MSG_DM_REQUEST_ANNOUNCE => self.handle_dm_request_announce(peer_id, payload).await,
             MSG_DM_ACCEPT_ANNOUNCE => self.handle_dm_accept_announce(peer_id, payload).await,
             MSG_DM_DECLINE_ANNOUNCE => self.handle_dm_decline_announce(peer_id, payload).await,
+
+            // === Hole-punch coordination (Layer 2 NAT traversal) ===
+            MSG_HOLE_PUNCH_INTRO => self.handle_hole_punch_intro(peer_id, payload).await,
 
             // === Mempool Gossip ===
             MSG_ACTION_ANNOUNCE => self.handle_action_announce(peer_id, payload).await,
@@ -1990,9 +2006,10 @@ impl MessageRouter {
                 .map(|b| b.cumulative_pow)
                 .unwrap_or(0);
             if root_block.cumulative_pow > our_tip_pow {
-                if let (Some(pool), Ok(locator_hashes)) =
-                    (self.connection_pool.as_ref(), chain_store.generate_locator())
-                {
+                if let (Some(pool), Ok(locator_hashes)) = (
+                    self.connection_pool.as_ref(),
+                    chain_store.generate_locator(),
+                ) {
                     let request = GetBlocksLocatorPayload::new(locator_hashes, 50);
                     let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
                         crate::types::network::MessageType::GetBlocksLocator,
@@ -5657,6 +5674,70 @@ impl MessageRouter {
         Ok(None)
     }
 
+    /// Handle an incoming HOLE_PUNCH_INTRO (Layer 2 NAT traversal).
+    ///
+    /// A connected peer (typically the seed) is telling us about another NAT'd peer's
+    /// observed public endpoint. If we're not already connected to that peer, we forward
+    /// the endpoint to the dialer task so it can attempt an outbound connect — when the
+    /// other side dials us at the same moment, both NAT mappings get punched.
+    ///
+    /// This is intentionally unauthenticated: the worst a bogus intro can do is cost one
+    /// failed `connect()`. We never re-flood it (it's point-to-point coordination), and we
+    /// skip peers we already have to avoid churning live connections.
+    async fn handle_hole_punch_intro(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        use crate::network::messages::HolePunchIntroPayload;
+
+        let intro = HolePunchIntroPayload::from_bytes(payload).ok_or_else(|| {
+            RouteError::PayloadTooSmall {
+                expected: HolePunchIntroPayload::SIZE,
+                actual: payload.len(),
+            }
+        })?;
+
+        // Ignore an intro pointing at ourselves.
+        if let Some(my_id) = self.node_id {
+            if intro.target_node_id == my_id {
+                return Ok(None);
+            }
+        }
+
+        let endpoint = match intro.endpoint() {
+            Some(addr) => addr,
+            None => {
+                debug!(
+                    "[NAT] Dropping hole-punch intro with no dialable endpoint from {}",
+                    hex::encode(&peer_id[..8])
+                );
+                return Ok(None);
+            }
+        };
+
+        // Already connected to this peer? Nothing to punch.
+        if let Some(ref pool) = self.connection_pool {
+            if pool.get(&intro.target_node_id).await.is_some() {
+                return Ok(None);
+            }
+        }
+
+        // Hand the endpoint to the dialer task (the router has no transport handle).
+        if let Some(ref tx) = self.hole_punch_tx {
+            if tx.send((endpoint, intro.target_node_id)).is_ok() {
+                info!(
+                    "[NAT] Hole-punch intro from {}: dialing {} ({})",
+                    hex::encode(&peer_id[..8]),
+                    endpoint,
+                    hex::encode(&intro.target_node_id[..8])
+                );
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Handle GETMEMPOOL request - respond with INV of all pending actions
     ///
     /// When a peer connects or wants to sync mempools, they send GETMEMPOOL.
@@ -7634,6 +7715,7 @@ pub struct MessageRouterBuilder {
     /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
     /// Used to recognize DM requests addressed to us.
     identity_pubkey: Option<[u8; 32]>,
+    hole_punch_tx: Option<tokio::sync::mpsc::UnboundedSender<HolePunchRequest>>,
     engagement_graph: Option<Arc<EngagementGraphStore>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     offer_store: Option<Arc<OfferStore>>,
@@ -7666,6 +7748,7 @@ impl MessageRouterBuilder {
             spam_attestation_store: None,
             membership_store: None,
             identity_pubkey: None,
+            hole_punch_tx: None,
             engagement_graph: None,
             sponsorship_store: None,
             offer_store: None,
@@ -7682,6 +7765,16 @@ impl MessageRouterBuilder {
     /// Set the metrics instance
     pub fn metrics(mut self, metrics: Arc<NodeMetrics>) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    /// Set the hole-punch dial-request outlet (Layer 2 NAT traversal). When set, an
+    /// incoming HOLE_PUNCH_INTRO for an unconnected peer forwards its endpoint here.
+    pub fn hole_punch_tx(
+        mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<HolePunchRequest>,
+    ) -> Self {
+        self.hole_punch_tx = Some(tx);
         self
     }
 
@@ -7877,6 +7970,7 @@ impl MessageRouterBuilder {
             spam_attestation_store: self.spam_attestation_store,
             membership_store: self.membership_store,
             identity_pubkey: self.identity_pubkey,
+            hole_punch_tx: self.hole_punch_tx,
             engagement_graph: self.engagement_graph,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,
@@ -7914,6 +8008,7 @@ impl MessageRouterBuilder {
             spam_attestation_store: self.spam_attestation_store,
             membership_store: self.membership_store,
             identity_pubkey: self.identity_pubkey,
+            hole_punch_tx: self.hole_punch_tx,
             engagement_graph: self.engagement_graph,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,

@@ -282,6 +282,10 @@ pub enum MessageType {
     /// Direct-message decline announcement — propagate back to the original requester
     /// so their node marks the request Declined. Signed by the decliner.
     DmDeclineAnnounce = 0x98,
+    /// Hole-punch introduction — a well-connected node tells this peer about another
+    /// NAT'd peer's observed public endpoint so both can attempt a simultaneous-open
+    /// TCP hole-punch (Layer 2 NAT traversal). Advisory; receiver just tries to dial.
+    HolePunchIntro = 0x99,
 
     // DHT (Kademlia) - SPEC_06 §3.8
     /// DHT ping (liveness check)
@@ -399,6 +403,7 @@ impl TryFrom<u8> for MessageType {
             0x96 => Ok(MessageType::DmRequestAnnounce),
             0x97 => Ok(MessageType::DmAcceptAnnounce),
             0x98 => Ok(MessageType::DmDeclineAnnounce),
+            0x99 => Ok(MessageType::HolePunchIntro),
             // DHT messages
             0x80 => Ok(MessageType::DhtPing),
             0x81 => Ok(MessageType::DhtPong),

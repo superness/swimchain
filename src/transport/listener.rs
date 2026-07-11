@@ -45,7 +45,10 @@ pub struct TcpTransport {
 
 /// True if `addr` is a globally-routable public address worth advertising — excludes
 /// loopback, private (RFC1918), link-local, unspecified, and multicast ranges.
-fn is_public_addr(addr: &SocketAddr) -> bool {
+///
+/// Also used by the hole-punch coordinator to decide which peer endpoints are worth
+/// introducing to each other (Layer 2 NAT traversal).
+pub(crate) fn is_public_addr(addr: &SocketAddr) -> bool {
     use std::net::IpAddr;
     match addr.ip() {
         IpAddr::V4(ip) => {
@@ -173,8 +176,7 @@ impl TcpTransport {
 
         let mut conn = Connection::new_inbound(stream, remote_addr, our_nonce);
         let advertised = self.advertised_addr().await;
-        let peer_info =
-            perform_inbound_handshake(&mut conn, &self.local_info, advertised).await?;
+        let peer_info = perform_inbound_handshake(&mut conn, &self.local_info, advertised).await?;
 
         // Check for duplicate nonce
         {
@@ -236,18 +238,15 @@ impl TcpTransport {
         match self.proxy {
             None => {
                 // Direct path (unchanged behavior when no proxy configured).
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    TcpStream::connect(addr),
-                )
-                .await
-                .map_err(|_| {
-                    TransportError::Io(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        format!("Connection to {} timed out", addr),
-                    ))
-                })?
-                .map_err(TransportError::Io)
+                tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                    .await
+                    .map_err(|_| {
+                        TransportError::Io(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("Connection to {} timed out", addr),
+                        ))
+                    })?
+                    .map_err(TransportError::Io)
             }
             Some(proxy) => {
                 // SOCKS5 CONNECT through the proxy. The resulting stream is a
@@ -458,7 +457,9 @@ mod tests {
         // Public — worth advertising.
         assert!(is_public_addr(&"8.8.8.8:9735".parse().unwrap()));
         assert!(is_public_addr(&"167.71.241.252:9735".parse().unwrap()));
-        assert!(is_public_addr(&"[2606:4700:4700::1111]:9735".parse().unwrap()));
+        assert!(is_public_addr(
+            &"[2606:4700:4700::1111]:9735".parse().unwrap()
+        ));
         // Non-public — must never be adopted as our external endpoint.
         assert!(!is_public_addr(&"127.0.0.1:9735".parse().unwrap()));
         assert!(!is_public_addr(&"192.168.1.10:9735".parse().unwrap()));
@@ -479,16 +480,31 @@ mod tests {
         a[10] = 0xff;
         a[11] = 0xff;
         a[12..16].copy_from_slice(&[203, 0, 113, 7]);
-        let v4 = CompactAddr { transport: 0x01, address: a, port: 19735, services: 0 };
+        let v4 = CompactAddr {
+            transport: 0x01,
+            address: a,
+            port: 19735,
+            services: 0,
+        };
         assert_eq!(v4.to_socket_addr(), "203.0.113.7:19735".parse().ok());
 
         // Native IPv6
         let v6bytes = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x42).octets();
-        let v6 = CompactAddr { transport: 0x01, address: v6bytes, port: 5000, services: 0 };
+        let v6 = CompactAddr {
+            transport: 0x01,
+            address: v6bytes,
+            port: 5000,
+            services: 0,
+        };
         assert_eq!(v6.to_socket_addr(), "[2001:db8::42]:5000".parse().ok());
 
         // Zero/unspecified → None
-        let zero = CompactAddr { transport: 0x01, address: [0u8; 16], port: 0, services: 0 };
+        let zero = CompactAddr {
+            transport: 0x01,
+            address: [0u8; 16],
+            port: 0,
+            services: 0,
+        };
         assert_eq!(zero.to_socket_addr(), None);
     }
 

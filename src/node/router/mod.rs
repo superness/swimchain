@@ -33,4 +33,4 @@ mod router;
 mod tests;
 
 pub use error::RouteError;
-pub use router::{MessageRouter, MessageRouterBuilder};
+pub use router::{HolePunchRequest, MessageRouter, MessageRouterBuilder};

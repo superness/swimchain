@@ -249,9 +249,7 @@ impl Message {
                 )))
             }
             // Block sync messages (SPEC_08) are handled at the router level
-            MessageType::BlockAnnounce
-            | MessageType::GetBlock
-            | MessageType::BlockData => {
+            MessageType::BlockAnnounce | MessageType::GetBlock | MessageType::BlockData => {
                 // Return the raw payload for router-level handling
                 Err(WireError::payload(format!(
                     "Block sync message type {:?} should be handled at router level",
@@ -266,7 +264,8 @@ impl Message {
             | MessageType::GetMempool
             | MessageType::DmRequestAnnounce
             | MessageType::DmAcceptAnnounce
-            | MessageType::DmDeclineAnnounce => {
+            | MessageType::DmDeclineAnnounce
+            | MessageType::HolePunchIntro => {
                 // Return the raw payload for router-level handling
                 Err(WireError::payload(format!(
                     "Pool/mempool message type {:?} should be handled at router level",
@@ -336,12 +335,10 @@ impl Message {
                 )))
             }
             // Space name resolution (Bug #4) — handled at router level
-            MessageType::GetSpaceMeta | MessageType::SpaceMeta => {
-                Err(WireError::payload(format!(
-                    "Space-meta message type {:?} should be handled at router level",
-                    envelope.message_type
-                )))
-            }
+            MessageType::GetSpaceMeta | MessageType::SpaceMeta => Err(WireError::payload(format!(
+                "Space-meta message type {:?} should be handled at router level",
+                envelope.message_type
+            ))),
         }
     }
 

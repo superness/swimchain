@@ -47,7 +47,9 @@ impl CompactAddr {
             return None;
         }
         // IPv4-mapped IPv6: first 10 bytes 0, then 0xff 0xff, then 4 IPv4 octets.
-        let ip = if self.address[..10] == [0u8; 10] && self.address[10] == 0xff && self.address[11] == 0xff
+        let ip = if self.address[..10] == [0u8; 10]
+            && self.address[10] == 0xff
+            && self.address[11] == 0xff
         {
             IpAddr::V4(Ipv4Addr::new(
                 self.address[12],
@@ -59,6 +61,90 @@ impl CompactAddr {
             IpAddr::V6(Ipv6Addr::from(self.address))
         };
         Some(SocketAddr::new(ip, self.port))
+    }
+}
+
+/// HOLE_PUNCH_INTRO (0x99) payload — 50 bytes.
+///
+/// A well-connected node (typically the seed) sends this to introduce two NAT'd peers
+/// to each other for Layer 2 NAT traversal. It carries the *target* peer's node_id and
+/// the public endpoint the introducer observed for it. The receiver attempts an
+/// outbound dial to that endpoint; when both introduced peers dial at nearly the same
+/// moment, the simultaneous outbound SYNs punch each side's NAT mapping.
+///
+/// This is advisory and unauthenticated beyond "a peer we're connected to suggested we
+/// dial this address" — a bogus intro costs at most one failed `connect()`, so no PoW
+/// or signature is required. Wire layout: target_node_id[32] ++ address[16] ++ port[2 LE].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HolePunchIntroPayload {
+    /// SHA-256 node_id of the peer to connect to (for dedup / already-connected check).
+    pub target_node_id: [u8; 32],
+    /// The target's observed public endpoint, as IPv4-mapped-IPv6 / IPv6 bytes.
+    pub address: [u8; 16],
+    /// The target's port.
+    pub port: u16,
+}
+
+impl HolePunchIntroPayload {
+    /// Fixed serialized size: 32 + 16 + 2.
+    pub const SIZE: usize = 50;
+
+    /// Build an intro for `target_node_id` observed at `endpoint`.
+    pub fn new(target_node_id: [u8; 32], endpoint: std::net::SocketAddr) -> Self {
+        use std::net::IpAddr;
+        let address = match endpoint.ip() {
+            IpAddr::V4(v4) => {
+                // IPv4-mapped IPv6: ::ffff:a.b.c.d
+                let mut a = [0u8; 16];
+                a[10] = 0xff;
+                a[11] = 0xff;
+                a[12..16].copy_from_slice(&v4.octets());
+                a
+            }
+            IpAddr::V6(v6) => v6.octets(),
+        };
+        Self {
+            target_node_id,
+            address,
+            port: endpoint.port(),
+        }
+    }
+
+    /// Serialize to a fixed 50-byte buffer.
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut out = [0u8; Self::SIZE];
+        out[0..32].copy_from_slice(&self.target_node_id);
+        out[32..48].copy_from_slice(&self.address);
+        out[48..50].copy_from_slice(&self.port.to_le_bytes());
+        out
+    }
+
+    /// Parse from bytes (accepts a longer buffer, reads the first 50 bytes).
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::SIZE {
+            return None;
+        }
+        let mut target_node_id = [0u8; 32];
+        target_node_id.copy_from_slice(&bytes[0..32]);
+        let mut address = [0u8; 16];
+        address.copy_from_slice(&bytes[32..48]);
+        let port = u16::from_le_bytes([bytes[48], bytes[49]]);
+        Some(Self {
+            target_node_id,
+            address,
+            port,
+        })
+    }
+
+    /// Decode the target endpoint into a dialable `SocketAddr` (None if zero addr/port).
+    pub fn endpoint(&self) -> Option<std::net::SocketAddr> {
+        CompactAddr {
+            transport: 0x02,
+            address: self.address,
+            port: self.port,
+            services: 0,
+        }
+        .to_socket_addr()
     }
 }
 
@@ -562,7 +648,8 @@ impl BlockDataPayload {
             return None;
         }
 
-        let space_block_count = u32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
+        let space_block_count =
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
         offset += 4;
 
         // Sanity check to prevent excessive allocation
@@ -587,7 +674,8 @@ impl BlockDataPayload {
         if bytes.len() < offset + 4 {
             return None;
         }
-        let content_block_count = u32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
+        let content_block_count =
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
         offset += 4;
 
         // Sanity check
@@ -916,7 +1004,10 @@ impl IHavePayload {
     /// Create a new I_HAVE payload for the given hash with self as provider
     #[must_use]
     pub const fn new(hash: [u8; 32]) -> Self {
-        Self { hash, provider_id: [0u8; 32] }
+        Self {
+            hash,
+            provider_id: [0u8; 32],
+        }
     }
 
     /// Create a new I_HAVE payload with explicit provider ID (for relays)
@@ -1210,7 +1301,9 @@ impl SpaceHealthResponsePayload {
 
     /// Serialize to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(Self::MIN_SIZE + self.contributors.len() * SpaceContributorPayload::SIZE);
+        let mut buf = Vec::with_capacity(
+            Self::MIN_SIZE + self.contributors.len() * SpaceContributorPayload::SIZE,
+        );
 
         buf.extend_from_slice(&self.space_id);
         buf.extend_from_slice(&self.active_swimmers.to_le_bytes());
@@ -1255,7 +1348,9 @@ impl SpaceHealthResponsePayload {
         let mut offset = 37;
 
         for _ in 0..contributor_count {
-            if let Some(c) = SpaceContributorPayload::from_bytes(&bytes[offset..offset + SpaceContributorPayload::SIZE]) {
+            if let Some(c) = SpaceContributorPayload::from_bytes(
+                &bytes[offset..offset + SpaceContributorPayload::SIZE],
+            ) {
                 contributors.push(c);
                 offset += SpaceContributorPayload::SIZE;
             } else {
@@ -1695,7 +1790,11 @@ impl ActionAnnouncePayload {
 
     /// Create a new action announcement
     #[must_use]
-    pub fn new(thread_id: [u8; 32], space_id: [u8; 32], action_data: [u8; crate::blocks::action::ACTION_SERIALIZED_SIZE]) -> Self {
+    pub fn new(
+        thread_id: [u8; 32],
+        space_id: [u8; 32],
+        action_data: [u8; crate::blocks::action::ACTION_SERIALIZED_SIZE],
+    ) -> Self {
         Self {
             thread_id,
             space_id,
@@ -2128,7 +2227,10 @@ pub struct SubscribeBranchPayload {
 
 impl SubscribeBranchPayload {
     pub fn new(space_id: [u8; 32], branch_path: crate::blocks::BranchPath) -> Self {
-        Self { space_id, branch_path }
+        Self {
+            space_id,
+            branch_path,
+        }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -2158,7 +2260,10 @@ impl SubscribeBranchPayload {
         let path = bytes[33..33 + path_len].to_vec();
         let branch_path = crate::blocks::BranchPath { depth, path };
 
-        Some(Self { space_id, branch_path })
+        Some(Self {
+            space_id,
+            branch_path,
+        })
     }
 }
 
@@ -2284,7 +2389,10 @@ impl BranchInventoryPayload {
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        let count = self.branches.len().min(constants::MAX_BRANCH_INVENTORY_ENTRIES) as u16;
+        let count = self
+            .branches
+            .len()
+            .min(constants::MAX_BRANCH_INVENTORY_ENTRIES) as u16;
         buf.extend_from_slice(&count.to_be_bytes());
 
         for (space_id, branch_path) in self.branches.iter().take(count as usize) {
@@ -2494,6 +2602,42 @@ mod tests {
     }
 
     #[test]
+    fn test_hole_punch_intro_roundtrip_ipv4() {
+        let node_id = [0x7c; 32];
+        let ep: std::net::SocketAddr = "203.0.113.9:29736".parse().unwrap();
+        let intro = HolePunchIntroPayload::new(node_id, ep);
+        let bytes = intro.to_bytes();
+        assert_eq!(bytes.len(), HolePunchIntroPayload::SIZE);
+
+        let decoded = HolePunchIntroPayload::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded, intro);
+        assert_eq!(decoded.target_node_id, node_id);
+        // IPv4 endpoint survives the IPv4-mapped-IPv6 round trip.
+        assert_eq!(decoded.endpoint(), Some(ep));
+    }
+
+    #[test]
+    fn test_hole_punch_intro_roundtrip_ipv6() {
+        let node_id = [0x01; 32];
+        let ep: std::net::SocketAddr = "[2001:db8::1]:1234".parse().unwrap();
+        let intro = HolePunchIntroPayload::new(node_id, ep);
+        let decoded = HolePunchIntroPayload::from_bytes(&intro.to_bytes()).unwrap();
+        assert_eq!(decoded.endpoint(), Some(ep));
+    }
+
+    #[test]
+    fn test_hole_punch_intro_rejects_short_and_zero() {
+        assert!(HolePunchIntroPayload::from_bytes(&[0u8; 10]).is_none());
+        // All-zero address/port is not dialable.
+        let zero = HolePunchIntroPayload {
+            target_node_id: [0u8; 32],
+            address: [0u8; 16],
+            port: 0,
+        };
+        assert_eq!(zero.endpoint(), None);
+    }
+
+    #[test]
     fn test_inv_item_constructors() {
         let hash = [0xab; 32];
 
@@ -2699,7 +2843,10 @@ mod tests {
         };
 
         let bytes = response.to_bytes();
-        assert_eq!(bytes.len(), SpaceHealthResponsePayload::MIN_SIZE + 2 * SpaceContributorPayload::SIZE);
+        assert_eq!(
+            bytes.len(),
+            SpaceHealthResponsePayload::MIN_SIZE + 2 * SpaceContributorPayload::SIZE
+        );
 
         let restored = SpaceHealthResponsePayload::from_bytes(&bytes).unwrap();
         assert_eq!(restored, response);
