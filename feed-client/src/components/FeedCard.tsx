@@ -5,7 +5,7 @@
  * engagement metrics, and action buttons.
  */
 
-import { useState, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import type { FeedItem } from '../types/feed';
 import { ImageGallery, ImageThumbnailIndicator } from './ImageGallery';
@@ -13,6 +13,7 @@ import { PostReactions } from './PostReactions';
 import { UserProfileModal } from './UserProfileModal';
 import { ReportModal, SpamBadge } from './ReportModal';
 import { useMediaUpload } from '../hooks/useRpc';
+import { useUserProfile } from '../hooks/useUserProfile';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { useToast } from './Toast';
 import './FeedCard.css';
@@ -119,8 +120,39 @@ export function FeedCard({
 
   const timeAgo = useMemo(() => formatTimeAgo(item.createdAt), [item.createdAt]);
   const avatarColor = useMemo(() => getAvatarColor(item.authorId), [item.authorId]);
-  const initials = useMemo(() => getInitials(item.authorName, item.authorId), [item.authorName, item.authorId]);
-  const displayName = item.authorName ?? truncateAddress(item.authorId);
+
+  // Media fetcher (getMedia RPC → base64 data URL, cached). The old
+  // /api/media/<hash> path only resolves behind the web gateway.
+  const { getMediaUrl } = useMediaUpload();
+
+  // Resolve the author's profile (display name + avatar) — cached per author,
+  // so the feed shows the chosen username and picture like the profile page
+  // does, not just the raw address + initials.
+  const { profile: authorProfile } = useUserProfile(item.authorId);
+  const initials = useMemo(
+    () => getInitials(authorProfile?.info?.displayName ?? item.authorName, item.authorId),
+    [authorProfile?.info?.displayName, item.authorName, item.authorId]
+  );
+  const displayName =
+    authorProfile?.info?.displayName ?? item.authorName ?? truncateAddress(item.authorId);
+
+  // Fetch the author's avatar image from its content hash (getMedia → data URL).
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const avatarContentId = authorProfile?.avatar?.contentId;
+  useEffect(() => {
+    let alive = true;
+    if (!avatarContentId) {
+      setAvatarUrl(null);
+      return;
+    }
+    const hash = avatarContentId.startsWith('sha256:')
+      ? avatarContentId.slice('sha256:'.length)
+      : avatarContentId;
+    getMediaUrl(hash)
+      .then(url => { if (alive) setAvatarUrl(url); })
+      .catch(() => { if (alive) setAvatarUrl(null); });
+    return () => { alive = false; };
+  }, [avatarContentId, getMediaUrl]);
   const decay = useMemo(() => getDecayDisplay(item.decayState), [item.decayState]);
 
   const handleSaveClick = useCallback(() => {
@@ -132,11 +164,6 @@ export function FeedCard({
       success('Post saved');
     }
   }, [isSaved, item.id, onSave, onUnsave, success, info]);
-
-  // Get media URL from hash via the getMedia RPC (base64 data URL, cached).
-  // The old `/api/media/<hash>` path only works behind the web gateway, so
-  // images never loaded in the desktop/mobile app (no such HTTP endpoint).
-  const { getMediaUrl } = useMediaUpload();
 
   // Reactions are handled by the shared PostReactions component (below).
 
@@ -190,11 +217,15 @@ export function FeedCard({
           ref={avatarRef}
           type="button"
           className="feed-card__avatar"
-          style={{ backgroundColor: avatarColor }}
+          style={avatarUrl ? undefined : { backgroundColor: avatarColor }}
           onClick={handleAvatarClick}
           aria-label={`View ${displayName}'s profile`}
         >
-          {initials}
+          {avatarUrl ? (
+            <img src={avatarUrl} alt="" className="feed-card__avatar-img" />
+          ) : (
+            initials
+          )}
         </button>
 
         <div className="feed-card__meta">

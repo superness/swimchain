@@ -76,6 +76,8 @@
   font-size: var(--font-size-sm);
   color: white;
   text-transform: uppercase;
+  overflow: hidden;
+  padding: 0;
 }
 
 .feed-card--compact .feed-card__avatar {
@@ -427,4 +429,12 @@
   .feed-card__action {
     padding: var(--spacing-sm);
   }
+}
+
+/* Author avatar image in feed cards (falls back to initials when absent) */
+.feed-card__avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
 }
