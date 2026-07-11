@@ -226,9 +226,19 @@ export function ChannelSidebar({
     groupChannelsByCategory(channels)
   );
 
-  // Update categories when channels change
-  if (channels.length > 0 && categories.length === 0) {
-    setCategories(groupChannelsByCategory(channels));
+  // Re-group whenever the channel set changes — including switching to an EMPTY space.
+  // The old check (`channels.length > 0 && categories.length === 0`) only ran once, so
+  // opening a different/empty space kept showing the previous space's channels.
+  const channelsSig = channels.map(c => c.id).join(',');
+  const [builtSig, setBuiltSig] = useState(channelsSig);
+  if (builtSig !== channelsSig) {
+    setBuiltSig(channelsSig);
+    setCategories(prev => {
+      const collapsed = new Set(prev.filter(c => c.collapsed).map(c => c.name));
+      return groupChannelsByCategory(channels).map(c =>
+        collapsed.has(c.name) ? { ...c, collapsed: true } : c
+      );
+    });
   }
 
   const toggleCategory = (categoryName: string) => {
