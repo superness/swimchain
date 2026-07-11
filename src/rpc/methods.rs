@@ -585,6 +585,26 @@ impl RpcMethods {
         &self.node.network
     }
 
+    /// Resolve the branch path to stamp on a mempool action (SPEC_08 §4).
+    ///
+    /// Threads already indexed on-chain inherit their branch (replies,
+    /// engagements and edits stay with their thread); new threads get the
+    /// hash-derived active leaf for their space. Deterministic given the
+    /// local chain state; falls back to the root path when no chain store
+    /// is available (minimal/test configurations).
+    fn resolve_branch_path(
+        &self,
+        space_id: &[u8; 32],
+        thread_root_id: &[u8; 32],
+        author: Option<&[u8; 32]>,
+    ) -> BranchPath {
+        match self.node.chain_store {
+            Some(ref store) => crate::branch::BranchManager::new(store)
+                .resolve_mempool_branch_path(space_id, thread_root_id, author),
+            None => BranchPath::root(),
+        }
+    }
+
     /// Per-space content count with a short-TTL cache. `count_content_in_space` is a prefix
     /// scan over the space's items; the feed calls `list_space_content` per space repeatedly,
     /// so cache the total for a few seconds to keep those calls cheap.
@@ -918,10 +938,22 @@ impl RpcMethods {
 
         // Store blocks in ChainStore
         if let Some(ref store) = self.node.chain_store {
-            // Store content blocks first (referenced by space blocks)
+            // Store content blocks first (referenced by space blocks).
+            // Branch-aware write: registers size tracking and runs the 50MB
+            // fracture check (SPEC_08 §5) without mutating the built block.
+            let branch_store = crate::branch::BranchAwareStore::new(store);
             for content_block in &content_blocks {
-                if let Err(e) = store.put_content_block(content_block) {
-                    warn!("[BLOCKS] Failed to store content block: {}", e);
+                match branch_store.put_built_content_block(content_block) {
+                    Ok(result) => {
+                        if result.fracture_triggered {
+                            info!(
+                                "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                                hex::encode(&content_block.space_id[..8]),
+                                result.branch_path.depth()
+                            );
+                        }
+                    }
+                    Err(e) => warn!("[BLOCKS] Failed to store content block: {}", e),
                 }
             }
 
@@ -2122,15 +2154,15 @@ impl RpcMethods {
             // Thread ID is the content hash for a new post
             let thread_id = content_hash;
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path =
+                self.resolve_branch_path(&space_id_bytes, &thread_id, Some(&author_bytes));
+
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(
-                        thread_id,
-                        space_id_bytes,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    let added =
+                        builder.add_action(thread_id, space_id_bytes, action.clone(), branch_path);
                     if added {
                         info!(
                             "[BLOCKS] Added POST action to block builder, total_pow={}",
@@ -2899,15 +2931,15 @@ impl RpcMethods {
             // Thread ID is the parent post's hash (replies belong to parent thread)
             let thread_id = parent_hash_bytes;
 
+            // Replies inherit the parent thread's branch (SPEC_08 §4.3)
+            let branch_path =
+                self.resolve_branch_path(&space_id_bytes, &thread_id, Some(&author_bytes));
+
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(
-                        thread_id,
-                        space_id_bytes,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    let added =
+                        builder.add_action(thread_id, space_id_bytes, action.clone(), branch_path);
                     if added {
                         info!(
                             "[BLOCKS] Added REPLY action to block builder, total_pow={}",
@@ -3386,14 +3418,13 @@ impl RpcMethods {
 
         // Add to block builder
         if let Some(ref block_builder) = self.node.block_builder {
+            // Edits stay with their thread's branch (SPEC_08 §4.3)
+            let branch_path =
+                self.resolve_branch_path(&space_id_bytes, &thread_id, Some(&author_bytes));
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(
-                        thread_id,
-                        space_id_bytes,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    let added =
+                        builder.add_action(thread_id, space_id_bytes, action.clone(), branch_path);
                     if added {
                         info!(
                             "[BLOCKS] Added EDIT action to block builder, total_pow={}",
@@ -3682,12 +3713,18 @@ impl RpcMethods {
                             replaces_pending: None,
                         };
 
+                        // Engagements go to the TARGET content's branch (SPEC_08 §4.3)
+                        let branch_path = self.resolve_branch_path(
+                            &space_id_bytes,
+                            &thread_id,
+                            Some(&author_bytes),
+                        );
                         let added = if let Ok(mut builder) = block_builder.write() {
                             let added = builder.add_action(
                                 thread_id,
                                 space_id_bytes,
                                 action.clone(),
-                                BranchPath::root(),
+                                branch_path,
                             );
                             if added {
                                 info!("[BLOCKS] Added ENGAGE action to block builder, total_pow={}, emoji={:?}",
@@ -5380,16 +5417,18 @@ impl RpcMethods {
             );
 
             // Add to block builder using space_id as thread_id (each space is its own "thread")
-            use crate::blocks::branch_path::BranchPath;
             use crate::blocks::content_block::SpaceCreationMetadata;
 
             let action_clone = action.clone();
 
+            // Space creation uses the space_id as the thread_id; the branch is
+            // hash-derived from it like any other new thread (SPEC_08 §4)
+            let branch_path =
+                self.resolve_branch_path(&space_id_32, &space_id_32, Some(&creator_bytes));
+
             // Scope the lock to avoid holding it across await
             {
                 let mut builder = block_builder.write().unwrap();
-                // Space creation uses the space_id as the thread_id and a root-level branch path
-                let branch_path = BranchPath::root();
                 // Include space metadata so other nodes can register the space when syncing
                 let metadata = SpaceCreationMetadata {
                     name: params.name.clone(),
@@ -11522,15 +11561,14 @@ impl RpcMethods {
             let mut space_id_32 = [0u8; 32];
             space_id_32[..16].copy_from_slice(&space_id);
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = self.resolve_branch_path(&space_id_32, &thread_id, Some(&creator_pk));
+
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(
-                        thread_id,
-                        space_id_32,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    let added =
+                        builder.add_action(thread_id, space_id_32, action.clone(), branch_path);
                     if added {
                         info!("[BLOCKS] Added CREATE_PRIVATE_SPACE action to block builder");
                     }
@@ -11764,9 +11802,16 @@ impl RpcMethods {
             let mut space_id_32 = [0u8; 32];
             space_id_32[..16].copy_from_slice(&space_id);
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = match chain_store {
+                Some(ref store) => crate::branch::BranchManager::new(store)
+                    .resolve_mempool_branch_path(&space_id_32, &thread_id, Some(&creator_pk)),
+                None => BranchPath::root(),
+            };
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(thread_id, space_id_32, action.clone(), branch_path)
                 }
                 Err(e) => {
                     warn!("[BLOCKS] Failed to acquire block builder lock: {:?}", e);
@@ -12350,9 +12395,12 @@ impl RpcMethods {
             let mut space_id_32 = [0u8; 32];
             space_id_32[..16].copy_from_slice(&space_id);
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = self.resolve_branch_path(&space_id_32, &thread_id, Some(&inviter_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(thread_id, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -12536,9 +12584,13 @@ impl RpcMethods {
                 replaces_pending: None,
             };
 
+            // Accept joins the invite's thread branch (SPEC_08 §4)
+            let branch_path =
+                self.resolve_branch_path(&space_id_32, &invite_hash, Some(&acceptor_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(invite_hash, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(invite_hash, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -12768,9 +12820,12 @@ impl RpcMethods {
             let mut space_id_32 = [0u8; 32];
             space_id_32[..16].copy_from_slice(&space_id);
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = self.resolve_branch_path(&space_id_32, &thread_id, Some(&inviter_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(thread_id, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -12943,9 +12998,13 @@ impl RpcMethods {
                 replaces_pending: None,
             };
 
+            // Accept joins the invite's thread branch (SPEC_08 §4)
+            let branch_path =
+                self.resolve_branch_path(&space_id_32, &invite_hash, Some(&acceptor_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(invite_hash, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(invite_hash, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -13228,9 +13287,12 @@ impl RpcMethods {
                 replaces_pending: None,
             };
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = self.resolve_branch_path(&space_id_32, &leave_hash, Some(&member_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(leave_hash, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(leave_hash, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -13532,20 +13594,20 @@ impl RpcMethods {
                 replaces_pending: None,
             };
 
+            // New threads: hash-derived branch placement (SPEC_08 §4)
+            let kick_branch = self.resolve_branch_path(&space_id_32, &kick_hash, Some(&admin_pk));
+            let rotation_branch =
+                self.resolve_branch_path(&space_id_32, &rotation_hash, Some(&admin_pk));
+
             // Add both actions to the mempool, then announce whichever were accepted
             let (added_kick, added_rotation) = match block_builder.write() {
                 Ok(mut builder) => (
-                    builder.add_action(
-                        kick_hash,
-                        space_id_32,
-                        kick_action.clone(),
-                        BranchPath::root(),
-                    ),
+                    builder.add_action(kick_hash, space_id_32, kick_action.clone(), kick_branch),
                     builder.add_action(
                         rotation_hash,
                         space_id_32,
                         rotation_action.clone(),
-                        BranchPath::root(),
+                        rotation_branch,
                     ),
                 ),
                 Err(_) => (false, false),
@@ -14118,7 +14180,6 @@ impl RpcMethods {
         // SPEC_11 Phase 6: Create on-chain GenesisRegister action and add to block builder
         {
             use crate::blocks::action::Action;
-            use crate::blocks::BranchPath;
 
             let action = Action::new_genesis_register(
                 identity_bytes,
@@ -14131,13 +14192,16 @@ impl RpcMethods {
             let action_hash = action.hash();
 
             if let Some(ref block_builder) = self.node.block_builder {
+                // New thread in the system space: hash-derived branch (SPEC_08 §4)
+                let branch_path =
+                    self.resolve_branch_path(&system_space_id, &action_hash, Some(&identity_bytes));
                 match block_builder.write() {
                     Ok(mut builder) => {
                         let added = builder.add_action(
                             action_hash,
                             system_space_id,
                             action.clone(),
-                            BranchPath::root(),
+                            branch_path,
                         );
                         if added {
                             info!("[SPONSORSHIP] Added GenesisRegister action to block builder");
@@ -14408,7 +14472,6 @@ impl RpcMethods {
         // SPEC_11 Phase 6: Create on-chain Sponsor action and add to block builder
         {
             use crate::blocks::action::Action;
-            use crate::blocks::BranchPath;
 
             // Parse PoW fields from params if provided
             let pow_target_bytes: [u8; 32] = params
@@ -14441,13 +14504,16 @@ impl RpcMethods {
             let action_hash = action.hash();
 
             if let Some(ref block_builder) = self.node.block_builder {
+                // New thread in the system space: hash-derived branch (SPEC_08 §4)
+                let branch_path =
+                    self.resolve_branch_path(&system_space_id, &action_hash, Some(&sponsor_bytes));
                 match block_builder.write() {
                     Ok(mut builder) => {
                         let added = builder.add_action(
                             action_hash,
                             system_space_id,
                             action.clone(),
-                            BranchPath::root(),
+                            branch_path,
                         );
                         if added {
                             info!("[SPONSORSHIP] Added Sponsor action to block builder");
@@ -15650,7 +15716,6 @@ impl RpcMethods {
         // Create on-chain Sponsor action
         {
             use crate::blocks::action::Action;
-            use crate::blocks::BranchPath;
 
             // Compute actual pow_work from the claim's PoW proof
             let pow_work = {
@@ -15676,13 +15741,11 @@ impl RpcMethods {
             let action_hash = action.hash();
 
             if let Some(ref block_builder) = self.node.block_builder {
+                // New thread in the system space: hash-derived branch (SPEC_08 §4)
+                let branch_path =
+                    self.resolve_branch_path(&system_space_id, &action_hash, Some(&sponsor_bytes));
                 if let Ok(mut builder) = block_builder.write() {
-                    builder.add_action(
-                        action_hash,
-                        system_space_id,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    builder.add_action(action_hash, system_space_id, action.clone(), branch_path);
                 }
             }
 

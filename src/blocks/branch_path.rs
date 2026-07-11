@@ -46,18 +46,20 @@ impl BranchPath {
         }
     }
 
-    /// Create path from thread root content hash
+    /// Create path from thread root content hash (SPEC_08 §4)
     ///
-    /// Uses the first bits of the hash to determine initial placement
+    /// Derives the placement path by walking the hash bits from the root:
+    /// bit `i` of the hash selects Left/Right at depth `i`, down to `depth`.
+    /// `depth` is the fracture depth of the space (0 = unfractured, which
+    /// yields the root path). This is a pure function of `(hash, depth)`,
+    /// so every node derives the identical placement from chain data alone.
     #[must_use]
-    pub fn from_thread_root(_hash: &[u8; 32]) -> Self {
-        // Start at depth 0 (root level), path derived from hash
-        // Branching happens incrementally via branch() method when tree grows
-        // For now, all threads start at root - hash will be used for placement hints
-        Self {
-            depth: 0,
-            path: vec![],
+    pub fn from_thread_root(hash: &[u8; 32], depth: u8) -> Self {
+        let mut path = Self::root();
+        for d in 0..depth {
+            path = path.branch(Self::direction_at(hash, d));
         }
+        path
     }
 
     /// Get direction at a specific depth
@@ -294,11 +296,54 @@ mod tests {
     }
 
     #[test]
-    fn test_from_thread_root() {
+    fn test_from_thread_root_depth_zero_is_root() {
         let hash = [0x42u8; 32];
-        let path = BranchPath::from_thread_root(&hash);
-        // Should start at root level
-        assert_eq!(path.depth, 0);
+        let path = BranchPath::from_thread_root(&hash, 0);
+        // Unfractured space: everything lives at the root branch
+        assert_eq!(path, BranchPath::root());
+    }
+
+    #[test]
+    fn test_from_thread_root_follows_hash_bits() {
+        // 0b1011_0001 -> Right, Left, Right, Right at depths 0..4
+        let hash = [0b1011_0001u8; 32];
+        let expected = BranchPath::root()
+            .branch(BranchDirection::Right)
+            .branch(BranchDirection::Left)
+            .branch(BranchDirection::Right)
+            .branch(BranchDirection::Right);
+        assert_eq!(BranchPath::from_thread_root(&hash, 4), expected);
+    }
+
+    #[test]
+    fn test_from_thread_root_deterministic() {
+        let hash = [0xA7u8; 32];
+        for depth in 0..16 {
+            assert_eq!(
+                BranchPath::from_thread_root(&hash, depth),
+                BranchPath::from_thread_root(&hash, depth),
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_thread_root_prefix_consistency() {
+        // Deeper derivations must be descendants of shallower ones
+        let hash = [0x5Cu8; 32];
+        let shallow = BranchPath::from_thread_root(&hash, 3);
+        let deep = BranchPath::from_thread_root(&hash, 9);
+        assert!(deep.is_descendant_of(&shallow));
+        // Every derived bit matches direction_at
+        for d in 0..9u8 {
+            let expected_bit = match BranchPath::direction_at(&hash, d) {
+                BranchDirection::Left => 0,
+                BranchDirection::Right => 1,
+            };
+            let byte_index = (d / 8) as usize;
+            let bit_index = 7 - (d % 8);
+            let actual_bit = (deep.path[byte_index] >> bit_index) & 1;
+            assert_eq!(actual_bit, expected_bit, "bit mismatch at depth {d}");
+        }
     }
 
     #[test]

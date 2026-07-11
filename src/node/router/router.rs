@@ -2417,23 +2417,38 @@ impl MessageRouter {
                 Ok(_) => {} // No duplicates, proceed
             }
 
-            if let Err(e) = chain_store.put_content_block(&content_block) {
-                warn!("[BLOCK] Failed to store content block: {}", e);
-            } else {
-                // Mark all actions in this content block as finalized
-                if let Err(e) =
-                    chain_store.mark_content_block_actions_finalized(&content_block, block_height)
-                {
-                    warn!("[BLOCK] Failed to mark actions as finalized: {}", e);
+            // Branch-aware write: registers the block with the branch indexes
+            // (size tracking + 50MB fracture, SPEC_08 §5). Placement is derived
+            // from chain data, so every node processing this block computes the
+            // identical branch assignment.
+            let branch_store = crate::branch::BranchAwareStore::new(chain_store);
+            match branch_store.put_built_content_block(&content_block) {
+                Err(e) => {
+                    warn!("[BLOCK] Failed to store content block: {}", e);
                 }
-                // Extract and store reactions from Engage actions
-                self.extract_reactions_from_block(&content_block);
-                // Track engagements in the engagement graph
-                self.extract_engagements_from_block(&content_block);
-                // SPEC_13 Phase A: behavioral clustering (organic communities)
-                self.process_behavioral_clustering(&content_block);
-                // Update reply counts in aggregation cache
-                self.update_reply_counts_from_block(&content_block);
+                Ok(put_result) => {
+                    if put_result.fracture_triggered {
+                        info!(
+                            "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                            hex::encode(&content_block.space_id[..8]),
+                            put_result.branch_path.depth()
+                        );
+                    }
+                    // Mark all actions in this content block as finalized
+                    if let Err(e) = chain_store
+                        .mark_content_block_actions_finalized(&content_block, block_height)
+                    {
+                        warn!("[BLOCK] Failed to mark actions as finalized: {}", e);
+                    }
+                    // Extract and store reactions from Engage actions
+                    self.extract_reactions_from_block(&content_block);
+                    // Track engagements in the engagement graph
+                    self.extract_engagements_from_block(&content_block);
+                    // SPEC_13 Phase A: behavioral clustering (organic communities)
+                    self.process_behavioral_clustering(&content_block);
+                    // Update reply counts in aggregation cache
+                    self.update_reply_counts_from_block(&content_block);
+                }
             }
         }
 
@@ -2812,7 +2827,9 @@ impl MessageRouter {
                         all_content_hashes.push(media_ref.media_hash);
                     }
                 }
-                let _ = chain_store.put_content_block(&content_block);
+                // Branch-aware write: size tracking + 50MB fracture (SPEC_08 §5)
+                let _ = crate::branch::BranchAwareStore::new(chain_store)
+                    .put_built_content_block(&content_block);
                 let _ =
                     chain_store.mark_content_block_actions_finalized(&content_block, block_height);
             }
@@ -3819,9 +3836,21 @@ impl MessageRouter {
                     Ok(_) => {} // No duplicates
                 }
 
-                if let Err(e) = chain_store.put_content_block(content_block) {
+                // Branch-aware write: size tracking + 50MB fracture (SPEC_08 §5)
+                let put_result = crate::branch::BranchAwareStore::new(chain_store)
+                    .put_built_content_block(content_block);
+                if let Err(e) = put_result {
                     warn!("[BLOCK] Failed to store content block: {}", e);
                 } else {
+                    if let Ok(ref result) = put_result {
+                        if result.fracture_triggered {
+                            info!(
+                                "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                                hex::encode(&content_block.space_id[..8]),
+                                result.branch_path.depth()
+                            );
+                        }
+                    }
                     // Mark actions as finalized
                     if let Err(e) = chain_store
                         .mark_content_block_actions_finalized(content_block, block_height)
@@ -5053,6 +5082,18 @@ impl MessageRouter {
             }
         }
 
+        // Resolve branch placement for the gossiped action (SPEC_08 §4).
+        // Deterministic from local chain state, so every node stamps the same
+        // path when it later builds a block from this mempool entry.
+        let branch_path = match &self.chain_store {
+            Some(store) => crate::branch::BranchManager::new(store).resolve_mempool_branch_path(
+                &announce.space_id,
+                &announce.thread_id,
+                Some(&action.actor),
+            ),
+            None => BranchPath::root(),
+        };
+
         // Add to block builder
         let added = {
             let mut bb_write = block_builder
@@ -5063,7 +5104,7 @@ impl MessageRouter {
                 announce.thread_id,
                 announce.space_id,
                 action.clone(),
-                BranchPath::root(),
+                branch_path,
             );
 
             if added {
@@ -5860,16 +5901,28 @@ impl MessageRouter {
         if let Some(ref store) = self.chain_store {
             let block_height = root.height();
 
-            // Store content blocks first (referenced by space blocks)
+            // Store content blocks first (referenced by space blocks).
+            // Branch-aware write: size tracking + 50MB fracture (SPEC_08 §5).
+            let branch_store = crate::branch::BranchAwareStore::new(store);
             for content_block in &content_blocks {
-                if let Err(e) = store.put_content_block(content_block) {
-                    warn!("[BLOCKS] Failed to store content block: {}", e);
-                } else {
-                    // Mark all actions as finalized so duplicate blocks from other nodes are rejected
-                    if let Err(e) =
-                        store.mark_content_block_actions_finalized(content_block, block_height)
-                    {
-                        warn!("[BLOCKS] Failed to mark actions as finalized: {}", e);
+                match branch_store.put_built_content_block(content_block) {
+                    Err(e) => {
+                        warn!("[BLOCKS] Failed to store content block: {}", e);
+                    }
+                    Ok(result) => {
+                        if result.fracture_triggered {
+                            info!(
+                                "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                                hex::encode(&content_block.space_id[..8]),
+                                result.branch_path.depth()
+                            );
+                        }
+                        // Mark all actions as finalized so duplicate blocks from other nodes are rejected
+                        if let Err(e) =
+                            store.mark_content_block_actions_finalized(content_block, block_height)
+                        {
+                            warn!("[BLOCKS] Failed to mark actions as finalized: {}", e);
+                        }
                     }
                 }
             }

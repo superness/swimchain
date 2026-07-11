@@ -132,6 +132,48 @@ impl<'a> BranchAwareStore<'a> {
         })
     }
 
+    /// Store an already-built content block with branch size tracking.
+    ///
+    /// This is the production write path for blocks that are hash-committed
+    /// (locally formed or received from the network). The block is stored
+    /// EXACTLY as built — its `branch_path` field is part of the block hash
+    /// and therefore of consensus, so it is never mutated here. Placement is
+    /// registered via [`BranchManager::register_built_block`], which derives
+    /// it deterministically from chain data (thread index / hash bits), and
+    /// the 50MB fracture check runs on every write.
+    ///
+    /// Idempotent: re-delivery of a block already in the store (e.g. the same
+    /// block arriving from multiple peers) does not double-count branch sizes.
+    pub fn put_built_content_block(&self, block: &ContentBlock) -> Result<PutResult, BranchError> {
+        let hash = block.hash();
+        let already_stored = self.chain_store.has_content_block(&hash)?;
+
+        // Store (or re-store) the block as-is.
+        let hash = self.chain_store.put_content_block(block)?;
+
+        if already_stored {
+            // Indexes already reflect this block — report current placement.
+            let path = self
+                .chain_store
+                .get_thread_branch(&block.space_id, &block.thread_root_id)?
+                .unwrap_or_else(|| block.branch_path.clone());
+            return Ok(PutResult {
+                hash,
+                branch_path: path,
+                fracture_triggered: false,
+            });
+        }
+
+        let manager = BranchManager::with_threshold(self.chain_store, self.fracture_threshold);
+        let (branch_path, fracture_triggered) = manager.register_built_block(block)?;
+
+        Ok(PutResult {
+            hash,
+            branch_path,
+            fracture_triggered,
+        })
+    }
+
     /// Access underlying chain store
     #[must_use]
     pub fn chain_store(&self) -> &ChainStore {

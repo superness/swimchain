@@ -105,11 +105,7 @@ impl<'a> BranchManager<'a> {
         }
 
         // If no match found, navigate by hash bits to max_depth as fallback
-        let mut current = BranchPath::root();
-        for depth in 0..state.max_depth {
-            let direction = BranchPath::direction_at(thread_root_id, depth);
-            current = current.branch(direction);
-        }
+        let current = BranchPath::from_thread_root(thread_root_id, state.max_depth);
 
         // This shouldn't happen with correct state
         Err(BranchError::NotLeafBranch {
@@ -705,14 +701,110 @@ impl<'a> BranchManager<'a> {
         }
 
         // Fallback mirrors assign_branch_for_new_thread.
-        let mut current = BranchPath::root();
-        for depth in 0..state.max_depth {
-            let direction = BranchPath::direction_at(thread_root_id, depth);
-            current = current.branch(direction);
-        }
         Err(BranchError::NotLeafBranch {
-            branch_path: current,
+            branch_path: BranchPath::from_thread_root(thread_root_id, state.max_depth),
         })
+    }
+
+    /// Resolve the branch path to stamp on a mempool action (SPEC_08 §4).
+    ///
+    /// Rules:
+    /// 1. Thread already indexed on-chain → inherit its branch (replies,
+    ///    engagements and edits stay with their thread, [`BranchPath::for_reply`]).
+    /// 2. Otherwise treat as a new thread → hash-derived active leaf for the
+    ///    space (community-aware when `author` is given).
+    ///
+    /// Infallible by design: any storage/assignment error falls back to the
+    /// root path. The stamped path is a placement hint committed into the
+    /// block hash; the authoritative placement index is maintained by
+    /// [`Self::register_built_block`] from chain data, so a stale stamp can
+    /// never diverge placement across nodes.
+    #[must_use]
+    pub fn resolve_mempool_branch_path(
+        &self,
+        space_id: &[u8; 32],
+        thread_root_id: &[u8; 32],
+        author: Option<&[u8; 32]>,
+    ) -> BranchPath {
+        if let Ok(Some(existing)) = self.store.get_thread_branch(space_id, thread_root_id) {
+            return BranchPath::for_reply(&existing);
+        }
+        self.assign_branch_for_new_thread_with_author(space_id, thread_root_id, author)
+            .unwrap_or_else(|_| BranchPath::root())
+    }
+
+    /// Register an already-built content block with the branch indexes.
+    ///
+    /// Unlike [`BranchAwareStore::put_content_block`](super::BranchAwareStore),
+    /// this NEVER mutates the block: built blocks are hash-committed (the
+    /// `branch_path` field is part of the content block hash, which the space
+    /// block merkle root commits to), so placement is tracked purely in the
+    /// local indexes. Used by every production write path — locally formed
+    /// blocks and blocks received from the network — so that size tracking
+    /// and the 50MB fracture run identically on all nodes.
+    ///
+    /// Placement is a pure function of chain data processed in chain order:
+    /// - thread already indexed → continuation (branch inherited);
+    /// - unindexed thread → hash-derived active leaf. This also lazily
+    ///   migrates pre-branching chains where nothing was ever indexed.
+    ///
+    /// Metadata timestamps use `block.timestamp` (never wall time) so replay
+    /// and live processing produce byte-identical branch state.
+    ///
+    /// # Returns
+    /// (assigned_branch_path, fracture_triggered)
+    pub fn register_built_block(
+        &self,
+        block: &crate::blocks::ContentBlock,
+    ) -> Result<(BranchPath, bool), BranchError> {
+        let timestamp = block.timestamp;
+        self.ensure_space_initialized(&block.space_id, timestamp)?;
+
+        let author = block.actions.first().map(|a| a.actor);
+
+        // Continuation if the thread is already indexed; otherwise this block
+        // starts (or lazily migrates) the thread.
+        let existing = self
+            .store
+            .get_thread_branch(&block.space_id, &block.thread_root_id)?;
+        let (path, is_new_thread) = match existing {
+            Some(p) => (p, false),
+            None => {
+                let assigned = self.assign_branch_for_new_thread_with_author(
+                    &block.space_id,
+                    &block.thread_root_id,
+                    author.as_ref(),
+                )?;
+                self.store
+                    .put_thread_branch(&block.space_id, &block.thread_root_id, &assigned)?;
+                (assigned, true)
+            }
+        };
+
+        let serialized_size = bincode::serialized_size(block)?;
+
+        self.store
+            .update_thread_size(&block.space_id, &block.thread_root_id, serialized_size)?;
+
+        let mut metadata = self
+            .store
+            .get_branch_metadata(&block.space_id, &path)?
+            .unwrap_or_else(|| BranchMetadata::new_empty(path.clone(), timestamp));
+        metadata.total_size += serialized_size;
+        if is_new_thread {
+            metadata.thread_count += 1;
+        }
+        metadata.last_updated = timestamp;
+        self.store.put_branch_metadata(&block.space_id, &metadata)?;
+
+        let fracture_triggered = if self.needs_fracture(&block.space_id, &path)? {
+            self.execute_fracture(&block.space_id, &path, timestamp)?;
+            true
+        } else {
+            false
+        };
+
+        Ok((path, fracture_triggered))
     }
 
     /// Register a content block with community-aware branch assignment.

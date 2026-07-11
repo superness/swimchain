@@ -2193,10 +2193,22 @@ impl BackgroundTaskRunner {
 
                         // Store blocks in ChainStore (proper block storage)
                         // (chain_store is already validated at the start of this block)
-                        // Store content blocks first (referenced by space blocks)
+                        // Store content blocks first (referenced by space blocks).
+                        // Branch-aware write: size tracking + 50MB fracture (SPEC_08 §5).
+                        let branch_store = crate::branch::BranchAwareStore::new(&chain_store);
                         for content_block in &content_blocks {
-                            if let Err(e) = chain_store.put_content_block(content_block) {
-                                warn!("[BLOCKS] Failed to store content block: {}", e);
+                            match branch_store.put_built_content_block(content_block) {
+                                Ok(result) if result.fracture_triggered => {
+                                    info!(
+                                        "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                                        hex::encode(&content_block.space_id[..8]),
+                                        result.branch_path.depth()
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    warn!("[BLOCKS] Failed to store content block: {}", e);
+                                }
                             }
 
                             // SPEC_11 Phase 6: Apply sponsorship actions from locally formed blocks
