@@ -403,6 +403,17 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     }
   }, [activeSources.spaces.length, activeSources.users.length]);
 
+  // Reload when the author filter changes ("View Posts"). Without this, tapping
+  // View Posts while already on the feed (e.g. from the profile modal) changed
+  // the URL but never refetched — it only worked from the profile page because
+  // that remounts the feed. `loadFeed` closes over authorFilter.
+  useEffect(() => {
+    if (initialLoadDone.current) {
+      loadFeed();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authorFilter]);
+
   return {
     items,
     loading,

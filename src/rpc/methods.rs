@@ -5836,12 +5836,36 @@ impl RpcMethods {
         let mut items: Vec<ContentSummary> = Vec::new();
         let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
 
+        // Special-purpose spaces to exclude from a "posts by author" view: the
+        // author's own profile space (holds PROFILE_INFO/AVATAR records) and any
+        // DM space they participate in — both are noise here, not public posts.
+        let author_profile_space_16: [u8; 16] = {
+            let preimage = format!("profile:v1:{}", hex::encode(author_bytes));
+            let h = crate::crypto::sha256(preimage.as_bytes());
+            let mut a = [0u8; 16];
+            a.copy_from_slice(&h[..16]);
+            a
+        };
+        let dm_space_ids: std::collections::HashSet<[u8; 16]> = self
+            .node
+            .membership_store
+            .as_ref()
+            .and_then(|ms| ms.get_dm_space_ids(&author_bytes).ok())
+            .map(|v| v.into_iter().collect())
+            .unwrap_or_default();
+
         if let Some(ref chain_store) = self.node.chain_store {
             // Use the new author index method
             let content_type_filter = if params.include_replies { None } else { Some(0) };
             match chain_store.get_content_by_author(&author_bytes, params.limit, params.offset, content_type_filter) {
                 Ok(results) => {
                     for (content_hash, metadata) in results {
+                        // Skip profile-space and DM-space content (noise).
+                        if metadata.space_id == author_profile_space_16
+                            || dm_space_ids.contains(&metadata.space_id)
+                        {
+                            continue;
+                        }
                         let content_id = format!("sha256:{}", hex::encode(&content_hash));
                         let actor_id = crate::types::identity::IdentityId(metadata.author);
                         let author_id = crate::crypto::address::encode_address(&actor_id);
