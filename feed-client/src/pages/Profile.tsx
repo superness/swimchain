@@ -14,6 +14,7 @@ import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useUserProfile, clearProfileCache } from '../hooks/useUserProfile';
 import { useRpc, usePostSubmit, useMediaUpload } from '../hooks/useRpc';
 import { usePostPow } from '../hooks/useActionPow';
+import { useSponsorship } from '../hooks/useSponsorship';
 import { solutionToRpcParams } from '../lib/action-pow';
 import { PowProgress } from '../components/PowProgress';
 import {
@@ -48,6 +49,7 @@ export function ProfilePage(): JSX.Element {
   const { state: powState, minePost, cancel: cancelMining, progress, reset: resetPow, solution } = usePostPow();
   const { submitPost, submitting, error: submitRpcError } = usePostSubmit();
   const { uploadImage } = useMediaUpload();
+  const { isSponsored } = useSponsorship();
 
   // Edit mode state
   const [isEditing, setIsEditing] = useState(false);
@@ -131,6 +133,16 @@ export function ProfilePage(): JSX.Element {
       return;
     }
 
+    // Gate on sponsorship BEFORE mining — profile updates are posts and the
+    // node rejects unsponsored posts (SPEC_11), so mining first only wastes
+    // proof-of-work and ends in a generic failure.
+    if (isSponsored === false) {
+      setSaveError(
+        'Your identity is not sponsored yet. Find a sponsor before updating your profile — no proof-of-work is spent until then.'
+      );
+      return;
+    }
+
     setSaveError(null);
     submittedRef.current = false;
 
@@ -184,7 +196,7 @@ export function ProfilePage(): JSX.Element {
       setSaveError(err instanceof Error ? err.message : 'Failed to save profile');
       setSaveStep('idle');
     }
-  }, [connected, myPk, hasIdentity, displayName, bio, website, avatarFile, uploadImage, minePost]);
+  }, [connected, myPk, hasIdentity, isSponsored, displayName, bio, website, avatarFile, uploadImage, minePost]);
 
   // Handle mining completion - submit to network
   const handleMiningComplete = useCallback(async () => {
