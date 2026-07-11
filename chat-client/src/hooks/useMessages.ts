@@ -108,6 +108,13 @@ export function useMessages(
           status: 'sent',
           reactions: [],
           isPinned: true, // Mark original post as pinned
+          // Map attached images on the post itself (replies map these too, but the
+          // root post was previously dropped — so post images never rendered).
+          mediaRefs: postResult.media_refs?.map(mr => ({
+            mediaHash: mr.media_hash,
+            mediaType: mr.media_type,
+            sizeBytes: mr.size_bytes,
+          })),
         });
       }
 

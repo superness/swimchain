@@ -49,6 +49,8 @@ interface ContentResult {
   engagement_count: number;
   decay_state: string;
   seconds_until_decay: number | null;
+  /** Attached media (images) on the post — same shape get_replies returns. */
+  media_refs?: Array<{ media_hash: string; media_type: string; size_bytes: number }>;
 }
 
 interface SpaceContentResult {
