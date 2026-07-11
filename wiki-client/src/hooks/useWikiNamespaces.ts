@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
+import { WIKI_APP } from '../lib/appNamespace';
 import type { WikiNamespace } from '../types/wiki';
 
 interface UseWikiNamespacesResult {
@@ -19,6 +20,8 @@ interface RpcSpaceSummary {
   name: string | null;
   post_count: number;
   last_activity: number | null;
+  /** App-namespace tag; wiki namespaces come back as "wiki" with a clean display name. */
+  app?: string | null;
 }
 
 interface RpcListSpacesResult {
@@ -60,7 +63,10 @@ export function useWikiNamespaces(): UseWikiNamespacesResult {
     rpc.call<RpcListSpacesResult>('list_spaces', { limit: 200, offset: 0 })
       .then(result => {
         if (!cancelled) {
-          setData(result.spaces.map(mapToNamespace));
+          // Wiki content is segregated to the wiki client: only surface spaces in the
+          // "wiki" app namespace. General clients hide these same spaces.
+          const wikiOnly = result.spaces.filter(s => s.app === WIKI_APP);
+          setData(wikiOnly.map(mapToNamespace));
         }
       })
       .catch(err => {

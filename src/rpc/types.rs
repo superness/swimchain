@@ -829,8 +829,16 @@ pub struct SpaceSummary {
     pub post_count: u64,
     /// Most recent post timestamp
     pub last_activity: Option<u64>,
-    /// Space name (if any)
+    /// Space name (if any). For app-namespaced spaces this is the CLEAN display name
+    /// (the `@<app>:` marker is stripped).
     pub name: Option<String>,
+    /// App namespace tag, if this is an app-namespaced space (see `parse_app_space_name`).
+    /// `None` = a normal public space shown by the general social clients. `Some("wiki")`,
+    /// `Some("chess")`, … = a specialized space: the general clients (forum/feed/chat/search)
+    /// hide ALL app spaces so they never pollute the default experience, and the matching
+    /// app client (wiki-client, etc.) shows only spaces whose `app` equals its own.
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 /// list_spaces result

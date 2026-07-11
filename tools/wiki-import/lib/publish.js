@@ -11,15 +11,23 @@
 
 import { ActionType, mineActionPow } from './pow.js';
 
+/** Wiki namespaces use the general app-space naming convention `@wiki:<display>`, so the
+ * node segregates them (general clients hide them; the wiki client shows only these). */
+const WIKI_APP = 'wiki';
+const wikiSpaceName = (display) => `@${WIKI_APP}:${display}`;
+
 /**
- * Find a space by name, or create it (SpaceCreation PoW + `space:` signature).
+ * Find a wiki space by display name, or create it (SpaceCreation PoW + `space:` signature).
+ * The on-chain name carries the `@wiki:` marker; the node returns the clean display name
+ * plus `app: "wiki"`, so we match on both to avoid colliding with a same-named forum space.
  * @returns {Promise<string>} space_id
  */
 export async function ensureSpace(rpc, keypair, name, network) {
+  const onchainName = wikiSpaceName(name);
   try {
     const spaces = await rpc.call('list_spaces', {});
     const list = Array.isArray(spaces) ? spaces : (spaces?.spaces ?? []);
-    const existing = list.find((s) => s.name === name);
+    const existing = list.find((s) => s.app === WIKI_APP && s.name === name);
     if (existing?.space_id) {
       return existing.space_id;
     }
@@ -27,19 +35,21 @@ export async function ensureSpace(rpc, keypair, name, network) {
     // list_spaces unavailable — fall through to create
   }
 
-  const pow = await mineActionPow(ActionType.SpaceCreation, name, keypair.publicKeyBytes, network);
+  // PoW and signature cover the FULL on-chain name (with the marker) — that's the exact
+  // string the node re-hashes for PoW and derives the shared space id from.
+  const pow = await mineActionPow(ActionType.SpaceCreation, onchainName, keypair.publicKeyBytes, network);
   const result = await rpc.call('create_space', {
-    name,
+    name: onchainName,
     creator_id: keypair.publicKeyHex,
     pow_nonce: pow.pow_nonce,
     pow_difficulty: pow.pow_difficulty,
     pow_nonce_space: pow.pow_nonce_space,
     pow_hash: pow.pow_hash,
-    signature: keypair.sign(`space:${name}:${pow.timestamp}`),
+    signature: keypair.sign(`space:${onchainName}:${pow.timestamp}`),
     timestamp: pow.timestamp,
   });
   if (!result?.success || !result.space_id) {
-    throw new Error(`create_space failed for "${name}": ${JSON.stringify(result)}`);
+    throw new Error(`create_space failed for "${onchainName}": ${JSON.stringify(result)}`);
   }
   return result.space_id;
 }

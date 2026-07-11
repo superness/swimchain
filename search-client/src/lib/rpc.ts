@@ -99,6 +99,8 @@ export class SwimchainRpc {
   private requestId = 1;
   private connected = false;
   private nodeInfo: NodeInfo | null = null;
+  /** Short-lived cache of app-namespaced space ids (wiki, etc.) to hide from search. */
+  private appSpaceCache: { ids: Set<string>; at: number } | null = null;
 
   constructor(config: RpcConfig) {
     this.endpoint = config.endpoint;
@@ -280,7 +282,7 @@ export class SwimchainRpc {
    * Full-text search across all content types
    */
   async search(params: SearchParams): Promise<SearchResponse> {
-    return this.call<SearchResponse>('search', {
+    const response = await this.call<SearchResponse>('search', {
       query: params.query,
       types: params.types,
       space_id: params.spaceId,
@@ -294,6 +296,37 @@ export class SwimchainRpc {
       limit: params.limit ?? 20,
       offset: params.offset ?? 0,
     });
+
+    // Search is a general client: drop results that live in a specialized app namespace
+    // (wiki, etc.) so that content stays in its own client. User results carry no spaceId.
+    const appSpaceIds = await this.appSpaceIds();
+    if (appSpaceIds.size === 0) return response;
+    const results = response.results.filter((r) => {
+      const spaceId = (r.data as { spaceId?: string }).spaceId;
+      return !spaceId || !appSpaceIds.has(spaceId);
+    });
+    const removed = response.results.length - results.length;
+    return { ...response, results, total: Math.max(0, response.total - removed) };
+  }
+
+  /** Set of app-namespaced space ids (from list_spaces `app` tag), cached ~30s. */
+  private async appSpaceIds(): Promise<Set<string>> {
+    const now = Date.now();
+    if (this.appSpaceCache && now - this.appSpaceCache.at < 30_000) {
+      return this.appSpaceCache.ids;
+    }
+    try {
+      const res = await this.call<{ spaces: Array<{ space_id: string; app?: string | null }> }>(
+        'list_spaces',
+        { limit: 500, offset: 0 },
+      );
+      const ids = new Set(res.spaces.filter((s) => s.app).map((s) => s.space_id));
+      this.appSpaceCache = { ids, at: now };
+      return ids;
+    } catch {
+      // If we can't determine app spaces, fail open (show results) rather than hide search.
+      return this.appSpaceCache?.ids ?? new Set();
+    }
   }
 
   /**

@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
+import { WIKI_APP } from '../lib/appNamespace';
 import type { WikiPage } from '../types/wiki';
 
 interface UseRecentChangesResult {
@@ -19,6 +20,8 @@ interface RpcSpaceSummary {
   name: string | null;
   post_count: number;
   last_activity: number | null;
+  /** App-namespace tag; wiki namespaces come back as "wiki". */
+  app?: string | null;
 }
 
 interface RpcListSpacesResult {
@@ -95,9 +98,9 @@ export function useRecentChanges(limit = 50): UseRecentChangesResult {
           offset: 0,
         });
 
-        // Sort spaces by last_activity descending, take top active ones
+        // Wiki content is segregated to the wiki client: only aggregate wiki-app namespaces.
         const activeSpaces = spacesResult.spaces
-          .filter(s => s.last_activity != null && s.post_count > 0)
+          .filter(s => s.app === WIKI_APP && s.last_activity != null && s.post_count > 0)
           .sort((a, b) => (b.last_activity ?? 0) - (a.last_activity ?? 0))
           .slice(0, 10);
 

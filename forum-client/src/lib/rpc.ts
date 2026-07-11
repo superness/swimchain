@@ -61,6 +61,8 @@ interface SpaceSummary {
   post_count: number;
   last_activity: number | null;
   name: string | null;
+  /** App-namespace tag (e.g. "wiki"). Set = a specialized space; general clients hide it. */
+  app?: string | null;
 }
 
 interface ListSpacesResult {
@@ -522,10 +524,14 @@ export class SwimchainRpc {
   }
 
   async listSpaces(options?: { limit?: number; offset?: number }): Promise<ListSpacesResult> {
-    return this.call<ListSpacesResult>('list_spaces', {
+    const result = await this.call<ListSpacesResult>('list_spaces', {
       limit: options?.limit ?? 100,
       offset: options?.offset ?? 0,
     });
+    // Specialized app spaces (wiki, etc.) live in their own clients — never surface them
+    // in the general forum experience.
+    const spaces = result.spaces.filter((s) => !s.app);
+    return { ...result, spaces, total: spaces.length };
   }
 
   async listSpaceContent(

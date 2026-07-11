@@ -18,7 +18,7 @@ use crate::content::pool::{
 };
 use crate::content::retrieval::ContentRetrievalManager;
 use crate::crypto::action_pow::{
-    ActionType, ForkPoWConfig, PoWChallenge, PoWSolution, verify_pow, compute_pow,
+    compute_pow, verify_pow, ActionType, ForkPoWConfig, PoWChallenge, PoWSolution,
 };
 use crate::identity::KeyPair;
 use crate::node::connection_manager::ConnectionManager;
@@ -48,16 +48,15 @@ fn reaction_type_from_code(code: u8) -> Option<ReactionType> {
         _ => return None,
     })
 }
-use crate::spam_attestation::{
-    SpamAttestation, SpamAttestationStore, SpamReason, CounterAttestation,
-    aggregate_attestations, find_sponsor_tree_root, StoredSpamAttestation,
-    SPAM_ATTESTATION_POW_DIFFICULTY,
-};
+use crate::cli::search_index::{IndexableContent, SearchFilters, SearchIndex};
 use crate::crypto::signature::{sign as ed25519_sign, verify as ed25519_verify};
 use crate::crypto::{leading_zeros, pow_hash};
 use crate::dht::ProviderRecord;
+use crate::spam_attestation::{
+    aggregate_attestations, find_sponsor_tree_root, CounterAttestation, SpamAttestation,
+    SpamAttestationStore, SpamReason, StoredSpamAttestation, SPAM_ATTESTATION_POW_DIFFICULTY,
+};
 use crate::types::identity::{PublicKey, Signature};
-use crate::cli::search_index::{SearchIndex, IndexableContent, SearchFilters};
 use crate::VERSION;
 
 use super::error::RpcErrorCode;
@@ -71,17 +70,107 @@ const SPACE_HRP: &str = "sp";
 /// - Bech32m: "sp1qqqq..." (preferred, new format)
 /// - Short hex: "0002de81" (legacy, 8 char hex for first 4 bytes, zero-padded to 16)
 /// - Full hex: "0002de81..." (32 char hex for full 16 bytes)
+/// App-namespaced spaces — a general, self-describing space-naming convention (no new
+/// protocol primitive). A space whose on-chain name is `@<app>:<display>` (with
+/// `app = [a-z0-9-]{1,32}`) belongs to a specialized client "app". The general social
+/// clients (forum/feed/chat/search) hide ALL app spaces so specialized content never
+/// pollutes the default experience; the matching app client shows only its own.
+///
+/// Parse `name` into `(app, display)` if it is a well-formed app marker, else `None`.
+fn parse_app_space_name(name: &str) -> Option<(String, String)> {
+    let rest = name.strip_prefix('@')?;
+    let (app, display) = rest.split_once(':')?;
+    if app.is_empty() || app.len() > 32 || display.is_empty() {
+        return None;
+    }
+    if !app
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return None;
+    }
+    Some((app.to_string(), display.to_string()))
+}
+
+/// Deterministic id for an app-namespaced space: `sha256("app:<app>:v1:<display>")[..16]`.
+/// Name-addressed like profile spaces, so a given `@<app>:<display>` is one shared space.
+fn app_space_id_16(app: &str, display: &str) -> [u8; 16] {
+    let h = crate::crypto::sha256(format!("app:{}:v1:{}", app, display).as_bytes());
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&h[..16]);
+    out
+}
+
+/// Authoritative "is this an app space" check for a `(space_id, name)` pair: the name must
+/// be a well-formed marker AND its derived id must match the actual space id. The derivation
+/// check doubles as anti-spoof — a normal space that merely happens to be named `@x:y`
+/// (and so has a random PoW id) fails the match and stays a normal space.
+fn resolve_app_space(space_id_16: &[u8; 16], name: &str) -> Option<(String, String)> {
+    let (app, display) = parse_app_space_name(name)?;
+    if app_space_id_16(&app, &display) == *space_id_16 {
+        Some((app, display))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod app_space_tests {
+    use super::{app_space_id_16, parse_app_space_name, resolve_app_space};
+
+    #[test]
+    fn parses_well_formed_markers() {
+        assert_eq!(
+            parse_app_space_name("@wiki:Minecraft"),
+            Some(("wiki".to_string(), "Minecraft".to_string()))
+        );
+        // Display may contain colons and spaces; only the first ':' splits app/display.
+        assert_eq!(
+            parse_app_space_name("@chess:Ruy Lopez: main line"),
+            Some(("chess".to_string(), "Ruy Lopez: main line".to_string()))
+        );
+    }
+
+    #[test]
+    fn rejects_non_markers() {
+        assert_eq!(parse_app_space_name("Minecraft"), None); // no @
+        assert_eq!(parse_app_space_name("@wiki"), None); // no ':'
+        assert_eq!(parse_app_space_name("@:name"), None); // empty app
+        assert_eq!(parse_app_space_name("@wiki:"), None); // empty display
+        assert_eq!(parse_app_space_name("@Wiki:x"), None); // uppercase app not allowed
+        assert_eq!(parse_app_space_name("@a b:x"), None); // space in app not allowed
+    }
+
+    #[test]
+    fn resolve_requires_derived_id_match() {
+        let id = app_space_id_16("wiki", "Minecraft");
+        // Correct derived id resolves.
+        assert_eq!(
+            resolve_app_space(&id, "@wiki:Minecraft"),
+            Some(("wiki".to_string(), "Minecraft".to_string()))
+        );
+        // Same name but a random (non-derived) id is NOT treated as an app space (anti-spoof).
+        assert_eq!(resolve_app_space(&[0u8; 16], "@wiki:Minecraft"), None);
+        // Derivation is app-scoped: chess id doesn't resolve a wiki-named space.
+        let chess_id = app_space_id_16("chess", "Minecraft");
+        assert_eq!(resolve_app_space(&chess_id, "@wiki:Minecraft"), None);
+    }
+}
+
 fn decode_space_id(space_id: &str) -> Result<[u8; 16], String> {
     use bech32::{Bech32m, Hrp};
 
     // Check if it's Bech32m format (starts with sp1)
     if space_id.starts_with("sp1") {
         let hrp = Hrp::parse(SPACE_HRP).map_err(|e| format!("Invalid HRP: {}", e))?;
-        let (decoded_hrp, data) = bech32::decode(space_id)
-            .map_err(|e| format!("Invalid bech32m encoding: {}", e))?;
+        let (decoded_hrp, data) =
+            bech32::decode(space_id).map_err(|e| format!("Invalid bech32m encoding: {}", e))?;
 
         if decoded_hrp != hrp {
-            return Err(format!("Expected HRP '{}', got '{}'", SPACE_HRP, decoded_hrp));
+            return Err(format!(
+                "Expected HRP '{}', got '{}'",
+                SPACE_HRP, decoded_hrp
+            ));
         }
 
         // Skip version byte (first byte), get the 16-byte space ID
@@ -100,14 +189,12 @@ fn decode_space_id(space_id: &str) -> Result<[u8; 16], String> {
 
         if space_id.len() == 8 {
             // Short hex: first 4 bytes, rest is zero
-            let hex_bytes = hex::decode(space_id)
-                .map_err(|e| format!("Invalid hex: {}", e))?;
+            let hex_bytes = hex::decode(space_id).map_err(|e| format!("Invalid hex: {}", e))?;
             space_bytes[..4].copy_from_slice(&hex_bytes);
             return Ok(space_bytes);
         } else if space_id.len() == 32 {
             // Full hex: all 16 bytes
-            let hex_bytes = hex::decode(space_id)
-                .map_err(|e| format!("Invalid hex: {}", e))?;
+            let hex_bytes = hex::decode(space_id).map_err(|e| format!("Invalid hex: {}", e))?;
             space_bytes.copy_from_slice(&hex_bytes);
             return Ok(space_bytes);
         }
@@ -147,10 +234,9 @@ fn load_space_names(data_dir: &std::path::Path) -> std::collections::HashMap<Str
                 Ok(value) => {
                     if let Some(space_names) = value.get("space_names") {
                         if let Some(table) = space_names.as_table() {
-                            return table.iter()
-                                .filter_map(|(k, v)| {
-                                    v.as_str().map(|s| (k.clone(), s.to_string()))
-                                })
+                            return table
+                                .iter()
+                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                                 .collect();
                         }
                     }
@@ -180,21 +266,51 @@ fn verify_pow_submission(
 ) -> Result<(), (RpcErrorCode, String)> {
     // Parse author_id (32-byte hex)
     let author_bytes: [u8; 32] = hex::decode(author_id)
-        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid author_id hex: {}", e)))?
+        .map_err(|e| {
+            (
+                RpcErrorCode::InvalidParams,
+                format!("Invalid author_id hex: {}", e),
+            )
+        })?
         .try_into()
-        .map_err(|_| (RpcErrorCode::InvalidParams, "author_id must be 32 bytes".to_string()))?;
+        .map_err(|_| {
+            (
+                RpcErrorCode::InvalidParams,
+                "author_id must be 32 bytes".to_string(),
+            )
+        })?;
 
     // Parse nonce_space (8-byte hex)
     let nonce_space_bytes: [u8; 8] = hex::decode(pow_nonce_space)
-        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid pow_nonce_space hex: {}", e)))?
+        .map_err(|e| {
+            (
+                RpcErrorCode::InvalidParams,
+                format!("Invalid pow_nonce_space hex: {}", e),
+            )
+        })?
         .try_into()
-        .map_err(|_| (RpcErrorCode::InvalidParams, "pow_nonce_space must be 8 bytes".to_string()))?;
+        .map_err(|_| {
+            (
+                RpcErrorCode::InvalidParams,
+                "pow_nonce_space must be 8 bytes".to_string(),
+            )
+        })?;
 
     // Parse hash (32-byte hex)
     let hash_bytes: [u8; 32] = hex::decode(pow_hash)
-        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid pow_hash hex: {}", e)))?
+        .map_err(|e| {
+            (
+                RpcErrorCode::InvalidParams,
+                format!("Invalid pow_hash hex: {}", e),
+            )
+        })?
         .try_into()
-        .map_err(|_| (RpcErrorCode::InvalidParams, "pow_hash must be 32 bytes".to_string()))?;
+        .map_err(|_| {
+            (
+                RpcErrorCode::InvalidParams,
+                "pow_hash must be 32 bytes".to_string(),
+            )
+        })?;
 
     // Compute content hash for verification
     let content_hash = crate::crypto::sha256(content);
@@ -247,10 +363,16 @@ fn verify_pow_submission(
     // Verify the PoW
     let current_time = crate::crypto::current_timestamp();
     verify_pow(&solution, &config, current_time).map_err(|e| {
-        (RpcErrorCode::PowInvalid, format!("PoW verification failed: {}", e))
+        (
+            RpcErrorCode::PowInvalid,
+            format!("PoW verification failed: {}", e),
+        )
     })?;
 
-    info!("[RPC] PoW verified for {:?}: difficulty={}, nonce={}", action_type, pow_difficulty, pow_nonce);
+    info!(
+        "[RPC] PoW verified for {:?}: difficulty={}, nonce={}",
+        action_type, pow_difficulty, pow_nonce
+    );
     Ok(())
 }
 
@@ -269,15 +391,35 @@ fn verify_pow_submission_raw(
 ) -> Result<(), (RpcErrorCode, String)> {
     // Parse nonce_space (8-byte hex)
     let nonce_space_bytes: [u8; 8] = hex::decode(pow_nonce_space)
-        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid pow_nonce_space hex: {}", e)))?
+        .map_err(|e| {
+            (
+                RpcErrorCode::InvalidParams,
+                format!("Invalid pow_nonce_space hex: {}", e),
+            )
+        })?
         .try_into()
-        .map_err(|_| (RpcErrorCode::InvalidParams, "pow_nonce_space must be 8 bytes".to_string()))?;
+        .map_err(|_| {
+            (
+                RpcErrorCode::InvalidParams,
+                "pow_nonce_space must be 8 bytes".to_string(),
+            )
+        })?;
 
     // Parse hash (32-byte hex)
     let hash_bytes: [u8; 32] = hex::decode(pow_hash)
-        .map_err(|e| (RpcErrorCode::InvalidParams, format!("Invalid pow_hash hex: {}", e)))?
+        .map_err(|e| {
+            (
+                RpcErrorCode::InvalidParams,
+                format!("Invalid pow_hash hex: {}", e),
+            )
+        })?
         .try_into()
-        .map_err(|_| (RpcErrorCode::InvalidParams, "pow_hash must be 32 bytes".to_string()))?;
+        .map_err(|_| {
+            (
+                RpcErrorCode::InvalidParams,
+                "pow_hash must be 32 bytes".to_string(),
+            )
+        })?;
 
     // Build the challenge (use content_hash directly, no SHA256)
     let challenge = PoWChallenge {
@@ -326,10 +468,16 @@ fn verify_pow_submission_raw(
     // Verify the PoW
     let current_time = crate::crypto::current_timestamp();
     verify_pow(&solution, &config, current_time).map_err(|e| {
-        (RpcErrorCode::PowInvalid, format!("PoW verification failed: {}", e))
+        (
+            RpcErrorCode::PowInvalid,
+            format!("PoW verification failed: {}", e),
+        )
     })?;
 
-    info!("[RPC] PoW verified for {:?}: difficulty={}, nonce={}", action_type, pow_difficulty, pow_nonce);
+    info!(
+        "[RPC] PoW verified for {:?}: difficulty={}, nonce={}",
+        action_type, pow_difficulty, pow_nonce
+    );
     Ok(())
 }
 
@@ -446,7 +594,10 @@ impl RpcMethods {
     /// block formation, decay, PoW and validation are unaffected — only the
     /// timing/target of the first outward announce changes. Delayed/stem
     /// deliveries run on a detached task so the RPC returns promptly.
-    async fn gossip_self_originated_action(&self, envelope: crate::types::network::MessageEnvelope) {
+    async fn gossip_self_originated_action(
+        &self,
+        envelope: crate::types::network::MessageEnvelope,
+    ) {
         use crate::node::{route_self_originated, OriginRoute};
 
         let pool = match &self.node.connection_pool {
@@ -583,7 +734,10 @@ impl RpcMethods {
                     }
                 }
 
-                info!("[SPONSORSHIP] Rejected action from unsponsored identity: {}", author_id);
+                info!(
+                    "[SPONSORSHIP] Rejected action from unsponsored identity: {}",
+                    author_id
+                );
                 Err(RpcResponse::error(
                     RpcErrorCode::IdentityNotSponsored,
                     "Identity is not sponsored. You must be sponsored by an existing member to post.",
@@ -638,7 +792,10 @@ impl RpcMethods {
             let mut bb_write = match block_builder.write() {
                 Ok(b) => b,
                 Err(e) => {
-                    warn!("[BLOCKS] Failed to acquire write lock for block formation: {}", e);
+                    warn!(
+                        "[BLOCKS] Failed to acquire write lock for block formation: {}",
+                        e
+                    );
                     return;
                 }
             };
@@ -663,7 +820,8 @@ impl RpcMethods {
                     // Get recent block timestamps for difficulty adjustment
                     let recent_timestamps: Vec<u64> = {
                         let tip_height = prev_block.height;
-                        let start_height = tip_height.saturating_sub(DIFFICULTY_ADJUSTMENT_WINDOW as u64);
+                        let start_height =
+                            tip_height.saturating_sub(DIFFICULTY_ADJUSTMENT_WINDOW as u64);
                         let mut timestamps = Vec::new();
                         for h in start_height..=tip_height {
                             if let Ok(Some(hash)) = chain_store.get_root_hash_at_height(h) {
@@ -705,7 +863,11 @@ impl RpcMethods {
                 return;
             }
 
-            bb_write.build_root_block(now, node_identity, self.node.sponsorship_store.as_ref().map(|s| s.as_ref()))
+            bb_write.build_root_block(
+                now,
+                node_identity,
+                self.node.sponsorship_store.as_ref().map(|s| s.as_ref()),
+            )
         };
 
         let root_hash = root.hash();
@@ -933,13 +1095,17 @@ impl RpcMethods {
     async fn get_info(&self, id: Value) -> RpcResponse {
         let state = *self.node.state.read().await;
         let uptime = self.node.start_time.elapsed().as_secs();
-        let peer_count = self.node.connection_manager
+        let peer_count = self
+            .node
+            .connection_manager
             .as_ref()
             .map(|cm| cm.connection_count())
             .unwrap_or(0);
 
         // Get actual chain height from chain store
-        let block_height = self.node.chain_store
+        let block_height = self
+            .node
+            .chain_store
             .as_ref()
             .and_then(|cs| cs.get_latest_height().ok().flatten())
             .unwrap_or(0);
@@ -959,7 +1125,9 @@ impl RpcMethods {
     }
 
     async fn get_peers(&self, id: Value) -> RpcResponse {
-        let peers: Vec<PeerInfoResult> = self.node.connection_manager
+        let peers: Vec<PeerInfoResult> = self
+            .node
+            .connection_manager
             .as_ref()
             .map(|cm| {
                 cm.get_connections()
@@ -982,7 +1150,9 @@ impl RpcMethods {
         let sync_state = *self.node.sync_state.read().await;
 
         // Get peer count
-        let peer_count = self.node.connection_manager
+        let peer_count = self
+            .node
+            .connection_manager
             .as_ref()
             .map(|cm| cm.get_connections().len() as u64)
             .unwrap_or(0);
@@ -996,9 +1166,13 @@ impl RpcMethods {
                     ("synced".to_string(), 100)
                 }
             }
-            SyncState::SyncingHeaders { current, target } |
-            SyncState::SyncingBlocks { current, target } => {
-                let pct = if target > 0 { (current as f64 / target as f64 * 100.0) as u8 } else { 0 };
+            SyncState::SyncingHeaders { current, target }
+            | SyncState::SyncingBlocks { current, target } => {
+                let pct = if target > 0 {
+                    (current as f64 / target as f64 * 100.0) as u8
+                } else {
+                    0
+                };
                 ("syncing".to_string(), pct.min(99)) // Cap at 99% while syncing
             }
             SyncState::Continuous => ("synced".to_string(), 100),
@@ -1067,15 +1241,17 @@ impl RpcMethods {
             // We can use just the hash as seed even if block data is corrupt
             if let Some(ref cs) = self.node.chain_store {
                 // Try to get tip hash - this works even if block data is corrupt
-                let tip_hash_opt = cs.get_best_tip().ok().flatten()
-                    .or_else(|| {
-                        // Fallback: get hash at latest height
-                        cs.get_latest_height().ok().flatten()
-                            .and_then(|h| cs.get_root_hash_at_height(h).ok().flatten())
-                    });
+                let tip_hash_opt = cs.get_best_tip().ok().flatten().or_else(|| {
+                    // Fallback: get hash at latest height
+                    cs.get_latest_height()
+                        .ok()
+                        .flatten()
+                        .and_then(|h| cs.get_root_hash_at_height(h).ok().flatten())
+                });
 
                 // Try to get timestamp from tip block if possible, fallback to current time
-                let tip_timestamp = cs.get_best_tip_block()
+                let tip_timestamp = cs
+                    .get_best_tip_block()
                     .ok()
                     .flatten()
                     .map(|b| b.timestamp)
@@ -1123,12 +1299,24 @@ impl RpcMethods {
 
                     // Convert first 8 bytes to u64 for display
                     let distance_u64 = u64::from_be_bytes([
-                        distance_bytes[0], distance_bytes[1], distance_bytes[2], distance_bytes[3],
-                        distance_bytes[4], distance_bytes[5], distance_bytes[6], distance_bytes[7],
+                        distance_bytes[0],
+                        distance_bytes[1],
+                        distance_bytes[2],
+                        distance_bytes[3],
+                        distance_bytes[4],
+                        distance_bytes[5],
+                        distance_bytes[6],
+                        distance_bytes[7],
                     ]);
                     let threshold_u64 = u64::from_be_bytes([
-                        threshold_bytes[0], threshold_bytes[1], threshold_bytes[2], threshold_bytes[3],
-                        threshold_bytes[4], threshold_bytes[5], threshold_bytes[6], threshold_bytes[7],
+                        threshold_bytes[0],
+                        threshold_bytes[1],
+                        threshold_bytes[2],
+                        threshold_bytes[3],
+                        threshold_bytes[4],
+                        threshold_bytes[5],
+                        threshold_bytes[6],
+                        threshold_bytes[7],
                     ]);
 
                     let is_eligible = eligibility.is_eligible(&node_id, now);
@@ -1187,7 +1375,11 @@ impl RpcMethods {
         let chain_store = match &self.node.chain_store {
             Some(cs) => cs,
             None => {
-                return RpcResponse::error(RpcErrorCode::InternalError, "Chain store not available", id);
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Chain store not available",
+                    id,
+                );
             }
         };
 
@@ -1222,14 +1414,22 @@ impl RpcMethods {
         let params: GetBlockParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
-                return RpcResponse::error(RpcErrorCode::InvalidParams, &format!("Invalid params: {}", e), id);
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
             }
         };
 
         let chain_store = match &self.node.chain_store {
             Some(cs) => cs,
             None => {
-                return RpcResponse::error(RpcErrorCode::InternalError, "Chain store not available", id);
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Chain store not available",
+                    id,
+                );
             }
         };
 
@@ -1237,10 +1437,18 @@ impl RpcMethods {
         let root_hash = match chain_store.get_root_hash_at_height(params.height) {
             Ok(Some(hash)) => hash,
             Ok(None) => {
-                return RpcResponse::error(RpcErrorCode::ContentNotFound, &format!("No block at height {}", params.height), id);
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    &format!("No block at height {}", params.height),
+                    id,
+                );
             }
             Err(e) => {
-                return RpcResponse::error(RpcErrorCode::StorageError, &format!("Storage error: {}", e), id);
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    &format!("Storage error: {}", e),
+                    id,
+                );
             }
         };
 
@@ -1248,10 +1456,18 @@ impl RpcMethods {
         let root_block = match chain_store.get_root_block(&root_hash) {
             Ok(Some(block)) => block,
             Ok(None) => {
-                return RpcResponse::error(RpcErrorCode::ContentNotFound, "Root block not found", id);
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    "Root block not found",
+                    id,
+                );
             }
             Err(e) => {
-                return RpcResponse::error(RpcErrorCode::StorageError, &format!("Storage error: {}", e), id);
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    &format!("Storage error: {}", e),
+                    id,
+                );
             }
         };
 
@@ -1259,7 +1475,8 @@ impl RpcMethods {
         let mut space_blocks = Vec::new();
         for space_hash in &root_block.space_block_hashes {
             if let Ok(Some(space_block)) = chain_store.get_space_block(space_hash) {
-                let content_hashes: Vec<String> = space_block.content_block_hashes
+                let content_hashes: Vec<String> = space_block
+                    .content_block_hashes
                     .iter()
                     .map(hex::encode)
                     .collect();
@@ -1288,13 +1505,17 @@ impl RpcMethods {
     /// Get content block by hash
     async fn get_content_block(&self, params: Value, id: Value) -> RpcResponse {
         use super::error::RpcErrorCode;
-        use super::types::{GetContentBlockParams, GetContentBlockResult, ActionInfo};
+        use super::types::{ActionInfo, GetContentBlockParams, GetContentBlockResult};
         use crate::blocks::action::ActionType;
 
         let params: GetContentBlockParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
-                return RpcResponse::error(RpcErrorCode::InvalidParams, &format!("Invalid params: {}", e), id);
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
             }
         };
 
@@ -1306,17 +1527,29 @@ impl RpcMethods {
                 arr
             }
             Ok(_) => {
-                return RpcResponse::error(RpcErrorCode::InvalidParams, "Hash must be 32 bytes (64 hex chars)", id);
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Hash must be 32 bytes (64 hex chars)",
+                    id,
+                );
             }
             Err(e) => {
-                return RpcResponse::error(RpcErrorCode::InvalidParams, &format!("Invalid hex: {}", e), id);
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid hex: {}", e),
+                    id,
+                );
             }
         };
 
         let chain_store = match &self.node.chain_store {
             Some(cs) => cs,
             None => {
-                return RpcResponse::error(RpcErrorCode::InternalError, "Chain store not available", id);
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Chain store not available",
+                    id,
+                );
             }
         };
 
@@ -1324,10 +1557,18 @@ impl RpcMethods {
         let content_block = match chain_store.get_content_block(&hash_bytes) {
             Ok(Some(block)) => block,
             Ok(None) => {
-                return RpcResponse::error(RpcErrorCode::ContentNotFound, "Content block not found", id);
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    "Content block not found",
+                    id,
+                );
             }
             Err(e) => {
-                return RpcResponse::error(RpcErrorCode::StorageError, &format!("Storage error: {}", e), id);
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    &format!("Storage error: {}", e),
+                    id,
+                );
             }
         };
 
@@ -1338,52 +1579,62 @@ impl RpcMethods {
             let mut data = Vec::with_capacity(17);
             data.push(0); // version byte
             data.extend_from_slice(&content_block.space_id[..16]);
-            bech32::encode::<Bech32m>(hrp, &data).unwrap_or_else(|_| hex::encode(&content_block.space_id[..16]))
+            bech32::encode::<Bech32m>(hrp, &data)
+                .unwrap_or_else(|_| hex::encode(&content_block.space_id[..16]))
         };
 
         // Convert actions to ActionInfo
-        let actions: Vec<ActionInfo> = content_block.actions.iter().map(|action| {
-            // Convert actor to bech32 address
-            let actor_address = {
-                use bech32::{Bech32m, Hrp};
-                let hrp = Hrp::parse("cs").expect("valid HRP");
-                let mut data = Vec::with_capacity(33);
-                data.push(1); // version byte
-                data.extend_from_slice(&action.actor);
-                bech32::encode::<Bech32m>(hrp, &data).unwrap_or_else(|_| hex::encode(action.actor))
-            };
+        let actions: Vec<ActionInfo> = content_block
+            .actions
+            .iter()
+            .map(|action| {
+                // Convert actor to bech32 address
+                let actor_address = {
+                    use bech32::{Bech32m, Hrp};
+                    let hrp = Hrp::parse("cs").expect("valid HRP");
+                    let mut data = Vec::with_capacity(33);
+                    data.push(1); // version byte
+                    data.extend_from_slice(&action.actor);
+                    bech32::encode::<Bech32m>(hrp, &data)
+                        .unwrap_or_else(|_| hex::encode(action.actor))
+                };
 
-            let action_type_str = match action.action_type {
-                ActionType::CreateSpace => "CreateSpace",
-                ActionType::Post => "Post",
-                ActionType::Reply => "Reply",
-                ActionType::Engage => "Engage",
-                ActionType::Edit => "Edit",
-                // Private space actions
-                ActionType::Invite => "Invite",
-                ActionType::Leave => "Leave",
-                ActionType::Kick => "Kick",
-                ActionType::RevokeInvite => "RevokeInvite",
-                ActionType::KeyRotation => "KeyRotation",
-                ActionType::DMRequest => "DMRequest",
-                ActionType::AcceptDM => "AcceptDM",
-                ActionType::DeclineDM => "DeclineDM",
-                // Sponsorship actions
-                ActionType::Sponsor => "Sponsor",
-                ActionType::GenesisRegister => "GenesisRegister",
-            };
+                let action_type_str = match action.action_type {
+                    ActionType::CreateSpace => "CreateSpace",
+                    ActionType::Post => "Post",
+                    ActionType::Reply => "Reply",
+                    ActionType::Engage => "Engage",
+                    ActionType::Edit => "Edit",
+                    // Private space actions
+                    ActionType::Invite => "Invite",
+                    ActionType::Leave => "Leave",
+                    ActionType::Kick => "Kick",
+                    ActionType::RevokeInvite => "RevokeInvite",
+                    ActionType::KeyRotation => "KeyRotation",
+                    ActionType::DMRequest => "DMRequest",
+                    ActionType::AcceptDM => "AcceptDM",
+                    ActionType::DeclineDM => "DeclineDM",
+                    // Sponsorship actions
+                    ActionType::Sponsor => "Sponsor",
+                    ActionType::GenesisRegister => "GenesisRegister",
+                };
 
-            ActionInfo {
-                action_type: action_type_str.to_string(),
-                actor: hex::encode(action.actor),
-                actor_address,
-                timestamp: action.timestamp,
-                content_id: action.content_hash.map(|h| format!("sha256:{}", hex::encode(h))),
-                parent_id: action.parent_id.map(|h| format!("sha256:{}", hex::encode(h))),
-                pow_work: action.pow_work,
-                emoji: action.emoji,
-            }
-        }).collect();
+                ActionInfo {
+                    action_type: action_type_str.to_string(),
+                    actor: hex::encode(action.actor),
+                    actor_address,
+                    timestamp: action.timestamp,
+                    content_id: action
+                        .content_hash
+                        .map(|h| format!("sha256:{}", hex::encode(h))),
+                    parent_id: action
+                        .parent_id
+                        .map(|h| format!("sha256:{}", hex::encode(h))),
+                    pow_work: action.pow_work,
+                    emoji: action.emoji,
+                }
+            })
+            .collect();
 
         let result = GetContentBlockResult {
             hash: params.hash,
@@ -1595,7 +1846,10 @@ impl RpcMethods {
         // Remove from connection manager
         if let Some(ref cm) = self.node.connection_manager {
             use crate::node::connection_event::DisconnectReason;
-            if cm.remove_connection(&peer_id, DisconnectReason::Normal).is_some() {
+            if cm
+                .remove_connection(&peer_id, DisconnectReason::Normal)
+                .is_some()
+            {
                 return RpcResponse::success(json!({"removed": true}), id);
             }
         }
@@ -1732,7 +1986,10 @@ impl RpcMethods {
                     Ok(false) => {
                         return RpcResponse::error(
                             RpcErrorCode::SpaceNotFound,
-                            &format!("Space {} does not exist. Create it first with 'space create'.", params.space_id),
+                            &format!(
+                                "Space {} does not exist. Create it first with 'space create'.",
+                                params.space_id
+                            ),
                             id,
                         );
                     }
@@ -1767,7 +2024,9 @@ impl RpcMethods {
             let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
 
             // Convert params media_refs to ActionMediaRef
-            let action_media_refs: Vec<crate::blocks::action::ActionMediaRef> = params.media_refs.iter()
+            let action_media_refs: Vec<crate::blocks::action::ActionMediaRef> = params
+                .media_refs
+                .iter()
                 .filter_map(|mr| {
                     let hash_bytes = hex::decode(&mr.media_hash).ok()?;
                     if hash_bytes.len() != 32 {
@@ -1784,23 +2043,28 @@ impl RpcMethods {
                         _ => return None,
                     };
 
-                    Some(crate::blocks::action::ActionMediaRef::new(hash_arr, media_type, mr.size_bytes))
+                    Some(crate::blocks::action::ActionMediaRef::new(
+                        hash_arr,
+                        media_type,
+                        mr.size_bytes,
+                    ))
                 })
                 .take(crate::blocks::action::MAX_MEDIA_REFS)
                 .collect();
 
             // Parse replaces_pending if provided (for Replace-In-Mempool)
-            let replaces_pending: Option<[u8; 32]> = params.replaces_pending.as_ref().and_then(|hex_str| {
-                hex::decode(hex_str).ok().and_then(|bytes| {
-                    if bytes.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        Some(arr)
-                    } else {
-                        None
-                    }
-                })
-            });
+            let replaces_pending: Option<[u8; 32]> =
+                params.replaces_pending.as_ref().and_then(|hex_str| {
+                    hex::decode(hex_str).ok().and_then(|bytes| {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    })
+                });
 
             let action = Action {
                 action_type: crate::blocks::ActionType::Post,
@@ -1824,14 +2088,25 @@ impl RpcMethods {
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(thread_id, space_id_bytes, action.clone(), BranchPath::root());
+                    let added = builder.add_action(
+                        thread_id,
+                        space_id_bytes,
+                        action.clone(),
+                        BranchPath::root(),
+                    );
                     if added {
-                        info!("[BLOCKS] Added POST action to block builder, total_pow={}", builder.total_pow());
+                        info!(
+                            "[BLOCKS] Added POST action to block builder, total_pow={}",
+                            builder.total_pow()
+                        );
                     }
                     added
                 }
                 Err(e) => {
-                    warn!("[BLOCKS] Failed to acquire block builder lock for POST: {:?}", e);
+                    warn!(
+                        "[BLOCKS] Failed to acquire block builder lock for POST: {:?}",
+                        e
+                    );
                     false
                 }
             };
@@ -1843,7 +2118,8 @@ impl RpcMethods {
                     use crate::types::network::{MessageEnvelope, MessageType};
 
                     let action_data = action.serialize();
-                    let payload = ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
+                    let payload =
+                        ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
                     let envelope = MessageEnvelope::new_fork_agnostic(
                         MessageType::ActionAnnounce,
                         payload.to_bytes().to_vec(),
@@ -1852,7 +2128,10 @@ impl RpcMethods {
                     // Announce with origin obfuscation (SWIM-PRIV-1): self-originated
                     // actions are delayed/stem-relayed instead of broadcast immediately.
                     self.gossip_self_originated_action(envelope).await;
-                    info!("[MEMPOOL] Announced POST action to peers (thread={})", hex::encode(&thread_id[..8]));
+                    info!(
+                        "[MEMPOOL] Announced POST action to peers (thread={})",
+                        hex::encode(&thread_id[..8])
+                    );
 
                     // Check if PoW threshold met - form block immediately if so
                     self.try_form_block_if_threshold_met().await;
@@ -1864,7 +2143,9 @@ impl RpcMethods {
 
         // Create and store ContentItem in content store (so get_content and list work)
         if let Some(ref content_store) = self.node.content_store {
-            use crate::types::content::{ContentItem, ContentType, ContentId, SpaceId, MediaRef, MediaType, ContentHash};
+            use crate::types::content::{
+                ContentHash, ContentId, ContentItem, ContentType, MediaRef, MediaType, SpaceId,
+            };
             use crate::types::identity::{IdentityId, Signature};
 
             // Create Signature from bytes
@@ -1873,32 +2154,36 @@ impl RpcMethods {
             let signature = Signature::from_bytes(sig_arr);
 
             // Parse media_refs from params
-            let media_refs: Vec<MediaRef> = params.media_refs.iter().filter_map(|mr| {
-                // Parse media hash (hex string to ContentHash)
-                let hash_bytes = hex::decode(&mr.media_hash).ok()?;
-                if hash_bytes.len() != 32 {
-                    return None;
-                }
-                let mut hash_arr = [0u8; 32];
-                hash_arr.copy_from_slice(&hash_bytes);
-                let media_hash = ContentHash::from_bytes(hash_arr);
+            let media_refs: Vec<MediaRef> = params
+                .media_refs
+                .iter()
+                .filter_map(|mr| {
+                    // Parse media hash (hex string to ContentHash)
+                    let hash_bytes = hex::decode(&mr.media_hash).ok()?;
+                    if hash_bytes.len() != 32 {
+                        return None;
+                    }
+                    let mut hash_arr = [0u8; 32];
+                    hash_arr.copy_from_slice(&hash_bytes);
+                    let media_hash = ContentHash::from_bytes(hash_arr);
 
-                // Parse media type
-                let media_type = match mr.media_type.as_str() {
-                    "image/jpeg" => MediaType::ImageJpeg,
-                    "image/png" => MediaType::ImagePng,
-                    "image/gif" => MediaType::ImageGif,
-                    "image/webp" => MediaType::ImageWebp,
-                    _ => return None,
-                };
+                    // Parse media type
+                    let media_type = match mr.media_type.as_str() {
+                        "image/jpeg" => MediaType::ImageJpeg,
+                        "image/png" => MediaType::ImagePng,
+                        "image/gif" => MediaType::ImageGif,
+                        "image/webp" => MediaType::ImageWebp,
+                        _ => return None,
+                    };
 
-                Some(MediaRef {
-                    media_hash,
-                    media_type,
-                    size_bytes: mr.size_bytes,
-                    inline_preview: None, // Could add thumbnail later
+                    Some(MediaRef {
+                        media_hash,
+                        media_type,
+                        size_bytes: mr.size_bytes,
+                        inline_preview: None, // Could add thumbnail later
+                    })
                 })
-            }).collect();
+                .collect();
 
             let now = params.timestamp;
             let content_item = ContentItem {
@@ -1978,7 +2263,10 @@ impl RpcMethods {
             if let Err(e) = decay.register(metadata) {
                 warn!("[DECAY] Failed to register post for decay: {}", e);
             } else {
-                info!("[DECAY] Registered post {} for decay tracking", &content_id[..24]);
+                info!(
+                    "[DECAY] Registered post {} for decay tracking",
+                    &content_id[..24]
+                );
             }
         }
 
@@ -1992,8 +2280,8 @@ impl RpcMethods {
 
         // Step 2: Broadcast DHT_STORE and I_HAVE to connected peers
         if let Some(ref pool) = self.node.connection_pool {
+            use crate::dht::{constants::MSG_DHT_STORE, DhtMessage, NodeId as DhtNodeId};
             use crate::types::network::{MessageEnvelope, MessageType};
-            use crate::dht::{DhtMessage, NodeId as DhtNodeId, constants::MSG_DHT_STORE};
 
             // Create signed DHT_STORE message for network-wide discoverability (Kademlia STORE)
             let node_id_bytes: [u8; 32] = hex::decode(&self.node.node_id)
@@ -2018,20 +2306,24 @@ impl RpcMethods {
             let mut dht_payload = vec![MSG_DHT_STORE];
             dht_payload.extend_from_slice(&dht_store_bytes);
 
-            let dht_envelope = MessageEnvelope::new_fork_agnostic(
-                MessageType::DhtStore,
-                dht_payload,
-            );
+            let dht_envelope =
+                MessageEnvelope::new_fork_agnostic(MessageType::DhtStore, dht_payload);
             let dht_sent = pool.broadcast(&dht_envelope).await;
-            debug!("[POST] Sent DHT_STORE for {} to {} peers", &content_id[..24], dht_sent);
+            debug!(
+                "[POST] Sent DHT_STORE for {} to {} peers",
+                &content_id[..24],
+                dht_sent
+            );
 
             // Send I_HAVE for immediate availability
-            let i_have = MessageEnvelope::new_fork_agnostic(
-                MessageType::IHave,
-                content_hash.to_vec(),
-            );
+            let i_have =
+                MessageEnvelope::new_fork_agnostic(MessageType::IHave, content_hash.to_vec());
             recipients = pool.broadcast(&i_have).await;
-            info!("[POST] Sent I_HAVE for {} to {} peers", &content_id[..24], recipients);
+            info!(
+                "[POST] Sent I_HAVE for {} to {} peers",
+                &content_id[..24],
+                recipients
+            );
         }
 
         let result = SubmitPostResult {
@@ -2057,7 +2349,7 @@ impl RpcMethods {
     /// Upload media (images) for attachment to posts
     async fn upload_media(&self, params: Value, id: Value) -> RpcResponse {
         use super::types::{UploadMediaParams, UploadMediaResult};
-        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
         let params: UploadMediaParams = match serde_json::from_value(params) {
             Ok(p) => p,
@@ -2102,7 +2394,11 @@ impl RpcMethods {
         if media_bytes.len() > MAX_MEDIA_SIZE {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
-                &format!("Media too large: {} bytes (max {} bytes)", media_bytes.len(), MAX_MEDIA_SIZE),
+                &format!(
+                    "Media too large: {} bytes (max {} bytes)",
+                    media_bytes.len(),
+                    MAX_MEDIA_SIZE
+                ),
                 id,
             );
         }
@@ -2158,7 +2454,7 @@ impl RpcMethods {
     /// Get media blob by hash
     async fn get_media(&self, params: Value, id: Value) -> RpcResponse {
         use super::types::{GetMediaParams, GetMediaResult};
-        use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
         let params: GetMediaParams = match serde_json::from_value(params) {
             Ok(p) => p,
@@ -2255,7 +2551,9 @@ impl RpcMethods {
         // Detect media type from magic bytes
         let media_type = if media_bytes.len() >= 3 && media_bytes[0..3] == [0xFF, 0xD8, 0xFF] {
             "image/jpeg"
-        } else if media_bytes.len() >= 8 && media_bytes[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+        } else if media_bytes.len() >= 8
+            && media_bytes[0..8] == [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        {
             "image/png"
         } else if media_bytes.len() >= 4 && media_bytes[0..4] == [0x47, 0x49, 0x46, 0x38] {
             "image/gif"
@@ -2385,9 +2683,11 @@ impl RpcMethods {
                     let mut space_id_32 = [0u8; 32];
                     space_id_32[..16].copy_from_slice(&metadata.space_id);
                     found_space_id = Some(space_id_32);
-                    debug!("[REPLY] Found parent {} in blockchain index, space_id: {:?}",
-                           hex::encode(&parent_hash_bytes[..8]),
-                           hex::encode(&metadata.space_id[..8]));
+                    debug!(
+                        "[REPLY] Found parent {} in blockchain index, space_id: {:?}",
+                        hex::encode(&parent_hash_bytes[..8]),
+                        hex::encode(&metadata.space_id[..8])
+                    );
                 }
             }
 
@@ -2399,9 +2699,11 @@ impl RpcMethods {
                         let mut space_id_32 = [0u8; 32];
                         space_id_32[..].copy_from_slice(item.space_id.as_bytes());
                         found_space_id = Some(space_id_32);
-                        debug!("[REPLY] Found parent {} in content_store, space_id: {:?}",
-                               hex::encode(&parent_hash_bytes[..8]),
-                               hex::encode(&space_id_32[..8]));
+                        debug!(
+                            "[REPLY] Found parent {} in content_store, space_id: {:?}",
+                            hex::encode(&parent_hash_bytes[..8]),
+                            hex::encode(&space_id_32[..8])
+                        );
                     }
                 }
             }
@@ -2432,8 +2734,10 @@ impl RpcMethods {
                         if let Some(ref chain_store) = self.node.chain_store {
                             match chain_store.space_exists(&space_id_16) {
                                 Ok(false) => {
-                                    warn!("[REPLY REJECTED] Parent's space not found in registry. \
-                                           This indicates blockchain corruption.");
+                                    warn!(
+                                        "[REPLY REJECTED] Parent's space not found in registry. \
+                                           This indicates blockchain corruption."
+                                    );
                                     return RpcResponse::error(
                                         RpcErrorCode::SpaceNotFound,
                                         "Parent content references unregistered space. This may indicate data corruption.",
@@ -2456,9 +2760,11 @@ impl RpcMethods {
                           &params.parent_id);
                     return RpcResponse::error(
                         RpcErrorCode::InvalidContentId,
-                        &format!("Parent content not found in blockchain: {}. \
+                        &format!(
+                            "Parent content not found in blockchain: {}. \
                                   The parent post must exist before you can reply to it.",
-                                 &params.parent_id),
+                            &params.parent_id
+                        ),
                         id,
                     );
                 }
@@ -2479,17 +2785,18 @@ impl RpcMethods {
             let pow_work = (1u64 << params.pow_difficulty.min(63)) / 1000 + 1;
 
             // Parse replaces_pending if provided (for Replace-In-Mempool)
-            let replaces_pending: Option<[u8; 32]> = params.replaces_pending.as_ref().and_then(|hex_str| {
-                hex::decode(hex_str).ok().and_then(|bytes| {
-                    if bytes.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        Some(arr)
-                    } else {
-                        None
-                    }
-                })
-            });
+            let replaces_pending: Option<[u8; 32]> =
+                params.replaces_pending.as_ref().and_then(|hex_str| {
+                    hex::decode(hex_str).ok().and_then(|bytes| {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    })
+                });
 
             // Media attachments (images) — mirror submit_post so replies carry them too.
             let action_media_refs: Vec<crate::blocks::action::ActionMediaRef> = params
@@ -2540,14 +2847,25 @@ impl RpcMethods {
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(thread_id, space_id_bytes, action.clone(), BranchPath::root());
+                    let added = builder.add_action(
+                        thread_id,
+                        space_id_bytes,
+                        action.clone(),
+                        BranchPath::root(),
+                    );
                     if added {
-                        info!("[BLOCKS] Added REPLY action to block builder, total_pow={}", builder.total_pow());
+                        info!(
+                            "[BLOCKS] Added REPLY action to block builder, total_pow={}",
+                            builder.total_pow()
+                        );
                     }
                     added
                 }
                 Err(e) => {
-                    warn!("[BLOCKS] Failed to acquire block builder lock for REPLY: {:?}", e);
+                    warn!(
+                        "[BLOCKS] Failed to acquire block builder lock for REPLY: {:?}",
+                        e
+                    );
                     false
                 }
             };
@@ -2559,7 +2877,8 @@ impl RpcMethods {
                     use crate::types::network::{MessageEnvelope, MessageType};
 
                     let action_data = action.serialize();
-                    let payload = ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
+                    let payload =
+                        ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
                     let envelope = MessageEnvelope::new_fork_agnostic(
                         MessageType::ActionAnnounce,
                         payload.to_bytes().to_vec(),
@@ -2567,7 +2886,10 @@ impl RpcMethods {
 
                     // Origin obfuscation (SWIM-PRIV-1): delay/stem self-originated announce.
                     self.gossip_self_originated_action(envelope).await;
-                    info!("[MEMPOOL] Announced REPLY action to peers (thread={})", hex::encode(&thread_id[..8]));
+                    info!(
+                        "[MEMPOOL] Announced REPLY action to peers (thread={})",
+                        hex::encode(&thread_id[..8])
+                    );
 
                     // Check if PoW threshold met - form block immediately if so
                     self.try_form_block_if_threshold_met().await;
@@ -2580,7 +2902,7 @@ impl RpcMethods {
         // Create and store ContentItem in content store (so get_replies works)
         if let Some(ref content_store) = self.node.content_store {
             use crate::types::content::{
-                ContentHash, ContentItem, ContentType, ContentId, MediaRef, MediaType, SpaceId,
+                ContentHash, ContentId, ContentItem, ContentType, MediaRef, MediaType, SpaceId,
             };
             use crate::types::identity::{IdentityId, Signature};
 
@@ -2649,8 +2971,11 @@ impl RpcMethods {
                     if let Err(e) = content_store.flush() {
                         warn!("Failed to flush content store after reply: {}", e);
                     }
-                    info!("[REPLY] Stored ContentItem for reply {} with parent {}",
-                          &content_id[..24], &params.parent_id[..24]);
+                    info!(
+                        "[REPLY] Stored ContentItem for reply {} with parent {}",
+                        &content_id[..24],
+                        &params.parent_id[..24]
+                    );
 
                     // Update aggregation cache to increment parent's reply count
                     if let Some(ref agg_cache) = self.node.aggregation_cache {
@@ -2658,14 +2983,18 @@ impl RpcMethods {
                         if let Err(e) = agg_cache.increment_reply_count(&parent_content_id) {
                             warn!("[REPLY] Failed to increment reply count for parent: {}", e);
                         } else {
-                            debug!("[REPLY] Incremented reply count for parent {}", &params.parent_id[..24]);
+                            debug!(
+                                "[REPLY] Incremented reply count for parent {}",
+                                &params.parent_id[..24]
+                            );
                         }
                     }
 
                     // Index the reply for full-text search
                     if let Some(ref search_index) = self.node.search_index {
                         // Convert space_id bytes to bech32m format for index
-                        let space_id_16: [u8; 16] = space_id_bytes[..16].try_into().unwrap_or([0u8; 16]);
+                        let space_id_16: [u8; 16] =
+                            space_id_bytes[..16].try_into().unwrap_or([0u8; 16]);
                         let space_id_str = encode_space_id(&space_id_16);
 
                         let indexable = IndexableContent {
@@ -2714,7 +3043,10 @@ impl RpcMethods {
             if let Err(e) = decay.register(metadata) {
                 warn!("[DECAY] Failed to register reply for decay: {}", e);
             } else {
-                info!("[DECAY] Registered reply {} for decay tracking", &content_id[..24]);
+                info!(
+                    "[DECAY] Registered reply {} for decay tracking",
+                    &content_id[..24]
+                );
             }
         }
 
@@ -2728,8 +3060,8 @@ impl RpcMethods {
 
         // Step 2: Broadcast DHT_STORE and I_HAVE to connected peers
         if let Some(ref pool) = self.node.connection_pool {
+            use crate::dht::{constants::MSG_DHT_STORE, DhtMessage, NodeId as DhtNodeId};
             use crate::types::network::{MessageEnvelope, MessageType};
-            use crate::dht::{DhtMessage, NodeId as DhtNodeId, constants::MSG_DHT_STORE};
 
             // Create signed DHT_STORE message for network-wide discoverability (Kademlia STORE)
             let node_id_bytes: [u8; 32] = hex::decode(&self.node.node_id)
@@ -2754,20 +3086,24 @@ impl RpcMethods {
             let mut dht_payload = vec![MSG_DHT_STORE];
             dht_payload.extend_from_slice(&dht_store_bytes);
 
-            let dht_envelope = MessageEnvelope::new_fork_agnostic(
-                MessageType::DhtStore,
-                dht_payload,
-            );
+            let dht_envelope =
+                MessageEnvelope::new_fork_agnostic(MessageType::DhtStore, dht_payload);
             let dht_sent = pool.broadcast(&dht_envelope).await;
-            debug!("[REPLY] Sent DHT_STORE for {} to {} peers", &content_id[..24], dht_sent);
+            debug!(
+                "[REPLY] Sent DHT_STORE for {} to {} peers",
+                &content_id[..24],
+                dht_sent
+            );
 
             // Send I_HAVE for immediate availability
-            let i_have = MessageEnvelope::new_fork_agnostic(
-                MessageType::IHave,
-                content_hash.to_vec(),
-            );
+            let i_have =
+                MessageEnvelope::new_fork_agnostic(MessageType::IHave, content_hash.to_vec());
             recipients = pool.broadcast(&i_have).await;
-            info!("[REPLY] Sent I_HAVE for {} to {} peers", &content_id[..24], recipients);
+            info!(
+                "[REPLY] Sent I_HAVE for {} to {} peers",
+                &content_id[..24],
+                recipients
+            );
         }
 
         let result = SubmitPostResult {
@@ -2862,7 +3198,8 @@ impl RpcMethods {
                     found_space_id = Some(space_id_32);
                     found_author = Some(*item.author_id.as_bytes());
                     // Thread ID is the original content ID for posts, or parent_id for replies
-                    found_thread_id = item.parent_id
+                    found_thread_id = item
+                        .parent_id
                         .map(|p| *p.as_bytes())
                         .or(Some(original_hash));
                 }
@@ -2962,17 +3299,18 @@ impl RpcMethods {
 
         // Parse replaces_pending if provided (for Replace-In-Mempool)
         // This is the key use case: coalescing create+edit into a single on-chain action
-        let replaces_pending: Option<[u8; 32]> = params.replaces_pending.as_ref().and_then(|hex_str| {
-            hex::decode(hex_str).ok().and_then(|bytes| {
-                if bytes.len() == 32 {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(&bytes);
-                    Some(arr)
-                } else {
-                    None
-                }
-            })
-        });
+        let replaces_pending: Option<[u8; 32]> =
+            params.replaces_pending.as_ref().and_then(|hex_str| {
+                hex::decode(hex_str).ok().and_then(|bytes| {
+                    if bytes.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&bytes);
+                        Some(arr)
+                    } else {
+                        None
+                    }
+                })
+            });
 
         // Create Edit action
         let action = Action {
@@ -2995,14 +3333,25 @@ impl RpcMethods {
         if let Some(ref block_builder) = self.node.block_builder {
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(thread_id, space_id_bytes, action.clone(), BranchPath::root());
+                    let added = builder.add_action(
+                        thread_id,
+                        space_id_bytes,
+                        action.clone(),
+                        BranchPath::root(),
+                    );
                     if added {
-                        info!("[BLOCKS] Added EDIT action to block builder, total_pow={}", builder.total_pow());
+                        info!(
+                            "[BLOCKS] Added EDIT action to block builder, total_pow={}",
+                            builder.total_pow()
+                        );
                     }
                     added
                 }
                 Err(e) => {
-                    warn!("[BLOCKS] Failed to acquire block builder lock for EDIT: {:?}", e);
+                    warn!(
+                        "[BLOCKS] Failed to acquire block builder lock for EDIT: {:?}",
+                        e
+                    );
                     false
                 }
             };
@@ -3014,7 +3363,8 @@ impl RpcMethods {
                     use crate::types::network::{MessageEnvelope, MessageType};
 
                     let action_data = action.serialize();
-                    let payload = ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
+                    let payload =
+                        ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
                     let envelope = MessageEnvelope::new_fork_agnostic(
                         MessageType::ActionAnnounce,
                         payload.to_bytes().to_vec(),
@@ -3022,8 +3372,11 @@ impl RpcMethods {
 
                     // Origin obfuscation (SWIM-PRIV-1): delay/stem self-originated announce.
                     self.gossip_self_originated_action(envelope).await;
-                    info!("[MEMPOOL] Announced EDIT action (original={}, new={})",
-                          hex::encode(&original_hash[..8]), hex::encode(&new_content_hash[..8]));
+                    info!(
+                        "[MEMPOOL] Announced EDIT action (original={}, new={})",
+                        hex::encode(&original_hash[..8]),
+                        hex::encode(&new_content_hash[..8])
+                    );
 
                     self.try_form_block_if_threshold_met().await;
                 }
@@ -3032,7 +3385,7 @@ impl RpcMethods {
 
         // Store the edit relationship in content store
         if let Some(ref content_store) = self.node.content_store {
-            use crate::types::content::{ContentItem, ContentType, ContentId, SpaceId};
+            use crate::types::content::{ContentId, ContentItem, ContentType, SpaceId};
             use crate::types::identity::{IdentityId, Signature};
 
             let mut sig_arr = [0u8; 64];
@@ -3067,8 +3420,11 @@ impl RpcMethods {
             if let Err(e) = content_store.put(&content_item) {
                 warn!("Failed to store edit ContentItem: {}", e);
             } else {
-                info!("[EDIT] Stored edit for content {} -> {}",
-                      hex::encode(&original_hash[..8]), hex::encode(&new_content_hash[..8]));
+                info!(
+                    "[EDIT] Stored edit for content {} -> {}",
+                    hex::encode(&original_hash[..8]),
+                    hex::encode(&new_content_hash[..8])
+                );
             }
         }
 
@@ -3241,12 +3597,14 @@ impl RpcMethods {
                         let space_id_bytes = *content.space_id.as_bytes();
 
                         // Thread ID: for replies, use parent_id; for posts, use content_id itself
-                        let thread_id = content.parent_id
+                        let thread_id = content
+                            .parent_id
                             .map(|p| *p.as_bytes())
                             .unwrap_or(content_bytes);
 
                         // Capture context for the real-time event
-                        let space_id_16: [u8; 16] = space_id_bytes[..16].try_into().unwrap_or([0u8; 16]);
+                        let space_id_16: [u8; 16] =
+                            space_id_bytes[..16].try_into().unwrap_or([0u8; 16]);
                         event_space_id = Some(encode_space_id(&space_id_16));
                         event_thread_id = Some(format!("sha256:{}", hex::encode(thread_id)));
 
@@ -3270,7 +3628,12 @@ impl RpcMethods {
                         };
 
                         let added = if let Ok(mut builder) = block_builder.write() {
-                            let added = builder.add_action(thread_id, space_id_bytes, action.clone(), BranchPath::root());
+                            let added = builder.add_action(
+                                thread_id,
+                                space_id_bytes,
+                                action.clone(),
+                                BranchPath::root(),
+                            );
                             if added {
                                 info!("[BLOCKS] Added ENGAGE action to block builder, total_pow={}, emoji={:?}",
                                       builder.total_pow(), params.emoji);
@@ -3287,7 +3650,11 @@ impl RpcMethods {
                                 use crate::types::network::{MessageEnvelope, MessageType};
 
                                 let action_data = action.serialize();
-                                let payload = ActionAnnouncePayload::new(thread_id, space_id_bytes, action_data);
+                                let payload = ActionAnnouncePayload::new(
+                                    thread_id,
+                                    space_id_bytes,
+                                    action_data,
+                                );
                                 let envelope = MessageEnvelope::new_fork_agnostic(
                                     MessageType::ActionAnnounce,
                                     payload.to_bytes().to_vec(),
@@ -3295,7 +3662,10 @@ impl RpcMethods {
 
                                 // Origin obfuscation (SWIM-PRIV-1): delay/stem self-originated announce.
                                 self.gossip_self_originated_action(envelope).await;
-                                info!("[MEMPOOL] Announced ENGAGE action to peers (thread={})", hex::encode(&thread_id[..8]));
+                                info!(
+                                    "[MEMPOOL] Announced ENGAGE action to peers (thread={})",
+                                    hex::encode(&thread_id[..8])
+                                );
 
                                 // Check if PoW threshold met - form block immediately if so
                                 self.try_form_block_if_threshold_met().await;
@@ -3306,7 +3676,10 @@ impl RpcMethods {
                         warn!("[BLOCKS] Cannot add ENGAGE to block builder: content not found in content_store");
                     }
                     Err(e) => {
-                        warn!("[BLOCKS] Cannot add ENGAGE to block builder: content_store error: {}", e);
+                        warn!(
+                            "[BLOCKS] Cannot add ENGAGE to block builder: content_store error: {}",
+                            e
+                        );
                     }
                 }
             } else {
@@ -3327,12 +3700,15 @@ impl RpcMethods {
             );
         }
 
-        RpcResponse::success(json!({
-            "engaged": engagement_recorded,
-            "reaction_stored": reaction_stored,
-            "content_id": params.content_id,
-            "emoji": params.emoji
-        }), id)
+        RpcResponse::success(
+            json!({
+                "engaged": engagement_recorded,
+                "reaction_stored": reaction_stored,
+                "content_id": params.content_id,
+                "emoji": params.emoji
+            }),
+            id,
+        )
     }
 
     // ========================================================================
@@ -3393,98 +3769,128 @@ impl RpcMethods {
         // First, try PersistentContentStore (for full ContentItem metadata)
         if let Ok(Some(item)) = content_store.get(&content_id_typed) {
             // Get decay state from DecayIntegration (the source of truth)
-            let (decay_state_str, seconds_until_decay_starts, seconds_until_pruned,
-                 survival_probability, is_protected, time_since_engagement) =
-                if let Some(ref decay) = self.node.decay_integration {
-                    if let Ok(Some(decay_state)) = decay.get_decay_state(&blob_hash) {
-                        let state_str = if decay_state.is_protected {
-                            "protected"
-                        } else if decay_state.survival_probability >= 0.5 {
-                            "active"
-                        } else if decay_state.survival_probability >= 0.0625 {
-                            "stale"
-                        } else {
-                            "decayed"
-                        };
-
-                        // Calculate seconds until decay starts (floor protection remaining)
-                        let floor_remaining = if decay_state.is_protected {
-                            // Floor is 48 hours from last engagement
-                            Some(crate::types::constants::DECAY_FLOOR_SECS
-                                .saturating_sub(decay_state.time_since_engagement))
-                        } else {
-                            None
-                        };
-
-                        // Calculate seconds until pruned (when survival < 6.25%)
-                        // survival = 0.5^(t/half_life), solve for t when survival = 0.0625
-                        // 0.0625 = 0.5^(t/half_life) => t = 4 * half_life
-                        // Total time from last engagement: floor + 4*half_life
-                        let seconds_until_pruned = if decay_state.is_protected {
-                            // From now: floor_remaining + 4*half_life
-                            let half_life = crate::types::constants::HALF_LIFE_SECS;
-                            Some(crate::types::constants::DECAY_FLOOR_SECS
-                                .saturating_sub(decay_state.time_since_engagement) + 4 * half_life)
-                        } else if !decay_state.is_decayed {
-                            // Already past floor, calculate remaining time
-                            // effective_time = time_since_engagement - floor
-                            // survival = 0.5^(effective_time/half_life)
-                            // We need to reach survival = 0.0625, so 4 half-lives total
-                            let half_life = crate::types::constants::HALF_LIFE_SECS;
-                            let effective_time = decay_state.time_since_engagement
-                                .saturating_sub(crate::types::constants::DECAY_FLOOR_SECS);
-                            let total_time_needed = 4 * half_life; // 4 half-lives = 28 days
-                            Some(total_time_needed.saturating_sub(effective_time))
-                        } else {
-                            Some(0) // Already decayed
-                        };
-
-                        (state_str.to_string(), floor_remaining, seconds_until_pruned,
-                         decay_state.survival_probability, decay_state.is_protected,
-                         decay_state.time_since_engagement)
+            let (
+                decay_state_str,
+                seconds_until_decay_starts,
+                seconds_until_pruned,
+                survival_probability,
+                is_protected,
+                time_since_engagement,
+            ) = if let Some(ref decay) = self.node.decay_integration {
+                if let Ok(Some(decay_state)) = decay.get_decay_state(&blob_hash) {
+                    let state_str = if decay_state.is_protected {
+                        "protected"
+                    } else if decay_state.survival_probability >= 0.5 {
+                        "active"
+                    } else if decay_state.survival_probability >= 0.0625 {
+                        "stale"
                     } else {
-                        // No decay metadata, calculate from ContentItem directly
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u64;
-                        let time_since = (now_ms - item.last_engagement) / 1000;
-                        let is_prot = time_since < crate::types::constants::DECAY_FLOOR_SECS;
-                        let floor_rem = if is_prot {
-                            Some(crate::types::constants::DECAY_FLOOR_SECS - time_since)
-                        } else {
-                            None
-                        };
-                        ("active".to_string(), floor_rem, None, 1.0, is_prot, time_since)
-                    }
+                        "decayed"
+                    };
+
+                    // Calculate seconds until decay starts (floor protection remaining)
+                    let floor_remaining = if decay_state.is_protected {
+                        // Floor is 48 hours from last engagement
+                        Some(
+                            crate::types::constants::DECAY_FLOOR_SECS
+                                .saturating_sub(decay_state.time_since_engagement),
+                        )
+                    } else {
+                        None
+                    };
+
+                    // Calculate seconds until pruned (when survival < 6.25%)
+                    // survival = 0.5^(t/half_life), solve for t when survival = 0.0625
+                    // 0.0625 = 0.5^(t/half_life) => t = 4 * half_life
+                    // Total time from last engagement: floor + 4*half_life
+                    let seconds_until_pruned = if decay_state.is_protected {
+                        // From now: floor_remaining + 4*half_life
+                        let half_life = crate::types::constants::HALF_LIFE_SECS;
+                        Some(
+                            crate::types::constants::DECAY_FLOOR_SECS
+                                .saturating_sub(decay_state.time_since_engagement)
+                                + 4 * half_life,
+                        )
+                    } else if !decay_state.is_decayed {
+                        // Already past floor, calculate remaining time
+                        // effective_time = time_since_engagement - floor
+                        // survival = 0.5^(effective_time/half_life)
+                        // We need to reach survival = 0.0625, so 4 half-lives total
+                        let half_life = crate::types::constants::HALF_LIFE_SECS;
+                        let effective_time = decay_state
+                            .time_since_engagement
+                            .saturating_sub(crate::types::constants::DECAY_FLOOR_SECS);
+                        let total_time_needed = 4 * half_life; // 4 half-lives = 28 days
+                        Some(total_time_needed.saturating_sub(effective_time))
+                    } else {
+                        Some(0) // Already decayed
+                    };
+
+                    (
+                        state_str.to_string(),
+                        floor_remaining,
+                        seconds_until_pruned,
+                        decay_state.survival_probability,
+                        decay_state.is_protected,
+                        decay_state.time_since_engagement,
+                    )
                 } else {
-                    // No decay integration available
-                    ("active".to_string(), None, None, 1.0, false, 0)
-                };
+                    // No decay metadata, calculate from ContentItem directly
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
+                    let time_since = (now_ms - item.last_engagement) / 1000;
+                    let is_prot = time_since < crate::types::constants::DECAY_FLOOR_SECS;
+                    let floor_rem = if is_prot {
+                        Some(crate::types::constants::DECAY_FLOOR_SECS - time_since)
+                    } else {
+                        None
+                    };
+                    (
+                        "active".to_string(),
+                        floor_rem,
+                        None,
+                        1.0,
+                        is_prot,
+                        time_since,
+                    )
+                }
+            } else {
+                // No decay integration available
+                ("active".to_string(), None, None, 1.0, false, 0)
+            };
 
             // Parse title from body (format is "Title\n\nBody")
             let body_text = item.body_inline.as_deref().unwrap_or("");
             let (title, body) = if let Some(idx) = body_text.find("\n\n") {
                 let (t, b) = body_text.split_at(idx);
-                (Some(t.to_string()), b.trim_start_matches("\n\n").to_string())
+                (
+                    Some(t.to_string()),
+                    b.trim_start_matches("\n\n").to_string(),
+                )
             } else {
                 (None, body_text.to_string())
             };
 
             // Convert media_refs to MediaRefResult
-            let media_refs: Vec<MediaRefResult> = item.media_refs.iter().map(|mr| {
-                let media_type_str = match mr.media_type {
-                    crate::types::content::MediaType::ImageJpeg => "image/jpeg",
-                    crate::types::content::MediaType::ImagePng => "image/png",
-                    crate::types::content::MediaType::ImageGif => "image/gif",
-                    crate::types::content::MediaType::ImageWebp => "image/webp",
-                };
-                MediaRefResult {
-                    media_hash: hex::encode(mr.media_hash.as_bytes()),
-                    media_type: media_type_str.to_string(),
-                    size_bytes: mr.size_bytes,
-                }
-            }).collect();
+            let media_refs: Vec<MediaRefResult> = item
+                .media_refs
+                .iter()
+                .map(|mr| {
+                    let media_type_str = match mr.media_type {
+                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                        crate::types::content::MediaType::ImagePng => "image/png",
+                        crate::types::content::MediaType::ImageGif => "image/gif",
+                        crate::types::content::MediaType::ImageWebp => "image/webp",
+                    };
+                    MediaRefResult {
+                        media_hash: hex::encode(mr.media_hash.as_bytes()),
+                        media_type: media_type_str.to_string(),
+                        size_bytes: mr.size_bytes,
+                    }
+                })
+                .collect();
 
             // Calculate reply count from chain + mempool
             let reply_count = {
@@ -3492,7 +3898,8 @@ impl RpcMethods {
 
                 // Count ALL replies recursively from chain index
                 if let Some(ref chain_store) = self.node.chain_store {
-                    count += chain_store.count_all_replies(&content_hash)
+                    count += chain_store
+                        .count_all_replies(&content_hash)
                         .map(|c| c as u64)
                         .unwrap_or(0);
                 }
@@ -3501,15 +3908,20 @@ impl RpcMethods {
                 if let Some(ref block_builder) = self.node.block_builder {
                     if let Ok(bb) = block_builder.read() {
                         let pending = bb.get_pending_actions();
-                        let mut target_parents: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                        let mut target_parents: std::collections::HashSet<[u8; 32]> =
+                            std::collections::HashSet::new();
                         target_parents.insert(content_hash);
 
                         loop {
                             let mut found_new = false;
                             for (_thread_id, _space_id, action) in &pending {
                                 if action.action_type == crate::blocks::action::ActionType::Reply {
-                                    if let (Some(parent_id), Some(reply_hash)) = (action.parent_id, action.content_hash) {
-                                        if target_parents.contains(&parent_id) && !target_parents.contains(&reply_hash) {
+                                    if let (Some(parent_id), Some(reply_hash)) =
+                                        (action.parent_id, action.content_hash)
+                                    {
+                                        if target_parents.contains(&parent_id)
+                                            && !target_parents.contains(&reply_hash)
+                                        {
                                             count += 1;
                                             target_parents.insert(reply_hash);
                                             found_new = true;
@@ -3545,7 +3957,9 @@ impl RpcMethods {
                 content_type: format!("{:?}", item.content_type),
                 author_id: crate::crypto::address::encode_address(&item.author_id),
                 space_id: hex::encode(item.space_id.as_bytes()),
-                parent_id: item.parent_id.map(|p: ContentId| format!("sha256:{}", hex::encode(p.as_bytes()))),
+                parent_id: item
+                    .parent_id
+                    .map(|p: ContentId| format!("sha256:{}", hex::encode(p.as_bytes()))),
                 created_at: created_at_ms,
                 last_engagement: last_engagement_ms,
                 body: Some(body),
@@ -3587,9 +4001,12 @@ impl RpcMethods {
                                     if action_hash == content_hash {
                                         // Found the action that created this content
                                         author_id = crate::crypto::address::encode_address(
-                                            &crate::types::identity::IdentityId(action.actor)
+                                            &crate::types::identity::IdentityId(action.actor),
                                         );
-                                        space_id = format!("sp1{}", hex::encode(&content_block.space_id[..16]));
+                                        space_id = format!(
+                                            "sp1{}",
+                                            hex::encode(&content_block.space_id[..16])
+                                        );
                                         created_at = action.timestamp;
                                         content_type = match action.action_type {
                                             crate::blocks::ActionType::Post => "Post".to_string(),
@@ -3597,7 +4014,8 @@ impl RpcMethods {
                                             _ => "Unknown".to_string(),
                                         };
                                         if let Some(parent) = action.parent_id {
-                                            parent_id_opt = Some(format!("sha256:{}", hex::encode(parent)));
+                                            parent_id_opt =
+                                                Some(format!("sha256:{}", hex::encode(parent)));
                                         }
                                         // Extract media_refs from the action
                                         found_media_refs = action.media_refs.clone();
@@ -3612,7 +4030,10 @@ impl RpcMethods {
                 // Parse title from body (first line if formatted as "Title\n\nBody")
                 let (title, body) = if let Some(idx) = body_str.find("\n\n") {
                     let (t, b) = body_str.split_at(idx);
-                    (Some(t.to_string()), b.trim_start_matches("\n\n").to_string())
+                    (
+                        Some(t.to_string()),
+                        b.trim_start_matches("\n\n").to_string(),
+                    )
                 } else {
                     (None, body_str.to_string())
                 };
@@ -3620,7 +4041,10 @@ impl RpcMethods {
                 // BACKFILL: Store ContentItem in content_store so future get_children works
                 // This handles content that was created before content_store was used
                 if !author_id.is_empty() && !space_id.is_empty() && created_at > 0 {
-                    use crate::types::content::{ContentItem, ContentType as CT, ContentId, SpaceId, MediaRef, MediaType, ContentHash};
+                    use crate::types::content::{
+                        ContentHash, ContentId, ContentItem, ContentType as CT, MediaRef,
+                        MediaType, SpaceId,
+                    };
                     use crate::types::identity::{IdentityId, Signature};
 
                     // Parse author public key from address
@@ -3667,24 +4091,39 @@ impl RpcMethods {
                         }
                     });
 
-                    let ct = if content_type == "Reply" { CT::Reply } else { CT::Post };
+                    let ct = if content_type == "Reply" {
+                        CT::Reply
+                    } else {
+                        CT::Post
+                    };
 
                     // Convert ActionMediaRef to MediaRef for ContentItem
-                    let backfill_media_refs: Vec<MediaRef> = found_media_refs.iter().map(|amr| {
-                        let media_type = match amr.media_type {
-                            crate::blocks::action::ActionMediaRef::TYPE_JPEG => MediaType::ImageJpeg,
-                            crate::blocks::action::ActionMediaRef::TYPE_PNG => MediaType::ImagePng,
-                            crate::blocks::action::ActionMediaRef::TYPE_GIF => MediaType::ImageGif,
-                            crate::blocks::action::ActionMediaRef::TYPE_WEBP => MediaType::ImageWebp,
-                            _ => MediaType::ImageJpeg, // Default fallback
-                        };
-                        MediaRef {
-                            media_hash: ContentHash::from_bytes(amr.media_hash),
-                            media_type,
-                            size_bytes: amr.size_bytes,
-                            inline_preview: None, // Preview not stored in action
-                        }
-                    }).collect();
+                    let backfill_media_refs: Vec<MediaRef> = found_media_refs
+                        .iter()
+                        .map(|amr| {
+                            let media_type = match amr.media_type {
+                                crate::blocks::action::ActionMediaRef::TYPE_JPEG => {
+                                    MediaType::ImageJpeg
+                                }
+                                crate::blocks::action::ActionMediaRef::TYPE_PNG => {
+                                    MediaType::ImagePng
+                                }
+                                crate::blocks::action::ActionMediaRef::TYPE_GIF => {
+                                    MediaType::ImageGif
+                                }
+                                crate::blocks::action::ActionMediaRef::TYPE_WEBP => {
+                                    MediaType::ImageWebp
+                                }
+                                _ => MediaType::ImageJpeg, // Default fallback
+                            };
+                            MediaRef {
+                                media_hash: ContentHash::from_bytes(amr.media_hash),
+                                media_type,
+                                size_bytes: amr.size_bytes,
+                                inline_preview: None, // Preview not stored in action
+                            }
+                        })
+                        .collect();
 
                     let content_item = ContentItem {
                         content_id: ContentId::from_bytes(content_hash),
@@ -3711,7 +4150,11 @@ impl RpcMethods {
                     // Try to store in content_store (ignore errors, this is best-effort backfill)
                     match content_store.put(&content_item) {
                         Ok(()) => {
-                            info!("[BACKFILL] Stored ContentItem for {} ({})", &params.content_id[..24], content_type);
+                            info!(
+                                "[BACKFILL] Stored ContentItem for {} ({})",
+                                &params.content_id[..24],
+                                content_type
+                            );
                             let _ = content_store.flush();
                         }
                         Err(e) if e.to_string().contains("already exists") => {
@@ -3724,45 +4167,68 @@ impl RpcMethods {
                 }
 
                 // Get decay state from DecayIntegration for blob-only content
-                let (decay_state_str, seconds_until_decay_starts, seconds_until_pruned,
-                     survival_probability, is_protected, time_since_engagement) =
-                    if let Some(ref decay) = self.node.decay_integration {
-                        if let Ok(Some(decay_state)) = decay.get_decay_state(&blob_hash) {
-                            let state_str = if decay_state.is_protected {
-                                "protected"
-                            } else if decay_state.survival_probability >= 0.5 {
-                                "active"
-                            } else if decay_state.survival_probability >= 0.0625 {
-                                "stale"
-                            } else {
-                                "decayed"
-                            };
-                            let floor_remaining = if decay_state.is_protected {
-                                Some(crate::types::constants::DECAY_FLOOR_SECS
-                                    .saturating_sub(decay_state.time_since_engagement))
-                            } else {
-                                None
-                            };
-                            let half_life = crate::types::constants::HALF_LIFE_SECS;
-                            let seconds_until_pruned = if decay_state.is_protected {
-                                Some(crate::types::constants::DECAY_FLOOR_SECS
-                                    .saturating_sub(decay_state.time_since_engagement) + 4 * half_life)
-                            } else if !decay_state.is_decayed {
-                                let effective_time = decay_state.time_since_engagement
-                                    .saturating_sub(crate::types::constants::DECAY_FLOOR_SECS);
-                                Some((4 * half_life).saturating_sub(effective_time))
-                            } else {
-                                Some(0)
-                            };
-                            (state_str.to_string(), floor_remaining, seconds_until_pruned,
-                             decay_state.survival_probability, decay_state.is_protected,
-                             decay_state.time_since_engagement)
+                let (
+                    decay_state_str,
+                    seconds_until_decay_starts,
+                    seconds_until_pruned,
+                    survival_probability,
+                    is_protected,
+                    time_since_engagement,
+                ) = if let Some(ref decay) = self.node.decay_integration {
+                    if let Ok(Some(decay_state)) = decay.get_decay_state(&blob_hash) {
+                        let state_str = if decay_state.is_protected {
+                            "protected"
+                        } else if decay_state.survival_probability >= 0.5 {
+                            "active"
+                        } else if decay_state.survival_probability >= 0.0625 {
+                            "stale"
                         } else {
-                            ("active".to_string(), Some(crate::types::constants::DECAY_FLOOR_SECS), None, 1.0, true, 0)
-                        }
+                            "decayed"
+                        };
+                        let floor_remaining = if decay_state.is_protected {
+                            Some(
+                                crate::types::constants::DECAY_FLOOR_SECS
+                                    .saturating_sub(decay_state.time_since_engagement),
+                            )
+                        } else {
+                            None
+                        };
+                        let half_life = crate::types::constants::HALF_LIFE_SECS;
+                        let seconds_until_pruned = if decay_state.is_protected {
+                            Some(
+                                crate::types::constants::DECAY_FLOOR_SECS
+                                    .saturating_sub(decay_state.time_since_engagement)
+                                    + 4 * half_life,
+                            )
+                        } else if !decay_state.is_decayed {
+                            let effective_time = decay_state
+                                .time_since_engagement
+                                .saturating_sub(crate::types::constants::DECAY_FLOOR_SECS);
+                            Some((4 * half_life).saturating_sub(effective_time))
+                        } else {
+                            Some(0)
+                        };
+                        (
+                            state_str.to_string(),
+                            floor_remaining,
+                            seconds_until_pruned,
+                            decay_state.survival_probability,
+                            decay_state.is_protected,
+                            decay_state.time_since_engagement,
+                        )
                     } else {
-                        ("active".to_string(), None, None, 1.0, false, 0)
-                    };
+                        (
+                            "active".to_string(),
+                            Some(crate::types::constants::DECAY_FLOOR_SECS),
+                            None,
+                            1.0,
+                            true,
+                            0,
+                        )
+                    }
+                } else {
+                    ("active".to_string(), None, None, 1.0, false, 0)
+                };
 
                 // Calculate reply count from chain + mempool
                 let reply_count = {
@@ -3770,7 +4236,8 @@ impl RpcMethods {
 
                     // Count ALL replies recursively from chain index
                     if let Some(ref chain_store) = self.node.chain_store {
-                        count += chain_store.count_all_replies(&content_hash)
+                        count += chain_store
+                            .count_all_replies(&content_hash)
                             .map(|c| c as u64)
                             .unwrap_or(0);
                     }
@@ -3779,15 +4246,22 @@ impl RpcMethods {
                     if let Some(ref block_builder) = self.node.block_builder {
                         if let Ok(bb) = block_builder.read() {
                             let pending = bb.get_pending_actions();
-                            let mut target_parents: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                            let mut target_parents: std::collections::HashSet<[u8; 32]> =
+                                std::collections::HashSet::new();
                             target_parents.insert(content_hash);
 
                             loop {
                                 let mut found_new = false;
                                 for (_thread_id, _space_id, action) in &pending {
-                                    if action.action_type == crate::blocks::action::ActionType::Reply {
-                                        if let (Some(parent_id), Some(reply_hash)) = (action.parent_id, action.content_hash) {
-                                            if target_parents.contains(&parent_id) && !target_parents.contains(&reply_hash) {
+                                    if action.action_type
+                                        == crate::blocks::action::ActionType::Reply
+                                    {
+                                        if let (Some(parent_id), Some(reply_hash)) =
+                                            (action.parent_id, action.content_hash)
+                                        {
+                                            if target_parents.contains(&parent_id)
+                                                && !target_parents.contains(&reply_hash)
+                                            {
                                                 count += 1;
                                                 target_parents.insert(reply_hash);
                                                 found_new = true;
@@ -3812,20 +4286,23 @@ impl RpcMethods {
                 };
 
                 // Convert ActionMediaRef to MediaRefResult for response
-                let response_media_refs: Vec<MediaRefResult> = found_media_refs.iter().map(|amr| {
-                    let media_type_str = match amr.media_type {
-                        crate::blocks::action::ActionMediaRef::TYPE_JPEG => "image/jpeg",
-                        crate::blocks::action::ActionMediaRef::TYPE_PNG => "image/png",
-                        crate::blocks::action::ActionMediaRef::TYPE_GIF => "image/gif",
-                        crate::blocks::action::ActionMediaRef::TYPE_WEBP => "image/webp",
-                        _ => "image/jpeg", // Default fallback
-                    };
-                    MediaRefResult {
-                        media_hash: hex::encode(amr.media_hash),
-                        media_type: media_type_str.to_string(),
-                        size_bytes: amr.size_bytes,
-                    }
-                }).collect();
+                let response_media_refs: Vec<MediaRefResult> = found_media_refs
+                    .iter()
+                    .map(|amr| {
+                        let media_type_str = match amr.media_type {
+                            crate::blocks::action::ActionMediaRef::TYPE_JPEG => "image/jpeg",
+                            crate::blocks::action::ActionMediaRef::TYPE_PNG => "image/png",
+                            crate::blocks::action::ActionMediaRef::TYPE_GIF => "image/gif",
+                            crate::blocks::action::ActionMediaRef::TYPE_WEBP => "image/webp",
+                            _ => "image/jpeg", // Default fallback
+                        };
+                        MediaRefResult {
+                            media_hash: hex::encode(amr.media_hash),
+                            media_type: media_type_str.to_string(),
+                            size_bytes: amr.size_bytes,
+                        }
+                    })
+                    .collect();
 
                 let result = GetContentResult {
                     content_id: params.content_id,
@@ -3865,21 +4342,29 @@ impl RpcMethods {
         let types = params.get("types").and_then(|v| v.as_array());
         let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
         let offset = params.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let space_filter = params.get("space_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let space_filter = params
+            .get("space_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         let query_trimmed = query.trim();
         if query_trimmed.is_empty() {
-            return RpcResponse::success(serde_json::json!({
-                "results": [],
-                "total": 0,
-                "took_ms": 0
-            }), id);
+            return RpcResponse::success(
+                serde_json::json!({
+                    "results": [],
+                    "total": 0,
+                    "took_ms": 0
+                }),
+                id,
+            );
         }
 
         let mut results: Vec<serde_json::Value> = Vec::new();
 
         // Check if we should search spaces (substring matching - spaces aren't in Tantivy)
-        let search_spaces = types.map(|t| t.iter().any(|x| x.as_str() == Some("space"))).unwrap_or(true);
+        let search_spaces = types
+            .map(|t| t.iter().any(|x| x.as_str() == Some("space")))
+            .unwrap_or(true);
         if search_spaces {
             let query_lower = query_trimmed.to_lowercase();
             let search_terms: Vec<&str> = query_lower.split_whitespace().collect();
@@ -3888,11 +4373,15 @@ impl RpcMethods {
                 for result in chain_store.list_spaces() {
                     if let Ok(space_info) = result {
                         let name_lower = space_info.name.to_lowercase();
-                        let desc_lower = space_info.description.as_ref().map(|d| d.to_lowercase()).unwrap_or_default();
+                        let desc_lower = space_info
+                            .description
+                            .as_ref()
+                            .map(|d| d.to_lowercase())
+                            .unwrap_or_default();
 
-                        let matches = search_terms.iter().any(|term| {
-                            name_lower.contains(term) || desc_lower.contains(term)
-                        });
+                        let matches = search_terms
+                            .iter()
+                            .any(|term| name_lower.contains(term) || desc_lower.contains(term));
 
                         if matches {
                             results.push(serde_json::json!({
@@ -3917,7 +4406,9 @@ impl RpcMethods {
         }
 
         // Check if we should search threads (using Tantivy full-text search)
-        let search_threads = types.map(|t| t.iter().any(|x| x.as_str() == Some("thread"))).unwrap_or(true);
+        let search_threads = types
+            .map(|t| t.iter().any(|x| x.as_str() == Some("thread")))
+            .unwrap_or(true);
         if search_threads {
             // Try Tantivy search first (fast, relevance-ranked)
             let tantivy_results = if let Some(ref search_index) = self.node.search_index {
@@ -3931,7 +4422,10 @@ impl RpcMethods {
                     match index.search(query_trimmed, filters, limit + offset + 100) {
                         Ok(entries) => Some(entries),
                         Err(e) => {
-                            debug!("[SEARCH] Tantivy search failed, falling back to scan: {}", e);
+                            debug!(
+                                "[SEARCH] Tantivy search failed, falling back to scan: {}",
+                                e
+                            );
                             None
                         }
                     }
@@ -3993,7 +4487,9 @@ impl RpcMethods {
                 if let Some(ref content_store) = self.node.content_store {
                     let mut count = 0;
                     for result in content_store.iter_content() {
-                        if count >= 2000 { break; }
+                        if count >= 2000 {
+                            break;
+                        }
                         count += 1;
                         let item = match result {
                             Ok(i) => i,
@@ -4017,19 +4513,33 @@ impl RpcMethods {
                         let title_lower = title.to_lowercase();
                         let body_lower = body.to_lowercase();
 
-                        let title_matches = search_terms.iter().any(|term| title_lower.contains(term));
-                        let body_matches = search_terms.iter().any(|term| body_lower.contains(term));
+                        let title_matches =
+                            search_terms.iter().any(|term| title_lower.contains(term));
+                        let body_matches =
+                            search_terms.iter().any(|term| body_lower.contains(term));
 
                         if !title_matches && !body_matches {
                             continue;
                         }
 
-                        let title_match_count = search_terms.iter().filter(|term| title_lower.contains(*term)).count();
-                        let body_match_count = search_terms.iter().filter(|term| body_lower.contains(*term)).count();
-                        let score = (title_match_count as f64 * 0.3) + (body_match_count as f64 * 0.1) + if title_matches { 0.5 } else { 0.2 };
+                        let title_match_count = search_terms
+                            .iter()
+                            .filter(|term| title_lower.contains(*term))
+                            .count();
+                        let body_match_count = search_terms
+                            .iter()
+                            .filter(|term| body_lower.contains(*term))
+                            .count();
+                        let score = (title_match_count as f64 * 0.3)
+                            + (body_match_count as f64 * 0.1)
+                            + if title_matches { 0.5 } else { 0.2 };
 
                         let content_id_str = hex::encode(item.content_id.as_bytes());
-                        let body_preview = if body.len() > 200 { format!("{}...", &body[..200]) } else { body.clone() };
+                        let body_preview = if body.len() > 200 {
+                            format!("{}...", &body[..200])
+                        } else {
+                            body.clone()
+                        };
 
                         results.push(serde_json::json!({
                             "id": content_id_str,
@@ -4058,22 +4568,24 @@ impl RpcMethods {
         results.sort_by(|a, b| {
             let score_a = a.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let score_b = b.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let total = results.len();
         let took_ms = start_time.elapsed().as_millis() as u64;
 
-        let paginated: Vec<_> = results.into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect();
+        let paginated: Vec<_> = results.into_iter().skip(offset).take(limit).collect();
 
-        RpcResponse::success(serde_json::json!({
-            "results": paginated,
-            "total": total,
-            "took_ms": took_ms
-        }), id)
+        RpcResponse::success(
+            serde_json::json!({
+                "results": paginated,
+                "total": total,
+                "took_ms": took_ms
+            }),
+            id,
+        )
     }
 
     /// Rebuild the full-text search index from content store
@@ -4121,7 +4633,9 @@ impl RpcMethods {
                 };
 
                 // Convert space_id to bech32m format
-                let space_id_16: [u8; 16] = item.space_id.as_bytes()[..16].try_into().unwrap_or([0u8; 16]);
+                let space_id_16: [u8; 16] = item.space_id.as_bytes()[..16]
+                    .try_into()
+                    .unwrap_or([0u8; 16]);
                 let space_id_str = encode_space_id(&space_id_16);
 
                 let content_id_str = format!("sha256:{}", hex::encode(item.content_id.as_bytes()));
@@ -4154,15 +4668,20 @@ impl RpcMethods {
             0
         };
 
-        info!("[SEARCH] Rebuilt search index: {} items indexed, {} errors, {} total docs, took {}ms",
-              indexed_count, error_count, doc_count, took_ms);
+        info!(
+            "[SEARCH] Rebuilt search index: {} items indexed, {} errors, {} total docs, took {}ms",
+            indexed_count, error_count, doc_count, took_ms
+        );
 
-        RpcResponse::success(serde_json::json!({
-            "indexed": indexed_count,
-            "errors": error_count,
-            "total_docs": doc_count,
-            "took_ms": took_ms
-        }), id)
+        RpcResponse::success(
+            serde_json::json!({
+                "indexed": indexed_count,
+                "errors": error_count,
+                "total_docs": doc_count,
+                "took_ms": took_ms
+            }),
+            id,
+        )
     }
 
     /// Get autocomplete suggestions for search prefix
@@ -4195,18 +4714,28 @@ impl RpcMethods {
         // Also suggest content-based terms from recent threads
         if suggestions.len() < limit {
             if let Some(ref content_store) = self.node.content_store {
-                let mut seen_terms: std::collections::HashSet<String> = suggestions.iter().cloned().collect();
+                let mut seen_terms: std::collections::HashSet<String> =
+                    suggestions.iter().cloned().collect();
                 let mut count = 0;
                 for result in content_store.iter_content() {
-                    if count >= 100 { break; }
+                    if count >= 100 {
+                        break;
+                    }
                     count += 1;
                     if let Ok(item) = result {
-                        if item.parent_id.is_some() { continue; } // Skip replies
+                        if item.parent_id.is_some() {
+                            continue;
+                        } // Skip replies
                         if let Some(body) = &item.body_inline {
                             // Extract words that start with the prefix
                             for word in body.split_whitespace() {
-                                let word_clean = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
-                                if word_clean.len() >= 3 && word_clean.starts_with(&prefix_lower) && !seen_terms.contains(&word_clean) {
+                                let word_clean = word
+                                    .trim_matches(|c: char| !c.is_alphanumeric())
+                                    .to_lowercase();
+                                if word_clean.len() >= 3
+                                    && word_clean.starts_with(&prefix_lower)
+                                    && !seen_terms.contains(&word_clean)
+                                {
                                     suggestions.push(word_clean.clone());
                                     seen_terms.insert(word_clean);
                                     if suggestions.len() >= limit {
@@ -4257,17 +4786,24 @@ impl RpcMethods {
 
         // Get recent thread keywords
         if let Some(ref content_store) = self.node.content_store {
-            let mut keyword_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+            let mut keyword_counts: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::new();
             let mut count = 0;
             for result in content_store.iter_content() {
-                if count >= 200 { break; }
+                if count >= 200 {
+                    break;
+                }
                 count += 1;
                 if let Ok(item) = result {
-                    if item.parent_id.is_some() { continue; } // Skip replies
+                    if item.parent_id.is_some() {
+                        continue;
+                    } // Skip replies
                     if let Some(body) = &item.body_inline {
                         // Extract significant words (4+ chars, not common)
                         for word in body.split_whitespace().take(20) {
-                            let word_clean = word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+                            let word_clean = word
+                                .trim_matches(|c: char| !c.is_alphanumeric())
+                                .to_lowercase();
                             if word_clean.len() >= 4 && !is_common_word(&word_clean) {
                                 *keyword_counts.entry(word_clean).or_insert(0) += 1;
                             }
@@ -4286,7 +4822,8 @@ impl RpcMethods {
 
         // Sort by activity/count and take top results
         trending.sort_by(|a, b| b.1.cmp(&a.1));
-        let result: Vec<String> = trending.into_iter()
+        let result: Vec<String> = trending
+            .into_iter()
             .map(|(name, _)| name)
             .take(limit)
             .collect();
@@ -4308,7 +4845,8 @@ impl RpcMethods {
         };
 
         use std::collections::HashMap;
-        let mut space_stats: HashMap<[u8; 16], (String, Option<String>, u64, u64, u64)> = HashMap::new();
+        let mut space_stats: HashMap<[u8; 16], (String, Option<String>, u64, u64, u64)> =
+            HashMap::new();
         // space_id_16 -> (name, description, creator_timestamp, post_count, last_activity)
 
         // Source 0: Space blocks in the chain (spaces are on-chain, no content fetch needed)
@@ -4330,24 +4868,34 @@ impl RpcMethods {
                                     let mut space_16: [u8; 16] = [0u8; 16];
                                     space_16.copy_from_slice(&space_block.space_id[..16]);
 
-                                    info!("[LIST_SPACES] Found space {} in block {}",
-                                          hex::encode(&space_16[..4]), root_block.height);
+                                    info!(
+                                        "[LIST_SPACES] Found space {} in block {}",
+                                        hex::encode(&space_16[..4]),
+                                        root_block.height
+                                    );
 
                                     // Add space if not already present
                                     // Note: post_count starts at 0, will be populated by Source 2 (content blocks)
                                     space_stats.entry(space_16).or_insert((
                                         format!("Space {}", hex::encode(&space_16[..4])), // Default name
-                                        None, // No description yet
+                                        None,                 // No description yet
                                         root_block.timestamp, // Use block timestamp as created_at
                                         0, // post_count - will be calculated from content blocks
                                         root_block.timestamp, // last_activity from block
                                     ));
                                 }
                                 Ok(None) => {
-                                    warn!("[LIST_SPACES] Space block {} not found in store", hex::encode(space_block_hash));
+                                    warn!(
+                                        "[LIST_SPACES] Space block {} not found in store",
+                                        hex::encode(space_block_hash)
+                                    );
                                 }
                                 Err(e) => {
-                                    warn!("[LIST_SPACES] Error fetching space block {}: {}", hex::encode(space_block_hash), e);
+                                    warn!(
+                                        "[LIST_SPACES] Error fetching space block {}: {}",
+                                        hex::encode(space_block_hash),
+                                        e
+                                    );
                                 }
                             }
                         }
@@ -4357,7 +4905,10 @@ impl RpcMethods {
                     }
                 }
             }
-            info!("[LIST_SPACES] Scanned {} root blocks, found {} space blocks", root_block_count, space_block_count);
+            info!(
+                "[LIST_SPACES] Scanned {} root blocks, found {} space blocks",
+                root_block_count, space_block_count
+            );
         } else {
             warn!("[LIST_SPACES] No chain_store available!");
         }
@@ -4435,12 +4986,15 @@ impl RpcMethods {
                         // Add space from mempool if not already in chain
                         space_stats.entry(space_16).or_insert((
                             format!("Space {}", hex::encode(&space_16[..4])), // Default name
-                            None, // No description yet
+                            None,                                             // No description yet
                             action.timestamp, // created_at from action
-                            0, // post_count
+                            0,                // post_count
                             action.timestamp, // last_activity
                         ));
-                        log::debug!("[LIST_SPACES] Found pending CreateSpace in mempool for space {}", hex::encode(&space_16[..4]));
+                        log::debug!(
+                            "[LIST_SPACES] Found pending CreateSpace in mempool for space {}",
+                            hex::encode(&space_16[..4])
+                        );
                     }
                 }
             }
@@ -4453,52 +5007,77 @@ impl RpcMethods {
         let chain_store_ref = self.node.chain_store.as_ref();
         let mut spaces: Vec<SpaceSummary> = space_stats
             .into_iter()
-            .filter_map(|(space_id_16, (name, _description, _created_at, _post_count, last_activity))| {
-                let space_id_str = encode_space_id(&space_id_16);
-                // Use config name if available, otherwise use on-chain/default name
-                let final_name = config_names.get(&space_id_str).cloned().unwrap_or(name);
+            .filter_map(
+                |(space_id_16, (name, _description, _created_at, _post_count, last_activity))| {
+                    let space_id_str = encode_space_id(&space_id_16);
+                    // Identify app-namespaced spaces from the ON-CHAIN name (not any config
+                    // override, which is display-only). For an app space, surface the clean
+                    // display name (marker stripped) and the app tag so clients can segregate.
+                    let (app, resolved_name) = match resolve_app_space(&space_id_16, &name) {
+                        Some((app, display)) => (Some(app), display),
+                        None => (None, name),
+                    };
+                    // For an app space the clean display name is authoritative (a config.toml
+                    // override still holds the raw "@app:" marker, so ignore it here). For a
+                    // normal space, a config override wins over the on-chain/default name.
+                    let final_name = if app.is_some() {
+                        resolved_name
+                    } else {
+                        config_names
+                            .get(&space_id_str)
+                            .cloned()
+                            .unwrap_or(resolved_name)
+                    };
 
-                // Public browse shows ONLY real, named public spaces. Private channels and
-                // DM spaces register with an EMPTY name (their real name is encrypted), and
-                // profile/derived/unregistered spaces get an auto-generated "Space <8 hex>"
-                // placeholder — hide all of those. (is_private alone is unreliable here:
-                // block-sync re-registration can reset it.)
-                let trimmed = final_name.trim();
-                let is_placeholder = trimmed.len() == 14
-                    && trimmed.starts_with("Space ")
-                    && trimmed[6..].chars().all(|c| c.is_ascii_hexdigit());
-                if trimmed.is_empty() || is_placeholder {
-                    return None;
-                }
+                    // Public browse shows ONLY real, named public spaces. Private channels and
+                    // DM spaces register with an EMPTY name (their real name is encrypted), and
+                    // profile/derived/unregistered spaces get an auto-generated "Space <8 hex>"
+                    // placeholder — hide all of those. (is_private alone is unreliable here:
+                    // block-sync re-registration can reset it.)
+                    let trimmed = final_name.trim();
+                    let is_placeholder = trimmed.len() == 14
+                        && trimmed.starts_with("Space ")
+                        && trimmed[6..].chars().all(|c| c.is_ascii_hexdigit());
+                    if trimmed.is_empty() || is_placeholder {
+                        return None;
+                    }
 
-                // Get accurate post count from indexed storage
-                let actual_post_count = chain_store_ref
-                    .and_then(|cs| cs.count_posts_for_space(&space_id_16).ok())
-                    .unwrap_or(0) as u64;
-                Some(SpaceSummary {
-                    space_id: space_id_str,
-                    post_count: actual_post_count,
-                    last_activity: if last_activity > 0 { Some(last_activity) } else { None },
-                    name: Some(final_name),
-                })
-            })
+                    // Get accurate post count from indexed storage
+                    let actual_post_count = chain_store_ref
+                        .and_then(|cs| cs.count_posts_for_space(&space_id_16).ok())
+                        .unwrap_or(0) as u64;
+                    Some(SpaceSummary {
+                        space_id: space_id_str,
+                        post_count: actual_post_count,
+                        last_activity: if last_activity > 0 {
+                            Some(last_activity)
+                        } else {
+                            None
+                        },
+                        name: Some(final_name),
+                        app,
+                    })
+                },
+            )
             .collect();
 
         // Sort by last activity (most recent first), then by name
-        spaces.sort_by(|a, b| {
-            match (b.last_activity, a.last_activity) {
-                (Some(b_time), Some(a_time)) => b_time.cmp(&a_time),
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.name.cmp(&b.name),
-            }
+        spaces.sort_by(|a, b| match (b.last_activity, a.last_activity) {
+            (Some(b_time), Some(a_time)) => b_time.cmp(&a_time),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.name.cmp(&b.name),
         });
 
         // total reflects the public spaces actually returned (after hiding private/system).
         let total = spaces.len();
 
         // Apply pagination
-        let spaces: Vec<_> = spaces.into_iter().skip(params.offset).take(params.limit).collect();
+        let spaces: Vec<_> = spaces
+            .into_iter()
+            .skip(params.offset)
+            .take(params.limit)
+            .collect();
 
         let result = ListSpacesResult { spaces, total };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
@@ -4617,15 +5196,39 @@ impl RpcMethods {
             );
         }
 
-        // Generate space ID from PoW hash (first 16 bytes)
+        // Space ID. An app-namespaced space (name `@<app>:<display>`) is name-addressed:
+        // its id derives from (app, display) so it's a single shared namespace any client
+        // can recognize + segregate. A normal space uses the PoW hash (random, so ids can't
+        // be squatted). PoW is verified either way (anti-abuse) — for app spaces it just no
+        // longer determines the id.
+        let app_marker = parse_app_space_name(&params.name);
         let mut space_id_bytes: [u8; 16] = [0u8; 16];
-        space_id_bytes.copy_from_slice(&pow_hash[..16]);
+        if let Some((ref app, ref display)) = app_marker {
+            space_id_bytes = app_space_id_16(app, display);
+        } else {
+            space_id_bytes.copy_from_slice(&pow_hash[..16]);
+        }
         let space_id = encode_space_id(&space_id_bytes);
 
         // Check if space already exists on-chain
         if let Some(ref chain_store) = self.node.chain_store {
             match chain_store.space_exists(&space_id_bytes) {
                 Ok(true) => {
+                    // An app-namespaced space is shared and name-addressed: "already exists"
+                    // just means someone registered this name first, so return it
+                    // idempotently instead of erroring — the caller can post to it either way.
+                    if app_marker.is_some() {
+                        info!(
+                            "[CREATE_SPACE] App space {} ({}) already registered; returning it",
+                            space_id, params.name
+                        );
+                        let result = CreateSpaceResult {
+                            space_id,
+                            name: params.name,
+                            success: true,
+                        };
+                        return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                    }
                     return RpcResponse::error(
                         RpcErrorCode::InvalidParams,
                         &format!("Space {} already exists", space_id),
@@ -4708,7 +5311,13 @@ impl RpcMethods {
                     name: params.name.clone(),
                     description: params.description.clone(),
                 };
-                builder.add_create_space_action(space_id_32, space_id_32, action, branch_path, metadata);
+                builder.add_create_space_action(
+                    space_id_32,
+                    space_id_32,
+                    action,
+                    branch_path,
+                    metadata,
+                );
                 debug!("[CREATE_SPACE] Added CreateSpace action with metadata to block builder");
             } // Lock released here
 
@@ -4726,7 +5335,10 @@ impl RpcMethods {
 
                 // Origin obfuscation (SWIM-PRIV-1): delay/stem self-originated announce.
                 self.gossip_self_originated_action(envelope).await;
-                info!("[MEMPOOL] Announced CREATE_SPACE action to peers (space={})", space_id);
+                info!(
+                    "[MEMPOOL] Announced CREATE_SPACE action to peers (space={})",
+                    space_id
+                );
 
                 // Check if PoW threshold met - form block immediately if so
                 self.try_form_block_if_threshold_met().await;
@@ -4757,7 +5369,10 @@ impl RpcMethods {
             // Insert after the section header
             let insert_pos = config_content.find("[space_names]").unwrap() + "[space_names]".len();
             let (before, after) = config_content.split_at(insert_pos);
-            config_content = format!("{}\n\"{}\" = \"{}\"{}", before, space_id, params.name, after);
+            config_content = format!(
+                "{}\n\"{}\" = \"{}\"{}",
+                before, space_id, params.name, after
+            );
         } else {
             // Add new section
             config_content.push_str(&format!(
@@ -4771,7 +5386,10 @@ impl RpcMethods {
             warn!("Failed to save space to local config (non-fatal): {}", e);
         }
 
-        info!("[CREATE_SPACE] Created space {} ({})", space_id, params.name);
+        info!(
+            "[CREATE_SPACE] Created space {} ({})",
+            space_id, params.name
+        );
 
         let result = CreateSpaceResult {
             space_id,
@@ -4789,24 +5407,30 @@ impl RpcMethods {
     /// upsert the name into the local registry; clients can re-call list_spaces.
     async fn resolve_space_name(&self, params: Value, id: Value) -> RpcResponse {
         #[derive(serde::Deserialize)]
-        struct P { space_id: String }
+        struct P {
+            space_id: String,
+        }
 
         let params: P = match serde_json::from_value(params) {
             Ok(p) => p,
-            Err(e) => return RpcResponse::error(
-                RpcErrorCode::InvalidParams,
-                &format!("Invalid params: {}", e),
-                id,
-            ),
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                )
+            }
         };
 
         let space_id_16 = match decode_space_id(&params.space_id) {
             Ok(b) => b,
-            Err(e) => return RpcResponse::error(
-                RpcErrorCode::InvalidParams,
-                &format!("Invalid space_id: {}", e),
-                id,
-            ),
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid space_id: {}", e),
+                    id,
+                )
+            }
         };
 
         let placeholder = format!("Space {}", hex::encode(&space_id_16[..4]));
@@ -4830,20 +5454,20 @@ impl RpcMethods {
         // Step 2: broadcast GET_SPACE_META to peers
         let pool = match &self.node.connection_pool {
             Some(p) => p,
-            None => return RpcResponse::error(
-                RpcErrorCode::SubsystemUnavailable,
-                "Connection pool not available",
-                id,
-            ),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Connection pool not available",
+                    id,
+                )
+            }
         };
 
         use crate::network::messages::GetSpaceMetaPayload;
         use crate::types::network::{MessageEnvelope, MessageType};
         let req = GetSpaceMetaPayload::new(space_id_16);
-        let envelope = MessageEnvelope::new_fork_agnostic(
-            MessageType::GetSpaceMeta,
-            req.to_bytes(),
-        );
+        let envelope =
+            MessageEnvelope::new_fork_agnostic(MessageType::GetSpaceMeta, req.to_bytes());
         let sent = pool.broadcast(&envelope).await;
 
         info!(
@@ -4890,8 +5514,10 @@ impl RpcMethods {
             }
         };
 
-        debug!("[LIST_SPACE_CONTENT] Looking for space: {} (bytes: {:?})",
-            params.space_id, &space_id_16);
+        debug!(
+            "[LIST_SPACE_CONTENT] Looking for space: {} (bytes: {:?})",
+            params.space_id, &space_id_16
+        );
 
         // Use indexed lookup for fast content retrieval
         let mut items: Vec<ContentSummary> = Vec::new();
@@ -4913,7 +5539,9 @@ impl RpcMethods {
             match chain_store.get_content_for_space(&space_id_16, fetch_limit, params.offset) {
                 Ok(indexed_content) => {
                     // Get total count for pagination (this is still O(n) but can be cached)
-                    total = chain_store.count_content_in_space(&space_id_16).unwrap_or(0);
+                    total = chain_store
+                        .count_content_in_space(&space_id_16)
+                        .unwrap_or(0);
 
                     for (content_hash, metadata) in indexed_content {
                         let content_id = format!("sha256:{}", hex::encode(&content_hash));
@@ -4939,7 +5567,8 @@ impl RpcMethods {
 
                             // First try content_store (same approach as get_replies)
                             if let Some(ref cs) = self.node.content_store {
-                                let cid = crate::types::content::ContentId::from_bytes(content_hash);
+                                let cid =
+                                    crate::types::content::ContentId::from_bytes(content_hash);
                                 if let Ok(Some(item)) = cs.get(&cid) {
                                     if let Some(ref body_inline) = item.body_inline {
                                         if !body_inline.is_empty() {
@@ -4971,13 +5600,18 @@ impl RpcMethods {
 
                             // Parse title/body from text
                             if let Some(text) = text_opt {
-                                let (parsed_title, parsed_body) = if let Some(idx) = text.find("\n\n") {
-                                    (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                let (parsed_title, parsed_body) = if let Some(idx) =
+                                    text.find("\n\n")
+                                {
+                                    (Some(text[..idx].to_string()), text[(idx + 2)..].to_string())
                                 } else {
                                     (None, text.clone())
                                 };
                                 let preview = if parsed_body.chars().count() > 200 {
-                                    format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                                    format!(
+                                        "{}...",
+                                        parsed_body.chars().take(200).collect::<String>()
+                                    )
                                 } else {
                                     parsed_body.clone()
                                 };
@@ -4990,60 +5624,89 @@ impl RpcMethods {
                         // Get accurate decay from DecayIntegration
                         let content_id_bytes = ContentId::from_bytes(content_hash);
                         let content_blob_hash = ContentBlobHash::from_bytes(content_hash);
-                        let (decay_state, survival_probability, is_protected, seconds_until_decay_starts, seconds_until_pruned, last_engagement_ms) =
-                            if let Some(ref decay) = self.node.decay_integration {
-                                if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
-                                    let state_str = if ds.is_decayed { "decayed" }
-                                        else if ds.survival_probability < 0.25 { "stale" }
-                                        else if ds.is_protected { "protected" }
-                                        else { "active" };
-
-                                    // Calculate seconds until floor ends (floor = 48h from creation)
-                                    let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
-                                        Some((48 * 3600u64).saturating_sub(ds.age_seconds))
-                                    } else {
-                                        None
-                                    };
-
-                                    // Calculate seconds until pruned (decay < 6.25%)
-                                    let pruned_secs = if ds.is_decayed {
-                                        None
-                                    } else {
-                                        let threshold = 0.0625;
-                                        if ds.survival_probability > threshold {
-                                            let half_life = 7.0 * 24.0 * 3600.0; // 7 days
-                                            let time_to_threshold = half_life * (ds.survival_probability / threshold).log2();
-                                            Some(time_to_threshold as u64)
-                                        } else {
-                                            None
-                                        }
-                                    };
-
-                                    // Calculate last_engagement from time_since_engagement
-                                    let now_ms = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis() as u64;
-                                    let last_engagement_ms = now_ms.saturating_sub(ds.time_since_engagement * 1000);
-
-                                    (state_str.to_string(), ds.survival_probability, ds.is_protected, floor_secs, pruned_secs, last_engagement_ms)
+                        let (
+                            decay_state,
+                            survival_probability,
+                            is_protected,
+                            seconds_until_decay_starts,
+                            seconds_until_pruned,
+                            last_engagement_ms,
+                        ) = if let Some(ref decay) = self.node.decay_integration {
+                            if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
+                                let state_str = if ds.is_decayed {
+                                    "decayed"
+                                } else if ds.survival_probability < 0.25 {
+                                    "stale"
+                                } else if ds.is_protected {
+                                    "protected"
                                 } else {
-                                    // Not in decay integration yet, use creation time
-                                    let created_at_ms = metadata.timestamp * 1000;
-                                    ("protected".to_string(), 1.0, true, Some(48 * 3600), Some(28 * 24 * 3600), created_at_ms)
-                                }
+                                    "active"
+                                };
+
+                                // Calculate seconds until floor ends (floor = 48h from creation)
+                                let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
+                                    Some((48 * 3600u64).saturating_sub(ds.age_seconds))
+                                } else {
+                                    None
+                                };
+
+                                // Calculate seconds until pruned (decay < 6.25%)
+                                let pruned_secs = if ds.is_decayed {
+                                    None
+                                } else {
+                                    let threshold = 0.0625;
+                                    if ds.survival_probability > threshold {
+                                        let half_life = 7.0 * 24.0 * 3600.0; // 7 days
+                                        let time_to_threshold = half_life
+                                            * (ds.survival_probability / threshold).log2();
+                                        Some(time_to_threshold as u64)
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                // Calculate last_engagement from time_since_engagement
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                                    as u64;
+                                let last_engagement_ms =
+                                    now_ms.saturating_sub(ds.time_since_engagement * 1000);
+
+                                (
+                                    state_str.to_string(),
+                                    ds.survival_probability,
+                                    ds.is_protected,
+                                    floor_secs,
+                                    pruned_secs,
+                                    last_engagement_ms,
+                                )
                             } else {
-                                // No decay integration, fallback
+                                // Not in decay integration yet, use creation time
                                 let created_at_ms = metadata.timestamp * 1000;
-                                ("active".to_string(), 1.0, false, None, None, created_at_ms)
-                            };
+                                (
+                                    "protected".to_string(),
+                                    1.0,
+                                    true,
+                                    Some(48 * 3600),
+                                    Some(28 * 24 * 3600),
+                                    created_at_ms,
+                                )
+                            }
+                        } else {
+                            // No decay integration, fallback
+                            let created_at_ms = metadata.timestamp * 1000;
+                            ("active".to_string(), 1.0, false, None, None, created_at_ms)
+                        };
 
                         // Get reply count from chain (confirmed) + mempool (pending)
                         let reply_count = {
                             let mut count = 0u64;
 
                             // Count ALL replies recursively (including nested replies)
-                            count += chain_store.count_all_replies(&content_hash)
+                            count += chain_store
+                                .count_all_replies(&content_hash)
                                 .map(|c| c as u64)
                                 .unwrap_or(0);
 
@@ -5052,16 +5715,23 @@ impl RpcMethods {
                                 if let Ok(bb) = block_builder.read() {
                                     let pending = bb.get_pending_actions();
                                     // Build a set of all content hashes we're counting for (root + all replies)
-                                    let mut target_parents: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                                    let mut target_parents: std::collections::HashSet<[u8; 32]> =
+                                        std::collections::HashSet::new();
                                     target_parents.insert(content_hash);
 
                                     // Multiple passes to find nested replies
                                     loop {
                                         let mut found_new = false;
                                         for (_thread_id, _space_id, action) in &pending {
-                                            if action.action_type == crate::blocks::action::ActionType::Reply {
-                                                if let (Some(parent_id), Some(reply_hash)) = (action.parent_id, action.content_hash) {
-                                                    if target_parents.contains(&parent_id) && !target_parents.contains(&reply_hash) {
+                                            if action.action_type
+                                                == crate::blocks::action::ActionType::Reply
+                                            {
+                                                if let (Some(parent_id), Some(reply_hash)) =
+                                                    (action.parent_id, action.content_hash)
+                                                {
+                                                    if target_parents.contains(&parent_id)
+                                                        && !target_parents.contains(&reply_hash)
+                                                    {
                                                         count += 1;
                                                         target_parents.insert(reply_hash);
                                                         found_new = true;
@@ -5079,30 +5749,43 @@ impl RpcMethods {
                         };
 
                         // Pool system removed - engagements are now stored directly
-                        let (pool_progress, has_pool, pool_status) = (0.0, false, "none".to_string());
+                        let (pool_progress, has_pool, pool_status) =
+                            (0.0, false, "none".to_string());
 
                         // Get media_refs from content_store if available
-                        let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) = self.node.content_store {
-                            if let Ok(Some(item)) = content_store.get(&content_id_bytes) {
-                                item.media_refs.iter().map(|mr| {
-                                    let media_type_str = match mr.media_type {
-                                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
-                                        crate::types::content::MediaType::ImagePng => "image/png",
-                                        crate::types::content::MediaType::ImageGif => "image/gif",
-                                        crate::types::content::MediaType::ImageWebp => "image/webp",
-                                    };
-                                    MediaRefResult {
-                                        media_hash: hex::encode(mr.media_hash.as_bytes()),
-                                        media_type: media_type_str.to_string(),
-                                        size_bytes: mr.size_bytes,
-                                    }
-                                }).collect()
+                        let media_refs: Vec<MediaRefResult> =
+                            if let Some(ref content_store) = self.node.content_store {
+                                if let Ok(Some(item)) = content_store.get(&content_id_bytes) {
+                                    item.media_refs
+                                        .iter()
+                                        .map(|mr| {
+                                            let media_type_str = match mr.media_type {
+                                                crate::types::content::MediaType::ImageJpeg => {
+                                                    "image/jpeg"
+                                                }
+                                                crate::types::content::MediaType::ImagePng => {
+                                                    "image/png"
+                                                }
+                                                crate::types::content::MediaType::ImageGif => {
+                                                    "image/gif"
+                                                }
+                                                crate::types::content::MediaType::ImageWebp => {
+                                                    "image/webp"
+                                                }
+                                            };
+                                            MediaRefResult {
+                                                media_hash: hex::encode(mr.media_hash.as_bytes()),
+                                                media_type: media_type_str.to_string(),
+                                                size_bytes: mr.size_bytes,
+                                            }
+                                        })
+                                        .collect()
+                                } else {
+                                    vec![]
+                                }
                             } else {
                                 vec![]
-                            }
-                        } else {
-                            vec![]
-                        };
+                            };
 
                         let created_at_ms = metadata.timestamp * 1000;
 
@@ -5133,11 +5816,17 @@ impl RpcMethods {
                         });
                     }
 
-                    debug!("[LIST_SPACE_CONTENT] Indexed lookup returned {} items in {:?}",
-                        items.len(), start_time.elapsed());
+                    debug!(
+                        "[LIST_SPACE_CONTENT] Indexed lookup returned {} items in {:?}",
+                        items.len(),
+                        start_time.elapsed()
+                    );
                 }
                 Err(e) => {
-                    warn!("[LIST_SPACE_CONTENT] Index lookup failed, falling back to full scan: {}", e);
+                    warn!(
+                        "[LIST_SPACE_CONTENT] Index lookup failed, falling back to full scan: {}",
+                        e
+                    );
                     // Fall back to full scan if index fails (shouldn't happen normally)
                 }
             }
@@ -5168,13 +5857,17 @@ impl RpcMethods {
                     let (content_type_str, parent_id) = match action.action_type {
                         crate::blocks::action::ActionType::Post => ("Post".to_string(), None),
                         crate::blocks::action::ActionType::Reply => {
-                            let parent = action.parent_id.map(|p| format!("sha256:{}", hex::encode(&p)));
+                            let parent = action
+                                .parent_id
+                                .map(|p| format!("sha256:{}", hex::encode(&p)));
                             ("Reply".to_string(), parent)
-                        },
+                        }
                         crate::blocks::action::ActionType::Engage => {
-                            let parent = action.parent_id.map(|p| format!("sha256:{}", hex::encode(&p)));
+                            let parent = action
+                                .parent_id
+                                .map(|p| format!("sha256:{}", hex::encode(&p)));
                             ("Engage".to_string(), parent)
-                        },
+                        }
                         _ => continue, // Skip other action types
                     };
 
@@ -5218,10 +5911,12 @@ impl RpcMethods {
 
                         // Parse title/body from text
                         if let Some(text) = text_opt {
-                            let (parsed_title, parsed_body) = if action.action_type == crate::blocks::action::ActionType::Post {
+                            let (parsed_title, parsed_body) = if action.action_type
+                                == crate::blocks::action::ActionType::Post
+                            {
                                 // Post: first line may be title
                                 if let Some(idx) = text.find("\n\n") {
-                                    (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                    (Some(text[..idx].to_string()), text[(idx + 2)..].to_string())
                                 } else {
                                     (None, text.clone())
                                 }
@@ -5246,20 +5941,24 @@ impl RpcMethods {
                         .as_millis() as u64;
 
                     // Get media_refs from action if available
-                    let media_refs: Vec<MediaRefResult> = action.media_refs.iter().map(|amr| {
-                        let media_type_str = match amr.media_type {
-                            crate::blocks::action::ActionMediaRef::TYPE_JPEG => "image/jpeg",
-                            crate::blocks::action::ActionMediaRef::TYPE_PNG => "image/png",
-                            crate::blocks::action::ActionMediaRef::TYPE_GIF => "image/gif",
-                            crate::blocks::action::ActionMediaRef::TYPE_WEBP => "image/webp",
-                            _ => "image/jpeg",
-                        };
-                        MediaRefResult {
-                            media_hash: hex::encode(&amr.media_hash),
-                            media_type: media_type_str.to_string(),
-                            size_bytes: amr.size_bytes,
-                        }
-                    }).collect();
+                    let media_refs: Vec<MediaRefResult> = action
+                        .media_refs
+                        .iter()
+                        .map(|amr| {
+                            let media_type_str = match amr.media_type {
+                                crate::blocks::action::ActionMediaRef::TYPE_JPEG => "image/jpeg",
+                                crate::blocks::action::ActionMediaRef::TYPE_PNG => "image/png",
+                                crate::blocks::action::ActionMediaRef::TYPE_GIF => "image/gif",
+                                crate::blocks::action::ActionMediaRef::TYPE_WEBP => "image/webp",
+                                _ => "image/jpeg",
+                            };
+                            MediaRefResult {
+                                media_hash: hex::encode(&amr.media_hash),
+                                media_type: media_type_str.to_string(),
+                                size_bytes: amr.size_bytes,
+                            }
+                        })
+                        .collect();
 
                     items.push(ContentSummary {
                         content_id,
@@ -5296,12 +5995,14 @@ impl RpcMethods {
         // blockchain data. If the chain_store is empty, return empty results.
         //
         // REMOVED: ContentStore fallback that caused orphan content to appear in listings
-        if items.is_empty() && false {  // Disabled fallback
+        if items.is_empty() && false {
+            // Disabled fallback
             if let Some(ref content_store) = self.node.content_store {
                 for result in content_store.iter_content() {
                     if let Ok(item) = result {
                         // Check if space matches (compare first 16 bytes)
-                        let item_space: [u8; 16] = item.space_id.as_bytes()[..16].try_into().unwrap();
+                        let item_space: [u8; 16] =
+                            item.space_id.as_bytes()[..16].try_into().unwrap();
                         if item_space == space_id_16 {
                             total += 1;
 
@@ -5316,14 +6017,18 @@ impl RpcMethods {
                             }
 
                             // Create summary
-                            let content_id = format!("sha256:{}", hex::encode(item.content_id.as_bytes()));
+                            let content_id =
+                                format!("sha256:{}", hex::encode(item.content_id.as_bytes()));
                             let author_id = crate::crypto::address::encode_address(&item.author_id);
 
                             // Parse title from body (format is "Title\n\nBody")
                             let body_text = item.body_inline.as_deref().unwrap_or("");
                             let (title, body) = if let Some(idx) = body_text.find("\n\n") {
                                 let (t, b) = body_text.split_at(idx);
-                                (Some(t.to_string()), b.trim_start_matches("\n\n").to_string())
+                                (
+                                    Some(t.to_string()),
+                                    b.trim_start_matches("\n\n").to_string(),
+                                )
                             } else {
                                 (None, body_text.to_string())
                             };
@@ -5335,79 +6040,124 @@ impl RpcMethods {
                             };
 
                             // Get accurate decay from DecayIntegration
-                            let content_blob_hash = ContentBlobHash::from_bytes(*item.content_id.as_bytes());
-                            let (decay_state, survival_probability, is_protected, seconds_until_decay_starts, seconds_until_pruned, last_engagement_ms) =
-                                if let Some(ref decay) = self.node.decay_integration {
-                                    if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
-                                        let state_str = if ds.is_decayed { "decayed" }
-                                            else if ds.survival_probability < 0.25 { "stale" }
-                                            else if ds.is_protected { "protected" }
-                                            else { "active" };
+                            let content_blob_hash =
+                                ContentBlobHash::from_bytes(*item.content_id.as_bytes());
+                            let (
+                                decay_state,
+                                survival_probability,
+                                is_protected,
+                                seconds_until_decay_starts,
+                                seconds_until_pruned,
+                                last_engagement_ms,
+                            ) = if let Some(ref decay) = self.node.decay_integration {
+                                if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
+                                    let state_str = if ds.is_decayed {
+                                        "decayed"
+                                    } else if ds.survival_probability < 0.25 {
+                                        "stale"
+                                    } else if ds.is_protected {
+                                        "protected"
+                                    } else {
+                                        "active"
+                                    };
 
-                                        let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
+                                    let floor_secs =
+                                        if ds.is_protected && ds.age_seconds < 48 * 3600 {
                                             Some((48 * 3600u64).saturating_sub(ds.age_seconds))
                                         } else {
                                             None
                                         };
 
-                                        let pruned_secs = if ds.is_decayed {
-                                            None
-                                        } else {
-                                            let threshold = 0.0625;
-                                            if ds.survival_probability > threshold {
-                                                let half_life = 7.0 * 24.0 * 3600.0;
-                                                let time_to_threshold = half_life * (ds.survival_probability / threshold).log2();
-                                                Some(time_to_threshold as u64)
-                                            } else {
-                                                None
-                                            }
-                                        };
-
-                                        // Calculate last_engagement from time_since_engagement
-                                        let now_ms = std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_millis() as u64;
-                                        let last_engagement_ms = now_ms.saturating_sub(ds.time_since_engagement * 1000);
-
-                                        (state_str.to_string(), ds.survival_probability, ds.is_protected, floor_secs, pruned_secs, last_engagement_ms)
+                                    let pruned_secs = if ds.is_decayed {
+                                        None
                                     } else {
-                                        ("protected".to_string(), 1.0, true, Some(48 * 3600), Some(28 * 24 * 3600), item.last_engagement)
-                                    }
+                                        let threshold = 0.0625;
+                                        if ds.survival_probability > threshold {
+                                            let half_life = 7.0 * 24.0 * 3600.0;
+                                            let time_to_threshold = half_life
+                                                * (ds.survival_probability / threshold).log2();
+                                            Some(time_to_threshold as u64)
+                                        } else {
+                                            None
+                                        }
+                                    };
+
+                                    // Calculate last_engagement from time_since_engagement
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis()
+                                        as u64;
+                                    let last_engagement_ms =
+                                        now_ms.saturating_sub(ds.time_since_engagement * 1000);
+
+                                    (
+                                        state_str.to_string(),
+                                        ds.survival_probability,
+                                        ds.is_protected,
+                                        floor_secs,
+                                        pruned_secs,
+                                        last_engagement_ms,
+                                    )
                                 } else {
-                                    ("active".to_string(), 1.0, false, None, None, item.last_engagement)
-                                };
+                                    (
+                                        "protected".to_string(),
+                                        1.0,
+                                        true,
+                                        Some(48 * 3600),
+                                        Some(28 * 24 * 3600),
+                                        item.last_engagement,
+                                    )
+                                }
+                            } else {
+                                (
+                                    "active".to_string(),
+                                    1.0,
+                                    false,
+                                    None,
+                                    None,
+                                    item.last_engagement,
+                                )
+                            };
 
                             // Get reply count
-                            let reply_count = content_store.get_children(&item.content_id)
+                            let reply_count = content_store
+                                .get_children(&item.content_id)
                                 .map(|children| children.len() as u64)
                                 .unwrap_or(0);
 
                             // Pool system removed - engagements are now stored directly
                             let _content_hash = item.content_id.as_bytes();
-                            let (pool_progress, has_pool, pool_status) = (0.0, false, "none".to_string());
+                            let (pool_progress, has_pool, pool_status) =
+                                (0.0, false, "none".to_string());
 
                             // Convert media_refs
-                            let media_refs: Vec<MediaRefResult> = item.media_refs.iter().map(|mr| {
-                                let media_type_str = match mr.media_type {
-                                    crate::types::content::MediaType::ImageJpeg => "image/jpeg",
-                                    crate::types::content::MediaType::ImagePng => "image/png",
-                                    crate::types::content::MediaType::ImageGif => "image/gif",
-                                    crate::types::content::MediaType::ImageWebp => "image/webp",
-                                };
-                                MediaRefResult {
-                                    media_hash: hex::encode(mr.media_hash.as_bytes()),
-                                    media_type: media_type_str.to_string(),
-                                    size_bytes: mr.size_bytes,
-                                }
-                            }).collect();
+                            let media_refs: Vec<MediaRefResult> = item
+                                .media_refs
+                                .iter()
+                                .map(|mr| {
+                                    let media_type_str = match mr.media_type {
+                                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                                        crate::types::content::MediaType::ImagePng => "image/png",
+                                        crate::types::content::MediaType::ImageGif => "image/gif",
+                                        crate::types::content::MediaType::ImageWebp => "image/webp",
+                                    };
+                                    MediaRefResult {
+                                        media_hash: hex::encode(mr.media_hash.as_bytes()),
+                                        media_type: media_type_str.to_string(),
+                                        size_bytes: mr.size_bytes,
+                                    }
+                                })
+                                .collect();
 
                             items.push(ContentSummary {
                                 content_id,
                                 content_type: format!("{:?}", item.content_type),
                                 author_id,
                                 space_id: params.space_id.clone(),
-                                parent_id: item.parent_id.map(|p| format!("sha256:{}", hex::encode(p.as_bytes()))),
+                                parent_id: item
+                                    .parent_id
+                                    .map(|p| format!("sha256:{}", hex::encode(p.as_bytes()))),
                                 created_at: item.created_at,
                                 last_engagement: last_engagement_ms,
                                 title,
@@ -5489,7 +6239,10 @@ impl RpcMethods {
             }
         };
 
-        debug!("[LIST_SPACE_POSTS] Looking for posts in space: {}", params.space_id);
+        debug!(
+            "[LIST_SPACE_POSTS] Looking for posts in space: {}",
+            params.space_id
+        );
 
         let mut items: Vec<ContentSummary> = Vec::new();
         let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
@@ -5508,13 +6261,20 @@ impl RpcMethods {
                             let blob_hash = ContentBlobHash::from_bytes(content_hash);
                             if let Ok(bytes) = bs.get(&blob_hash) {
                                 if let Ok(text) = String::from_utf8(bytes.clone()) {
-                                    let (parsed_title, parsed_body) = if let Some(idx) = text.find("\n\n") {
-                                        (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
-                                    } else {
-                                        (None, text.clone())
-                                    };
+                                    let (parsed_title, parsed_body) =
+                                        if let Some(idx) = text.find("\n\n") {
+                                            (
+                                                Some(text[..idx].to_string()),
+                                                text[(idx + 2)..].to_string(),
+                                            )
+                                        } else {
+                                            (None, text.clone())
+                                        };
                                     let preview = if parsed_body.chars().count() > 200 {
-                                        format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                                        format!(
+                                            "{}...",
+                                            parsed_body.chars().take(200).collect::<String>()
+                                        )
                                     } else {
                                         parsed_body.clone()
                                     };
@@ -5532,55 +6292,84 @@ impl RpcMethods {
                         // Get decay info
                         let content_id_bytes = ContentId::from_bytes(content_hash);
                         let content_blob_hash = ContentBlobHash::from_bytes(content_hash);
-                        let (decay_state, survival_probability, is_protected, seconds_until_decay_starts, seconds_until_pruned, last_engagement_ms) =
-                            if let Some(ref decay) = self.node.decay_integration {
-                                if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
-                                    let state_str = if ds.is_decayed { "decayed" }
-                                        else if ds.survival_probability < 0.25 { "stale" }
-                                        else if ds.is_protected { "protected" }
-                                        else { "active" };
-
-                                    let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
-                                        Some((48 * 3600u64).saturating_sub(ds.age_seconds))
-                                    } else {
-                                        None
-                                    };
-
-                                    let pruned_secs = if ds.is_decayed {
-                                        None
-                                    } else {
-                                        let threshold = 0.0625;
-                                        if ds.survival_probability > threshold {
-                                            let half_life = 7.0 * 24.0 * 3600.0;
-                                            let time_to_threshold = half_life * (ds.survival_probability / threshold).log2();
-                                            Some(time_to_threshold as u64)
-                                        } else {
-                                            None
-                                        }
-                                    };
-
-                                    let now_ms = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis() as u64;
-                                    let last_engagement_ms = now_ms.saturating_sub(ds.time_since_engagement * 1000);
-
-                                    (state_str.to_string(), ds.survival_probability, ds.is_protected, floor_secs, pruned_secs, last_engagement_ms)
+                        let (
+                            decay_state,
+                            survival_probability,
+                            is_protected,
+                            seconds_until_decay_starts,
+                            seconds_until_pruned,
+                            last_engagement_ms,
+                        ) = if let Some(ref decay) = self.node.decay_integration {
+                            if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
+                                let state_str = if ds.is_decayed {
+                                    "decayed"
+                                } else if ds.survival_probability < 0.25 {
+                                    "stale"
+                                } else if ds.is_protected {
+                                    "protected"
                                 } else {
-                                    let created_at_ms = metadata.timestamp * 1000;
-                                    ("protected".to_string(), 1.0, true, Some(48 * 3600), Some(28 * 24 * 3600), created_at_ms)
-                                }
+                                    "active"
+                                };
+
+                                let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
+                                    Some((48 * 3600u64).saturating_sub(ds.age_seconds))
+                                } else {
+                                    None
+                                };
+
+                                let pruned_secs = if ds.is_decayed {
+                                    None
+                                } else {
+                                    let threshold = 0.0625;
+                                    if ds.survival_probability > threshold {
+                                        let half_life = 7.0 * 24.0 * 3600.0;
+                                        let time_to_threshold = half_life
+                                            * (ds.survival_probability / threshold).log2();
+                                        Some(time_to_threshold as u64)
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                                    as u64;
+                                let last_engagement_ms =
+                                    now_ms.saturating_sub(ds.time_since_engagement * 1000);
+
+                                (
+                                    state_str.to_string(),
+                                    ds.survival_probability,
+                                    ds.is_protected,
+                                    floor_secs,
+                                    pruned_secs,
+                                    last_engagement_ms,
+                                )
                             } else {
                                 let created_at_ms = metadata.timestamp * 1000;
-                                ("active".to_string(), 1.0, false, None, None, created_at_ms)
-                            };
+                                (
+                                    "protected".to_string(),
+                                    1.0,
+                                    true,
+                                    Some(48 * 3600),
+                                    Some(28 * 24 * 3600),
+                                    created_at_ms,
+                                )
+                            }
+                        } else {
+                            let created_at_ms = metadata.timestamp * 1000;
+                            ("active".to_string(), 1.0, false, None, None, created_at_ms)
+                        };
 
                         // Get reply count from chain (confirmed) + mempool (pending)
                         let reply_count = {
                             let mut count = 0u64;
 
                             // Count ALL replies recursively (including nested replies)
-                            count += chain_store.count_all_replies(&content_hash)
+                            count += chain_store
+                                .count_all_replies(&content_hash)
                                 .map(|c| c as u64)
                                 .unwrap_or(0);
 
@@ -5589,16 +6378,23 @@ impl RpcMethods {
                                 if let Ok(bb) = block_builder.read() {
                                     let pending = bb.get_pending_actions();
                                     // Build a set of all content hashes we're counting for (root + all replies)
-                                    let mut target_parents: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                                    let mut target_parents: std::collections::HashSet<[u8; 32]> =
+                                        std::collections::HashSet::new();
                                     target_parents.insert(content_hash);
 
                                     // Multiple passes to find nested replies
                                     loop {
                                         let mut found_new = false;
                                         for (_thread_id, _space_id, action) in &pending {
-                                            if action.action_type == crate::blocks::action::ActionType::Reply {
-                                                if let (Some(parent_id), Some(reply_hash)) = (action.parent_id, action.content_hash) {
-                                                    if target_parents.contains(&parent_id) && !target_parents.contains(&reply_hash) {
+                                            if action.action_type
+                                                == crate::blocks::action::ActionType::Reply
+                                            {
+                                                if let (Some(parent_id), Some(reply_hash)) =
+                                                    (action.parent_id, action.content_hash)
+                                                {
+                                                    if target_parents.contains(&parent_id)
+                                                        && !target_parents.contains(&reply_hash)
+                                                    {
                                                         count += 1;
                                                         target_parents.insert(reply_hash);
                                                         found_new = true;
@@ -5616,27 +6412,39 @@ impl RpcMethods {
                         };
 
                         // Get media_refs from content_store if available
-                        let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) = self.node.content_store {
-                            if let Ok(Some(item)) = content_store.get(&content_id_bytes) {
-                                item.media_refs.iter().map(|mr| {
-                                    let media_type_str = match mr.media_type {
-                                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
-                                        crate::types::content::MediaType::ImagePng => "image/png",
-                                        crate::types::content::MediaType::ImageGif => "image/gif",
-                                        crate::types::content::MediaType::ImageWebp => "image/webp",
-                                    };
-                                    MediaRefResult {
-                                        media_hash: hex::encode(mr.media_hash.as_bytes()),
-                                        media_type: media_type_str.to_string(),
-                                        size_bytes: mr.size_bytes,
-                                    }
-                                }).collect()
+                        let media_refs: Vec<MediaRefResult> =
+                            if let Some(ref content_store) = self.node.content_store {
+                                if let Ok(Some(item)) = content_store.get(&content_id_bytes) {
+                                    item.media_refs
+                                        .iter()
+                                        .map(|mr| {
+                                            let media_type_str = match mr.media_type {
+                                                crate::types::content::MediaType::ImageJpeg => {
+                                                    "image/jpeg"
+                                                }
+                                                crate::types::content::MediaType::ImagePng => {
+                                                    "image/png"
+                                                }
+                                                crate::types::content::MediaType::ImageGif => {
+                                                    "image/gif"
+                                                }
+                                                crate::types::content::MediaType::ImageWebp => {
+                                                    "image/webp"
+                                                }
+                                            };
+                                            MediaRefResult {
+                                                media_hash: hex::encode(mr.media_hash.as_bytes()),
+                                                media_type: media_type_str.to_string(),
+                                                size_bytes: mr.size_bytes,
+                                            }
+                                        })
+                                        .collect()
+                                } else {
+                                    vec![]
+                                }
                             } else {
                                 vec![]
-                            }
-                        } else {
-                            vec![]
-                        };
+                            };
 
                         let created_at_ms = metadata.timestamp * 1000;
 
@@ -5681,96 +6489,118 @@ impl RpcMethods {
                     // Check if this action is for the requested space and is a Post
                     if pending_space_id[..16] == space_id_16 {
                         if action.action_type == crate::blocks::action::ActionType::Post {
-                                let content_hash = action.content_hash.unwrap_or([0u8; 32]);
-                                let content_id = format!("sha256:{}", hex::encode(&content_hash));
+                            let content_hash = action.content_hash.unwrap_or([0u8; 32]);
+                            let content_id = format!("sha256:{}", hex::encode(&content_hash));
 
-                                // Skip if we already have this content on chain
-                                if items.iter().any(|i| i.content_id == content_id) {
-                                    continue;
-                                }
+                            // Skip if we already have this content on chain
+                            if items.iter().any(|i| i.content_id == content_id) {
+                                continue;
+                            }
 
-                                let actor_id = crate::types::identity::IdentityId(action.actor);
-                                let author_id = crate::crypto::address::encode_address(&actor_id);
+                            let actor_id = crate::types::identity::IdentityId(action.actor);
+                            let author_id = crate::crypto::address::encode_address(&actor_id);
 
-                                // Get body from BlobStore if available
-                                let (title, body_preview, body) = if let Some(ref bs) = blob_store {
-                                    let blob_hash = ContentBlobHash::from_bytes(content_hash);
-                                    if let Ok(bytes) = bs.get(&blob_hash) {
-                                        if let Ok(text) = String::from_utf8(bytes.clone()) {
-                                            let (parsed_title, parsed_body) = if let Some(idx) = text.find("\n\n") {
-                                                (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                            // Get body from BlobStore if available
+                            let (title, body_preview, body) = if let Some(ref bs) = blob_store {
+                                let blob_hash = ContentBlobHash::from_bytes(content_hash);
+                                if let Ok(bytes) = bs.get(&blob_hash) {
+                                    if let Ok(text) = String::from_utf8(bytes.clone()) {
+                                        let (parsed_title, parsed_body) =
+                                            if let Some(idx) = text.find("\n\n") {
+                                                (
+                                                    Some(text[..idx].to_string()),
+                                                    text[(idx + 2)..].to_string(),
+                                                )
                                             } else {
                                                 (None, text.clone())
                                             };
-                                            let preview = if parsed_body.chars().count() > 200 {
-                                                format!("{}...", parsed_body.chars().take(200).collect::<String>())
-                                            } else {
-                                                parsed_body.clone()
-                                            };
-                                            (parsed_title, Some(preview), Some(text))
+                                        let preview = if parsed_body.chars().count() > 200 {
+                                            format!(
+                                                "{}...",
+                                                parsed_body.chars().take(200).collect::<String>()
+                                            )
                                         } else {
-                                            (None, None, None)
-                                        }
+                                            parsed_body.clone()
+                                        };
+                                        (parsed_title, Some(preview), Some(text))
                                     } else {
                                         (None, None, None)
                                     }
                                 } else {
                                     (None, None, None)
-                                };
+                                }
+                            } else {
+                                (None, None, None)
+                            };
 
-                                let now_ms = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis() as u64;
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
 
-                                // Get media_refs from content_store if available
-                                let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) = self.node.content_store {
-                                    if let Ok(Some(item)) = content_store.get(&ContentId::from_bytes(content_hash)) {
-                                        item.media_refs.iter().map(|mr| {
+                            // Get media_refs from content_store if available
+                            let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) =
+                                self.node.content_store
+                            {
+                                if let Ok(Some(item)) =
+                                    content_store.get(&ContentId::from_bytes(content_hash))
+                                {
+                                    item.media_refs
+                                        .iter()
+                                        .map(|mr| {
                                             let media_type_str = match mr.media_type {
-                                                crate::types::content::MediaType::ImageJpeg => "image/jpeg",
-                                                crate::types::content::MediaType::ImagePng => "image/png",
-                                                crate::types::content::MediaType::ImageGif => "image/gif",
-                                                crate::types::content::MediaType::ImageWebp => "image/webp",
+                                                crate::types::content::MediaType::ImageJpeg => {
+                                                    "image/jpeg"
+                                                }
+                                                crate::types::content::MediaType::ImagePng => {
+                                                    "image/png"
+                                                }
+                                                crate::types::content::MediaType::ImageGif => {
+                                                    "image/gif"
+                                                }
+                                                crate::types::content::MediaType::ImageWebp => {
+                                                    "image/webp"
+                                                }
                                             };
                                             MediaRefResult {
                                                 media_hash: hex::encode(mr.media_hash.as_bytes()),
                                                 media_type: media_type_str.to_string(),
                                                 size_bytes: mr.size_bytes,
                                             }
-                                        }).collect()
-                                    } else {
-                                        vec![]
-                                    }
+                                        })
+                                        .collect()
                                 } else {
                                     vec![]
-                                };
+                                }
+                            } else {
+                                vec![]
+                            };
 
-                                items.push(ContentSummary {
-                                    content_id,
-                                    content_type: "Post".to_string(),
-                                    author_id,
-                                    space_id: params.space_id.clone(),
-                                    parent_id: None,
-                                    created_at: now_ms,
-                                    last_engagement: now_ms,
-                                    title,
-                                    body,
-                                    body_preview,
-                                    engagement_count: 0,
-                                    reply_count: 0,
-                                    decay_state: "pending".to_string(),
-                                    seconds_until_decay: None,
-                                    survival_probability: 1.0,
-                                    is_protected: true,
-                                    seconds_until_decay_starts: None,
-                                    seconds_until_pruned: None,
-                                    pool_progress: 0.0,
-                                    has_pool: false,
-                                    pool_status: "none".to_string(),
-                                    pending: true,
-                                    media_refs,
-                                });
+                            items.push(ContentSummary {
+                                content_id,
+                                content_type: "Post".to_string(),
+                                author_id,
+                                space_id: params.space_id.clone(),
+                                parent_id: None,
+                                created_at: now_ms,
+                                last_engagement: now_ms,
+                                title,
+                                body,
+                                body_preview,
+                                engagement_count: 0,
+                                reply_count: 0,
+                                decay_state: "pending".to_string(),
+                                seconds_until_decay: None,
+                                survival_probability: 1.0,
+                                is_protected: true,
+                                seconds_until_decay_starts: None,
+                                seconds_until_pruned: None,
+                                pool_progress: 0.0,
+                                has_pool: false,
+                                pool_status: "none".to_string(),
+                                pending: true,
+                                media_refs,
+                            });
                         }
                     }
                 }
@@ -5779,7 +6609,9 @@ impl RpcMethods {
 
         // Get total count for pagination (includes pending)
         let total = if let Some(ref chain_store) = self.node.chain_store {
-            chain_store.count_posts_for_space(&space_id_16).unwrap_or(items.len())
+            chain_store
+                .count_posts_for_space(&space_id_16)
+                .unwrap_or(items.len())
         } else {
             items.len()
         };
@@ -5791,7 +6623,10 @@ impl RpcMethods {
         info!("[LIST_SPACE_POSTS] Returning {} posts ({} with body, {} missing) (total: {}) for space {}",
             items.len(), with_body, missing_body, total, params.space_id);
 
-        let result = ListSpaceContentResult { items: items.clone(), total };
+        let result = ListSpaceContentResult {
+            items: items.clone(),
+            total,
+        };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
@@ -5815,7 +6650,9 @@ impl RpcMethods {
         // the author as a cs1 address, so "View Posts" passes an address; hex
         // comes from profile pages. Same normalization get_user_profile uses.
         let author_bytes: [u8; 32] = if params.user_id.len() == 64
-            && hex::decode(&params.user_id).map(|b| b.len() == 32).unwrap_or(false)
+            && hex::decode(&params.user_id)
+                .map(|b| b.len() == 32)
+                .unwrap_or(false)
         {
             let bytes = hex::decode(&params.user_id).unwrap();
             let mut arr = [0u8; 32];
@@ -5831,7 +6668,10 @@ impl RpcMethods {
             );
         };
 
-        debug!("[GET_USER_POSTS] Looking for content by user: {}", &params.user_id[..params.user_id.len().min(16)]);
+        debug!(
+            "[GET_USER_POSTS] Looking for content by user: {}",
+            &params.user_id[..params.user_id.len().min(16)]
+        );
 
         let mut items: Vec<ContentSummary> = Vec::new();
         let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
@@ -5856,8 +6696,17 @@ impl RpcMethods {
 
         if let Some(ref chain_store) = self.node.chain_store {
             // Use the new author index method
-            let content_type_filter = if params.include_replies { None } else { Some(0) };
-            match chain_store.get_content_by_author(&author_bytes, params.limit, params.offset, content_type_filter) {
+            let content_type_filter = if params.include_replies {
+                None
+            } else {
+                Some(0)
+            };
+            match chain_store.get_content_by_author(
+                &author_bytes,
+                params.limit,
+                params.offset,
+                content_type_filter,
+            ) {
                 Ok(results) => {
                     for (content_hash, metadata) in results {
                         // Skip profile-space and DM-space content (noise).
@@ -5877,7 +6726,8 @@ impl RpcMethods {
 
                             // First try content_store (has body_inline for replies)
                             if let Some(ref cs) = self.node.content_store {
-                                let cid = crate::types::content::ContentId::from_bytes(content_hash);
+                                let cid =
+                                    crate::types::content::ContentId::from_bytes(content_hash);
                                 if let Ok(Some(item)) = cs.get(&cid) {
                                     if let Some(ref body_inline) = item.body_inline {
                                         if !body_inline.is_empty() {
@@ -5912,7 +6762,10 @@ impl RpcMethods {
                                 let (parsed_title, parsed_body) = if metadata.content_type == 0 {
                                     // Post: first line is title
                                     if let Some(idx) = text.find("\n\n") {
-                                        (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                        (
+                                            Some(text[..idx].to_string()),
+                                            text[(idx + 2)..].to_string(),
+                                        )
                                     } else {
                                         (None, text.clone())
                                     }
@@ -5921,7 +6774,10 @@ impl RpcMethods {
                                     (None, text.clone())
                                 };
                                 let preview = if parsed_body.chars().count() > 200 {
-                                    format!("{}...", parsed_body.chars().take(200).collect::<String>())
+                                    format!(
+                                        "{}...",
+                                        parsed_body.chars().take(200).collect::<String>()
+                                    )
                                 } else {
                                     parsed_body.clone()
                                 };
@@ -5933,76 +6789,120 @@ impl RpcMethods {
 
                         // Get decay info
                         let content_blob_hash = ContentBlobHash::from_bytes(content_hash);
-                        let (decay_state, survival_probability, is_protected, seconds_until_decay_starts, seconds_until_pruned, last_engagement_ms) =
-                            if let Some(ref decay) = self.node.decay_integration {
-                                if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
-                                    let state_str = if ds.is_decayed { "decayed" }
-                                        else if ds.survival_probability < 0.25 { "stale" }
-                                        else if ds.is_protected { "protected" }
-                                        else { "active" };
-
-                                    let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
-                                        Some((48 * 3600u64).saturating_sub(ds.age_seconds))
-                                    } else {
-                                        None
-                                    };
-
-                                    let pruned_secs = if ds.is_decayed {
-                                        None
-                                    } else {
-                                        let threshold = 0.0625;
-                                        if ds.survival_probability > threshold {
-                                            let half_life = 7.0 * 24.0 * 3600.0;
-                                            let time_to_threshold = half_life * (ds.survival_probability / threshold).log2();
-                                            Some(time_to_threshold as u64)
-                                        } else {
-                                            None
-                                        }
-                                    };
-
-                                    let now_ms = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis() as u64;
-                                    let last_engagement_ms = now_ms.saturating_sub(ds.time_since_engagement * 1000);
-
-                                    (state_str.to_string(), ds.survival_probability, ds.is_protected, floor_secs, pruned_secs, last_engagement_ms)
+                        let (
+                            decay_state,
+                            survival_probability,
+                            is_protected,
+                            seconds_until_decay_starts,
+                            seconds_until_pruned,
+                            last_engagement_ms,
+                        ) = if let Some(ref decay) = self.node.decay_integration {
+                            if let Ok(Some(ds)) = decay.get_decay_state(&content_blob_hash) {
+                                let state_str = if ds.is_decayed {
+                                    "decayed"
+                                } else if ds.survival_probability < 0.25 {
+                                    "stale"
+                                } else if ds.is_protected {
+                                    "protected"
                                 } else {
-                                    let created_at_ms = metadata.timestamp * 1000;
-                                    ("protected".to_string(), 1.0, true, Some(48 * 3600), Some(28 * 24 * 3600), created_at_ms)
-                                }
+                                    "active"
+                                };
+
+                                let floor_secs = if ds.is_protected && ds.age_seconds < 48 * 3600 {
+                                    Some((48 * 3600u64).saturating_sub(ds.age_seconds))
+                                } else {
+                                    None
+                                };
+
+                                let pruned_secs = if ds.is_decayed {
+                                    None
+                                } else {
+                                    let threshold = 0.0625;
+                                    if ds.survival_probability > threshold {
+                                        let half_life = 7.0 * 24.0 * 3600.0;
+                                        let time_to_threshold = half_life
+                                            * (ds.survival_probability / threshold).log2();
+                                        Some(time_to_threshold as u64)
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                                    as u64;
+                                let last_engagement_ms =
+                                    now_ms.saturating_sub(ds.time_since_engagement * 1000);
+
+                                (
+                                    state_str.to_string(),
+                                    ds.survival_probability,
+                                    ds.is_protected,
+                                    floor_secs,
+                                    pruned_secs,
+                                    last_engagement_ms,
+                                )
                             } else {
                                 let created_at_ms = metadata.timestamp * 1000;
-                                ("active".to_string(), 1.0, false, None, None, created_at_ms)
-                            };
+                                (
+                                    "protected".to_string(),
+                                    1.0,
+                                    true,
+                                    Some(48 * 3600),
+                                    Some(28 * 24 * 3600),
+                                    created_at_ms,
+                                )
+                            }
+                        } else {
+                            let created_at_ms = metadata.timestamp * 1000;
+                            ("active".to_string(), 1.0, false, None, None, created_at_ms)
+                        };
 
                         // Get reply count
-                        let reply_count = chain_store.count_all_replies(&content_hash)
+                        let reply_count = chain_store
+                            .count_all_replies(&content_hash)
                             .map(|c| c as u64)
                             .unwrap_or(0);
 
                         // Get media_refs from content_store if available
-                        let media_refs: Vec<MediaRefResult> = if let Some(ref content_store) = self.node.content_store {
-                            if let Ok(Some(content)) = content_store.get(&crate::types::ContentId::from_bytes(content_hash)) {
-                                content.media_refs.iter().map(|mr| {
-                                    let media_type_str = match mr.media_type {
-                                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
-                                        crate::types::content::MediaType::ImagePng => "image/png",
-                                        crate::types::content::MediaType::ImageGif => "image/gif",
-                                        crate::types::content::MediaType::ImageWebp => "image/webp",
-                                    };
-                                    MediaRefResult {
-                                        media_hash: hex::encode(&mr.media_hash),
-                                        media_type: media_type_str.to_string(),
-                                        size_bytes: mr.size_bytes,
-                                    }
-                                }).collect()
+                        let media_refs: Vec<MediaRefResult> =
+                            if let Some(ref content_store) = self.node.content_store {
+                                if let Ok(Some(content)) = content_store
+                                    .get(&crate::types::ContentId::from_bytes(content_hash))
+                                {
+                                    content
+                                        .media_refs
+                                        .iter()
+                                        .map(|mr| {
+                                            let media_type_str = match mr.media_type {
+                                                crate::types::content::MediaType::ImageJpeg => {
+                                                    "image/jpeg"
+                                                }
+                                                crate::types::content::MediaType::ImagePng => {
+                                                    "image/png"
+                                                }
+                                                crate::types::content::MediaType::ImageGif => {
+                                                    "image/gif"
+                                                }
+                                                crate::types::content::MediaType::ImageWebp => {
+                                                    "image/webp"
+                                                }
+                                            };
+                                            MediaRefResult {
+                                                media_hash: hex::encode(&mr.media_hash),
+                                                media_type: media_type_str.to_string(),
+                                                size_bytes: mr.size_bytes,
+                                            }
+                                        })
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                }
                             } else {
                                 Vec::new()
-                            }
-                        } else {
-                            Vec::new()
-                        };
+                            };
 
                         let content_type_str = match metadata.content_type {
                             0 => "post",
@@ -6068,7 +6968,7 @@ impl RpcMethods {
                                 // Filter matches - include posts
                                 "post"
                             }
-                        },
+                        }
                         crate::blocks::action::ActionType::Reply => {
                             if params.include_replies {
                                 "reply"
@@ -6076,7 +6976,7 @@ impl RpcMethods {
                                 // Filter doesn't match - skip replies
                                 continue;
                             }
-                        },
+                        }
                         _ => continue, // Skip other action types
                     };
 
@@ -6101,10 +7001,12 @@ impl RpcMethods {
                     let space_id_bech32 = encode_space_id(&space_id_16);
 
                     // Get body from content_store
-                    let (title, body_preview, body) = if let Some(ref cs) = self.node.content_store {
+                    let (title, body_preview, body) = if let Some(ref cs) = self.node.content_store
+                    {
                         let cid = crate::types::content::ContentId::from_bytes(content_hash);
                         let text_opt = if let Ok(Some(item)) = cs.get(&cid) {
-                            item.body_inline.or_else(|| cs.get_body_by_hash(&content_hash).ok().flatten())
+                            item.body_inline
+                                .or_else(|| cs.get_body_by_hash(&content_hash).ok().flatten())
                         } else {
                             cs.get_body_by_hash(&content_hash).ok().flatten()
                         };
@@ -6112,7 +7014,7 @@ impl RpcMethods {
                         if let Some(text) = text_opt {
                             let (parsed_title, parsed_body) = if content_type_str == "post" {
                                 if let Some(idx) = text.find("\n\n") {
-                                    (Some(text[..idx].to_string()), text[(idx+2)..].to_string())
+                                    (Some(text[..idx].to_string()), text[(idx + 2)..].to_string())
                                 } else {
                                     (None, text.clone())
                                 }
@@ -6132,7 +7034,9 @@ impl RpcMethods {
                         (None, None, None)
                     };
 
-                    let parent_id = action.parent_id.map(|p| format!("sha256:{}", hex::encode(&p)));
+                    let parent_id = action
+                        .parent_id
+                        .map(|p| format!("sha256:{}", hex::encode(&p)));
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -6169,15 +7073,24 @@ impl RpcMethods {
 
         // Get counts
         let (total_posts, total_content) = if let Some(ref chain_store) = self.node.chain_store {
-            let posts = chain_store.count_posts_by_author(&author_bytes).unwrap_or(0);
-            let total = chain_store.count_content_by_author(&author_bytes).unwrap_or(0);
+            let posts = chain_store
+                .count_posts_by_author(&author_bytes)
+                .unwrap_or(0);
+            let total = chain_store
+                .count_content_by_author(&author_bytes)
+                .unwrap_or(0);
             (posts, total)
         } else {
             (items.len(), items.len())
         };
 
-        info!("[GET_USER_POSTS] Returning {} items (total_posts: {}, total_content: {}) for user {}",
-            items.len(), total_posts, total_content, &params.user_id[..16]);
+        info!(
+            "[GET_USER_POSTS] Returning {} items (total_posts: {}, total_content: {}) for user {}",
+            items.len(),
+            total_posts,
+            total_content,
+            &params.user_id[..16]
+        );
 
         let result = GetUserPostsResult {
             user_id: params.user_id,
@@ -6276,10 +7189,8 @@ impl RpcMethods {
                 if let Some(ref pool) = self.node.connection_pool {
                     use crate::types::network::{MessageEnvelope, MessageType};
 
-                    let get_envelope = MessageEnvelope::new_fork_agnostic(
-                        MessageType::Get,
-                        content_hash.to_vec(),
-                    );
+                    let get_envelope =
+                        MessageEnvelope::new_fork_agnostic(MessageType::Get, content_hash.to_vec());
 
                     let sent = pool.broadcast(&get_envelope).await;
 
@@ -6301,18 +7212,16 @@ impl RpcMethods {
             // No local providers - broadcast DHT_FIND_VALUE to network
             // This is the actual Kademlia FIND_VALUE operation
             if let Some(ref pool) = self.node.connection_pool {
+                use crate::dht::{constants::MSG_DHT_FIND_VALUE, DhtMessage};
                 use crate::types::network::{MessageEnvelope, MessageType};
-                use crate::dht::{DhtMessage, constants::MSG_DHT_FIND_VALUE};
 
                 let dht_find_msg = DhtMessage::FindValue { content_hash };
                 let dht_find_bytes = dht_find_msg.to_bytes();
                 let mut dht_payload = vec![MSG_DHT_FIND_VALUE];
                 dht_payload.extend_from_slice(&dht_find_bytes);
 
-                let dht_envelope = MessageEnvelope::new_fork_agnostic(
-                    MessageType::DhtFindValue,
-                    dht_payload,
-                );
+                let dht_envelope =
+                    MessageEnvelope::new_fork_agnostic(MessageType::DhtFindValue, dht_payload);
                 let dht_sent = pool.broadcast(&dht_envelope).await;
                 info!(
                     "[DHT] Sent FIND_VALUE for {} to {} peers",
@@ -6345,10 +7254,8 @@ impl RpcMethods {
                 use crate::types::network::{MessageEnvelope, MessageType};
 
                 // Create GET envelope with content hash as payload
-                let get_envelope = MessageEnvelope::new_fork_agnostic(
-                    MessageType::Get,
-                    content_hash.to_vec(),
-                );
+                let get_envelope =
+                    MessageEnvelope::new_fork_agnostic(MessageType::Get, content_hash.to_vec());
 
                 // Broadcast GET (ideally we'd unicast to the specific peer)
                 let sent = pool.broadcast(&get_envelope).await;
@@ -6483,10 +7390,13 @@ impl RpcMethods {
         let signature = crate::identity::sign(&self.node.keypair.private_key, &message_bytes);
         let signature_hex = hex::encode(signature.as_bytes());
 
-        RpcResponse::success(json!({
-            "signature": signature_hex,
-            "public_key": hex::encode(self.node.keypair.public_key.as_bytes()),
-        }), id)
+        RpcResponse::success(
+            json!({
+                "signature": signature_hex,
+                "public_key": hex::encode(self.node.keypair.public_key.as_bytes()),
+            }),
+            id,
+        )
     }
 
     async fn get_identity_level(&self, params: Value, id: Value) -> RpcResponse {
@@ -6545,9 +7455,12 @@ impl RpcMethods {
     /// Get the current display name for this node's identity
     async fn get_identity_name(&self, id: Value) -> RpcResponse {
         let name = self.node.identity_name.read().await.clone();
-        RpcResponse::success(json!({
-            "identity_name": name,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "identity_name": name,
+            }),
+            id,
+        )
     }
 
     /// Set the display name for this node's identity
@@ -6635,16 +7548,21 @@ impl RpcMethods {
         } else {
             // Create new config file with just the identity_name
             if let Some(ref name) = params.name {
-                if let Err(e) = std::fs::write(&config_path, format!("identity_name = \"{}\"\n", name)) {
+                if let Err(e) =
+                    std::fs::write(&config_path, format!("identity_name = \"{}\"\n", name))
+                {
                     warn!("Failed to create config.toml: {}", e);
                 }
             }
         }
 
-        RpcResponse::success(json!({
-            "success": true,
-            "identity_name": params.name,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "success": true,
+                "identity_name": params.name,
+            }),
+            id,
+        )
     }
 
     /// Get a user's profile information
@@ -6737,30 +7655,51 @@ impl RpcMethods {
                 let seg = raw_segment.trim();
                 if let Some(json_str) = seg.strip_prefix(info_marker) {
                     if let Ok(info) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
-                        let ts = info.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(item.created_at);
+                        let ts = info
+                            .get("updatedAt")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(item.created_at);
                         if ts >= best_info_ts {
                             best_info_ts = ts;
-                            display_name = info.get("displayName").and_then(|v| v.as_str()).map(str::to_string);
+                            display_name = info
+                                .get("displayName")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
                             bio = info.get("bio").and_then(|v| v.as_str()).map(str::to_string);
-                            website = info.get("website").and_then(|v| v.as_str()).map(str::to_string);
+                            website = info
+                                .get("website")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
                             updated_at = Some(ts);
                         }
                     }
                 } else if let Some(json_str) = seg.strip_prefix(info_private_marker) {
                     if let Ok(meta) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
-                        let ts = meta.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(item.created_at);
+                        let ts = meta
+                            .get("updatedAt")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(item.created_at);
                         if ts >= best_info_ts {
                             best_info_ts = ts;
-                            display_name = meta.get("publicDisplayName").and_then(|v| v.as_str()).map(str::to_string);
+                            display_name = meta
+                                .get("publicDisplayName")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
                             updated_at = Some(ts);
                         }
                     }
                 } else if let Some(json_str) = seg.strip_prefix(avatar_marker) {
                     if let Ok(av) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
-                        let ts = av.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(item.created_at);
+                        let ts = av
+                            .get("updatedAt")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(item.created_at);
                         if ts >= best_avatar_ts {
                             best_avatar_ts = ts;
-                            avatar_content_id = av.get("contentId").and_then(|v| v.as_str()).map(str::to_string);
+                            avatar_content_id = av
+                                .get("contentId")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
                         }
                     }
                 }
@@ -6768,20 +7707,27 @@ impl RpcMethods {
         }
 
         // If no profile found, return null
-        if display_name.is_none() && bio.is_none() && website.is_none() && avatar_content_id.is_none() {
+        if display_name.is_none()
+            && bio.is_none()
+            && website.is_none()
+            && avatar_content_id.is_none()
+        {
             return RpcResponse::success(serde_json::Value::Null, id);
         }
 
         // Return profile info. avatar_content_id is the content hash of the avatar image;
         // clients fetch it like any media (get_media / getMediaUrl).
-        RpcResponse::success(json!({
-            "display_name": display_name,
-            "bio": bio,
-            "website": website,
-            "avatar_url": avatar_content_id.clone(),
-            "avatar_content_id": avatar_content_id,
-            "updated_at": updated_at,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "display_name": display_name,
+                "bio": bio,
+                "website": website,
+                "avatar_url": avatar_content_id.clone(),
+                "avatar_content_id": avatar_content_id,
+                "updated_at": updated_at,
+            }),
+            id,
+        )
     }
 
     // ========================================================================
@@ -6818,67 +7764,90 @@ impl RpcMethods {
     async fn contribute_to_pool(&self, params: Value, id: Value) -> RpcResponse {
         // Parse parameters: try the full ContributeToPoolParams shape first,
         // then fall back to the simplified {pool_id, amount} form.
-        let (pool_id, contributor_id, pow_nonce, pow_work, pow_target, nonce_space, signature, emoji) =
-            if let Ok(p) = serde_json::from_value::<ContributeToPoolParams>(params.clone()) {
-                (
-                    p.pool_id,
-                    p.contributor_id,
-                    p.pow_nonce,
-                    p.pow_work,
-                    p.pow_target,
-                    p.nonce_space,
-                    p.signature,
-                    p.emoji,
-                )
-            } else {
-                let pool_id = match params.get("pool_id").and_then(|v| v.as_str()) {
-                    Some(s) => s.to_string(),
-                    None => {
-                        return RpcResponse::error(
-                            RpcErrorCode::InvalidParams,
-                            "Missing required parameter: pool_id",
-                            id,
-                        );
-                    }
-                };
-                let pow_work = match params
-                    .get("amount")
-                    .and_then(|v| v.as_u64())
-                    .or_else(|| params.get("pow_work").and_then(|v| v.as_u64()))
-                {
-                    Some(w) => w,
-                    None => {
-                        return RpcResponse::error(
-                            RpcErrorCode::InvalidParams,
-                            "Missing required parameter: amount or pow_work",
-                            id,
-                        );
-                    }
-                };
-                let contributor_id = params
-                    .get("contributor_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let pow_nonce = params.get("pow_nonce").and_then(|v| v.as_u64()).unwrap_or(0);
-                let pow_target = params
-                    .get("pow_target")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let nonce_space = params
-                    .get("nonce_space")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let signature = params
-                    .get("signature")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let emoji = params.get("emoji").and_then(|v| v.as_u64()).map(|e| e as u8);
-                (pool_id, contributor_id, pow_nonce, pow_work, pow_target, nonce_space, signature, emoji)
+        let (
+            pool_id,
+            contributor_id,
+            pow_nonce,
+            pow_work,
+            pow_target,
+            nonce_space,
+            signature,
+            emoji,
+        ) = if let Ok(p) = serde_json::from_value::<ContributeToPoolParams>(params.clone()) {
+            (
+                p.pool_id,
+                p.contributor_id,
+                p.pow_nonce,
+                p.pow_work,
+                p.pow_target,
+                p.nonce_space,
+                p.signature,
+                p.emoji,
+            )
+        } else {
+            let pool_id = match params.get("pool_id").and_then(|v| v.as_str()) {
+                Some(s) => s.to_string(),
+                None => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Missing required parameter: pool_id",
+                        id,
+                    );
+                }
             };
+            let pow_work = match params
+                .get("amount")
+                .and_then(|v| v.as_u64())
+                .or_else(|| params.get("pow_work").and_then(|v| v.as_u64()))
+            {
+                Some(w) => w,
+                None => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Missing required parameter: amount or pow_work",
+                        id,
+                    );
+                }
+            };
+            let contributor_id = params
+                .get("contributor_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let pow_nonce = params
+                .get("pow_nonce")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let pow_target = params
+                .get("pow_target")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let nonce_space = params
+                .get("nonce_space")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let signature = params
+                .get("signature")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let emoji = params
+                .get("emoji")
+                .and_then(|v| v.as_u64())
+                .map(|e| e as u8);
+            (
+                pool_id,
+                contributor_id,
+                pow_nonce,
+                pow_work,
+                pow_target,
+                nonce_space,
+                signature,
+                emoji,
+            )
+        };
 
         // Validate work amount
         if pow_work == 0 {
@@ -7098,9 +8067,7 @@ impl RpcMethods {
             }
             Err(e) => {
                 let (code, msg) = match &e {
-                    PoolError::PoolNotFound(_) => {
-                        (RpcErrorCode::ContentNotFound, format!("{}", e))
-                    }
+                    PoolError::PoolNotFound(_) => (RpcErrorCode::ContentNotFound, format!("{}", e)),
                     PoolError::PoolNotOpen(_) => (
                         RpcErrorCode::InvalidParams,
                         "Pool is not open for contributions".to_string(),
@@ -7117,9 +8084,10 @@ impl RpcMethods {
                     PoolError::InvalidSignature => {
                         (RpcErrorCode::InvalidSignature, format!("{}", e))
                     }
-                    PoolError::InvalidStatus(_) => {
-                        (RpcErrorCode::InternalError, format!("Internal error: {}", e))
-                    }
+                    PoolError::InvalidStatus(_) => (
+                        RpcErrorCode::InternalError,
+                        format!("Internal error: {}", e),
+                    ),
                 };
                 RpcResponse::error(code, &msg, id)
             }
@@ -7268,10 +8236,17 @@ impl RpcMethods {
                             size_bytes: mr.size_bytes,
                         })
                         .collect();
-                    (item.body_inline.unwrap_or_default(), item.display_name, mrefs)
+                    (
+                        item.body_inline.unwrap_or_default(),
+                        item.display_name,
+                        mrefs,
+                    )
                 } else {
                     (
-                        store.get_body_by_hash(&reply_hash).unwrap_or(None).unwrap_or_default(),
+                        store
+                            .get_body_by_hash(&reply_hash)
+                            .unwrap_or(None)
+                            .unwrap_or_default(),
                         None,
                         Vec::new(),
                     )
@@ -7321,17 +8296,21 @@ impl RpcMethods {
                 let pending_actions = bb_read.get_pending_actions();
 
                 // Collect all pending Reply actions with their metadata
-                let mut pending_replies: Vec<(crate::blocks::action::Action, [u8; 32], [u8; 32])> = Vec::new();
+                let mut pending_replies: Vec<(crate::blocks::action::Action, [u8; 32], [u8; 32])> =
+                    Vec::new();
                 for (_thread_id, _pending_space_id, action) in pending_actions {
                     if action.action_type == crate::blocks::action::ActionType::Reply {
-                        if let (Some(content_hash), Some(parent_id)) = (action.content_hash, action.parent_id) {
+                        if let (Some(content_hash), Some(parent_id)) =
+                            (action.content_hash, action.parent_id)
+                        {
                             pending_replies.push((action.clone(), content_hash, parent_id));
                         }
                     }
                 }
 
                 // Build set of known reply hashes (from chain + already added)
-                let mut known_hashes: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+                let mut known_hashes: std::collections::HashSet<[u8; 32]> =
+                    std::collections::HashSet::new();
                 known_hashes.insert(content_bytes); // Root content
                 for r in &all_replies {
                     if let Ok(bytes) = hex::decode(&r.content_id[7..]) {
@@ -7371,7 +8350,9 @@ impl RpcMethods {
                             depth += 1;
                             // Find parent in all_replies
                             let parent_hex = format!("sha256:{}", hex::encode(&current_parent));
-                            if let Some(parent_reply) = all_replies.iter().find(|r| r.content_id == parent_hex) {
+                            if let Some(parent_reply) =
+                                all_replies.iter().find(|r| r.content_id == parent_hex)
+                            {
                                 if let Ok(bytes) = hex::decode(&parent_reply.parent_id[7..]) {
                                     if bytes.len() == 32 {
                                         current_parent.copy_from_slice(&bytes);
@@ -7388,7 +8369,8 @@ impl RpcMethods {
 
                         // Get body from ContentStore
                         let body = if let Some(ref store) = content_store {
-                            store.get_body_by_hash(reply_hash)
+                            store
+                                .get_body_by_hash(reply_hash)
                                 .ok()
                                 .flatten()
                                 .unwrap_or_default()
@@ -7408,10 +8390,14 @@ impl RpcMethods {
                             .map(|amr| MediaRefResult {
                                 media_hash: hex::encode(amr.media_hash),
                                 media_type: match amr.media_type {
-                                    crate::blocks::action::ActionMediaRef::TYPE_JPEG => "image/jpeg",
+                                    crate::blocks::action::ActionMediaRef::TYPE_JPEG => {
+                                        "image/jpeg"
+                                    }
                                     crate::blocks::action::ActionMediaRef::TYPE_PNG => "image/png",
                                     crate::blocks::action::ActionMediaRef::TYPE_GIF => "image/gif",
-                                    crate::blocks::action::ActionMediaRef::TYPE_WEBP => "image/webp",
+                                    crate::blocks::action::ActionMediaRef::TYPE_WEBP => {
+                                        "image/webp"
+                                    }
                                     _ => "image/jpeg",
                                 }
                                 .to_string(),
@@ -7438,7 +8424,10 @@ impl RpcMethods {
                 }
 
                 if pass > 1 {
-                    debug!("[REPLIES] Multi-pass pending reply resolution took {} passes", pass);
+                    debug!(
+                        "[REPLIES] Multi-pass pending reply resolution took {} passes",
+                        pass
+                    );
                 }
             }
         }
@@ -7451,7 +8440,12 @@ impl RpcMethods {
             total_count,
         };
 
-        info!("[REPLIES] Found {} replies (depth_limit={}) for content {}", total_count, depth_limit, &content_hex[..16]);
+        info!(
+            "[REPLIES] Found {} replies (depth_limit={}) for content {}",
+            total_count,
+            depth_limit,
+            &content_hex[..16]
+        );
 
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
@@ -7481,12 +8475,14 @@ impl RpcMethods {
         };
 
         // Parse parameters
-        let name = params.get("name")
+        let name = params
+            .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
 
-        let description = params.get("description")
+        let description = params
+            .get("description")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
@@ -7582,7 +8578,10 @@ impl RpcMethods {
         // Create the fork
         match fork_registry.create_fork(config, &identity) {
             Ok(result) => {
-                info!("[RPC] Created fork: {:?} name={}", result.fork_id, result.genesis.name);
+                info!(
+                    "[RPC] Created fork: {:?} name={}",
+                    result.fork_id, result.genesis.name
+                );
 
                 let response = json!({
                     "fork_id": hex::encode(result.fork_id.as_bytes()),
@@ -7596,13 +8595,11 @@ impl RpcMethods {
 
                 RpcResponse::success(response, id)
             }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::InternalError,
-                    &format!("Failed to create fork: {}", e),
-                    id,
-                )
-            }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to create fork: {}", e),
+                id,
+            ),
         }
     }
 
@@ -7625,11 +8622,7 @@ impl RpcMethods {
         let fork_id_str = match params.get("fork_id").and_then(|v| v.as_str()) {
             Some(id) => id,
             None => {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    "fork_id is required",
-                    id,
-                );
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "fork_id is required", id);
             }
         };
 
@@ -7656,18 +8649,19 @@ impl RpcMethods {
         match fork_registry.switch_fork(fork_id) {
             Ok(()) => {
                 info!("[RPC] Switched to fork: {:?}", fork_id);
-                RpcResponse::success(json!({
-                    "success": true,
-                    "active_fork": hex::encode(fork_id.as_bytes()),
-                }), id)
-            }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::ContentNotFound,
-                    &format!("Failed to switch fork: {}", e),
+                RpcResponse::success(
+                    json!({
+                        "success": true,
+                        "active_fork": hex::encode(fork_id.as_bytes()),
+                    }),
                     id,
                 )
             }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::ContentNotFound,
+                &format!("Failed to switch fork: {}", e),
+                id,
+            ),
         }
     }
 
@@ -7707,18 +8701,19 @@ impl RpcMethods {
                 })];
                 all_forks.extend(fork_list);
 
-                RpcResponse::success(json!({
-                    "forks": all_forks,
-                    "count": all_forks.len(),
-                }), id)
-            }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::InternalError,
-                    &format!("Failed to list forks: {}", e),
+                RpcResponse::success(
+                    json!({
+                        "forks": all_forks,
+                        "count": all_forks.len(),
+                    }),
                     id,
                 )
             }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to list forks: {}", e),
+                id,
+            ),
         }
     }
 
@@ -7741,11 +8736,7 @@ impl RpcMethods {
         let fork_id_str = match params.get("fork_id").and_then(|v| v.as_str()) {
             Some(id) => id,
             None => {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    "fork_id is required",
-                    id,
-                );
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "fork_id is required", id);
             }
         };
 
@@ -7772,26 +8763,27 @@ impl RpcMethods {
         match fork_registry.get_fork_info(&fork_id) {
             Ok(info) => {
                 let is_active = fork_registry.active_fork() == fork_id;
-                RpcResponse::success(json!({
-                    "fork_id": hex::encode(info.fork_id.as_bytes()),
-                    "name": info.name,
-                    "description": info.description,
-                    "parent_fork": info.parent_fork.map(|p| hex::encode(p.as_bytes())),
-                    "parent_height": info.parent_height,
-                    "creator": hex::encode(info.creator),
-                    "timestamp": info.timestamp,
-                    "excluded_count": info.excluded_count,
-                    "supporter_count": info.supporter_count,
-                    "is_active": is_active,
-                }), id)
-            }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::ContentNotFound,
-                    &format!("Fork not found: {}", e),
+                RpcResponse::success(
+                    json!({
+                        "fork_id": hex::encode(info.fork_id.as_bytes()),
+                        "name": info.name,
+                        "description": info.description,
+                        "parent_fork": info.parent_fork.map(|p| hex::encode(p.as_bytes())),
+                        "parent_height": info.parent_height,
+                        "creator": hex::encode(info.creator),
+                        "timestamp": info.timestamp,
+                        "excluded_count": info.excluded_count,
+                        "supporter_count": info.supporter_count,
+                        "is_active": is_active,
+                    }),
                     id,
                 )
             }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::ContentNotFound,
+                &format!("Fork not found: {}", e),
+                id,
+            ),
         }
     }
 
@@ -7813,11 +8805,14 @@ impl RpcMethods {
 
         let info = fork_registry.get_fork_info(&active).ok();
 
-        RpcResponse::success(json!({
-            "fork_id": hex::encode(active.as_bytes()),
-            "name": if is_main { "main".to_string() } else { info.as_ref().map(|i| i.name.clone()).unwrap_or_default() },
-            "is_main_chain": is_main,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "fork_id": hex::encode(active.as_bytes()),
+                "name": if is_main { "main".to_string() } else { info.as_ref().map(|i| i.name.clone()).unwrap_or_default() },
+                "is_main_chain": is_main,
+            }),
+            id,
+        )
     }
 
     // ========================================================================
@@ -7837,7 +8832,10 @@ impl RpcMethods {
         };
 
         // Parse content_id
-        let content_id_hex = params.content_id.strip_prefix("sha256:").unwrap_or(&params.content_id);
+        let content_id_hex = params
+            .content_id
+            .strip_prefix("sha256:")
+            .unwrap_or(&params.content_id);
         let content_id_bytes: [u8; 32] = match hex::decode(content_id_hex)
             .ok()
             .and_then(|v| v.try_into().ok())
@@ -7930,11 +8928,14 @@ impl RpcMethods {
             })
             .collect();
 
-        RpcResponse::success(json!({
-            "content_id": params.content_id,
-            "reactions": reactions,
-            "total": total,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "content_id": params.content_id,
+                "reactions": reactions,
+                "total": total,
+            }),
+            id,
+        )
     }
 
     /// Get a user's reactions on content (from content store)
@@ -7951,7 +8952,10 @@ impl RpcMethods {
         };
 
         // Parse content_id
-        let content_id_hex = params.content_id.strip_prefix("sha256:").unwrap_or(&params.content_id);
+        let content_id_hex = params
+            .content_id
+            .strip_prefix("sha256:")
+            .unwrap_or(&params.content_id);
         let content_id_bytes: [u8; 32] = match hex::decode(content_id_hex)
             .ok()
             .and_then(|v| v.try_into().ok())
@@ -7993,11 +8997,14 @@ impl RpcMethods {
             Vec::new()
         };
 
-        RpcResponse::success(json!({
-            "content_id": params.content_id,
-            "user_id": params.user_id,
-            "reaction_types": emoji_codes,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "content_id": params.content_id,
+                "user_id": params.user_id,
+                "reaction_types": emoji_codes,
+            }),
+            id,
+        )
     }
 
     /// Get all engagement actions from the chain (for debugging sync)
@@ -8034,7 +9041,10 @@ impl RpcMethods {
 
         // Collect all Engage actions
         let mut actions: Vec<EngageActionInfo> = Vec::new();
-        let mut content_stats: HashMap<[u8; 32], (u32, u64, HashSet<[u8; 32]>, HashMap<String, u32>)> = HashMap::new();
+        let mut content_stats: HashMap<
+            [u8; 32],
+            (u32, u64, HashSet<[u8; 32]>, HashMap<String, u32>),
+        > = HashMap::new();
 
         for block_result in chain_store.iter_content_blocks() {
             let block = match block_result {
@@ -8075,9 +9085,9 @@ impl RpcMethods {
                 });
 
                 // Update aggregated stats
-                let entry = content_stats.entry(target).or_insert_with(|| {
-                    (0, 0, HashSet::new(), HashMap::new())
-                });
+                let entry = content_stats
+                    .entry(target)
+                    .or_insert_with(|| (0, 0, HashSet::new(), HashMap::new()));
                 entry.0 += 1; // total engagements
                 entry.1 += action.pow_work; // total pow work
                 entry.2.insert(action.actor); // unique actors
@@ -8093,13 +9103,15 @@ impl RpcMethods {
         // Build output
         let mut stats_list: Vec<ContentEngagementStats> = content_stats
             .into_iter()
-            .map(|(hash, (count, pow, actors, emojis))| ContentEngagementStats {
-                content_hash: hex::encode(hash),
-                total_engagements: count,
-                total_pow_work: pow,
-                unique_actors: actors.len() as u32,
-                emoji_counts: emojis,
-            })
+            .map(
+                |(hash, (count, pow, actors, emojis))| ContentEngagementStats {
+                    content_hash: hex::encode(hash),
+                    total_engagements: count,
+                    total_pow_work: pow,
+                    unique_actors: actors.len() as u32,
+                    emoji_counts: emojis,
+                },
+            )
             .collect();
 
         // Sort by total engagements (highest first)
@@ -8230,15 +9242,21 @@ impl RpcMethods {
             }
         }
 
-        info!("[REBUILD] Reactions rebuilt: cleared={}, added={}, skipped={}, errors={}", cleared, added, skipped, errors);
+        info!(
+            "[REBUILD] Reactions rebuilt: cleared={}, added={}, skipped={}, errors={}",
+            cleared, added, skipped, errors
+        );
 
-        RpcResponse::success(json!({
-            "cleared": cleared,
-            "added": added,
-            "skipped": skipped,
-            "errors": errors,
-            "message": format!("Rebuilt reactions from chain: {} cleared, {} added, {} duplicates skipped, {} errors", cleared, added, skipped, errors)
-        }), id)
+        RpcResponse::success(
+            json!({
+                "cleared": cleared,
+                "added": added,
+                "skipped": skipped,
+                "errors": errors,
+                "message": format!("Rebuilt reactions from chain: {} cleared, {} added, {} duplicates skipped, {} errors", cleared, added, skipped, errors)
+            }),
+            id,
+        )
     }
 
     // ========================================================================
@@ -8261,7 +9279,9 @@ impl RpcMethods {
         let stats = dht.get_stats().await;
 
         // Get routing table nodes
-        let routing_nodes: Vec<serde_json::Value> = dht.get_routing_table_nodes().await
+        let routing_nodes: Vec<serde_json::Value> = dht
+            .get_routing_table_nodes()
+            .await
             .into_iter()
             .map(|(node_id, addr)| {
                 json!({
@@ -8271,13 +9291,16 @@ impl RpcMethods {
             })
             .collect();
 
-        RpcResponse::success(json!({
-            "local_id": hex::encode(&stats.local_id[..8]),
-            "total_nodes": stats.total_nodes,
-            "non_empty_buckets": stats.non_empty_buckets,
-            "provider_count": stats.provider_count,
-            "routing_table": routing_nodes,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "local_id": hex::encode(&stats.local_id[..8]),
+                "total_nodes": stats.total_nodes,
+                "non_empty_buckets": stats.non_empty_buckets,
+                "provider_count": stats.provider_count,
+                "routing_table": routing_nodes,
+            }),
+            id,
+        )
     }
 
     /// Get known providers for a content hash
@@ -8350,12 +9373,15 @@ impl RpcMethods {
             false
         };
 
-        RpcResponse::success(json!({
-            "content_id": params.content_id,
-            "have_locally": have_locally,
-            "known_peers": known_peers,
-            "dht_providers": dht_providers,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "content_id": params.content_id,
+                "have_locally": have_locally,
+                "known_peers": known_peers,
+                "dht_providers": dht_providers,
+            }),
+            id,
+        )
     }
 
     /// Verify that an action with the given content_id is finalized in the blockchain
@@ -8428,8 +9454,11 @@ impl RpcMethods {
                             if action_content_hash == content_hash {
                                 // Found the action! Now find its block height
                                 // Use the action hash to check finalization status
-                                let action_hash = crate::blocks::builder::BlockBuilder::action_hash(action);
-                                if let Ok(Some(height)) = chain_store.is_action_finalized(&action_hash) {
+                                let action_hash =
+                                    crate::blocks::builder::BlockBuilder::action_hash(action);
+                                if let Ok(Some(height)) =
+                                    chain_store.is_action_finalized(&action_hash)
+                                {
                                     found_height = Some(height);
                                     found_action_type = Some(format!("{:?}", action.action_type));
                                     found_actor = Some(hex::encode(&action.actor[..8]));
@@ -8448,13 +9477,16 @@ impl RpcMethods {
             }
         }
 
-        RpcResponse::success(json!({
-            "content_id": params.content_id,
-            "finalized": found_height.is_some(),
-            "block_height": found_height,
-            "action_type": found_action_type,
-            "actor": found_actor,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "content_id": params.content_id,
+                "finalized": found_height.is_some(),
+                "block_height": found_height,
+                "action_type": found_action_type,
+                "actor": found_actor,
+            }),
+            id,
+        )
     }
 
     // ========================================================================
@@ -8535,7 +9567,8 @@ impl RpcMethods {
             }
         };
 
-        let pow_nonce = params.get("pow_nonce")
+        let pow_nonce = params
+            .get("pow_nonce")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
@@ -8625,7 +9658,10 @@ impl RpcMethods {
         }
 
         // Check for duplicate
-        if store.has_attestation(&content_hash, &attester).unwrap_or(false) {
+        if store
+            .has_attestation(&content_hash, &attester)
+            .unwrap_or(false)
+        {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
                 "Attestation already exists for this content from this attester",
@@ -8705,11 +9741,14 @@ impl RpcMethods {
         }
 
         // Check threshold
-        let attestations = store.get_attestations_for_content(&content_hash).unwrap_or_default();
+        let attestations = store
+            .get_attestations_for_content(&content_hash)
+            .unwrap_or_default();
         let counter_state = store.get_counter_state(&content_hash).unwrap_or_else(|_| {
             crate::spam_attestation::CounterAttestationState::empty(content_hash)
         });
-        let aggregation = aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
+        let aggregation =
+            aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
 
         // Increment rate limit
         store.increment_attestation_count(&attester, timestamp);
@@ -8721,15 +9760,18 @@ impl RpcMethods {
             reason
         );
 
-        RpcResponse::success(json!({
-            "success": true,
-            "content_id": content_id,
-            "attester_id": attester_id,
-            "reason": reason_str,
-            "unique_trees": aggregation.count.unique_tree_count,
-            "threshold_reached": aggregation.should_accelerate_decay,
-            "is_cleared": counter_state.is_cleared,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "success": true,
+                "content_id": content_id,
+                "attester_id": attester_id,
+                "reason": reason_str,
+                "unique_trees": aggregation.count.unique_tree_count,
+                "threshold_reached": aggregation.should_accelerate_decay,
+                "is_cleared": counter_state.is_cleared,
+            }),
+            id,
+        )
     }
 
     /// Submit a counter-attestation to dispute a spam flag
@@ -8868,12 +9910,15 @@ impl RpcMethods {
 
         // Check if already cleared
         if state.is_cleared {
-            return RpcResponse::success(json!({
-                "success": true,
-                "content_id": content_id,
-                "already_cleared": true,
-                "counter_attestations": state.count(),
-            }), id);
+            return RpcResponse::success(
+                json!({
+                    "success": true,
+                    "content_id": content_id,
+                    "already_cleared": true,
+                    "counter_attestations": state.count(),
+                }),
+                id,
+            );
         }
 
         // Add counter-attestation
@@ -8896,15 +9941,18 @@ impl RpcMethods {
             crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD
         );
 
-        RpcResponse::success(json!({
-            "success": true,
-            "content_id": content_id,
-            "counter_attester_id": counter_attester_id,
-            "counter_attestations": state.count(),
-            "threshold_needed": crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD,
-            "is_cleared": state.is_cleared,
-            "just_cleared": threshold_reached,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "success": true,
+                "content_id": content_id,
+                "counter_attester_id": counter_attester_id,
+                "counter_attestations": state.count(),
+                "threshold_needed": crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD,
+                "is_cleared": state.is_cleared,
+                "just_cleared": threshold_reached,
+            }),
+            id,
+        )
     }
 
     /// Get spam status for content
@@ -8951,7 +9999,9 @@ impl RpcMethods {
         };
 
         // Get attestations
-        let attestations = store.get_attestations_for_content(&content_hash).unwrap_or_default();
+        let attestations = store
+            .get_attestations_for_content(&content_hash)
+            .unwrap_or_default();
 
         // Get counter state
         let counter_state = store.get_counter_state(&content_hash).unwrap_or_else(|_| {
@@ -8959,30 +10009,37 @@ impl RpcMethods {
         });
 
         // Aggregate
-        let aggregation = aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
+        let aggregation =
+            aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
 
         // Build attestation details
-        let attestation_details: Vec<Value> = attestations.iter().map(|a| {
-            json!({
-                "attester": hex::encode(&a.attestation.attester),
-                "reason": a.attestation.reason.name(),
-                "timestamp": a.attestation.timestamp,
-                "sponsor_tree_root": hex::encode(&a.sponsor_tree_root),
+        let attestation_details: Vec<Value> = attestations
+            .iter()
+            .map(|a| {
+                json!({
+                    "attester": hex::encode(&a.attestation.attester),
+                    "reason": a.attestation.reason.name(),
+                    "timestamp": a.attestation.timestamp,
+                    "sponsor_tree_root": hex::encode(&a.sponsor_tree_root),
+                })
             })
-        }).collect();
+            .collect();
 
-        RpcResponse::success(json!({
-            "content_id": content_id,
-            "is_flagged": aggregation.should_accelerate_decay,
-            "is_cleared": counter_state.is_cleared,
-            "unique_tree_count": aggregation.count.unique_tree_count,
-            "total_attestations": attestations.len(),
-            "spam_threshold": crate::spam_attestation::SPAM_ATTESTATION_THRESHOLD,
-            "counter_attestations": counter_state.count(),
-            "counter_threshold": crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD,
-            "cleared_at": counter_state.cleared_at,
-            "attestations": attestation_details,
-        }), id)
+        RpcResponse::success(
+            json!({
+                "content_id": content_id,
+                "is_flagged": aggregation.should_accelerate_decay,
+                "is_cleared": counter_state.is_cleared,
+                "unique_tree_count": aggregation.count.unique_tree_count,
+                "total_attestations": attestations.len(),
+                "spam_threshold": crate::spam_attestation::SPAM_ATTESTATION_THRESHOLD,
+                "counter_attestations": counter_state.count(),
+                "counter_threshold": crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD,
+                "cleared_at": counter_state.cleared_at,
+                "attestations": attestation_details,
+            }),
+            id,
+        )
     }
 
     // ========================================================================
@@ -9055,7 +10112,9 @@ impl RpcMethods {
             })
             .collect();
 
-        let result = GetMyInvitesResult { invites: invite_infos };
+        let result = GetMyInvitesResult {
+            invites: invite_infos,
+        };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
@@ -9202,7 +10261,9 @@ impl RpcMethods {
             a.copy_from_slice(&h[..16]);
             a
         };
-        let dm_space_ids = membership_store.get_dm_space_ids(&user_pk).unwrap_or_default();
+        let dm_space_ids = membership_store
+            .get_dm_space_ids(&user_pk)
+            .unwrap_or_default();
 
         // Build space info for each space
         let mut spaces: Vec<PrivateSpaceInfo> = Vec::new();
@@ -9211,12 +10272,18 @@ impl RpcMethods {
                 continue;
             }
             // Get member record for role info
-            let member = membership_store.get_member(&space_id, &user_pk).ok().flatten();
-            let role = member.as_ref().map(|m| match m.role {
-                crate::storage::membership::MemberRole::Admin => "admin".to_string(),
-                crate::storage::membership::MemberRole::Moderator => "moderator".to_string(),
-                crate::storage::membership::MemberRole::Member => "member".to_string(),
-            }).unwrap_or_else(|| "member".to_string());
+            let member = membership_store
+                .get_member(&space_id, &user_pk)
+                .ok()
+                .flatten();
+            let role = member
+                .as_ref()
+                .map(|m| match m.role {
+                    crate::storage::membership::MemberRole::Admin => "admin".to_string(),
+                    crate::storage::membership::MemberRole::Moderator => "moderator".to_string(),
+                    crate::storage::membership::MemberRole::Member => "member".to_string(),
+                })
+                .unwrap_or_else(|| "member".to_string());
             let joined_at = member.as_ref().map(|m| m.joined_at).unwrap_or(0);
             let key_version = member.as_ref().map(|m| m.key_version).unwrap_or(0);
 
@@ -9226,28 +10293,27 @@ impl RpcMethods {
             // Get space info from chain store for encrypted name, and — when this is the
             // node's own membership (node-managed mode) — decrypt the name node-side so
             // desktop clients can show it without ever holding the space key.
-            let (encrypted_name, decrypted_name) = if let Some(ref chain_store) =
-                self.node.chain_store
-            {
-                if let Ok(Some(space_info)) = chain_store.get_space(&space_id) {
-                    let raw = space_info.encrypted_name;
-                    let decrypted = if user_pk == self.node.keypair.public_key.0 {
-                        match self.node_space_key(&space_id) {
-                            Ok(key) => raw.as_ref().and_then(|n| {
-                                crate::crypto::private_space::decrypt_space_name(n, &key).ok()
-                            }),
-                            Err(_) => None,
-                        }
+            let (encrypted_name, decrypted_name) =
+                if let Some(ref chain_store) = self.node.chain_store {
+                    if let Ok(Some(space_info)) = chain_store.get_space(&space_id) {
+                        let raw = space_info.encrypted_name;
+                        let decrypted = if user_pk == self.node.keypair.public_key.0 {
+                            match self.node_space_key(&space_id) {
+                                Ok(key) => raw.as_ref().and_then(|n| {
+                                    crate::crypto::private_space::decrypt_space_name(n, &key).ok()
+                                }),
+                                Err(_) => None,
+                            }
+                        } else {
+                            None
+                        };
+                        (raw.map(|n| hex::encode(&n)), decrypted)
                     } else {
-                        None
-                    };
-                    (raw.map(|n| hex::encode(&n)), decrypted)
+                        (None, None)
+                    }
                 } else {
                     (None, None)
-                }
-            } else {
-                (None, None)
-            };
+                };
 
             spaces.push(PrivateSpaceInfo {
                 space_id: hex::encode(&space_id),
@@ -9328,7 +10394,9 @@ impl RpcMethods {
             })
             .collect();
 
-        let result = GetPendingDMRequestsResult { requests: request_infos };
+        let result = GetPendingDMRequestsResult {
+            requests: request_infos,
+        };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
@@ -9340,9 +10408,7 @@ impl RpcMethods {
     async fn encode_address(&self, params: Value, id: Value) -> RpcResponse {
         let pk_hex = match params.get("pubkey").and_then(|v| v.as_str()) {
             Some(s) => s,
-            None => {
-                return RpcResponse::error(RpcErrorCode::InvalidParams, "Missing pubkey", id)
-            }
+            None => return RpcResponse::error(RpcErrorCode::InvalidParams, "Missing pubkey", id),
         };
         let pk: [u8; 32] = match hex::decode(pk_hex) {
             Ok(b) if b.len() == 32 => b.try_into().unwrap(),
@@ -9364,7 +10430,11 @@ impl RpcMethods {
         let user_hex = match params.get("user").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => {
-                return RpcResponse::error(RpcErrorCode::InvalidParams, "Missing user parameter", id)
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing user parameter",
+                    id,
+                )
             }
         };
         let user_pk: [u8; 32] = match hex::decode(&user_hex) {
@@ -9535,11 +10605,14 @@ impl RpcMethods {
         }
 
         // Compute request hash
-        let request_hash = crate::crypto::sha256(&[
-            &requester_pk[..],
-            &recipient_pk[..],
-            &params.timestamp.to_le_bytes(),
-        ].concat());
+        let request_hash = crate::crypto::sha256(
+            &[
+                &requester_pk[..],
+                &recipient_pk[..],
+                &params.timestamp.to_le_bytes(),
+            ]
+            .concat(),
+        );
 
         // Create the DM request record
         let record = crate::storage::membership::DMRequestRecord {
@@ -9563,7 +10636,8 @@ impl RpcMethods {
 
         info!(
             "[DM] Created DM request from {} to {}",
-            &params.requester[..16], &params.recipient[..16]
+            &params.requester[..16],
+            &params.recipient[..16]
         );
 
         let result = RequestDMResult {
@@ -9612,11 +10686,7 @@ impl RpcMethods {
         };
         let me = self.node.keypair.public_key.0;
         if recipient == me {
-            return RpcResponse::error(
-                RpcErrorCode::InvalidParams,
-                "Cannot DM yourself",
-                id,
-            );
+            return RpcResponse::error(RpcErrorCode::InvalidParams, "Cannot DM yourself", id);
         }
 
         // DMs are participation — same sponsorship gate as posting.
@@ -9716,7 +10786,8 @@ impl RpcMethods {
             pow_nonce: 0,
             signature: [0u8; 64],
         };
-        payload.signature = ed25519_sign(&self.node.keypair.private_key, &payload.signing_message()).0;
+        payload.signature =
+            ed25519_sign(&self.node.keypair.private_key, &payload.signing_message()).0;
         let pow_pre = payload.pow_message();
         let mut nonce: u64 = 0;
         loop {
@@ -9860,7 +10931,11 @@ impl RpcMethods {
             keys.sort();
             keys
         };
-        let preimage = format!("dm:v1:{}:{}", hex::encode(&sorted_keys[0]), hex::encode(&sorted_keys[1]));
+        let preimage = format!(
+            "dm:v1:{}:{}",
+            hex::encode(&sorted_keys[0]),
+            hex::encode(&sorted_keys[1])
+        );
         let space_hash = crate::crypto::sha256(preimage.as_bytes());
         let mut space_id = [0u8; 16];
         space_id.copy_from_slice(&space_hash[..16]);
@@ -9911,10 +10986,7 @@ impl RpcMethods {
             warn!("[DM] Failed to add acceptor as member: {}", e);
         }
 
-        info!(
-            "[DM] Accepted DM request: space {}",
-            hex::encode(&space_id)
-        );
+        info!("[DM] Accepted DM request: space {}", hex::encode(&space_id));
 
         let result = AcceptDMResult {
             space_id: hex::encode(&space_id),
@@ -9991,21 +11063,17 @@ impl RpcMethods {
         };
 
         // Unwrap the space key the requester sealed for us (invited_by = requester).
-        let space_key = match unwrap_space_key(
-            &request.requester_key_share,
-            &requester_pk,
-            &me,
-            &seed,
-        ) {
-            Ok(k) => k,
-            Err(e) => {
-                return RpcResponse::error(
-                    RpcErrorCode::InternalError,
-                    &format!("Failed to unwrap DM key: {}", e),
-                    id,
-                )
-            }
-        };
+        let space_key =
+            match unwrap_space_key(&request.requester_key_share, &requester_pk, &me, &seed) {
+                Ok(k) => k,
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InternalError,
+                        &format!("Failed to unwrap DM key: {}", e),
+                        id,
+                    )
+                }
+            };
 
         // Deterministic DM space id (identical derivation on both sides).
         let mut sorted = [requester_pk, me];
@@ -10273,10 +11341,7 @@ impl RpcMethods {
             );
         }
 
-        info!(
-            "[DM] Declined DM request from {}",
-            &params.requester[..16]
-        );
+        info!("[DM] Declined DM request from {}", &params.requester[..16]);
 
         let result = DeclineDMResult {
             success: true,
@@ -10436,7 +11501,12 @@ impl RpcMethods {
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root());
+                    let added = builder.add_action(
+                        thread_id,
+                        space_id_32,
+                        action.clone(),
+                        BranchPath::root(),
+                    );
                     if added {
                         info!("[BLOCKS] Added CREATE_PRIVATE_SPACE action to block builder");
                     }
@@ -10690,7 +11760,10 @@ impl RpcMethods {
                         payload.to_bytes().to_vec(),
                     );
                     let sent = pool.broadcast(&envelope).await;
-                    info!("[PRIVATE] Broadcast managed CreatePrivateSpace to {} peers", sent);
+                    info!(
+                        "[PRIVATE] Broadcast managed CreatePrivateSpace to {} peers",
+                        sent
+                    );
                 }
             }
         });
@@ -10716,7 +11789,12 @@ impl RpcMethods {
         let me = self.node.keypair.public_key.0;
         let member = membership
             .get_member(space_id, &me)
-            .map_err(|e| (RpcErrorCode::InternalError, format!("membership lookup: {e}")))?
+            .map_err(|e| {
+                (
+                    RpcErrorCode::InternalError,
+                    format!("membership lookup: {e}"),
+                )
+            })?
             .ok_or((
                 RpcErrorCode::InvalidParams,
                 "not a member of this private space".to_string(),
@@ -10730,7 +11808,12 @@ impl RpcMethods {
             &me,
             &seed,
         )
-        .map_err(|e| (RpcErrorCode::InternalError, format!("recover space key: {e}")))
+        .map_err(|e| {
+            (
+                RpcErrorCode::InternalError,
+                format!("recover space key: {e}"),
+            )
+        })
     }
 
     /// Parse a hex 16-byte space id from a request field.
@@ -10740,8 +11823,12 @@ impl RpcMethods {
     /// (submit/list AND encrypt/decrypt/invite) instead of tracking which form each
     /// call happens to want — removing a whole class of client-side id-mixup bugs.
     fn parse_space_id_16(space_id: &str) -> Result<[u8; 16], (RpcErrorCode, String)> {
-        decode_space_id(space_id)
-            .map_err(|e| (RpcErrorCode::InvalidParams, format!("invalid space_id: {e}")))
+        decode_space_id(space_id).map_err(|e| {
+            (
+                RpcErrorCode::InvalidParams,
+                format!("invalid space_id: {e}"),
+            )
+        })
     }
 
     /// Encrypt plaintext with a private space's key (node-managed mode). The client
@@ -10768,7 +11855,10 @@ impl RpcMethods {
         let ciphertext =
             crate::crypto::private_space::encrypt_content_with_space_key(&params.content, &key);
         RpcResponse::success(
-            serde_json::to_value(PrivateContentResult { content: ciphertext }).unwrap(),
+            serde_json::to_value(PrivateContentResult {
+                content: ciphertext,
+            })
+            .unwrap(),
             id,
         )
     }
@@ -10946,11 +12036,15 @@ impl RpcMethods {
             }
         };
         let getb = |k: &str| -> Option<Vec<u8>> {
-            v.get(k).and_then(|x| x.as_str()).and_then(|s| hex::decode(s).ok())
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .and_then(|s| hex::decode(s).ok())
         };
         let space_id: [u8; 16] = match getb("space_id") {
             Some(b) if b.len() == 16 => b.try_into().unwrap(),
-            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite: bad space_id", id),
+            _ => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite: bad space_id", id)
+            }
         };
         let inviter: [u8; 32] = match getb("inviter") {
             Some(b) if b.len() == 32 => b.try_into().unwrap(),
@@ -10993,7 +12087,11 @@ impl RpcMethods {
                 created_at: now,
                 pow_work: 1,
                 is_private: true,
-                encrypted_name: if enc_name.is_empty() { None } else { Some(enc_name) },
+                encrypted_name: if enc_name.is_empty() {
+                    None
+                } else {
+                    Some(enc_name)
+                },
                 creator_encrypted_key: None,
                 key_version: 0,
             };
@@ -11319,11 +12417,7 @@ impl RpcMethods {
         let invite = match membership_store.get_invite(&invite_hash) {
             Ok(Some(inv)) => inv,
             Ok(None) => {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    "Invite not found",
-                    id,
-                );
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite not found", id);
             }
             Err(e) => {
                 return RpcResponse::error(
@@ -11355,11 +12449,7 @@ impl RpcMethods {
         // Check expiry
         if let Some(expires_at) = invite.expires_at {
             if params.timestamp > expires_at {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    "Invite has expired",
-                    id,
-                );
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite has expired", id);
             }
         }
 
@@ -11918,11 +13008,7 @@ impl RpcMethods {
         let invite = match membership_store.get_invite(&invite_hash) {
             Ok(Some(inv)) => inv,
             Ok(None) => {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    "Invite not found",
-                    id,
-                );
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Invite not found", id);
             }
             Err(e) => {
                 return RpcResponse::error(
@@ -12029,8 +13115,13 @@ impl RpcMethods {
                 // Admin cannot leave (they must transfer admin first or delete space)
                 if member.role == crate::storage::membership::MemberRole::Admin {
                     // Check if there are other admins
-                    let members = membership_store.get_space_members(&space_id).unwrap_or_default();
-                    let admin_count = members.iter().filter(|m| m.role == crate::storage::membership::MemberRole::Admin).count();
+                    let members = membership_store
+                        .get_space_members(&space_id)
+                        .unwrap_or_default();
+                    let admin_count = members
+                        .iter()
+                        .filter(|m| m.role == crate::storage::membership::MemberRole::Admin)
+                        .count();
                     if admin_count == 1 {
                         return RpcResponse::error(
                             RpcErrorCode::InvalidParams,
@@ -12252,7 +13343,10 @@ impl RpcMethods {
         match membership_store.get_member(&space_id, &member_pk) {
             Ok(Some(target_member)) => {
                 // Moderators can't kick admins or other moderators
-                let admin_member = membership_store.get_member(&space_id, &admin_pk).ok().flatten();
+                let admin_member = membership_store
+                    .get_member(&space_id, &admin_pk)
+                    .ok()
+                    .flatten();
                 if let Some(admin) = admin_member {
                     if admin.role == crate::storage::membership::MemberRole::Moderator
                         && target_member.role != crate::storage::membership::MemberRole::Member
@@ -12310,12 +13404,12 @@ impl RpcMethods {
         }
 
         // Update keys for remaining members (key rotation)
-        let remaining_members = membership_store.get_space_members(&space_id).unwrap_or_default();
+        let remaining_members = membership_store
+            .get_space_members(&space_id)
+            .unwrap_or_default();
         // Build HashSet for O(1) lookup instead of O(n) linear search per key
-        let remaining_member_pks: std::collections::HashSet<[u8; 32]> = remaining_members
-            .iter()
-            .map(|m| m.member_pk)
-            .collect();
+        let remaining_member_pks: std::collections::HashSet<[u8; 32]> =
+            remaining_members.iter().map(|m| m.member_pk).collect();
         let mut keys_updated = 0usize;
 
         for (member_hex, encrypted_key_hex) in &params.new_encrypted_keys {
@@ -12653,10 +13747,7 @@ impl RpcMethods {
                         id,
                     );
                 }
-                info!(
-                    "[BLOCKLIST] Removed {} via RPC",
-                    &params.content_hash[..16]
-                );
+                info!("[BLOCKLIST] Removed {} via RPC", &params.content_hash[..16]);
             }
             other => {
                 return RpcResponse::error(
@@ -12683,9 +13774,7 @@ impl RpcMethods {
     /// Register a genesis identity (must be in hardcoded genesis list)
     async fn register_genesis_identity(&self, params: Value, id: Value) -> RpcResponse {
         use crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list;
-        use crate::sponsorship::types::{
-            StoredSponsorship, SponsorshipStatus,
-        };
+        use crate::sponsorship::types::{SponsorshipStatus, StoredSponsorship};
         use crate::types::identity::PublicKey;
 
         let params: RegisterGenesisIdentityParams = match serde_json::from_value(params) {
@@ -12809,7 +13898,12 @@ impl RpcMethods {
             if let Some(ref block_builder) = self.node.block_builder {
                 match block_builder.write() {
                     Ok(mut builder) => {
-                        let added = builder.add_action(action_hash, system_space_id, action.clone(), BranchPath::root());
+                        let added = builder.add_action(
+                            action_hash,
+                            system_space_id,
+                            action.clone(),
+                            BranchPath::root(),
+                        );
                         if added {
                             info!("[SPONSORSHIP] Added GenesisRegister action to block builder");
                         }
@@ -12825,7 +13919,8 @@ impl RpcMethods {
                     use crate::types::network::{MessageEnvelope, MessageType};
 
                     let action_data = action.serialize();
-                    let payload = ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
+                    let payload =
+                        ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
                     let envelope = MessageEnvelope::new_fork_agnostic(
                         MessageType::ActionAnnounce,
                         payload.to_bytes().to_vec(),
@@ -12834,8 +13929,11 @@ impl RpcMethods {
                     let peers = pool.peer_ids().await;
                     for peer_id in peers {
                         if let Err(e) = pool.send_to(&peer_id, &envelope).await {
-                            log::debug!("[SPONSORSHIP] Failed to broadcast GenesisRegister to peer {}: {}",
-                                       hex::encode(&peer_id[..8]), e);
+                            log::debug!(
+                                "[SPONSORSHIP] Failed to broadcast GenesisRegister to peer {}: {}",
+                                hex::encode(&peer_id[..8]),
+                                e
+                            );
                         }
                     }
                     info!("[SPONSORSHIP] Broadcast GenesisRegister action to peers");
@@ -12857,7 +13955,7 @@ impl RpcMethods {
     /// The sponsor must be an existing sponsored identity in good standing.
     async fn register_sponsored_identity(&self, params: Value, id: Value) -> RpcResponse {
         use crate::sponsorship::types::{
-            StoredSponsorship, SponsorshipStatus, PROBATION_PERIOD_SECONDS,
+            SponsorshipStatus, StoredSponsorship, PROBATION_PERIOD_SECONDS,
             TIMESTAMP_TOLERANCE_SECONDS,
         };
         use crate::types::identity::PublicKey;
@@ -12937,11 +14035,7 @@ impl RpcMethods {
             );
         }
         if current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS {
-            return RpcResponse::error(
-                RpcErrorCode::InvalidParams,
-                "Timestamp is too old",
-                id,
-            );
+            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp is too old", id);
         }
 
         // Get sponsorship store
@@ -13082,10 +14176,19 @@ impl RpcMethods {
             use crate::blocks::BranchPath;
 
             // Parse PoW fields from params if provided
-            let pow_target_bytes: [u8; 32] = params.pow_target
+            let pow_target_bytes: [u8; 32] = params
+                .pow_target
                 .as_ref()
                 .and_then(|t| hex::decode(t).ok())
-                .and_then(|b| if b.len() == 32 { let mut a = [0u8; 32]; a.copy_from_slice(&b); Some(a) } else { None })
+                .and_then(|b| {
+                    if b.len() == 32 {
+                        let mut a = [0u8; 32];
+                        a.copy_from_slice(&b);
+                        Some(a)
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or([0u8; 32]);
 
             let action = Action::new_sponsor_with_pow(
@@ -13105,13 +14208,21 @@ impl RpcMethods {
             if let Some(ref block_builder) = self.node.block_builder {
                 match block_builder.write() {
                     Ok(mut builder) => {
-                        let added = builder.add_action(action_hash, system_space_id, action.clone(), BranchPath::root());
+                        let added = builder.add_action(
+                            action_hash,
+                            system_space_id,
+                            action.clone(),
+                            BranchPath::root(),
+                        );
                         if added {
                             info!("[SPONSORSHIP] Added Sponsor action to block builder");
                         }
                     }
                     Err(e) => {
-                        warn!("[SPONSORSHIP] Failed to acquire block builder lock for Sponsor: {:?}", e);
+                        warn!(
+                            "[SPONSORSHIP] Failed to acquire block builder lock for Sponsor: {:?}",
+                            e
+                        );
                     }
                 }
 
@@ -13121,7 +14232,8 @@ impl RpcMethods {
                     use crate::types::network::{MessageEnvelope, MessageType};
 
                     let action_data = action.serialize();
-                    let payload = ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
+                    let payload =
+                        ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
                     let envelope = MessageEnvelope::new_fork_agnostic(
                         MessageType::ActionAnnounce,
                         payload.to_bytes().to_vec(),
@@ -13130,8 +14242,11 @@ impl RpcMethods {
                     let peers = pool.peer_ids().await;
                     for peer_id in peers {
                         if let Err(e) = pool.send_to(&peer_id, &envelope).await {
-                            log::debug!("[SPONSORSHIP] Failed to broadcast Sponsor to peer {}: {}",
-                                       hex::encode(&peer_id[..8]), e);
+                            log::debug!(
+                                "[SPONSORSHIP] Failed to broadcast Sponsor to peer {}: {}",
+                                hex::encode(&peer_id[..8]),
+                                e
+                            );
                         }
                     }
                     info!("[SPONSORSHIP] Broadcast Sponsor action to peers");
@@ -13247,7 +14362,10 @@ impl RpcMethods {
                                             probationary: false, // Unknown until on-chain
                                             created_at: Some(action.timestamp),
                                         };
-                                        return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                                        return RpcResponse::success(
+                                            serde_json::to_value(result).unwrap(),
+                                            id,
+                                        );
                                     }
                                 }
                             }
@@ -13302,13 +14420,11 @@ impl RpcMethods {
                 };
                 RpcResponse::success(serde_json::to_value(result).unwrap(), id)
             }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::InternalError,
-                    &format!("Failed to get sponsorship info: {}", e),
-                    id,
-                )
-            }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to get sponsorship info: {}", e),
+                id,
+            ),
         }
     }
 
@@ -13360,7 +14476,8 @@ impl RpcMethods {
                     );
                 }
             };
-            offer_store.filter_by_type(offer_type, current_time)
+            offer_store
+                .filter_by_type(offer_type, current_time)
                 .map(|offers| {
                     let total = offers.len();
                     let has_more = total > params.offset + limit;
@@ -13368,37 +14485,49 @@ impl RpcMethods {
                     (page, total, has_more)
                 })
         } else {
-            offer_store.list_active_offers_paginated(current_time, params.offset, limit)
+            offer_store
+                .list_active_offers_paginated(current_time, params.offset, limit)
                 .map(|(page, has_more)| {
-                    let total = if has_more { params.offset + page.len() + 1 } else { params.offset + page.len() };
+                    let total = if has_more {
+                        params.offset + page.len() + 1
+                    } else {
+                        params.offset + page.len()
+                    };
                     (page, total, has_more)
                 })
         };
 
         match offers_result {
             Ok((offers, total, has_more)) => {
-                let summaries: Vec<SponsorshipOfferSummary> = offers.iter().map(|o| {
-                    let claimed = offer_store.get_claimed_count(&o.offer_id).unwrap_or(0);
-                    let type_str = match o.offer_type {
-                        crate::sponsorship::types::SponsorshipOfferType::Open => "open",
-                        crate::sponsorship::types::SponsorshipOfferType::Probationary => "probationary",
-                        crate::sponsorship::types::SponsorshipOfferType::Conditional => "conditional",
-                    };
-                    SponsorshipOfferSummary {
-                        offer_id: hex::encode(o.offer_id),
-                        sponsor_pubkey: hex::encode(o.sponsor.as_bytes()),
-                        offer_type: type_str.to_string(),
-                        slots_total: o.max_sponsees,
-                        slots_remaining: o.max_sponsees.saturating_sub(claimed),
-                        expires_at: o.expires_at,
-                        created_at: o.created_at,
-                        requirements: SponsorshipOfferRequirements {
-                            min_pow_difficulty: o.requirements.min_pow_difficulty,
-                            application_required: o.requirements.application_required,
-                        },
-                        auto_approve: o.auto_approve,
-                    }
-                }).collect();
+                let summaries: Vec<SponsorshipOfferSummary> = offers
+                    .iter()
+                    .map(|o| {
+                        let claimed = offer_store.get_claimed_count(&o.offer_id).unwrap_or(0);
+                        let type_str = match o.offer_type {
+                            crate::sponsorship::types::SponsorshipOfferType::Open => "open",
+                            crate::sponsorship::types::SponsorshipOfferType::Probationary => {
+                                "probationary"
+                            }
+                            crate::sponsorship::types::SponsorshipOfferType::Conditional => {
+                                "conditional"
+                            }
+                        };
+                        SponsorshipOfferSummary {
+                            offer_id: hex::encode(o.offer_id),
+                            sponsor_pubkey: hex::encode(o.sponsor.as_bytes()),
+                            offer_type: type_str.to_string(),
+                            slots_total: o.max_sponsees,
+                            slots_remaining: o.max_sponsees.saturating_sub(claimed),
+                            expires_at: o.expires_at,
+                            created_at: o.created_at,
+                            requirements: SponsorshipOfferRequirements {
+                                min_pow_difficulty: o.requirements.min_pow_difficulty,
+                                application_required: o.requirements.application_required,
+                            },
+                            auto_approve: o.auto_approve,
+                        }
+                    })
+                    .collect();
 
                 let result = ListSponsorshipOffersResult {
                     offers: summaries,
@@ -13407,13 +14536,11 @@ impl RpcMethods {
                 };
                 RpcResponse::success(serde_json::to_value(result).unwrap(), id)
             }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::InternalError,
-                    &format!("Failed to list offers: {}", e),
-                    id,
-                )
-            }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to list offers: {}", e),
+                id,
+            ),
         }
     }
 
@@ -13469,7 +14596,8 @@ impl RpcMethods {
                 let pending_claims = if let Some(ref caller) = params.caller_pubkey {
                     let sponsor_hex = hex::encode(offer.sponsor.as_bytes());
                     if caller == &sponsor_hex {
-                        offer_store.get_pending_claims(&offer_id_bytes)
+                        offer_store
+                            .get_pending_claims(&offer_id_bytes)
                             .unwrap_or_default()
                             .into_iter()
                             .map(|c| PendingClaimDetail {
@@ -13502,16 +14630,12 @@ impl RpcMethods {
                 };
                 RpcResponse::success(serde_json::to_value(result).unwrap(), id)
             }
-            Ok(None) => {
-                RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id)
-            }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::InternalError,
-                    &format!("Failed to get offer: {}", e),
-                    id,
-                )
-            }
+            Ok(None) => RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id),
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to get offer: {}", e),
+                id,
+            ),
         }
     }
 
@@ -13663,7 +14787,7 @@ impl RpcMethods {
         // Generate offer_id from hash
         let expires_at = current_time + (params.expires_days as u64) * 86400;
         let offer_id: [u8; 16] = {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(&sponsor_bytes);
             hasher.update(&current_time.to_be_bytes());
@@ -13771,7 +14895,10 @@ impl RpcMethods {
 
         info!(
             "[SPONSORSHIP] Created offer {} by {} ({} slots, expires in {} days, auto_approve={})",
-            hex::encode(offer_id), params.sponsor_pubkey, params.slots, params.expires_days,
+            hex::encode(offer_id),
+            params.sponsor_pubkey,
+            params.slots,
+            params.expires_days,
             params.auto_approve
         );
 
@@ -13889,11 +15016,7 @@ impl RpcMethods {
         let offer = match offer_store.get_offer(&offer_id_bytes) {
             Ok(Some(o)) => o,
             Ok(None) => {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    "Offer not found",
-                    id,
-                );
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id);
             }
             Err(e) => {
                 return RpcResponse::error(
@@ -13905,11 +15028,7 @@ impl RpcMethods {
         };
 
         if offer.is_expired(current_time) {
-            return RpcResponse::error(
-                RpcErrorCode::InvalidParams,
-                "This offer has expired",
-                id,
-            );
+            return RpcResponse::error(RpcErrorCode::InvalidParams, "This offer has expired", id);
         }
 
         // Check claimant is not already sponsored
@@ -13955,16 +15074,34 @@ impl RpcMethods {
         }
 
         // Parse PoW fields
-        let pow_hash_bytes: [u8; 32] = params.pow_hash
+        let pow_hash_bytes: [u8; 32] = params
+            .pow_hash
             .as_ref()
             .and_then(|h| hex::decode(h).ok())
-            .and_then(|b| if b.len() == 32 { let mut a = [0u8; 32]; a.copy_from_slice(&b); Some(a) } else { None })
+            .and_then(|b| {
+                if b.len() == 32 {
+                    let mut a = [0u8; 32];
+                    a.copy_from_slice(&b);
+                    Some(a)
+                } else {
+                    None
+                }
+            })
             .unwrap_or([0u8; 32]);
 
-        let pow_nonce_space_bytes: [u8; 32] = params.pow_nonce_space
+        let pow_nonce_space_bytes: [u8; 32] = params
+            .pow_nonce_space
             .as_ref()
             .and_then(|h| hex::decode(h).ok())
-            .and_then(|b| if b.len() == 32 { let mut a = [0u8; 32]; a.copy_from_slice(&b); Some(a) } else { None })
+            .and_then(|b| {
+                if b.len() == 32 {
+                    let mut a = [0u8; 32];
+                    a.copy_from_slice(&b);
+                    Some(a)
+                } else {
+                    None
+                }
+            })
             .unwrap_or([0u8; 32]);
 
         // Validate claimant PoW: sha256(pow_nonce_space || pow_nonce) must have
@@ -13975,7 +15112,7 @@ impl RpcMethods {
         // counted zero BYTES, making it 8x stricter than the block-level
         // validation of the same offer field and rejecting honest claims.
         {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let min_difficulty = if offer.requirements.min_pow_difficulty > 0 {
                 offer.requirements.min_pow_difficulty as u32
             } else {
@@ -14112,11 +15249,18 @@ impl RpcMethods {
                 let mut approval_msg = Vec::with_capacity(40);
                 approval_msg.extend_from_slice(&claimant_bytes);
                 approval_msg.extend_from_slice(&current_time.to_be_bytes());
-                let approval_sig = crate::identity::sign(&self.node.keypair.private_key, &approval_msg);
+                let approval_sig =
+                    crate::identity::sign(&self.node.keypair.private_key, &approval_msg);
                 let approval_sig_bytes: [u8; 64] = *approval_sig.as_bytes();
 
                 match self
-                    .execute_claim_approval(&offer, &claim, approval_sig_bytes, current_time, current_time)
+                    .execute_claim_approval(
+                        &offer,
+                        &claim,
+                        approval_sig_bytes,
+                        current_time,
+                        current_time,
+                    )
                     .await
                 {
                     Ok((depth, probationary)) => {
@@ -14218,7 +15362,10 @@ impl RpcMethods {
                 if crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&sponsor_pk) {
                     None
                 } else {
-                    return Err((RpcErrorCode::PermissionDenied, "Sponsor not found".to_string()));
+                    return Err((
+                        RpcErrorCode::PermissionDenied,
+                        "Sponsor not found".to_string(),
+                    ));
                 }
             }
             Err(e) => {
@@ -14272,7 +15419,7 @@ impl RpcMethods {
 
             // Compute actual pow_work from the claim's PoW proof
             let pow_work = {
-                use sha2::{Sha256, Digest};
+                use sha2::{Digest, Sha256};
                 let mut pow_input = Vec::with_capacity(40);
                 pow_input.extend_from_slice(&claim.pow_nonce_space);
                 pow_input.extend_from_slice(&claim.identity_pow_proof.nonce.to_le_bytes());
@@ -14295,7 +15442,12 @@ impl RpcMethods {
 
             if let Some(ref block_builder) = self.node.block_builder {
                 if let Ok(mut builder) = block_builder.write() {
-                    builder.add_action(action_hash, system_space_id, action.clone(), BranchPath::root());
+                    builder.add_action(
+                        action_hash,
+                        system_space_id,
+                        action.clone(),
+                        BranchPath::root(),
+                    );
                 }
             }
 
@@ -14338,19 +15490,47 @@ impl RpcMethods {
 
         // Parse IDs
         let offer_id_bytes: [u8; 16] = match hex::decode(&params.offer_id) {
-            Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 16 => {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid offer_id", id),
         };
         let claimant_bytes: [u8; 32] = match hex::decode(&params.claimant_pubkey) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid claimant_pubkey", id),
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid claimant_pubkey",
+                    id,
+                )
+            }
         };
         let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor_pubkey", id),
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid sponsor_pubkey",
+                    id,
+                )
+            }
         };
         let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
-            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 64 => {
+                let mut a = [0u8; 64];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid signature", id),
         };
 
@@ -14362,31 +15542,61 @@ impl RpcMethods {
         if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
             || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
         {
-            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp out of tolerance", id);
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Timestamp out of tolerance",
+                id,
+            );
         }
 
         let offer_store = match &self.node.offer_store {
             Some(s) => s,
-            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                )
+            }
         };
 
         // Verify offer exists and sponsor owns it
         let offer = match offer_store.get_offer(&offer_id_bytes) {
             Ok(Some(o)) => o,
-            Ok(None) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id),
-            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to get offer: {}", e), id),
+            Ok(None) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id)
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get offer: {}", e),
+                    id,
+                )
+            }
         };
 
         if offer.sponsor.as_bytes() != &sponsor_bytes {
-            return RpcResponse::error(RpcErrorCode::PermissionDenied, "You are not the sponsor of this offer", id);
+            return RpcResponse::error(
+                RpcErrorCode::PermissionDenied,
+                "You are not the sponsor of this offer",
+                id,
+            );
         }
 
         // Verify claim exists
         let claimant_pk = PublicKey::from_bytes(claimant_bytes);
         let _claim = match offer_store.get_claim(&offer_id_bytes, &claimant_pk) {
             Ok(Some(c)) => c,
-            Ok(None) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Claim not found", id),
-            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to get claim: {}", e), id),
+            Ok(None) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Claim not found", id)
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get claim: {}", e),
+                    id,
+                )
+            }
         };
 
         // Verify sponsor signature over (claimant(32) || timestamp(8 BE))
@@ -14397,11 +15607,21 @@ impl RpcMethods {
             use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
             let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
                 Ok(k) => k,
-                Err(_) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor key", id),
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid sponsor key",
+                        id,
+                    )
+                }
             };
             let sig = DalekSig::from_bytes(&sig_bytes);
             if vk.verify(&sig_msg, &sig).is_err() {
-                return RpcResponse::error(RpcErrorCode::InvalidSignature, "Invalid sponsor signature", id);
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidSignature,
+                    "Invalid sponsor signature",
+                    id,
+                );
             }
         }
 
@@ -14452,19 +15672,47 @@ impl RpcMethods {
         };
 
         let offer_id_bytes: [u8; 16] = match hex::decode(&params.offer_id) {
-            Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 16 => {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid offer_id", id),
         };
         let claimant_bytes: [u8; 32] = match hex::decode(&params.claimant_pubkey) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid claimant_pubkey", id),
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid claimant_pubkey",
+                    id,
+                )
+            }
         };
         let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor_pubkey", id),
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid sponsor_pubkey",
+                    id,
+                )
+            }
         };
         let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
-            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 64 => {
+                let mut a = [0u8; 64];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid signature", id),
         };
 
@@ -14476,23 +15724,45 @@ impl RpcMethods {
         if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
             || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
         {
-            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp out of tolerance", id);
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Timestamp out of tolerance",
+                id,
+            );
         }
 
         let offer_store = match &self.node.offer_store {
             Some(s) => s,
-            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                )
+            }
         };
 
         // Verify offer exists and sponsor owns it
         let offer = match offer_store.get_offer(&offer_id_bytes) {
             Ok(Some(o)) => o,
-            Ok(None) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id),
-            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to get offer: {}", e), id),
+            Ok(None) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id)
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get offer: {}", e),
+                    id,
+                )
+            }
         };
 
         if offer.sponsor.as_bytes() != &sponsor_bytes {
-            return RpcResponse::error(RpcErrorCode::PermissionDenied, "You are not the sponsor of this offer", id);
+            return RpcResponse::error(
+                RpcErrorCode::PermissionDenied,
+                "You are not the sponsor of this offer",
+                id,
+            );
         }
 
         // Verify signature
@@ -14503,11 +15773,21 @@ impl RpcMethods {
             use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
             let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
                 Ok(k) => k,
-                Err(_) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor key", id),
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid sponsor key",
+                        id,
+                    )
+                }
             };
             let sig = DalekSig::from_bytes(&sig_bytes);
             if vk.verify(&sig_msg, &sig).is_err() {
-                return RpcResponse::error(RpcErrorCode::InvalidSignature, "Invalid sponsor signature", id);
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidSignature,
+                    "Invalid sponsor signature",
+                    id,
+                );
             }
         }
 
@@ -14550,15 +15830,33 @@ impl RpcMethods {
         };
 
         let offer_id_bytes: [u8; 16] = match hex::decode(&params.offer_id) {
-            Ok(b) if b.len() == 16 => { let mut a = [0u8; 16]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 16 => {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid offer_id", id),
         };
         let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor_pubkey", id),
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid sponsor_pubkey",
+                    id,
+                )
+            }
         };
         let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
-            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 64 => {
+                let mut a = [0u8; 64];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid signature", id),
         };
 
@@ -14570,23 +15868,45 @@ impl RpcMethods {
         if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
             || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
         {
-            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp out of tolerance", id);
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Timestamp out of tolerance",
+                id,
+            );
         }
 
         let offer_store = match &self.node.offer_store {
             Some(s) => s,
-            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                )
+            }
         };
 
         // Verify offer exists and sponsor owns it
         let offer = match offer_store.get_offer(&offer_id_bytes) {
             Ok(Some(o)) => o,
-            Ok(None) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id),
-            Err(e) => return RpcResponse::error(RpcErrorCode::InternalError, &format!("Failed to get offer: {}", e), id),
+            Ok(None) => {
+                return RpcResponse::error(RpcErrorCode::InvalidParams, "Offer not found", id)
+            }
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to get offer: {}", e),
+                    id,
+                )
+            }
         };
 
         if offer.sponsor.as_bytes() != &sponsor_bytes {
-            return RpcResponse::error(RpcErrorCode::PermissionDenied, "You are not the sponsor of this offer", id);
+            return RpcResponse::error(
+                RpcErrorCode::PermissionDenied,
+                "You are not the sponsor of this offer",
+                id,
+            );
         }
 
         // Verify signature over (offer_id(16) || timestamp(8 BE))
@@ -14597,11 +15917,21 @@ impl RpcMethods {
             use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
             let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
                 Ok(k) => k,
-                Err(_) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor key", id),
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid sponsor key",
+                        id,
+                    )
+                }
             };
             let sig = DalekSig::from_bytes(&sig_bytes);
             if vk.verify(&sig_msg, &sig).is_err() {
-                return RpcResponse::error(RpcErrorCode::InvalidSignature, "Invalid sponsor signature", id);
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidSignature,
+                    "Invalid sponsor signature",
+                    id,
+                );
             }
         }
 
@@ -14639,12 +15969,26 @@ impl RpcMethods {
         };
 
         let sponsor_bytes: [u8; 32] = match hex::decode(&params.sponsor_pubkey) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor_pubkey", id),
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid sponsor_pubkey",
+                    id,
+                )
+            }
         };
 
         let sig_bytes: [u8; 64] = match hex::decode(&params.signature) {
-            Ok(b) if b.len() == 64 => { let mut a = [0u8; 64]; a.copy_from_slice(&b); a }
+            Ok(b) if b.len() == 64 => {
+                let mut a = [0u8; 64];
+                a.copy_from_slice(&b);
+                a
+            }
             _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid signature", id),
         };
 
@@ -14657,7 +16001,11 @@ impl RpcMethods {
         if params.timestamp > current_time + TIMESTAMP_TOLERANCE_SECONDS
             || current_time > params.timestamp + TIMESTAMP_TOLERANCE_SECONDS
         {
-            return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp out of tolerance", id);
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Timestamp out of tolerance",
+                id,
+            );
         }
 
         // Verify sponsor signature: "swimchain-list-offers:" || sponsor(32) || timestamp(8 BE)
@@ -14671,55 +16019,77 @@ impl RpcMethods {
 
             let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
                 Ok(k) => k,
-                Err(_) => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid sponsor key", id),
+                Err(_) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid sponsor key",
+                        id,
+                    )
+                }
             };
             let sig = DalekSig::from_bytes(&sig_bytes);
             if vk.verify(&sig_msg, &sig).is_err() {
-                return RpcResponse::error(RpcErrorCode::InvalidSignature, "Invalid sponsor signature", id);
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidSignature,
+                    "Invalid sponsor signature",
+                    id,
+                );
             }
         }
 
         let offer_store = match &self.node.offer_store {
             Some(s) => s,
-            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                )
+            }
         };
 
         let sponsor_pk = crate::types::identity::PublicKey::from_bytes(sponsor_bytes);
         match offer_store.list_by_sponsor(&sponsor_pk) {
             Ok(offers) => {
-                let summaries: Vec<MySponsorshipOfferSummary> = offers.iter().map(|o| {
-                    let claimed = offer_store.get_claimed_count(&o.offer_id).unwrap_or(0);
-                    let pending_count = offer_store.get_pending_claims(&o.offer_id)
-                        .map(|c| c.len())
-                        .unwrap_or(0);
-                    let type_str = match o.offer_type {
-                        crate::sponsorship::types::SponsorshipOfferType::Open => "open",
-                        crate::sponsorship::types::SponsorshipOfferType::Probationary => "probationary",
-                        crate::sponsorship::types::SponsorshipOfferType::Conditional => "conditional",
-                    };
-                    MySponsorshipOfferSummary {
-                        offer_id: hex::encode(o.offer_id),
-                        offer_type: type_str.to_string(),
-                        slots_total: o.max_sponsees,
-                        slots_claimed: claimed,
-                        slots_pending: pending_count,
-                        expires_at: o.expires_at,
-                        created_at: o.created_at,
-                        is_expired: o.is_expired(current_time),
-                        auto_approve: o.auto_approve,
-                    }
-                }).collect();
+                let summaries: Vec<MySponsorshipOfferSummary> = offers
+                    .iter()
+                    .map(|o| {
+                        let claimed = offer_store.get_claimed_count(&o.offer_id).unwrap_or(0);
+                        let pending_count = offer_store
+                            .get_pending_claims(&o.offer_id)
+                            .map(|c| c.len())
+                            .unwrap_or(0);
+                        let type_str = match o.offer_type {
+                            crate::sponsorship::types::SponsorshipOfferType::Open => "open",
+                            crate::sponsorship::types::SponsorshipOfferType::Probationary => {
+                                "probationary"
+                            }
+                            crate::sponsorship::types::SponsorshipOfferType::Conditional => {
+                                "conditional"
+                            }
+                        };
+                        MySponsorshipOfferSummary {
+                            offer_id: hex::encode(o.offer_id),
+                            offer_type: type_str.to_string(),
+                            slots_total: o.max_sponsees,
+                            slots_claimed: claimed,
+                            slots_pending: pending_count,
+                            expires_at: o.expires_at,
+                            created_at: o.created_at,
+                            is_expired: o.is_expired(current_time),
+                            auto_approve: o.auto_approve,
+                        }
+                    })
+                    .collect();
 
                 let result = ListMySponsorshipOffersResult { offers: summaries };
                 RpcResponse::success(serde_json::to_value(result).unwrap(), id)
             }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::InternalError,
-                    &format!("Failed to list offers: {}", e),
-                    id,
-                )
-            }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to list offers: {}", e),
+                id,
+            ),
         }
     }
 
@@ -14737,13 +16107,29 @@ impl RpcMethods {
         };
 
         let claimant_bytes: [u8; 32] = match hex::decode(&params.claimant_pubkey) {
-            Ok(b) if b.len() == 32 => { let mut a = [0u8; 32]; a.copy_from_slice(&b); a }
-            _ => return RpcResponse::error(RpcErrorCode::InvalidParams, "Invalid claimant_pubkey", id),
+            Ok(b) if b.len() == 32 => {
+                let mut a = [0u8; 32];
+                a.copy_from_slice(&b);
+                a
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid claimant_pubkey",
+                    id,
+                )
+            }
         };
 
         let offer_store = match &self.node.offer_store {
             Some(s) => s,
-            None => return RpcResponse::error(RpcErrorCode::SubsystemUnavailable, "Offer store not available", id),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Offer store not available",
+                    id,
+                )
+            }
         };
 
         let current_time = std::time::SystemTime::now()
@@ -14782,13 +16168,11 @@ impl RpcMethods {
                 };
                 RpcResponse::success(serde_json::to_value(result).unwrap(), id)
             }
-            Err(e) => {
-                RpcResponse::error(
-                    RpcErrorCode::InternalError,
-                    &format!("Failed to check claim status: {}", e),
-                    id,
-                )
-            }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to check claim status: {}", e),
+                id,
+            ),
         }
     }
 }
@@ -14796,12 +16180,11 @@ impl RpcMethods {
 /// Check if a word is a common/stop word that should be excluded from trending
 fn is_common_word(word: &str) -> bool {
     const COMMON_WORDS: &[&str] = &[
-        "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
-        "her", "was", "one", "our", "out", "has", "have", "been", "were", "they",
-        "this", "that", "with", "from", "will", "would", "there", "their", "what",
-        "about", "which", "when", "make", "like", "time", "just", "know", "take",
-        "into", "year", "your", "good", "some", "them", "than", "then", "look",
-        "only", "come", "over", "such", "also", "back", "after", "most", "want",
+        "the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her", "was", "one",
+        "our", "out", "has", "have", "been", "were", "they", "this", "that", "with", "from",
+        "will", "would", "there", "their", "what", "about", "which", "when", "make", "like",
+        "time", "just", "know", "take", "into", "year", "your", "good", "some", "them", "than",
+        "then", "look", "only", "come", "over", "such", "also", "back", "after", "most", "want",
         "here", "these", "thing", "think", "more", "very", "should", "could",
     ];
     COMMON_WORDS.contains(&word)
