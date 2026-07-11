@@ -255,3 +255,23 @@
     font-size: var(--font-size-base);
   }
 }
+
+/* Create Space button in the Discover header */
+.discover-page__header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+}
+
+.discover-page__create-btn {
+  flex-shrink: 0;
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-md, 8px);
+  border: none;
+  background: var(--color-accent-primary, #3b82f6);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+}

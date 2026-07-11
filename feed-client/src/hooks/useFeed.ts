@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useRpc } from './useRpc';
+import { useRpc, stripTitleSeparator } from './useRpc';
 import { useFeedPreferences } from './useFeedPreferences';
 import { useBlocklist } from './useBlocklist';
 import { logger } from '../lib/logger';
@@ -55,6 +55,7 @@ function mapContentToFeedItem(
     decay_state: string;
     seconds_until_decay: number | null;
     reply_count?: number;
+    media_refs?: Array<{ media_hash: string; media_type: string; size_bytes: number }>;
   },
   source: 'space' | 'user',
   sourceId: string,
@@ -67,7 +68,10 @@ function mapContentToFeedItem(
     spaceName: spaceName,
     authorId: content.author_id,
     title: content.title ?? undefined,
-    body: content.body ?? '',
+    // The node stores bodies as title + double-newline + body; strip the
+    // prefix or the title renders twice (bold header, then again as the
+    // body's first line).
+    body: stripTitleSeparator(content.body ?? ''),
     createdAt: content.created_at,
     lastEngagement: content.last_engagement,
     engagementCount: content.engagement_count,
@@ -76,6 +80,13 @@ function mapContentToFeedItem(
     secondsUntilDecay: content.seconds_until_decay,
     source,
     sourceId,
+    // Attached images: this transform silently dropped media_refs, so feed
+    // cards never showed post images even though the detail page did.
+    mediaRefs: content.media_refs?.map(mr => ({
+      mediaHash: mr.media_hash,
+      mediaType: mr.media_type,
+      sizeBytes: mr.size_bytes,
+    })),
   };
 }
 

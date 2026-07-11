@@ -16,6 +16,7 @@ import { solutionToRpcParams } from '../lib/action-pow';
 import { PowProgress } from '../components/PowProgress';
 import { SpamBadge, ReportModal } from '../components/ReportModal';
 import { ImageGallery } from '../components/ImageGallery';
+import { PostReactions } from '../components/PostReactions';
 import './Post.css';
 
 // Use the Reply type from types, but re-define for clarity in this component
@@ -99,6 +100,7 @@ function ReplyItem({
       </div>
 
       <div className="reply-actions">
+        <PostReactions contentId={reply.id} />
         <button
           type="button"
           className="reply-action-btn"
@@ -483,6 +485,7 @@ export function Post(): JSX.Element {
         )}
 
         <footer className="post-detail__footer">
+          <PostReactions contentId={post.id} />
           <button
             type="button"
             className="post-action-btn"

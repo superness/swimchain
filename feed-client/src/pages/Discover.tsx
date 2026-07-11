@@ -13,6 +13,7 @@ import { useStoredIdentity } from '../hooks/useStoredIdentity';
 import { FollowButton } from '../components/FollowButton';
 import { PrivateSpaceList } from '../components/PrivateSpaceList';
 import { JoinPrivateSpace } from '../components/JoinPrivateSpace';
+import { CreateSpaceModal } from '../components/CreateSpaceModal';
 import './Discover.css';
 
 interface SpaceCardProps {
@@ -117,6 +118,7 @@ function formatTimeAgo(timestamp: number): string {
 export function Discover(): JSX.Element {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'spaces' | 'users'>('spaces');
+  const [showCreate, setShowCreate] = useState(false);
   const { spaces, loading, error, refetch: refresh } = useSpaces();
   const { preferences } = useFeedPreferences();
   const { identity } = useStoredIdentity();
@@ -167,11 +169,24 @@ export function Discover(): JSX.Element {
   return (
     <div className="discover-page">
       <header className="discover-page__header">
-        <h1 className="discover-page__title">Discover</h1>
+        <div className="discover-page__header-row">
+          <h1 className="discover-page__title">Discover</h1>
+          <button
+            type="button"
+            className="discover-page__create-btn"
+            onClick={() => setShowCreate(true)}
+          >
+            + Create Space
+          </button>
+        </div>
         <p className="discover-page__subtitle">
           Find spaces and users to follow
         </p>
       </header>
+
+      {showCreate && (
+        <CreateSpaceModal onClose={() => setShowCreate(false)} />
+      )}
 
       {/* Search */}
       <div className="discover-page__search">
