@@ -6389,7 +6389,6 @@ impl MessageRouter {
         Ok(None)
     }
 
-    // ========== DHT (Kademlia) Handlers (SPEC_06 §3.8) ==========
 
     /// Handle incoming DHT_PING
     async fn handle_dht_ping(

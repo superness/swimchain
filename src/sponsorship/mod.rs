@@ -62,19 +62,23 @@ pub use genesis_list::{
     GenesisDistributionCategory,
 };
 pub use linear_chain::LinearChainDetector;
-pub use offer_store::OfferStore;
 pub use offer_flow::{
-    approve_claim, cancel_offer, claim_public_offer, create_public_offer,
-    get_offer_status, reject_claim, OfferStatus,
+    approve_claim, cancel_offer, claim_public_offer, create_public_offer, get_offer_status,
+    reject_claim, OfferStatus,
 };
+pub use offer_store::OfferStore;
 pub use offer_validation::{
     validate_claim_requirements, validate_claim_timestamp, validate_offer_active,
     validate_offer_creation, verify_attestation_signature,
 };
+pub use orphan::{
+    apply_cascade_protection, count_at_risk_identities, execute_adoption, validate_adoption,
+    AdoptionRequest, AdoptionResult, OrphanCapabilities, OrphanDetectionTask, OrphanInfo,
+    OrphanReason, ORPHAN_SCAN_INTERVAL_SECONDS,
+};
 pub use penalty::{
-    MisbehaviorSeverity, PenaltyRecord, PenaltyType, ABUSE_PENALTY_SECONDS,
+    MisbehaviorSeverity, PenaltyRecord, PenaltyType, ABUSE_PENALTY_SECONDS, ALL_INVITE_SLOTS,
     ILLEGAL_PENALTY_SECONDS, MIN_PENALTY_RECOVERY_ATTESTATION_COUNT, SPAM_PENALTY_SECONDS,
-    ALL_INVITE_SLOTS,
 };
 pub use penalty_store::{PenaltyStore, Warning};
 pub use propagation::{propagate_consequences, PropagationResult};
@@ -86,11 +90,6 @@ pub use validation::*;
 pub use wire::{
     deserialize_claim, deserialize_claim_response, deserialize_offer, serialize_claim,
     serialize_claim_response, serialize_offer, ClaimResponse, ClaimResponseType, WireError,
-};
-pub use orphan::{
-    apply_cascade_protection, count_at_risk_identities, execute_adoption, validate_adoption,
-    AdoptionRequest, AdoptionResult, OrphanCapabilities, OrphanDetectionTask, OrphanInfo,
-    OrphanReason, ORPHAN_SCAN_INTERVAL_SECONDS,
 };
 
 use crate::types::identity::PublicKey;
@@ -243,18 +242,14 @@ pub fn register_sponsored_identity_with_rights(
     // Genesis sponsors bypass capacity checks but still record sponsorships
     if !is_genesis_sponsor {
         // Check capacity using penalty info from sponsorship store
-        let capacity_info = rights_store.can_sponsor(
-            &sponsor,
-            current_time,
-            |pk, time| {
-                store
-                    .get(pk)
-                    .ok()
-                    .flatten()
-                    .map(|s| s.is_under_penalty(time))
-                    .unwrap_or(false)
-            },
-        )?;
+        let capacity_info = rights_store.can_sponsor(&sponsor, current_time, |pk, time| {
+            store
+                .get(pk)
+                .ok()
+                .flatten()
+                .map(|s| s.is_under_penalty(time))
+                .unwrap_or(false)
+        })?;
 
         if !capacity_info.can_sponsor {
             return Err(capacity_info
@@ -523,9 +518,15 @@ mod tests {
         let a = test_pubkey(1);
         let b = test_pubkey(2);
 
-        sponsorship_store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        sponsorship_store.put(&make_regular_sponsorship(a, genesis, 1)).unwrap();
-        sponsorship_store.put(&make_regular_sponsorship(b, a, 2)).unwrap();
+        sponsorship_store
+            .put(&make_genesis_sponsorship(genesis))
+            .unwrap();
+        sponsorship_store
+            .put(&make_regular_sponsorship(a, genesis, 1))
+            .unwrap();
+        sponsorship_store
+            .put(&make_regular_sponsorship(b, a, 2))
+            .unwrap();
 
         let result = on_misbehavior(
             &sponsorship_store,
@@ -533,7 +534,8 @@ mod tests {
             &b,
             MisbehaviorSeverity::Spam,
             time,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Offender penalty applied
         assert!(penalty_store.has_active_penalty(&b, time).unwrap());
@@ -560,8 +562,12 @@ mod tests {
         let genesis = test_pubkey(0);
         let offender = test_pubkey(1);
 
-        sponsorship_store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        sponsorship_store.put(&make_regular_sponsorship(offender, genesis, 1)).unwrap();
+        sponsorship_store
+            .put(&make_genesis_sponsorship(genesis))
+            .unwrap();
+        sponsorship_store
+            .put(&make_regular_sponsorship(offender, genesis, 1))
+            .unwrap();
 
         on_misbehavior(
             &sponsorship_store,
@@ -569,7 +575,8 @@ mod tests {
             &offender,
             MisbehaviorSeverity::Illegal,
             time,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Offender should be revoked
         let sponsorship = sponsorship_store.get(&offender).unwrap().unwrap();
@@ -587,7 +594,9 @@ mod tests {
 
         // Create genesis identity
         let genesis = test_pubkey(0);
-        sponsorship_store.put(&make_genesis_sponsorship(genesis)).unwrap();
+        sponsorship_store
+            .put(&make_genesis_sponsorship(genesis))
+            .unwrap();
 
         // Apply a spam penalty
         on_misbehavior(
@@ -596,7 +605,8 @@ mod tests {
             &genesis,
             MisbehaviorSeverity::Spam,
             time,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Apply recovery with 2× contribution
         let elapsed = 86400; // 1 day
@@ -612,7 +622,8 @@ mod tests {
             expected_rate,
             3, // attestations
             time + elapsed,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(recovery.accelerated);
         assert!((recovery.reduction_factor - 0.5).abs() < f32::EPSILON);

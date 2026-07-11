@@ -78,7 +78,6 @@ pub const ORPHAN_INACTIVITY_THRESHOLD_SECONDS: u64 = 7_776_000; // 90 * 24 * 60 
 /// Grace period for orphaned identities before adoption eligibility (30 days)
 pub const ORPHAN_GRACE_PERIOD_SECONDS: u64 = 2_592_000; // 30 * 24 * 60 * 60
 
-
 // === SPEC_11 Section 3.1: SponsoredIdentityCreation ===
 
 /// Message for creating a sponsored identity (SPEC_11 Section 3.1)
@@ -486,8 +485,7 @@ impl LinearChainMetrics {
 
     /// Recalculate linearity score
     pub fn calculate_linearity_score(&mut self) {
-        self.linearity_score =
-            self.sponsorship_depth as f32 / (self.subtree_breadth.max(1) as f32);
+        self.linearity_score = self.sponsorship_depth as f32 / (self.subtree_breadth.max(1) as f32);
     }
 
     /// Check if suspicious based on current metrics
@@ -921,9 +919,9 @@ mod tests {
     fn test_linear_chain_metrics_calculation() {
         let m = LinearChainMetrics::new(
             PublicKey::from_bytes([1u8; 32]),
-            10, // depth
-            5,  // breadth
-            2,  // direct
+            10,  // depth
+            5,   // breadth
+            2,   // direct
             8.0, // avg depth
         );
         assert!((m.linearity_score - 2.0).abs() < f32::EPSILON); // 10/5 = 2.0
@@ -935,9 +933,9 @@ mod tests {
     fn test_linear_chain_metrics_not_suspicious() {
         let m = LinearChainMetrics::new(
             PublicKey::from_bytes([1u8; 32]),
-            3,  // depth < LINEAR_CHAIN_MIN_DEPTH
-            10, // breadth
-            5,  // direct
+            3,   // depth < LINEAR_CHAIN_MIN_DEPTH
+            10,  // breadth
+            5,   // direct
             2.0, // avg depth
         );
         assert!(!m.flagged_as_suspicious);
@@ -949,9 +947,9 @@ mod tests {
         // Test that breadth of 0 doesn't cause division by zero
         let m = LinearChainMetrics::new(
             PublicKey::from_bytes([1u8; 32]),
-            10, // depth
-            0,  // breadth (would cause div/0 without max(1))
-            0,  // direct
+            10,  // depth
+            0,   // breadth (would cause div/0 without max(1))
+            0,   // direct
             0.0, // avg depth
         );
         assert!((m.linearity_score - 10.0).abs() < f32::EPSILON); // 10/1 = 10.0
@@ -995,7 +993,8 @@ mod tests {
         };
 
         assert!(!s.is_probation_expired(1735689600)); // Before probation ends
-        assert!(s.is_probation_expired(1735689600 + PROBATION_PERIOD_SECONDS + 1)); // After
+        assert!(s.is_probation_expired(1735689600 + PROBATION_PERIOD_SECONDS + 1));
+        // After
     }
 
     #[test]
@@ -1189,8 +1188,8 @@ mod tests {
         // High linearity + sufficient depth = flagged
         let m = LinearChainMetrics::new(
             PublicKey::from_bytes([1u8; 32]),
-            5,  // depth >= 4
-            1,  // low breadth -> high linearity (5/1 = 5.0 > 0.8)
+            5, // depth >= 4
+            1, // low breadth -> high linearity (5/1 = 5.0 > 0.8)
             1,
             5.0,
         );
@@ -1233,8 +1232,8 @@ mod tests {
         // Depth too low: not flagged
         let m = LinearChainMetrics::new(
             PublicKey::from_bytes([1u8; 32]),
-            3,  // depth < 4
-            1,  // single sponsee
+            3, // depth < 4
+            1, // single sponsee
             1,
             3.0,
         );
@@ -1267,13 +1266,7 @@ mod tests {
 
     #[test]
     fn test_linear_chain_flag_new() {
-        let metrics = LinearChainMetrics::new(
-            PublicKey::from_bytes([42u8; 32]),
-            5,
-            10,
-            3,
-            4.0,
-        );
+        let metrics = LinearChainMetrics::new(PublicKey::from_bytes([42u8; 32]), 5, 10, 3, 4.0);
         let flag = LinearChainFlag::new(&metrics, 1735689600);
 
         assert_eq!(flag.identity_bytes, [42u8; 32]);
@@ -1288,10 +1281,7 @@ mod tests {
 
     #[test]
     fn test_linear_chain_flag_identity() {
-        let metrics = LinearChainMetrics::new(
-            PublicKey::from_bytes([99u8; 32]),
-            5, 10, 3, 4.0,
-        );
+        let metrics = LinearChainMetrics::new(PublicKey::from_bytes([99u8; 32]), 5, 10, 3, 4.0);
         let flag = LinearChainFlag::new(&metrics, 1735689600);
         assert_eq!(flag.identity(), PublicKey::from_bytes([99u8; 32]));
     }
@@ -1313,10 +1303,7 @@ mod tests {
 
     #[test]
     fn test_linear_chain_flag_status_helpers() {
-        let metrics = LinearChainMetrics::new(
-            PublicKey::from_bytes([1u8; 32]),
-            5, 10, 3, 4.0,
-        );
+        let metrics = LinearChainMetrics::new(PublicKey::from_bytes([1u8; 32]), 5, 10, 3, 4.0);
         let mut flag = LinearChainFlag::new(&metrics, 1735689600);
 
         assert!(flag.is_pending());
@@ -1336,10 +1323,7 @@ mod tests {
 
     #[test]
     fn test_linear_chain_flag_serialization() {
-        let metrics = LinearChainMetrics::new(
-            PublicKey::from_bytes([1u8; 32]),
-            5, 10, 3, 4.0,
-        );
+        let metrics = LinearChainMetrics::new(PublicKey::from_bytes([1u8; 32]), 5, 10, 3, 4.0);
         let flag = LinearChainFlag::new(&metrics, 1735689600);
 
         // Test bincode round-trip
@@ -1434,9 +1418,7 @@ impl SponsorshipRequirements {
     /// Check if any requirements are set
     #[must_use]
     pub fn has_requirements(&self) -> bool {
-        self.min_pow_difficulty > 0
-            || self.required_attester.is_some()
-            || self.application_required
+        self.min_pow_difficulty > 0 || self.required_attester.is_some() || self.application_required
     }
 
     /// Get SHA-256 hash of requirements for signature
@@ -1767,7 +1749,7 @@ mod public_offer_tests {
         assert_eq!(&msg[24..56], &[1u8; 32]); // sponsor
         assert_eq!(msg[56], 5); // max_sponsees
         assert_eq!(msg[57], 0); // offer_type (Open)
-        // expires_days = (expires_at - created_at) / 86400 = 30
+                                // expires_days = (expires_at - created_at) / 86400 = 30
         assert_eq!(&msg[58..62], &30u32.to_be_bytes());
         assert_eq!(msg[62], 0); // min_pow_difficulty
         assert_eq!(msg[63], 0); // application_required
