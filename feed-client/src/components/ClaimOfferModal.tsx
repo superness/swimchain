@@ -25,11 +25,14 @@ function hexToBytes(hex: string): Uint8Array {
 }
 
 /**
- * Mine SHA-256 PoW: find nonce where sha256(nonceSpace || nonce_le) has enough leading zero bytes.
- * Backend validates: sha256(pow_nonce_space || pow_nonce.to_le_bytes())
+ * Mine SHA-256 PoW: find nonce where sha256(nonceSpace || nonce_le) has enough
+ * leading zero BITS. The node validates bits (count_leading_zero_bits in
+ * offer_validation.rs); this miner previously counted zero BYTES against the
+ * same number, over-mining 8x and making any offer above ~24 difficulty
+ * exhaust its attempt cap.
  */
 async function mineSha256Pow(
-  minZeroBytes: number,
+  minZeroBits: number,
   onProgress?: (attempts: number) => void,
   isCancelled?: () => boolean,
 ): Promise<{ nonce: number; nonceSpace: Uint8Array; powHash: Uint8Array }> {
@@ -55,14 +58,18 @@ async function mineSha256Pow(
     const hashBuf = await crypto.subtle.digest('SHA-256', input);
     const hash = new Uint8Array(hashBuf);
 
-    // Count leading zero bytes
-    let zeros = 0;
+    // Count leading zero bits (matches node-side count_leading_zero_bits)
+    let zeroBits = 0;
     for (const byte of hash) {
-      if (byte === 0) zeros++;
-      else break;
+      if (byte === 0) {
+        zeroBits += 8;
+        continue;
+      }
+      zeroBits += Math.clz32(byte) - 24;
+      break;
     }
 
-    if (zeros >= minZeroBytes) {
+    if (zeroBits >= minZeroBits) {
       return { nonce, nonceSpace, powHash: hash };
     }
 

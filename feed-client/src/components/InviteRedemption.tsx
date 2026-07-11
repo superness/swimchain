@@ -54,10 +54,12 @@ function hexToBytes(hex: string): Uint8Array {
 
 /**
  * Mine SHA-256 PoW for the claim: find nonce where
- * sha256(nonceSpace || nonce_le) has enough leading zero bytes.
+ * sha256(nonceSpace || nonce_le) has enough leading zero BITS (the node
+ * validates bits; counting bytes here over-mined 8x and exhausted the
+ * attempt cap on any offer above ~24 difficulty).
  */
 async function mineSha256Pow(
-  minZeroBytes: number,
+  minZeroBits: number,
 ): Promise<{ nonce: number; nonceSpace: Uint8Array; powHash: Uint8Array }> {
   const nonceSpace = new Uint8Array(32);
   crypto.getRandomValues(nonceSpace);
@@ -75,13 +77,18 @@ async function mineSha256Pow(
     const hashBuf = await crypto.subtle.digest('SHA-256', input);
     const hash = new Uint8Array(hashBuf);
 
-    let zeros = 0;
+    // Count leading zero bits (matches node-side count_leading_zero_bits)
+    let zeroBits = 0;
     for (const byte of hash) {
-      if (byte === 0) zeros++;
-      else break;
+      if (byte === 0) {
+        zeroBits += 8;
+        continue;
+      }
+      zeroBits += Math.clz32(byte) - 24;
+      break;
     }
 
-    if (zeros >= minZeroBytes) {
+    if (zeroBits >= minZeroBits) {
       return { nonce, nonceSpace, powHash: hash };
     }
 
