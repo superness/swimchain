@@ -26,7 +26,8 @@ pub mod retrieval;
 pub mod storage;
 
 pub use decay::{
-    calculate_adaptive_half_life, calculate_decay_state, calculate_decay_state_full, NodeState,
+    calculate_adaptive_half_life, calculate_decay_state, calculate_decay_state_full,
+    select_half_life, NodeState,
 };
 pub use engagement::{process_engagement, EngagementRejection, EngagementResult};
 pub use lifecycle::ContentManager;
