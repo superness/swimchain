@@ -15,7 +15,7 @@
 Swimchain uses a **recursive block architecture** where blocks form a hierarchical tree structure mirroring content organization. This design enables:
 
 1. **Content-specific PoW** - Actions target specific content, can't be reused
-2. **Pooled engagement** - Multiple users contribute PoW to persist shared content
+2. **Per-engagement PoW** - Each engagement is an individual PoW action that persists shared content
 3. **Efficient lookup** - O(log n) binary tree navigation
 4. **Parent-anchored threading** - Related content stays together for sync efficiency
 5. **Automatic branching** - Tree fractures when branches grow too large
@@ -25,18 +25,18 @@ Swimchain uses a **recursive block architecture** where blocks form a hierarchic
 There is no distinction between "mining" and "paying for actions." Users mine to:
 
 - **Post** - Pay PoW, content enters chain
-- **Engage** - Pay PoW (pooled), content persists
+- **Engage** - Pay PoW, content persists
 
 The mechanism is identical to Bitcoin - PoW proves work was done. The difference:
 - **Not competitive** - All valid PoW counts
-- **Pooled contributions** - Multiple users can contribute to same target
+- **Independent engagements** - Each engagement is its own PoW action against a target
 - **Reward is the action** - Not a token, but the effect (content posted, content persisted)
 
 ### 1.3 Scope
 
 **In Scope:**
 - Hierarchical block structure (root → space → content)
-- PoW aggregation and pooling mechanics
+- PoW aggregation mechanics
 - Block formation and timing
 - Parent-anchored content placement
 - Automatic branching thresholds
@@ -155,13 +155,13 @@ Action {
 enum ActionType {
     POST    = 0x01,     // New thread root
     REPLY   = 0x02,     // Reply to existing content
-    ENGAGE  = 0x03      // Engagement (pool contribution)
+    ENGAGE  = 0x03      // Engagement (individual PoW action)
 }
 ```
 
 ---
 
-## 3. PoW Pooling for Engagement
+## 3. PoW for Engagement
 
 ### 3.1 The Core Concept
 
@@ -172,90 +172,63 @@ enum ActionType {
 | Create space | ~60s | One-time space creation |
 | Create post (new thread) | ~30s | Creates new content block |
 | Reply | ~10s | Adds to existing thread |
-| Engage (persist) | 60s total (pooled) | Resets content decay |
+| Engage (persist) | ~5s (individual action) | Resets content decay |
 
-### 3.2 Engagement Pool Mechanics
+### 3.2 Engagement Mechanics
 
-Content persistence requires a **fixed total PoW**, distributed across contributors:
+Content persistence requires an **individual PoW action** per engagement. There is no shared accumulator - one valid engagement resets the target content's decay timer on its own:
 
 ```
-ENGAGEMENT POOL MODEL
+ENGAGEMENT MODEL
 
-Required total PoW per engagement: 60 seconds
-├── Pool can have any number of contributors
-├── Each contributor adds their work to the pool
-├── Same contributor can contribute multiple times
-├── Pool completes when total >= required
-└── All contributors credited in content block
+Each engagement is a self-contained PoW action.
+├── Engager computes PoW against the target content
+├── A valid engagement resets the content's decay timer
+├── engagement_count is incremented
+├── Engager is credited in the content block
+└── Any identity can engage again later to reset decay again
 
 Example:
-├── User A contributes: 15s
-├── User B contributes: 15s
-├── User C contributes: 30s
-└── Total: 60s ✓ → Pool complete, decay reset
+├── User A engages content X → decay reset, A credited
+├── Later, User B engages content X → decay reset again, B credited
+└── Each engagement stands alone; no coordination required
 ```
 
-### 3.3 Pool Data Structures
+### 3.3 Engagement Data Structures
 
 ```
-EngagementPool {
+Engagement {
     target_content:     ContentHash     // Content being engaged
-    required_pow:       uint64          // Total PoW needed (e.g., 60s)
-    window_start:       Timestamp       // When pool opened
-    window_end:         Timestamp       // Deadline for contributions
-    contributions:      Contribution[]  // List of contributions
-    status:             PoolStatus      // OPEN | COMPLETED | EXPIRED
-}
-
-Contribution {
-    contributor:        PublicKey       // Who contributed
+    engager:            PublicKey        // Who engaged
     pow_nonce:          uint64          // Their PoW solution
     pow_work:           uint64          // Work amount in seconds
     pow_target:         Hash            // Target including content hash
-    timestamp:          Timestamp       // When contributed
-    signature:          Signature       // Proof of contribution
-}
-
-enum PoolStatus {
-    OPEN      = 0x01,   // Accepting contributions
-    COMPLETED = 0x02,   // Total met, engagement recorded
-    EXPIRED   = 0x03    // Window closed, incomplete
+    timestamp:          Timestamp       // When engaged
+    signature:          Signature       // Proof of engagement
 }
 ```
 
-### 3.4 Pool Contribution Flow
+### 3.4 Engagement Flow
 
 ```
-1. POOL INITIATION
+1. COMPUTE
    ├── User sees content approaching decay
-   ├── User initiates engagement intent
-   ├── Pool created with 10-minute window
-   └── User starts computing their contribution
+   ├── User computes PoW against: H(nonce || content_hash || prev_block)
+   └── User meets the ENGAGE difficulty
 
-2. CONTRIBUTION
-   ├── User computes PoW against: H(nonce || content_hash || pool_id)
-   ├── Contribution broadcast to peers
-   ├── Peers validate and add to pool state
-   └── Pool total updated
+2. BROADCAST
+   ├── Engagement action broadcast to peers via the mempool
+   ├── Peers validate the PoW and signature
+   └── Valid engagement is included in the content block
 
-3. ADDITIONAL CONTRIBUTIONS
-   ├── Other users who want content to persist
-   ├── Each computes and contributes
-   ├── Same user can contribute multiple times
-   └── Pool total accumulates
+3. EFFECT
+   ├── Content decay timer reset (last_engagement updated)
+   ├── engagement_count incremented
+   └── Engager credited as keeping content alive
 
-4. COMPLETION
-   ├── Total >= required (60s)
-   ├── Pool marked COMPLETED
-   ├── Engagement recorded in content block
-   ├── Content decay timer reset
-   └── All contributors credited
-
-5. EXPIRATION (if incomplete)
-   ├── Window closes
-   ├── Pool marked EXPIRED
-   ├── Contributed PoW is lost (sunk cost)
-   └── Content decay continues
+4. REPEAT
+   ├── Any identity can engage again later
+   └── Each new engagement resets decay again
 ```
 
 ### 3.5 Why Sybils Don't Help
@@ -264,35 +237,29 @@ enum PoolStatus {
 ATTACK: Create 100 identities to "split" cost
 
 Reality:
-├── Pool requires 60s TOTAL work
-├── 100 identities × 0.6s each = 60s total
-├── 1 identity × 60s = 60s total
-├── Same total work regardless
+├── Each engagement costs its own PoW
+├── 100 identities × full engagement PoW each
+├── 1 identity × full engagement PoW per engagement
+├── Same per-engagement cost regardless
 └── No advantage to Sybils
 
-The pool measures TOTAL PoW, not per-identity work.
+Engagement is priced per action, not per identity.
 Identity count is irrelevant.
 ```
 
-### 3.6 Continuing Contributions
+### 3.6 Repeated Engagement
 
-Same user can keep contributing until pool completes:
+Any identity can keep content alive by engaging again over time:
 
 ```
 SCENARIO: Small community, few contributors
 
-User A contributes 15s
-User B contributes 15s
-Total: 30s (need 30s more)
+User A engages content X → decay reset
+Later, User B engages content X → decay reset
+Later, User A engages content X again → decay reset
 
-User A contributes another 15s
-Total: 45s (need 15s more)
-
-User B contributes another 15s
-Total: 60s ✓ COMPLETE
-
-Both users could persist niche content.
-Each paid more individually, but it's possible.
+Each engagement is an independent PoW action.
+Niche content persists as long as someone keeps engaging.
 ```
 
 ---
@@ -344,7 +311,7 @@ POST X                 → LEFT (root determines placement)
 ├── Reply A to X       → LEFT (follows parent)
 │   └── Reply B to A   → LEFT (follows thread root)
 ├── Reply C to X       → LEFT (follows parent)
-└── Engagement pool    → LEFT (targets content in LEFT)
+└── Engagement         → LEFT (targets content in LEFT)
 
 ALL in same branch. User syncs LEFT, gets complete thread.
 ```
@@ -555,7 +522,7 @@ For each action in a content block:
    - prev_root_hash (chain-specific)
 4. Timestamp within acceptable window
 5. For REPLY: parent exists and is not decayed
-6. For ENGAGE: contribution is to valid pool
+6. For ENGAGE: target content exists and is not decayed
 ```
 
 ### 7.2 Content Block Validation
@@ -604,10 +571,10 @@ Setup:
 ├── Posts 1000 files
 ├── Initial cost: 1000 × 30s = 500 minutes
 
-Persistence cost (monthly):
-├── Each content needs engagement pool (60s)
-├── Only contributor: attacker
-├── Monthly: 1000 × 60s = 1000 minutes
+Persistence cost (ongoing):
+├── Each content needs an engagement (individual PoW) to reset decay
+├── Only engager: attacker
+├── Repeated across 1000 files, repeatedly over time
 └── Ongoing cost makes this expensive
 
 RESULT: Economically irrational vs. actual hosting ($0.10/month)
@@ -625,8 +592,8 @@ Post spam in "rust-lang" (1000 members):
 
 Defense:
 ├── Spam content has no organic engagement
-├── Attacker must pay 60s/month to persist
-├── Nobody else contributes to pool
+├── Attacker must pay engagement PoW repeatedly to persist
+├── Nobody else engages the spam
 ├── Spam decays without engagement
 └── Community visible, can filter/migrate
 
@@ -639,16 +606,14 @@ RESULT: Visible but expensive and temporary
 ATTACK: Create fake identities to reduce per-identity cost
 
 100 identities engage same content:
-├── Pool needs 60s total
-├── Each contributes 0.6s
-├── Total: 100 × 0.6s = 60s
+├── Each engagement costs full engagement PoW
+├── 100 engagements = 100 × full PoW
 
 Single identity:
-├── Pool needs 60s total
-├── Contributes 60s
-├── Total: 60s
+├── Each engagement costs full engagement PoW
+├── 1 engagement = 1 × full PoW
 
-RESULT: Same total cost. Sybils provide zero advantage.
+RESULT: Engagement is priced per action. Sybils provide zero advantage.
 ```
 
 ### 8.4 Block Stuffing
@@ -731,36 +696,21 @@ Storage target: 500MB per user
 | GET_SPACE | 0x43 | Request space block |
 | CONTENT_BLOCK | 0x44 | Content block data |
 | GET_CONTENT | 0x45 | Request content block |
-| POOL_INIT | 0x46 | Initialize engagement pool |
-| POOL_CONTRIBUTE | 0x47 | Contribute to pool |
-| POOL_STATUS | 0x48 | Pool completion status |
-| ACTION_NEW | 0x49 | New action broadcast |
+| ACTION_NEW | 0x49 | New action broadcast (POST, REPLY, ENGAGE) |
 
-### 10.2 Pool Coordination
+### 10.2 Engagement Broadcast
+
+Engagements are not a separate protocol. An ENGAGE is an ordinary action carried in the normal ACTION_NEW (0x49) / mempool flow, alongside POST and REPLY:
 
 ```
-POOL INITIATION (0x46):
+ACTION_NEW (0x49) for an ENGAGE:
 [1 byte: type]
+[1 byte: action_type = ENGAGE]
 [32 bytes: target_content_hash]
-[8 bytes: required_pow]
-[8 bytes: window_duration_ms]
-[32 bytes: pool_id]
-[64 bytes: initiator_signature]
-
-POOL CONTRIBUTION (0x47):
-[1 byte: type]
-[32 bytes: pool_id]
-[32 bytes: contributor_pubkey]
+[32 bytes: engager_pubkey]
 [8 bytes: pow_nonce]
 [8 bytes: pow_work]
 [64 bytes: signature]
-
-POOL STATUS (0x48):
-[1 byte: type]
-[32 bytes: pool_id]
-[1 byte: status]
-[8 bytes: current_total]
-[2 bytes: contributor_count]
 ```
 
 ---
@@ -770,15 +720,15 @@ POOL STATUS (0x48):
 ### 11.1 SPEC_02 (Decay)
 
 - Decay applies at content level (individual posts)
-- Engagement pool completion resets decay timer
-- Pool contributions count as engagement for decay purposes
+- A valid engagement resets the target content's decay timer
+- Each engagement counts as engagement for decay purposes
 - Decayed content blocks can be pruned
 
 ### 11.2 SPEC_03 (PoW)
 
 - Action PoW uses same algorithm (Argon2id)
-- Difficulty levels by action type (post > reply > engage contribution)
-- Pool total is sum of individual contribution work
+- Difficulty levels by action type (post > reply > engage)
+- Each engagement is an independent unit of PoW work
 
 ### 11.3 SPEC_04 (Spaces)
 
@@ -798,16 +748,14 @@ POOL STATUS (0x48):
 
 ### 12.1 To Resolve
 
-1. **Pool window duration**: 10 minutes proposed. Too long? Too short?
-2. **Partial pool credit**: If pool expires incomplete, do contributors lose all work?
-3. **Pool discovery**: How do users find pools they might want to contribute to?
-4. **Minimum contribution**: Is there a floor (e.g., 1s minimum)?
+1. **Engagement difficulty**: Is a ~5s per-engagement PoW the right cost?
+2. **Re-engagement rate**: Should the same identity be limited in how often it re-engages the same content?
 
 ### 12.2 For Prototyping
 
 1. **Branch size thresholds**: 50MB proposed. Optimal value?
 2. **Block timing**: 30s target. Right for social media cadence?
-3. **Pool economics**: Is 60s total the right engagement cost?
+3. **Engagement economics**: Is the per-engagement PoW cost calibrated correctly?
 
 ---
 

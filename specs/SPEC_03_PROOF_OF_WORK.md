@@ -20,9 +20,9 @@ The Proof of Work (PoW) system implements computational friction for ALL actions
 
 **Economic Foundation:**
 - **ALL engagement costs PoW** - no free persistence
-- Pooled engagement distributes cost across interested parties
+- Each engagement is an individual PoW action that resets content decay
 - Content persistence reflects actual community investment
-- Sybil attacks provide zero advantage (total work is fixed)
+- Sybil attacks provide zero advantage (each engagement costs the same work)
 
 **Key Insight: Mining IS Paying.** There is no distinction between "mining" and "paying for actions." Users mine to post, mine to engage, mine to persist content. The mechanism is identical to Bitcoin - the difference is that reward is the action itself, not a token.
 
@@ -106,11 +106,11 @@ enum ActionType {
     SPACE_CREATION = 0x01,        // Creating a new space
     POST = 0x02,                  // Creating a new post/thread
     REPLY = 0x03,                 // Replying to existing content
-    ENGAGE = 0x04,                // Engagement pool contribution (persistence)
+    ENGAGE = 0x04,                // Engagement action (persistence)
     IDENTITY_UPDATE = 0x05,       // Updating identity metadata
 }
 
-// Note: REACTION (0x04) renamed to ENGAGE in v2.0.0 to reflect pooled engagement model
+// Note: REACTION (0x04) renamed to ENGAGE in v2.0.0 to reflect the per-engagement PoW model
 ```
 
 ### 3.2 PoWSolution
@@ -366,31 +366,24 @@ Per-action minimum difficulties (leading zero bits):
 | SPACE_CREATION | 22 | ~60 seconds | One-time per space |
 | POST | 20 | ~30 seconds | Creates new thread |
 | REPLY | 18 | ~15 seconds | Adds to existing thread |
-| ENGAGE | 16 | ~5-60 seconds | See pooled engagement below |
+| ENGAGE | 16 | ~5 seconds | Individual PoW action, resets decay |
 | IDENTITY_UPDATE | 20 | ~30 seconds | Updating profile |
 
-**Pooled Engagement (ENGAGE action):**
+**Engagement (ENGAGE action):**
 
-Engagement to persist content uses **pooled PoW** - a fixed total requirement that can be distributed across multiple contributors:
+Engagement to persist content is an **individual PoW action**. Each engagement is a self-contained proof of work, comparable in cost to a REPLY, and a valid engagement resets the target content's decay timer immediately.
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Pool total required | 60 seconds | Fixed per engagement |
-| Min contribution | 1 second | Floor per contributor |
-| Pool window | 10 minutes | Time to accumulate contributions |
-| Same contributor | Unlimited | Can contribute multiple times |
+| Difficulty | 16 leading zero bits | ~5 seconds on reference hardware |
+| Effect | Resets decay timer | Updates last_engagement, increments engagement_count |
+| Repeatable | Yes | Any identity can engage again later to keep resetting decay |
 
-**Example scenarios:**
-- 1 user contributes 60s alone → pool complete
-- 6 users contribute 10s each → pool complete (60s total)
-- 1 user contributes 30s, then 30s more → pool complete
-- Pool gets 45s before window expires → incomplete, work lost
-
-**Why Sybils don't help:** Pool measures TOTAL work, not per-identity work. 100 identities × 0.6s = same as 1 identity × 60s.
+**Why Sybils don't help:** Each engagement costs the same PoW regardless of identity. Splitting engagement across 100 identities costs 100 separate proofs of work, not a discount.
 
 Note: These are reference values. Actual difficulty should be calibrated through prototyping to achieve target times on reference hardware.
 
-## 7. Pooled Engagement System
+## 7. Engagement PoW System
 
 ### 7.1 Purpose
 
@@ -403,63 +396,45 @@ Without engagement PoW:
 
 With engagement PoW:
 - Attacker posts content (30s PoW)
-- Attacker must pay 60s monthly to persist
+- Each engagement to persist content costs its own PoW
 - Ongoing cost makes abuse economically irrational
 
-### 7.2 Pool Mechanics
+### 7.2 Engagement Mechanics
+
+Each engagement is a self-contained PoW action carried in the normal action/mempool flow. There is no shared accumulator and no multi-contributor coordination - one valid engagement resets the target content's decay timer on its own.
 
 ```
-EngagementPool {
-    pool_id:            Hash            // Unique pool identifier
+Engagement {
     target_content:     ContentHash     // Content being engaged
-    required_pow:       uint64          // Total PoW needed (60s default)
-    window_start:       Timestamp       // When pool opened
-    window_end:         Timestamp       // Deadline for contributions
-    contributions:      Contribution[]  // List of contributions
-    status:             PoolStatus      // OPEN | COMPLETED | EXPIRED
-}
-
-Contribution {
-    contributor:        PublicKey       // Who contributed
-    pow_nonce:          uint64          // Their PoW solution
+    engager:            PublicKey        // Who engaged
+    pow_nonce:          uint64          // PoW solution
     pow_work:           uint64          // Work amount in seconds
-    timestamp:          Timestamp       // When contributed
-    signature:          Signature       // Proof of contribution
+    timestamp:          Timestamp       // When engaged
+    signature:          Signature       // Proof of engagement
 }
 ```
 
-### 7.3 Pool Lifecycle
+### 7.3 Engagement Lifecycle
 
 ```
-1. INITIATION
-   ├── User signals intent to engage with content X
-   ├── Pool created with unique ID
-   ├── Window: 10 minutes
-   └── User begins computing their contribution
+1. COMPUTE
+   ├── User selects content X to keep alive
+   ├── PoW target: H(nonce || content_hash || prev_block)
+   └── User computes a solution meeting ENGAGE difficulty
 
-2. CONTRIBUTION
-   ├── PoW target: H(nonce || content_hash || pool_id || prev_block)
-   ├── Solution broadcast to peers
-   ├── Peers validate and track contribution
-   └── Pool total updated
+2. BROADCAST
+   ├── Engagement action broadcast to peers via the mempool
+   ├── Peers validate the PoW and signature
+   └── Valid engagement is included in the content block
 
-3. ACCUMULATION
-   ├── Multiple users can contribute
-   ├── Same user can contribute multiple times
-   ├── Work amounts are additive
-   └── No limit on contributor count
+3. EFFECT
+   ├── Content decay timer reset (last_engagement updated)
+   ├── engagement_count incremented
+   └── Engager credited as keeping content alive
 
-4. COMPLETION (total >= required)
-   ├── Pool marked COMPLETED
-   ├── Engagement recorded in content block
-   ├── Content decay timer reset
-   └── All contributors credited
-
-5. EXPIRATION (window closes, total < required)
-   ├── Pool marked EXPIRED
-   ├── Contributed PoW is LOST (sunk cost)
-   ├── Content decay continues
-   └── New pool can be started
+4. REPEAT
+   ├── Any identity can engage again later
+   └── Each new engagement resets decay again
 ```
 
 ### 7.4 Content-Specific PoW
@@ -467,11 +442,10 @@ Contribution {
 Engagement PoW includes the content hash, preventing reuse:
 
 ```
-PoW Target = H(nonce || content_hash || pool_id || prev_block_hash)
+PoW Target = H(nonce || content_hash || prev_block_hash)
 
 This ensures:
 ├── PoW is specific to target content
-├── PoW is specific to this pool instance
 ├── PoW is tied to chain state (prev_block_hash)
 └── Cannot reuse PoW for different content
 ```
@@ -482,7 +456,7 @@ This ensures:
 ```
 Attack: Use private space as personal storage
 ├── Post 100 files: 100 × 30s = 50 min initial
-├── Monthly persistence: 100 × 60s = 100 min/month
+├── Ongoing persistence: an engagement per content, repeatedly
 └── Vs. actual hosting: $0.10/month
 
 Result: Economically irrational
@@ -490,11 +464,11 @@ Result: Economically irrational
 
 **Sybil Attack:**
 ```
-Attack: Create 100 identities to split pool cost
-├── Pool requires 60s TOTAL
-├── 100 identities × 0.6s = 60s total
-├── 1 identity × 60s = 60s total
-└── Same cost regardless
+Attack: Create 100 identities to cheapen engagement
+├── Each engagement costs its own PoW
+├── 100 identities × full engagement PoW each
+├── 1 identity × full engagement PoW per engagement
+└── Same per-engagement cost regardless
 
 Result: No advantage to Sybils
 ```
@@ -502,35 +476,13 @@ Result: No advantage to Sybils
 **Self-Persistence:**
 ```
 Attack: Keep own content alive via self-engagement
-├── Author pays 60s PoW monthly per content
+├── Author pays full engagement PoW per engagement
 ├── Same cost as anyone else
 ├── No free ride
 └── Must actually invest compute
 
 Result: Expensive, can't scale
 ```
-
-### 7.6 Pool Discovery
-
-How users find pools to contribute to:
-
-1. **Following spaces** - See pool requests for content in followed spaces
-2. **Explicit broadcast** - Pool initiator announces to space
-3. **Client notification** - Alert when content user engaged with needs help
-4. **Decay warnings** - Content approaching decay shows pool status
-
-### 7.7 Partial Contribution Fate
-
-If pool expires incomplete:
-- **Contributed PoW is lost** (sunk cost)
-- Rationale: Prevents gaming where partial contributions extend decay
-- Users should only contribute if they believe pool will complete
-- Encourages realistic assessment of community interest
-
-**Alternative considered but rejected:**
-- Partial credit proportional to contribution
-- Problem: Could be gamed to get cheap extensions
-- Problem: Complicates decay calculation
 
 ## 8. Security Considerations
 
@@ -745,17 +697,11 @@ Expected: REJECT with reason 0x03 (Content mismatch)
 
 8. **Difficulty Calibration**: What benchmark suite should be used for calibrating difficulty targets?
 
-### 12.1 Pool-Specific Questions
+### 12.1 Engagement-Specific Questions
 
-9. **Pool Window Duration**: 10 minutes proposed. Is this optimal for user coordination?
+9. **Engagement Difficulty**: Is 16 leading zero bits (~5 seconds) the right cost for a single engagement?
 
-10. **Minimum Contribution**: Is 1 second a reasonable floor? Should there be a higher minimum?
-
-11. **Pool Discovery Mechanism**: How do users efficiently find pools they might want to contribute to?
-
-12. **Expired Pool Retry**: Can a new pool be started immediately after expiration, or is there a cooldown?
-
-13. **Concurrent Pools**: Can multiple pools target the same content simultaneously?
+10. **Engagement Rate**: Should there be a limit on how frequently the same identity can re-engage the same content?
 
 ## 13. References
 
@@ -772,7 +718,7 @@ Expected: REJECT with reason 0x03 (Content mismatch)
 *Specification Version: 2.0.0 DRAFT*
 *Last Updated: 2024-12-25*
 *Changes in 2.0.0:*
-- *Added pooled engagement PoW (Section 7)*
+- *Added per-engagement PoW (Section 7)*
 - *Renamed REACTION to ENGAGE action type*
 - *Added content-specific PoW targeting*
 - *Integrated with recursive block architecture*

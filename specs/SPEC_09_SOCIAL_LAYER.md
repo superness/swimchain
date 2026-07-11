@@ -88,7 +88,7 @@ The protocol tracks **hosting contribution** at the identity level:
 | `content_hosted_hours` | GB-hours of content stored | Local measurement × uptime | **Primary** |
 | `uptime_ratio` | Time online vs. offline (0.0-1.0) | Peer observations | **Primary** |
 | `peer_requests_served` | Number of peer requests answered | Request logs | **Secondary** |
-| `posts_kept_alive` | Content you contributed PoW to | Engagement pool records | Secondary |
+| `posts_kept_alive` | Content you contributed PoW to | Engagement records | Secondary |
 | `streak_days` | Consecutive days with hosting activity | Daily heartbeat | Tertiary |
 
 **Note**: `spaces_active` and post counts are NOT contribution metrics. Those are participation, not infrastructure.
@@ -1185,7 +1185,7 @@ pub struct SpaceHealthResponsePayload {
 ### 13.7 Phase 7: Content Attribution ✅ COMPLETE (Milestone 7.7)
 
 - Who kept this alive display
-- Engagement pool attribution
+- Engagement attribution
 - Decay timeline display
 - Wire protocol (MSG_ATTRIBUTION_QUERY 0x50, MSG_ATTRIBUTION_RESPONSE 0x51)
 
@@ -1277,13 +1277,13 @@ This is social media. The social layer makes it feel that way.
 - **2025-12-26**: Phase 7 (Content Attribution) implemented in Milestone 7.7
   - Attribution module: `src/attribution/` (6 files: mod.rs, types.rs, error.rs, compute.rs, manager.rs, handler.rs)
   - AttributionEntry (§6.3): 48-byte wire format (identity:32 + pow_contributed:8 + timestamp:8)
-  - ContentAttribution: aggregates contributors from engagement pools, sorted by PoW DESC
+  - ContentAttribution: aggregates contributors from engagements, sorted by PoW DESC
   - ContentAttributionDisplay: format_attribution_display() generates "KEPT ALIVE BY: @alice, @bob, and X others"
   - MAX_DISPLAY_CONTRIBUTORS = 10 limit per display
   - DecayStatus enum: Active (0x01), Protected (0x02), Decayed (0x03)
   - decay_countdown_days(): floor protection, active decay, decayed states
   - decay_countdown_days_with_level(): level multipliers per §4.4 (1.0x→2.0x for NewSwimmer→PoolKeeper)
-  - extract_contributors_from_pool(): HashMap-based O(n) deduplication
+  - extract_contributors_from_engagements(): HashMap-based O(n) deduplication
   - IdentityResolver trait: name resolution for display
   - Protocol messages (§11.1):
     - MSG_ATTRIBUTION_QUERY (0x50): 32 bytes (content_id)
