@@ -4,7 +4,6 @@ import { notFound } from 'next/navigation';
 import { cache } from 'react';
 import type { ContentResponse } from '@/types/gateway';
 import { HeatIndicator } from '@/components/HeatIndicator';
-import { PoolDisplay } from '@/components/PoolDisplay';
 import { AddressDisplay } from '@/components/AddressDisplay';
 import { ReadOnlyReplyTree } from '@/components/ReadOnlyReplyTree';
 import { StructuredData } from '@/components/StructuredData';
@@ -101,7 +100,7 @@ export default async function PostPage({ params }: PageProps) {
     },
     // Swimchain-specific (non-standard, for transparency)
     'swimchain:heat': post.survival_probability,
-    'swimchain:poolProgress': post.pool?.progressPercentage,
+    'swimchain:engagementCount': post.item.engagement_count,
   };
 
   return (
@@ -149,12 +148,6 @@ export default async function PostPage({ params }: PageProps) {
         <div className="post-body">
           {post.item.body_inline || '[Content unavailable]'}
         </div>
-
-        {post.pool && (
-          <div className="post-pool">
-            <PoolDisplay pool={post.pool} />
-          </div>
-        )}
 
         {/* NO ACTION BUTTONS - READ ONLY GATEWAY */}
       </article>

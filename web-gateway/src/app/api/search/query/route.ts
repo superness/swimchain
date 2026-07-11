@@ -51,7 +51,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       const threshold = parseInt(minEngagement, 10);
       if (!isNaN(threshold)) {
         results = results.filter(
-          r => r.scoreBreakdown.engagementPool >= threshold
+          r => r.scoreBreakdown.engagement >= threshold
         );
       }
     }
@@ -87,7 +87,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       case 'engagement':
         results.sort(
           (a, b) =>
-            b.scoreBreakdown.engagementPool - a.scoreBreakdown.engagementPool
+            b.scoreBreakdown.engagement - a.scoreBreakdown.engagement
         );
         break;
       default:

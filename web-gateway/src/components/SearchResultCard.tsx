@@ -49,10 +49,10 @@ export function SearchResultCard({
             />
           </span>
 
-          {result.pool && (
+          {result.scoreBreakdown.engagement > 0 && (
             <span className="stat">
-              <PoolIcon />
-              {result.pool.contributedSeconds}s/{result.pool.requiredSeconds}s
+              <EngagementIcon />
+              {result.scoreBreakdown.engagement.toFixed(0)}% engaged
             </span>
           )}
 
@@ -70,9 +70,9 @@ export function SearchResultCard({
             <details>
               <summary>Details</summary>
               <div className="breakdown-details">
-                <div>Text: {result.scoreBreakdown.textRelevance.toFixed(0)}% &times; 40% = {result.scoreBreakdown.contributions.textRelevance.toFixed(1)}</div>
-                <div>Heat: {result.scoreBreakdown.heatDecay.toFixed(0)}% &times; 25% = {result.scoreBreakdown.contributions.heatDecay.toFixed(1)}</div>
-                <div>Engagement: {result.scoreBreakdown.engagementPool.toFixed(0)}% &times; 20% = {result.scoreBreakdown.contributions.engagementPool.toFixed(1)}</div>
+                <div>Text: {result.scoreBreakdown.textRelevance.toFixed(0)}% &times; 45% = {result.scoreBreakdown.contributions.textRelevance.toFixed(1)}</div>
+                <div>Heat: {result.scoreBreakdown.heatDecay.toFixed(0)}% &times; 30% = {result.scoreBreakdown.contributions.heatDecay.toFixed(1)}</div>
+                <div>Engagement: {result.scoreBreakdown.engagement.toFixed(0)}% &times; 10% = {result.scoreBreakdown.contributions.engagement.toFixed(1)}</div>
                 <div>Recency: {result.scoreBreakdown.recency.toFixed(0)}% &times; 15% = {result.scoreBreakdown.contributions.recency.toFixed(1)}</div>
               </div>
             </details>
@@ -209,7 +209,7 @@ function formatTimeAgo(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
-function PoolIcon() {
+function EngagementIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <circle cx="12" cy="12" r="10" />
