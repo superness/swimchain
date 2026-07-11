@@ -318,9 +318,30 @@ impl ConnectionManager {
     ) -> Result<(), ConnectionManagerError> {
         let mut inner = self.inner.write().unwrap();
 
-        // Check if already connected
-        if inner.connections.contains_key(&peer_id) {
-            return Err(ConnectionManagerError::AlreadyConnected);
+        // If we already track a connection for this peer, this is a reconnect.
+        // The previous socket has almost certainly gone half-open — a NAT'd peer
+        // whose old connection wedged, or a stuck handler that never observed the
+        // disconnect. A live peer does not open a duplicate, so prefer the NEW
+        // connection: drop the stale handle so the caller can register the
+        // replacement (ConnectionPool::add overwrites the socket, so later sends
+        // use the fresh connection).
+        //
+        // Previously this returned AlreadyConnected, so a single wedged
+        // connection blocked the peer from EVER reconnecting until a restart
+        // ("peer already connected" forever) — the seed-node symptom that
+        // stranded a mobile peer mid-resync. We deliberately do NOT emit a
+        // Disconnected event for the old handle: the replacement emits Connected
+        // just below, and firing Disconnected here could race a subscriber into
+        // tearing down the fresh connection.
+        if let Some(old) = inner.connections.remove(&peer_id) {
+            warn!(
+                "[CONN] Replacing stale {:?} connection to {} ({}) with new {:?} from {}",
+                old.direction,
+                hex::encode(&peer_id[..8]),
+                old.remote_addr,
+                direction,
+                addr,
+            );
         }
 
         // Check if banned
@@ -511,7 +532,9 @@ impl ConnectionManager {
     pub fn cleanup_expired_bans(&self) {
         let mut inner = self.inner.write().unwrap();
         let now = Instant::now();
-        inner.banned_until.retain(|_, &mut ban_until| ban_until > now);
+        inner
+            .banned_until
+            .retain(|_, &mut ban_until| ban_until > now);
     }
 
     // ========== Peer Selection ==========
@@ -531,11 +554,8 @@ impl ConnectionManager {
         let mut candidates = self.peer_store.get_all().unwrap_or_default();
 
         // Get connected peer addresses for filtering
-        let connected_addrs: std::collections::HashSet<SocketAddr> = inner
-            .connections
-            .values()
-            .map(|c| c.remote_addr)
-            .collect();
+        let connected_addrs: std::collections::HashSet<SocketAddr> =
+            inner.connections.values().map(|c| c.remote_addr).collect();
 
         // Filter out connected and banned peers
         // Note: We can't easily check banned by peer_id since PeerEntry doesn't have peer_id
@@ -559,7 +579,10 @@ impl ConnectionManager {
         });
 
         // Take up to (target_peers - current_peers) candidates
-        let needed = self.config.target_peers.saturating_sub(inner.connections.len());
+        let needed = self
+            .config
+            .target_peers
+            .saturating_sub(inner.connections.len());
         candidates.truncate(needed);
 
         candidates
@@ -788,19 +811,30 @@ mod tests {
     }
 
     #[test]
-    fn test_add_connection_already_connected() {
+    fn test_add_connection_reconnect_replaces_stale() {
+        // A reconnect from an already-tracked peer must REPLACE the stale
+        // connection, not be rejected — otherwise a half-open/wedged connection
+        // blocks the peer from ever reconnecting until a restart.
         let peer_store = test_peer_store();
         let manager = ConnectionManager::new(ConnectionConfig::for_test(), peer_store);
 
         let peer_id = [0xab; 32];
-        let addr: SocketAddr = "127.0.0.1:9735".parse().unwrap();
+        let addr1: SocketAddr = "127.0.0.1:9735".parse().unwrap();
+        let addr2: SocketAddr = "127.0.0.1:9999".parse().unwrap();
 
         manager
-            .add_connection(peer_id, addr, ConnectionDirection::Outbound)
+            .add_connection(peer_id, addr1, ConnectionDirection::Outbound)
             .unwrap();
-        let result = manager.add_connection(peer_id, addr, ConnectionDirection::Outbound);
 
-        assert!(matches!(result, Err(ConnectionManagerError::AlreadyConnected)));
+        // Reconnect (e.g. a fresh inbound after the old socket wedged) succeeds.
+        let result = manager.add_connection(peer_id, addr2, ConnectionDirection::Inbound);
+        assert!(result.is_ok(), "reconnect must be accepted, got {result:?}");
+
+        // Still exactly one connection for the peer, now the new one.
+        assert_eq!(manager.connection_count(), 1);
+        assert!(manager.is_connected(&peer_id));
+        assert_eq!(manager.inbound_count(), 1);
+        assert_eq!(manager.outbound_count(), 0);
     }
 
     #[test]
