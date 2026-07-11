@@ -894,7 +894,7 @@ impl MessageRouter {
             i_have.provider_id // Explicit provider_id from relay
         };
 
-        info!(
+        debug!(
             "[CONTENT-SYNC] Received I_HAVE from {} for {} (provider: {})",
             hex::encode(&peer_id[..8]),
             hex::encode(&i_have.hash[..8]),

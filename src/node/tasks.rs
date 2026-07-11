@@ -968,9 +968,13 @@ impl BackgroundTaskRunner {
                                             }
 
                                             // Send content inventory to new peer (I_HAVE for all local content)
-                                            // This ensures the peer knows what content we have for WHO_HAS queries
+                                            // This ensures the peer knows what content we have for WHO_HAS queries.
+                                            // Throttled per-peer: re-scanning + re-flooding on every (re)connect
+                                            // pegs the CPU under seed-node connection churn.
                                             let sync_blobs_path = data_dir.join("sync_blobs");
-                                            if sync_blobs_path.exists() {
+                                            if sync_blobs_path.exists()
+                                                && connection_pool.should_send_inventory(&peer_id).await
+                                            {
                                                 let mut inventory_count = 0;
                                                 if let Ok(prefix_dirs) = std::fs::read_dir(&sync_blobs_path) {
                                                     for prefix_entry in prefix_dirs.flatten() {
@@ -1702,8 +1706,12 @@ impl BackgroundTaskRunner {
 
                                     // Send content inventory to new peer (I_HAVE for all local content)
                                     // Content is stored in sharded structure: sync_blobs/XX/XXXX...
+                                    // Throttled per-peer: re-scanning + re-flooding on every (re)connect
+                                    // pegs the CPU under seed-node connection churn.
                                     let sync_blobs_path = data_dir.join("sync_blobs");
-                                    if sync_blobs_path.exists() {
+                                    if sync_blobs_path.exists()
+                                        && connection_pool.should_send_inventory(&peer_id).await
+                                    {
                                         let mut inventory_count = 0;
                                         // Iterate over prefix directories (e.g., "a7", "ca")
                                         if let Ok(prefix_dirs) = std::fs::read_dir(&sync_blobs_path) {

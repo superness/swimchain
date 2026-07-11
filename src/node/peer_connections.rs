@@ -160,7 +160,8 @@ impl PeerConnection {
 
     /// Mark the connection as established
     pub fn set_established(&self, value: bool) {
-        self.established.store(value, std::sync::atomic::Ordering::Relaxed);
+        self.established
+            .store(value, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -171,21 +172,56 @@ impl PeerConnection {
 pub struct PeerConnectionPool {
     /// Active connections by peer_id
     connections: RwLock<HashMap<[u8; 32], Arc<PeerConnection>>>,
+    /// Per-peer throttle for the full-content I_HAVE inventory blast. Announcing the entire
+    /// blob store to a peer on every connection is O(blobs) filesystem work plus a message
+    /// flood; under seed-node connection churn (reconnect every ~30s) it re-scans and
+    /// re-floods constantly and pegs the CPU. We only re-send to a given peer after a
+    /// cooldown. `node_id -> last time we sent it our inventory`.
+    inventory_sent: RwLock<HashMap<[u8; 32], std::time::Instant>>,
 }
+
+/// How long to wait before re-announcing our full content inventory to the same peer.
+const INVENTORY_THROTTLE: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl PeerConnectionPool {
     /// Create a new empty pool
     pub fn new() -> Self {
         Self {
             connections: RwLock::new(HashMap::new()),
+            inventory_sent: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Returns `true` (and records "now") if we should send the full content inventory to
+    /// this peer — i.e. we have not sent it within [`INVENTORY_THROTTLE`]. This stops
+    /// reconnect churn from re-scanning the blob store and re-flooding I_HAVE, which
+    /// otherwise pegs a small node's CPU.
+    pub async fn should_send_inventory(&self, node_id: &[u8; 32]) -> bool {
+        let now = std::time::Instant::now();
+        let mut sent = self.inventory_sent.write().await;
+        if let Some(at) = sent.get(node_id) {
+            if now.duration_since(*at) < INVENTORY_THROTTLE {
+                return false;
+            }
+        }
+        sent.insert(*node_id, now);
+        // Bound memory: occasionally drop peers we haven't announced to in a while.
+        if sent.len() > 1024 {
+            sent.retain(|_, t| now.duration_since(*t) < INVENTORY_THROTTLE);
+        }
+        true
     }
 
     /// Add a connection to the pool
     ///
     /// Takes a raw TcpStream (post-handshake) and creates a PeerConnection.
     /// Returns the Arc<PeerConnection> for use in message loop.
-    pub async fn add(&self, stream: TcpStream, peer_id: [u8; 32], established: bool) -> Arc<PeerConnection> {
+    pub async fn add(
+        &self,
+        stream: TcpStream,
+        peer_id: [u8; 32],
+        established: bool,
+    ) -> Arc<PeerConnection> {
         let peer_conn = Arc::new(PeerConnection::new(stream, peer_id, established));
         let mut connections = self.connections.write().await;
         connections.insert(peer_id, peer_conn.clone());
