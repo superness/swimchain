@@ -32,6 +32,10 @@ pub struct PeerConnection {
     writer: Mutex<OwnedWriteHalf>,
     /// Peer's node ID
     peer_id: [u8; 32],
+    /// The peer's socket endpoint (observed source for inbound; dialed addr for
+    /// outbound). Post-NAT-reflection this is the peer's public endpoint either way,
+    /// so it's usable for introducing peers to each other (hole-punch coordination).
+    remote_addr: std::net::SocketAddr,
     /// Whether the connection is established (handshake complete)
     established: std::sync::atomic::AtomicBool,
 }
@@ -41,11 +45,15 @@ impl PeerConnection {
     ///
     /// Splits the stream into independent read and write halves.
     pub fn new(stream: TcpStream, peer_id: [u8; 32], established: bool) -> Self {
+        let remote_addr = stream
+            .peer_addr()
+            .unwrap_or_else(|_| std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
         let (reader, writer) = stream.into_split();
         Self {
             reader: Mutex::new(reader),
             writer: Mutex::new(writer),
             peer_id,
+            remote_addr,
             established: std::sync::atomic::AtomicBool::new(established),
         }
     }
@@ -53,6 +61,11 @@ impl PeerConnection {
     /// Get the peer ID
     pub fn peer_id(&self) -> [u8; 32] {
         self.peer_id
+    }
+
+    /// The peer's socket endpoint (see field docs).
+    pub fn remote_addr(&self) -> std::net::SocketAddr {
+        self.remote_addr
     }
 
     /// Send a message to this peer
@@ -208,6 +221,16 @@ impl PeerConnectionPool {
     pub async fn peer_ids(&self) -> Vec<[u8; 32]> {
         let connections = self.connections.read().await;
         connections.keys().copied().collect()
+    }
+
+    /// Get (node_id, endpoint) for every connected peer whose endpoint is a real
+    /// public address — used to introduce peers to each other for hole-punching.
+    pub async fn peer_endpoints(&self) -> Vec<([u8; 32], std::net::SocketAddr)> {
+        let connections = self.connections.read().await;
+        connections
+            .iter()
+            .map(|(id, conn)| (*id, conn.remote_addr()))
+            .collect()
     }
 
     /// Get the number of active connections
