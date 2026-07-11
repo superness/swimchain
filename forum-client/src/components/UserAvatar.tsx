@@ -9,8 +9,9 @@
  * (generates default avatar) or with full profile data.
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { getAvatarColor, getAvatarInitials, AvatarInfo } from '../lib/profile';
+import { useMediaUpload } from '../hooks/useRpc';
 import './UserAvatar.css';
 
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
@@ -57,6 +58,8 @@ export function UserAvatar({
   isOnline = false,
 }: UserAvatarProps): JSX.Element {
   const [imageError, setImageError] = useState(false);
+  const { getMediaUrl } = useMediaUpload();
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
 
   // Generate default avatar properties
   const { color, initials } = useMemo(() => ({
@@ -64,13 +67,21 @@ export function UserAvatar({
     initials: getAvatarInitials(displayName, userPk),
   }), [userPk, displayName]);
 
-  // Determine if we should show uploaded image
-  const showImage = avatar?.contentId && !imageError;
+  // Fetch the avatar image bytes via get_media (there is no /api/content route) and
+  // use the resulting data URL. Falls back to initials if absent/unfetchable.
+  useEffect(() => {
+    const cid = avatar?.contentId;
+    if (!cid) { setResolvedUrl(null); return; }
+    let cancelled = false;
+    setImageError(false);
+    getMediaUrl(cid.replace(/^sha256:/, ''))
+      .then(u => { if (!cancelled) setResolvedUrl(u); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [avatar?.contentId, getMediaUrl]);
 
-  // Build image URL from content ID
-  const imageUrl = showImage
-    ? `/api/content/${avatar!.contentId}`
-    : undefined;
+  const showImage = !!resolvedUrl && !imageError;
+  const imageUrl = showImage ? resolvedUrl! : undefined;
 
   const pixelSize = sizeMap[size];
 

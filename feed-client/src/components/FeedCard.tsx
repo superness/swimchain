@@ -325,10 +325,6 @@ export function FeedCard({
           <span className="feed-card__action-count">{item.replyCount || ''}</span>
         </Link>
 
-        <button className="feed-card__action" type="button" aria-label="Share">
-          <span className="feed-card__action-icon" aria-hidden="true">🔄</span>
-        </button>
-
         <button
           className={`feed-card__action ${isSaved ? 'feed-card__action--active' : ''}`}
           onClick={handleSaveClick}

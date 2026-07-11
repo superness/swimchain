@@ -3984,7 +3984,11 @@ impl MessageRouter {
                 content_id: ContentId::from_bytes(target_content),
                 reactor_id: IdentityId::from_bytes(action.actor),
                 reaction_type,
-                timestamp: action.timestamp,
+                // action.timestamp is in seconds; the reaction store + decay window work
+                // in milliseconds (get_reaction_counts compares against now*1000), so
+                // normalize here — otherwise every stored reaction reads as decayed and
+                // reaction counts come back empty.
+                timestamp: action.timestamp.saturating_mul(1000),
                 signature: Signature::from_bytes([0u8; 64]), // Block PoW already verified
             };
 

@@ -8162,7 +8162,8 @@ impl RpcMethods {
                     content_id: ContentId::from_bytes(target_content),
                     reactor_id: IdentityId::from_bytes(action.actor),
                     reaction_type,
-                    timestamp: action.timestamp,
+                    // seconds -> milliseconds (reaction store/decay window is ms).
+                    timestamp: action.timestamp.saturating_mul(1000),
                     signature: Signature::from_bytes([0u8; 64]),
                 };
 
