@@ -35,7 +35,7 @@ use crate::network::messages::{
     SpaceHealthResponsePayload, WhoHasPayload, WireAddr,
 };
 use crate::node::peer_connections::PeerConnectionPool;
-use crate::node::NodeMetrics;
+use crate::node::{BehavioralBranchingMode, NodeMetrics};
 use crate::spam_attestation::{
     aggregate_attestations, validate_attestation, CounterAttestation, CounterAttestationState,
     SpamAttestation, SpamAttestationStore, StoredSpamAttestation,
@@ -244,9 +244,10 @@ pub struct MessageRouter {
     /// Event manager for publishing real-time WebSocket events (H-RPC-2)
     event_manager: Option<Arc<crate::rpc::events::EventManager>>,
 
-    /// Behavioral branching enabled (SPEC_13 Phase A)
-    /// Gates organic community detection during block processing.
-    behavioral_branching_enabled: bool,
+    /// Behavioral branching mode (SPEC_13 Phase A / Phase 1 rollout)
+    /// Gates organic community detection during block processing, and whether
+    /// a qualifying cluster fractures (`Full`) or is only logged (`LogOnly`).
+    behavioral_branching_mode: BehavioralBranchingMode,
 }
 
 impl MessageRouter {
@@ -283,7 +284,7 @@ impl MessageRouter {
             node_id: None,
             search_index: None,
             event_manager: None,
-            behavioral_branching_enabled: false,
+            behavioral_branching_mode: BehavioralBranchingMode::Disabled,
         }
     }
 
@@ -327,7 +328,7 @@ impl MessageRouter {
             node_id: None,
             search_index: None,
             event_manager: None,
-            behavioral_branching_enabled: false,
+            behavioral_branching_mode: BehavioralBranchingMode::Disabled,
         }
     }
 
@@ -4194,14 +4195,20 @@ impl MessageRouter {
     ///
     /// Updates per-identity interaction metrics (SPEC_13 §3.1) and applies
     /// detection outcomes (community fracture or spam signal). Gated by
-    /// `behavioral_branching_enabled` (from `NodeConfig`, default ON only for
-    /// regtest until SPEC_13 §7 consensus messages land).
+    /// `behavioral_branching_mode` (from `NodeConfig::behavioral_branching_mode()`):
+    /// `Full` executes the fracture (default ON only for regtest until SPEC_13
+    /// §7 consensus messages land), `LogOnly` records a would-be formation
+    /// without applying it (Phase 1 observation rollout, default ON for
+    /// testnet -- `docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`), `Disabled`
+    /// skips detection entirely.
     fn process_behavioral_clustering(&self, content_block: &crate::blocks::ContentBlock) {
-        use crate::branch::{BranchManager, ClusterOutcome, ClusteringAction};
+        use crate::branch::{BranchManager, ClusterOutcome, ClusteringAction, ClusteringMode};
 
-        if !self.behavioral_branching_enabled {
-            return;
-        }
+        let clustering_mode = match self.behavioral_branching_mode {
+            BehavioralBranchingMode::Disabled => return,
+            BehavioralBranchingMode::LogOnly => ClusteringMode::LogOnly,
+            BehavioralBranchingMode::Full => ClusteringMode::Full,
+        };
         let chain_store = match &self.chain_store {
             Some(store) => store,
             None => return,
@@ -4237,12 +4244,22 @@ impl MessageRouter {
                 continue;
             };
 
-            match manager.process_action_for_clustering(
+            match manager.process_action_for_clustering_with_mode(
                 &content_block.space_id,
                 &clustering_action,
                 current_height,
                 action.timestamp,
+                clustering_mode,
             ) {
+                Ok(ClusterOutcome::Community(formation))
+                    if clustering_mode == ClusteringMode::LogOnly =>
+                {
+                    info!(
+                        "[SPEC13] Would-be community formation logged in space {}: {} members (log-only, Phase 1)",
+                        hex::encode(&content_block.space_id[..8]),
+                        formation.founding_members.len(),
+                    );
+                }
                 Ok(ClusterOutcome::Community(formation)) => {
                     info!(
                         "[SPEC13] Community formed in space {}: {} members, branch {:?}",
@@ -7725,7 +7742,7 @@ pub struct MessageRouterBuilder {
     node_id: Option<[u8; 32]>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
     event_manager: Option<Arc<crate::rpc::events::EventManager>>,
-    behavioral_branching_enabled: bool,
+    behavioral_branching_mode: BehavioralBranchingMode,
 }
 
 impl MessageRouterBuilder {
@@ -7758,7 +7775,7 @@ impl MessageRouterBuilder {
             node_id: None,
             search_index: None,
             event_manager: None,
-            behavioral_branching_enabled: false,
+            behavioral_branching_mode: BehavioralBranchingMode::Disabled,
         }
     }
 
@@ -7936,9 +7953,10 @@ impl MessageRouterBuilder {
         self
     }
 
-    /// Enable behavioral branching (SPEC_13 Phase A organic community detection)
-    pub fn behavioral_branching(mut self, enabled: bool) -> Self {
-        self.behavioral_branching_enabled = enabled;
+    /// Set the behavioral branching mode (SPEC_13 Phase A organic community
+    /// detection: `Disabled`, `LogOnly` observation, or `Full` formation).
+    pub fn behavioral_branching_mode(mut self, mode: BehavioralBranchingMode) -> Self {
+        self.behavioral_branching_mode = mode;
         self
     }
 
@@ -7980,7 +7998,7 @@ impl MessageRouterBuilder {
             node_id: self.node_id,
             search_index: self.search_index,
             event_manager: self.event_manager,
-            behavioral_branching_enabled: self.behavioral_branching_enabled,
+            behavioral_branching_mode: self.behavioral_branching_mode,
         }
     }
 
@@ -8018,7 +8036,7 @@ impl MessageRouterBuilder {
             node_id: self.node_id,
             search_index: self.search_index,
             event_manager: self.event_manager,
-            behavioral_branching_enabled: self.behavioral_branching_enabled,
+            behavioral_branching_mode: self.behavioral_branching_mode,
         })
     }
 }

@@ -507,6 +507,9 @@ async fn handle_request(
         "list_blocklist",
         "list_private_spaces",
         "list_dms",
+        // Behavioral branching observation (SPEC_13 Phase A / Phase 1 rollout):
+        // read-only, chain-derived diagnostic data, same treatment as list_blocklist.
+        "list_behavioral_events",
     ];
 
     let is_auth_exempt = AUTH_EXEMPT_METHODS.contains(&rpc_req.method.as_str())

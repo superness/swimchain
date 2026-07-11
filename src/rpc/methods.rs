@@ -1064,6 +1064,9 @@ impl RpcMethods {
             "list_blocklist" => self.list_blocklist(params, id).await,
             "manage_blocklist" => self.manage_blocklist(params, id).await,
 
+            // Behavioral branching methods (SPEC_13 Phase A / Phase 1 log-only rollout)
+            "list_behavioral_events" => self.list_behavioral_events(params, id).await,
+
             // Private space methods (DMs, group chats)
             "create_private_space" => self.create_private_space(params, id).await,
             "create_private_space_managed" => self.create_private_space_managed(params, id).await,
@@ -13828,6 +13831,104 @@ impl RpcMethods {
             action: params.action,
             content_hash: params.content_hash,
             count: store.count(),
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    // ========================================================================
+    // Behavioral Branching Methods (SPEC_13 Phase A / Phase 1 log-only rollout)
+    // ========================================================================
+
+    /// List recorded behavioral-branching events (`docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`
+    /// Phase 1): would-be community formations detected while running in
+    /// log-only mode. Optionally scoped to one space.
+    ///
+    /// Optional parameters:
+    /// - `space_id`: restrict results to one space (32-byte hex)
+    async fn list_behavioral_events(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ListBehavioralEventsParams = if params.is_null() {
+            ListBehavioralEventsParams { space_id: None }
+        } else {
+            match serde_json::from_value(params) {
+                Ok(p) => p,
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Invalid params: {}", e),
+                        id,
+                    );
+                }
+            }
+        };
+
+        let chain_store = match &self.node.chain_store {
+            Some(cs) => cs,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Chain store not available",
+                    id,
+                );
+            }
+        };
+
+        let events = if let Some(space_id_hex) = &params.space_id {
+            let space_id: [u8; 32] = match hex::decode(space_id_hex) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid space_id: must be 32-byte hex",
+                        id,
+                    );
+                }
+            };
+            chain_store.get_space_behavioral_events(&space_id)
+        } else {
+            chain_store.get_all_behavioral_events()
+        };
+
+        let mut events = match events {
+            Ok(events) => events,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to read behavioral events: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Most recently detected first.
+        events.sort_by(|a, b| {
+            b.detected_height
+                .cmp(&a.detected_height)
+                .then_with(|| b.timestamp.cmp(&a.timestamp))
+        });
+
+        let events: Vec<BehavioralEventInfo> = events
+            .iter()
+            .map(|e| BehavioralEventInfo {
+                event_id: hex::encode(e.event_id),
+                space_id: hex::encode(e.parent_space_id),
+                cluster_members: e.cluster_members.iter().map(hex::encode).collect(),
+                engagement_diversity: e.metrics.engagement_diversity,
+                external_interaction: e.metrics.external_interaction,
+                internal_cohesion: e.metrics.internal_cohesion,
+                member_count: e.metrics.member_count,
+                age_blocks: e.metrics.age_blocks,
+                detected_height: e.detected_height,
+                timestamp: e.timestamp,
+            })
+            .collect();
+
+        let result = ListBehavioralEventsResult {
+            count: events.len() as u32,
+            events,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }

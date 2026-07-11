@@ -18,10 +18,29 @@ use std::collections::BTreeSet;
 use crate::blocks::{BranchDirection, BranchPath};
 use crate::storage::ChainStore;
 
-use super::behavioral::{self, ClusterOutcome, ClusteringAction, CommunityFormation};
+use super::behavioral::{
+    self, BehavioralEvent, ClusterOutcome, ClusteringAction, CommunityFormation,
+};
 use super::error::BranchError;
 use super::metadata::{BranchMetadata, SpaceBranchState};
 use super::BRANCH_FRACTURE_THRESHOLD;
+
+/// Mode for [`BranchManager::process_action_for_clustering`] — controls what
+/// happens when detection crosses the community-formation thresholds
+/// (`docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md` Phase 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusteringMode {
+    /// Detection runs; a qualifying cluster executes the behavioral fracture
+    /// and is recorded as a [`CommunityFormation`] (existing Phase A
+    /// behavior). Gated to regtest by default via
+    /// `NodeConfig::behavioral_branching_enabled()`.
+    Full,
+    /// Detection runs; a qualifying cluster is persisted as a
+    /// [`BehavioralEvent`] ("would-be formation") but no fracture executes
+    /// and no space/branch is created. Rollout Phase 1 default for testnet
+    /// via `NodeConfig::behavioral_branching_log_only_enabled()`.
+    LogOnly,
+}
 
 /// Branch manager for assignment and fracturing
 ///
@@ -367,18 +386,13 @@ impl<'a> BranchManager<'a> {
     // Behavioral branching (SPEC_13 Phase A)
     // ========================================================================
 
-    /// Process one action for behavioral clustering (SPEC_13 §3.1).
+    /// Process one action for behavioral clustering (SPEC_13 §3.1), in
+    /// [`ClusteringMode::Full`].
     ///
-    /// Updates per-identity interaction metrics, checks whether the acting
-    /// identity's cluster now crosses the formation thresholds, and applies
-    /// the outcome:
-    ///
-    /// - **Community** (cluster >= `MIN_COMMUNITY_SIZE`): executes a
-    ///   behavioral fracture — threads are assigned by cluster membership,
-    ///   not hash bit — then records the formation.
-    /// - **Spam signal** (cluster of one, §6.1): records a
-    ///   [`behavioral::SpamClusterSignal`] for the spam-attestation /
-    ///   space-health side. No community forms.
+    /// Convenience wrapper over
+    /// [`Self::process_action_for_clustering_with_mode`] preserving the
+    /// original (pre-Phase-1) signature and behavior: qualifying formations
+    /// execute the fracture immediately.
     ///
     /// Callers must gate this behind
     /// `NodeConfig::behavioral_branching_enabled()` — detection is local-only
@@ -396,6 +410,54 @@ impl<'a> BranchManager<'a> {
         current_height: u64,
         timestamp: u64,
     ) -> Result<ClusterOutcome, BranchError> {
+        self.process_action_for_clustering_with_mode(
+            space_id,
+            action,
+            current_height,
+            timestamp,
+            ClusteringMode::Full,
+        )
+    }
+
+    /// Process one action for behavioral clustering (SPEC_13 §3.1), honoring
+    /// the given [`ClusteringMode`] (`docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`
+    /// Phase 1).
+    ///
+    /// Updates per-identity interaction metrics, checks whether the acting
+    /// identity's cluster now crosses the formation thresholds, and applies
+    /// the outcome:
+    ///
+    /// - **Community** (cluster >= `MIN_COMMUNITY_SIZE`):
+    ///   - [`ClusteringMode::Full`] executes a behavioral fracture — threads
+    ///     are assigned by cluster membership, not hash bit — then records
+    ///     the formation.
+    ///   - [`ClusteringMode::LogOnly`] persists a [`BehavioralEvent`]
+    ///     ("would-be formation") instead: no fracture executes, no
+    ///     space/branch is created. The per-space formation cooldown
+    ///     (§6.3) is still applied so a sustained insular cluster produces
+    ///     one observation per cooldown window rather than one per action.
+    /// - **Spam signal** (cluster of one, §6.1): records a
+    ///   [`behavioral::SpamClusterSignal`] for the spam-attestation /
+    ///   space-health side in either mode. No community forms.
+    ///
+    /// Callers must gate this behind `NodeConfig::behavioral_branching_mode()`
+    /// — detection is local-only until SPEC_13 §7 consensus messages land.
+    ///
+    /// # Arguments
+    /// * `space_id` - Space the action occurred in
+    /// * `action` - Normalized clustering view of the action
+    /// * `current_height` - Current chain height (for age/cooldown gates)
+    /// * `timestamp` - Current timestamp (for branch metadata / event updates)
+    /// * `mode` - Whether a qualifying cluster fractures ([`ClusteringMode::Full`])
+    ///   or is only logged ([`ClusteringMode::LogOnly`])
+    pub fn process_action_for_clustering_with_mode(
+        &self,
+        space_id: &[u8; 32],
+        action: &ClusteringAction,
+        current_height: u64,
+        timestamp: u64,
+        mode: ClusteringMode,
+    ) -> Result<ClusterOutcome, BranchError> {
         behavioral::update_metrics_for_action(self.store, space_id, action, current_height)?;
 
         let outcome = behavioral::check_threshold_crossing(
@@ -405,8 +467,8 @@ impl<'a> BranchManager<'a> {
             current_height,
         )?;
 
-        match outcome {
-            ClusterOutcome::Community(mut formation) => {
+        match (mode, outcome) {
+            (ClusteringMode::Full, ClusterOutcome::Community(mut formation)) => {
                 let community_branch =
                     self.execute_behavioral_fracture(space_id, &formation, timestamp)?;
                 formation.community_branch = Some(community_branch);
@@ -415,11 +477,23 @@ impl<'a> BranchManager<'a> {
                     .put_last_formation_height(space_id, current_height)?;
                 Ok(ClusterOutcome::Community(formation))
             }
-            ClusterOutcome::SpamSignal(signal) => {
+            (ClusteringMode::LogOnly, ClusterOutcome::Community(formation)) => {
+                // Phase 1 (log-only): record the would-be formation for
+                // observation. No fracture executes and no space/branch is
+                // created. The cooldown is still advanced so this mirrors
+                // Full mode's cadence -- one observation per cooldown window
+                // per space, not one per subsequent qualifying action.
+                let event = BehavioralEvent::from_formation(&formation, timestamp);
+                self.store.record_behavioral_event(&event)?;
+                self.store
+                    .put_last_formation_height(space_id, current_height)?;
+                Ok(ClusterOutcome::Community(formation))
+            }
+            (_, ClusterOutcome::SpamSignal(signal)) => {
                 self.store.record_spam_cluster_signal(&signal)?;
                 Ok(ClusterOutcome::SpamSignal(signal))
             }
-            ClusterOutcome::None => Ok(ClusterOutcome::None),
+            (_, ClusterOutcome::None) => Ok(ClusterOutcome::None),
         }
     }
 

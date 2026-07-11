@@ -90,6 +90,23 @@ impl SeedingMode {
     }
 }
 
+/// Effective behavioral-branching mode for a node (SPEC_13 Phase A,
+/// `docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md` Phase 1), resolved from
+/// [`NodeConfig::behavioral_branching_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehavioralBranchingMode {
+    /// Detection does not run at all.
+    Disabled,
+    /// Detection runs; qualifying formations are recorded as
+    /// [`crate::branch::BehavioralEvent`]s but no fracture executes and no
+    /// space/branch is created (Phase 1 observation rollout).
+    LogOnly,
+    /// Detection runs; qualifying formations execute the fracture and are
+    /// recorded as a real [`crate::branch::CommunityFormation`] (pre-rollout
+    /// behavior, currently regtest-only by default).
+    Full,
+}
+
 /// Node configuration
 ///
 /// All configuration options for running a node per SPEC_10 §3.2.
@@ -234,6 +251,21 @@ pub struct NodeConfig {
     /// avoids state divergence with nodes that don't run detection yet.
     pub behavioral_branching: Option<bool>,
 
+    /// Enable log-only behavioral branching (Phase 1 observation rollout,
+    /// `docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`).
+    ///
+    /// When on (and full [`Self::behavioral_branching`] is off), detection
+    /// still runs and qualifying clusters are persisted as
+    /// [`crate::branch::BehavioralEvent`]s — queryable via the
+    /// `list_behavioral_events` RPC — but no fracture executes and no
+    /// space/branch is created.
+    ///
+    /// `None` uses the network-mode default: ON for Testnet (Phase 1
+    /// rollout), OFF for Mainnet/Regtest. Regtest defaults to full formation
+    /// instead (see [`Self::behavioral_branching_enabled`]), so log-only
+    /// would never be consulted there unless full is explicitly disabled.
+    pub behavioral_branching_log_only: Option<bool>,
+
     // ========== Gossip Origin Privacy (SWIM-PRIV-1) ==========
     /// Enable gossip origin obfuscation for self-originated actions.
     ///
@@ -319,6 +351,10 @@ impl Default for NodeConfig {
             // Behavioral branching defaults to network-mode behavior
             // (ON for regtest, OFF for mainnet/testnet)
             behavioral_branching: None,
+
+            // Log-only behavioral branching defaults to network-mode behavior
+            // (ON for testnet -- Phase 1 rollout, OFF for mainnet/regtest)
+            behavioral_branching_log_only: None,
 
             // Gossip origin privacy (SWIM-PRIV-1) defaults to network-mode
             // behavior (ON for mainnet/testnet, OFF for regtest) with a
@@ -428,6 +464,32 @@ impl NodeConfig {
     pub fn behavioral_branching_enabled(&self) -> bool {
         self.behavioral_branching
             .unwrap_or(matches!(self.network_mode, NetworkMode::Regtest))
+    }
+
+    /// Check if log-only behavioral branching (Phase 1 rollout) is enabled.
+    ///
+    /// Explicit setting wins; otherwise defaults ON for Testnet and OFF for
+    /// Mainnet/Regtest. Only consulted when [`Self::behavioral_branching_enabled`]
+    /// is false -- see [`Self::behavioral_branching_mode`].
+    pub fn behavioral_branching_log_only_enabled(&self) -> bool {
+        self.behavioral_branching_log_only
+            .unwrap_or(matches!(self.network_mode, NetworkMode::Testnet))
+    }
+
+    /// Resolve the effective behavioral-branching mode for this node
+    /// (`docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`).
+    ///
+    /// Full formation wins over log-only if both are (explicitly or by
+    /// default) enabled -- log-only exists to observe *before* full
+    /// formation is safe to enable, not alongside it.
+    pub fn behavioral_branching_mode(&self) -> BehavioralBranchingMode {
+        if self.behavioral_branching_enabled() {
+            BehavioralBranchingMode::Full
+        } else if self.behavioral_branching_log_only_enabled() {
+            BehavioralBranchingMode::LogOnly
+        } else {
+            BehavioralBranchingMode::Disabled
+        }
     }
 
     /// Check if gossip origin privacy (SWIM-PRIV-1) is enabled.
@@ -783,6 +845,66 @@ mod tests {
             ..NodeConfig::for_regtest(29998)
         };
         assert!(forced_on.origin_privacy_enabled());
+    }
+
+    #[test]
+    fn test_behavioral_branching_mode_network_defaults() {
+        // Phase 1 rollout (docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md):
+        // regtest keeps full formation, testnet gets log-only observation,
+        // mainnet stays fully disabled -- all by default (None/None).
+        let mainnet = NodeConfig::with_network_defaults(NetworkMode::Mainnet);
+        assert_eq!(
+            mainnet.behavioral_branching_mode(),
+            BehavioralBranchingMode::Disabled
+        );
+        assert!(!mainnet.behavioral_branching_enabled());
+        assert!(!mainnet.behavioral_branching_log_only_enabled());
+
+        let testnet = NodeConfig::for_testnet();
+        assert_eq!(
+            testnet.behavioral_branching_mode(),
+            BehavioralBranchingMode::LogOnly
+        );
+        assert!(!testnet.behavioral_branching_enabled());
+        assert!(testnet.behavioral_branching_log_only_enabled());
+
+        let regtest = NodeConfig::for_regtest(29997);
+        assert_eq!(
+            regtest.behavioral_branching_mode(),
+            BehavioralBranchingMode::Full
+        );
+        assert!(regtest.behavioral_branching_enabled());
+
+        // Explicit full override wins over log-only, even on testnet.
+        let forced_full = NodeConfig {
+            behavioral_branching: Some(true),
+            ..NodeConfig::for_testnet()
+        };
+        assert_eq!(
+            forced_full.behavioral_branching_mode(),
+            BehavioralBranchingMode::Full
+        );
+
+        // Explicit log-only override applies on mainnet too.
+        let forced_log_only = NodeConfig {
+            behavioral_branching_log_only: Some(true),
+            ..NodeConfig::with_network_defaults(NetworkMode::Mainnet)
+        };
+        assert_eq!(
+            forced_log_only.behavioral_branching_mode(),
+            BehavioralBranchingMode::LogOnly
+        );
+
+        // Explicit false on both disables regardless of network mode.
+        let forced_off = NodeConfig {
+            behavioral_branching: Some(false),
+            behavioral_branching_log_only: Some(false),
+            ..NodeConfig::for_testnet()
+        };
+        assert_eq!(
+            forced_off.behavioral_branching_mode(),
+            BehavioralBranchingMode::Disabled
+        );
     }
 
     #[test]

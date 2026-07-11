@@ -218,6 +218,69 @@ impl CommunityFormation {
     }
 }
 
+/// A would-be community formation recorded during the Phase 1 log-only
+/// rollout (`docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`). Detection and
+/// gating are identical to a real [`CommunityFormation`]; the difference is
+/// purely in what the caller does with the outcome: log-only mode persists
+/// this record instead of executing the fracture, so no space/branch is ever
+/// created. Queryable via the `list_behavioral_events` RPC.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BehavioralEvent {
+    /// Deterministic event identifier. Uses a distinct domain-separation tag
+    /// from [`CommunityFormation::derive_community_id`] so a log-only event
+    /// can never collide with a real community ID over identical inputs.
+    pub event_id: [u8; 32],
+    /// Space the cluster was detected in.
+    pub parent_space_id: [u8; 32],
+    /// Member identities of the would-be community (sorted; determinism §4.3).
+    pub cluster_members: Vec<[u8; 32]>,
+    /// Metrics that crossed the §2.2 insularity gates at detection time.
+    pub metrics: ClusterMetrics,
+    /// Block height when the would-be formation was detected.
+    pub detected_height: u64,
+    /// Wall-clock timestamp of the triggering action.
+    pub timestamp: u64,
+}
+
+impl BehavioralEvent {
+    /// Derive a deterministic event ID, mirroring
+    /// [`CommunityFormation::derive_community_id`] with a distinct domain tag
+    /// (§4.3 determinism).
+    #[must_use]
+    pub fn derive_event_id(
+        parent_space_id: &[u8; 32],
+        sorted_members: &[[u8; 32]],
+        detected_height: u64,
+    ) -> [u8; 32] {
+        let mut buf = Vec::with_capacity(24 + 32 + sorted_members.len() * 32 + 8);
+        buf.extend_from_slice(b"swimchain:spec13:logonly:v1");
+        buf.extend_from_slice(parent_space_id);
+        for m in sorted_members {
+            buf.extend_from_slice(m);
+        }
+        buf.extend_from_slice(&detected_height.to_be_bytes());
+        sha256(&buf)
+    }
+
+    /// Build a log-only event from a detected (not-yet-applied) formation.
+    #[must_use]
+    pub fn from_formation(formation: &CommunityFormation, timestamp: u64) -> Self {
+        let event_id = Self::derive_event_id(
+            &formation.parent_space_id,
+            &formation.founding_members,
+            formation.formation_height,
+        );
+        Self {
+            event_id,
+            parent_space_id: formation.parent_space_id,
+            cluster_members: formation.founding_members.clone(),
+            metrics: formation.metrics.clone(),
+            detected_height: formation.formation_height,
+            timestamp,
+        }
+    }
+}
+
 /// Signal emitted when a single-participant cluster crosses the insularity
 /// gates (§6.1). Phase A surfaces this to the spam-attestation / space-health
 /// side instead of forming a community-of-one; the unlisted spam space of
@@ -612,5 +675,59 @@ mod tests {
         let data = bincode::serialize(&m).unwrap();
         let back: IdentitySpaceMetrics = bincode::deserialize(&data).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn test_event_id_is_deterministic_and_distinct_from_community_id() {
+        let space = [7u8; 32];
+        let members = vec![[1u8; 32], [2u8; 32], [3u8; 32]];
+        let a = BehavioralEvent::derive_event_id(&space, &members, 100);
+        let b = BehavioralEvent::derive_event_id(&space, &members, 100);
+        assert_eq!(a, b);
+
+        // Different height or member set changes the ID.
+        let c = BehavioralEvent::derive_event_id(&space, &members, 101);
+        assert_ne!(a, c);
+        let d = BehavioralEvent::derive_event_id(&space, &members[..2].to_vec(), 100);
+        assert_ne!(a, d);
+
+        // Distinct domain tag: same inputs never collide with a real
+        // CommunityFormation's community_id.
+        let community_id = CommunityFormation::derive_community_id(&space, &members, 100);
+        assert_ne!(a, community_id);
+    }
+
+    #[test]
+    fn test_behavioral_event_from_formation() {
+        let formation = CommunityFormation {
+            community_id: CommunityFormation::derive_community_id(
+                &[9u8; 32],
+                &[[1u8; 32], [2u8; 32], [3u8; 32]],
+                500,
+            ),
+            parent_space_id: [9u8; 32],
+            founding_members: vec![[1u8; 32], [2u8; 32], [3u8; 32]],
+            metrics: ClusterMetrics {
+                engagement_diversity: 0.05,
+                external_interaction: 0.02,
+                internal_cohesion: 0.95,
+                member_count: 3,
+                age_blocks: MIN_PATTERN_AGE_BLOCKS,
+            },
+            formation_height: 500,
+            community_branch: None,
+        };
+
+        let event = BehavioralEvent::from_formation(&formation, 1_700_000_000);
+        assert_eq!(event.parent_space_id, formation.parent_space_id);
+        assert_eq!(event.cluster_members, formation.founding_members);
+        assert_eq!(event.metrics, formation.metrics);
+        assert_eq!(event.detected_height, formation.formation_height);
+        assert_eq!(event.timestamp, 1_700_000_000);
+        assert_ne!(event.event_id, formation.community_id);
+
+        let data = bincode::serialize(&event).unwrap();
+        let back: BehavioralEvent = bincode::deserialize(&data).unwrap();
+        assert_eq!(event, back);
     }
 }

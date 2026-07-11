@@ -852,9 +852,11 @@ impl NodeManager {
         if let Some(ref engagement_graph) = self.engagement_graph {
             router_builder = router_builder.engagement_graph(engagement_graph.clone());
         }
-        // SPEC_13 Phase A: behavioral branching (default ON for regtest only)
+        // SPEC_13 Phase A / Phase 1 rollout: behavioral branching mode
+        // (Full formation default ON for regtest only; LogOnly observation
+        // default ON for testnet -- docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md)
         router_builder =
-            router_builder.behavioral_branching(self.config.behavioral_branching_enabled());
+            router_builder.behavioral_branching_mode(self.config.behavioral_branching_mode());
         if let Some(ref agg_cache) = self.aggregation_cache {
             router_builder = router_builder.aggregation_cache(agg_cache.clone());
         }

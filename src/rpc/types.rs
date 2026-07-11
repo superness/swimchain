@@ -2045,3 +2045,50 @@ pub struct GetUserPostsResult {
     /// Total content items by this user (posts + replies)
     pub total_content: usize,
 }
+
+// ============================================================================
+// Behavioral Branching Types (SPEC_13 Phase A / Phase 1 log-only rollout)
+// ============================================================================
+
+/// list_behavioral_events params
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListBehavioralEventsParams {
+    /// Restrict results to a single space (32-byte hex). Omit for all spaces.
+    #[serde(default)]
+    pub space_id: Option<String>,
+}
+
+/// A recorded would-be community formation (log-only Phase 1 rollout) for
+/// `list_behavioral_events` result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehavioralEventInfo {
+    /// Deterministic event identifier (hex)
+    pub event_id: String,
+    /// Parent space the cluster was detected in (hex)
+    pub space_id: String,
+    /// Member identities of the would-be community (hex)
+    pub cluster_members: Vec<String>,
+    /// Engagement diversity metric at detection time (§2.1.1)
+    pub engagement_diversity: f64,
+    /// External interaction ratio at detection time (§2.1.2)
+    pub external_interaction: f64,
+    /// Internal cohesion metric at detection time (§2.1.3)
+    pub internal_cohesion: f64,
+    /// Cluster member count at detection time (§2.1.4)
+    pub member_count: usize,
+    /// Pattern age in blocks at detection time (§2.1.5)
+    pub age_blocks: u64,
+    /// Block height when the would-be formation was detected
+    pub detected_height: u64,
+    /// Wall-clock timestamp of the triggering action
+    pub timestamp: u64,
+}
+
+/// list_behavioral_events result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListBehavioralEventsResult {
+    /// Recorded would-be formations, most recently detected first
+    pub events: Vec<BehavioralEventInfo>,
+    /// Total number of events returned
+    pub count: u32,
+}

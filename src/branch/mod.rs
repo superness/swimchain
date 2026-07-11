@@ -52,11 +52,11 @@ pub mod metadata;
 pub mod storage;
 
 pub use behavioral::{
-    ClusterMetrics, ClusterOutcome, ClusteringAction, CommunityFormation, IdentitySpaceMetrics,
-    SpamClusterSignal,
+    BehavioralEvent, ClusterMetrics, ClusterOutcome, ClusteringAction, CommunityFormation,
+    IdentitySpaceMetrics, SpamClusterSignal,
 };
 pub use error::BranchError;
-pub use manager::BranchManager;
+pub use manager::{BranchManager, ClusteringMode};
 pub use metadata::{BranchMetadata, SpaceBranchState};
 pub use storage::{BranchAwareStore, PutResult};
 

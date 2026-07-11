@@ -18,7 +18,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sled::Db;
 
 use crate::blocks::{BranchPath, ContentBlock, RootBlock, SpaceBlock};
-use crate::branch::behavioral::{CommunityFormation, IdentitySpaceMetrics, SpamClusterSignal};
+use crate::branch::behavioral::{
+    BehavioralEvent, CommunityFormation, IdentitySpaceMetrics, SpamClusterSignal,
+};
 use crate::branch::{BranchMetadata, SpaceBranchState};
 use crate::types::error::StorageError;
 
@@ -109,6 +111,12 @@ pub struct ChainStore {
     /// Last behavioral formation height per space (SPEC_13 §6.3 cooldown):
     /// Key = space_id(32), Value = height(8, big-endian)
     space_formation_heights: sled::Tree,
+    /// Log-only behavioral events (Phase 1 rollout, would-be formations):
+    /// Key = event_id(32), Value = BehavioralEvent (bincode)
+    behavioral_events: sled::Tree,
+    /// Behavioral events by parent space (mirrors `space_communities`):
+    /// Key = parent_space_id(32) || event_id(32), Value = detected_height(8, big-endian)
+    space_behavioral_events: sled::Tree,
 }
 
 /// Compact content metadata for indexed lookups
@@ -209,6 +217,8 @@ impl ChainStore {
         let community_branches = db.open_tree("community_branches")?;
         let spam_cluster_signals = db.open_tree("spam_cluster_signals")?;
         let space_formation_heights = db.open_tree("space_formation_heights")?;
+        let behavioral_events = db.open_tree("behavioral_events")?;
+        let space_behavioral_events = db.open_tree("space_behavioral_events")?;
 
         // Calculate initial total bytes
         let mut total = 0u64;
@@ -252,6 +262,8 @@ impl ChainStore {
             community_branches,
             spam_cluster_signals,
             space_formation_heights,
+            behavioral_events,
+            space_behavioral_events,
         })
     }
 
@@ -2629,6 +2641,83 @@ impl ChainStore {
         self.space_formation_heights
             .insert(space_id, &height.to_be_bytes())?;
         Ok(())
+    }
+
+    /// Record a log-only behavioral event ("would-be formation", Phase 1
+    /// rollout). Writes the event record and indexes it under its parent
+    /// space, mirroring [`Self::record_community_formation`] but without any
+    /// membership/branch side effects — log-only mode never creates a space.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if serialization or database write fails.
+    pub fn record_behavioral_event(&self, event: &BehavioralEvent) -> Result<(), StorageError> {
+        let data = bincode::serialize(event)?;
+        self.behavioral_events.insert(event.event_id, data)?;
+
+        let space_key = Self::space_identity_key(&event.parent_space_id, &event.event_id);
+        self.space_behavioral_events
+            .insert(space_key, &event.detected_height.to_be_bytes())?;
+
+        Ok(())
+    }
+
+    /// Get a behavioral event record by ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_behavioral_event(
+        &self,
+        event_id: &[u8; 32],
+    ) -> Result<Option<BehavioralEvent>, StorageError> {
+        match self.behavioral_events.get(event_id)? {
+            Some(data) => Ok(Some(bincode::deserialize(&data)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List behavioral events recorded under a parent space (Phase 1 rollout).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_space_behavioral_events(
+        &self,
+        space_id: &[u8; 32],
+    ) -> Result<Vec<BehavioralEvent>, StorageError> {
+        let mut result = Vec::new();
+        for item in self.space_behavioral_events.scan_prefix(space_id) {
+            let (key, _) = item?;
+            if key.len() == 64 {
+                let event_id: [u8; 32] =
+                    key[32..]
+                        .try_into()
+                        .map_err(|_| StorageError::CorruptedData {
+                            expected: "32 bytes for event_id".to_string(),
+                            actual: format!("{} bytes", key.len() - 32),
+                        })?;
+                if let Some(event) = self.get_behavioral_event(&event_id)? {
+                    result.push(event);
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    /// List all behavioral events recorded on this node (Phase 1 rollout),
+    /// across every space.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_all_behavioral_events(&self) -> Result<Vec<BehavioralEvent>, StorageError> {
+        let mut result = Vec::new();
+        for item in self.behavioral_events.iter() {
+            let (_, data) = item?;
+            result.push(bincode::deserialize(&data)?);
+        }
+        Ok(result)
     }
 
     // === Finalized Action Tracking ===
