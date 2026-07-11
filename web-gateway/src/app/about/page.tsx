@@ -39,6 +39,60 @@ export default function AboutPage() {
         </ul>
       </section>
 
+      <section className="section" id="why">
+        <h2>Why Swimchain?</h2>
+        <p>
+          We wanted a place to socialize online without being the product.
+          Modern platforms eventually optimize for extraction: your attention
+          sold to advertisers, your emotions farmed for engagement, your
+          communities shaped by algorithms you can&apos;t see. Swimchain
+          exists so that a few simple promises can actually hold &mdash;
+          enforced by the protocol&apos;s design, not by a company&apos;s
+          goodwill:
+        </p>
+        <ul>
+          <li>
+            <strong>No central authority</strong> &mdash; No one owns the
+            network or the data, so no one can manipulate it. The chain is
+            replicated across every node and protocol rules apply equally to
+            everyone. There is no server to seize, no admin to pressure, no
+            company to acquire &mdash; and if a community is ever captured,
+            it can fork away and leave the attacker an empty chain.
+          </li>
+          <li>
+            <strong>No advertisement</strong> &mdash; Advertising here
+            isn&apos;t forbidden; it&apos;s economically pointless. There is
+            no feed to inject into, no placement to buy, no targeting, and no
+            metrics to prove an ad was ever seen. Posting costs proof-of-work
+            instead of being paid for by ads, so nothing in the system needs
+            to farm your attention or keep you scrolling.
+          </li>
+          <li>
+            <strong>No political influence</strong> &mdash; There is no
+            algorithm to buy and no amplification to capture. Everyone sees
+            the same content, ranked by the same fixed, transparent formula
+            &mdash; a shared experience, not fragments tailored to manipulate
+            each person individually. Propagandists can speak, but they
+            can&apos;t force anyone to listen: without organic engagement,
+            their content simply decays away.
+          </li>
+          <li>
+            <strong>No profiling data to sell</strong> &mdash; Your identity
+            is a keypair, not an email or phone number. Every user runs a
+            node, so there is no central server watching what you read,
+            building a profile, or warehousing behavior data. There is
+            nothing to collect and no one to sell it to.
+          </li>
+          <li>
+            <strong>Just social media</strong> &mdash; People, spaces, and
+            conversations &mdash; for participants, not consumers. Content
+            lives while the community engages with it and drifts away when it
+            stops mattering. The network is its users; if every developer
+            disappeared tomorrow, the pool keeps swimming.
+          </li>
+        </ul>
+      </section>
+
       <section className="section" id="decay">
         <h2>Content Decay</h2>
         <p>
@@ -164,6 +218,7 @@ export default function AboutPage() {
       <section className="section">
         <h2>Learn More</h2>
         <ul className="link-list">
+          <li><a href={withBase('/protocol')}>The Swimchain Protocol &mdash; how the mechanics work</a></li>
           <li><a href="https://github.com/superness/swimchain">GitHub Repository</a></li>
           <li><a href={withBase('/docs/search-ranking')}>Search Ranking Documentation</a></li>
           <li><a href={withBase('/docs/gateway-operation')}>Run Your Own Gateway</a></li>

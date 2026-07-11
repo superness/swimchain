@@ -1,0 +1,204 @@
+<title>Why Swimchain — social media without being the product</title>
+<meta name="description" content="Why Swimchain exists: no advertisement, no political influence, no profiling data to sell, no central authority. Just social media, enforced by protocol design.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #071E26;
+    --surface: #0C2A33;
+    --surface-2: #10333E;
+    --line: #1B4450;
+    --foam: #E8F1EF;
+    --muted: #8FB0AC;
+    --heat: #FF9E5E;
+    --heat-deep: #E07B3A;
+    --shallow: #6ED3C2;
+    --cold: #3E7C8A;
+    --serif: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+  }
+
+  html { background: var(--ink); }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, rgba(110, 211, 194, 0.07), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(255, 158, 94, 0.05), transparent 55%),
+      var(--ink);
+    color: var(--foam);
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.65;
+  }
+
+  a { color: var(--shallow); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--foam); }
+  a:focus-visible { outline: 2px solid var(--heat); outline-offset: 3px; border-radius: 2px; }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--shallow);
+  }
+
+  header.site {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 28px 0 0;
+  }
+  .mark {
+    font-family: var(--mono); font-size: 15px; letter-spacing: 0.06em; color: var(--foam);
+    text-decoration: none;
+  }
+  .mark .tld { color: var(--muted); }
+  nav.site { display: flex; gap: 22px; font-family: var(--mono); font-size: 13px; }
+  nav.site a { color: var(--muted); text-decoration: none; }
+  nav.site a:hover { color: var(--foam); }
+
+  .page-hero { padding: 84px 0 64px; }
+  h1 {
+    margin: 18px 0 22px;
+    font-size: clamp(34px, 4.6vw, 52px);
+    line-height: 1.08;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  h1 em { font-style: italic; color: var(--heat); }
+  .lede { max-width: 36em; color: var(--muted); font-size: 19px; margin: 0; }
+  .lede strong { color: var(--foam); font-weight: 600; }
+
+  section { padding: 64px 0; border-top: 1px solid var(--line); }
+  h2 {
+    font-size: clamp(24px, 3vw, 32px); font-weight: 600; letter-spacing: -0.01em;
+    margin: 14px 0 10px; text-wrap: balance;
+  }
+  .section-lede { color: var(--muted); max-width: 38em; margin: 0 0 44px; }
+
+  .laws { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .law {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 26px 24px;
+  }
+  .law h3 { margin: 0 0 10px; font-size: 20px; font-weight: 600; }
+  .law p { margin: 0 0 10px; color: var(--muted); font-size: 16px; }
+  .law p:last-child { margin-bottom: 0; }
+  .law p strong { color: var(--foam); }
+  .law .stat {
+    display: block; font-family: var(--mono); font-size: 12px; color: var(--heat);
+    letter-spacing: 0.08em; margin-bottom: 14px; text-transform: uppercase;
+  }
+  .law.wide { grid-column: 1 / -1; }
+
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 36px; }
+  .btn {
+    display: inline-block; padding: 12px 22px;
+    font-family: var(--mono); font-size: 14px; text-decoration: none;
+    border: 1px solid var(--line); color: var(--foam); border-radius: 3px;
+  }
+  .btn.primary { background: var(--heat); border-color: var(--heat); color: #241205; font-weight: 600; }
+  .btn.primary:hover { background: var(--heat-deep); border-color: var(--heat-deep); color: #241205; }
+  .btn:hover { border-color: var(--shallow); color: var(--foam); }
+
+  footer.site {
+    border-top: 1px solid var(--line); padding: 42px 0 56px;
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+  }
+  footer.site a { color: var(--muted); }
+  footer.site a:hover { color: var(--foam); }
+
+  @media (max-width: 860px) {
+    .laws { grid-template-columns: 1fr; }
+    .page-hero { padding: 60px 0 48px; }
+  }
+  @media (max-width: 640px) {
+    nav.site { display: none; }
+    .cta-row { flex-direction: column; align-items: stretch; }
+    .cta-row .btn { text-align: center; }
+  }
+</style>
+
+<header class="site wrap">
+  <a class="mark" href="/">swimchain<span class="tld">.io</span></a>
+  <nav class="site">
+    <a href="/protocol">Protocol</a>
+    <a href="/about">About</a>
+    <a href="/browse/">Browse</a>
+    <a href="developers.html">Developers</a>
+  </nav>
+</header>
+
+<div class="page-hero wrap">
+  <span class="eyebrow">Why this exists</span>
+  <h1>A place to exist online <em>without being the product</em>.</h1>
+  <p class="lede">
+    Modern platforms eventually optimize for extraction: your attention sold to
+    advertisers, your emotions farmed for engagement, your communities shaped by
+    algorithms you can't see. Swimchain exists so that a few simple promises can
+    actually hold — <strong>enforced by protocol design, not by a company's goodwill</strong>.
+  </p>
+</div>
+
+<section>
+  <div class="wrap">
+    <span class="eyebrow">The promises</span>
+    <h2>What can't happen here.</h2>
+    <p class="section-lede">Each promise holds because the machinery it would need has been designed out — not because someone pinky-swore.</p>
+    <div class="laws">
+
+      <div class="law">
+        <span class="stat">No server to seize &middot; no company to acquire</span>
+        <h3>No central authority.</h3>
+        <p>No one owns the network or the data, so no one can manipulate it. The chain is replicated across every node and protocol rules apply equally to everyone.</p>
+        <p>There's no admin to pressure and no headquarters to raid — and if a community is ever captured, it <strong>forks away</strong> and leaves the attacker an empty chain.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">No feed to inject into &middot; no metrics to sell</span>
+        <h3>No advertisement.</h3>
+        <p>Advertising isn't forbidden — it's <strong>economically pointless</strong>. There's no placement to buy, no targeting, and no way to prove an ad was ever seen.</p>
+        <p>Posting costs proof-of-work instead of being paid for by ads, so nothing in the system needs to farm your attention or keep you scrolling.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">One ranking &middot; same water for everyone</span>
+        <h3>No political influence.</h3>
+        <p>There's no algorithm to buy and no amplification to capture. Everyone sees the same content, ranked the same transparent way — a <strong>shared experience</strong>, not fragments tailored to manipulate each person individually.</p>
+        <p>Propagandists can speak, but they can't force anyone to listen. Without organic engagement, their content simply decays away.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">Keypair identity &middot; nothing to warehouse</span>
+        <h3>No profiling data to sell.</h3>
+        <p>Your identity is a keypair — not an email, a phone number, or a real name. Every user runs a node, so there's <strong>no central server watching what you read</strong> or building a profile.</p>
+        <p>There is nothing to collect and no one to sell it to.</p>
+      </div>
+
+      <div class="law wide">
+        <span class="stat">People &middot; spaces &middot; conversations</span>
+        <h3>Just social media.</h3>
+        <p>For participants, not consumers. Content lives while the community engages with it and drifts away when it stops mattering — attention is life support, and <strong>the community is the moderator</strong>.</p>
+        <p>The network is its users. If every developer disappeared tomorrow, the pool keeps swimming.</p>
+      </div>
+
+    </div>
+
+    <div class="cta-row">
+      <a class="btn primary" href="/download">Get Swimchain</a>
+      <a class="btn" href="/protocol">See the mechanics</a>
+      <a class="btn" href="https://github.com/superness/swimchain/blob/main/VISION.md">Read the vision</a>
+    </div>
+  </div>
+</section>
+
+<footer class="site wrap">
+  <span>swimchain.io — content that earns its place</span>
+  <span>
+    <a href="https://github.com/superness/swimchain">GitHub</a> ·
+    <a href="developers.html">Developers</a> ·
+    <a href="/protocol">Protocol</a>
+  </span>
+</footer>

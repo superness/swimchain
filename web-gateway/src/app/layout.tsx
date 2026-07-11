@@ -43,6 +43,7 @@ export default function RootLayout({
               <div className="gateway-nav-links">
                 <a href={withBase('/search')}>Search</a>
                 <a href={withBase('/spaces')}>Spaces</a>
+                <a href={withBase('/protocol')}>Protocol</a>
                 <a href={withBase('/about')}>About</a>
               </div>
             </nav>

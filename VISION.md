@@ -274,36 +274,41 @@ THE DISTINCTION:
 | Peer requests served | Secondary | How many times you've helped other nodes |
 | Posts kept alive | Secondary | Content you contributed engagement PoW to |
 
-**Swimmer Levels (Based on HOSTING, not posting):**
-| Level | Name | Hosting Requirements |
-|-------|------|----------------------|
-| 0 | New Swimmer 🏊 | Just joined |
-| 1 | Regular 🏊‍♂️ | 7+ days, any bandwidth served |
-| 2 | Resident 🏊‍♀️ | 30+ days, 10GB+ served lifetime, 50%+ uptime |
-| 3 | Lifeguard 🛟 | 50GB+/month served, 70%+ uptime |
-| 4 | Anchor ⚓ | 200GB+/month served, 90%+ uptime |
-| 5 | Pool Keeper 🏛️ | 500GB+/month served, 95%+ uptime |
+**Recognition Model (Updated July 2026): Achievements, Not Levels**
 
-**Key insight**: An active poster with no hosting stays at Regular. A silent node that serves 500GB/month is a Pool Keeper.
+> **Status note:** Earlier drafts described a swimmer-level ladder (New
+> Swimmer → Pool Keeper) with earned protocol benefits (PoW reduction,
+> decay extension, priority sync). That system was **removed from the
+> protocol**. No protocol privileges attach to status — a long-time host
+> and a brand-new node play by identical rules. Recognition is purely
+> social, via achievements and reputation.
 
-**Benefits (Fair Exchange, Non-Transferable):**
-| You Give | You Get | Rationale |
-|----------|---------|-----------|
-| Bandwidth (serving) | Reduced PoW (post faster) | Compute for compute |
-| Storage (hosting) | Extended decay (content lives longer) | Keep content alive, yours lives longer |
-| Uptime (availability) | Priority sync | Serve others, get served |
-| Consistency (streaks) | Space creation rights | Earned capability |
+**Achievements (implemented, SPEC_09 §5.3):** permanent, non-transferable
+badges for hosting and participation milestones. Examples:
+
+| Achievement | Earned By |
+|-------------|-----------|
+| First Stroke 🌊 | First post ever created |
+| First Serve 📡 | First content served to a peer |
+| Week/Month Swimmer, Centurion | 7/30/100-day hosting streaks |
+| Bandwidth Baron, Terabyte Club | 100GB / 1TB lifetime served |
+| Lane Opener | Created first space |
+| Keeper of the Flame | Kept 100+ posts alive through engagement |
+
+**Poster Reputation (implemented, SPEC_12):** every identity carries a
+reputation score that decays when the community attests their content as
+spam and recovers over time with good behavior. Accountability without
+real-world identity.
 
 **What This Is NOT:**
 - ❌ Tokens, coins, or anything tradeable
-- ❌ Rewards for posting or engagement
 - ❌ Purchasable status or benefits
+- ❌ Protocol privileges for veterans
 - ❌ "Mining" that creates value
 
 **What This IS:**
-- ✅ Reward for HOSTING, not content creation
-- ✅ Fair exchange: give bandwidth → get faster posts
 - ✅ Visible recognition for infrastructure contribution
+- ✅ Recognition biased toward HOSTING, not just content creation
 - ✅ Identity that takes years to build, can't be bought, hurts to lose
 
 **Space Health (Hosting Health):**
@@ -327,16 +332,14 @@ TOP HOSTS THIS WEEK:
 
 **Profile Display (Hosting Profile):**
 ```
-@alice_gardener | 🛟 Lifeguard
+@alice_gardener | 🌊 📡 📅 🏅
 
 📡 Last 30 days:
 ├── Bandwidth served: 67GB
 ├── Uptime: 73%
 └── Posts kept alive: 47
 
-💪 Earned benefits:
-├── PoW reduction: 20%
-└── Decay extension: 1.5x
+🏆 Achievements: First Stroke, First Serve, Week Swimmer, Bandwidth Baron
 ```
 
 See SPEC_09_SOCIAL_LAYER.md for full specification.
@@ -1876,10 +1879,11 @@ Discussion is primary, links are references. "Here's a video [link]. What do you
 ---
 
 *Document started: 2024-12-24*
-*Last updated: 2026-01-08*
+*Last updated: 2026-07-11*
 *Status: Vision complete, specifications complete, ready for implementation*
 
 **Changelog:**
+- 2026-07-11: Reconciled Social Layer with implementation — swimmer levels and earned protocol benefits were removed; recognition is achievements (SPEC_09 §5.3) + poster reputation (SPEC_12) only.
 - 2026-01-08: Added Organic Community Formation (SPEC_13) - behavioral branching based on interaction patterns, natural community boundaries, spam as self-isolation.
 - 2025-12-25: Added Social Layer (SPEC_09) - hosting-based contribution rewards, swimmer levels, non-economic benefits. Added MARKETING.md reference.
 - 2024-12-25: Added recursive block architecture, pooled engagement PoW, parent-anchored threading. Updated moderation analysis to reflect engagement PoW requirement.

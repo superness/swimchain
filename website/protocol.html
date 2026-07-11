@@ -1,0 +1,225 @@
+<title>The Swimchain Protocol — mechanics that make the promises hold</title>
+<meta name="description" content="How Swimchain works: proof-of-work as participation, pooled engagement, adaptive decay, fork-friendly chains, organic communities, and view-to-host distribution.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #071E26;
+    --surface: #0C2A33;
+    --surface-2: #10333E;
+    --line: #1B4450;
+    --foam: #E8F1EF;
+    --muted: #8FB0AC;
+    --heat: #FF9E5E;
+    --heat-deep: #E07B3A;
+    --shallow: #6ED3C2;
+    --cold: #3E7C8A;
+    --serif: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+  }
+
+  html { background: var(--ink); }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, rgba(110, 211, 194, 0.07), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(255, 158, 94, 0.05), transparent 55%),
+      var(--ink);
+    color: var(--foam);
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.65;
+  }
+
+  a { color: var(--shallow); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--foam); }
+  a:focus-visible { outline: 2px solid var(--heat); outline-offset: 3px; border-radius: 2px; }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--shallow);
+  }
+
+  header.site {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 28px 0 0;
+  }
+  .mark {
+    font-family: var(--mono); font-size: 15px; letter-spacing: 0.06em; color: var(--foam);
+    text-decoration: none;
+  }
+  .mark .tld { color: var(--muted); }
+  nav.site { display: flex; gap: 22px; font-family: var(--mono); font-size: 13px; }
+  nav.site a { color: var(--muted); text-decoration: none; }
+  nav.site a:hover { color: var(--foam); }
+
+  .page-hero { padding: 84px 0 64px; }
+  h1 {
+    margin: 18px 0 22px;
+    font-size: clamp(34px, 4.6vw, 52px);
+    line-height: 1.08;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  h1 em { font-style: italic; color: var(--heat); }
+  .lede { max-width: 36em; color: var(--muted); font-size: 19px; margin: 0; }
+  .lede strong { color: var(--foam); font-weight: 600; }
+
+  section { padding: 64px 0; border-top: 1px solid var(--line); }
+  h2 {
+    font-size: clamp(24px, 3vw, 32px); font-weight: 600; letter-spacing: -0.01em;
+    margin: 14px 0 10px; text-wrap: balance;
+  }
+  .section-lede { color: var(--muted); max-width: 38em; margin: 0 0 44px; }
+
+  .laws { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .law {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 26px 24px;
+  }
+  .law h3 { margin: 0 0 10px; font-size: 20px; font-weight: 600; }
+  .law p { margin: 0 0 10px; color: var(--muted); font-size: 16px; }
+  .law p:last-child { margin-bottom: 0; }
+  .law p strong { color: var(--foam); }
+  .law .stat {
+    display: block; font-family: var(--mono); font-size: 12px; color: var(--heat);
+    letter-spacing: 0.08em; margin-bottom: 14px; text-transform: uppercase;
+  }
+
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 36px; }
+  .btn {
+    display: inline-block; padding: 12px 22px;
+    font-family: var(--mono); font-size: 14px; text-decoration: none;
+    border: 1px solid var(--line); color: var(--foam); border-radius: 3px;
+  }
+  .btn.primary { background: var(--heat); border-color: var(--heat); color: #241205; font-weight: 600; }
+  .btn.primary:hover { background: var(--heat-deep); border-color: var(--heat-deep); color: #241205; }
+  .btn:hover { border-color: var(--shallow); color: var(--foam); }
+
+  footer.site {
+    border-top: 1px solid var(--line); padding: 42px 0 56px;
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+  }
+  footer.site a { color: var(--muted); }
+  footer.site a:hover { color: var(--foam); }
+
+  @media (max-width: 860px) {
+    .laws { grid-template-columns: 1fr; }
+    .page-hero { padding: 60px 0 48px; }
+  }
+  @media (max-width: 640px) {
+    nav.site { display: none; }
+    .cta-row { flex-direction: column; align-items: stretch; }
+    .cta-row .btn { text-align: center; }
+  }
+</style>
+
+<header class="site wrap">
+  <a class="mark" href="/">swimchain<span class="tld">.io</span></a>
+  <nav class="site">
+    <a href="/protocol">Protocol</a>
+    <a href="/about">About</a>
+    <a href="/browse/">Browse</a>
+    <a href="developers.html">Developers</a>
+  </nav>
+</header>
+
+<div class="page-hero wrap">
+  <span class="eyebrow">The mechanics, not the marketing</span>
+  <h1>Promises don't hold. <em>Physics</em> does.</h1>
+  <p class="lede">
+    No ads, no manipulation, no owner — Swimchain's guarantees aren't policies
+    a company could quietly change. They're consequences of protocol mechanics.
+    <strong>This page is the mechanics.</strong> Everything here is implemented
+    and running; the full rules are written down in
+    <a href="https://github.com/superness/swimchain/tree/main/specs">thirteen open specifications</a>.
+  </p>
+</div>
+
+<section>
+  <div class="wrap">
+    <span class="eyebrow">Eight mechanisms</span>
+    <h2>What the protocol actually does.</h2>
+    <p class="section-lede">Each of these removes a lever that platforms use to extract value from you — and replaces it with something no one controls.</p>
+    <div class="laws">
+
+      <div class="law">
+        <span class="stat">No miner class &middot; no tokens</span>
+        <h3>Mining is paying.</h3>
+        <p>Every action — posting, replying, keeping content alive — carries its own proof-of-work, and that work <strong>is</strong> the payment. Effort aggregates up a recursive block tree: actions into content blocks, content blocks into spaces, spaces into the root chain.</p>
+        <p>Creating costs the most, replying less, engaging least. There are no block rewards and nothing to speculate on. Participation is the security model.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">Fixed pool &middot; sybils gain zero</span>
+        <h3>Sock puppets are pointless.</h3>
+        <p>Keeping content alive requires a fixed pool of total engagement work. One person doing 60 seconds and a hundred fake accounts doing 0.6 seconds each produce <strong>exactly the same result</strong>.</p>
+        <p>Self-promotion isn't banned — it's just paying full price, forever, to float content nobody else cares about. Incomplete pools expire and the work is lost.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">Storage-pressure half-life &middot; bounded chain</span>
+        <h3>Decay adapts. Storage stays small.</h3>
+        <p>Content decays unless the community engages — and the half-life adapts to storage pressure. Fast growth means faster decay; quiet water means content lives longer. The chain targets a bounded footprint instead of growing forever.</p>
+        <p>That's why the whole thing fits on a phone — a <strong>full node</strong>, not a light client trusting someone else's server.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">51% attack &rarr; empty chain</span>
+        <h3>Capture wins nothing.</h3>
+        <p>If an attacker captures a chain, the community forks away — identities and content intact — and the new fork can exclude the attacker entirely. They "win" an abandoned chain.</p>
+        <p>Forks aren't failures here; they're how communities govern themselves <strong>without a government</strong>. Chain selection is a spec, not a committee.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">On-chain consensus &middot; no admins</span>
+        <h3>Communities form themselves.</h3>
+        <p>When a group interacts mostly with each other, the network detects the cluster from chain data and gives it its own discoverable space — automatically, by consensus, with no admin deciding anything.</p>
+        <p>The same mechanism handles spam: a spammer engaging only with themselves is a community of one, alone in a space nobody visits. <strong>They get exactly what they built.</strong></p>
+      </div>
+
+      <div class="law">
+        <span class="stat">Consent-based &middot; spam-immune</span>
+        <h3>You host what you viewed. Nothing else.</h3>
+        <p>Nodes cache and serve only content their user chose to look at. Nothing is pushed to your disk, nothing fetched on your behalf. Don't view it, never download it.</p>
+        <p>The chain record — who posted, when, with what work — persists independently, so you can <strong>verify something was said</strong> even after the content itself drifts away.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">Badges &amp; reputation &middot; nothing tradeable</span>
+        <h3>Recognition without an economy.</h3>
+        <p>Contribution earns permanent, non-transferable achievements — first post, hosting streaks, bandwidth served to peers. They can't be bought, traded, or farmed, and they grant <strong>no protocol privileges</strong>.</p>
+        <p>Posters carry a reputation that decays when the community attests spam and recovers with good behavior. Accountability from a pseudonym with something to lose — not from your real name.</p>
+      </div>
+
+      <div class="law">
+        <span class="stat">Argon2id &middot; never instant, for anyone</span>
+        <h3>Friction is the feature.</h3>
+        <p>Posting takes seconds of memory-hard computation, deliberately. The pause interrupts impulse posting, discourages doomscrolling, and self-selects for people who mean what they write.</p>
+        <p>Engagement-optimized platforms remove friction because friction reduces extractable attention. Swimchain inverts that: <strong>friction is the defense</strong>.</p>
+      </div>
+
+    </div>
+
+    <div class="cta-row">
+      <a class="btn primary" href="/download">Get Swimchain</a>
+      <a class="btn" href="/about">Why we built this</a>
+      <a class="btn" href="https://github.com/superness/swimchain/tree/main/specs">Read the specs</a>
+    </div>
+  </div>
+</section>
+
+<footer class="site wrap">
+  <span>swimchain.io — content that earns its place</span>
+  <span>
+    <a href="https://github.com/superness/swimchain">GitHub</a> ·
+    <a href="developers.html">Developers</a> ·
+    <a href="/about">About</a>
+  </span>
+</footer>
