@@ -28,6 +28,7 @@ function replyToMessage(reply: {
   parent_id: string;
   created_at: number;
   last_engagement: number;
+  display_name?: string;
   media_refs?: Array<{
     media_hash: string;
     media_type: string;
@@ -37,7 +38,7 @@ function replyToMessage(reply: {
   return {
     id: reply.content_id,
     authorId: reply.author_id,
-    authorName: undefined, // Display name resolved by MessageItem via authorId
+    authorName: reply.display_name, // Name the author set when posting (falls back to id)
     authorAvatar: undefined,
     content: reply.body,
     createdAt: Math.floor(reply.created_at / 1000), // Convert to seconds

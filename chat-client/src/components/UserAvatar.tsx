@@ -19,6 +19,9 @@ interface UserAvatarProps {
   displayName?: string;
   /** Avatar info if already fetched */
   avatar?: AvatarInfo | null;
+  /** A ready-to-use image URL (e.g. a data: URL fetched via get_media). Takes
+   *  precedence over `avatar.contentId` — chat has no /api/content route. */
+  imageUrl?: string | null;
   /** Size of the avatar */
   size?: AvatarSize;
   /** Additional CSS classes */
@@ -46,6 +49,7 @@ export function UserAvatar({
   userId,
   displayName,
   avatar,
+  imageUrl: imageUrlProp,
   size = 'md',
   className = '',
   style,
@@ -61,13 +65,10 @@ export function UserAvatar({
     initials: getAvatarInitials(displayName, userId),
   }), [userId, displayName]);
 
-  // Determine if we should show uploaded image
-  const showImage = avatar?.contentId && !imageError;
-
-  // Build image URL from content ID
-  const imageUrl = showImage
-    ? `/api/content/${avatar!.contentId}`
-    : undefined;
+  // Prefer an explicit URL (data: URL from get_media); fall back to a content id.
+  const resolvedUrl = imageUrlProp ?? (avatar?.contentId ? `/api/content/${avatar.contentId}` : undefined);
+  const showImage = !!resolvedUrl && !imageError;
+  const imageUrl = showImage ? resolvedUrl : undefined;
 
   const pixelSize = sizeMap[size];
 

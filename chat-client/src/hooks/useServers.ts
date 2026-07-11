@@ -6,6 +6,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
+import { useChatIdentity } from './useChatIdentity';
 
 export interface Server {
   id: string;
@@ -36,9 +37,12 @@ function getServerIcon(name: string): string | undefined {
  */
 export function useServers() {
   const { rpc, connected } = useRpc();
+  const { identity } = useChatIdentity();
   const [servers, setServers] = useState<Server[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const myPubKey = identity?.publicKey ?? null;
 
   const fetchServers = useCallback(async () => {
     if (!rpc || !connected) {
@@ -48,10 +52,9 @@ export function useServers() {
 
     setLoading(true);
     try {
+      // Public spaces (browsable) — list_spaces now returns only public spaces.
       const result = await rpc.listSpaces();
-
-      // Transform RPC spaces to Server format
-      const transformedServers: Server[] = result.spaces.map(space => ({
+      const publicServers: Server[] = result.spaces.map(space => ({
         id: space.space_id,
         name: space.name ?? space.space_id.substring(0, 12) + '...',
         icon: getServerIcon(space.name ?? ''),
@@ -61,14 +64,36 @@ export function useServers() {
         description: `${space.post_count} posts`,
       }));
 
-      setServers(transformedServers);
+      // Merge the user's own private channels so they still appear as servers even
+      // though public browse omits them. get_my_private_spaces already hides DM and
+      // profile spaces, so this adds only real private channels.
+      let privateServers: Server[] = [];
+      if (myPubKey) {
+        try {
+          const priv = (await rpc.call('get_my_private_spaces', { user: myPubKey })) as {
+            spaces: Array<{ space_id: string; space_id_bech32?: string; name?: string | null }>;
+          };
+          privateServers = (priv.spaces ?? []).map(s => ({
+            id: s.space_id_bech32 || s.space_id,
+            name: s.name || 'Private channel',
+            unreadCount: 0,
+            hasNotification: false,
+          }));
+        } catch {
+          /* private spaces are best-effort; ignore */
+        }
+      }
+
+      const seen = new Set(publicServers.map(s => s.id));
+      const merged = [...publicServers, ...privateServers.filter(s => !seen.has(s.id))];
+      setServers(merged);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch servers');
     } finally {
       setLoading(false);
     }
-  }, [rpc, connected]);
+  }, [rpc, connected, myPubKey]);
 
   useEffect(() => {
     fetchServers();

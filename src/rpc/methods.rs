@@ -4433,8 +4433,6 @@ impl RpcMethods {
             }
         }
 
-        let total = space_stats.len();
-
         // Load space names from config.toml (user-defined names take precedence)
         let config_names = load_space_names(&self.node.data_dir);
 
@@ -4442,20 +4440,34 @@ impl RpcMethods {
         let chain_store_ref = self.node.chain_store.as_ref();
         let mut spaces: Vec<SpaceSummary> = space_stats
             .into_iter()
-            .map(|(space_id_16, (name, _description, _created_at, _post_count, last_activity))| {
+            .filter_map(|(space_id_16, (name, _description, _created_at, _post_count, last_activity))| {
                 let space_id_str = encode_space_id(&space_id_16);
                 // Use config name if available, otherwise use on-chain/default name
                 let final_name = config_names.get(&space_id_str).cloned().unwrap_or(name);
+
+                // Public browse shows ONLY real, named public spaces. Private channels and
+                // DM spaces register with an EMPTY name (their real name is encrypted), and
+                // profile/derived/unregistered spaces get an auto-generated "Space <8 hex>"
+                // placeholder — hide all of those. (is_private alone is unreliable here:
+                // block-sync re-registration can reset it.)
+                let trimmed = final_name.trim();
+                let is_placeholder = trimmed.len() == 14
+                    && trimmed.starts_with("Space ")
+                    && trimmed[6..].chars().all(|c| c.is_ascii_hexdigit());
+                if trimmed.is_empty() || is_placeholder {
+                    return None;
+                }
+
                 // Get accurate post count from indexed storage
                 let actual_post_count = chain_store_ref
                     .and_then(|cs| cs.count_posts_for_space(&space_id_16).ok())
                     .unwrap_or(0) as u64;
-                SpaceSummary {
+                Some(SpaceSummary {
                     space_id: space_id_str,
                     post_count: actual_post_count,
                     last_activity: if last_activity > 0 { Some(last_activity) } else { None },
                     name: Some(final_name),
-                }
+                })
             })
             .collect();
 
@@ -4468,6 +4480,9 @@ impl RpcMethods {
                 (None, None) => a.name.cmp(&b.name),
             }
         });
+
+        // total reflects the public spaces actually returned (after hiding private/system).
+        let total = spaces.len();
 
         // Apply pagination
         let spaces: Vec<_> = spaces.into_iter().skip(params.offset).take(params.limit).collect();

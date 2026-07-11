@@ -11,6 +11,8 @@ import { UserAvatar } from './UserAvatar';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { useDm } from '../hooks/useDm';
 import { useChatIdentity } from '../hooks/useChatIdentity';
+import { useIsSponsored } from '../hooks/useIsSponsored';
+import { useMediaUpload } from '../hooks/useRpc';
 import './UserProfileModal.css';
 
 interface UserProfileModalProps {
@@ -42,10 +44,24 @@ export function UserProfileModal({
 }: UserProfileModalProps): JSX.Element {
   const { profile, loading } = useUserProfile(userId);
   const { isUserBlocked, block, unblock } = useBlocklist();
+  const { getMediaUrl } = useMediaUpload();
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+
+  // The profile's avatarUrl is the avatar image's content hash — fetch the bytes
+  // (get_media → data URL) since chat has no /api/content route.
+  const avatarContentId = profile?.info?.avatarUrl;
+  useEffect(() => {
+    if (!avatarContentId) { setAvatarUrl(null); return; }
+    let cancelled = false;
+    getMediaUrl(avatarContentId).then(url => { if (!cancelled) setAvatarUrl(url); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [avatarContentId, getMediaUrl]);
   const { sendRequest } = useDm();
   const { identity } = useChatIdentity();
+  const isSponsored = useIsSponsored();
   const navigate = useNavigate();
   const [starting, setStarting] = useState(false);
+  const [dmError, setDmError] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
 
   const isBlocked = isUserBlocked(userId);
@@ -56,14 +72,22 @@ export function UserProfileModal({
 
   const handleMessage = useCallback(async () => {
     if (starting) return;
+    setDmError(null);
+    // DMs need a sponsor (same gate as posting). Say so instead of failing silently.
+    if (isSponsored === false) {
+      setDmError('You need a sponsor before you can DM. Redeem an invite or request sponsorship first.');
+      return;
+    }
     setStarting(true);
     const spaceId = await sendRequest(userId);
     setStarting(false);
     if (spaceId) {
       onClose();
       navigate('/channels/@me/' + spaceId);
+    } else {
+      setDmError('Could not start the DM. Please try again.');
     }
-  }, [starting, sendRequest, userId, onClose, navigate]);
+  }, [starting, isSponsored, sendRequest, userId, onClose, navigate]);
 
   // Close on escape
   useEffect(() => {
@@ -135,6 +159,7 @@ export function UserProfileModal({
         <UserAvatar
           userId={userId}
           displayName={name}
+          imageUrl={avatarUrl}
           size="lg"
         />
         <div className="profile-modal-name">
@@ -200,6 +225,7 @@ export function UserProfileModal({
           {isBlocked ? 'Unblock User' : 'Block User'}
         </button>
       </div>
+      {dmError && <p className="profile-modal-dm-error">{dmError}</p>}
     </div>
   );
 }

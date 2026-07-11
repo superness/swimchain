@@ -524,6 +524,7 @@ export class SwimchainRpc {
       parent_id: string;
       created_at: number;
       last_engagement: number;
+      display_name?: string;
       media_refs?: Array<{
         media_hash: string;
         media_type: string;
