@@ -272,6 +272,10 @@ pub enum MessageType {
     ActionAnnounce = 0x93,
     /// Request peer's mempool inventory (Bitcoin-style mempool sync)
     GetMempool = 0x94,
+    /// Direct-message request announcement — propagate a pending DM request so it
+    /// reaches the recipient's node (SPEC: DM delivery). Carries its own PoW +
+    /// signature so receiving nodes can verify it without trusting the relay.
+    DmRequestAnnounce = 0x95,
 
     // DHT (Kademlia) - SPEC_06 §3.8
     /// DHT ping (liveness check)
@@ -386,6 +390,7 @@ impl TryFrom<u8> for MessageType {
             // Mempool gossip
             0x93 => Ok(MessageType::ActionAnnounce),
             0x94 => Ok(MessageType::GetMempool),
+            0x95 => Ok(MessageType::DmRequestAnnounce),
             // DHT messages
             0x80 => Ok(MessageType::DhtPing),
             0x81 => Ok(MessageType::DhtPong),

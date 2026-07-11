@@ -1719,6 +1719,118 @@ impl Default for ActionAnnouncePayload {
     }
 }
 
+/// Announcement that propagates a pending direct-message request to peers so it
+/// reaches the recipient's node. Self-authenticating: a receiving node verifies the
+/// signature and PoW independently, so an untrusted relay can't forge or tamper.
+///
+/// Canonical signed message (ed25519 by `requester`):
+///   b"DM_REQUEST_V1" || requester || recipient || key_share || timestamp(8 LE)
+/// PoW (anti-spam, `DM_REQUEST_POW_DIFFICULTY` leading zero bits):
+///   sha256(b"DM_REQUEST_POW_V1" || requester || recipient || timestamp(8 LE) || pow_nonce(8 LE))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DmRequestAnnouncePayload {
+    /// Requester (sender) ed25519 public key.
+    pub requester: [u8; 32],
+    /// Intended recipient ed25519 public key.
+    pub recipient: [u8; 32],
+    /// The DM space key wrapped for the recipient (X25519), so only they can open it.
+    pub key_share: [u8; 32],
+    /// Unix seconds when the request was created (bounds replay + PoW freshness).
+    pub timestamp: u64,
+    /// PoW nonce satisfying the difficulty target above.
+    pub pow_nonce: u64,
+    /// Requester's signature over the canonical message.
+    pub signature: [u8; 64],
+}
+
+/// Fixed PoW difficulty (leading zero bits) for a DM request. Unsolicited, so it
+/// carries a cost to deter spam, mirroring the spam-attestation PoW.
+pub const DM_REQUEST_POW_DIFFICULTY: u8 = 12;
+
+impl DmRequestAnnouncePayload {
+    /// Wire size: 32 + 32 + 32 + 8 + 8 + 64 = 176 bytes.
+    pub const SIZE: usize = 32 + 32 + 32 + 8 + 8 + 64;
+
+    /// The bytes the `requester` signs (ed25519).
+    #[must_use]
+    pub fn signing_message(&self) -> Vec<u8> {
+        let mut m = Vec::with_capacity(13 + 32 + 32 + 32 + 8);
+        m.extend_from_slice(b"DM_REQUEST_V1");
+        m.extend_from_slice(&self.requester);
+        m.extend_from_slice(&self.recipient);
+        m.extend_from_slice(&self.key_share);
+        m.extend_from_slice(&self.timestamp.to_le_bytes());
+        m
+    }
+
+    /// The PoW pre-image (without the nonce); callers append the u64 nonce (LE).
+    #[must_use]
+    pub fn pow_message(&self) -> Vec<u8> {
+        let mut m = Vec::with_capacity(17 + 32 + 32 + 8);
+        m.extend_from_slice(b"DM_REQUEST_POW_V1");
+        m.extend_from_slice(&self.requester);
+        m.extend_from_slice(&self.recipient);
+        m.extend_from_slice(&self.timestamp.to_le_bytes());
+        m
+    }
+
+    /// Serialize to bytes.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
+        let mut b = [0u8; Self::SIZE];
+        b[0..32].copy_from_slice(&self.requester);
+        b[32..64].copy_from_slice(&self.recipient);
+        b[64..96].copy_from_slice(&self.key_share);
+        b[96..104].copy_from_slice(&self.timestamp.to_le_bytes());
+        b[104..112].copy_from_slice(&self.pow_nonce.to_le_bytes());
+        b[112..176].copy_from_slice(&self.signature);
+        b
+    }
+
+    /// Deserialize from bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < Self::SIZE {
+            return None;
+        }
+        let mut requester = [0u8; 32];
+        requester.copy_from_slice(&bytes[0..32]);
+        let mut recipient = [0u8; 32];
+        recipient.copy_from_slice(&bytes[32..64]);
+        let mut key_share = [0u8; 32];
+        key_share.copy_from_slice(&bytes[64..96]);
+        let timestamp = u64::from_le_bytes(bytes[96..104].try_into().ok()?);
+        let pow_nonce = u64::from_le_bytes(bytes[104..112].try_into().ok()?);
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(&bytes[112..176]);
+        Some(Self {
+            requester,
+            recipient,
+            key_share,
+            timestamp,
+            pow_nonce,
+            signature,
+        })
+    }
+
+    /// Verify the signature and PoW independently of any relay. Returns true only if
+    /// the requester actually signed this and paid the PoW cost.
+    #[must_use]
+    pub fn verify(&self) -> bool {
+        use crate::crypto::{leading_zeros, pow_hash};
+        // PoW
+        let mut pow_input = self.pow_message();
+        pow_input.extend_from_slice(&self.pow_nonce.to_le_bytes());
+        if leading_zeros(&pow_hash(&pow_input)) < u32::from(DM_REQUEST_POW_DIFFICULTY) {
+            return false;
+        }
+        // Signature
+        let pubkey = crate::types::identity::PublicKey(self.requester);
+        let sig = crate::types::identity::Signature(self.signature);
+        crate::crypto::signature::verify(&pubkey, &self.signing_message(), &sig)
+    }
+}
+
 // ============================================================================
 // Branch-Selective Sync Payloads
 // See docs/BRANCH_SELECTIVE_SYNC.md for architecture overview

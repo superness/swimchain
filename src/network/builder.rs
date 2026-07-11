@@ -263,7 +263,8 @@ impl Message {
             | MessageType::PoolContribution
             | MessageType::PoolStatus
             | MessageType::ActionAnnounce
-            | MessageType::GetMempool => {
+            | MessageType::GetMempool
+            | MessageType::DmRequestAnnounce => {
                 // Return the raw payload for router-level handling
                 Err(WireError::payload(format!(
                     "Pool/mempool message type {:?} should be handled at router level",
