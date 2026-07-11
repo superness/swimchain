@@ -326,6 +326,15 @@ export function ProfilePage(): JSX.Element {
       {/* Banner */}
       <div className="profile-banner" style={{ backgroundColor: bannerColor }} />
 
+      {/* Settings shortcut: on mobile the top app header (which carried the
+          settings cog) is hidden in favor of the bottom nav, so the cog lives
+          here on the profile page instead. Hidden on desktop via CSS. */}
+      {isOwnProfile && (
+        <Link to="/settings" className="profile-settings-cog" aria-label="Settings">
+          ⚙️
+        </Link>
+      )}
+
       {/* Header */}
       <div className="profile-header">
         <div className="profile-avatar-wrapper">

@@ -200,12 +200,15 @@
 
 /* Responsive */
 @media (max-width: 768px) {
-  .app-header__nav {
+  /* The bottom nav covers Feed/Discover/Sponsor/Profile and the settings cog
+     moves onto the Profile page, so the top header is fully redundant on
+     mobile — hide it and release the space reserved for it on .app. */
+  .app-header {
     display: none;
   }
 
-  .app-header__logo-text {
-    display: none;
+  .app {
+    padding-top: 0;
   }
 
   .mobile-nav {

@@ -159,6 +159,13 @@
 }
 
 /* Responsive */
+@media (max-width: 768px) {
+  .feed-page__header {
+    /* The top app header is hidden at this width; stick to the viewport top. */
+    top: 0;
+  }
+}
+
 @media (max-width: 600px) {
   .feed-page {
     padding-top: 0; /* header cleared centrally on .app */
