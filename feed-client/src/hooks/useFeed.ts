@@ -182,13 +182,19 @@ export interface UseFeedOptions {
   sortOrder?: 'recent' | 'hot';
   filter?: 'all' | 'spaces' | 'users';
   searchQuery?: string;
+  /**
+   * When set, show ONLY this author's posts (the "View Posts" action). Fetched
+   * via get_user_posts, which takes the author's pubkey/id directly, so it
+   * works regardless of whether the caller has the hex pubkey or cs1 address.
+   */
+  authorFilter?: string;
 }
 
 /**
  * Hook to build and manage the aggregated feed
  */
 export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
-  const { sortOrder = 'recent', filter = 'all', searchQuery = '' } = options;
+  const { sortOrder = 'recent', filter = 'all', searchQuery = '', authorFilter } = options;
   const { rpc, connected } = useRpc();
   const { preferences, loading: prefsLoading } = useFeedPreferences();
   const { filterBlocked, isSpaceBlocked } = useBlocklist();
@@ -300,11 +306,11 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
     setError(null);
 
     try {
-      // Fetch all content from sources
-      const allItems = await fetchFromSources(
-        activeSources.spaces,
-        activeSources.users
-      );
+      // Author-filtered view ("View Posts"): fetch only this author's posts.
+      const allItems = authorFilter
+        ? (await rpc!.getUserPosts({ userId: authorFilter, limit: FETCH_LIMIT_PER_SOURCE }))
+            .items.map(item => mapContentToFeedItem(item, 'user', authorFilter))
+        : await fetchFromSources(activeSources.spaces, activeSources.users);
 
       // Filter out blocked content/authors, and — unless "Show Replies in Feed" is
       // on — reply items (the feed fetches posts + replies together; without this the
@@ -337,7 +343,7 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [connected, prefsLoading, activeSources, fetchFromSources, sortOrder, preferences.showRepliesInFeed, filterBlocked, isSpaceBlocked]);
+  }, [connected, prefsLoading, activeSources, fetchFromSources, sortOrder, preferences.showRepliesInFeed, filterBlocked, isSpaceBlocked, authorFilter, rpc]);
 
   /**
    * Load more items (pagination)

@@ -8,6 +8,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useUserProfile } from '../hooks/useUserProfile';
+import { useMediaUpload } from '../hooks/useRpc';
 import { getAvatarColor, getAvatarInitials, truncateAddress } from '../lib/profile';
 import './UserProfileModal.css';
 
@@ -34,6 +35,20 @@ export function UserProfileModal({
   const displayName = profile?.info?.displayName || knownDisplayName || truncateAddress(userPk);
   const avatarColor = getAvatarColor(userPk);
   const initials = getAvatarInitials(profile?.info?.displayName, userPk);
+
+  // Fetch the avatar image (the modal showed only initials before).
+  const { getMediaUrl } = useMediaUpload();
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const avatarContentId = profile?.avatar?.contentId;
+  useEffect(() => {
+    let alive = true;
+    if (!avatarContentId) { setAvatarUrl(null); return; }
+    const hash = avatarContentId.startsWith('sha256:')
+      ? avatarContentId.slice('sha256:'.length)
+      : avatarContentId;
+    getMediaUrl(hash).then(url => { if (alive) setAvatarUrl(url); }).catch(() => { if (alive) setAvatarUrl(null); });
+    return () => { alive = false; };
+  }, [avatarContentId, getMediaUrl]);
 
   // Close on click outside
   useEffect(() => {
@@ -106,9 +121,13 @@ export function UserProfileModal({
           <div className="user-profile-modal__header">
             <div
               className="user-profile-modal__avatar"
-              style={{ backgroundColor: avatarColor }}
+              style={avatarUrl ? undefined : { backgroundColor: avatarColor }}
             >
-              {initials}
+              {avatarUrl ? (
+                <img src={avatarUrl} alt="" className="user-profile-modal__avatar-img" />
+              ) : (
+                initials
+              )}
             </div>
             <div className="user-profile-modal__info">
               <div className="user-profile-modal__name">{displayName}</div>

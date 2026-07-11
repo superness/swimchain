@@ -6,6 +6,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { FeedList } from '../components/FeedList';
 import { CreatePostFAB } from '../components/CreatePostFAB';
 import { SearchBar } from '../components/SearchBar';
@@ -22,6 +23,11 @@ export function Feed(): JSX.Element {
   const [filter, setFilter] = useState<FilterType>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // "View Posts" navigates to /?author=<pubkey>; when present, show only that
+  // author's posts.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const authorFilter = searchParams.get('author') ?? undefined;
+
   const {
     items,
     loading,
@@ -31,7 +37,7 @@ export function Feed(): JSX.Element {
     loadMore,
     refresh,
     hasFollows,
-  } = useFeed({ sortOrder, filter, searchQuery });
+  } = useFeed({ sortOrder, filter, searchQuery, authorFilter });
 
   const {
     preferences,
@@ -77,7 +83,9 @@ export function Feed(): JSX.Element {
       {/* Header with controls */}
       <header className="feed-page__header">
         <div className="feed-page__title-row">
-          <h1 className="feed-page__title">Your Feed</h1>
+          <h1 className="feed-page__title">
+            {authorFilter ? 'Posts by author' : 'Your Feed'}
+          </h1>
           <button
             className="feed-page__refresh-btn"
             onClick={refresh}
@@ -90,6 +98,16 @@ export function Feed(): JSX.Element {
             </span>
           </button>
         </div>
+
+        {authorFilter && (
+          <button
+            type="button"
+            className="feed-page__clear-filter"
+            onClick={() => setSearchParams({})}
+          >
+            ← Back to your feed
+          </button>
+        )}
 
         {/* Search bar */}
         <div className="feed-page__search">
