@@ -512,7 +512,7 @@ impl NodeManager {
         // Wrapped in RwLock to allow network gossip handlers to store updates (C-BLOCKLIST-2)
         let blocklist_path = self.config.data_dir.join("blocklist");
         std::fs::create_dir_all(&blocklist_path).ok();
-        match sled::open(&blocklist_path) {
+        match crate::storage::open_db(&blocklist_path) {
             Ok(blocklist_db) => match BlocklistStore::open(Arc::new(blocklist_db)) {
                 Ok(blocklist) => {
                     self.blocklist = Some(Arc::new(RwLock::new(blocklist)));
@@ -530,7 +530,7 @@ impl NodeManager {
         // 4.5.3. Initialize spam attestation store for community flagging (SPEC_12 §3)
         let spam_path = self.config.data_dir.join("spam_attestations");
         std::fs::create_dir_all(&spam_path).ok();
-        match sled::open(&spam_path) {
+        match crate::storage::open_db(&spam_path) {
             Ok(spam_db) => {
                 let spam_store = Arc::new(SpamAttestationStore::open(spam_db));
                 self.spam_attestation_store = Some(spam_store.clone());
@@ -551,7 +551,7 @@ impl NodeManager {
         // 4.5.3b. Initialize engagement graph for tracking who engages with whom
         let engagement_path = self.config.data_dir.join("engagement_graph");
         std::fs::create_dir_all(&engagement_path).ok();
-        match sled::open(&engagement_path) {
+        match crate::storage::open_db(&engagement_path) {
             Ok(engagement_db) => {
                 let engagement_graph = Arc::new(EngagementGraphStore::open(engagement_db));
                 self.engagement_graph = Some(engagement_graph);
@@ -679,7 +679,7 @@ impl NodeManager {
         // 4.5.3e. Initialize offer store for public sponsorship offer lifecycle
         {
             let offer_db_path = self.config.data_dir.join("offer_store");
-            match sled::open(&offer_db_path) {
+            match crate::storage::open_db(&offer_db_path) {
                 Ok(offer_db) => {
                     match crate::sponsorship::offer_store::OfferStore::from_db(&offer_db) {
                         Ok(offer_store) => {
@@ -698,7 +698,7 @@ impl NodeManager {
         }
 
         // 4.5.4. Initialize fork registry (VISION §5)
-        let fork_db = sled::open(self.config.data_dir.join("fork_store"))
+        let fork_db = crate::storage::open_db(self.config.data_dir.join("fork_store"))
             .map_err(|e| NodeError::StorageOpen(self.config.data_dir.clone(), e.to_string()))?;
         let fork_store = Arc::new(
             crate::fork::ForkStore::open(Arc::new(fork_db))

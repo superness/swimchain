@@ -40,7 +40,7 @@ pub struct PeerStore {
 impl PeerStore {
     /// Open or create a peer store at the given path
     pub fn open(path: &Path) -> Result<Self, DiscoveryError> {
-        let db = sled::open(path)?;
+        let db = crate::storage::open_db(path)?;
         let tree = db.open_tree(TREE_NAME)?;
         let score_index = db.open_tree(SCORE_INDEX_TREE)?;
         Ok(Self {
@@ -103,7 +103,11 @@ impl PeerStore {
     }
 
     /// Remove entry from score index.
-    fn remove_from_score_index(&self, score: i16, peer_key: &PeerKey) -> Result<(), DiscoveryError> {
+    fn remove_from_score_index(
+        &self,
+        score: i16,
+        peer_key: &PeerKey,
+    ) -> Result<(), DiscoveryError> {
         let index_key = Self::make_score_index_key(score, peer_key);
         self.score_index.remove(index_key)?;
         Ok(())
@@ -305,7 +309,10 @@ impl PeerStore {
     pub fn remove_banned(&self) -> Result<usize, DiscoveryError> {
         // Build the upper bound key for ban threshold
         // We want all scores < PEER_BAN_THRESHOLD
-        let threshold_key = Self::make_score_index_key(PEER_BAN_THRESHOLD, &PeerKey::from_bytes(&[0u8; 67]).unwrap());
+        let threshold_key = Self::make_score_index_key(
+            PEER_BAN_THRESHOLD,
+            &PeerKey::from_bytes(&[0u8; 67]).unwrap(),
+        );
 
         let mut removed = 0;
         let mut to_remove = Vec::new();
@@ -782,7 +789,9 @@ mod tests {
 
         // Add 10 entries with varying scores
         for i in 0..10 {
-            store.put(&make_entry(9735 + i, (i as i16) * 50 - 200)).unwrap();
+            store
+                .put(&make_entry(9735 + i, (i as i16) * 50 - 200))
+                .unwrap();
         }
 
         assert!(store.verify_index_consistency().unwrap());
@@ -838,11 +847,11 @@ mod tests {
         let store = PeerStore::open_temporary().unwrap();
 
         // Add entries with specific scores
-        store.put(&make_entry(9735, 500)).unwrap();  // Should survive
-        store.put(&make_entry(9736, 100)).unwrap();  // Should be evicted
-        store.put(&make_entry(9737, 300)).unwrap();  // Should survive
-        store.put(&make_entry(9738, 50)).unwrap();   // Should be evicted
-        store.put(&make_entry(9739, 400)).unwrap();  // Should survive
+        store.put(&make_entry(9735, 500)).unwrap(); // Should survive
+        store.put(&make_entry(9736, 100)).unwrap(); // Should be evicted
+        store.put(&make_entry(9737, 300)).unwrap(); // Should survive
+        store.put(&make_entry(9738, 50)).unwrap(); // Should be evicted
+        store.put(&make_entry(9739, 400)).unwrap(); // Should survive
 
         let evicted = store.evict_lowest_scores(3).unwrap();
         assert_eq!(evicted, 2);
@@ -851,7 +860,11 @@ mod tests {
         let remaining = store.get_all().unwrap();
         assert_eq!(remaining.len(), 3);
         for entry in remaining {
-            assert!(entry.score >= 300, "Entry with score {} should have been evicted", entry.score);
+            assert!(
+                entry.score >= 300,
+                "Entry with score {} should have been evicted",
+                entry.score
+            );
         }
     }
 

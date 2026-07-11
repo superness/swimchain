@@ -33,7 +33,7 @@ pub struct SponsorshipStore {
 impl SponsorshipStore {
     /// Open or create sponsorship store at path
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SponsorshipError> {
-        let db = sled::open(path.as_ref())?;
+        let db = crate::storage::open_db(path.as_ref())?;
         Self::from_db(&db)
     }
 

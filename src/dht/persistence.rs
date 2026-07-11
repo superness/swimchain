@@ -162,21 +162,21 @@ pub struct DhtPersistence {
 impl DhtPersistence {
     /// Open or create the DHT persistence store
     pub fn open(path: impl AsRef<Path>) -> DhtResult<Self> {
-        let db = sled::open(path).map_err(|e| DhtError::StorageError {
+        let db = crate::storage::open_db(path).map_err(|e| DhtError::StorageError {
             reason: format!("Failed to open sled database: {}", e),
         })?;
 
-        let routing_tree = db.open_tree(TREE_ROUTING_TABLE).map_err(|e| {
-            DhtError::StorageError {
-                reason: format!("Failed to open routing table tree: {}", e),
-            }
-        })?;
-
-        let providers_tree =
-            db.open_tree(TREE_PROVIDERS)
+        let routing_tree =
+            db.open_tree(TREE_ROUTING_TABLE)
                 .map_err(|e| DhtError::StorageError {
-                    reason: format!("Failed to open providers tree: {}", e),
+                    reason: format!("Failed to open routing table tree: {}", e),
                 })?;
+
+        let providers_tree = db
+            .open_tree(TREE_PROVIDERS)
+            .map_err(|e| DhtError::StorageError {
+                reason: format!("Failed to open providers tree: {}", e),
+            })?;
 
         let local_content_tree =
             db.open_tree(TREE_LOCAL_CONTENT)
@@ -184,11 +184,11 @@ impl DhtPersistence {
                     reason: format!("Failed to open local content tree: {}", e),
                 })?;
 
-        let metadata_tree =
-            db.open_tree(TREE_METADATA)
-                .map_err(|e| DhtError::StorageError {
-                    reason: format!("Failed to open metadata tree: {}", e),
-                })?;
+        let metadata_tree = db
+            .open_tree(TREE_METADATA)
+            .map_err(|e| DhtError::StorageError {
+                reason: format!("Failed to open metadata tree: {}", e),
+            })?;
 
         Ok(Self {
             db,
@@ -201,11 +201,12 @@ impl DhtPersistence {
 
     /// Get the persisted version number
     pub fn get_version(&self) -> DhtResult<Option<u32>> {
-        match self.metadata_tree.get(KEY_VERSION).map_err(|e| {
-            DhtError::StorageError {
+        match self
+            .metadata_tree
+            .get(KEY_VERSION)
+            .map_err(|e| DhtError::StorageError {
                 reason: format!("Failed to read version: {}", e),
-            }
-        })? {
+            })? {
             Some(bytes) => {
                 if bytes.len() != 4 {
                     return Ok(None);
@@ -229,11 +230,12 @@ impl DhtPersistence {
 
     /// Get the persisted local node ID
     pub fn get_local_id(&self) -> DhtResult<Option<NodeId>> {
-        match self.metadata_tree.get(KEY_LOCAL_ID).map_err(|e| {
-            DhtError::StorageError {
+        match self
+            .metadata_tree
+            .get(KEY_LOCAL_ID)
+            .map_err(|e| DhtError::StorageError {
                 reason: format!("Failed to read local ID: {}", e),
-            }
-        })? {
+            })? {
             Some(bytes) => {
                 if bytes.len() != 32 {
                     return Err(DhtError::InvalidNodeId {
@@ -261,9 +263,11 @@ impl DhtPersistence {
     /// Save the routing table to persistence
     pub fn save_routing_table(&self, table: &RoutingTable) -> DhtResult<()> {
         // Clear existing entries
-        self.routing_tree.clear().map_err(|e| DhtError::StorageError {
-            reason: format!("Failed to clear routing table: {}", e),
-        })?;
+        self.routing_tree
+            .clear()
+            .map_err(|e| DhtError::StorageError {
+                reason: format!("Failed to clear routing table: {}", e),
+            })?;
 
         // Save local ID
         self.set_local_id(table.local_id())?;
@@ -272,9 +276,10 @@ impl DhtPersistence {
         for entry in table.all_nodes() {
             let persisted = PersistedNodeEntry::from_entry(entry);
             let key = entry.id.as_bytes();
-            let value = bincode::serialize(&persisted).map_err(|e| DhtError::SerializationError {
-                reason: format!("Failed to serialize node entry: {}", e),
-            })?;
+            let value =
+                bincode::serialize(&persisted).map_err(|e| DhtError::SerializationError {
+                    reason: format!("Failed to serialize node entry: {}", e),
+                })?;
             self.routing_tree
                 .insert(key.as_slice(), value)
                 .map_err(|e| DhtError::StorageError {
@@ -478,9 +483,11 @@ impl DhtPersistence {
 
     /// Clear all persisted data
     pub fn clear(&self) -> DhtResult<()> {
-        self.routing_tree.clear().map_err(|e| DhtError::StorageError {
-            reason: format!("Failed to clear routing table: {}", e),
-        })?;
+        self.routing_tree
+            .clear()
+            .map_err(|e| DhtError::StorageError {
+                reason: format!("Failed to clear routing table: {}", e),
+            })?;
         self.providers_tree
             .clear()
             .map_err(|e| DhtError::StorageError {
@@ -731,7 +738,12 @@ mod tests {
             let hash = make_hash(0xcd);
             store.add_provider(
                 hash,
-                ProviderRecord::new(make_id(5), make_addr(9000), make_pubkey(5), make_signature(5)),
+                ProviderRecord::new(
+                    make_id(5),
+                    make_addr(9000),
+                    make_pubkey(5),
+                    make_signature(5),
+                ),
             );
             store.add_local_content(hash);
 

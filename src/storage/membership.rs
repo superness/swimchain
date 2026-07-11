@@ -153,7 +153,7 @@ pub struct MembershipStore {
 impl MembershipStore {
     /// Open or create membership store at path
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let db = sled::open(path.as_ref())?;
+        let db = crate::storage::open_db(path.as_ref())?;
         let members = db.open_tree("members")?;
         let user_spaces = db.open_tree("user_spaces")?;
         let pending_invites = db.open_tree("pending_invites")?;
@@ -241,7 +241,11 @@ impl MembershipStore {
     }
 
     /// Check if a user is a member of a space
-    pub fn is_member(&self, space_id: &[u8; 16], member_pk: &[u8; 32]) -> Result<bool, StorageError> {
+    pub fn is_member(
+        &self,
+        space_id: &[u8; 16],
+        member_pk: &[u8; 32],
+    ) -> Result<bool, StorageError> {
         let mut key = [0u8; 48];
         key[..16].copy_from_slice(space_id);
         key[16..].copy_from_slice(member_pk);
@@ -250,7 +254,10 @@ impl MembershipStore {
     }
 
     /// Get all members of a space
-    pub fn get_space_members(&self, space_id: &[u8; 16]) -> Result<Vec<MemberRecord>, StorageError> {
+    pub fn get_space_members(
+        &self,
+        space_id: &[u8; 16],
+    ) -> Result<Vec<MemberRecord>, StorageError> {
         let mut members = Vec::new();
 
         // Prefix scan: all keys starting with space_id
@@ -363,7 +370,10 @@ impl MembershipStore {
     }
 
     /// Get all pending invites for a user
-    pub fn get_user_invites(&self, invitee_pk: &[u8; 32]) -> Result<Vec<InviteRecord>, StorageError> {
+    pub fn get_user_invites(
+        &self,
+        invitee_pk: &[u8; 32],
+    ) -> Result<Vec<InviteRecord>, StorageError> {
         let mut invites = Vec::new();
 
         for result in self.invites_by_user.scan_prefix(invitee_pk) {
@@ -385,7 +395,10 @@ impl MembershipStore {
     }
 
     /// Get all invites for a space (for admin view)
-    pub fn get_space_invites(&self, space_id: &[u8; 16]) -> Result<Vec<InviteRecord>, StorageError> {
+    pub fn get_space_invites(
+        &self,
+        space_id: &[u8; 16],
+    ) -> Result<Vec<InviteRecord>, StorageError> {
         let mut invites = Vec::new();
 
         for result in self.pending_invites.iter() {
@@ -717,7 +730,11 @@ mod tests {
         for i in 0..5 {
             let record = MemberRecord {
                 member_pk: [i as u8; 32],
-                role: if i == 0 { MemberRole::Admin } else { MemberRole::Member },
+                role: if i == 0 {
+                    MemberRole::Admin
+                } else {
+                    MemberRole::Member
+                },
                 joined_at: 1000 + i as u64,
                 invited_by: [0u8; 32],
                 encrypted_space_key: vec![],
@@ -834,7 +851,10 @@ mod tests {
         store.add_dm_request(&request).unwrap();
 
         // Get request
-        let retrieved = store.get_dm_request(&[2u8; 32], &[3u8; 32]).unwrap().unwrap();
+        let retrieved = store
+            .get_dm_request(&[2u8; 32], &[3u8; 32])
+            .unwrap()
+            .unwrap();
         assert_eq!(retrieved.status, DMRequestStatus::Pending);
 
         // Check exists
@@ -855,7 +875,10 @@ mod tests {
             )
             .unwrap();
 
-        let updated = store.get_dm_request(&[2u8; 32], &[3u8; 32]).unwrap().unwrap();
+        let updated = store
+            .get_dm_request(&[2u8; 32], &[3u8; 32])
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.status, DMRequestStatus::Accepted);
         assert_eq!(updated.space_id, Some([5u8; 16]));
 

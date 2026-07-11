@@ -11,11 +11,11 @@
 //! This separates the "source of truth" (blockchain) from the
 //! "queryable view" (aggregation cache) for performance.
 
-use std::path::Path;
-use sled::Db;
-use log::{info, debug, warn};
 use crate::types::content::ContentId;
 use crate::types::error::StorageError;
+use log::{debug, info, warn};
+use sled::Db;
+use std::path::Path;
 
 /// Aggregated metadata for a single content item
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -83,15 +83,15 @@ const CACHE_VERSION: u32 = 1;
 /// Persistent aggregation cache using Sled
 pub struct AggregationCache {
     db: Db,
-    content_tree: sled::Tree,   // ContentId -> ContentAggregation
-    space_tree: sled::Tree,     // SpaceId -> SpaceAggregation
-    meta_tree: sled::Tree,      // Cache metadata (version, last rebuild time)
+    content_tree: sled::Tree, // ContentId -> ContentAggregation
+    space_tree: sled::Tree,   // SpaceId -> SpaceAggregation
+    meta_tree: sled::Tree,    // Cache metadata (version, last rebuild time)
 }
 
 impl AggregationCache {
     /// Open or create the aggregation cache
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let db = sled::open(path.as_ref())?;
+        let db = crate::storage::open_db(path.as_ref())?;
         let content_tree = db.open_tree("content_aggregations")?;
         let space_tree = db.open_tree("space_aggregations")?;
         let meta_tree = db.open_tree("cache_meta")?;
@@ -107,7 +107,10 @@ impl AggregationCache {
         if cache.needs_rebuild()? {
             info!("[AGGREGATION-CACHE] Cache version mismatch or missing, will need rebuild");
         } else {
-            debug!("[AGGREGATION-CACHE] Cache version {} is current", CACHE_VERSION);
+            debug!(
+                "[AGGREGATION-CACHE] Cache version {} is current",
+                CACHE_VERSION
+            );
         }
 
         Ok(cache)
@@ -136,7 +139,10 @@ impl AggregationCache {
         let timestamp_data = bincode::serialize(&timestamp)?;
         self.meta_tree.insert("last_rebuild", timestamp_data)?;
 
-        info!("[AGGREGATION-CACHE] Marked as rebuilt, version {}", CACHE_VERSION);
+        info!(
+            "[AGGREGATION-CACHE] Marked as rebuilt, version {}",
+            CACHE_VERSION
+        );
         Ok(())
     }
 
@@ -153,7 +159,10 @@ impl AggregationCache {
     // =========================================================================
 
     /// Get aggregation for a content item
-    pub fn get_content(&self, content_id: &ContentId) -> Result<Option<ContentAggregation>, StorageError> {
+    pub fn get_content(
+        &self,
+        content_id: &ContentId,
+    ) -> Result<Option<ContentAggregation>, StorageError> {
         match self.content_tree.get(&content_id.0)? {
             Some(data) => {
                 let agg: ContentAggregation = bincode::deserialize(&data)?;
@@ -172,7 +181,11 @@ impl AggregationCache {
     }
 
     /// Set aggregation for a content item
-    pub fn set_content(&self, content_id: &ContentId, agg: &ContentAggregation) -> Result<(), StorageError> {
+    pub fn set_content(
+        &self,
+        content_id: &ContentId,
+        agg: &ContentAggregation,
+    ) -> Result<(), StorageError> {
         let data = bincode::serialize(agg)?;
         self.content_tree.insert(&content_id.0, data)?;
         Ok(())
@@ -183,12 +196,19 @@ impl AggregationCache {
         let mut agg = self.get_content(parent_id)?.unwrap_or_default();
         agg.reply_count += 1;
         self.set_content(parent_id, &agg)?;
-        debug!("[AGGREGATION-CACHE] Incremented reply count for {:?} to {}", parent_id, agg.reply_count);
+        debug!(
+            "[AGGREGATION-CACHE] Incremented reply count for {:?} to {}",
+            parent_id, agg.reply_count
+        );
         Ok(())
     }
 
     /// Update last activity for a content item
-    pub fn update_last_activity(&self, content_id: &ContentId, timestamp: u64) -> Result<(), StorageError> {
+    pub fn update_last_activity(
+        &self,
+        content_id: &ContentId,
+        timestamp: u64,
+    ) -> Result<(), StorageError> {
         let mut agg = self.get_content(content_id)?.unwrap_or_default();
         if timestamp > agg.last_activity {
             agg.last_activity = timestamp;
@@ -198,7 +218,12 @@ impl AggregationCache {
     }
 
     /// Initialize a new content item in the cache
-    pub fn init_content(&self, content_id: &ContentId, thread_depth: u32, created_at: u64) -> Result<(), StorageError> {
+    pub fn init_content(
+        &self,
+        content_id: &ContentId,
+        thread_depth: u32,
+        created_at: u64,
+    ) -> Result<(), StorageError> {
         let agg = ContentAggregation {
             reply_count: 0,
             engagement_score: 0,
@@ -225,14 +250,22 @@ impl AggregationCache {
     }
 
     /// Set aggregation for a space
-    pub fn set_space(&self, space_id: &[u8; 16], agg: &SpaceAggregation) -> Result<(), StorageError> {
+    pub fn set_space(
+        &self,
+        space_id: &[u8; 16],
+        agg: &SpaceAggregation,
+    ) -> Result<(), StorageError> {
         let data = bincode::serialize(agg)?;
         self.space_tree.insert(space_id, data)?;
         Ok(())
     }
 
     /// Increment post count for a space
-    pub fn increment_post_count(&self, space_id: &[u8; 16], timestamp: u64) -> Result<(), StorageError> {
+    pub fn increment_post_count(
+        &self,
+        space_id: &[u8; 16],
+        timestamp: u64,
+    ) -> Result<(), StorageError> {
         let mut agg = self.get_space(space_id)?.unwrap_or_default();
         agg.post_count += 1;
         agg.total_content_count += 1;
@@ -240,12 +273,19 @@ impl AggregationCache {
             agg.last_activity = timestamp;
         }
         self.set_space(space_id, &agg)?;
-        debug!("[AGGREGATION-CACHE] Space {:?} now has {} posts", space_id, agg.post_count);
+        debug!(
+            "[AGGREGATION-CACHE] Space {:?} now has {} posts",
+            space_id, agg.post_count
+        );
         Ok(())
     }
 
     /// Increment reply count for a space
-    pub fn increment_space_reply_count(&self, space_id: &[u8; 16], timestamp: u64) -> Result<(), StorageError> {
+    pub fn increment_space_reply_count(
+        &self,
+        space_id: &[u8; 16],
+        timestamp: u64,
+    ) -> Result<(), StorageError> {
         let mut agg = self.get_space(space_id)?.unwrap_or_default();
         agg.total_reply_count += 1;
         agg.total_content_count += 1;
@@ -261,7 +301,10 @@ impl AggregationCache {
     // =========================================================================
 
     /// Batch update content aggregations
-    pub fn batch_set_content(&self, updates: &[(ContentId, ContentAggregation)]) -> Result<(), StorageError> {
+    pub fn batch_set_content(
+        &self,
+        updates: &[(ContentId, ContentAggregation)],
+    ) -> Result<(), StorageError> {
         let mut batch = sled::Batch::default();
         for (id, agg) in updates {
             let data = bincode::serialize(agg)?;
@@ -272,7 +315,10 @@ impl AggregationCache {
     }
 
     /// Batch update space aggregations
-    pub fn batch_set_space(&self, updates: &[([u8; 16], SpaceAggregation)]) -> Result<(), StorageError> {
+    pub fn batch_set_space(
+        &self,
+        updates: &[([u8; 16], SpaceAggregation)],
+    ) -> Result<(), StorageError> {
         let mut batch = sled::Batch::default();
         for (id, agg) in updates {
             let data = bincode::serialize(agg)?;

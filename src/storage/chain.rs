@@ -172,7 +172,7 @@ impl ChainStore {
     ///
     /// Returns error if database cannot be opened or trees cannot be created.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let db = sled::open(path.as_ref())?;
+        let db = crate::storage::open_db(path.as_ref())?;
         let root_blocks = db.open_tree("root_blocks")?;
         let space_blocks = db.open_tree("space_blocks")?;
         let content_blocks = db.open_tree("content_blocks")?;

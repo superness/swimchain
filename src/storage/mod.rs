@@ -74,7 +74,7 @@ pub mod membership;
 pub mod metrics;
 
 // Re-export main types
-pub use aggregation_cache::{AggregationCache, ContentAggregation, SpaceAggregation, CacheStats};
+pub use aggregation_cache::{AggregationCache, CacheStats, ContentAggregation, SpaceAggregation};
 pub use blob::{BlobStore, ContentBlobHash, CHUNK_SIZE};
 pub use cache::{
     CacheEntry, CacheStatistics, EvictionPriority, LruCache, MAX_CACHE_BYTES, MIN_CACHE_BYTES,
@@ -91,6 +91,22 @@ pub use membership::{
     MembershipStats, MembershipStore,
 };
 pub use metrics::StorageMetrics;
+
+/// sled defaults to a **1 GiB page cache per database**. A node opens ~13 separate sled
+/// databases (chain, content, aggregation, membership, peers, DHT, sponsorship, blocklist,
+/// spam, engagement, offers, fork, device-constraints), so the defaults can balloon to many
+/// GiB under load and OOM a small host — the testnet seed on a 1 GB droplet was OOM-killed at
+/// ~1.8 GiB RSS (idle it uses ~19 MiB). Cap each DB's cache so total memory stays bounded.
+pub const SLED_CACHE_CAPACITY: u64 = 32 * 1024 * 1024; // 32 MiB per database
+
+/// Open a sled database with a bounded page cache (see [`SLED_CACHE_CAPACITY`]). Use this
+/// instead of `sled::open` for any long-lived node database.
+pub fn open_db<P: AsRef<std::path::Path>>(path: P) -> Result<sled::Db, sled::Error> {
+    sled::Config::new()
+        .path(path.as_ref())
+        .cache_capacity(SLED_CACHE_CAPACITY)
+        .open()
+}
 
 #[cfg(test)]
 mod integration_tests {

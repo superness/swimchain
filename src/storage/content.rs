@@ -11,7 +11,9 @@ use log::info;
 use sled::Db;
 
 use super::blob::BlobStore;
-use crate::types::content::{ContentId, ContentItem, Reaction, ReactionCounts, ReactionType, Tombstone};
+use crate::types::content::{
+    ContentId, ContentItem, Reaction, ReactionCounts, ReactionType, Tombstone,
+};
 use crate::types::error::StorageError;
 use crate::types::identity::IdentityId;
 
@@ -48,7 +50,7 @@ impl PersistentContentStore {
         db_path: impl AsRef<Path>,
         blob_path: impl AsRef<Path>,
     ) -> Result<Self, StorageError> {
-        let db = sled::open(db_path.as_ref())?;
+        let db = crate::storage::open_db(db_path.as_ref())?;
         let content_tree = db.open_tree("content")?;
         let tombstone_tree = db.open_tree("tombstones")?;
         let children_tree = db.open_tree("children")?;
@@ -127,7 +129,10 @@ impl PersistentContentStore {
     /// For content with inline body, returns the inline body.
     /// For content with content_hash, reads from blob store.
     /// Returns None if content not found or no body available.
-    pub fn get_body_by_hash(&self, content_hash: &[u8; 32]) -> Result<Option<String>, StorageError> {
+    pub fn get_body_by_hash(
+        &self,
+        content_hash: &[u8; 32],
+    ) -> Result<Option<String>, StorageError> {
         use super::blob::ContentBlobHash;
 
         // First check if we have a blob with this exact hash
@@ -224,7 +229,11 @@ impl PersistentContentStore {
     /// # Errors
     ///
     /// Returns error if content doesn't exist or operation fails.
-    pub fn update_last_engagement(&self, id: &ContentId, new_timestamp: u64) -> Result<(), StorageError> {
+    pub fn update_last_engagement(
+        &self,
+        id: &ContentId,
+        new_timestamp: u64,
+    ) -> Result<(), StorageError> {
         let key = id.0;
 
         // Get existing content
@@ -394,7 +403,11 @@ impl PersistentContentStore {
 
     /// Create a key for reaction storage
     /// Format: content_id (32 bytes) + reactor_id (32 bytes) + reaction_type (1 byte)
-    fn reaction_key(content_id: &ContentId, reactor_id: &IdentityId, reaction_type: ReactionType) -> [u8; 65] {
+    fn reaction_key(
+        content_id: &ContentId,
+        reactor_id: &IdentityId,
+        reaction_type: ReactionType,
+    ) -> [u8; 65] {
         let mut key = [0u8; 65];
         key[..32].copy_from_slice(&content_id.0);
         key[32..64].copy_from_slice(&reactor_id.0);
@@ -613,7 +626,10 @@ impl PersistentContentStore {
     /// # Errors
     ///
     /// Returns error if read fails.
-    pub fn get_reaction_counts(&self, content_id: &ContentId) -> Result<ReactionCounts, StorageError> {
+    pub fn get_reaction_counts(
+        &self,
+        content_id: &ContentId,
+    ) -> Result<ReactionCounts, StorageError> {
         let now_ms = crate::crypto::current_timestamp() * 1000;
         self.get_reaction_counts_at(content_id, now_ms)
     }
@@ -856,7 +872,10 @@ mod tests {
 
         // First heart accepted.
         assert!(store
-            .add_reaction_windowed(&make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now), now)
+            .add_reaction_windowed(
+                &make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now),
+                now
+            )
             .unwrap());
         // Same user, same emoji, still within the 5-day window → rejected, no double count.
         assert!(!store
@@ -879,10 +898,16 @@ mod tests {
         let now = 10_000_000_000u64;
 
         assert!(store
-            .add_reaction_windowed(&make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now), now)
+            .add_reaction_windowed(
+                &make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now),
+                now
+            )
             .unwrap());
         assert!(store
-            .add_reaction_windowed(&make_reaction([9u8; 32], [1u8; 32], ReactionType::Fire, now), now)
+            .add_reaction_windowed(
+                &make_reaction([9u8; 32], [1u8; 32], ReactionType::Fire, now),
+                now
+            )
             .unwrap());
 
         let counts = store.get_reaction_counts_at(&cid, now).unwrap();
@@ -900,7 +925,10 @@ mod tests {
         let after = now + REACTION_LIFETIME_MS + 1;
 
         assert!(store
-            .add_reaction_windowed(&make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now), now)
+            .add_reaction_windowed(
+                &make_reaction([9u8; 32], [1u8; 32], ReactionType::Heart, now),
+                now
+            )
             .unwrap());
         // The original reaction has decayed → not counted.
         assert_eq!(store.get_reaction_counts_at(&cid, after).unwrap().heart, 0);
@@ -924,7 +952,10 @@ mod tests {
 
         for u in 1u8..=3 {
             assert!(store
-                .add_reaction_windowed(&make_reaction([9u8; 32], [u; 32], ReactionType::Thinking, now), now)
+                .add_reaction_windowed(
+                    &make_reaction([9u8; 32], [u; 32], ReactionType::Thinking, now),
+                    now
+                )
                 .unwrap());
         }
         assert_eq!(store.get_reaction_counts_at(&cid, now).unwrap().thinking, 3);

@@ -83,7 +83,7 @@ pub struct DeviceSettingsStore {
 impl DeviceSettingsStore {
     /// Open or create the device settings store
     pub fn open(path: impl AsRef<Path>) -> Result<Self, DeviceConstraintError> {
-        let db = sled::open(path)?;
+        let db = crate::storage::open_db(path)?;
         let tree = db.open_tree(TREE_DEVICE_SETTINGS)?;
         Ok(Self { db, tree })
     }
@@ -363,7 +363,9 @@ mod tests {
         let (store, _tmp) = create_temp_store();
 
         store.set_mode(ContributionMode::AnchorMode).unwrap();
-        store.set_settings(&ContributionSettings::minimal()).unwrap();
+        store
+            .set_settings(&ContributionSettings::minimal())
+            .unwrap();
 
         assert!(store.has_mode().unwrap());
         assert!(store.has_settings().unwrap());
@@ -394,7 +396,9 @@ mod tests {
 
         // Add data
         store.set_mode(ContributionMode::AnchorMode).unwrap();
-        store.set_settings(&ContributionSettings::default()).unwrap();
+        store
+            .set_settings(&ContributionSettings::default())
+            .unwrap();
         store.flush().unwrap();
 
         // Size should have increased (or at least not decreased)
@@ -453,7 +457,8 @@ mod tests {
 
             // Serialize ContributionSettings directly (legacy format)
             let legacy_bytes = bincode::serialize(&legacy_settings).unwrap();
-            tree.insert(KEY_CONTRIBUTION_SETTINGS, legacy_bytes).unwrap();
+            tree.insert(KEY_CONTRIBUTION_SETTINGS, legacy_bytes)
+                .unwrap();
             tree.flush().unwrap();
         }
 
