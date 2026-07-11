@@ -99,24 +99,34 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Find the space by name, or create it. Returns space_id. */
+// Wiki namespaces use the general app-space naming convention `@wiki:<display>`, so the
+// node segregates them (general clients hide them; the wiki client shows only these) and
+// returns the clean display name + app:"wiki". See docs/APP_NAMESPACED_SPACES.md.
+const WIKI_APP = 'wiki';
+const wikiOnchainName = (display) => `@${WIKI_APP}:${display}`;
+
+/** Find the wiki namespace by display name, or create it. Returns space_id. */
 async function ensureSpace(name) {
+  const onchainName = wikiOnchainName(name);
   const spaces = await rpc('list_spaces', {});
   const list = Array.isArray(spaces) ? spaces : (spaces?.spaces ?? []);
-  const existing = list.find((s) => s.name === name);
+  // Match on the clean display name AND the wiki app tag (the node strips the marker).
+  const existing = list.find((s) => s.app === WIKI_APP && s.name === name);
   if (existing?.space_id) {
-    console.log(`Space "${name}" already exists: ${existing.space_id}`);
+    console.log(`Wiki namespace "${name}" already exists: ${existing.space_id}`);
     return existing.space_id;
   }
 
-  console.log(`Creating space "${name}" (mining ${NETWORK} SpaceCreation PoW)...`);
+  console.log(`Creating wiki namespace "${name}" as "${onchainName}" (mining ${NETWORK} SpaceCreation PoW)...`);
   const t0 = Date.now();
-  const pow = await mineActionPow(ActionType.SpaceCreation, name, authorBytes, NETWORK);
+  // PoW + signature cover the FULL on-chain name (with the marker) — that's the exact
+  // string the node re-hashes for PoW and derives the shared wiki space id from.
+  const pow = await mineActionPow(ActionType.SpaceCreation, onchainName, authorBytes, NETWORK);
   console.log(`  mined in ${((Date.now() - t0) / 1000).toFixed(1)}s (difficulty ${pow.pow_difficulty})`);
 
-  const signature = await signWithNode(`space:${name}:${pow.timestamp}`);
+  const signature = await signWithNode(`space:${onchainName}:${pow.timestamp}`);
   const result = await rpc('create_space', {
-    name,
+    name: onchainName,
     creator_id: AUTHOR_PUBKEY,
     pow_nonce: pow.pow_nonce,
     pow_difficulty: pow.pow_difficulty,
@@ -174,28 +184,45 @@ async function main() {
   console.log(`RPC: ${RPC_URL}  network=${NETWORK}  author=${AUTHOR_PUBKEY.slice(0, 16)}...`);
   console.log(`Content dir: ${CONTENT_DIR}`);
 
-  const files = PAGE_ORDER.filter((f) => readdirSync(CONTENT_DIR).includes(f));
-  if (files.length !== PAGE_ORDER.length) {
-    console.warn(`Warning: expected ${PAGE_ORDER.length} files, found ${files.length}`);
-  }
+  // Publish every .md in the content dir. Keep the known pages in their curated
+  // order, then append any newly added pages alphabetically. This lets the wiki be
+  // expanded just by dropping new .md files in the folder.
+  const allMd = readdirSync(CONTENT_DIR).filter((f) => f.endsWith('.md'));
+  const files = [
+    ...PAGE_ORDER.filter((f) => allMd.includes(f)),
+    ...allMd.filter((f) => !PAGE_ORDER.includes(f)).sort(),
+  ];
+  console.log(`Found ${files.length} page(s): ${files.join(', ')}`);
 
   const spaceId = await ensureSpace(SPACE_NAME);
+
+  // Idempotent: skip pages already published to this space (so re-runs and
+  // expansions only post what's new).
+  const existing = await rpc('list_space_content', { space_id: spaceId, limit: 500 });
+  const existingItems = existing?.items ?? existing?.content ?? (Array.isArray(existing) ? existing : []);
+  const existingTitles = new Set(existingItems.map((it) => it.title));
+  if (existingTitles.size) console.log(`Space already has ${existingTitles.size} page(s); new ones will be added.`);
 
   const published = [];
   for (const file of files) {
     const { title, body } = readPage(file);
+    if (existingTitles.has(title)) {
+      console.log(`Skipping "${title}" — already on "${SPACE_NAME}"`);
+      continue;
+    }
     const contentId = await publishPage(spaceId, title, body);
     published.push({ file, title, contentId });
     // Space out write calls (write limit is 20/min); be gentle.
     await sleep(3500);
   }
+  console.log(`\nPublished ${published.length} new page(s).`);
 
   // ---- Verify end to end ----
   console.log('\n=== VERIFY ===');
   const spacesAfter = await rpc('list_spaces', {});
   const spaceList = Array.isArray(spacesAfter) ? spacesAfter : (spacesAfter?.spaces ?? []);
-  const mc = spaceList.find((s) => s.name === SPACE_NAME);
-  console.log(`list_spaces -> "${SPACE_NAME}": space_id=${mc?.space_id} post_count=${mc?.post_count}`);
+  const mc = spaceList.find((s) => s.app === WIKI_APP && s.name === SPACE_NAME);
+  console.log(`list_spaces -> "${SPACE_NAME}" (app=${mc?.app}): space_id=${mc?.space_id} post_count=${mc?.post_count}`);
 
   const content = await rpc('list_space_content', { space_id: spaceId, limit: 50, sort: 'recent' });
   const items = content?.items ?? content?.content ?? (Array.isArray(content) ? content : []);
