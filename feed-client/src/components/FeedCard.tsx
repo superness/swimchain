@@ -5,18 +5,14 @@
  * engagement metrics, and action buttons.
  */
 
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import type { FeedItem, ReactionType } from '../types/feed';
+import type { FeedItem } from '../types/feed';
 import { ImageGallery, ImageThumbnailIndicator } from './ImageGallery';
-import { ReactionPicker, ReactionDisplay } from './ReactionPicker';
+import { PostReactions } from './PostReactions';
 import { UserProfileModal } from './UserProfileModal';
 import { ReportModal, SpamBadge } from './ReportModal';
-import { usePoolContribution, useMediaUpload } from '../hooks/useRpc';
-import { useSponsorship } from '../hooks/useSponsorship';
-import { useEngagementPow } from '../hooks/useActionPow';
-import { useStoredIdentity } from '../hooks/useStoredIdentity';
-import { useFeedIdentity } from '../hooks/useFeedIdentity';
+import { useMediaUpload } from '../hooks/useRpc';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { useToast } from './Toast';
 import './FeedCard.css';
@@ -32,18 +28,6 @@ interface FeedCardProps {
   /** Called when user blocks content */
   onBlock?: (type: 'user' | 'post', id: string) => void;
 }
-
-/** Map reaction type to emoji code */
-const REACTION_CODE_MAP: Record<ReactionType, number> = {
-  heart: 1,
-  thumbs_up: 2,
-  thumbs_down: 3,
-  laugh: 4,
-  thinking: 5,
-  mind_blown: 6,
-  fire: 7,
-  swimming: 8,
-};
 
 /**
  * Format relative time (e.g., "2h", "3d")
@@ -117,13 +101,12 @@ export function FeedCard({
   onSave,
   onUnsave,
   isSaved = false,
-  onReactionChange,
+  onReactionChange: _onReactionChange,
   onBlock,
 }: FeedCardProps): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
-  const [isReacting, setIsReacting] = useState(false);
   const [profileModal, setProfileModal] = useState<{ x: number; y: number } | null>(null);
 
   // Refs
@@ -131,12 +114,6 @@ export function FeedCard({
   const avatarRef = useRef<HTMLButtonElement>(null);
 
   // Hooks for interactions
-  const { identity } = useStoredIdentity();
-  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
-  const { sign } = useFeedIdentity();
-  const { contribute, contributing } = usePoolContribution();
-  const { isSponsored } = useSponsorship();
-  const { state: engagementPowState, mineEngagement, solution: engagementSolution, reset: resetEngagementPow } = useEngagementPow();
   const { block } = useBlocklist();
   const { success, info } = useToast();
 
@@ -161,75 +138,7 @@ export function FeedCard({
   // images never loaded in the desktop/mobile app (no such HTTP endpoint).
   const { getMediaUrl } = useMediaUpload();
 
-  // Handle reaction with PoW
-  const handleReact = useCallback(async (_emoji: string, _reactionType: ReactionType) => {
-    if (!identity || isReacting) return;
-
-    // Gate on sponsorship BEFORE mining — the node rejects unsponsored engagements
-    // (SPEC_11), so mining first only wastes proof-of-work.
-    if (isSponsored === false) {
-      info('You need a sponsor before you can react. Redeem an invite or request sponsorship first — no proof-of-work is spent until then.');
-      return;
-    }
-
-    setIsReacting(true);
-    try {
-      // Convert hex public key to Uint8Array
-      const publicKeyBytes = new Uint8Array(
-        identity.publicKey.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16))
-      );
-
-      // Mine engagement PoW
-      await mineEngagement(item.id, publicKeyBytes, true);
-    } catch (err) {
-      console.error('[FeedCard] Reaction error:', err);
-      setIsReacting(false);
-      resetEngagementPow();
-    }
-  }, [identity, isReacting, isSponsored, info, item.id, mineEngagement, resetEngagementPow]);
-
-  // Handle engagement PoW completion
-  const pendingReactionRef = useRef<ReactionType | null>(null);
-
-  // Watch for engagement PoW completion and submit.
-  // MUST be useEffect, not useMemo: this block calls setState
-  // (setIsReacting/resetEngagementPow), and useMemo runs during render —
-  // setState-in-render is React error #301 (crashed on reacting when the
-  // PoW state hit the error/cancelled branch).
-  useEffect(() => {
-    if (engagementPowState === 'complete' && engagementSolution && identity && sign) {
-      const submitReaction = async () => {
-        try {
-          // Note: powParams would be used by contribute() internally
-          // solutionToRpcParams(engagementSolution) converts the solution
-          const emojiCode = pendingReactionRef.current
-            ? REACTION_CODE_MAP[pendingReactionRef.current]
-            : 1; // default to heart
-
-          await contribute(
-            item.id,
-            0, // targetSeconds not used
-            identity.publicKey,
-            sign,
-            emojiCode
-          );
-
-          onReactionChange?.(item.id);
-        } catch (err) {
-          console.error('[FeedCard] Failed to submit reaction:', err);
-        } finally {
-          setIsReacting(false);
-          resetEngagementPow();
-          pendingReactionRef.current = null;
-        }
-      };
-      submitReaction();
-    } else if (engagementPowState === 'error' || engagementPowState === 'cancelled') {
-      setIsReacting(false);
-      resetEngagementPow();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engagementPowState, engagementSolution, identity, sign, contribute, item.id, onReactionChange, resetEngagementPow]);
+  // Reactions are handled by the shared PostReactions component (below).
 
   // Handle profile modal
   const handleAvatarClick = useCallback((e: React.MouseEvent) => {
@@ -408,20 +317,7 @@ export function FeedCard({
       <footer className="feed-card__actions">
         {/* Reactions - show picker if identity exists, otherwise read-only display */}
         <div className="feed-card__reactions">
-          {compact ? (
-            <ReactionDisplay reactions={item.reactions} compact />
-          ) : identity ? (
-            <ReactionPicker
-              reactions={item.reactions}
-              onReact={(emoji, type) => {
-                pendingReactionRef.current = type;
-                handleReact(emoji, type);
-              }}
-              isReacting={isReacting || contributing}
-            />
-          ) : (
-            <ReactionDisplay reactions={item.reactions} />
-          )}
+          <PostReactions contentId={item.id} reactions={item.reactions} compact={compact} />
         </div>
 
         <Link to={`/post/${item.id}`} className="feed-card__action" aria-label={`${item.replyCount} comments`}>

@@ -1,18 +1,18 @@
 /**
  * PostReactions - self-contained emoji reactions for any content item.
  *
- * Encapsulates the full engagement flow (sponsorship gate → engagement PoW →
- * contribute) so it can be dropped onto feed cards, the post detail page, and
- * replies without duplicating the machinery. Previously this logic lived only
- * inside FeedCard, so the detail page and replies had no way to react.
+ * `contribute` (usePoolContribution) already mines the engagement PoW AND
+ * submits it, so this component just gates on sponsorship and calls it once
+ * per tap. An earlier version layered a separate useEngagementPow + a
+ * PoW-completion effect on top; unstable effect deps re-fired submission in a
+ * loop that flooded the node with hundreds of engagements per reaction.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { ReactionPicker, ReactionDisplay } from './ReactionPicker';
 import type { ReactionType, ReactionCounts } from '../types/feed';
 import { usePoolContribution, useReactions } from '../hooks/useRpc';
 import { useSponsorship } from '../hooks/useSponsorship';
-import { useEngagementPow } from '../hooks/useActionPow';
 import { useStoredIdentity } from '../hooks/useStoredIdentity';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useToast } from './Toast';
@@ -41,7 +41,6 @@ export function PostReactions({ contentId, reactions: reactionsProp, compact = f
   const { sign } = useFeedIdentity();
   const { contribute, contributing } = usePoolContribution();
   const { isSponsored } = useSponsorship();
-  const { state: powState, mineEngagement, solution, reset: resetPow } = useEngagementPow();
   const { info } = useToast();
 
   // Fetch reactions by id when the caller didn't pass them (detail page /
@@ -49,54 +48,29 @@ export function PostReactions({ contentId, reactions: reactionsProp, compact = f
   const { reactions: fetched, refetch } = useReactions(reactionsProp ? '' : contentId);
   const reactions = reactionsProp ?? fetched;
 
-  const [isReacting, setIsReacting] = useState(false);
-  const pendingReactionRef = useRef<ReactionType | null>(null);
+  const [busy, setBusy] = useState(false);
+  // Re-entrancy guard: one in-flight reaction at a time, independent of render.
+  const inFlightRef = useRef(false);
 
   const handleReact = useCallback(async (_emoji: string, type: ReactionType) => {
-    if (!identity || isReacting) return;
+    if (!identity || !sign || inFlightRef.current) return;
     if (isSponsored === false) {
       info('You need a sponsor before you can react. Redeem an invite or request sponsorship first — no proof-of-work is spent until then.');
       return;
     }
-    pendingReactionRef.current = type;
-    setIsReacting(true);
+    inFlightRef.current = true;
+    setBusy(true);
     try {
-      const publicKeyBytes = new Uint8Array(
-        identity.publicKey.match(/.{1,2}/g)!.map(b => parseInt(b, 16))
-      );
-      await mineEngagement(contentId, publicKeyBytes, true);
+      // contribute() mines the engagement PoW and submits it in one call.
+      await contribute(contentId, 0, identity.publicKey, sign, REACTION_CODE_MAP[type]);
+      if (!reactionsProp) refetch();
     } catch (err) {
-      console.error('[PostReactions] Reaction error:', err);
-      setIsReacting(false);
-      resetPow();
+      console.error('[PostReactions] Reaction failed:', err);
+    } finally {
+      inFlightRef.current = false;
+      setBusy(false);
     }
-  }, [identity, isReacting, isSponsored, info, contentId, mineEngagement, resetPow]);
-
-  // Submit once the engagement PoW completes. Effect (not memo) — it setState.
-  useEffect(() => {
-    if (powState === 'complete' && solution && identity && sign) {
-      const submit = async () => {
-        try {
-          const emojiCode = pendingReactionRef.current
-            ? REACTION_CODE_MAP[pendingReactionRef.current]
-            : 1;
-          await contribute(contentId, 0, identity.publicKey, sign, emojiCode);
-          if (!reactionsProp) refetch();
-        } catch (err) {
-          console.error('[PostReactions] Failed to submit reaction:', err);
-        } finally {
-          setIsReacting(false);
-          resetPow();
-          pendingReactionRef.current = null;
-        }
-      };
-      submit();
-    } else if (powState === 'error' || powState === 'cancelled') {
-      setIsReacting(false);
-      resetPow();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [powState, solution, identity, sign, contribute, contentId, refetch, resetPow]);
+  }, [identity, sign, isSponsored, info, contribute, contentId, reactionsProp, refetch]);
 
   if (compact) {
     return <ReactionDisplay reactions={reactions} compact />;
@@ -106,7 +80,7 @@ export function PostReactions({ contentId, reactions: reactionsProp, compact = f
       <ReactionPicker
         reactions={reactions}
         onReact={handleReact}
-        isReacting={isReacting || contributing || powState === 'mining'}
+        isReacting={busy || contributing}
       />
     );
   }
