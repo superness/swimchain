@@ -32,6 +32,22 @@ use crate::storage::AggregationCache;
 use crate::sync::SyncState;
 use crate::types::content::{ContentId, Reaction, ReactionType};
 use crate::types::identity::IdentityId;
+
+/// Map an on-wire emoji code (1..=8) to a `ReactionType`. Returns `None` for
+/// unknown codes. Centralizes the mapping duplicated across engage handlers.
+fn reaction_type_from_code(code: u8) -> Option<ReactionType> {
+    Some(match code {
+        1 => ReactionType::Heart,
+        2 => ReactionType::ThumbsUp,
+        3 => ReactionType::ThumbsDown,
+        4 => ReactionType::Laugh,
+        5 => ReactionType::Thinking,
+        6 => ReactionType::MindBlown,
+        7 => ReactionType::Fire,
+        8 => ReactionType::Swimming,
+        _ => return None,
+    })
+}
 use crate::spam_attestation::{
     SpamAttestation, SpamAttestationStore, SpamReason, CounterAttestation,
     aggregate_attestations, find_sponsor_tree_root, StoredSpamAttestation,
@@ -3143,12 +3159,35 @@ impl RpcMethods {
             );
         }
 
-        // Note: Reactions are NOT stored immediately here. They go to mempool via BlockBuilder
-        // and get stored when the block is formed/processed. This prevents double-counting
-        // in get_reactions (which counts both content_store and mempool).
-        let reaction_stored = false;
-        info!("[ENGAGE] Processing emoji: {:?} - will be stored when block is formed",
-              params.emoji);
+        // Persist the reaction to the content store immediately (flushed), not
+        // only when a block later forms. On a quiet testnet a single reaction
+        // may never meet the block threshold, and the in-memory mempool is lost
+        // on app restart — so reactions vanished on restart. The windowed
+        // add_reaction_windowed makes this idempotent with the block-apply path
+        // (a stack within the live window is rejected there, no double count).
+        let mut reaction_stored = false;
+        if let (Some(rtype), Some(ref content_store)) = (
+            params.emoji.and_then(reaction_type_from_code),
+            &self.node.content_store,
+        ) {
+            let now_ms = crate::crypto::current_timestamp() * 1000;
+            let reaction = Reaction {
+                content_id: ContentId::from_bytes(content_bytes),
+                reactor_id: IdentityId::from_bytes(author_bytes),
+                reaction_type: rtype,
+                timestamp: now_ms,
+                signature: crate::types::identity::Signature::from_bytes([0u8; 64]),
+            };
+            match content_store.add_reaction_windowed(&reaction, now_ms) {
+                Ok(stored) => {
+                    reaction_stored = stored;
+                    let _ = content_store.flush();
+                }
+                Err(e) => warn!("[ENGAGE] Failed to persist reaction: {}", e),
+            }
+        }
+        info!("[ENGAGE] Processing emoji: {:?} (persisted={})",
+              params.emoji, reaction_stored);
 
         // Record engagement to reset decay timer
         let mut engagement_recorded = false;
@@ -6607,65 +6646,85 @@ impl RpcMethods {
             }
         };
 
-        // Find profile info post in the space (content starting with [PROFILE_INFO] or [PROFILE_INFO_PRIVATE])
-        let profile_info_marker = "[PROFILE_INFO]";
-        let profile_info_private_marker = "[PROFILE_INFO_PRIVATE]";
+        // Profile bodies are marked segments joined by "\n---\n". A profile post is
+        // stored with an empty title, so body_inline begins with "\n\n"; and when an
+        // avatar is set the body is "[PROFILE_AVATAR]{..}\n---\n[PROFILE_INFO]{..}".
+        // So we must TRIM and split on the separator, not naively `starts_with` the
+        // whole body (which was why profiles never resolved). Mirrors feed-client's
+        // decodeMarkedSegment.
+        let info_marker = "[PROFILE_INFO]";
+        let info_private_marker = "[PROFILE_INFO_PRIVATE]";
+        let avatar_marker = "[PROFILE_AVATAR]";
 
         let mut display_name: Option<String> = None;
         let mut bio: Option<String> = None;
         let mut website: Option<String> = None;
-        let mut avatar_url: Option<String> = None;
+        let mut avatar_content_id: Option<String> = None;
         let mut updated_at: Option<u64> = None;
+        let mut best_info_ts: u64 = 0;
+        let mut best_avatar_ts: u64 = 0;
 
-        // Iterate through content in the profile space
+        // Iterate the profile space, keeping the NEWEST info and avatar segments
+        // (profiles are updated by posting a new version).
         for result in content_store.iter_content() {
             let item = match result {
                 Ok(i) => i,
                 Err(_) => continue,
             };
-
-            // Check if this content is in the profile space
             if item.space_id.as_bytes()[..16] != profile_space_id {
                 continue;
             }
-
-            // Check for profile info marker
-            if let Some(body) = &item.body_inline {
-                if body.starts_with(profile_info_marker) {
-                    // Parse JSON after the marker
-                    let json_str = &body[profile_info_marker.len()..];
-                    if let Ok(info) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        display_name = info.get("displayName").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        bio = info.get("bio").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        website = info.get("website").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        updated_at = info.get("updatedAt").and_then(|v| v.as_u64());
-                        // Profile found
-                        break;
+            let body = match &item.body_inline {
+                Some(b) => b.trim(),
+                None => continue,
+            };
+            for raw_segment in body.split("\n---\n") {
+                let seg = raw_segment.trim();
+                if let Some(json_str) = seg.strip_prefix(info_marker) {
+                    if let Ok(info) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
+                        let ts = info.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(item.created_at);
+                        if ts >= best_info_ts {
+                            best_info_ts = ts;
+                            display_name = info.get("displayName").and_then(|v| v.as_str()).map(str::to_string);
+                            bio = info.get("bio").and_then(|v| v.as_str()).map(str::to_string);
+                            website = info.get("website").and_then(|v| v.as_str()).map(str::to_string);
+                            updated_at = Some(ts);
+                        }
                     }
-                } else if body.starts_with(profile_info_private_marker) {
-                    // Private profile - extract public display name if available
-                    let json_str = &body[profile_info_private_marker.len()..];
-                    if let Ok(meta) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        display_name = meta.get("publicDisplayName").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        updated_at = meta.get("updatedAt").and_then(|v| v.as_u64());
-                        // Private profiles don't expose other fields
-                        break;
+                } else if let Some(json_str) = seg.strip_prefix(info_private_marker) {
+                    if let Ok(meta) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
+                        let ts = meta.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(item.created_at);
+                        if ts >= best_info_ts {
+                            best_info_ts = ts;
+                            display_name = meta.get("publicDisplayName").and_then(|v| v.as_str()).map(str::to_string);
+                            updated_at = Some(ts);
+                        }
+                    }
+                } else if let Some(json_str) = seg.strip_prefix(avatar_marker) {
+                    if let Ok(av) = serde_json::from_str::<serde_json::Value>(json_str.trim()) {
+                        let ts = av.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(item.created_at);
+                        if ts >= best_avatar_ts {
+                            best_avatar_ts = ts;
+                            avatar_content_id = av.get("contentId").and_then(|v| v.as_str()).map(str::to_string);
+                        }
                     }
                 }
             }
         }
 
         // If no profile found, return null
-        if display_name.is_none() && bio.is_none() && website.is_none() {
+        if display_name.is_none() && bio.is_none() && website.is_none() && avatar_content_id.is_none() {
             return RpcResponse::success(serde_json::Value::Null, id);
         }
 
-        // Return profile info
+        // Return profile info. avatar_content_id is the content hash of the avatar image;
+        // clients fetch it like any media (get_media / getMediaUrl).
         RpcResponse::success(json!({
             "display_name": display_name,
             "bio": bio,
             "website": website,
-            "avatar_url": avatar_url,
+            "avatar_url": avatar_content_id.clone(),
+            "avatar_content_id": avatar_content_id,
             "updated_at": updated_at,
         }), id)
     }
