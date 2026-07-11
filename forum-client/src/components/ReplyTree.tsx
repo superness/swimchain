@@ -13,6 +13,7 @@ import { useBlocklist } from '../hooks/useBlocklist';
 import { formatRelativeTime } from '../utils/time';
 import { useReactions, usePoolContribution } from '../hooks/useRpc';
 import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useSponsorship } from '../hooks/useSponsorship';
 import './ReplyTree.css';
 
 interface ReplyTreeProps {
@@ -118,6 +119,7 @@ function ReplyNode({
   const { reactions, refetch: refetchReactions } = useReactions(reply.id);
   const { contribute, contributing } = usePoolContribution();
   const { publicKey, sign } = useStoredKeypair();
+  const { isSponsored } = useSponsorship();
 
   // Scroll to and highlight focused reply
   useEffect(() => {
@@ -152,6 +154,14 @@ function ReplyNode({
       return;
     }
 
+    // Gate on sponsorship BEFORE mining — the node rejects unsponsored engagements
+    // (SPEC_11), so mining first only wastes ~10s of proof-of-work. This mirrors the
+    // top-level post reaction in ThreadView.
+    if (isSponsored === false) {
+      setReactError('You need a sponsor before you can react. Redeem an invite or request sponsorship first — no proof-of-work is spent until then.');
+      return;
+    }
+
     try {
       const pubKeyHex = Array.from(publicKey).map(b => b.toString(16).padStart(2, '0')).join('');
       // Use async signing - returns Uint8Array or null
@@ -173,7 +183,7 @@ function ReplyNode({
     } catch (err) {
       setReactError(err instanceof Error ? err.message : 'Failed to react');
     }
-  }, [reply.id, contribute, refetchReactions, publicKey, sign]);
+  }, [reply.id, contribute, refetchReactions, publicKey, sign, isSponsored]);
 
   const handleReplySuccess = useCallback((replyId: string) => {
     setShowReplyComposer(false);
