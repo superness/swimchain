@@ -24,6 +24,11 @@
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  /* The fixed .app-header is cleared HERE, once, for every page and for the
+     in-flow sponsorship banner. Pages must not add their own
+     var(--header-height) clearance (several did, inconsistently, and the
+     pages that didn't rendered their top content under the header). */
+  padding-top: var(--header-height);
 }
 
 .app-main {

@@ -4,7 +4,7 @@
 
 .settings-page {
   min-height: 100vh;
-  padding-top: var(--header-height);
+  padding-top: 0; /* header cleared centrally on .app */
 }
 
 .settings-page__header {

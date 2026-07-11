@@ -4,7 +4,7 @@
 
 .feed-page {
   min-height: 100vh;
-  padding-top: var(--header-height);
+  padding-top: 0; /* header cleared centrally on .app */
 }
 
 .feed-page__header {
@@ -161,7 +161,7 @@
 /* Responsive */
 @media (max-width: 600px) {
   .feed-page {
-    padding-top: calc(var(--header-height) - 10px);
+    padding-top: 0; /* header cleared centrally on .app */
   }
 
   .feed-page__header {

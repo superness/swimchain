@@ -2,14 +2,11 @@
   background: #fef3c7;
   border-bottom: 1px solid #f59e0b;
   padding: 0.5rem 1rem;
-  position: fixed;
-  top: 56px; /* Header height */
-  left: 0;
-  right: 0;
-  /* Raised above page-level headers (e.g. the "Your Feed" title bar) which were
-     painting over the banner and hiding it. It sits at top:56px so it still clears
-     the main nav; this only ensures it is not occluded by in-page headers. */
-  z-index: 250;
+  /* In-flow, not an overlay: the fixed variant painted over page content
+     (e.g. the Profile identity card). Header clearance is centralized on
+     .app (padding-top: var(--header-height)), so a plain block here occupies
+     real layout space below the header, obscures nothing, and scrolls away
+     with the page. */
 }
 
 .sponsorship-banner-content {
