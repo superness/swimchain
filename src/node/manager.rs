@@ -326,6 +326,29 @@ impl NodeManager {
             }
         }
 
+        // 3.1b. Ensure branch placement state is built (SPEC_08 §5).
+        // Deterministic rebuild from canonical chain data: runs once per
+        // BRANCH_STATE_VERSION (first startup after upgrade / fresh node),
+        // so every node derives identical branch placements and fracture
+        // points regardless of when it upgraded.
+        match crate::branch::ensure_branch_state(
+            &chain_store,
+            crate::branch::BRANCH_FRACTURE_THRESHOLD,
+        ) {
+            Ok(Some(stats)) => {
+                info!(
+                    "[BRANCH] Rebuilt branch state from chain: {} blocks registered, {} fractures ({} errors)",
+                    stats.blocks_registered, stats.fractures, stats.errors
+                );
+            }
+            Ok(None) => {
+                debug!("[BRANCH] Branch state is up to date");
+            }
+            Err(e) => {
+                warn!("[BRANCH] Failed to ensure branch state: {}. Placement indexes may lag until next restart.", e);
+            }
+        }
+
         // 3.2. Validate chain integrity and repair if needed (self-healing)
         // This detects and fixes chain corruption (orphaned blocks in height_index)
         // Store orphaned actions to resubmit to block builder later
@@ -841,7 +864,11 @@ impl NodeManager {
         if !recovered_actions.is_empty() {
             if let Ok(mut builder) = block_builder.write() {
                 let mut resubmitted = 0;
-                for (thread_id, space_id, action, branch_path) in recovered_actions {
+                for (thread_id, space_id, action, _branch_path) in recovered_actions {
+                    // Re-resolve placement from current chain state (SPEC_08 §4):
+                    // the recovered stamp may predate fractures.
+                    let branch_path = crate::branch::BranchManager::new(&chain_store)
+                        .resolve_mempool_branch_path(&space_id, &thread_id, Some(&action.actor));
                     builder.add_action(thread_id, space_id, action, branch_path);
                     resubmitted += 1;
                 }

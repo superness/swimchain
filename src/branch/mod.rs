@@ -49,6 +49,7 @@ pub mod behavioral;
 pub mod error;
 pub mod manager;
 pub mod metadata;
+pub mod migration;
 pub mod storage;
 
 pub use behavioral::{
@@ -58,6 +59,7 @@ pub use behavioral::{
 pub use error::BranchError;
 pub use manager::{BranchManager, ClusteringMode};
 pub use metadata::{BranchMetadata, SpaceBranchState};
+pub use migration::{ensure_branch_state, rebuild_branch_state, RebuildStats};
 pub use storage::{BranchAwareStore, PutResult};
 
 /// Default fracture threshold: 50MB

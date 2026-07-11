@@ -2214,6 +2214,59 @@ impl ChainStore {
         Ok(())
     }
 
+    // === Branch State Versioning & Rebuild Support (SPEC_08 §5 migration) ===
+
+    /// Reserved key for the branch state version marker.
+    ///
+    /// Lives in the `space_branch_state` tree; space keys are exactly 32
+    /// bytes, so this shorter reserved key can never collide with one.
+    const BRANCH_STATE_VERSION_KEY: &'static [u8] = b"__branch_state_version__";
+
+    /// Get the stored branch state schema version (None = never built)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn get_branch_state_version(&self) -> Result<Option<u32>, StorageError> {
+        match self
+            .space_branch_state
+            .get(Self::BRANCH_STATE_VERSION_KEY)?
+        {
+            Some(v) if v.len() == 4 => Ok(Some(u32::from_le_bytes([v[0], v[1], v[2], v[3]]))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Set the branch state schema version marker
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database write fails.
+    pub fn set_branch_state_version(&self, version: u32) -> Result<(), StorageError> {
+        self.space_branch_state
+            .insert(Self::BRANCH_STATE_VERSION_KEY, &version.to_le_bytes())?;
+        Ok(())
+    }
+
+    /// Clear ALL branch placement state (metadata, indexes, sizes, per-space
+    /// fracture state, and the version marker).
+    ///
+    /// Used by the deterministic branch-state rebuild: state is then replayed
+    /// from canonical chain data so every node derives identical placements
+    /// regardless of when it upgraded.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if a database operation fails.
+    pub fn clear_branch_state(&self) -> Result<(), StorageError> {
+        self.branch_metadata.clear()?;
+        self.thread_branch_index.clear()?;
+        self.space_branch_state.clear()?;
+        self.thread_size.clear()?;
+        self.branch_thread_index.clear()?;
+        Ok(())
+    }
+
     // === Query: Get all threads in a branch ===
 
     /// Get all threads in a branch with their sizes
