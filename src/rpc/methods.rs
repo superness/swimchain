@@ -4930,7 +4930,44 @@ impl RpcMethods {
         )
     }
 
-    /// Rebuild the full-text search index from content store
+    /// Resolve a content item's body text from the stores the node actually holds,
+    /// mirroring list_space_content: content_store `body_inline` → content_store
+    /// `get_body_by_hash` → BlobStore. Returns None when the body isn't held (pull
+    /// model), so search only indexes content whose text the node genuinely has.
+    fn resolve_content_body(
+        &self,
+        content_hash: &[u8; 32],
+        blob_store: Option<&BlobStore>,
+    ) -> Option<String> {
+        if let Some(ref cs) = self.node.content_store {
+            let cid = crate::types::content::ContentId::from_bytes(*content_hash);
+            if let Ok(Some(item)) = cs.get(&cid) {
+                if let Some(ref b) = item.body_inline {
+                    if !b.is_empty() {
+                        return Some(b.clone());
+                    }
+                }
+            }
+            if let Ok(Some(b)) = cs.get_body_by_hash(content_hash) {
+                if !b.is_empty() {
+                    return Some(b);
+                }
+            }
+        }
+        if let Some(bs) = blob_store {
+            let blob_hash = ContentBlobHash::from_bytes(*content_hash);
+            if let Ok(bytes) = bs.get(&blob_hash) {
+                if let Ok(text) = String::from_utf8(bytes) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Rebuild the full-text search index from ALL content the node holds
     ///
     /// This is useful when:
     /// - The index is empty or corrupted
@@ -4951,55 +4988,79 @@ impl RpcMethods {
             }
         };
 
-        // Collect all content to index
-        let mut indexed_count = 0;
-        let mut error_count = 0;
+        // Collect all content the node holds. Content synced from peers lives in the
+        // chain (block) store — NOT the content_store — so iterate content blocks and
+        // resolve each body the same way list_space_content does. (The old path scanned
+        // content_store, which is empty for synced content, so search only ever found
+        // posts this node authored.)
+        let mut indexed_count = 0usize;
+        let mut error_count = 0usize;
 
-        if let Some(ref content_store) = self.node.content_store {
-            for result in content_store.iter_content() {
-                let item = match result {
-                    Ok(i) => i,
+        if let Some(ref chain_store) = self.node.chain_store {
+            let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
+            let mut indexables: Vec<IndexableContent> = Vec::new();
+
+            for block_res in chain_store.iter_content_blocks() {
+                let block = match block_res {
+                    Ok(b) => b,
                     Err(_) => {
                         error_count += 1;
                         continue;
                     }
                 };
-
-                // Parse title and body from inline content
-                let body_text = item.body_inline.as_deref().unwrap_or("");
-                let (title, body) = if let Some(idx) = body_text.find("\n\n") {
-                    let (t, b) = body_text.split_at(idx);
-                    (t.to_string(), b.trim_start_matches('\n').to_string())
-                } else {
-                    (String::new(), body_text.to_string())
-                };
-
-                // Convert space_id to bech32m format
-                let space_id_16: [u8; 16] = item.space_id.as_bytes()[..16]
-                    .try_into()
-                    .unwrap_or([0u8; 16]);
+                let space_id_16: [u8; 16] = block.space_id[..16].try_into().unwrap_or([0u8; 16]);
                 let space_id_str = encode_space_id(&space_id_16);
 
-                let content_id_str = format!("sha256:{}", hex::encode(item.content_id.as_bytes()));
-
-                let indexable = IndexableContent {
-                    content_id: content_id_str,
-                    space_id: space_id_str,
-                    author: hex::encode(item.author_id.as_bytes()),
-                    title,
-                    body,
-                    heat: 50.0, // Default heat for existing content
-                    timestamp: item.created_at,
-                };
-
-                if let Ok(mut index) = search_index.write() {
-                    if let Err(e) = index.add_content(&indexable) {
-                        debug!("[SEARCH] Failed to index content: {}", e);
-                        error_count += 1;
-                    } else {
-                        indexed_count += 1;
+                for action in &block.actions {
+                    // Only posts/replies carry searchable text; skip engagements/space acts.
+                    if !matches!(
+                        action.action_type,
+                        crate::blocks::action::ActionType::Post
+                            | crate::blocks::action::ActionType::Reply
+                    ) {
+                        continue;
                     }
+                    // Private content bodies are encrypted — indexing them is useless.
+                    if action.private {
+                        continue;
+                    }
+                    let content_hash = match action.content_hash {
+                        Some(h) => h,
+                        None => continue,
+                    };
+                    // Body not held yet (pull model) → nothing to index for this item.
+                    let text = match self.resolve_content_body(&content_hash, blob_store.as_ref()) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    let (title, body) = match text.find("\n\n") {
+                        Some(i) => (text[..i].to_string(), text[(i + 2)..].to_string()),
+                        None => (String::new(), text.clone()),
+                    };
+                    indexables.push(IndexableContent {
+                        content_id: format!("sha256:{}", hex::encode(content_hash)),
+                        space_id: space_id_str.clone(),
+                        author: crate::crypto::address::encode_address(
+                            &crate::types::identity::IdentityId(action.actor),
+                        ),
+                        title,
+                        body,
+                        heat: 50.0,
+                        timestamp: action.timestamp,
+                    });
                 }
+            }
+
+            // Rebuild from scratch so stale/removed content drops out of the index too.
+            match search_index.write() {
+                Ok(mut index) => match index.rebuild(indexables.into_iter()) {
+                    Ok(n) => indexed_count = n,
+                    Err(e) => {
+                        warn!("[SEARCH] Rebuild failed: {}", e);
+                        error_count += 1;
+                    }
+                },
+                Err(_) => error_count += 1,
             }
         }
 

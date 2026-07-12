@@ -483,43 +483,94 @@ impl NodeManager {
         match SearchIndex::open_or_create(&self.config.data_dir) {
             Ok(mut index) => {
                 let docs = index.doc_count();
-                if let Some(ref cs) = self.content_store {
-                    let content_len = cs.len() as u64;
-                    if docs < content_len {
-                        info!(
-                            "[SEARCH] Index has {} docs but node holds {} content items — reindexing…",
-                            docs, content_len
-                        );
-                        let iter = cs.iter_content().filter_map(|r| r.ok()).map(|item| {
-                            // Same mapping the network-receive path uses (title = text
-                            // before the first blank line; body = the rest).
-                            let (title, body) = match &item.body_inline {
-                                Some(bi) => match bi.find("\n\n") {
-                                    Some(i) => (bi[..i].to_string(), bi[i + 2..].to_string()),
-                                    None => (String::new(), bi.clone()),
-                                },
-                                None => (String::new(), String::new()),
+                // Reindex from the CHAIN (block) store — content synced from peers lives in
+                // content blocks + the blob store, NOT content_store (which is empty for it),
+                // so the old content_store scan left all synced content unsearchable. Resolve
+                // each body the way list_space_content does (content_store → BlobStore).
+                if let Some(ref chain_store) = self.chain_store {
+                    let blob_store = BlobStore::new(&sync_blob_path).ok();
+                    let content_store = self.content_store.clone();
+                    let mut indexables: Vec<crate::cli::search_index::IndexableContent> = Vec::new();
+                    for block in chain_store.iter_content_blocks().filter_map(|r| r.ok()) {
+                        let space_id = {
+                            use bech32::{Bech32m, Hrp};
+                            let mut d = Vec::with_capacity(17);
+                            d.push(0);
+                            d.extend_from_slice(&block.space_id[..16]);
+                            bech32::encode::<Bech32m>(Hrp::parse("sp").expect("valid HRP"), &d)
+                                .unwrap_or_else(|_| hex::encode(&block.space_id[..16]))
+                        };
+                        for action in &block.actions {
+                            // Only posts/replies carry searchable text; skip engagements.
+                            if !matches!(
+                                action.action_type,
+                                crate::blocks::ActionType::Post | crate::blocks::ActionType::Reply
+                            ) {
+                                continue;
+                            }
+                            // Private content bodies are encrypted — useless to index.
+                            if action.private {
+                                continue;
+                            }
+                            let content_hash = match action.content_hash {
+                                Some(h) => h,
+                                None => continue,
                             };
-                            let space_id = {
-                                use bech32::{Bech32m, Hrp};
-                                let sb = item.space_id.as_bytes();
-                                let mut d = Vec::with_capacity(17);
-                                d.push(0);
-                                d.extend_from_slice(&sb[..16]);
-                                bech32::encode::<Bech32m>(Hrp::parse("sp").expect("valid HRP"), &d)
-                                    .unwrap_or_else(|_| hex::encode(&sb[..16]))
+                            let text = content_store
+                                .as_ref()
+                                .and_then(|cs| {
+                                    let cid =
+                                        crate::types::content::ContentId::from_bytes(content_hash);
+                                    cs.get(&cid)
+                                        .ok()
+                                        .flatten()
+                                        .and_then(|it| it.body_inline)
+                                        .filter(|b| !b.is_empty())
+                                        .or_else(|| {
+                                            cs.get_body_by_hash(&content_hash)
+                                                .ok()
+                                                .flatten()
+                                                .filter(|b| !b.is_empty())
+                                        })
+                                })
+                                .or_else(|| {
+                                    blob_store.as_ref().and_then(|bs| {
+                                        bs.get(&crate::storage::blob::ContentBlobHash::from_bytes(
+                                            content_hash,
+                                        ))
+                                        .ok()
+                                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                                        .filter(|t| !t.is_empty())
+                                    })
+                                });
+                            let text = match text {
+                                Some(t) => t,
+                                None => continue,
                             };
-                            crate::cli::search_index::IndexableContent {
-                                content_id: format!("sha256:{}", hex::encode(item.content_id.0)),
-                                space_id,
-                                author: crate::crypto::address::encode_address(&item.author_id),
+                            let (title, body) = match text.find("\n\n") {
+                                Some(i) => (text[..i].to_string(), text[i + 2..].to_string()),
+                                None => (String::new(), text.clone()),
+                            };
+                            indexables.push(crate::cli::search_index::IndexableContent {
+                                content_id: format!("sha256:{}", hex::encode(content_hash)),
+                                space_id: space_id.clone(),
+                                author: crate::crypto::address::encode_address(
+                                    &crate::types::identity::IdentityId(action.actor),
+                                ),
                                 title,
                                 body,
                                 heat: 100.0,
-                                timestamp: item.created_at,
-                            }
-                        });
-                        match index.rebuild(iter) {
+                                timestamp: action.timestamp,
+                            });
+                        }
+                    }
+                    if indexables.len() as u64 > docs {
+                        info!(
+                            "[SEARCH] Reindexing {} content items from chain (index had {})",
+                            indexables.len(),
+                            docs
+                        );
+                        match index.rebuild(indexables.into_iter()) {
                             Ok(n) => info!("[SEARCH] Reindexed {} content items", n),
                             Err(e) => warn!("[SEARCH] Reindex failed: {}", e),
                         }
