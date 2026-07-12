@@ -35,8 +35,10 @@ interface FeedCardProps {
  * Format relative time (e.g., "2h", "3d")
  */
 function formatTimeAgo(timestamp: number): string {
+  // createdAt is milliseconds (values ~1.7e12); tolerate a seconds value too.
+  const tsSec = timestamp > 1e12 ? timestamp / 1000 : timestamp;
   const now = Date.now() / 1000;
-  const diff = now - timestamp;
+  const diff = now - tsSec;
 
   if (diff < 60) return 'now';
   if (diff < 3600) return `${Math.floor(diff / 60)}m`;
@@ -222,7 +224,7 @@ export function FeedCard({
             <Link to={`/profile/${item.authorId}`} className="feed-card__author-name">
               {displayName}
             </Link>
-            <span className="feed-card__time" title={new Date(item.createdAt * 1000).toLocaleString()}>
+            <span className="feed-card__time" title={new Date(item.createdAt > 1e12 ? item.createdAt : item.createdAt * 1000).toLocaleString()}>
               {timeAgo}
             </span>
             {item.isPrivate && (
