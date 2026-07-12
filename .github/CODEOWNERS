@@ -1,0 +1,4 @@
+# Default owner for everything in the repo.
+# PRs touching any file require an approving review from a code owner
+# (enforced by the "Require review from Code Owners" branch protection on main).
+* @superness
