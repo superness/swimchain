@@ -96,7 +96,7 @@ export function DownloadCTA({
           }
 
           .cta-actions li::before {
-            content: "\\2713";
+            content: "✓";
             color: var(--color-success);
             margin-right: 0.5rem;
           }
