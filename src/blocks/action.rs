@@ -887,6 +887,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
