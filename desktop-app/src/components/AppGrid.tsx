@@ -13,6 +13,22 @@ interface AppEntry {
   version: string | null;
 }
 
+function AppTileIcon({ entry }: { entry: AppEntry }): JSX.Element {
+  const [failed, setFailed] = useState(false);
+
+  if (entry.icon && !failed) {
+    return (
+      <img
+        className="app-tile-icon"
+        src={convertFileSrc(entry.icon)}
+        alt=""
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return <div className="app-tile-icon app-tile-icon--default">{entry.name.charAt(0)}</div>;
+}
+
 export default function AppGrid(): JSX.Element {
   const [apps, setApps] = useState<AppEntry[]>([]);
   const [launching, setLaunching] = useState<string | null>(null);
@@ -48,11 +64,7 @@ export default function AppGrid(): JSX.Element {
           disabled={launching === a.id}
           onClick={() => open(a.id)}
         >
-          {a.icon ? (
-            <img className="app-tile-icon" src={convertFileSrc(a.icon)} alt="" />
-          ) : (
-            <div className="app-tile-icon app-tile-icon--default">{a.name.charAt(0)}</div>
-          )}
+          <AppTileIcon entry={a} />
           <span className="app-tile-name">{a.name}</span>
           {launching === a.id && <span className="app-tile-spinner">Opening…</span>}
         </button>
