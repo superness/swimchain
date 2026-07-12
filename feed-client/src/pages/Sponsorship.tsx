@@ -318,7 +318,11 @@ export function SponsorshipPage(): JSX.Element {
                   key={offer.offer_id}
                   offer={offer}
                   onClaim={handleClaim}
-                  claimDisabled={!!pendingClaim}
+                  // Only disable the offer you've already claimed — you can claim OTHER
+                  // offers too. A single pending claim used to block them all, which
+                  // stranded users whose sponsor never approved (no way to withdraw).
+                  // The node allows claiming multiple distinct offers; first approval wins.
+                  claimDisabled={pendingClaim?.offerId === offer.offer_id}
                 />
               ))}
             </div>

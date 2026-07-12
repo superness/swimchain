@@ -28,6 +28,8 @@ const IDENTITY_STORAGE_KEY = 'swimchain-identity';
 // Prevents re-querying every refetch while a peer is still mid-response.
 // (Same lazy display-driven pattern as forum-client's Bug #4 fix.)
 const spaceNamesAsked = new Set<string>();
+// Bounded retry when list_spaces comes back empty on a freshly-synced node.
+let emptySpacesRetries = 0;
 
 /**
  * Load stored identity from localStorage
@@ -417,9 +419,18 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
         postCount: s.post_count,
       }));
 
-      // Cache the result
-      setInMemory(CACHE_KEY, transformedSpaces, 5 * 60 * 1000); // 5 min memory
-      setInStorage(CACHE_KEY, transformedSpaces, 30 * 60 * 1000); // 30 min storage
+      // Do NOT cache an empty list. On a freshly-started node the first list_spaces
+      // can return nothing (blocks/spaces still syncing); caching that [] for 30 min
+      // leaves Discover stuck on "No spaces found" long after the node has them.
+      // Cache only a non-empty result, and retry (bounded) while empty.
+      if (transformedSpaces.length > 0) {
+        emptySpacesRetries = 0;
+        setInMemory(CACHE_KEY, transformedSpaces, 5 * 60 * 1000); // 5 min memory
+        setInStorage(CACHE_KEY, transformedSpaces, 30 * 60 * 1000); // 30 min storage
+      } else if (emptySpacesRetries < 12) {
+        emptySpacesRetries++;
+        setTimeout(() => refetch(true).catch(() => undefined), 4000);
+      }
 
       setSpaces(transformedSpaces);
       setError(null);
