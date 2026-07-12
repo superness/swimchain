@@ -134,6 +134,66 @@ pub struct NodeManager {
     rpc_addr: Option<std::net::SocketAddr>,
 }
 
+/// Stores whose contents belong to one specific network (its magic). Cleared when the
+/// data dir is opened under a different magic than it was last written for. Deliberately
+/// EXCLUDES `identity.enc`/`config.toml` (network-agnostic) and `blocklist` (a user pref).
+const NETWORK_SCOPED_DIRS: &[&str] = &[
+    "chain",
+    "content",
+    "sync_blobs",
+    "chunked_blobs",
+    "aggregation_cache",
+    "search_index_v1",
+    "engagement_graph",
+    "fork_store",
+    "membership",
+    "sponsorship",
+    "offer_store",
+    "reputation",
+    "spam_attestations",
+    "notifications",
+    "achievements",
+    "peers",
+    "pending_broadcast",
+];
+/// Network-scoped single files (same treatment as `NETWORK_SCOPED_DIRS`).
+const NETWORK_SCOPED_FILES: &[&str] = &["mempool.bin", "decay_metadata.json"];
+
+/// Marker file recording the network magic the data dir was last written for.
+const NETWORK_MAGIC_MARKER: &str = "network.magic";
+
+/// Network-magic guard for the data dir (see call site in `start`).
+///
+/// - marker present and EQUAL to `magic`: same network, no-op.
+/// - marker present and DIFFERENT: prior hard-forked network — delete the network-scoped
+///   stores so stale content/actions can't be loaded, served, or re-gossiped, then restamp.
+/// - marker MISSING: treated as "assume current" — write the marker but do NOT wipe, so
+///   simply upgrading to this (marker-aware) binary never destroys a node already on the
+///   correct network. (Pre-marker stale data is handled by an explicit one-time wipe.)
+///
+/// Identity and config are never touched.
+fn enforce_network_magic(data_dir: &std::path::Path, magic: [u8; 4]) -> std::io::Result<()> {
+    let marker = data_dir.join(NETWORK_MAGIC_MARKER);
+    match std::fs::read(&marker) {
+        Ok(stored) if stored.as_slice() == magic => return Ok(()),
+        Ok(stored) => {
+            warn!(
+                "[NET] data dir was written for network magic {stored:02x?} but this node is \
+                 {magic:02x?}; clearing network-scoped stores (identity/config preserved)"
+            );
+            for dir in NETWORK_SCOPED_DIRS {
+                let _ = std::fs::remove_dir_all(data_dir.join(dir));
+            }
+            for f in NETWORK_SCOPED_FILES {
+                let _ = std::fs::remove_file(data_dir.join(f));
+            }
+        }
+        Err(_) => { /* no marker yet: assume current network, stamp without wiping */ }
+    }
+    std::fs::create_dir_all(data_dir)?;
+    std::fs::write(&marker, magic)
+}
+
 impl NodeManager {
     /// Create a new NodeManager with the given configuration
     ///
@@ -282,6 +342,19 @@ impl NodeManager {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         self.shutdown_tx = shutdown_tx;
         self.shutdown_rx = shutdown_rx;
+
+        // 0.5. Network-magic guard. Chain-derived stores belong to one specific network
+        // (identified by its 4-byte magic). If the data dir was last written for a
+        // DIFFERENT magic — i.e. a prior, hard-forked network (e.g. testnet TEST->TES2) —
+        // clear the network-scoped stores so we never load, serve, or re-gossip stale
+        // content/actions across the fork. Identity + config are network-agnostic and kept.
+        // Runs before ANY store opens.
+        if let Err(e) = enforce_network_magic(
+            &self.config.data_dir,
+            crate::network::NetworkContext::magic_bytes(),
+        ) {
+            log::warn!("[NET] network-magic guard failed (continuing): {e}");
+        }
 
         // 1. Open peer store
         let peer_path = self.config.peer_store_path();
@@ -2354,6 +2427,34 @@ mod tests {
 
     fn test_keypair() -> KeyPair {
         generate_keypair()
+    }
+
+    #[test]
+    fn network_magic_guard_wipes_only_on_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let dd = dir.path();
+        // Seed some network-scoped state + a preserved file.
+        std::fs::create_dir_all(dd.join("chain")).unwrap();
+        std::fs::write(dd.join("chain/block"), b"old").unwrap();
+        std::fs::write(dd.join("mempool.bin"), b"old-actions").unwrap();
+        std::fs::write(dd.join("identity.enc"), b"keep-me").unwrap();
+
+        // 1) Missing marker: assume current network — stamp, do NOT wipe.
+        enforce_network_magic(dd, *b"TES2").unwrap();
+        assert!(dd.join("chain/block").exists(), "missing marker must not wipe");
+        assert_eq!(std::fs::read(dd.join(NETWORK_MAGIC_MARKER)).unwrap(), b"TES2");
+
+        // 2) Same magic again: no-op, state preserved.
+        enforce_network_magic(dd, *b"TES2").unwrap();
+        assert!(dd.join("chain/block").exists());
+        assert!(dd.join("mempool.bin").exists());
+
+        // 3) Different magic (a hard fork): network-scoped stores cleared, identity kept.
+        enforce_network_magic(dd, *b"TES3").unwrap();
+        assert!(!dd.join("chain").exists(), "chain must be cleared on magic change");
+        assert!(!dd.join("mempool.bin").exists(), "mempool must be cleared");
+        assert_eq!(std::fs::read(dd.join("identity.enc")).unwrap(), b"keep-me");
+        assert_eq!(std::fs::read(dd.join(NETWORK_MAGIC_MARKER)).unwrap(), b"TES3");
     }
 
     #[test]
