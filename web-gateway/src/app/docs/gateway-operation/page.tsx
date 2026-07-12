@@ -70,6 +70,13 @@ export default function GatewayOperationDocsPage() {
           existing <strong>wiki client</strong> already works exactly this way &mdash; it&apos;s
           a gateway-shaped frontend scoped to wiki spaces, presented as an ordinary wiki.
         </p>
+        <p>
+          <strong>See it live:</strong>{' '}
+          <a href="https://swimchain.io/example/">The Daily Drift</a> is exactly this &mdash; a
+          newspaper whose every story is a real post on the Swimchain testnet, rendered by one
+          node with no database or app backend. (Yes, that node is a server. That&apos;s the
+          honest part.)
+        </p>
 
         <h3>Adding interaction, when you want it</h3>
         <p>
