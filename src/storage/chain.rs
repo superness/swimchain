@@ -958,6 +958,26 @@ impl ChainStore {
     ///
     /// Returns error if serialization or storage fails.
     pub fn register_space(&self, info: &SpaceInfo) -> Result<(), StorageError> {
+        // Storage-boundary guard (SWIM-SPACE-CLASS Task 4): every legitimately
+        // registered space id carries a class byte 0x01-0x05 at
+        // space_id[0] (see crate::types::space_class). No genesis/root/system
+        // space is ever registered unclassed, so rejecting unclassed ids here
+        // cannot break a legitimate flow — it only blocks malformed/forged
+        // ids arriving via peer/RPC-controlled call sites that don't already
+        // guard individually (handle_block_data, handle_space_meta,
+        // redeem_space_invite).
+        if !crate::blocks::validation::space_id_class_is_valid(&info.space_id) {
+            log::warn!(
+                "[SPACE-REGISTRY] Rejected register_space for unclassed space id (first byte 0x{:02x}, id {})",
+                info.space_id[0],
+                hex::encode(&info.space_id[..4])
+            );
+            return Err(StorageError::InvalidHashFormat(format!(
+                "space id has unrecognized class byte 0x{:02x} (expected one of 0x01-0x05)",
+                info.space_id[0]
+            )));
+        }
+
         // Key is space_id (16 bytes) padded to 32 bytes
         let mut key = [0u8; 32];
         key[..16].copy_from_slice(&info.space_id);
@@ -3831,5 +3851,60 @@ mod tests {
         assert_eq!(store.root_block_count().unwrap(), 5);
         assert_eq!(store.space_block_count().unwrap(), 3);
         assert_eq!(store.content_block_count().unwrap(), 7);
+    }
+
+    fn make_test_space_info(space_id: [u8; 16]) -> SpaceInfo {
+        SpaceInfo {
+            space_id,
+            name: "Test Space".to_string(),
+            description: None,
+            creator: [0x42u8; 32],
+            created_at: 1_000_000,
+            pow_work: 1,
+            is_private: false,
+            encrypted_name: None,
+            creator_encrypted_key: None,
+            key_version: 0,
+        }
+    }
+
+    /// SWIM-SPACE-CLASS Task 4: `register_space` must reject an unclassed
+    /// space id (first byte not in 0x01-0x05) at the storage boundary, and
+    /// must still accept a legitimately-classed id.
+    #[test]
+    fn register_space_rejects_unclassed_id() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let mut bad_id = [0xABu8; 16];
+        bad_id[0] = 0x00; // not a valid SpaceClass byte
+        let bad_info = make_test_space_info(bad_id);
+
+        let result = store.register_space(&bad_info);
+        assert!(
+            result.is_err(),
+            "register_space must reject an unclassed space id"
+        );
+        assert!(
+            store.get_space(&bad_id).unwrap().is_none(),
+            "rejected space must not be persisted"
+        );
+    }
+
+    #[test]
+    fn register_space_accepts_classed_id() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let mut good_id = [0xABu8; 16];
+        good_id[0] = 0x01; // SpaceClass::Social
+        let good_info = make_test_space_info(good_id);
+
+        store
+            .register_space(&good_info)
+            .expect("register_space must accept a validly-classed space id");
+        let fetched = store.get_space(&good_id).unwrap();
+        assert!(fetched.is_some(), "accepted space must be persisted");
+        assert_eq!(fetched.unwrap().name, "Test Space");
     }
 }
