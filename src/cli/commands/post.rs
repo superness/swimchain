@@ -532,8 +532,11 @@ fn create(config: &CliConfig, space: &str, title: &str, body: &str, no_pow: bool
     let author_id = IdentityId::from_bytes(portable.public_key);
     let now = current_timestamp();
 
-    // Sign the content (content_hash + timestamp)
-    let signature = sign_content(&private_key, &content_hash, now);
+    // Sign the content (content_hash + timestamp). Must use the SAME timestamp that is
+    // submitted to the node (the PoW challenge timestamp), NOT `now` — the node verifies
+    // the signature over content_hash || submitted_timestamp, so a mismatch is rejected
+    // once action-signature enforcement is on.
+    let signature = sign_content(&private_key, &content_hash, _solution.challenge.timestamp);
 
     let content_item = ContentItem {
         content_id: ContentId::from_bytes(content_hash),
@@ -733,8 +736,15 @@ fn reply(config: &CliConfig, parent: &str, body: &str, no_pow: bool) -> Result<(
     let content_hash_array: [u8; 32] = content_hash.into();
     let content_id_str = format!("sha256:{}", hex::encode(content_hash_array));
 
-    // Sign the content (content_hash + timestamp)
-    let signature = sign_content(&private_key, &content_hash_array, now);
+    // Sign the content (content_hash + timestamp). Must use the SAME timestamp that is
+    // submitted to the node (the PoW challenge timestamp), NOT `now` — the node verifies
+    // the signature over content_hash || submitted_timestamp, so a mismatch is rejected
+    // once action-signature enforcement is on.
+    let signature = sign_content(
+        &private_key,
+        &content_hash_array,
+        solution.challenge.timestamp,
+    );
 
     let content_item = ContentItem {
         content_id: ContentId::from_bytes(content_hash_array),

@@ -392,6 +392,79 @@ pub fn validate_action_signature(action: &Action) -> Result<(), ValidationError>
     Err(ValidationError::SignatureVerificationFailed)
 }
 
+/// Validate the Ed25519 signature of an ENGAGE action.
+///
+/// Engage does NOT use the content_hash preimage. It signs the UTF-8 string
+/// `engage:{content_id}:{nonce}:{timestamp}[:emoji]`, where `content_id` is
+/// `sha256:{hex(content_hash)}` — matching the reconstruction in the RPC layer
+/// (`submit_engagement`). This rebuilds that message from the action alone and
+/// verifies it, so an engagement's `actor` is cryptographically binding.
+pub fn validate_engage_signature(action: &Action) -> Result<(), ValidationError> {
+    let content_hash = action.content_hash.ok_or_else(|| {
+        ValidationError::ActionError("Cannot verify engage without content_hash".to_string())
+    })?;
+    let content_id = format!("sha256:{}", hex::encode(content_hash));
+    let message = match action.emoji {
+        Some(emoji) => format!(
+            "engage:{}:{}:{}:{}",
+            content_id, action.pow_nonce, action.timestamp, emoji
+        ),
+        None => format!(
+            "engage:{}:{}:{}",
+            content_id, action.pow_nonce, action.timestamp
+        ),
+    };
+    let public_key = PublicKey(action.actor);
+    let signature = Signature(action.signature);
+    if crate::crypto::signature::verify(&public_key, message.as_bytes(), &signature) {
+        Ok(())
+    } else {
+        Err(ValidationError::SignatureVerificationFailed)
+    }
+}
+
+/// Verify a content action's authorship for mempool/block ingest.
+///
+/// This is the network-wide enforcement point that makes an action's `actor`
+/// cryptographically binding, closing the impersonation gap where the signature
+/// field was previously unchecked on the ingest path (anyone could submit an
+/// action attributed to another identity's pubkey with a garbage signature).
+///
+/// Scheme by action type:
+/// - **Post / Reply / Edit** — canonical content-hash preimage
+///   (`validate_action_signature`: `content_hash || ts_LE || private`).
+/// - **Engage** — the `engage:` string scheme (`validate_engage_signature`).
+/// - **Sponsor / GenesisRegister** — authenticated separately in the router's
+///   sponsorship apply path (they require SponsorshipStore / hardcoded
+///   genesis-list context not available here), so they pass through here.
+/// - **CreateSpace / Invite / Leave / Kick / RevokeInvite / KeyRotation /
+///   DMRequest / AcceptDM / DeclineDM / RenameSpace** — these space /
+///   private-space / DM admin actions have no canonical, ingest-reconstructable
+///   signature scheme yet (their preimages depend on data not carried on the
+///   wire, e.g. the invitee pubkey or the full key-rotation payload), and peers
+///   do not apply them. Enforcement is DEFERRED to the private-space membership
+///   work (Phase 2-4). They pass through here — an explicit, documented
+///   deferral, not an accidental gap.
+pub fn validate_content_action_authenticity(action: &Action) -> Result<(), ValidationError> {
+    match action.action_type {
+        ActionType::Post | ActionType::Reply | ActionType::Edit => {
+            validate_action_signature(action)
+        }
+        ActionType::Engage => validate_engage_signature(action),
+        ActionType::Sponsor | ActionType::GenesisRegister => Ok(()),
+        ActionType::CreateSpace
+        | ActionType::Invite
+        | ActionType::Leave
+        | ActionType::Kick
+        | ActionType::RevokeInvite
+        | ActionType::KeyRotation
+        | ActionType::DMRequest
+        | ActionType::AcceptDM
+        | ActionType::DeclineDM
+        | ActionType::RenameSpace => Ok(()),
+    }
+}
+
 /// Validate action PoW
 ///
 /// Performs basic validation of PoW fields. Full Argon2id verification
@@ -700,6 +773,93 @@ mod tests {
         let mut forged = action.clone();
         forged.private = false;
         assert!(validate_action_signature(&forged).is_err());
+    }
+
+    #[test]
+    fn test_engage_signature_roundtrip() {
+        let keypair = generate_keypair_from_seed([7u8; 32]);
+        let content_hash = [9u8; 32];
+        let ts = 1_700_000_000u64;
+        let nonce = 12345u64;
+        let content_id = format!("sha256:{}", hex::encode(content_hash));
+        let msg = format!("engage:{}:{}:{}", content_id, nonce, ts);
+        let sig = crate::crypto::signature::sign(&keypair.private_key, msg.as_bytes());
+
+        let mut action = make_test_action(ActionType::Engage, ts);
+        action.actor = keypair.public_key.0;
+        action.content_hash = Some(content_hash);
+        action.pow_nonce = nonce;
+        action.emoji = None;
+        action.signature = sig.0;
+
+        assert!(validate_engage_signature(&action).is_ok());
+        assert!(validate_content_action_authenticity(&action).is_ok());
+
+        // Wrong nonce -> reconstructed message differs -> rejected.
+        let mut forged = action.clone();
+        forged.pow_nonce = nonce + 1;
+        assert!(validate_engage_signature(&forged).is_err());
+    }
+
+    #[test]
+    fn test_engage_signature_with_emoji() {
+        let keypair = generate_keypair_from_seed([8u8; 32]);
+        let content_hash = [3u8; 32];
+        let ts = 1_700_000_500u64;
+        let nonce = 99u64;
+        let emoji = 5u8;
+        let content_id = format!("sha256:{}", hex::encode(content_hash));
+        let msg = format!("engage:{}:{}:{}:{}", content_id, nonce, ts, emoji);
+        let sig = crate::crypto::signature::sign(&keypair.private_key, msg.as_bytes());
+
+        let mut action = make_test_action(ActionType::Engage, ts);
+        action.actor = keypair.public_key.0;
+        action.content_hash = Some(content_hash);
+        action.pow_nonce = nonce;
+        action.emoji = Some(emoji);
+        action.signature = sig.0;
+
+        assert!(validate_engage_signature(&action).is_ok());
+    }
+
+    #[test]
+    fn test_authenticity_rejects_forged_post() {
+        // The core fix: a post attributed to a victim pubkey with a garbage signature
+        // must be rejected (this is the "someone can post as you" hole).
+        let mut action = make_test_action(ActionType::Post, 1000);
+        action.actor = [77u8; 32]; // "victim" pubkey
+        action.signature = [0u8; 64]; // garbage / no real signature
+        assert!(validate_content_action_authenticity(&action).is_err());
+    }
+
+    #[test]
+    fn test_authenticity_accepts_valid_post() {
+        let action = make_signed_test_action(ActionType::Post, 1000);
+        assert!(validate_content_action_authenticity(&action).is_ok());
+    }
+
+    #[test]
+    fn test_authenticity_passes_through_deferred_types() {
+        // Space/private-space/sponsor/genesis actions are deferred (no
+        // ingest-reconstructable scheme yet, or verified separately) and must pass
+        // through even with a placeholder signature — enforcing them here would
+        // brick genesis/DM/space flows.
+        for at in [
+            ActionType::CreateSpace,
+            ActionType::Invite,
+            ActionType::Kick,
+            ActionType::KeyRotation,
+            ActionType::Sponsor,
+            ActionType::GenesisRegister,
+        ] {
+            let mut action = make_test_action(at, 1000);
+            action.signature = [0u8; 64];
+            assert!(
+                validate_content_action_authenticity(&action).is_ok(),
+                "type {:?} should pass through",
+                at
+            );
+        }
     }
 
     #[test]

@@ -2304,6 +2304,22 @@ impl MessageRouter {
         for content_bytes in &block_data.content_blocks {
             if let Ok(cb) = bincode::deserialize::<crate::blocks::ContentBlock>(content_bytes) {
                 for action in &cb.actions {
+                    // AUTHENTICITY: reject the whole block up-front if any content
+                    // action has forged/invalid authorship, BEFORE any side effects
+                    // (space registration, sponsorship apply, storage) run below.
+                    // This is what makes "someone can post as you" impossible
+                    // network-wide. Space/private-space admin actions pass through
+                    // (see validate_content_action_authenticity).
+                    if let Err(e) = crate::blocks::validate_content_action_authenticity(action) {
+                        warn!(
+                            "[BLOCK] REJECTED: content action with invalid authorship (type={:?}): {:?}",
+                            action.action_type, e
+                        );
+                        return Err(RouteError::InvalidData(format!(
+                            "content block contains an action with invalid authorship: {:?}",
+                            e
+                        )));
+                    }
                     if let Some(content_hash) = action.content_hash {
                         all_content_ids_in_batch.insert(content_hash);
                     }
@@ -5310,6 +5326,20 @@ impl MessageRouter {
                 return Ok(None);
             }
         };
+
+        // AUTHENTICITY: reject forged authorship before it enters the mempool.
+        // Without this a peer could gossip an action attributed to any identity's
+        // pubkey with a garbage signature; verifying here keeps forged actions out
+        // of our mempool, so we never build a block a peer would reject.
+        if let Err(e) = crate::blocks::validate_content_action_authenticity(&action) {
+            warn!(
+                "[MEMPOOL] Dropping action from peer {} with invalid authorship (type={:?}): {:?}",
+                hex::encode(&peer_id[..8]),
+                action.action_type,
+                e
+            );
+            return Ok(None);
+        }
 
         // Get the block builder
         let block_builder = match &self.block_builder {

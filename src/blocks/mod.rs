@@ -44,8 +44,9 @@ pub use merkle::compute_merkle_root;
 pub use root_block::{RootBlock, INITIAL_DIFFICULTY};
 pub use space_block::SpaceBlock;
 pub use validation::{
-    validate_action, validate_content_block, validate_root_block, validate_space_block,
-    ValidationError, TIMESTAMP_FUTURE_SECS, TIMESTAMP_WINDOW_SECS,
+    validate_action, validate_content_action_authenticity, validate_content_block,
+    validate_engage_signature, validate_root_block, validate_space_block, ValidationError,
+    TIMESTAMP_FUTURE_SECS, TIMESTAMP_WINDOW_SECS,
 };
 
 /// Type aliases for clarity

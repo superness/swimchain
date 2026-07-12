@@ -2254,6 +2254,20 @@ impl RpcMethods {
                 private: is_private,
             };
 
+            // AUTHENTICITY: verify the caller actually signed this action before it
+            // enters our mempool. Prevents this node from ever building a block with a
+            // forged-authorship post (front-door defense; block/gossip ingest re-check).
+            if let Err(e) = crate::blocks::validate_content_action_authenticity(&action) {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!(
+                        "Invalid signature: action authorship verification failed ({:?})",
+                        e
+                    ),
+                    id,
+                );
+            }
+
             // Thread ID is the content hash for a new post
             let thread_id = content_hash;
 
@@ -3107,6 +3121,19 @@ impl RpcMethods {
                 private: is_private,
             };
 
+            // AUTHENTICITY: verify the caller actually signed this reply before it
+            // enters our mempool (front-door defense; block/gossip ingest re-check).
+            if let Err(e) = crate::blocks::validate_content_action_authenticity(&action) {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!(
+                        "Invalid signature: action authorship verification failed ({:?})",
+                        e
+                    ),
+                    id,
+                );
+            }
+
             // Thread ID is the parent post's hash (replies belong to parent thread)
             let thread_id = parent_hash_bytes;
 
@@ -3595,6 +3622,19 @@ impl RpcMethods {
             replaces_pending,
             private: false,
         };
+
+        // AUTHENTICITY: verify the caller actually signed this edit before it enters
+        // our mempool (front-door defense; block/gossip ingest re-check).
+        if let Err(e) = crate::blocks::validate_content_action_authenticity(&action) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!(
+                    "Invalid signature: action authorship verification failed ({:?})",
+                    e
+                ),
+                id,
+            );
+        }
 
         // Add to block builder
         if let Some(ref block_builder) = self.node.block_builder {

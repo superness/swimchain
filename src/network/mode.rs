@@ -150,7 +150,7 @@ impl NetworkMode {
     pub fn magic_bytes(&self) -> [u8; 4] {
         match self {
             NetworkMode::Mainnet => [0x53, 0x57, 0x49, 0x4D], // "SWIM"
-            NetworkMode::Testnet => [0x54, 0x45, 0x53, 0x33], // "TES3" (re-bump to purge leaked pre-TES3 content)
+            NetworkMode::Testnet => [0x54, 0x45, 0x53, 0x34], // "TES4" (re-bump: action-signature enforcement fork)
             NetworkMode::Regtest => [0x52, 0x45, 0x47, 0x54], // "REGT"
         }
     }
