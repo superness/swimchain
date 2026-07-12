@@ -1,7 +1,7 @@
 //! Engagement graph types
 
-use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 /// Type of engagement action
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -52,7 +52,12 @@ impl EngagementEdge {
     pub const MAX_RECENT: usize = 100;
 
     /// Create a new edge with first engagement
-    pub fn new(engager: [u8; 32], author: [u8; 32], engagement_type: EngagementType, timestamp: u64) -> Self {
+    pub fn new(
+        engager: [u8; 32],
+        author: [u8; 32],
+        engagement_type: EngagementType,
+        timestamp: u64,
+    ) -> Self {
         let mut edge = Self {
             engager,
             author,

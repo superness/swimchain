@@ -15,8 +15,8 @@ use super::harness::MultiNodeTestHarness;
 use super::helpers::{create_test_chain, store_chain, wait_for_height};
 
 use swimchain::network::messages::{GetBlocksLocatorPayload, GetHeadersLocatorPayload};
-use swimchain::types::{Serialize, Deserialize};
 use swimchain::types::network::{MessageEnvelope, MessageType};
+use swimchain::types::{Deserialize, Serialize};
 
 /// Test that GETBLOCKS_LOCATOR request is properly routed and handled
 ///
@@ -72,10 +72,8 @@ async fn test_locator_sync_basic_flow() {
 
     // Create and send GETBLOCKS_LOCATOR request
     let request = GetBlocksLocatorPayload::new(locator_hashes, 20);
-    let envelope = MessageEnvelope::new_fork_agnostic(
-        MessageType::GetBlocksLocator,
-        request.to_bytes(),
-    );
+    let envelope =
+        MessageEnvelope::new_fork_agnostic(MessageType::GetBlocksLocator, request.to_bytes());
 
     // Send to first peer (node 0)
     let peer_id = &peers[0];
@@ -151,10 +149,8 @@ async fn test_headers_first_sync() {
     }
 
     let request = GetHeadersLocatorPayload::new(locator_hashes, 500);
-    let envelope = MessageEnvelope::new_fork_agnostic(
-        MessageType::GetHeadersLocator,
-        request.to_bytes(),
-    );
+    let envelope =
+        MessageEnvelope::new_fork_agnostic(MessageType::GetHeadersLocator, request.to_bytes());
 
     pool_1.send_to(&peers[0], &envelope).await.unwrap();
     log::info!("Sent GETHEADERS_LOCATOR");
@@ -226,14 +222,8 @@ async fn test_locator_finds_fork_point() {
         prev_hash = hash;
     }
 
-    log::info!(
-        "Node 0 tip: {:?}",
-        chain_0.get_root_hash_at_height(4)
-    );
-    log::info!(
-        "Node 1 tip: {:?}",
-        chain_1.get_root_hash_at_height(4)
-    );
+    log::info!("Node 0 tip: {:?}", chain_0.get_root_hash_at_height(4));
+    log::info!("Node 1 tip: {:?}", chain_1.get_root_hash_at_height(4));
 
     // Generate locator from node 1
     let locator = chain_1.generate_locator().unwrap();
@@ -244,10 +234,7 @@ async fn test_locator_finds_fork_point() {
     log::info!("Common ancestor found at height: {:?}", match_height);
 
     // Should find height 2 (block B) as last common block
-    assert!(
-        match_height.is_some(),
-        "Should find common ancestor"
-    );
+    assert!(match_height.is_some(), "Should find common ancestor");
     let height = match_height.unwrap();
     assert!(
         height <= 2,
@@ -294,14 +281,16 @@ async fn test_locator_sync_multiple_peers() {
     // Generate locator and send to all peers
     let locator = chain_0.generate_locator().unwrap();
     let request = GetBlocksLocatorPayload::new(locator, 20);
-    let envelope = MessageEnvelope::new_fork_agnostic(
-        MessageType::GetBlocksLocator,
-        request.to_bytes(),
-    );
+    let envelope =
+        MessageEnvelope::new_fork_agnostic(MessageType::GetBlocksLocator, request.to_bytes());
 
     for peer_id in &peers {
         if let Err(e) = pool_0.send_to(peer_id, &envelope).await {
-            log::warn!("Failed to send to peer {}: {}", hex::encode(&peer_id[..8]), e);
+            log::warn!(
+                "Failed to send to peer {}: {}",
+                hex::encode(&peer_id[..8]),
+                e
+            );
         }
     }
 
@@ -351,10 +340,8 @@ async fn test_locator_sync_empty_locator() {
 
     // Send empty locator request (should return from genesis)
     let request = GetBlocksLocatorPayload::new(vec![], 20);
-    let envelope = MessageEnvelope::new_fork_agnostic(
-        MessageType::GetBlocksLocator,
-        request.to_bytes(),
-    );
+    let envelope =
+        MessageEnvelope::new_fork_agnostic(MessageType::GetBlocksLocator, request.to_bytes());
 
     pool_1.send_to(&peers[0], &envelope).await.unwrap();
     log::info!("Sent empty locator request");
@@ -400,10 +387,8 @@ async fn test_locator_sync_respects_max_blocks() {
     // Request only 10 blocks
     let locator = chain_1.generate_locator().unwrap();
     let request = GetBlocksLocatorPayload::new(locator, 10);
-    let envelope = MessageEnvelope::new_fork_agnostic(
-        MessageType::GetBlocksLocator,
-        request.to_bytes(),
-    );
+    let envelope =
+        MessageEnvelope::new_fork_agnostic(MessageType::GetBlocksLocator, request.to_bytes());
 
     pool_1.send_to(&peers[0], &envelope).await.unwrap();
     log::info!("Sent locator request with max_blocks=10");
@@ -455,10 +440,8 @@ async fn test_locator_sync_rapid_requests() {
     for i in 0..10 {
         let locator = chain_1.generate_locator().unwrap();
         let request = GetBlocksLocatorPayload::new(locator, 5);
-        let envelope = MessageEnvelope::new_fork_agnostic(
-            MessageType::GetBlocksLocator,
-            request.to_bytes(),
-        );
+        let envelope =
+            MessageEnvelope::new_fork_agnostic(MessageType::GetBlocksLocator, request.to_bytes());
 
         if let Err(e) = pool_1.send_to(&peers[0], &envelope).await {
             log::warn!("Request {} failed: {}", i, e);
@@ -489,11 +472,7 @@ mod unit_tests {
     /// Verify locator payload serializes correctly
     #[test]
     fn test_locator_payload_roundtrip() {
-        let hashes = vec![
-            [1u8; 32],
-            [2u8; 32],
-            [3u8; 32],
-        ];
+        let hashes = vec![[1u8; 32], [2u8; 32], [3u8; 32]];
         let payload = GetBlocksLocatorPayload::new(hashes.clone(), 100);
 
         let bytes = payload.to_bytes();
@@ -506,10 +485,7 @@ mod unit_tests {
     /// Verify headers payload serializes correctly
     #[test]
     fn test_headers_locator_payload_roundtrip() {
-        let hashes = vec![
-            [0xAAu8; 32],
-            [0xBBu8; 32],
-        ];
+        let hashes = vec![[0xAAu8; 32], [0xBBu8; 32]];
         let payload = GetHeadersLocatorPayload::new(hashes.clone(), 500);
 
         let bytes = payload.to_bytes();

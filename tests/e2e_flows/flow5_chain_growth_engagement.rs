@@ -36,7 +36,7 @@ fn test_chain_growth_simulation() {
 
     // Simulation parameters
     const BLOCKS_PER_DAY: u64 = 24 * 60; // 1 block per minute
-    const DAYS_TO_SIMULATE: u64 = 365;   // 1 year
+    const DAYS_TO_SIMULATE: u64 = 365; // 1 year
     const ACTIONS_PER_BLOCK_AVG: usize = 50;
 
     // But for actual test, use smaller numbers
@@ -65,15 +65,21 @@ fn test_chain_growth_simulation() {
             let content_hash = sha256(content_data.as_bytes());
 
             let action = Action {
-                action_type: if action_idx % 3 == 0 { ActionType::Post }
-                           else if action_idx % 3 == 1 { ActionType::Reply }
-                           else { ActionType::Engage },
+                action_type: if action_idx % 3 == 0 {
+                    ActionType::Post
+                } else if action_idx % 3 == 1 {
+                    ActionType::Reply
+                } else {
+                    ActionType::Engage
+                },
                 actor,
                 timestamp,
                 content_hash: Some(content_hash),
                 parent_id: if action_idx % 3 == 1 {
                     // Replies reference previous content
-                    Some(sha256(format!("Content 0 in block {}", block_num.saturating_sub(1)).as_bytes()))
+                    Some(sha256(
+                        format!("Content 0 in block {}", block_num.saturating_sub(1)).as_bytes(),
+                    ))
                 } else {
                     None
                 },
@@ -84,7 +90,7 @@ fn test_chain_growth_simulation() {
                 emoji: if action_idx % 3 == 2 { Some(1) } else { None }, // Engage actions have emoji
                 media_refs: vec![],
                 display_name: None,
-            replaces_pending: None,
+                replaces_pending: None,
             };
             actions.push(action);
             action_count += 1;
@@ -114,15 +120,30 @@ fn test_chain_growth_simulation() {
     let full_yearly_gb = full_yearly_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
 
     println!("=== Chain Growth Simulation Results ===");
-    println!("Test simulation: {} blocks, {} actions/block", TEST_BLOCKS, TEST_ACTIONS_PER_BLOCK);
-    println!("Total bytes (test): {} KB", (total_root_bytes + total_content_bytes) / 1024);
+    println!(
+        "Test simulation: {} blocks, {} actions/block",
+        TEST_BLOCKS, TEST_ACTIONS_PER_BLOCK
+    );
+    println!(
+        "Total bytes (test): {} KB",
+        (total_root_bytes + total_content_bytes) / 1024
+    );
     println!("Bytes per block: {} bytes", bytes_per_block);
     println!("Actions simulated: {}", action_count);
     println!();
-    println!("=== Yearly Projections (at {} actions/block) ===", ACTIONS_PER_BLOCK_AVG);
+    println!(
+        "=== Yearly Projections (at {} actions/block) ===",
+        ACTIONS_PER_BLOCK_AVG
+    );
     println!("Blocks per year: {}", BLOCKS_PER_DAY * DAYS_TO_SIMULATE);
-    println!("Daily storage growth: {} MB", projected_daily_bytes / (1024 * 1024));
-    println!("Yearly storage (test params): {:.2} GB", projected_yearly_gb);
+    println!(
+        "Daily storage growth: {} MB",
+        projected_daily_bytes / (1024 * 1024)
+    );
+    println!(
+        "Yearly storage (test params): {:.2} GB",
+        projected_yearly_gb
+    );
     println!("Yearly storage (full params): {:.2} GB", full_yearly_gb);
     println!();
     println!("Timing: {:?}", timing.total("simulation").unwrap());
@@ -167,9 +188,8 @@ fn test_content_type_storage_sizes() {
 
     // Estimate for typical usage patterns
     // Assume: 60% posts, 30% replies, 10% engages
-    let weighted_avg = (0.6 * post_total as f64)
-                     + (0.3 * reply_total as f64)
-                     + (0.1 * engage_total as f64);
+    let weighted_avg =
+        (0.6 * post_total as f64) + (0.3 * reply_total as f64) + (0.1 * engage_total as f64);
     println!("Weighted average per action: {:.0} bytes", weighted_avg);
 
     // If 1000 active users, 10 actions/day each
@@ -182,7 +202,10 @@ fn test_content_type_storage_sizes() {
 
     // Assertions
     assert!(action_size == 218, "Action size should be 218 bytes");
-    assert!(monthly_gb < 1.0, "Monthly storage for 1000 users should be < 1GB");
+    assert!(
+        monthly_gb < 1.0,
+        "Monthly storage for 1000 users should be < 1GB"
+    );
 }
 
 // ============================================================================
@@ -205,13 +228,19 @@ fn test_engagement_graph_reply_tracking() {
     let start = Instant::now();
 
     // Alice posts, Bob replies to Alice's post
-    store.record_engagement(&bob, &alice, EngagementType::Reply, 1000).unwrap();
+    store
+        .record_engagement(&bob, &alice, EngagementType::Reply, 1000)
+        .unwrap();
 
     // Charlie also replies to Alice
-    store.record_engagement(&charlie, &alice, EngagementType::Reply, 2000).unwrap();
+    store
+        .record_engagement(&charlie, &alice, EngagementType::Reply, 2000)
+        .unwrap();
 
     // Bob replies to Alice again
-    store.record_engagement(&bob, &alice, EngagementType::Reply, 3000).unwrap();
+    store
+        .record_engagement(&bob, &alice, EngagementType::Reply, 3000)
+        .unwrap();
 
     timing.record("recording", start.elapsed());
 
@@ -225,7 +254,10 @@ fn test_engagement_graph_reply_tracking() {
 
     // Verify stats
     let alice_stats = store.get_stats(&alice).unwrap();
-    assert_eq!(alice_stats.total_incoming, 3, "Alice received 3 engagements");
+    assert_eq!(
+        alice_stats.total_incoming, 3,
+        "Alice received 3 engagements"
+    );
     assert_eq!(alice_stats.incoming_replies, 3);
 
     // Verify engagers list
@@ -234,7 +266,10 @@ fn test_engagement_graph_reply_tracking() {
     assert!(alice_engagers.contains(&bob));
     assert!(alice_engagers.contains(&charlie));
 
-    println!("Engagement graph reply tracking: {:?}", timing.total("recording").unwrap());
+    println!(
+        "Engagement graph reply tracking: {:?}",
+        timing.total("recording").unwrap()
+    );
 }
 
 /// Test: Engagement graph tracks reactions
@@ -250,9 +285,13 @@ fn test_engagement_graph_reaction_tracking() {
 
     // Multiple users react to author's content
     for i in 0..5 {
-        store.record_engagement(&reactor1, &author, EngagementType::Reaction, 1000 + i * 100).unwrap();
+        store
+            .record_engagement(&reactor1, &author, EngagementType::Reaction, 1000 + i * 100)
+            .unwrap();
     }
-    store.record_engagement(&reactor2, &author, EngagementType::Reaction, 2000).unwrap();
+    store
+        .record_engagement(&reactor2, &author, EngagementType::Reaction, 2000)
+        .unwrap();
 
     // Verify
     let r1_edge = store.get_edge(&reactor1, &author).unwrap().unwrap();
@@ -276,11 +315,17 @@ fn test_engagement_graph_mutual_engagement() {
     let user_b = [21u8; 32];
 
     // User A engages with User B
-    store.record_engagement(&user_a, &user_b, EngagementType::Reply, 1000).unwrap();
-    store.record_engagement(&user_a, &user_b, EngagementType::Reaction, 1500).unwrap();
+    store
+        .record_engagement(&user_a, &user_b, EngagementType::Reply, 1000)
+        .unwrap();
+    store
+        .record_engagement(&user_a, &user_b, EngagementType::Reaction, 1500)
+        .unwrap();
 
     // User B engages with User A
-    store.record_engagement(&user_b, &user_a, EngagementType::Reply, 2000).unwrap();
+    store
+        .record_engagement(&user_b, &user_a, EngagementType::Reply, 2000)
+        .unwrap();
 
     // Check mutual engagement
     let mutual = store.get_mutual(&user_a, &user_b).unwrap();
@@ -309,16 +354,23 @@ fn test_engagement_graph_self_engagement() {
 
     // User engages with own content (suspicious)
     for i in 0..10 {
-        store.record_engagement(&user, &user, EngagementType::Reaction, 1000 + i * 100).unwrap();
+        store
+            .record_engagement(&user, &user, EngagementType::Reaction, 1000 + i * 100)
+            .unwrap();
     }
 
     // User also gets some organic engagement
     for i in 0..3 {
-        store.record_engagement(&other, &user, EngagementType::Reaction, 2000 + i * 100).unwrap();
+        store
+            .record_engagement(&other, &user, EngagementType::Reaction, 2000 + i * 100)
+            .unwrap();
     }
 
     let stats = store.get_stats(&user).unwrap();
-    assert_eq!(stats.self_engagement_count, 10, "Should track self-engagement");
+    assert_eq!(
+        stats.self_engagement_count, 10,
+        "Should track self-engagement"
+    );
     assert_eq!(stats.total_incoming, 13, "Total incoming is self + others");
 
     // Self-engagement ratio should be high (suspicious)
@@ -343,22 +395,38 @@ fn test_engagement_graph_statistics() {
 
     // Each user engages with the next user
     for i in 0..9 {
-        store.record_engagement(&users[i], &users[i + 1], EngagementType::Reply, (i * 1000) as u64).unwrap();
+        store
+            .record_engagement(
+                &users[i],
+                &users[i + 1],
+                EngagementType::Reply,
+                (i * 1000) as u64,
+            )
+            .unwrap();
     }
 
     // Some users engage multiple times
-    store.record_engagement(&users[0], &users[1], EngagementType::Reaction, 10000).unwrap();
-    store.record_engagement(&users[0], &users[2], EngagementType::Reply, 11000).unwrap();
+    store
+        .record_engagement(&users[0], &users[1], EngagementType::Reaction, 10000)
+        .unwrap();
+    store
+        .record_engagement(&users[0], &users[2], EngagementType::Reply, 11000)
+        .unwrap();
 
     let graph_stats = store.graph_stats().unwrap();
 
     // 9 edges from chain + 1 new edge (0->2) = 10 edges
     // (0->1 gets updated, not created new)
     assert_eq!(graph_stats.total_edges, 10, "Should have 10 unique edges");
-    assert!(graph_stats.total_identities > 0, "Should have identities with stats");
+    assert!(
+        graph_stats.total_identities > 0,
+        "Should have identities with stats"
+    );
 
-    println!("Graph stats: {} edges, {} identities with stats",
-             graph_stats.total_edges, graph_stats.total_identities);
+    println!(
+        "Graph stats: {} edges, {} identities with stats",
+        graph_stats.total_edges, graph_stats.total_identities
+    );
 }
 
 /// Test: Large-scale engagement graph simulation
@@ -372,11 +440,13 @@ fn test_engagement_graph_scale_simulation() {
     const NUM_USERS: usize = 100;
     const ENGAGEMENTS_PER_USER: usize = 50;
 
-    let users: Vec<[u8; 32]> = (0..NUM_USERS).map(|i| {
-        let mut bytes = [0u8; 32];
-        bytes[0..4].copy_from_slice(&(i as u32).to_le_bytes());
-        bytes
-    }).collect();
+    let users: Vec<[u8; 32]> = (0..NUM_USERS)
+        .map(|i| {
+            let mut bytes = [0u8; 32];
+            bytes[0..4].copy_from_slice(&(i as u32).to_le_bytes());
+            bytes
+        })
+        .collect();
 
     let start = Instant::now();
 
@@ -393,7 +463,9 @@ fn test_engagement_graph_scale_simulation() {
                 _ => EngagementType::Reaction, // More reactions than replies
             };
 
-            store.record_engagement(user, target, engagement_type, (i * 1000 + j) as u64).unwrap();
+            store
+                .record_engagement(user, target, engagement_type, (i * 1000 + j) as u64)
+                .unwrap();
         }
     }
 
@@ -412,12 +484,18 @@ fn test_engagement_graph_scale_simulation() {
     let graph_stats = store.graph_stats().unwrap();
 
     println!("=== Engagement Graph Scale Test ===");
-    println!("Users: {}, Engagements per user: {}", NUM_USERS, ENGAGEMENTS_PER_USER);
+    println!(
+        "Users: {}, Engagements per user: {}",
+        NUM_USERS, ENGAGEMENTS_PER_USER
+    );
     println!("Total engagements: {}", NUM_USERS * ENGAGEMENTS_PER_USER);
     println!("Insert time: {:?}", timing.total("insert").unwrap());
     println!("Query time: {:?}", timing.total("queries").unwrap());
     println!("Graph edges: {}", graph_stats.total_edges);
-    println!("User 0 stats: {} outgoing, {} incoming", stats.total_outgoing, stats.total_incoming);
+    println!(
+        "User 0 stats: {} outgoing, {} incoming",
+        stats.total_outgoing, stats.total_incoming
+    );
     println!("User 50 engagers: {}", engagers.len());
     println!("Top engagers for user 25: {}", top.len());
 
@@ -451,7 +529,13 @@ fn test_content_lifecycle_full() {
 
     // Step 1: Create content
     let content_bodies: Vec<Vec<u8>> = (0..10)
-        .map(|i| format!("Post content number {}: This is a longer post with some text.", i).into_bytes())
+        .map(|i| {
+            format!(
+                "Post content number {}: This is a longer post with some text.",
+                i
+            )
+            .into_bytes()
+        })
         .collect();
 
     let create_start = Instant::now();
@@ -492,10 +576,11 @@ fn test_content_lifecycle_full() {
         thread_root,
         space_id_32,
         actions.clone(),
-        None,  // prev_content_hash
-        1700000000,  // timestamp
+        None,       // prev_content_hash
+        1700000000, // timestamp
         BranchPath::root(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let store_start = Instant::now();
     chain_store.put_content_block(&content_block).unwrap();
@@ -516,11 +601,24 @@ fn test_content_lifecycle_full() {
 
     println!("=== Content Lifecycle Test ===");
     println!("Created {} content items", content_hashes.len());
-    println!("Content create: {:?}", timing.total("content_create").unwrap());
-    println!("Actions create: {:?}", timing.total("actions_create").unwrap());
+    println!(
+        "Content create: {:?}",
+        timing.total("content_create").unwrap()
+    );
+    println!(
+        "Actions create: {:?}",
+        timing.total("actions_create").unwrap()
+    );
     println!("Block store: {:?}", timing.total("block_store").unwrap());
-    println!("Content retrieve: {:?}", timing.total("content_retrieve").unwrap());
-    println!("Index rebuild: {:?} ({} items)", timing.total("index_rebuild").unwrap(), index_count);
+    println!(
+        "Content retrieve: {:?}",
+        timing.total("content_retrieve").unwrap()
+    );
+    println!(
+        "Index rebuild: {:?} ({} items)",
+        timing.total("index_rebuild").unwrap(),
+        index_count
+    );
 
     // Assertions
     assert!(timing.total("content_retrieve").unwrap() < Duration::from_millis(100));
@@ -565,21 +663,30 @@ fn test_content_retrieval_by_space() {
         None,
         1700000000,
         BranchPath::root(),
-    ).unwrap();
+    )
+    .unwrap();
     chain_store.put_content_block(&content_block).unwrap();
     chain_store.rebuild_space_content_index().unwrap();
 
     // Query content for space
     let space_id_16: [u8; 16] = space_id.as_bytes()[..16].try_into().unwrap();
-    let content = chain_store.get_content_for_space(&space_id_16, 10, 0).unwrap();
+    let content = chain_store
+        .get_content_for_space(&space_id_16, 10, 0)
+        .unwrap();
 
     assert_eq!(content.len(), 10, "Should return 10 items (limit)");
 
     // Get next page
-    let content_page2 = chain_store.get_content_for_space(&space_id_16, 10, 10).unwrap();
+    let content_page2 = chain_store
+        .get_content_for_space(&space_id_16, 10, 10)
+        .unwrap();
     assert_eq!(content_page2.len(), 10, "Should return 10 more items");
 
-    println!("Space content retrieval: {} + {} items", content.len(), content_page2.len());
+    println!(
+        "Space content retrieval: {} + {} items",
+        content.len(),
+        content_page2.len()
+    );
 }
 
 /// Test: Reply threading (parent-child relationships)
@@ -607,7 +714,7 @@ fn test_reply_threading() {
         emoji: None,
         media_refs: vec![],
         display_name: None,
-            replaces_pending: None,
+        replaces_pending: None,
     };
 
     // Create replies to the post
@@ -643,17 +750,23 @@ fn test_reply_threading() {
         None,
         1700000000,
         BranchPath::root(),
-    ).unwrap();
+    )
+    .unwrap();
     chain_store.put_content_block(&content_block).unwrap();
     chain_store.rebuild_space_content_index().unwrap();
 
     // Query replies to the post
-    let replies = chain_store.get_replies_for_content(&post_hash, 100, 0).unwrap();
+    let replies = chain_store
+        .get_replies_for_content(&post_hash, 100, 0)
+        .unwrap();
     assert_eq!(replies.len(), 5, "Should have 5 replies");
 
     // Verify all replies reference the parent
     for (hash, metadata) in &replies {
-        assert_eq!(metadata.parent_hash, post_hash, "Reply should reference parent");
+        assert_eq!(
+            metadata.parent_hash, post_hash,
+            "Reply should reference parent"
+        );
         assert_eq!(metadata.content_type, 1, "Content type should be Reply (1)");
     }
 
@@ -715,7 +828,8 @@ fn test_content_metadata_indexing() {
         None,
         1700000000,
         BranchPath::root(),
-    ).unwrap();
+    )
+    .unwrap();
     chain_store.put_content_block(&content_block).unwrap();
     chain_store.rebuild_space_content_index().unwrap();
 
@@ -767,7 +881,7 @@ fn test_content_to_engagement_integration() {
         emoji: None,
         media_refs: vec![],
         display_name: None,
-            replaces_pending: None,
+        replaces_pending: None,
     };
 
     // Store the post
@@ -778,7 +892,8 @@ fn test_content_to_engagement_integration() {
         None,
         1700000000,
         BranchPath::root(),
-    ).unwrap();
+    )
+    .unwrap();
     chain_store.put_content_block(&block1).unwrap();
     chain_store.rebuild_space_content_index().unwrap();
 
@@ -797,7 +912,7 @@ fn test_content_to_engagement_integration() {
         emoji: None,
         media_refs: vec![],
         display_name: None,
-            replaces_pending: None,
+        replaces_pending: None,
     };
 
     let charlie_engage = Action {
@@ -813,7 +928,7 @@ fn test_content_to_engagement_integration() {
         emoji: Some(1), // Thumbs up
         media_refs: vec![],
         display_name: None,
-            replaces_pending: None,
+        replaces_pending: None,
     };
 
     let block2 = ContentBlock::new(
@@ -823,21 +938,34 @@ fn test_content_to_engagement_integration() {
         Some(sha256(b"block1_hash")), // prev_content_hash
         1700001000,
         BranchPath::root(),
-    ).unwrap();
+    )
+    .unwrap();
     chain_store.put_content_block(&block2).unwrap();
     chain_store.rebuild_space_content_index().unwrap();
 
     // Simulate what the router would do - extract engagements
     // Bob replied to Alice's post -> Bob engages with Alice
     let alice_author = chain_store.get_content_author(&post_hash).unwrap().unwrap();
-    engagement_store.record_engagement(&bob, &alice_author, EngagementType::Reply, 1700001000).unwrap();
+    engagement_store
+        .record_engagement(&bob, &alice_author, EngagementType::Reply, 1700001000)
+        .unwrap();
 
     // Charlie engaged with Alice's post
-    engagement_store.record_engagement(&charlie, &alice_author, EngagementType::Reaction, 1700002000).unwrap();
+    engagement_store
+        .record_engagement(
+            &charlie,
+            &alice_author,
+            EngagementType::Reaction,
+            1700002000,
+        )
+        .unwrap();
 
     // Verify engagement graph
     let alice_stats = engagement_store.get_stats(&alice).unwrap();
-    assert_eq!(alice_stats.total_incoming, 2, "Alice should have 2 engagements");
+    assert_eq!(
+        alice_stats.total_incoming, 2,
+        "Alice should have 2 engagements"
+    );
     assert_eq!(alice_stats.incoming_replies, 1);
     assert_eq!(alice_stats.incoming_reactions, 1);
 
@@ -847,6 +975,9 @@ fn test_content_to_engagement_integration() {
     assert!(alice_engagers.contains(&charlie));
 
     println!("Content-to-engagement integration verified");
-    println!("Alice received {} engagements from {} unique users",
-             alice_stats.total_incoming, alice_engagers.len());
+    println!(
+        "Alice received {} engagements from {} unique users",
+        alice_stats.total_incoming,
+        alice_engagers.len()
+    );
 }

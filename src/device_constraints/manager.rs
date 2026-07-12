@@ -205,7 +205,9 @@ impl DeviceConstraintManager {
         // Battery and thermal check
         let (battery_paused, _pause_reason) = self.battery_checker.should_pause_contribution();
         let battery_state = self.battery_checker.get_state();
-        let thermal_paused = battery_state.thermal_state.should_pause(settings.thermal_pause);
+        let thermal_paused = battery_state
+            .thermal_state
+            .should_pause(settings.thermal_pause);
 
         // Network check
         let on_cellular = self.network_provider.is_cellular();
@@ -258,7 +260,10 @@ impl DeviceConstraintManager {
     /// Get current settings
     #[must_use]
     pub fn get_settings(&self) -> ContributionSettings {
-        self.settings.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.settings
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Update settings (persisted)
@@ -275,7 +280,8 @@ impl DeviceConstraintManager {
         self.store.set_settings(&settings)?;
 
         // Update bandwidth limiter cap
-        self.bandwidth_limiter.set_daily_cap(settings.daily_bandwidth_cap);
+        self.bandwidth_limiter
+            .set_daily_cap(settings.daily_bandwidth_cap);
 
         // Update in-memory settings
         *self.settings.write().unwrap_or_else(|e| e.into_inner()) = settings;
@@ -386,8 +392,7 @@ impl MockNetworkProvider {
     }
 
     pub fn set_wifi(&self, wifi: bool) {
-        self.wifi
-            .store(wifi, std::sync::atomic::Ordering::Relaxed);
+        self.wifi.store(wifi, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn set_cellular(&self, cellular: bool) {
@@ -456,8 +461,12 @@ mod tests {
         (manager, tmp)
     }
 
-    fn create_test_manager_with_mocks(
-    ) -> (DeviceConstraintManager, Arc<MockBatteryMonitor>, Arc<MockNetworkProvider>, TempDir) {
+    fn create_test_manager_with_mocks() -> (
+        DeviceConstraintManager,
+        Arc<MockBatteryMonitor>,
+        Arc<MockNetworkProvider>,
+        TempDir,
+    ) {
         let tmp = TempDir::new().unwrap();
         let battery = Arc::new(MockBatteryMonitor::new());
         let network = Arc::new(MockNetworkProvider::new());

@@ -212,9 +212,9 @@ pub fn execute_adoption(
     let old_sponsor = orphan.sponsor;
 
     // Get adopter's depth
-    let adopter = sponsorship_store.get(&request.adopter)?.ok_or_else(|| {
-        SponsorshipError::StorageError("adopter not found".into())
-    })?;
+    let adopter = sponsorship_store
+        .get(&request.adopter)?
+        .ok_or_else(|| SponsorshipError::StorageError("adopter not found".into()))?;
     let new_depth = adopter.depth.saturating_add(1);
 
     // Clear orphan status with new sponsor
@@ -335,10 +335,8 @@ impl OrphanDetectionTask {
                 if let Some(last_active) = get_sponsor_last_active(&sponsor) {
                     let inactive_duration = current_time.saturating_sub(last_active);
                     if inactive_duration >= ORPHAN_INACTIVITY_THRESHOLD_SECONDS {
-                        sponsorship_store.set_orphan_status(
-                            &sponsorship.sponsored_identity,
-                            current_time,
-                        )?;
+                        sponsorship_store
+                            .set_orphan_status(&sponsorship.sponsored_identity, current_time)?;
                         newly_orphaned.push(sponsorship.sponsored_identity);
                     }
                 }
@@ -470,7 +468,9 @@ mod tests {
         let current_time = 1735689600;
 
         // Create genesis and active identity (not orphaned)
-        store.put(&make_genesis_sponsorship(test_pubkey(0))).unwrap();
+        store
+            .put(&make_genesis_sponsorship(test_pubkey(0)))
+            .unwrap();
         store
             .put(&make_regular_sponsorship(test_pubkey(1), test_pubkey(0), 1))
             .unwrap();
@@ -493,11 +493,15 @@ mod tests {
         let orphaned_at = current_time - 100; // Only 100 seconds ago
 
         // Create genesis and orphaned identity (still in grace period)
-        store.put(&make_genesis_sponsorship(test_pubkey(0))).unwrap();
+        store
+            .put(&make_genesis_sponsorship(test_pubkey(0)))
+            .unwrap();
         store
             .put(&make_regular_sponsorship(test_pubkey(1), test_pubkey(0), 1))
             .unwrap();
-        store.set_orphan_status(&test_pubkey(1), orphaned_at).unwrap();
+        store
+            .set_orphan_status(&test_pubkey(1), orphaned_at)
+            .unwrap();
 
         let request = AdoptionRequest {
             adopter: test_pubkey(0),
@@ -520,11 +524,15 @@ mod tests {
         let orphaned_at = current_time - ORPHAN_GRACE_PERIOD_SECONDS - 100;
 
         // Create genesis and orphaned identity (past grace period)
-        store.put(&make_genesis_sponsorship(test_pubkey(0))).unwrap();
+        store
+            .put(&make_genesis_sponsorship(test_pubkey(0)))
+            .unwrap();
         store
             .put(&make_regular_sponsorship(test_pubkey(1), test_pubkey(0), 1))
             .unwrap();
-        store.set_orphan_status(&test_pubkey(1), orphaned_at).unwrap();
+        store
+            .set_orphan_status(&test_pubkey(1), orphaned_at)
+            .unwrap();
 
         let request = AdoptionRequest {
             adopter: test_pubkey(0),
@@ -543,7 +551,9 @@ mod tests {
         let current_time = 1735689600;
 
         // Create chain: Genesis(0) -> A(1) -> B(2) -> C(3)
-        store.put(&make_genesis_sponsorship(test_pubkey(0))).unwrap();
+        store
+            .put(&make_genesis_sponsorship(test_pubkey(0)))
+            .unwrap();
         store
             .put(&make_regular_sponsorship(test_pubkey(1), test_pubkey(0), 1))
             .unwrap();
@@ -576,14 +586,12 @@ mod tests {
         let (store, _dir) = create_test_store();
 
         // Genesis sponsors 3 identities
-        store.put(&make_genesis_sponsorship(test_pubkey(0))).unwrap();
+        store
+            .put(&make_genesis_sponsorship(test_pubkey(0)))
+            .unwrap();
         for i in 1..=3 {
             store
-                .put(&make_regular_sponsorship(
-                    test_pubkey(i),
-                    test_pubkey(0),
-                    1,
-                ))
+                .put(&make_regular_sponsorship(test_pubkey(i), test_pubkey(0), 1))
                 .unwrap();
         }
 
@@ -615,7 +623,9 @@ mod tests {
         let current_time = 1735689600;
 
         // Create genesis and sponsored identity
-        store.put(&make_genesis_sponsorship(test_pubkey(0))).unwrap();
+        store
+            .put(&make_genesis_sponsorship(test_pubkey(0)))
+            .unwrap();
         store
             .put(&make_regular_sponsorship(test_pubkey(1), test_pubkey(0), 1))
             .unwrap();
@@ -625,7 +635,8 @@ mod tests {
         // Mock: Genesis (test_pubkey(0)) has been inactive for 91 days
         let sponsor_last_active = |pk: &PublicKey| {
             if *pk == test_pubkey(0) {
-                Some(current_time - ORPHAN_INACTIVITY_THRESHOLD_SECONDS - 86_400) // 91 days ago
+                Some(current_time - ORPHAN_INACTIVITY_THRESHOLD_SECONDS - 86_400)
+            // 91 days ago
             } else {
                 None
             }

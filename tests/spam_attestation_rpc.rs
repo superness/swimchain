@@ -15,9 +15,12 @@
 //! 4. **Integration Tests**: End-to-end spam reporting flow
 
 use swimchain::spam_attestation::{
-    storage::SpamAttestationStore,
-    types::{SpamAttestation, SpamReason, StoredSpamAttestation, SPAM_ATTESTATION_THRESHOLD, COUNTER_ATTESTATION_THRESHOLD},
     counter::CounterAttestationState,
+    storage::SpamAttestationStore,
+    types::{
+        SpamAttestation, SpamReason, StoredSpamAttestation, COUNTER_ATTESTATION_THRESHOLD,
+        SPAM_ATTESTATION_THRESHOLD,
+    },
 };
 
 // =============================================================================
@@ -66,7 +69,10 @@ fn test_content_id_rejects_sha256_prefix() {
 
     // hex::decode will fail on the colon
     let result = hex::decode(prefixed_id);
-    assert!(result.is_err(), "Should reject sha256: prefix - not valid hex");
+    assert!(
+        result.is_err(),
+        "Should reject sha256: prefix - not valid hex"
+    );
 
     // RPC validation should reject
     assert!(validate_content_id(prefixed_id).is_err());
@@ -117,7 +123,10 @@ fn test_client_should_strip_sha256_prefix() {
     let normalized = normalize_content_id(prefixed);
 
     // After normalization, should be valid for RPC
-    assert!(validate_content_id(normalized).is_ok(), "Normalized ID should be valid");
+    assert!(
+        validate_content_id(normalized).is_ok(),
+        "Normalized ID should be valid"
+    );
 }
 
 #[test]
@@ -126,7 +135,10 @@ fn test_client_handles_already_normalized() {
     let already_normalized = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     let result = normalize_content_id(already_normalized);
 
-    assert_eq!(result, already_normalized, "Already normalized should pass through");
+    assert_eq!(
+        result, already_normalized,
+        "Already normalized should pass through"
+    );
     assert!(validate_content_id(result).is_ok());
 }
 
@@ -173,7 +185,8 @@ fn test_store_and_retrieve_spam_attestation() {
     assert!(result.is_ok(), "Should store attestation");
 
     // Retrieve attestations for content
-    let attestations = store.get_attestations_for_content(&content_hash)
+    let attestations = store
+        .get_attestations_for_content(&content_hash)
         .expect("Should retrieve attestations");
 
     assert_eq!(attestations.len(), 1, "Should have 1 attestation");
@@ -194,7 +207,8 @@ fn test_duplicate_attestation_detected() {
     store.put_attestation(&attestation).unwrap();
 
     // Check if attestation exists (RPC should check this before accepting)
-    let exists = store.has_attestation(&content_hash, &attester)
+    let exists = store
+        .has_attestation(&content_hash, &attester)
         .expect("Should check existence");
 
     assert!(exists, "Should have attestation from this attester");
@@ -231,7 +245,10 @@ fn test_spam_threshold_is_three() {
 #[test]
 fn test_counter_threshold_is_five() {
     // SPEC_12 §3.4: Flag is cleared after 5 Lifeguard+ counter-attestations
-    assert_eq!(COUNTER_ATTESTATION_THRESHOLD, 5, "Counter threshold should be 5");
+    assert_eq!(
+        COUNTER_ATTESTATION_THRESHOLD, 5,
+        "Counter threshold should be 5"
+    );
 }
 
 #[test]
@@ -264,7 +281,10 @@ fn test_counter_threshold_reached() {
         let reached_threshold = state.add_counter_attester([i + 1; 32], 1000000 + i as u64);
 
         if i < 4 {
-            assert!(!reached_threshold, "Should not be cleared before 5 counters");
+            assert!(
+                !reached_threshold,
+                "Should not be cleared before 5 counters"
+            );
             assert!(!state.is_cleared);
         } else {
             assert!(reached_threshold, "Should reach threshold on 5th counter");
@@ -289,11 +309,19 @@ fn test_counter_state_rejects_duplicate() {
 
     // Second add with same attester should be silently rejected (no count increase)
     let _ = state.add_counter_attester(attester, 1000001);
-    assert_eq!(state.count(), 1, "Should still have only 1 counter (duplicate rejected)");
+    assert_eq!(
+        state.count(),
+        1,
+        "Should still have only 1 counter (duplicate rejected)"
+    );
 
     // Third add with same attester
     let _ = state.add_counter_attester(attester, 1000002);
-    assert_eq!(state.count(), 1, "Count unchanged - duplicates don't accumulate");
+    assert_eq!(
+        state.count(),
+        1,
+        "Count unchanged - duplicates don't accumulate"
+    );
 }
 
 // =============================================================================
@@ -308,7 +336,10 @@ fn test_all_spam_reasons_valid() {
     // Verify each reason has a name and description
     for reason in reasons {
         assert!(!reason.name().is_empty(), "Reason should have name");
-        assert!(!reason.description().is_empty(), "Reason should have description");
+        assert!(
+            !reason.description().is_empty(),
+            "Reason should have description"
+        );
     }
 }
 
@@ -325,9 +356,18 @@ fn test_spam_reason_serialization() {
 #[test]
 fn test_invalid_spam_reason_rejected() {
     // Values outside valid range should return None
-    assert!(SpamReason::from_u8(0x00).is_none(), "Should reject 0x00 (reserved)");
-    assert!(SpamReason::from_u8(0x06).is_none(), "Should reject values > 0x05");
-    assert!(SpamReason::from_u8(100).is_none(), "Should reject arbitrary values");
+    assert!(
+        SpamReason::from_u8(0x00).is_none(),
+        "Should reject 0x00 (reserved)"
+    );
+    assert!(
+        SpamReason::from_u8(0x06).is_none(),
+        "Should reject values > 0x05"
+    );
+    assert!(
+        SpamReason::from_u8(100).is_none(),
+        "Should reject arbitrary values"
+    );
     assert!(SpamReason::from_u8(255).is_none(), "Should reject 0xFF");
 }
 
@@ -375,7 +415,10 @@ fn test_spam_attestation_signing_message_deterministic() {
 
     assert_eq!(msg1, msg2, "Signing message should be deterministic");
     assert!(!msg1.is_empty(), "Signing message should not be empty");
-    assert!(msg1.starts_with(b"SPAM_ATTESTATION"), "Should have correct prefix");
+    assert!(
+        msg1.starts_with(b"SPAM_ATTESTATION"),
+        "Should have correct prefix"
+    );
 }
 
 // =============================================================================
@@ -390,7 +433,10 @@ fn test_rpc_validates_content_id_format() {
 
     // Invalid: sha256: prefix (THE BUG WE FIXED!)
     let with_prefix = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    assert!(validate_content_id(with_prefix).is_err(), "Should reject sha256: prefix");
+    assert!(
+        validate_content_id(with_prefix).is_err(),
+        "Should reject sha256: prefix"
+    );
 
     // Invalid: too short
     let short = "0123456789abcdef";
@@ -426,14 +472,20 @@ fn test_rate_limit_tracking() {
     let current_time = 1735689600u64;
 
     // Initially zero
-    assert_eq!(store.get_attestation_count_in_window(&attester, current_time), 0);
+    assert_eq!(
+        store.get_attestation_count_in_window(&attester, current_time),
+        0
+    );
 
     // Increment a few times
     for _ in 0..5 {
         store.increment_attestation_count(&attester, current_time);
     }
 
-    assert_eq!(store.get_attestation_count_in_window(&attester, current_time), 5);
+    assert_eq!(
+        store.get_attestation_count_in_window(&attester, current_time),
+        5
+    );
 }
 
 #[test]
@@ -446,9 +498,16 @@ fn test_rate_limit_window_reset() {
     for _ in 0..5 {
         store.increment_attestation_count(&attester, current_time);
     }
-    assert_eq!(store.get_attestation_count_in_window(&attester, current_time), 5);
+    assert_eq!(
+        store.get_attestation_count_in_window(&attester, current_time),
+        5
+    );
 
     // Move to next window (1 hour later)
     let next_window = current_time + 3601;
-    assert_eq!(store.get_attestation_count_in_window(&attester, next_window), 0, "Count should reset in new window");
+    assert_eq!(
+        store.get_attestation_count_in_window(&attester, next_window),
+        0,
+        "Count should reset in new window"
+    );
 }

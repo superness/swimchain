@@ -46,8 +46,8 @@ impl SpamAttestationStore {
         key.extend_from_slice(&attestation.attestation.content_hash);
         key.extend_from_slice(&attestation.attestation.attester);
 
-        let value =
-            bincode::serialize(attestation).map_err(|e| SpamAttestationError::StorageError(e.to_string()))?;
+        let value = bincode::serialize(attestation)
+            .map_err(|e| SpamAttestationError::StorageError(e.to_string()))?;
 
         self.db
             .insert(key, value)
@@ -110,9 +110,8 @@ impl SpamAttestationStore {
             .get(&key)
             .map_err(|e| SpamAttestationError::StorageError(e.to_string()))?
         {
-            Some(value) => {
-                bincode::deserialize(&value).map_err(|e| SpamAttestationError::StorageError(e.to_string()))
-            }
+            Some(value) => bincode::deserialize(&value)
+                .map_err(|e| SpamAttestationError::StorageError(e.to_string())),
             None => Ok(CounterAttestationState::empty(*content_hash)),
         }
     }
@@ -126,8 +125,8 @@ impl SpamAttestationStore {
         key.extend_from_slice(COUNTER_PREFIX);
         key.extend_from_slice(&state.content_hash);
 
-        let value =
-            bincode::serialize(state).map_err(|e| SpamAttestationError::StorageError(e.to_string()))?;
+        let value = bincode::serialize(state)
+            .map_err(|e| SpamAttestationError::StorageError(e.to_string()))?;
 
         self.db
             .insert(key, value)
@@ -137,11 +136,7 @@ impl SpamAttestationStore {
     }
 
     /// Get attestation count for an attester in the current rate limit window.
-    pub fn get_attestation_count_in_window(
-        &self,
-        attester: &[u8; 32],
-        current_time: u64,
-    ) -> u32 {
+    pub fn get_attestation_count_in_window(&self, attester: &[u8; 32], current_time: u64) -> u32 {
         let rate_limits = self.rate_limits.read().unwrap_or_else(|p| p.into_inner());
 
         if let Some((count, window_start)) = rate_limits.get(attester) {
@@ -196,9 +191,8 @@ impl SpamAttestationStore {
             // Extract content hash from key
             if key.len() >= ATTESTATION_PREFIX.len() + 32 {
                 let mut content_hash = [0u8; 32];
-                content_hash.copy_from_slice(
-                    &key[ATTESTATION_PREFIX.len()..ATTESTATION_PREFIX.len() + 32],
-                );
+                content_hash
+                    .copy_from_slice(&key[ATTESTATION_PREFIX.len()..ATTESTATION_PREFIX.len() + 32]);
 
                 if !seen_content.contains(&content_hash) {
                     seen_content.insert(content_hash);
@@ -206,8 +200,11 @@ impl SpamAttestationStore {
                     // Get all attestations and check threshold
                     let attestations = self.get_attestations_for_content(&content_hash)?;
                     let counter_state = self.get_counter_state(&content_hash)?;
-                    let aggregation =
-                        aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
+                    let aggregation = aggregate_attestations(
+                        content_hash,
+                        &attestations,
+                        counter_state.is_cleared,
+                    );
 
                     if aggregation.should_accelerate_decay {
                         flagged.push(content_hash);
@@ -231,8 +228,7 @@ impl SpamAttestationStore {
         let mut count = 0u32;
 
         for result in self.db.scan_prefix(&prefix) {
-            let (key, _) =
-                result.map_err(|e| SpamAttestationError::StorageError(e.to_string()))?;
+            let (key, _) = result.map_err(|e| SpamAttestationError::StorageError(e.to_string()))?;
             self.db
                 .remove(key)
                 .map_err(|e| SpamAttestationError::StorageError(e.to_string()))?;
@@ -305,9 +301,7 @@ mod tests {
         store.put_attestation(&attestation).unwrap();
 
         assert!(store.has_attestation(&content_hash, &attester).unwrap());
-        assert!(!store
-            .has_attestation(&content_hash, &[99u8; 32])
-            .unwrap());
+        assert!(!store.has_attestation(&content_hash, &[99u8; 32]).unwrap());
     }
 
     #[test]
@@ -338,17 +332,29 @@ mod tests {
         let attester = [1u8; 32];
         let current_time = 1735689600;
 
-        assert_eq!(store.get_attestation_count_in_window(&attester, current_time), 0);
+        assert_eq!(
+            store.get_attestation_count_in_window(&attester, current_time),
+            0
+        );
 
         store.increment_attestation_count(&attester, current_time);
-        assert_eq!(store.get_attestation_count_in_window(&attester, current_time), 1);
+        assert_eq!(
+            store.get_attestation_count_in_window(&attester, current_time),
+            1
+        );
 
         store.increment_attestation_count(&attester, current_time);
-        assert_eq!(store.get_attestation_count_in_window(&attester, current_time), 2);
+        assert_eq!(
+            store.get_attestation_count_in_window(&attester, current_time),
+            2
+        );
 
         // New window resets count
         let new_window = current_time + 3601; // 1 hour + 1 second
-        assert_eq!(store.get_attestation_count_in_window(&attester, new_window), 0);
+        assert_eq!(
+            store.get_attestation_count_in_window(&attester, new_window),
+            0
+        );
     }
 
     #[test]
@@ -368,15 +374,29 @@ mod tests {
         store.put_counter_state(&state).unwrap();
 
         // Verify they exist
-        assert_eq!(store.get_attestations_for_content(&content_hash).unwrap().len(), 5);
+        assert_eq!(
+            store
+                .get_attestations_for_content(&content_hash)
+                .unwrap()
+                .len(),
+            5
+        );
         assert_eq!(store.get_counter_state(&content_hash).unwrap().count(), 1);
 
         // Delete
-        let count = store.delete_attestations_for_content(&content_hash).unwrap();
+        let count = store
+            .delete_attestations_for_content(&content_hash)
+            .unwrap();
         assert_eq!(count, 5);
 
         // Verify deleted
-        assert_eq!(store.get_attestations_for_content(&content_hash).unwrap().len(), 0);
+        assert_eq!(
+            store
+                .get_attestations_for_content(&content_hash)
+                .unwrap()
+                .len(),
+            0
+        );
         assert_eq!(store.get_counter_state(&content_hash).unwrap().count(), 0);
     }
 }

@@ -62,7 +62,6 @@ where
     Ok(())
 }
 
-
 /// V-SPONSOR-05: Validate genesis handling
 ///
 /// Ensures genesis identities have valid proofs and non-genesis identities
@@ -100,7 +99,6 @@ pub fn validate_genesis_handling(
         (Some(_), None) => Ok(()), // Regular sponsorship, no genesis checks needed
     }
 }
-
 
 /// Calculate required attestation count for MultiSigThreshold
 ///
@@ -195,7 +193,11 @@ where
                 if !is_attester_genesis(&attestation.attester) {
                     return Err(SponsorshipError::InvalidGenesisAttestation);
                 }
-                verify_genesis_attestation(attestation, &creation.new_identity_pubkey, proof.slot_number)?;
+                verify_genesis_attestation(
+                    attestation,
+                    &creation.new_identity_pubkey,
+                    proof.slot_number,
+                )?;
             }
         }
         GenesisProofType::CommunityVote => {
@@ -530,11 +532,7 @@ mod tests {
             genesis_proof: None,
         };
 
-        let result = validate_sponsorship(
-            &creation,
-            1735689600,
-            |_| false,
-        );
+        let result = validate_sponsorship(&creation, 1735689600, |_| false);
         assert!(matches!(result, Err(SponsorshipError::MissingSignature)));
     }
 
@@ -647,11 +645,11 @@ mod tests {
 
         let result = verify_genesis_creation(
             &creation,
-            1735689600,        // current_time
-            |_| false,         // slot not claimed
+            1735689600,             // current_time
+            |_| false,              // slot not claimed
             |pk| *pk == new_pubkey, // identity is in genesis list
-            0,                 // active_genesis_count
-            |_| true,          // attester is genesis (not used for HardcodedList)
+            0,                      // active_genesis_count
+            |_| true,               // attester is genesis (not used for HardcodedList)
         );
 
         assert!(result.is_ok());
@@ -735,14 +733,8 @@ mod tests {
             }),
         };
 
-        let result = verify_genesis_creation(
-            &creation,
-            1735689600,
-            |_| false,
-            |_| true,
-            0,
-            |_| true,
-        );
+        let result =
+            verify_genesis_creation(&creation, 1735689600, |_| false, |_| true, 0, |_| true);
 
         assert!(matches!(result, Err(SponsorshipError::InvalidGenesisSlot)));
     }
@@ -829,7 +821,7 @@ mod tests {
             timestamp,
             |_| false,
             |_| true,
-            3, // 3 active genesis, need 2 attestations (we have 2)
+            3,         // 3 active genesis, need 2 attestations (we have 2)
             |_| false, // Attester is NOT genesis
         );
 
@@ -857,14 +849,8 @@ mod tests {
             }),
         };
 
-        let result = verify_genesis_creation(
-            &creation,
-            1735689600,
-            |_| false,
-            |_| true,
-            0,
-            |_| true,
-        );
+        let result =
+            verify_genesis_creation(&creation, 1735689600, |_| false, |_| true, 0, |_| true);
 
         assert!(matches!(
             result,
@@ -891,11 +877,7 @@ mod tests {
         };
 
         // Genesis creation should bypass sponsor checks
-        let result = validate_sponsorship(
-            &creation,
-            1735689600,
-            |_| false,
-        );
+        let result = validate_sponsorship(&creation, 1735689600, |_| false);
 
         assert!(result.is_ok());
     }

@@ -34,14 +34,13 @@ pub use aggregation::{
 };
 pub use counter::{CounterAttestation, CounterAttestationState};
 pub use error::SpamAttestationError;
+pub use manager::{
+    calculate_heat_bonus, can_counter_attest, counter_threshold, CounterAttestationManager,
+    CounterAttestationResult, COUNTER_ATTESTATION_HEAT_BONUS, MAX_COUNTER_ATTESTATION_HEAT_BONUS,
+};
 pub use storage::SpamAttestationStore;
 pub use types::{
     SpamAttestation, SpamReason, StoredSpamAttestation, COUNTER_ATTESTATION_THRESHOLD,
     FLAGGED_DECAY_HALF_LIFE_SECS, SPAM_ATTESTATION_POW_DIFFICULTY, SPAM_ATTESTATION_THRESHOLD,
 };
 pub use validation::{check_attester_eligibility, validate_attestation, AttesterEligibility};
-pub use manager::{
-    calculate_heat_bonus, can_counter_attest, counter_threshold,
-    CounterAttestationManager, CounterAttestationResult, COUNTER_ATTESTATION_HEAT_BONUS,
-    MAX_COUNTER_ATTESTATION_HEAT_BONUS,
-};

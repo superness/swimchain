@@ -10,7 +10,7 @@
 //!
 //! All nodes independently compute the same eligibility, requiring no coordination.
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Target time between blocks (seconds)
 pub const TARGET_BLOCK_INTERVAL: u64 = 600; // 10 minutes
@@ -135,11 +135,7 @@ pub fn threshold_for_percentage(pct: f64) -> [u8; 32] {
 /// * `elapsed_secs` - Time since the previous block
 /// * `starting_pct` - Initial eligible percentage (e.g., 0.001 for 0.001%)
 /// * `max_time` - Time at which 100% becomes eligible
-pub fn threshold_at_elapsed(
-    elapsed_secs: u64,
-    starting_pct: f64,
-    max_time: u64,
-) -> [u8; 32] {
+pub fn threshold_at_elapsed(elapsed_secs: u64, starting_pct: f64, max_time: u64) -> [u8; 32] {
     if elapsed_secs >= max_time {
         return [0xFF; 32]; // 100% - anyone eligible
     }
@@ -169,10 +165,7 @@ pub fn threshold_at_elapsed(
 /// # Arguments
 /// * `block_timestamps` - Timestamps of recent blocks (oldest to newest)
 /// * `target_interval` - Desired average time between blocks
-pub fn calculate_starting_percentage(
-    block_timestamps: &[u64],
-    target_interval: u64,
-) -> f64 {
+pub fn calculate_starting_percentage(block_timestamps: &[u64], target_interval: u64) -> f64 {
     if block_timestamps.len() < 2 {
         return BASE_STARTING_PCT;
     }
@@ -501,12 +494,8 @@ mod tests {
         let space_id = [0x01u8; 16];
         let recent_timestamps = vec![prev_timestamp - 600, prev_timestamp];
 
-        let eligibility = BlockEligibility::new(
-            &prev_hash,
-            prev_timestamp,
-            &space_id,
-            &recent_timestamps,
-        );
+        let eligibility =
+            BlockEligibility::new(&prev_hash, prev_timestamp, &space_id, &recent_timestamps);
 
         // The seed should be deterministic
         let seed2 = compute_block_seed(&prev_hash, &space_id);

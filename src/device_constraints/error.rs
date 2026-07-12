@@ -105,7 +105,10 @@ mod tests {
         let err = DeviceConstraintError::ModeChangeBlocked {
             reason: "already at max".to_string(),
         };
-        assert_eq!(format!("{}", err), "mode change not allowed: already at max");
+        assert_eq!(
+            format!("{}", err),
+            "mode change not allowed: already at max"
+        );
 
         let err = DeviceConstraintError::Serialization("decode failed".to_string());
         assert_eq!(format!("{}", err), "serialization error: decode failed");

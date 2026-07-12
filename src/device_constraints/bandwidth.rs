@@ -86,7 +86,12 @@ impl DailyBandwidthLimiter {
             // Only the thread that wins the compare_exchange resets the counter
             if self
                 .day_start_secs
-                .compare_exchange(stored_day, current_day, Ordering::Release, Ordering::Relaxed)
+                .compare_exchange(
+                    stored_day,
+                    current_day,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 self.bytes_used_today.store(0, Ordering::Release);
@@ -343,17 +348,11 @@ mod tests {
     fn test_day_start_calculation() {
         // Test at midnight UTC
         let midnight = SECS_PER_DAY * 1000; // Day 1000 at midnight
-        assert_eq!(
-            DailyBandwidthLimiter::day_start_for(midnight),
-            midnight
-        );
+        assert_eq!(DailyBandwidthLimiter::day_start_for(midnight), midnight);
 
         // Test at noon UTC
         let noon = SECS_PER_DAY * 1000 + 43200; // 12:00 UTC on day 1000
-        assert_eq!(
-            DailyBandwidthLimiter::day_start_for(noon),
-            midnight
-        );
+        assert_eq!(DailyBandwidthLimiter::day_start_for(noon), midnight);
 
         // Test just before midnight
         let before_midnight = SECS_PER_DAY * 1001 - 1; // 23:59:59 on day 1000

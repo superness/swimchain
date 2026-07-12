@@ -122,7 +122,9 @@ impl AuthCookie {
 
         // Validate cookie format (should be hex)
         if value.len() != COOKIE_SIZE * 2 || hex::decode(&value).is_err() {
-            return Err(RpcError::AuthenticationFailed("Invalid cookie format".into()));
+            return Err(RpcError::AuthenticationFailed(
+                "Invalid cookie format".into(),
+            ));
         }
 
         Ok(Self {
@@ -268,14 +270,20 @@ impl Authenticator {
         let pubkey_bytes = hex::decode(identity_hex)
             .map_err(|_| RpcError::AuthenticationFailed("Invalid identity hex".into()))?;
         if pubkey_bytes.len() != 32 {
-            return Err(RpcError::AuthenticationFailed("Identity must be 32 bytes".into()));
+            return Err(RpcError::AuthenticationFailed(
+                "Identity must be 32 bytes".into(),
+            ));
         }
         let mut pubkey_arr = [0u8; 32];
         pubkey_arr.copy_from_slice(&pubkey_bytes);
         let public_key = PublicKey(pubkey_arr);
 
         let bech32_addr = crate::identity::encode_address_from_pubkey(&public_key);
-        log::info!("Authenticating identity: {} ({})", identity_hex, bech32_addr);
+        log::info!(
+            "Authenticating identity: {} ({})",
+            identity_hex,
+            bech32_addr
+        );
 
         // Parse timestamp
         let timestamp: u64 = timestamp_str
@@ -291,16 +299,18 @@ impl Authenticator {
         if timestamp < now {
             let age = now - timestamp;
             if age > SIGNATURE_PAST_TOLERANCE_SECS {
-                return Err(RpcError::AuthenticationFailed(
-                    format!("Timestamp too old: {} seconds (max {})", age, SIGNATURE_PAST_TOLERANCE_SECS)
-                ));
+                return Err(RpcError::AuthenticationFailed(format!(
+                    "Timestamp too old: {} seconds (max {})",
+                    age, SIGNATURE_PAST_TOLERANCE_SECS
+                )));
             }
         } else {
             let ahead = timestamp - now;
             if ahead > SIGNATURE_FUTURE_TOLERANCE_SECS {
-                return Err(RpcError::AuthenticationFailed(
-                    format!("Timestamp too far in future: {} seconds (max {})", ahead, SIGNATURE_FUTURE_TOLERANCE_SECS)
-                ));
+                return Err(RpcError::AuthenticationFailed(format!(
+                    "Timestamp too far in future: {} seconds (max {})",
+                    ahead, SIGNATURE_FUTURE_TOLERANCE_SECS
+                )));
             }
         }
 
@@ -308,7 +318,9 @@ impl Authenticator {
         let sig_bytes = hex::decode(signature_hex)
             .map_err(|_| RpcError::AuthenticationFailed("Invalid signature hex".into()))?;
         if sig_bytes.len() != 64 {
-            return Err(RpcError::AuthenticationFailed("Signature must be 64 bytes".into()));
+            return Err(RpcError::AuthenticationFailed(
+                "Signature must be 64 bytes".into(),
+            ));
         }
         let mut sig_arr = [0u8; 64];
         sig_arr.copy_from_slice(&sig_bytes);
@@ -318,14 +330,24 @@ impl Authenticator {
         // "swimchain-rpc:" + method + ":" + sha256(params_json_hex) + ":" + timestamp
         let params_hash = Sha256::digest(params_json);
         let params_hash_hex = hex::encode(params_hash);
-        let message = format!("swimchain-rpc:{}:{}:{}", method, params_hash_hex, timestamp_str);
+        let message = format!(
+            "swimchain-rpc:{}:{}:{}",
+            method, params_hash_hex, timestamp_str
+        );
 
         // Security: Log only non-sensitive verification info (avoid leaking signatures)
-        log::debug!("Signature verification for method: {} at timestamp: {}", method, timestamp_str);
+        log::debug!(
+            "Signature verification for method: {} at timestamp: {}",
+            method,
+            timestamp_str
+        );
 
         // Verify the signature
         if !ed25519_verify(&public_key, message.as_bytes(), &signature) {
-            log::warn!("Signature verification FAILED for identity: {}", identity_hex);
+            log::warn!(
+                "Signature verification FAILED for identity: {}",
+                identity_hex
+            );
             return Err(RpcError::AuthenticationFailed("Invalid signature".into()));
         }
 
@@ -399,7 +421,8 @@ mod tests {
         assert!(auth.validate(Some(&header)).is_ok());
 
         // Invalid cookie should fail
-        let header = format_cookie_auth("0000000000000000000000000000000000000000000000000000000000000000");
+        let header =
+            format_cookie_auth("0000000000000000000000000000000000000000000000000000000000000000");
         assert!(auth.validate(Some(&header)).is_err());
 
         // No header should fail

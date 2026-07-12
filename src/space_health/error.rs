@@ -36,7 +36,11 @@ impl fmt::Display for SpaceHealthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SpaceNotFound(space_id) => {
-                write!(f, "Space not found: {:02x}{:02x}...", space_id[0], space_id[1])
+                write!(
+                    f,
+                    "Space not found: {:02x}{:02x}...",
+                    space_id[0], space_id[1]
+                )
             }
             Self::Storage(e) => write!(f, "Storage error: {}", e),
             Self::Serialization(msg) => write!(f, "Serialization error: {}", msg),

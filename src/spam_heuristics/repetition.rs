@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use super::error::SpamHeuristicsError;
 use super::types::{
-    ContentFingerprint, HeuristicResult, HeuristicViolation, ViolationType,
-    MAX_EXACT_DUPLICATES, REPETITION_WINDOW_SECS, SIMILARITY_THRESHOLD,
+    ContentFingerprint, HeuristicResult, HeuristicViolation, ViolationType, MAX_EXACT_DUPLICATES,
+    REPETITION_WINDOW_SECS, SIMILARITY_THRESHOLD,
 };
 
 /// Configuration for repetition detection.
@@ -239,7 +239,10 @@ mod tests {
         // Second post (duplicate) - flagged
         let result2 = detector.check(content, &space, &author, 1001);
         assert!(result2.has_violations);
-        assert!(result2.violations.iter().any(|v| v.violation_type == ViolationType::Repetition));
+        assert!(result2
+            .violations
+            .iter()
+            .any(|v| v.violation_type == ViolationType::Repetition));
     }
 
     #[test]
@@ -273,7 +276,10 @@ mod tests {
         // Similar post
         let result2 = detector.check(content2, &space, &author, 1001);
         assert!(result2.has_violations);
-        assert!(result2.violations.iter().any(|v| v.violation_type == ViolationType::NearDuplicate));
+        assert!(result2
+            .violations
+            .iter()
+            .any(|v| v.violation_type == ViolationType::NearDuplicate));
     }
 
     #[test]
@@ -306,7 +312,10 @@ mod tests {
 
         // Check without adding
         let result = detector.is_duplicate(content, &space, &author, 1001);
-        assert!(matches!(result, Err(SpamHeuristicsError::DuplicateContent { .. })));
+        assert!(matches!(
+            result,
+            Err(SpamHeuristicsError::DuplicateContent { .. })
+        ));
     }
 
     #[test]

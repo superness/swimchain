@@ -25,11 +25,11 @@ impl StorageProfile {
     #[must_use]
     pub const fn max_cache_bytes(&self) -> u64 {
         match self {
-            Self::Budget1GB => 1_073_741_824,      // 1 * 1024^3
-            Self::Standard5GB => 5_368_709_120,    // 5 * 1024^3
-            Self::Flagship10GB => 10_737_418_240,  // 10 * 1024^3
-            Self::Desktop50GB => 53_687_091_200,   // 50 * 1024^3
-            Self::Custom => 10_737_418_240,        // Default to 10GB
+            Self::Budget1GB => 1_073_741_824,     // 1 * 1024^3
+            Self::Standard5GB => 5_368_709_120,   // 5 * 1024^3
+            Self::Flagship10GB => 10_737_418_240, // 10 * 1024^3
+            Self::Desktop50GB => 53_687_091_200,  // 50 * 1024^3
+            Self::Custom => 10_737_418_240,       // Default to 10GB
         }
     }
 

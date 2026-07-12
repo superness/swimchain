@@ -190,7 +190,8 @@ fn encode_address_internal(public_key: &[u8]) -> Result<String, WasmError> {
         )));
     }
 
-    let hrp = Hrp::parse(ADDRESS_HRP).map_err(|e| invalid_address(format!("Invalid HRP: {}", e)))?;
+    let hrp =
+        Hrp::parse(ADDRESS_HRP).map_err(|e| invalid_address(format!("Invalid HRP: {}", e)))?;
     let mut data = Vec::with_capacity(33);
     data.push(ADDRESS_VERSION);
     data.extend_from_slice(public_key);

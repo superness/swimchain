@@ -85,8 +85,12 @@ fn check_no_skipped(report: &TestReport) -> VerificationCheck {
     if report.summary.skipped == 0 {
         VerificationCheck::pass("no_skipped", "No tests were skipped")
     } else {
-        VerificationCheck::fail("no_skipped", "No tests were skipped", VerificationSeverity::Info)
-            .with_details(format!("{} tests skipped", report.summary.skipped))
+        VerificationCheck::fail(
+            "no_skipped",
+            "No tests were skipped",
+            VerificationSeverity::Info,
+        )
+        .with_details(format!("{} tests skipped", report.summary.skipped))
     }
 }
 
@@ -116,7 +120,10 @@ fn check_pass_rate(report: &TestReport) -> VerificationCheck {
             format!("Pass rate is at least {THRESHOLD}%"),
             VerificationSeverity::Error,
         )
-        .with_details(format!("Actual pass rate: {:.1}%", report.summary.pass_rate))
+        .with_details(format!(
+            "Actual pass rate: {:.1}%",
+            report.summary.pass_rate
+        ))
     }
 }
 
@@ -212,7 +219,10 @@ impl VerifierBuilder {
                         format!("Pass rate is at least {threshold}%"),
                         VerificationSeverity::Error,
                     )
-                    .with_details(format!("Actual pass rate: {:.1}%", report.summary.pass_rate))
+                    .with_details(format!(
+                        "Actual pass rate: {:.1}%",
+                        report.summary.pass_rate
+                    ))
                 }
             });
         }
@@ -265,14 +275,20 @@ fn run_cargo_build() -> VerificationCheck {
                 VerificationCheck::pass("build", "Project builds successfully")
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                VerificationCheck::fail("build", "Project builds successfully", VerificationSeverity::Error)
-                    .with_details(truncate_output(&stderr, 500))
+                VerificationCheck::fail(
+                    "build",
+                    "Project builds successfully",
+                    VerificationSeverity::Error,
+                )
+                .with_details(truncate_output(&stderr, 500))
             }
         }
-        Err(e) => {
-            VerificationCheck::fail("build", "Project builds successfully", VerificationSeverity::Error)
-                .with_details(format!("Failed to run cargo build: {e}"))
-        }
+        Err(e) => VerificationCheck::fail(
+            "build",
+            "Project builds successfully",
+            VerificationSeverity::Error,
+        )
+        .with_details(format!("Failed to run cargo build: {e}")),
     }
 }
 
@@ -295,14 +311,12 @@ fn run_cargo_clippy() -> VerificationCheck {
                 .with_details(truncate_output(&stderr, 500))
             }
         }
-        Err(e) => {
-            VerificationCheck::fail(
-                "lint",
-                "No clippy warnings or errors",
-                VerificationSeverity::Warning,
-            )
-            .with_details(format!("Failed to run cargo clippy: {e}"))
-        }
+        Err(e) => VerificationCheck::fail(
+            "lint",
+            "No clippy warnings or errors",
+            VerificationSeverity::Warning,
+        )
+        .with_details(format!("Failed to run cargo clippy: {e}")),
     }
 }
 
@@ -325,14 +339,12 @@ fn run_cargo_fmt_check() -> VerificationCheck {
                 .with_details(truncate_output(&stdout, 500))
             }
         }
-        Err(e) => {
-            VerificationCheck::fail(
-                "format",
-                "Code is properly formatted",
-                VerificationSeverity::Warning,
-            )
-            .with_details(format!("Failed to run cargo fmt: {e}"))
-        }
+        Err(e) => VerificationCheck::fail(
+            "format",
+            "Code is properly formatted",
+            VerificationSeverity::Warning,
+        )
+        .with_details(format!("Failed to run cargo fmt: {e}")),
     }
 }
 
@@ -489,7 +501,12 @@ mod tests {
     fn sample_failing_report() -> TestReport {
         let mut report = TestReport::new(ReportMetadata::new("Failing Suite"));
         report.add_result(TestResult::passed("t1", "m", Duration::from_millis(10)));
-        report.add_result(TestResult::failed("t2", "m", Duration::from_millis(10), "err"));
+        report.add_result(TestResult::failed(
+            "t2",
+            "m",
+            Duration::from_millis(10),
+            "err",
+        ));
         report
     }
 

@@ -159,7 +159,11 @@ mod tests {
         let id = IdentityId([0x00; 32]);
         let encoded = encode_address(&id);
         // HRP is "cs" (ChainSocial), so addresses start with "cs1"
-        assert!(encoded.starts_with("cs1"), "Expected cs1 prefix, got: {}", encoded);
+        assert!(
+            encoded.starts_with("cs1"),
+            "Expected cs1 prefix, got: {}",
+            encoded
+        );
     }
 
     #[test]

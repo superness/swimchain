@@ -158,7 +158,9 @@ fn parse_space_id(space: &str) -> Result<[u8; 32]> {
 
     if space_trimmed.len() != 64 {
         eprintln!("Error: Space ID must be 64 hex characters (32 bytes)");
-        return Err(CliError::InvalidSpaceId("must be 64 hex characters".to_string()));
+        return Err(CliError::InvalidSpaceId(
+            "must be 64 hex characters".to_string(),
+        ));
     }
 
     let mut bytes = [0u8; 32];
@@ -178,24 +180,32 @@ fn parse_storage_size(size: &str) -> Result<u64> {
 
     // Parse with suffix
     if size.ends_with("GB") {
-        let num: f64 = size.trim_end_matches("GB").parse()
+        let num: f64 = size
+            .trim_end_matches("GB")
+            .parse()
             .map_err(|_| CliError::InvalidConfig("Invalid size format".to_string()))?;
         return Ok((num * 1_000_000_000.0) as u64);
     }
 
     if size.ends_with("MB") {
-        let num: f64 = size.trim_end_matches("MB").parse()
+        let num: f64 = size
+            .trim_end_matches("MB")
+            .parse()
             .map_err(|_| CliError::InvalidConfig("Invalid size format".to_string()))?;
         return Ok((num * 1_000_000.0) as u64);
     }
 
     if size.ends_with("KB") {
-        let num: f64 = size.trim_end_matches("KB").parse()
+        let num: f64 = size
+            .trim_end_matches("KB")
+            .parse()
             .map_err(|_| CliError::InvalidConfig("Invalid size format".to_string()))?;
         return Ok((num * 1_000.0) as u64);
     }
 
-    Err(CliError::InvalidConfig("Invalid size format. Use bytes or suffix (KB, MB, GB)".to_string()))
+    Err(CliError::InvalidConfig(
+        "Invalid size format. Use bytes or suffix (KB, MB, GB)".to_string(),
+    ))
 }
 
 /// Subscribe to a branch
@@ -203,15 +213,19 @@ fn subscribe(config: &CliConfig, space: &str, branch: &str) -> Result<()> {
     let space_id = parse_space_id(space)?;
     let mut client = get_rpc_client(config)?;
 
-    println!("Subscribing to space {} branch '{}'...",
-             &space[..16.min(space.len())],
-             if branch.is_empty() { "root" } else { branch }
+    println!(
+        "Subscribing to space {} branch '{}'...",
+        &space[..16.min(space.len())],
+        if branch.is_empty() { "root" } else { branch }
     );
 
-    match client.call("branch_subscribe", serde_json::json!({
-        "space_id": hex::encode(space_id),
-        "branch_path": branch,
-    })) {
+    match client.call(
+        "branch_subscribe",
+        serde_json::json!({
+            "space_id": hex::encode(space_id),
+            "branch_path": branch,
+        }),
+    ) {
         Ok(response) => {
             if response.is_error() {
                 eprintln!("Subscription failed: {:?}", response.error);
@@ -238,15 +252,19 @@ fn unsubscribe(config: &CliConfig, space: &str, branch: &str) -> Result<()> {
     let space_id = parse_space_id(space)?;
     let mut client = get_rpc_client(config)?;
 
-    println!("Unsubscribing from space {} branch '{}'...",
-             &space[..16.min(space.len())],
-             if branch.is_empty() { "root" } else { branch }
+    println!(
+        "Unsubscribing from space {} branch '{}'...",
+        &space[..16.min(space.len())],
+        if branch.is_empty() { "root" } else { branch }
     );
 
-    match client.call("branch_unsubscribe", serde_json::json!({
-        "space_id": hex::encode(space_id),
-        "branch_path": branch,
-    })) {
+    match client.call(
+        "branch_unsubscribe",
+        serde_json::json!({
+            "space_id": hex::encode(space_id),
+            "branch_path": branch,
+        }),
+    ) {
         Ok(response) => {
             if response.is_error() {
                 eprintln!("Unsubscription failed: {:?}", response.error);
@@ -267,36 +285,41 @@ fn unsubscribe(config: &CliConfig, space: &str, branch: &str) -> Result<()> {
 /// List branch subscriptions
 fn list(config: &CliConfig, json_output: bool) -> Result<()> {
     let (subscriptions, total_storage, rpc_available) = match get_rpc_client(config) {
-        Ok(mut client) => {
-            match client.call("branch_list_subscriptions", serde_json::json!({})) {
-                Ok(response) => {
-                    if let Some(result) = response.result {
-                        let subs: Vec<SubscriptionInfo> = result
-                            .get("subscriptions")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter().filter_map(|v| {
+        Ok(mut client) => match client.call("branch_list_subscriptions", serde_json::json!({})) {
+            Ok(response) => {
+                if let Some(result) = response.result {
+                    let subs: Vec<SubscriptionInfo> = result
+                        .get("subscriptions")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| {
                                     Some(SubscriptionInfo {
                                         space_id: v.get("space_id")?.as_str()?.to_string(),
                                         branch_path: v.get("branch_path")?.as_str()?.to_string(),
                                         storage_bytes: v.get("storage_bytes")?.as_u64()?,
-                                        last_synced_height: v.get("last_synced_height")?.as_u64().unwrap_or(0),
-                                        content_count: v.get("content_count")?.as_u64().unwrap_or(0) as u32,
+                                        last_synced_height: v
+                                            .get("last_synced_height")?
+                                            .as_u64()
+                                            .unwrap_or(0),
+                                        content_count: v.get("content_count")?.as_u64().unwrap_or(0)
+                                            as u32,
                                     })
-                                }).collect()
-                            })
-                            .unwrap_or_default();
-                        let total = result.get("total_storage_bytes")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        (subs, total, true)
-                    } else {
-                        (Vec::new(), 0, true)
-                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let total = result
+                        .get("total_storage_bytes")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    (subs, total, true)
+                } else {
+                    (Vec::new(), 0, true)
                 }
-                Err(_) => (Vec::new(), 0, false),
             }
-        }
+            Err(_) => (Vec::new(), 0, false),
+        },
         Err(_) => (Vec::new(), 0, false),
     };
 
@@ -340,9 +363,10 @@ fn list(config: &CliConfig, json_output: bool) -> Result<()> {
                 );
             }
             println!();
-            println!("{} subscription(s), total storage: {}",
-                     subscriptions.len(),
-                     format_bytes(total_storage)
+            println!(
+                "{} subscription(s), total storage: {}",
+                subscriptions.len(),
+                format_bytes(total_storage)
             );
         }
     }
@@ -354,24 +378,34 @@ fn list(config: &CliConfig, json_output: bool) -> Result<()> {
 fn status(config: &CliConfig, json_output: bool) -> Result<()> {
     let (sub_count, storage_used, storage_budget, peer_count, rpc_available) =
         match get_rpc_client(config) {
-            Ok(mut client) => {
-                match client.call("branch_sync_status", serde_json::json!({})) {
-                    Ok(response) => {
-                        if let Some(result) = response.result {
-                            (
-                                result.get("subscription_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                                result.get("storage_used_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                                result.get("storage_budget_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
-                                result.get("peers_supporting_branch_sync").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
-                                true,
-                            )
-                        } else {
-                            (0, 0, 0, 0, true)
-                        }
+            Ok(mut client) => match client.call("branch_sync_status", serde_json::json!({})) {
+                Ok(response) => {
+                    if let Some(result) = response.result {
+                        (
+                            result
+                                .get("subscription_count")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize,
+                            result
+                                .get("storage_used_bytes")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                            result
+                                .get("storage_budget_bytes")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0),
+                            result
+                                .get("peers_supporting_branch_sync")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize,
+                            true,
+                        )
+                    } else {
+                        (0, 0, 0, 0, true)
                     }
-                    Err(_) => (0, 0, 0, 0, false),
                 }
-            }
+                Err(_) => (0, 0, 0, 0, false),
+            },
             Err(_) => (0, 0, 0, 0, false),
         };
 
@@ -423,11 +457,17 @@ fn budget(config: &CliConfig, size: &str) -> Result<()> {
     let budget_bytes = parse_storage_size(size)?;
     let mut client = get_rpc_client(config)?;
 
-    println!("Setting storage budget to {}...", format_bytes(budget_bytes));
+    println!(
+        "Setting storage budget to {}...",
+        format_bytes(budget_bytes)
+    );
 
-    match client.call("branch_set_budget", serde_json::json!({
-        "budget_bytes": budget_bytes,
-    })) {
+    match client.call(
+        "branch_set_budget",
+        serde_json::json!({
+            "budget_bytes": budget_bytes,
+        }),
+    ) {
         Ok(response) => {
             if response.is_error() {
                 eprintln!("Failed to set budget: {:?}", response.error);

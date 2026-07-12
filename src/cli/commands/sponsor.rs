@@ -8,25 +8,23 @@
 //!
 //! All commands communicate with the running node via RPC.
 
+use crate::cli::commands::identity::prompt_password;
 use crate::cli::config::CliConfig;
 use crate::cli::error::{CliError, Result};
-use crate::cli::commands::identity::prompt_password;
-use crate::identity::{import_identity, encode_address_from_pubkey};
+use crate::crypto::signature::sign;
+use crate::identity::{encode_address_from_pubkey, import_identity};
+use crate::network::NetworkContext;
+use crate::rpc::types::{
+    ApproveSponsorshipClaimResult, CancelSponsorshipOfferResult, ClaimSponsorshipOfferResult,
+    CreateSponsorshipOfferResult, GetSponsorshipOfferResult, ListMySponsorshipOffersResult,
+    RegisterGenesisIdentityResult, RegisterSponsoredIdentityResult, RejectSponsorshipClaimResult,
+    SponsorshipInfo,
+};
+use crate::rpc::{RpcClient, RpcClientConfig};
 use crate::sponsorship::{
-    is_in_hardcoded_genesis_list,
-    PublicSponsorshipOffer, SponsorshipOfferType,
+    is_in_hardcoded_genesis_list, PublicSponsorshipOffer, SponsorshipOfferType,
 };
 use crate::types::identity::PublicKey;
-use crate::crypto::signature::sign;
-use crate::network::NetworkContext;
-use crate::rpc::{RpcClient, RpcClientConfig};
-use crate::rpc::types::{
-    SponsorshipInfo, RegisterGenesisIdentityResult, RegisterSponsoredIdentityResult,
-    CreateSponsorshipOfferResult, ClaimSponsorshipOfferResult,
-    ApproveSponsorshipClaimResult, RejectSponsorshipClaimResult,
-    CancelSponsorshipOfferResult, GetSponsorshipOfferResult,
-    ListMySponsorshipOffersResult,
-};
 use clap::Subcommand;
 use serde::Serialize;
 use serde_json::json;
@@ -229,18 +227,38 @@ pub fn execute(cmd: SponsorCmd, config: &CliConfig) -> Result<()> {
     match cmd {
         SponsorCmd::GenesisClaim { slot } => genesis_claim(config, slot),
         SponsorCmd::GenesisStatus => genesis_status(config),
-        SponsorCmd::OfferCreate { slots, offer_type, expires_days, min_pow, require_application } => {
-            offer_create(config, slots, &offer_type, expires_days, min_pow, require_application)
-        }
-        SponsorCmd::Invite { slots, expires_hours } => invite(config, slots, expires_hours),
+        SponsorCmd::OfferCreate {
+            slots,
+            offer_type,
+            expires_days,
+            min_pow,
+            require_application,
+        } => offer_create(
+            config,
+            slots,
+            &offer_type,
+            expires_days,
+            min_pow,
+            require_application,
+        ),
+        SponsorCmd::Invite {
+            slots,
+            expires_hours,
+        } => invite(config, slots, expires_hours),
         SponsorCmd::OfferList { json } => offer_list(config, json),
         SponsorCmd::OfferView { offer_id, json } => offer_view(config, &offer_id, json),
         SponsorCmd::OfferCancel { offer_id } => offer_cancel(config, &offer_id),
-        SponsorCmd::Claim { offer_id, application } => claim_offer(config, &offer_id, application),
+        SponsorCmd::Claim {
+            offer_id,
+            application,
+        } => claim_offer(config, &offer_id, application),
         SponsorCmd::Approve { offer_id, claimant } => approve(config, &offer_id, &claimant),
         SponsorCmd::Reject { offer_id, claimant } => reject(config, &offer_id, &claimant),
         SponsorCmd::Status { json } => status(config, json),
-        SponsorCmd::Direct { address, probationary } => direct_sponsor(config, &address, probationary),
+        SponsorCmd::Direct {
+            address,
+            probationary,
+        } => direct_sponsor(config, &address, probationary),
     }
 }
 
@@ -277,7 +295,8 @@ fn create_rpc_client(config: &CliConfig) -> Result<RpcClient> {
         Err(_) => {
             let network_mode = NetworkContext::mode();
             let rpc_port = network_mode.default_rpc_port();
-            let addr = format!("127.0.0.1:{}", rpc_port).parse()
+            let addr = format!("127.0.0.1:{}", rpc_port)
+                .parse()
                 .map_err(|e| CliError::Other(format!("Invalid RPC address: {}", e)))?;
             RpcClientConfig {
                 addr,
@@ -286,8 +305,12 @@ fn create_rpc_client(config: &CliConfig) -> Result<RpcClient> {
         }
     };
 
-    let cookie = fs::read_to_string(data_dir.join(".cookie"))
-        .map_err(|e| CliError::Other(format!("Failed to read RPC cookie: {}. Is the node running?", e)))?;
+    let cookie = fs::read_to_string(data_dir.join(".cookie")).map_err(|e| {
+        CliError::Other(format!(
+            "Failed to read RPC cookie: {}. Is the node running?",
+            e
+        ))
+    })?;
 
     let rpc_config = RpcClientConfig {
         cookie: Some(cookie),
@@ -303,7 +326,8 @@ fn rpc_call_result<T: serde::de::DeserializeOwned>(
     method: &str,
     params: serde_json::Value,
 ) -> Result<T> {
-    client.call_result::<T>(method, params)
+    client
+        .call_result::<T>(method, params)
         .map_err(|e| CliError::Other(format!("RPC error: {}", e)))
 }
 
@@ -404,9 +428,11 @@ fn offer_create(
     let offer_type_enum = match offer_type.to_lowercase().as_str() {
         "probationary" => SponsorshipOfferType::Probationary,
         "open" => SponsorshipOfferType::Open,
-        _ => return Err(CliError::Other(
-            "Invalid offer type. Use 'probationary' or 'open'.".into()
-        )),
+        _ => {
+            return Err(CliError::Other(
+                "Invalid offer type. Use 'probationary' or 'open'.".into(),
+            ))
+        }
     };
 
     let now = current_time();
@@ -510,13 +536,16 @@ fn invite(config: &CliConfig, slots: u8, expires_hours: u32) -> Result<()> {
         "sponsor": pubkey_hex,
         "net": net,
     });
-    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(token_json.to_string().as_bytes());
+    let token =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token_json.to_string().as_bytes());
 
     println!("Invite created!");
     println!("Offer ID: {}", result.offer_id);
     println!("Slots: {}", result.slots);
-    println!("Expires: in {} day(s) (at unix {})", expires_days, result.expires_at);
+    println!(
+        "Expires: in {} day(s) (at unix {})",
+        expires_days, result.expires_at
+    );
     println!("Network: {}", net);
     println!();
     println!("Invite token:");
@@ -578,7 +607,10 @@ fn offer_list(config: &CliConfig, json: bool) -> Result<()> {
             let expired = if offer.is_expired { " (EXPIRED)" } else { "" };
             println!("  ID: {}{}", offer.offer_id, expired);
             println!("  Type: {}", offer.offer_type);
-            println!("  Slots: {}/{} claimed, {} pending", offer.slots_claimed, offer.slots_total, offer.slots_pending);
+            println!(
+                "  Slots: {}/{} claimed, {} pending",
+                offer.slots_claimed, offer.slots_total, offer.slots_pending
+            );
             println!();
         }
     }
@@ -607,14 +639,17 @@ fn offer_view(config: &CliConfig, offer_id: &str, json: bool) -> Result<()> {
     if json {
         crate::cli::output::print_json(&result)?;
     } else {
-        let slots_remaining = result.slots_total.saturating_sub(
-            result.slots_total.saturating_sub(result.slots_remaining)
-        );
+        let slots_remaining = result
+            .slots_total
+            .saturating_sub(result.slots_total.saturating_sub(result.slots_remaining));
         println!("Offer Details:");
         println!("  ID: {}", result.offer_id);
         println!("  Sponsor: {}", result.sponsor_pubkey);
         println!("  Type: {}", result.offer_type);
-        println!("  Slots remaining: {}/{}", result.slots_remaining, result.slots_total);
+        println!(
+            "  Slots remaining: {}/{}",
+            result.slots_remaining, result.slots_total
+        );
         println!("  Pending claims: {}", result.pending_claims.len());
 
         if !result.pending_claims.is_empty() {
@@ -667,8 +702,8 @@ fn offer_cancel(config: &CliConfig, offer_id: &str) -> Result<()> {
 
 /// Claim an offer (for new users)
 fn claim_offer(config: &CliConfig, offer_id: &str, application: Option<String>) -> Result<()> {
-    use sha2::{Sha256, Digest};
     use rand::RngCore;
+    use sha2::{Digest, Sha256};
 
     let keypair = load_keypair(config)?;
     let pubkey = keypair.public_key;
@@ -885,7 +920,9 @@ fn status(config: &CliConfig, json: bool) -> Result<()> {
                 println!("You are eligible for genesis. Claim with:");
                 println!("  sw sponsor genesis-claim --slot <0-99>");
             } else {
-                println!("You need sponsorship to participate. Ask an existing member for an offer ID.");
+                println!(
+                    "You need sponsorship to participate. Ask an existing member for an offer ID."
+                );
                 println!("Then claim it with: sw sponsor claim <offer-id>");
             }
         }
@@ -903,7 +940,7 @@ fn direct_sponsor(config: &CliConfig, address: &str, probationary: bool) -> Resu
     // Client-side check (pure function)
     if !is_in_hardcoded_genesis_list(&sponsor_pubkey) {
         return Err(CliError::Other(
-            "Direct sponsorship is only available to genesis identities.".into()
+            "Direct sponsorship is only available to genesis identities.".into(),
         ));
     }
 
@@ -949,7 +986,9 @@ fn parse_offer_id(offer_id: &str) -> Result<[u8; 16]> {
         .map_err(|_| CliError::Other("Invalid offer ID format. Expected hex string.".into()))?;
 
     if bytes.len() != 16 {
-        return Err(CliError::Other("Invalid offer ID length. Expected 16 bytes.".into()));
+        return Err(CliError::Other(
+            "Invalid offer ID length. Expected 16 bytes.".into(),
+        ));
     }
 
     let mut arr = [0u8; 16];
@@ -968,8 +1007,9 @@ fn parse_address(addr: &str) -> Result<PublicKey> {
     // Fall back to hex-encoded public key
     let hex_str = addr.trim_start_matches("0x");
 
-    let bytes = hex::decode(hex_str)
-        .map_err(|_| CliError::Other("Invalid address format. Use cs1... address or hex public key.".into()))?;
+    let bytes = hex::decode(hex_str).map_err(|_| {
+        CliError::Other("Invalid address format. Use cs1... address or hex public key.".into())
+    })?;
 
     if bytes.len() != 32 {
         return Err(CliError::Other("Invalid public key length.".into()));

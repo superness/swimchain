@@ -56,11 +56,7 @@ impl SpaceSwimmerTracker {
     ///
     /// # Returns
     /// Number of active swimmers in the space
-    pub fn get_active_count(
-        &self,
-        space_id: &[u8; 16],
-        now: u64,
-    ) -> Result<u32, SpaceHealthError> {
+    pub fn get_active_count(&self, space_id: &[u8; 16], now: u64) -> Result<u32, SpaceHealthError> {
         let cutoff = now.saturating_sub(ACTIVITY_WINDOW_SECS);
         let prefix = space_id.as_slice();
 
@@ -74,10 +70,7 @@ impl SpaceSwimmerTracker {
             }
 
             // Parse last activity timestamp
-            let timestamp_bytes: [u8; 8] = value
-                .as_ref()
-                .try_into()
-                .unwrap_or([0; 8]);
+            let timestamp_bytes: [u8; 8] = value.as_ref().try_into().unwrap_or([0; 8]);
             let last_activity = u64::from_le_bytes(timestamp_bytes);
 
             // Check if activity is within window
@@ -108,10 +101,7 @@ impl SpaceSwimmerTracker {
                 continue;
             }
 
-            let timestamp_bytes: [u8; 8] = value
-                .as_ref()
-                .try_into()
-                .unwrap_or([0; 8]);
+            let timestamp_bytes: [u8; 8] = value.as_ref().try_into().unwrap_or([0; 8]);
             let last_activity = u64::from_le_bytes(timestamp_bytes);
 
             if last_activity >= cutoff {
@@ -134,10 +124,7 @@ impl SpaceSwimmerTracker {
         for result in self.tree.iter() {
             let (key, value) = result?;
 
-            let timestamp_bytes: [u8; 8] = value
-                .as_ref()
-                .try_into()
-                .unwrap_or([0; 8]);
+            let timestamp_bytes: [u8; 8] = value.as_ref().try_into().unwrap_or([0; 8]);
             let last_activity = u64::from_le_bytes(timestamp_bytes);
 
             if last_activity < cutoff {

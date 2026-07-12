@@ -478,7 +478,10 @@ mod tests {
         // block_a should be heavier
         assert!(block_a.is_heavier_than(&block_b));
         assert!(!block_b.is_heavier_than(&block_a));
-        assert_eq!(block_a.compare_chain_weight(&block_b), std::cmp::Ordering::Greater);
+        assert_eq!(
+            block_a.compare_chain_weight(&block_b),
+            std::cmp::Ordering::Greater
+        );
     }
 
     #[test]
@@ -521,7 +524,11 @@ mod tests {
         // keeps every node on a network in agreement.
         use crate::network::NetworkMode;
 
-        for mode in [NetworkMode::Mainnet, NetworkMode::Testnet, NetworkMode::Regtest] {
+        for mode in [
+            NetworkMode::Mainnet,
+            NetworkMode::Testnet,
+            NetworkMode::Regtest,
+        ] {
             let threshold = mode.scaled_block_difficulty(INITIAL_DIFFICULTY);
             // A block whose total_pow exactly meets the scaled threshold.
             let sb = make_test_space_block(threshold);
@@ -596,7 +603,8 @@ mod tests {
         let sb2 = make_test_space_block(50);
         let space_blocks = vec![sb1.clone(), sb2.clone()];
 
-        let block = RootBlock::from_space_blocks(&space_blocks, [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
+        let block =
+            RootBlock::from_space_blocks(&space_blocks, [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
 
         assert!(block.verify_pow_sum(&space_blocks).is_ok());
     }
@@ -606,7 +614,8 @@ mod tests {
         let sb = make_test_space_block(100);
         let space_blocks = vec![sb.clone()];
 
-        let mut block = RootBlock::from_space_blocks(&space_blocks, [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
+        let mut block =
+            RootBlock::from_space_blocks(&space_blocks, [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
 
         // Tamper with total_pow
         block.total_pow = 999;
@@ -660,7 +669,8 @@ mod tests {
         for _ in 0..60 {
             space_blocks.push(make_test_space_block(1));
         }
-        let block2 = RootBlock::from_space_blocks(&space_blocks, [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
+        let block2 =
+            RootBlock::from_space_blocks(&space_blocks, [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
 
         // Both should have same total PoW
         assert_eq!(block1.total_pow, 60);
@@ -674,7 +684,8 @@ mod tests {
     #[test]
     fn test_from_hashes() {
         let hashes = vec![[1u8; 32], [2u8; 32]];
-        let block = RootBlock::from_hashes(hashes.clone(), 100, [0u8; 32], 50, 1000, 30, 5, [0u8; 32]);
+        let block =
+            RootBlock::from_hashes(hashes.clone(), 100, [0u8; 32], 50, 1000, 30, 5, [0u8; 32]);
 
         assert_eq!(block.space_block_count, 2);
         assert_eq!(block.total_pow, 100);

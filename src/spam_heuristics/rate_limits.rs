@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use super::error::SpamHeuristicsError;
 use super::types::{
-    HeuristicResult, HeuristicViolation, ViolationType,
-    POSTS_PER_SPACE_PER_HOUR, DEFAULT_POSTS_PER_DAY,
+    HeuristicResult, HeuristicViolation, ViolationType, DEFAULT_POSTS_PER_DAY,
+    POSTS_PER_SPACE_PER_HOUR,
 };
 
 /// Seconds in a day
@@ -297,14 +297,22 @@ mod tests {
         for i in 0..5 {
             let result = tracker.check(&author, &space, base_time + i as u64);
             assert!(
-                !result.has_violations || result.violations.iter().all(|v| v.description.contains("Space flooding") == false),
-                "Post {} should not trigger space flooding", i + 1
+                !result.has_violations
+                    || result
+                        .violations
+                        .iter()
+                        .all(|v| v.description.contains("Space flooding") == false),
+                "Post {} should not trigger space flooding",
+                i + 1
             );
         }
 
         // 6th post in same space within hour should trigger space flooding
         let result = tracker.check(&author, &space, base_time + 5);
-        assert!(result.violations.iter().any(|v| v.description.contains("Space flooding")));
+        assert!(result
+            .violations
+            .iter()
+            .any(|v| v.description.contains("Space flooding")));
     }
 
     #[test]
@@ -318,8 +326,12 @@ mod tests {
             let space = make_space(i);
             let result = tracker.check(&author, &space, base_time + i as u64);
             assert!(
-                !result.violations.iter().any(|v| v.description.contains("Space flooding")),
-                "Space {} should not trigger flooding", i
+                !result
+                    .violations
+                    .iter()
+                    .any(|v| v.description.contains("Space flooding")),
+                "Space {} should not trigger flooding",
+                i
             );
         }
     }
@@ -355,7 +367,10 @@ mod tests {
         // Next hour, space limit should reset
         let result = tracker.check(&author, &space, SECS_PER_HOUR);
         assert!(
-            !result.violations.iter().any(|v| v.description.contains("Space flooding")),
+            !result
+                .violations
+                .iter()
+                .any(|v| v.description.contains("Space flooding")),
             "Hourly limit should have reset"
         );
     }
@@ -389,11 +404,17 @@ mod tests {
         assert_eq!(tracker.remaining_daily(&author, 0), DEFAULT_POSTS_PER_DAY);
 
         tracker.check(&author, &space, 0);
-        assert_eq!(tracker.remaining_daily(&author, 0), DEFAULT_POSTS_PER_DAY - 1);
+        assert_eq!(
+            tracker.remaining_daily(&author, 0),
+            DEFAULT_POSTS_PER_DAY - 1
+        );
 
         tracker.check(&author, &space, 1);
         tracker.check(&author, &space, 2);
-        assert_eq!(tracker.remaining_daily(&author, 2), DEFAULT_POSTS_PER_DAY - 3);
+        assert_eq!(
+            tracker.remaining_daily(&author, 2),
+            DEFAULT_POSTS_PER_DAY - 3
+        );
     }
 
     #[test]

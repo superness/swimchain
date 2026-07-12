@@ -28,8 +28,8 @@ use crate::reputation::{
 };
 use crate::spam_attestation::{
     aggregate_attestations, check_attester_eligibility, find_sponsor_tree_root,
-    validate_attestation, SpamAttestation, SpamAttestationStore, SpamReason,
-    StoredSpamAttestation, SPAM_ATTESTATION_THRESHOLD,
+    validate_attestation, SpamAttestation, SpamAttestationStore, SpamReason, StoredSpamAttestation,
+    SPAM_ATTESTATION_THRESHOLD,
 };
 use crate::spam_heuristics::{
     default_posts_per_day, CrossPostingTracker, PatternDetector, RateLimitTracker,
@@ -321,9 +321,9 @@ impl AntiAbuseHandler {
             Ok(a) => a,
             Err(_) => return false,
         };
-        let counter_state = store
-            .get_counter_state(content_hash)
-            .unwrap_or_else(|_| crate::spam_attestation::CounterAttestationState::empty(*content_hash));
+        let counter_state = store.get_counter_state(content_hash).unwrap_or_else(|_| {
+            crate::spam_attestation::CounterAttestationState::empty(*content_hash)
+        });
         let agg = aggregate_attestations(*content_hash, &attestations, counter_state.is_cleared);
         agg.count.unique_tree_count >= SPAM_ATTESTATION_THRESHOLD && !agg.is_cleared
     }
@@ -335,9 +335,9 @@ impl AntiAbuseHandler {
             Ok(a) => a,
             Err(_) => return SpamStatus::default(),
         };
-        let counter_state = store
-            .get_counter_state(content_hash)
-            .unwrap_or_else(|_| crate::spam_attestation::CounterAttestationState::empty(*content_hash));
+        let counter_state = store.get_counter_state(content_hash).unwrap_or_else(|_| {
+            crate::spam_attestation::CounterAttestationState::empty(*content_hash)
+        });
         let agg = aggregate_attestations(*content_hash, &attestations, counter_state.is_cleared);
 
         SpamStatus {
@@ -669,14 +669,19 @@ mod tests {
         let reputation_store = Arc::new(ReputationStore::open(db.clone()));
         let review_flag_store = Arc::new(RwLock::new(ReviewFlagStore::new()));
 
-        AntiAbuseHandler::new(spam_store, blocklist_store, reputation_store, review_flag_store)
+        AntiAbuseHandler::new(
+            spam_store,
+            blocklist_store,
+            reputation_store,
+            review_flag_store,
+        )
     }
 
     fn make_blocklist_entry(content_hash: [u8; 32], reason: BlocklistReason) -> BlocklistEntry {
         BlocklistEntry::new(
             content_hash,
             reason,
-            vec![], // No attestations for test
+            vec![],    // No attestations for test
             [0u8; 32], // Reporter
             crate::crypto::current_timestamp(),
         )

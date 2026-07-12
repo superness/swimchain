@@ -29,7 +29,9 @@ impl Identity {
 
         Ok(Self {
             keypair: KeyPair {
-                public_key: crate::types::identity::PublicKey::from_bytes(*verifying_key.as_bytes()),
+                public_key: crate::types::identity::PublicKey::from_bytes(
+                    *verifying_key.as_bytes(),
+                ),
                 private_key: crate::types::identity::PrivateKey::from_bytes(private_bytes),
             },
         })
@@ -338,9 +340,7 @@ impl ForkRegistry {
     /// Delete a fork (only non-active forks)
     pub fn delete_fork(&self, fork_id: &ForkId) -> Result<(), ForkError> {
         if *fork_id == self.active_fork() {
-            return Err(ForkError::InvalidConfig(
-                "Cannot delete active fork".into(),
-            ));
+            return Err(ForkError::InvalidConfig("Cannot delete active fork".into()));
         }
 
         self.store.delete_fork(fork_id)?;
@@ -435,9 +435,7 @@ mod tests {
 
         // Create multiple forks
         for i in 1..=3 {
-            let config = ForkConfig::builder()
-                .name(format!("fork-{}", i))
-                .build();
+            let config = ForkConfig::builder().name(format!("fork-{}", i)).build();
             registry.create_fork(config, &identity).unwrap();
         }
 

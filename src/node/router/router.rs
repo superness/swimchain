@@ -192,7 +192,6 @@ pub struct MessageRouter {
     /// requirement; all other keys still require the attestation threshold.
     trusted_blocklist_keys: std::collections::HashSet<[u8; 32]>,
 
-
     /// Connection pool for block relay broadcasting
     connection_pool: Option<Arc<PeerConnectionPool>>,
 
@@ -7930,7 +7929,6 @@ impl MessageRouterBuilder {
         self.trusted_blocklist_keys = keys;
         self
     }
-
 
     /// Set the connection pool for block relay broadcasting
     pub fn connection_pool(mut self, pool: Arc<PeerConnectionPool>) -> Self {

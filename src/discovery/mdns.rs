@@ -52,8 +52,7 @@ impl MdnsService {
         node_id: &[u8; 32],
         port: u16,
     ) -> Result<(Self, mpsc::Receiver<SocketAddr>), DiscoveryError> {
-        let daemon =
-            ServiceDaemon::new().map_err(|e| DiscoveryError::MdnsError(e.to_string()))?;
+        let daemon = ServiceDaemon::new().map_err(|e| DiscoveryError::MdnsError(e.to_string()))?;
 
         let instance = hex::encode(&node_id[..8]);
         let host_name = format!("{instance}.local.");

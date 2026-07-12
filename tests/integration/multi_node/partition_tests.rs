@@ -43,10 +43,18 @@ async fn test_rapid_start_stop_cycles() {
     // Perform multiple start/stop cycles
     for i in 0..3 {
         harness.nodes[0].manager.start().await.unwrap();
-        assert!(harness.nodes[0].manager.is_running(), "Cycle {}: should be running", i);
+        assert!(
+            harness.nodes[0].manager.is_running(),
+            "Cycle {}: should be running",
+            i
+        );
 
         harness.nodes[0].manager.stop().await.unwrap();
-        assert!(!harness.nodes[0].manager.is_running(), "Cycle {}: should be stopped", i);
+        assert!(
+            !harness.nodes[0].manager.is_running(),
+            "Cycle {}: should be stopped",
+            i
+        );
     }
 }
 
@@ -60,13 +68,25 @@ async fn test_independent_node_lifecycle() {
 
     // Stop middle node
     harness.nodes[1].manager.stop().await.unwrap();
-    assert!(!harness.nodes[1].manager.is_running(), "Node 1 should be stopped");
-    assert!(harness.nodes[0].manager.is_running(), "Node 0 should still run");
-    assert!(harness.nodes[2].manager.is_running(), "Node 2 should still run");
+    assert!(
+        !harness.nodes[1].manager.is_running(),
+        "Node 1 should be stopped"
+    );
+    assert!(
+        harness.nodes[0].manager.is_running(),
+        "Node 0 should still run"
+    );
+    assert!(
+        harness.nodes[2].manager.is_running(),
+        "Node 2 should still run"
+    );
 
     // Restart middle node
     harness.nodes[1].manager.start().await.unwrap();
-    assert!(harness.nodes[1].manager.is_running(), "Node 1 should restart");
+    assert!(
+        harness.nodes[1].manager.is_running(),
+        "Node 1 should restart"
+    );
 
     harness.shutdown_all().await.unwrap();
 }
@@ -148,17 +168,29 @@ async fn test_network_partition_simulation() {
     // Simulate partition: disconnect node 1 by stopping it
     // This is a simulated partition - in reality we'd disconnect connections
     harness.nodes[1].manager.stop().await.unwrap();
-    assert!(!harness.nodes[1].manager.is_running(), "Node 1 should be stopped");
+    assert!(
+        !harness.nodes[1].manager.is_running(),
+        "Node 1 should be stopped"
+    );
 
     // Nodes 0 and 2 should still be running (isolated from each other)
-    assert!(harness.nodes[0].manager.is_running(), "Node 0 should still run");
-    assert!(harness.nodes[2].manager.is_running(), "Node 2 should still run");
+    assert!(
+        harness.nodes[0].manager.is_running(),
+        "Node 0 should still run"
+    );
+    assert!(
+        harness.nodes[2].manager.is_running(),
+        "Node 2 should still run"
+    );
 
     log::info!("Partition active: Node 1 is down");
 
     // Heal partition: restart node 1
     harness.nodes[1].manager.start().await.unwrap();
-    assert!(harness.nodes[1].manager.is_running(), "Node 1 should restart");
+    assert!(
+        harness.nodes[1].manager.is_running(),
+        "Node 1 should restart"
+    );
 
     // Update listen address after restart
     if let Some(addr) = harness.nodes[1].manager.listen_addr() {
@@ -195,7 +227,11 @@ async fn test_network_partition_simulation() {
 
     // All nodes should be running
     for (i, node) in harness.nodes.iter().enumerate() {
-        assert!(node.manager.is_running(), "Node {} should be running after recovery", i);
+        assert!(
+            node.manager.is_running(),
+            "Node {} should be running after recovery",
+            i
+        );
     }
 
     harness.shutdown_all().await.unwrap();
@@ -255,7 +291,8 @@ async fn test_chain_divergence_during_partition() {
     let mut node_1_blocks = Vec::new();
     prev_hash = initial_blocks.last().unwrap().hash();
     let mut cumulative_1 = initial_blocks.last().unwrap().cumulative_pow;
-    for i in 10..13 {  // Node 1 produces fewer blocks
+    for i in 10..13 {
+        // Node 1 produces fewer blocks
         let block_pow = i * 1000;
         cumulative_1 += block_pow;
         let block = swimchain::blocks::RootBlock {
@@ -307,8 +344,7 @@ async fn test_chain_divergence_during_partition() {
     );
 
     assert_eq!(
-        final_height_0,
-        final_height_1,
+        final_height_0, final_height_1,
         "Chains should converge after partition heals"
     );
 
@@ -337,7 +373,11 @@ async fn test_disconnect_reconnect_cycle() {
 
     // Disconnect via API
     let node_1_id = harness.nodes[1].node_id();
-    harness.nodes[0].manager.disconnect(&node_1_id).await.unwrap();
+    harness.nodes[0]
+        .manager
+        .disconnect(&node_1_id)
+        .await
+        .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Reconnect

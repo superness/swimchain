@@ -10,16 +10,16 @@
 use crate::sponsorship::error::SponsorshipError;
 use crate::sponsorship::offer_store::OfferStore;
 use crate::sponsorship::offer_validation::{
-    validate_claim_requirements, validate_claim_timestamp, validate_offer_active,
-    validate_offer_creation, validate_claim_identity_consistency,
+    validate_claim_identity_consistency, validate_claim_requirements, validate_claim_timestamp,
+    validate_offer_active, validate_offer_creation,
 };
+use crate::sponsorship::register_sponsored_identity;
 use crate::sponsorship::rights::RightsStore;
 use crate::sponsorship::storage::SponsorshipStore;
 use crate::sponsorship::types::{
-    PublicSponsorshipOffer, SponsorshipClaim, SponsorshipOfferType,
-    SponsoredIdentityCreation, StoredSponsorship, PROBATION_PERIOD_SECONDS,
+    PublicSponsorshipOffer, SponsoredIdentityCreation, SponsorshipClaim, SponsorshipOfferType,
+    StoredSponsorship, PROBATION_PERIOD_SECONDS,
 };
-use crate::sponsorship::register_sponsored_identity;
 use crate::types::identity::{PublicKey, Signature};
 
 /// Create a new public sponsorship offer
@@ -164,7 +164,11 @@ where
 {
     // Verify claimant signature
     let message = claim.signature_message();
-    if !verify_fn(&claim.claimant, &message, claim.claimant_signature.as_bytes()) {
+    if !verify_fn(
+        &claim.claimant,
+        &message,
+        claim.claimant_signature.as_bytes(),
+    ) {
         return Err(SponsorshipError::InvalidClaimantSignature);
     }
 
@@ -279,7 +283,11 @@ where
 
     // Verify sponsor's approval signature
     let message = claim.approval_message();
-    if !verify_fn(&offer.sponsor, &message, sponsor_approval_signature.as_bytes()) {
+    if !verify_fn(
+        &offer.sponsor,
+        &message,
+        sponsor_approval_signature.as_bytes(),
+    ) {
         return Err(SponsorshipError::InvalidSignature);
     }
 
@@ -489,15 +497,12 @@ mod tests {
         let current_time = 1735689600;
 
         let sponsor = [1u8; 32];
-        sponsorship_store.put(&make_genesis_sponsorship(sponsor)).unwrap();
+        sponsorship_store
+            .put(&make_genesis_sponsorship(sponsor))
+            .unwrap();
 
         let offer = make_test_offer(sponsor, [2u8; 16]);
-        let result = create_public_offer(
-            &offer_store,
-            &sponsorship_store,
-            &offer,
-            current_time,
-        );
+        let result = create_public_offer(&offer_store, &sponsorship_store, &offer, current_time);
 
         assert!(result.is_ok());
         assert!(offer_store.get_offer(&offer.offer_id).unwrap().is_some());
@@ -509,17 +514,14 @@ mod tests {
         let current_time = 1735689600;
 
         let sponsor = [1u8; 32];
-        sponsorship_store.put(&make_genesis_sponsorship(sponsor)).unwrap();
+        sponsorship_store
+            .put(&make_genesis_sponsorship(sponsor))
+            .unwrap();
 
         let mut offer = make_test_offer(sponsor, [2u8; 16]);
         offer.offer_type = SponsorshipOfferType::Open;
 
-        let result = create_public_offer(
-            &offer_store,
-            &sponsorship_store,
-            &offer,
-            current_time,
-        );
+        let result = create_public_offer(&offer_store, &sponsorship_store, &offer, current_time);
 
         // Without level system, all offer types are allowed
         assert!(result.is_ok());
@@ -536,12 +538,7 @@ mod tests {
         sponsorship_store.put(&genesis).unwrap();
 
         let offer = make_test_offer(sponsor, [2u8; 16]);
-        let result = create_public_offer(
-            &offer_store,
-            &sponsorship_store,
-            &offer,
-            current_time,
-        );
+        let result = create_public_offer(&offer_store, &sponsorship_store, &offer, current_time);
 
         assert!(matches!(result, Err(SponsorshipError::SponsorRestricted)));
     }
@@ -559,7 +556,10 @@ mod tests {
         let result = claim_public_offer(&offer_store, &claim, current_time);
 
         assert!(result.is_ok());
-        assert!(offer_store.get_claim(&offer.offer_id, &claim.claimant).unwrap().is_some());
+        assert!(offer_store
+            .get_claim(&offer.offer_id, &claim.claimant)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -588,7 +588,9 @@ mod tests {
         offer_store.create_offer(&offer).unwrap();
 
         // Fill the offer
-        offer_store.increment_claimed_count(&offer.offer_id, 1).unwrap();
+        offer_store
+            .increment_claimed_count(&offer.offer_id, 1)
+            .unwrap();
 
         let claim = make_test_claim([2u8; 16], [3u8; 32]);
         let result = claim_public_offer(&offer_store, &claim, current_time);
@@ -602,7 +604,9 @@ mod tests {
         let current_time = 1735689600;
 
         let sponsor = [1u8; 32];
-        sponsorship_store.put(&make_genesis_sponsorship(sponsor)).unwrap();
+        sponsorship_store
+            .put(&make_genesis_sponsorship(sponsor))
+            .unwrap();
 
         let offer = make_test_offer(sponsor, [2u8; 16]);
         offer_store.create_offer(&offer).unwrap();
@@ -629,7 +633,10 @@ mod tests {
         assert_eq!(sponsorship.depth, 1); // Genesis is depth 0
 
         // Claim should be removed
-        assert!(offer_store.get_claim(&offer.offer_id, &claim.claimant).unwrap().is_none());
+        assert!(offer_store
+            .get_claim(&offer.offer_id, &claim.claimant)
+            .unwrap()
+            .is_none());
 
         // Claimed count should be incremented
         assert_eq!(offer_store.get_claimed_count(&offer.offer_id).unwrap(), 1);
@@ -641,7 +648,9 @@ mod tests {
         let current_time = 1735689600;
 
         let sponsor = [1u8; 32];
-        sponsorship_store.put(&make_genesis_sponsorship(sponsor)).unwrap();
+        sponsorship_store
+            .put(&make_genesis_sponsorship(sponsor))
+            .unwrap();
 
         let mut offer = make_test_offer(sponsor, [2u8; 16]);
         offer.offer_type = SponsorshipOfferType::Open;
@@ -687,7 +696,10 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        assert!(offer_store.get_claim(&offer.offer_id, &claim.claimant).unwrap().is_none());
+        assert!(offer_store
+            .get_claim(&offer.offer_id, &claim.claimant)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -733,7 +745,10 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(offer_store.get_offer(&offer.offer_id).unwrap().is_none());
-        assert_eq!(offer_store.get_all_claims(&offer.offer_id).unwrap().len(), 0);
+        assert_eq!(
+            offer_store.get_all_claims(&offer.offer_id).unwrap().len(),
+            0
+        );
     }
 
     #[test]
@@ -754,7 +769,9 @@ mod tests {
         }
 
         // Approve one
-        offer_store.increment_claimed_count(&offer.offer_id, 5).unwrap();
+        offer_store
+            .increment_claimed_count(&offer.offer_id, 5)
+            .unwrap();
 
         let status = get_offer_status(&offer_store, &offer.offer_id, current_time).unwrap();
 
@@ -770,7 +787,9 @@ mod tests {
         let current_time = 1735689600;
 
         let sponsor = [1u8; 32];
-        sponsorship_store.put(&make_genesis_sponsorship(sponsor)).unwrap();
+        sponsorship_store
+            .put(&make_genesis_sponsorship(sponsor))
+            .unwrap();
 
         let offer = make_test_offer(sponsor, [2u8; 16]);
 
@@ -782,7 +801,10 @@ mod tests {
             current_time,
             |_, _, _| false,
         );
-        assert!(matches!(result, Err(SponsorshipError::InvalidOfferSignature)));
+        assert!(matches!(
+            result,
+            Err(SponsorshipError::InvalidOfferSignature)
+        ));
 
         // Test with always-pass verifier
         let result = create_public_offer_with_verification(

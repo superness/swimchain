@@ -212,9 +212,9 @@ fn execute_run(args: TestRunArgs) -> Result<()> {
     // Convert args to string slices for run_tests
     let arg_refs: Vec<&str> = cargo_args.iter().map(String::as_str).collect();
 
-    let mut report = parser.run_tests(&arg_refs).map_err(|e| {
-        CliError::Other(format!("Failed to run cargo test: {e}"))
-    })?;
+    let mut report = parser
+        .run_tests(&arg_refs)
+        .map_err(|e| CliError::Other(format!("Failed to run cargo test: {e}")))?;
 
     // Update metadata from builder
     let collector = builder.build();
@@ -225,7 +225,10 @@ fn execute_run(args: TestRunArgs) -> Result<()> {
     report.metadata.environment = collector_report.metadata.environment;
 
     // Run verification if requested
-    if args.verify || args.min_pass_rate.is_some() || args.max_failures.is_some() || args.fail_on_skip
+    if args.verify
+        || args.min_pass_rate.is_some()
+        || args.max_failures.is_some()
+        || args.fail_on_skip
     {
         let thresholds = build_thresholds(&args);
 
@@ -292,9 +295,9 @@ fn execute_list(args: TestListArgs) -> Result<()> {
     // Add -- --list to list tests
     cmd.args(["--", "--list"]);
 
-    let output = cmd.output().map_err(|e| {
-        CliError::Other(format!("Failed to run cargo test --list: {e}"))
-    })?;
+    let output = cmd
+        .output()
+        .map_err(|e| CliError::Other(format!("Failed to run cargo test --list: {e}")))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -305,8 +308,7 @@ fn execute_list(args: TestListArgs) -> Result<()> {
         .filter(|line| line.ends_with(": test") || line.ends_with(": bench"))
         .map(|line| {
             // Remove ": test" or ": bench" suffix
-            line.trim_end_matches(": test")
-                .trim_end_matches(": bench")
+            line.trim_end_matches(": test").trim_end_matches(": bench")
         })
         .collect();
 

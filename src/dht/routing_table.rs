@@ -328,10 +328,12 @@ impl RoutingTable {
 
     /// Get a reference to a bucket by index
     pub fn bucket(&self, index: usize) -> DhtResult<&KBucket> {
-        self.buckets.get(index).ok_or(DhtError::BucketIndexOutOfRange {
-            index,
-            max: NUM_BUCKETS - 1,
-        })
+        self.buckets
+            .get(index)
+            .ok_or(DhtError::BucketIndexOutOfRange {
+                index,
+                max: NUM_BUCKETS - 1,
+            })
     }
 
     /// Get a mutable reference to a bucket by index
@@ -391,11 +393,7 @@ impl RoutingTable {
     ///
     /// This is the core operation for FIND_NODE.
     pub fn closest(&self, target: &NodeId, count: usize) -> Vec<&NodeEntry> {
-        let mut candidates: Vec<&NodeEntry> = self
-            .buckets
-            .iter()
-            .flat_map(|b| b.nodes())
-            .collect();
+        let mut candidates: Vec<&NodeEntry> = self.buckets.iter().flat_map(|b| b.nodes()).collect();
 
         // Sort by XOR distance to target
         candidates.sort_by(|a, b| {
@@ -478,7 +476,10 @@ mod tests {
     }
 
     fn make_addr_with_subnet(subnet: [u8; 3], port: u16) -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(subnet[0], subnet[1], subnet[2], 1)), port)
+        SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(subnet[0], subnet[1], subnet[2], 1)),
+            port,
+        )
     }
 
     #[test]

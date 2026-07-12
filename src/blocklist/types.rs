@@ -574,7 +574,10 @@ mod tests {
         let restored = BlocklistRequest::from_bytes(&bytes).unwrap();
 
         assert_eq!(request.since_timestamp, restored.since_timestamp);
-        assert_eq!(request.requested_hashes.len(), restored.requested_hashes.len());
+        assert_eq!(
+            request.requested_hashes.len(),
+            restored.requested_hashes.len()
+        );
         assert_eq!(request.requested_hashes[0], restored.requested_hashes[0]);
         assert_eq!(request.requested_hashes[1], restored.requested_hashes[1]);
     }

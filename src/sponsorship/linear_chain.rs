@@ -80,10 +80,8 @@ impl LinearChainDetector {
         // Create and store flag
         let flag = LinearChainFlag::new(&metrics, current_time);
 
-        self.flags.insert(
-            identity.as_bytes(),
-            bincode::serialize(&flag)?,
-        )?;
+        self.flags
+            .insert(identity.as_bytes(), bincode::serialize(&flag)?)?;
 
         Ok(Some(flag))
     }
@@ -110,7 +108,10 @@ impl LinearChainDetector {
     }
 
     /// Get flag record for an identity
-    pub fn get_flag(&self, identity: &PublicKey) -> Result<Option<LinearChainFlag>, SponsorshipError> {
+    pub fn get_flag(
+        &self,
+        identity: &PublicKey,
+    ) -> Result<Option<LinearChainFlag>, SponsorshipError> {
         match self.flags.get(identity.as_bytes())? {
             Some(data) => Ok(Some(bincode::deserialize(&data)?)),
             None => Ok(None),
@@ -155,7 +156,8 @@ impl LinearChainDetector {
         if let Some(mut flag) = self.get_flag(identity)? {
             flag.status = ReviewStatus::Cleared;
             flag.reviewer_notes = reviewer_notes;
-            self.flags.insert(identity.as_bytes(), bincode::serialize(&flag)?)?;
+            self.flags
+                .insert(identity.as_bytes(), bincode::serialize(&flag)?)?;
         }
         Ok(())
     }
@@ -172,7 +174,8 @@ impl LinearChainDetector {
         if let Some(mut flag) = self.get_flag(identity)? {
             flag.status = ReviewStatus::Confirmed;
             flag.reviewer_notes = reviewer_notes;
-            self.flags.insert(identity.as_bytes(), bincode::serialize(&flag)?)?;
+            self.flags
+                .insert(identity.as_bytes(), bincode::serialize(&flag)?)?;
         }
         Ok(())
     }
@@ -188,7 +191,8 @@ impl LinearChainDetector {
     ) -> Result<(), SponsorshipError> {
         if let Some(mut flag) = self.get_flag(identity)? {
             flag.appeal_reason = Some(reason);
-            self.flags.insert(identity.as_bytes(), bincode::serialize(&flag)?)?;
+            self.flags
+                .insert(identity.as_bytes(), bincode::serialize(&flag)?)?;
         }
         Ok(())
     }
@@ -356,7 +360,9 @@ mod tests {
             .check_and_flag(&store, &PublicKey::from_bytes([0u8; 32]), 1735689600)
             .unwrap();
         assert!(result.is_none());
-        assert!(!detector.is_flagged(&PublicKey::from_bytes([0u8; 32])).unwrap());
+        assert!(!detector
+            .is_flagged(&PublicKey::from_bytes([0u8; 32]))
+            .unwrap());
     }
 
     #[test]
@@ -365,11 +371,21 @@ mod tests {
 
         // Create linear chain: G -> A -> B -> C -> D -> E (depth 5, breadth 1)
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
-        store.put(&make_sponsorship([5u8; 32], [4u8; 32], 5)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
+        store
+            .put(&make_sponsorship([5u8; 32], [4u8; 32], 5))
+            .unwrap();
 
         // Identity at depth 4 with linear subtree should be flagged
         // D (depth 4) has 1 sponsee (E), so linearity = 4/1 = 4.0 > 0.8
@@ -381,7 +397,9 @@ mod tests {
         let flag = result.unwrap();
         assert_eq!(flag.identity_bytes, [4u8; 32]);
         assert_eq!(flag.status, ReviewStatus::Pending);
-        assert!(detector.is_flagged(&PublicKey::from_bytes([4u8; 32])).unwrap());
+        assert!(detector
+            .is_flagged(&PublicKey::from_bytes([4u8; 32]))
+            .unwrap());
     }
 
     #[test]
@@ -390,19 +408,31 @@ mod tests {
 
         // Create linear chain
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
 
         let identity = PublicKey::from_bytes([4u8; 32]);
 
         // First call flags
-        let result1 = detector.check_and_flag(&store, &identity, 1735689600).unwrap();
+        let result1 = detector
+            .check_and_flag(&store, &identity, 1735689600)
+            .unwrap();
         assert!(result1.is_some());
 
         // Second call returns None (already flagged)
-        let result2 = detector.check_and_flag(&store, &identity, 1735689600).unwrap();
+        let result2 = detector
+            .check_and_flag(&store, &identity, 1735689600)
+            .unwrap();
         assert!(result2.is_none());
 
         // Only one flag in store
@@ -414,20 +444,32 @@ mod tests {
         let (store, detector, _dir) = create_test_env();
 
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
 
         let identity = PublicKey::from_bytes([4u8; 32]);
 
         // Flag the identity
-        detector.check_and_flag(&store, &identity, 1735689600).unwrap();
+        detector
+            .check_and_flag(&store, &identity, 1735689600)
+            .unwrap();
         assert!(detector.is_pending_review(&identity).unwrap());
         assert!(!detector.is_confirmed(&identity).unwrap());
 
         // Clear the flag
-        detector.clear_flag(&identity, Some("Legitimate mentorship".into())).unwrap();
+        detector
+            .clear_flag(&identity, Some("Legitimate mentorship".into()))
+            .unwrap();
         assert!(!detector.is_pending_review(&identity).unwrap());
         assert!(!detector.is_confirmed(&identity).unwrap());
 
@@ -441,15 +483,27 @@ mod tests {
         let (store, detector, _dir) = create_test_env();
 
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
 
         let identity = PublicKey::from_bytes([4u8; 32]);
 
-        detector.check_and_flag(&store, &identity, 1735689600).unwrap();
-        detector.confirm_flag(&identity, Some("Suspicious pattern verified".into())).unwrap();
+        detector
+            .check_and_flag(&store, &identity, 1735689600)
+            .unwrap();
+        detector
+            .confirm_flag(&identity, Some("Suspicious pattern verified".into()))
+            .unwrap();
 
         assert!(detector.is_confirmed(&identity).unwrap());
         assert!(!detector.is_pending_review(&identity).unwrap());
@@ -460,18 +514,33 @@ mod tests {
         let (store, detector, _dir) = create_test_env();
 
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
 
         let identity = PublicKey::from_bytes([4u8; 32]);
 
-        detector.check_and_flag(&store, &identity, 1735689600).unwrap();
-        detector.submit_appeal(&identity, "This is a teaching organization chain".into()).unwrap();
+        detector
+            .check_and_flag(&store, &identity, 1735689600)
+            .unwrap();
+        detector
+            .submit_appeal(&identity, "This is a teaching organization chain".into())
+            .unwrap();
 
         let flag = detector.get_flag(&identity).unwrap().unwrap();
-        assert_eq!(flag.appeal_reason, Some("This is a teaching organization chain".into()));
+        assert_eq!(
+            flag.appeal_reason,
+            Some("This is a teaching organization chain".into())
+        );
         // Status should remain pending after appeal
         assert!(flag.is_pending());
     }
@@ -482,17 +551,33 @@ mod tests {
 
         // Create two flaggable identities
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
-        store.put(&make_sponsorship([5u8; 32], [4u8; 32], 5)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
+        store
+            .put(&make_sponsorship([5u8; 32], [4u8; 32], 5))
+            .unwrap();
 
-        detector.check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600).unwrap();
-        detector.check_and_flag(&store, &PublicKey::from_bytes([5u8; 32]), 1735689600).unwrap();
+        detector
+            .check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600)
+            .unwrap();
+        detector
+            .check_and_flag(&store, &PublicKey::from_bytes([5u8; 32]), 1735689600)
+            .unwrap();
 
         // Confirm one
-        detector.confirm_flag(&PublicKey::from_bytes([4u8; 32]), None).unwrap();
+        detector
+            .confirm_flag(&PublicKey::from_bytes([4u8; 32]), None)
+            .unwrap();
 
         // Only one pending
         let pending = detector.get_all_pending().unwrap();
@@ -506,30 +591,52 @@ mod tests {
 
         // Create tree with some flagged identities
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
-        store.put(&make_sponsorship([5u8; 32], [4u8; 32], 5)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
+        store
+            .put(&make_sponsorship([5u8; 32], [4u8; 32], 5))
+            .unwrap();
 
         // Flag identities at depth 4 and 5
-        detector.check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600).unwrap();
-        detector.check_and_flag(&store, &PublicKey::from_bytes([5u8; 32]), 1735689600).unwrap();
+        detector
+            .check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600)
+            .unwrap();
+        detector
+            .check_and_flag(&store, &PublicKey::from_bytes([5u8; 32]), 1735689600)
+            .unwrap();
 
         // Count from genesis
-        let count = detector.count_flagged_in_subtree(&store, &PublicKey::from_bytes([0u8; 32])).unwrap();
+        let count = detector
+            .count_flagged_in_subtree(&store, &PublicKey::from_bytes([0u8; 32]))
+            .unwrap();
         assert_eq!(count, 2);
 
         // Count from depth 3 (includes 4 and 5)
-        let count = detector.count_flagged_in_subtree(&store, &PublicKey::from_bytes([3u8; 32])).unwrap();
+        let count = detector
+            .count_flagged_in_subtree(&store, &PublicKey::from_bytes([3u8; 32]))
+            .unwrap();
         assert_eq!(count, 2);
 
         // Count from depth 4 (includes self and 5)
-        let count = detector.count_flagged_in_subtree(&store, &PublicKey::from_bytes([4u8; 32])).unwrap();
+        let count = detector
+            .count_flagged_in_subtree(&store, &PublicKey::from_bytes([4u8; 32]))
+            .unwrap();
         assert_eq!(count, 2);
 
         // Count from depth 5 (only self)
-        let count = detector.count_flagged_in_subtree(&store, &PublicKey::from_bytes([5u8; 32])).unwrap();
+        let count = detector
+            .count_flagged_in_subtree(&store, &PublicKey::from_bytes([5u8; 32]))
+            .unwrap();
         assert_eq!(count, 1);
     }
 
@@ -550,25 +657,50 @@ mod tests {
         // Create chain that would normally be flagged with default config
         // G -> A -> B -> C -> D -> E (depth 5 at E)
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
-        store.put(&make_sponsorship([5u8; 32], [4u8; 32], 5)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
+        store
+            .put(&make_sponsorship([5u8; 32], [4u8; 32], 5))
+            .unwrap();
 
         // Identity at depth 4 would normally be flagged (depth >= 4, 1 sponsee)
         // But with lenient config: depth 4 < min_depth 10, so neither condition triggers
-        let result = detector.check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600).unwrap();
-        assert!(result.is_none(), "Identity at depth 4 should not be flagged with min_depth=10");
+        let result = detector
+            .check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600)
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "Identity at depth 4 should not be flagged with min_depth=10"
+        );
 
         // Identity at depth 5 is a leaf (0 sponsees), depth 5 < 10
-        let result = detector.check_and_flag(&store, &PublicKey::from_bytes([5u8; 32]), 1735689600).unwrap();
-        assert!(result.is_none(), "Identity at depth 5 should not be flagged with min_depth=10");
+        let result = detector
+            .check_and_flag(&store, &PublicKey::from_bytes([5u8; 32]), 1735689600)
+            .unwrap();
+        assert!(
+            result.is_none(),
+            "Identity at depth 5 should not be flagged with min_depth=10"
+        );
 
         // Now create a detector with default config and verify it DOES flag
         let default_detector = LinearChainDetector::new(&db).unwrap();
-        let result = default_detector.check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600).unwrap();
-        assert!(result.is_some(), "Identity at depth 4 should be flagged with default config");
+        let result = default_detector
+            .check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600)
+            .unwrap();
+        assert!(
+            result.is_some(),
+            "Identity at depth 4 should be flagged with default config"
+        );
     }
 
     #[test]
@@ -576,14 +708,26 @@ mod tests {
         let (store, detector, _dir) = create_test_env();
 
         store.put(&make_genesis([0u8; 32])).unwrap();
-        store.put(&make_sponsorship([1u8; 32], [0u8; 32], 1)).unwrap();
-        store.put(&make_sponsorship([2u8; 32], [1u8; 32], 2)).unwrap();
-        store.put(&make_sponsorship([3u8; 32], [2u8; 32], 3)).unwrap();
-        store.put(&make_sponsorship([4u8; 32], [3u8; 32], 4)).unwrap();
+        store
+            .put(&make_sponsorship([1u8; 32], [0u8; 32], 1))
+            .unwrap();
+        store
+            .put(&make_sponsorship([2u8; 32], [1u8; 32], 2))
+            .unwrap();
+        store
+            .put(&make_sponsorship([3u8; 32], [2u8; 32], 3))
+            .unwrap();
+        store
+            .put(&make_sponsorship([4u8; 32], [3u8; 32], 4))
+            .unwrap();
 
-        detector.check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600).unwrap();
+        detector
+            .check_and_flag(&store, &PublicKey::from_bytes([4u8; 32]), 1735689600)
+            .unwrap();
 
-        let flags = detector.get_flagged_in_subtree(&store, &PublicKey::from_bytes([0u8; 32])).unwrap();
+        let flags = detector
+            .get_flagged_in_subtree(&store, &PublicKey::from_bytes([0u8; 32]))
+            .unwrap();
         assert_eq!(flags.len(), 1);
         assert_eq!(flags[0].identity_bytes, [4u8; 32]);
     }

@@ -155,8 +155,15 @@ fn test_root_block_pow_aggregation() {
     .unwrap();
     let sb2 = SpaceBlock::from_content_blocks([21u8; 32], &[cb2], None, 1001);
 
-    let root_block =
-        RootBlock::from_space_blocks(&[sb1.clone(), sb2.clone()], [0u8; 32], 0, 1000, 30, 1, [0u8; 32]);
+    let root_block = RootBlock::from_space_blocks(
+        &[sb1.clone(), sb2.clone()],
+        [0u8; 32],
+        0,
+        1000,
+        30,
+        1,
+        [0u8; 32],
+    );
 
     assert_eq!(root_block.total_pow, 500); // 300 + 200
     assert_eq!(root_block.space_block_count(), 2);
@@ -384,7 +391,7 @@ fn test_three_level_chain_building() {
     let root_block = RootBlock::from_space_blocks(
         &[space_block.clone()],
         [0u8; 32],
-        0,    // prev_cumulative_pow
+        0, // prev_cumulative_pow
         1000,
         30, // difficulty target
         1,

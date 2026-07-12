@@ -100,8 +100,8 @@ impl MisbehaviorSeverity {
         match self {
             Self::None => None,
             Self::Spam => None, // Warning only for hop 2 on spam
-            Self::Abuse => Some(SPAM_PENALTY_SECONDS),       // 7 days
-            Self::Illegal => Some(ABUSE_PENALTY_SECONDS),    // 30 days
+            Self::Abuse => Some(SPAM_PENALTY_SECONDS), // 7 days
+            Self::Illegal => Some(ABUSE_PENALTY_SECONDS), // 30 days
         }
     }
 }
@@ -261,7 +261,9 @@ impl PenaltyRecord {
         let (penalty_type, slots_lost, additional_penalty) = match (severity, hop_distance) {
             // Hop 1 penalties per SPEC_11 §4.2
             (MisbehaviorSeverity::Spam, 1) => (PenaltyType::LostInviteSlots, 1, None),
-            (MisbehaviorSeverity::Abuse, 1) => (PenaltyType::LostInviteSlots, ALL_INVITE_SLOTS, None),
+            (MisbehaviorSeverity::Abuse, 1) => {
+                (PenaltyType::LostInviteSlots, ALL_INVITE_SLOTS, None)
+            }
             (MisbehaviorSeverity::Illegal, 1) => (
                 PenaltyType::LostInviteSlots,
                 ALL_INVITE_SLOTS,
@@ -299,8 +301,7 @@ impl PenaltyRecord {
     /// Check if this is a permanent penalty
     #[must_use]
     pub fn is_permanent(&self) -> bool {
-        self.penalty_type == PenaltyType::PermanentRevocation
-            || self.base_expires_at == u64::MAX
+        self.penalty_type == PenaltyType::PermanentRevocation || self.base_expires_at == u64::MAX
     }
 
     /// Get remaining duration in seconds
@@ -329,8 +330,7 @@ impl PenaltyRecord {
         }
 
         // Invariant 3: PermanentRevocation → base_expires_at == u64::MAX
-        if self.penalty_type == PenaltyType::PermanentRevocation
-            && self.base_expires_at != u64::MAX
+        if self.penalty_type == PenaltyType::PermanentRevocation && self.base_expires_at != u64::MAX
         {
             return Err(SponsorshipError::InvalidInvariant(
                 "PermanentRevocation must have u64::MAX expiration".into(),
@@ -366,10 +366,22 @@ mod tests {
 
     #[test]
     fn test_misbehavior_severity_try_from() {
-        assert_eq!(MisbehaviorSeverity::try_from(0).unwrap(), MisbehaviorSeverity::None);
-        assert_eq!(MisbehaviorSeverity::try_from(1).unwrap(), MisbehaviorSeverity::Spam);
-        assert_eq!(MisbehaviorSeverity::try_from(2).unwrap(), MisbehaviorSeverity::Abuse);
-        assert_eq!(MisbehaviorSeverity::try_from(3).unwrap(), MisbehaviorSeverity::Illegal);
+        assert_eq!(
+            MisbehaviorSeverity::try_from(0).unwrap(),
+            MisbehaviorSeverity::None
+        );
+        assert_eq!(
+            MisbehaviorSeverity::try_from(1).unwrap(),
+            MisbehaviorSeverity::Spam
+        );
+        assert_eq!(
+            MisbehaviorSeverity::try_from(2).unwrap(),
+            MisbehaviorSeverity::Abuse
+        );
+        assert_eq!(
+            MisbehaviorSeverity::try_from(3).unwrap(),
+            MisbehaviorSeverity::Illegal
+        );
         assert!(MisbehaviorSeverity::try_from(4).is_err());
     }
 
@@ -391,21 +403,29 @@ mod tests {
 
     #[test]
     fn test_penalty_type_try_from() {
-        assert_eq!(PenaltyType::try_from(0).unwrap(), PenaltyType::RestrictedPosting);
-        assert_eq!(PenaltyType::try_from(1).unwrap(), PenaltyType::LostInviteSlots);
-        assert_eq!(PenaltyType::try_from(2).unwrap(), PenaltyType::AcceleratedDecay);
-        assert_eq!(PenaltyType::try_from(3).unwrap(), PenaltyType::PermanentRevocation);
+        assert_eq!(
+            PenaltyType::try_from(0).unwrap(),
+            PenaltyType::RestrictedPosting
+        );
+        assert_eq!(
+            PenaltyType::try_from(1).unwrap(),
+            PenaltyType::LostInviteSlots
+        );
+        assert_eq!(
+            PenaltyType::try_from(2).unwrap(),
+            PenaltyType::AcceleratedDecay
+        );
+        assert_eq!(
+            PenaltyType::try_from(3).unwrap(),
+            PenaltyType::PermanentRevocation
+        );
         assert!(PenaltyType::try_from(4).is_err());
     }
 
     #[test]
     fn test_penalty_record_for_offender_spam() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         assert_eq!(penalty.penalty_type, PenaltyType::RestrictedPosting);
         assert_eq!(penalty.hop_distance, 0);
@@ -418,11 +438,7 @@ mod tests {
     #[test]
     fn test_penalty_record_for_offender_abuse() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Abuse,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Abuse, time);
 
         assert_eq!(penalty.penalty_type, PenaltyType::RestrictedPosting);
         assert_eq!(penalty.base_expires_at, time + ABUSE_PENALTY_SECONDS);
@@ -432,11 +448,8 @@ mod tests {
     #[test]
     fn test_penalty_record_for_offender_illegal() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Illegal,
-            time,
-        );
+        let penalty =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Illegal, time);
 
         assert_eq!(penalty.penalty_type, PenaltyType::PermanentRevocation);
         assert_eq!(penalty.base_expires_at, u64::MAX);
@@ -477,17 +490,16 @@ mod tests {
 
         assert_eq!(penalty.penalty_type, PenaltyType::LostInviteSlots);
         assert_eq!(penalty.slots_lost, ALL_INVITE_SLOTS);
-        assert_eq!(penalty.additional_penalty, Some(PenaltyType::AcceleratedDecay));
+        assert_eq!(
+            penalty.additional_penalty,
+            Some(PenaltyType::AcceleratedDecay)
+        );
     }
 
     #[test]
     fn test_penalty_record_is_expired() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         assert!(!penalty.is_expired(time));
         assert!(!penalty.is_expired(time + SPAM_PENALTY_SECONDS - 1));
@@ -498,25 +510,21 @@ mod tests {
     #[test]
     fn test_penalty_record_remaining_duration() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         assert_eq!(penalty.remaining_duration(time), SPAM_PENALTY_SECONDS);
-        assert_eq!(penalty.remaining_duration(time + 100), SPAM_PENALTY_SECONDS - 100);
+        assert_eq!(
+            penalty.remaining_duration(time + 100),
+            SPAM_PENALTY_SECONDS - 100
+        );
         assert_eq!(penalty.remaining_duration(time + SPAM_PENALTY_SECONDS), 0);
     }
 
     #[test]
     fn test_penalty_record_permanent_remaining_duration() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Illegal,
-            time,
-        );
+        let penalty =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Illegal, time);
 
         assert_eq!(penalty.remaining_duration(time), u64::MAX);
         assert_eq!(penalty.remaining_duration(time + 1_000_000), u64::MAX);
@@ -525,11 +533,8 @@ mod tests {
     #[test]
     fn test_penalty_record_set_current_expires_at() {
         let time = 1735689600;
-        let mut penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Abuse,
-            time,
-        );
+        let mut penalty =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Abuse, time);
 
         let original_base = penalty.base_expires_at;
 
@@ -546,11 +551,8 @@ mod tests {
     #[test]
     fn test_penalty_record_validate_invariants_invalid_current() {
         let time = 1735689600;
-        let mut penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let mut penalty =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         // Force invalid state
         penalty.current_expires_at = penalty.base_expires_at + 1;
@@ -585,11 +587,8 @@ mod tests {
     #[test]
     fn test_penalty_record_validate_invariants_invalid_permanent() {
         let time = 1735689600;
-        let mut penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Illegal,
-            time,
-        );
+        let mut penalty =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Illegal, time);
 
         // Force invalid state
         penalty.base_expires_at = time + 1000;
@@ -610,10 +609,22 @@ mod tests {
 
     #[test]
     fn test_penalty_type_display() {
-        assert_eq!(format!("{}", PenaltyType::RestrictedPosting), "RestrictedPosting");
-        assert_eq!(format!("{}", PenaltyType::LostInviteSlots), "LostInviteSlots");
-        assert_eq!(format!("{}", PenaltyType::AcceleratedDecay), "AcceleratedDecay");
-        assert_eq!(format!("{}", PenaltyType::PermanentRevocation), "PermanentRevocation");
+        assert_eq!(
+            format!("{}", PenaltyType::RestrictedPosting),
+            "RestrictedPosting"
+        );
+        assert_eq!(
+            format!("{}", PenaltyType::LostInviteSlots),
+            "LostInviteSlots"
+        );
+        assert_eq!(
+            format!("{}", PenaltyType::AcceleratedDecay),
+            "AcceleratedDecay"
+        );
+        assert_eq!(
+            format!("{}", PenaltyType::PermanentRevocation),
+            "PermanentRevocation"
+        );
     }
 
     #[test]
@@ -629,7 +640,9 @@ mod tests {
 
     #[test]
     fn test_offender_duration_seconds() {
-        assert!(MisbehaviorSeverity::None.offender_duration_seconds().is_none());
+        assert!(MisbehaviorSeverity::None
+            .offender_duration_seconds()
+            .is_none());
         assert_eq!(
             MisbehaviorSeverity::Spam.offender_duration_seconds(),
             Some(SPAM_PENALTY_SECONDS)

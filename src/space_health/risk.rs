@@ -189,16 +189,16 @@ mod tests {
     #[test]
     fn test_count_posts_at_risk() {
         let content = vec![
-            make_content_info(1.0, false),   // Healthy
-            make_content_info(0.8, false),   // Healthy
-            make_content_info(0.5, false),   // Healthy
-            make_content_info(0.3, false),   // Healthy
-            make_content_info(0.24, false),  // At risk
-            make_content_info(0.20, false),  // At risk
-            make_content_info(0.10, false),  // At risk
-            make_content_info(0.07, false),  // At risk (just above 6.25%)
-            make_content_info(0.05, false),  // Decayed
-            make_content_info(0.01, false),  // Decayed
+            make_content_info(1.0, false),  // Healthy
+            make_content_info(0.8, false),  // Healthy
+            make_content_info(0.5, false),  // Healthy
+            make_content_info(0.3, false),  // Healthy
+            make_content_info(0.24, false), // At risk
+            make_content_info(0.20, false), // At risk
+            make_content_info(0.10, false), // At risk
+            make_content_info(0.07, false), // At risk (just above 6.25%)
+            make_content_info(0.05, false), // Decayed
+            make_content_info(0.01, false), // Decayed
         ];
 
         let at_risk = count_posts_at_risk(content.into_iter());
@@ -208,10 +208,10 @@ mod tests {
     #[test]
     fn test_count_with_protected_content() {
         let content = vec![
-            make_content_info(0.20, false),  // At risk
-            make_content_info(0.20, true),   // Protected (not at risk)
-            make_content_info(0.10, false),  // At risk
-            make_content_info(0.10, true),   // Protected (not at risk)
+            make_content_info(0.20, false), // At risk
+            make_content_info(0.20, true),  // Protected (not at risk)
+            make_content_info(0.10, false), // At risk
+            make_content_info(0.10, true),  // Protected (not at risk)
         ];
 
         let at_risk = count_posts_at_risk(content.into_iter());
@@ -221,13 +221,13 @@ mod tests {
     #[test]
     fn test_risk_analysis() {
         let content = vec![
-            make_content_info(1.0, false),   // Healthy
-            make_content_info(0.5, false),   // Healthy
-            make_content_info(0.3, false),   // Healthy
-            make_content_info(0.24, false),  // At risk
-            make_content_info(0.10, false),  // At risk
-            make_content_info(0.05, false),  // Decayed
-            make_content_info(0.20, true),   // Protected
+            make_content_info(1.0, false),  // Healthy
+            make_content_info(0.5, false),  // Healthy
+            make_content_info(0.3, false),  // Healthy
+            make_content_info(0.24, false), // At risk
+            make_content_info(0.10, false), // At risk
+            make_content_info(0.05, false), // Decayed
+            make_content_info(0.20, true),  // Protected
         ];
 
         let analysis = RiskAnalysis::analyze(content.into_iter());

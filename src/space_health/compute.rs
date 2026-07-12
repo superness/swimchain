@@ -364,26 +364,38 @@ mod tests {
     fn test_breakdown_compute() {
         let breakdown = HealthScoreBreakdown::compute(5, 10, 60, 50);
 
-        assert_eq!(breakdown.swimmer_score, 15);  // 5/10 * 30
-        assert_eq!(breakdown.risk_score, 20);     // 30 - 10
-        assert_eq!(breakdown.sync_score, 20);     // < 5 min
-        assert_eq!(breakdown.contrib_score, 10);  // 50/100 * 20
+        assert_eq!(breakdown.swimmer_score, 15); // 5/10 * 30
+        assert_eq!(breakdown.risk_score, 20); // 30 - 10
+        assert_eq!(breakdown.sync_score, 20); // < 5 min
+        assert_eq!(breakdown.contrib_score, 10); // 50/100 * 20
         assert_eq!(breakdown.total, 65);
     }
 
     #[test]
     fn test_health_status() {
         // Healthy: 10 swimmers (30) + 0 at-risk (30) + fresh sync (20) + 100GB (20) = 100
-        assert_eq!(HealthScoreBreakdown::compute(10, 0, 60, 100).status(), HealthStatus::Healthy);
+        assert_eq!(
+            HealthScoreBreakdown::compute(10, 0, 60, 100).status(),
+            HealthStatus::Healthy
+        );
 
         // Degraded: 5 swimmers (15) + 5 at-risk (25) + fresh sync (20) + 50GB (10) = 70
-        assert_eq!(HealthScoreBreakdown::compute(5, 5, 60, 50).status(), HealthStatus::Degraded);
+        assert_eq!(
+            HealthScoreBreakdown::compute(5, 5, 60, 50).status(),
+            HealthStatus::Degraded
+        );
 
         // Warning: 5 swimmers (15) + 5 at-risk (25) + stale sync (0) + 10GB (2) = 42
-        assert_eq!(HealthScoreBreakdown::compute(5, 5, 600, 10).status(), HealthStatus::Warning);
+        assert_eq!(
+            HealthScoreBreakdown::compute(5, 5, 600, 10).status(),
+            HealthStatus::Warning
+        );
 
         // Unhealthy: 0 swimmers (0) + 20 at-risk (10) + stale sync (0) + 0GB (0) = 10
-        assert_eq!(HealthScoreBreakdown::compute(0, 20, 600, 0).status(), HealthStatus::Unhealthy);
+        assert_eq!(
+            HealthScoreBreakdown::compute(0, 20, 600, 0).status(),
+            HealthStatus::Unhealthy
+        );
     }
 
     #[test]

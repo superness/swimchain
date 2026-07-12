@@ -54,7 +54,11 @@ impl ProviderRecord {
     /// - The content being claimed
     /// - The node's identity
     /// - The network address
-    pub fn signing_message(content_hash: &[u8; 32], node_id: &NodeId, addr: &SocketAddr) -> Vec<u8> {
+    pub fn signing_message(
+        content_hash: &[u8; 32],
+        node_id: &NodeId,
+        addr: &SocketAddr,
+    ) -> Vec<u8> {
         let mut msg = Vec::with_capacity(128);
         msg.extend_from_slice(PROVIDER_RECORD_PREFIX);
         msg.extend_from_slice(content_hash);

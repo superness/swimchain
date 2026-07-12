@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use super::error::SpamHeuristicsError;
 use super::types::{
-    ContentFingerprint, HeuristicResult, HeuristicViolation, ViolationType,
-    CROSS_POST_WINDOW_SECS, MAX_CROSS_POST_SPACES,
+    ContentFingerprint, HeuristicResult, HeuristicViolation, ViolationType, CROSS_POST_WINDOW_SECS,
+    MAX_CROSS_POST_SPACES,
 };
 
 /// Configuration for cross-posting detection.
@@ -100,10 +100,7 @@ impl CrossPostingTracker {
                         ),
                         ViolationType::CrossPosting.default_weight(),
                     )
-                    .with_context(format!(
-                        "within {} hours",
-                        self.config.window_secs / 3600
-                    )),
+                    .with_context(format!("within {} hours", self.config.window_secs / 3600)),
                 );
             }
 

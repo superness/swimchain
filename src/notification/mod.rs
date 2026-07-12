@@ -76,5 +76,5 @@ pub use triggers::{detect_triggers, TriggerEvent, TriggerSources};
 pub use types::{Notification, NotificationContext, NotificationId, NotificationType};
 
 // Re-export threshold constants
-pub use throttle::{DEFAULT_DAILY_LIMIT, SPACE_HEALTH_COOLDOWN_SECS, CONTENT_RISK_COOLDOWN_SECS};
+pub use throttle::{CONTENT_RISK_COOLDOWN_SECS, DEFAULT_DAILY_LIMIT, SPACE_HEALTH_COOLDOWN_SECS};
 pub use triggers::STREAK_MILESTONES;

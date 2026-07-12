@@ -293,10 +293,7 @@ impl Default for IncrementalMerkleTree {
 /// Compute the difference between two blocklists.
 ///
 /// Returns hashes that are in `local` but not in `remote`, and vice versa.
-pub fn compute_diff(
-    local: &[[u8; 32]],
-    remote: &[[u8; 32]],
-) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
+pub fn compute_diff(local: &[[u8; 32]], remote: &[[u8; 32]]) -> (Vec<[u8; 32]>, Vec<[u8; 32]>) {
     use std::collections::HashSet;
 
     let local_set: HashSet<[u8; 32]> = local.iter().copied().collect();

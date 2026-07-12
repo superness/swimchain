@@ -23,7 +23,10 @@ pub enum ReviewFlagReason {
     CrossPosting { space_count: u32 },
 
     /// Rate limit exceeded
-    RateLimit { current_count: u32, max_allowed: u32 },
+    RateLimit {
+        current_count: u32,
+        max_allowed: u32,
+    },
 
     /// High link density
     HighLinkDensity { link_count: u32, word_count: u32 },
@@ -74,9 +77,7 @@ impl ReviewFlagReason {
             }
             Self::SuspiciousPattern {
                 pattern_description,
-            } => {
-                pattern_description.clone()
-            }
+            } => pattern_description.clone(),
             Self::MultipleViolations { violation_count } => {
                 format!("{} heuristic violations", violation_count)
             }
@@ -211,7 +212,9 @@ fn violation_to_reason(violation: &super::types::HeuristicViolation) -> ReviewFl
             link_count: 0,
             word_count: 0,
         },
-        ViolationType::ExcessiveMentions => ReviewFlagReason::ExcessiveMentions { mention_count: 0 },
+        ViolationType::ExcessiveMentions => {
+            ReviewFlagReason::ExcessiveMentions { mention_count: 0 }
+        }
         ViolationType::AllCaps => ReviewFlagReason::AllCaps {
             uppercase_percent: (violation.weight * 100.0) as u8,
         },

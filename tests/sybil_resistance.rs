@@ -6,7 +6,9 @@
 
 use std::time::{Duration, Instant};
 
-use swimchain::crypto::action_pow::{compute_pow, verify_pow, ActionType, ForkPoWConfig, PoWChallenge};
+use swimchain::crypto::action_pow::{
+    compute_pow, verify_pow, ActionType, ForkPoWConfig, PoWChallenge,
+};
 use swimchain::crypto::{current_timestamp, sha256};
 
 // ============================================================================
@@ -206,7 +208,10 @@ fn test_sy1_2_higher_difficulty_takes_longer() {
     let _solution_high = compute_pow(&high_challenge, &config).unwrap();
     let time_high = start_high.elapsed();
 
-    println!("4-bit difficulty: {:?}, 8-bit difficulty: {:?}", time_low, time_high);
+    println!(
+        "4-bit difficulty: {:?}, 8-bit difficulty: {:?}",
+        time_low, time_high
+    );
 
     // Note: Due to randomness, we can't guarantee high > low every time
     // But the expected value for 8-bit is 16x higher than 4-bit

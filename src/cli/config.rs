@@ -117,9 +117,8 @@ impl CliConfig {
 
         // Validate followed spaces format
         use std::sync::LazyLock;
-        static SPACE_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"^sp1[a-z0-9]+$").expect("valid regex")
-        });
+        static SPACE_REGEX: LazyLock<regex::Regex> =
+            LazyLock::new(|| regex::Regex::new(r"^sp1[a-z0-9]+$").expect("valid regex"));
         for space in &self.followed_spaces {
             if !SPACE_REGEX.is_match(space) {
                 return Err(CliError::InvalidSpaceId(space.clone()));

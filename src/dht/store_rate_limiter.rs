@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use super::constants::{MAX_PROVIDERS_PER_SENDER, MAX_STORES_PER_SENDER_PER_MIN, STORE_RATE_LIMITER_CLEANUP_SECS};
+use super::constants::{
+    MAX_PROVIDERS_PER_SENDER, MAX_STORES_PER_SENDER_PER_MIN, STORE_RATE_LIMITER_CLEANUP_SECS,
+};
 use super::node_id::NodeId;
 
 /// Tracks STORE request rate per sender
@@ -92,7 +94,10 @@ impl StoreRateLimiter {
         // Periodic cleanup of stale entries
         self.maybe_cleanup(now);
 
-        let entry = self.senders.entry(*sender).or_insert_with(SenderRateEntry::new);
+        let entry = self
+            .senders
+            .entry(*sender)
+            .or_insert_with(SenderRateEntry::new);
 
         // Check rate limit
         if !entry.can_request(now, self.max_per_min) {
@@ -116,7 +121,10 @@ impl StoreRateLimiter {
     /// Call this after successfully storing a provider record.
     pub fn record_store(&mut self, sender: &NodeId, is_new_provider: bool) {
         let now = Instant::now();
-        let entry = self.senders.entry(*sender).or_insert_with(SenderRateEntry::new);
+        let entry = self
+            .senders
+            .entry(*sender)
+            .or_insert_with(SenderRateEntry::new);
         entry.record_request(now);
         if is_new_provider {
             entry.provider_count = entry.provider_count.saturating_add(1);
@@ -137,7 +145,9 @@ impl StoreRateLimiter {
 
     /// Get the current request count (in the last minute) for a sender
     pub fn request_count(&self, sender: &NodeId) -> usize {
-        self.senders.get(sender).map_or(0, |e| e.request_times.len())
+        self.senders
+            .get(sender)
+            .map_or(0, |e| e.request_times.len())
     }
 
     /// Clean up entries for senders with no recent activity
@@ -213,7 +223,10 @@ mod tests {
 
         // First 3 requests allowed
         for _ in 0..3 {
-            assert_eq!(limiter.check_store_allowed(&sender), StoreCheckResult::Allowed);
+            assert_eq!(
+                limiter.check_store_allowed(&sender),
+                StoreCheckResult::Allowed
+            );
             limiter.record_store(&sender, true);
         }
 
@@ -231,7 +244,10 @@ mod tests {
 
         // Record 5 providers
         for _ in 0..5 {
-            assert_eq!(limiter.check_store_allowed(&sender), StoreCheckResult::Allowed);
+            assert_eq!(
+                limiter.check_store_allowed(&sender),
+                StoreCheckResult::Allowed
+            );
             limiter.record_store(&sender, true);
         }
 
@@ -286,7 +302,10 @@ mod tests {
         );
 
         // Sender 2 still has quota
-        assert_eq!(limiter.check_store_allowed(&sender2), StoreCheckResult::Allowed);
+        assert_eq!(
+            limiter.check_store_allowed(&sender2),
+            StoreCheckResult::Allowed
+        );
     }
 
     #[test]

@@ -189,9 +189,7 @@ impl ContributorRanker {
             }
 
             // Check period matches (bytes 48..52 BE)
-            let key_period = u32::from_be_bytes(
-                key[48..52].try_into().unwrap_or([0; 4])
-            );
+            let key_period = u32::from_be_bytes(key[48..52].try_into().unwrap_or([0; 4]));
             if key_period != period {
                 continue;
             }
@@ -201,8 +199,7 @@ impl ContributorRanker {
             identity.copy_from_slice(&key[16..48]);
 
             // Parse contribution data
-            let data = SpaceContributionData::from_bytes(&value)
-                .unwrap_or_default();
+            let data = SpaceContributionData::from_bytes(&value).unwrap_or_default();
 
             // Calculate contribution score: bandwidth_gb * 100 + content_count / 100
             let bandwidth_gb = data.bandwidth_served_bytes / (1024 * 1024 * 1024);
@@ -218,7 +215,8 @@ impl ContributorRanker {
 
         // Sort: contribution_score DESC, then identity ASC (deterministic)
         contributors.sort_by(|a, b| {
-            b.contribution_score.cmp(&a.contribution_score)
+            b.contribution_score
+                .cmp(&a.contribution_score)
                 .then_with(|| a.identity.cmp(&b.identity))
         });
 
@@ -255,9 +253,7 @@ impl ContributorRanker {
                 continue;
             }
 
-            let key_period = u32::from_be_bytes(
-                key[48..52].try_into().unwrap_or([0; 4])
-            );
+            let key_period = u32::from_be_bytes(key[48..52].try_into().unwrap_or([0; 4]));
             if key_period != period {
                 continue;
             }
@@ -365,11 +361,18 @@ mod tests {
         let period = 5u32;
 
         // Record bandwidth
-        ranker.record_bandwidth(&space_id, &identity, 1_000_000, period).unwrap();
-        ranker.record_bandwidth(&space_id, &identity, 500_000, period).unwrap();
+        ranker
+            .record_bandwidth(&space_id, &identity, 1_000_000, period)
+            .unwrap();
+        ranker
+            .record_bandwidth(&space_id, &identity, 500_000, period)
+            .unwrap();
 
         // Get contribution
-        let data = ranker.get_contribution(&space_id, &identity, period).unwrap().unwrap();
+        let data = ranker
+            .get_contribution(&space_id, &identity, period)
+            .unwrap()
+            .unwrap();
         assert_eq!(data.bandwidth_served_bytes, 1_500_000);
     }
 
@@ -382,10 +385,17 @@ mod tests {
         let identity = [2u8; 32];
         let period = 5u32;
 
-        ranker.record_content_served(&space_id, &identity, 50, period).unwrap();
-        ranker.record_content_served(&space_id, &identity, 30, period).unwrap();
+        ranker
+            .record_content_served(&space_id, &identity, 50, period)
+            .unwrap();
+        ranker
+            .record_content_served(&space_id, &identity, 30, period)
+            .unwrap();
 
-        let data = ranker.get_contribution(&space_id, &identity, period).unwrap().unwrap();
+        let data = ranker
+            .get_contribution(&space_id, &identity, period)
+            .unwrap()
+            .unwrap();
         assert_eq!(data.content_served_count, 80);
     }
 
@@ -403,9 +413,15 @@ mod tests {
         let identity3 = [3u8; 32];
 
         // identity2 has highest contribution
-        ranker.record_bandwidth(&space_id, &identity1, 1_000_000_000, period).unwrap(); // ~1GB = 100 score
-        ranker.record_bandwidth(&space_id, &identity2, 5_000_000_000, period).unwrap(); // ~5GB = 500 score
-        ranker.record_bandwidth(&space_id, &identity3, 2_000_000_000, period).unwrap(); // ~2GB = 200 score
+        ranker
+            .record_bandwidth(&space_id, &identity1, 1_000_000_000, period)
+            .unwrap(); // ~1GB = 100 score
+        ranker
+            .record_bandwidth(&space_id, &identity2, 5_000_000_000, period)
+            .unwrap(); // ~5GB = 500 score
+        ranker
+            .record_bandwidth(&space_id, &identity3, 2_000_000_000, period)
+            .unwrap(); // ~2GB = 200 score
 
         let top = ranker.get_top_contributors(&space_id, period, 3).unwrap();
 
@@ -427,7 +443,9 @@ mod tests {
         for i in 0..5u8 {
             let mut identity = [0u8; 32];
             identity[0] = i;
-            ranker.record_bandwidth(&space_id, &identity, (i as u64 + 1) * 1_000_000_000, period).unwrap();
+            ranker
+                .record_bandwidth(&space_id, &identity, (i as u64 + 1) * 1_000_000_000, period)
+                .unwrap();
         }
 
         // Request top 3
@@ -449,8 +467,12 @@ mod tests {
         let mut identity2 = [0u8; 32];
         identity2[0] = 1;
 
-        ranker.record_bandwidth(&space_id, &identity1, 1_000_000_000, period).unwrap();
-        ranker.record_bandwidth(&space_id, &identity2, 1_000_000_000, period).unwrap();
+        ranker
+            .record_bandwidth(&space_id, &identity1, 1_000_000_000, period)
+            .unwrap();
+        ranker
+            .record_bandwidth(&space_id, &identity2, 1_000_000_000, period)
+            .unwrap();
 
         let top = ranker.get_top_contributors(&space_id, period, 2).unwrap();
 
@@ -468,15 +490,25 @@ mod tests {
         let identity = [1u8; 32];
 
         // Record in different periods
-        ranker.record_bandwidth(&space_id, &identity, 1_000_000, 1).unwrap();
-        ranker.record_bandwidth(&space_id, &identity, 2_000_000, 2).unwrap();
+        ranker
+            .record_bandwidth(&space_id, &identity, 1_000_000, 1)
+            .unwrap();
+        ranker
+            .record_bandwidth(&space_id, &identity, 2_000_000, 2)
+            .unwrap();
 
         // Period 1 should have 1MB
-        let data1 = ranker.get_contribution(&space_id, &identity, 1).unwrap().unwrap();
+        let data1 = ranker
+            .get_contribution(&space_id, &identity, 1)
+            .unwrap()
+            .unwrap();
         assert_eq!(data1.bandwidth_served_bytes, 1_000_000);
 
         // Period 2 should have 2MB
-        let data2 = ranker.get_contribution(&space_id, &identity, 2).unwrap().unwrap();
+        let data2 = ranker
+            .get_contribution(&space_id, &identity, 2)
+            .unwrap()
+            .unwrap();
         assert_eq!(data2.bandwidth_served_bytes, 2_000_000);
 
         // Top contributors for period 1 should not include period 2 data
@@ -496,8 +528,12 @@ mod tests {
         let identity1 = [1u8; 32];
         let identity2 = [2u8; 32];
 
-        ranker.record_bandwidth(&space_id, &identity1, 1_000_000, period).unwrap();
-        ranker.record_bandwidth(&space_id, &identity2, 2_000_000, period).unwrap();
+        ranker
+            .record_bandwidth(&space_id, &identity1, 1_000_000, period)
+            .unwrap();
+        ranker
+            .record_bandwidth(&space_id, &identity2, 2_000_000, period)
+            .unwrap();
 
         let total = ranker.get_total_bandwidth(&space_id, period).unwrap();
         assert_eq!(total, 3_000_000);

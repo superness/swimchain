@@ -195,11 +195,8 @@ mod tests {
     #[test]
     fn test_permanent_revocation_no_recovery() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Illegal,
-            time,
-        );
+        let penalty =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Illegal, time);
 
         let result = calculate_recovery(
             &penalty,
@@ -217,18 +214,14 @@ mod tests {
     #[test]
     fn test_time_based_full_recovery() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         // Check after penalty expires
         let result = calculate_recovery(
             &penalty,
-            0,  // No contribution
+            0, // No contribution
             100,
-            0,  // No attestations
+            0, // No attestations
             time + SPAM_PENALTY_SECONDS + 1,
         );
 
@@ -239,11 +232,7 @@ mod tests {
     #[test]
     fn test_insufficient_attestations_no_acceleration() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Abuse,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Abuse, time);
 
         // 1.5× contribution but only 2 attestations (need 3)
         let elapsed = 1000;
@@ -266,11 +255,7 @@ mod tests {
     #[test]
     fn test_contribution_2x_gives_50_percent_reduction() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Abuse,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Abuse, time);
 
         let elapsed = 1000;
         let expected_rate = 100;
@@ -295,24 +280,14 @@ mod tests {
     #[test]
     fn test_contribution_1_5x_gives_25_percent_reduction() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Abuse,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Abuse, time);
 
         let elapsed = 1000;
         let expected_rate = 100;
         // 1.5× contribution
         let contribution = (expected_rate * elapsed * 15) / 10;
 
-        let result = calculate_recovery(
-            &penalty,
-            contribution,
-            expected_rate,
-            3,
-            time + elapsed,
-        );
+        let result = calculate_recovery(&penalty, contribution, expected_rate, 3, time + elapsed);
 
         assert!(result.accelerated);
         assert!((result.reduction_factor - 0.25).abs() < f32::EPSILON);
@@ -325,23 +300,13 @@ mod tests {
     #[test]
     fn test_contribution_below_threshold_no_reduction() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         let elapsed = 1000;
         let expected_rate = 100;
         let contribution = expected_rate * elapsed; // 1.0× (below 1.5× threshold)
 
-        let result = calculate_recovery(
-            &penalty,
-            contribution,
-            expected_rate,
-            3,
-            time + elapsed,
-        );
+        let result = calculate_recovery(&penalty, contribution, expected_rate, 3, time + elapsed);
 
         assert!(!result.accelerated);
         assert_eq!(result.reduction_factor, 0.0);
@@ -350,11 +315,7 @@ mod tests {
     #[test]
     fn test_zero_expected_rate_no_recovery() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         let result = calculate_recovery(
             &penalty,
@@ -371,18 +332,10 @@ mod tests {
     #[test]
     fn test_zero_elapsed_time_no_recovery() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         let result = calculate_recovery(
-            &penalty,
-            1000,
-            100,
-            3,
-            time, // No elapsed time
+            &penalty, 1000, 100, 3, time, // No elapsed time
         );
 
         assert!(!result.accelerated);
@@ -393,11 +346,7 @@ mod tests {
     fn test_qualifies_for_recovery() {
         let time = 1735689600;
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         // Qualifies: 2× contribution, 3 attestations
         assert!(qualifies_for_recovery(&penalty, 2.0, 3));
@@ -416,11 +365,8 @@ mod tests {
     fn test_qualifies_for_recovery_permanent() {
         let time = 1735689600;
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Illegal,
-            time,
-        );
+        let penalty =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Illegal, time);
 
         // Permanent never qualifies
         assert!(!qualifies_for_recovery(&penalty, 10.0, 10));
@@ -445,11 +391,7 @@ mod tests {
     #[test]
     fn test_recovery_result_fields() {
         let time = 1735689600;
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Abuse,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Abuse, time);
 
         // Test no recovery result
         let no_recovery = RecoveryResult::no_recovery(&penalty);
@@ -478,13 +420,7 @@ mod tests {
         let expected_rate = 1000;
         let contribution = expected_rate * elapsed * 2; // 2×
 
-        let result = calculate_recovery(
-            &penalty,
-            contribution,
-            expected_rate,
-            3,
-            time + elapsed,
-        );
+        let result = calculate_recovery(&penalty, contribution, expected_rate, 3, time + elapsed);
 
         // 30 days * 0.5 = 15 days
         let expected_duration = ABUSE_PENALTY_SECONDS / 2;

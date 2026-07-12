@@ -12,10 +12,9 @@ use tempfile::tempdir;
 fn test_block_announce_serialization() {
     let block_hash = [0x42u8; 32];
     let announce = BlockAnnouncePayload::new(
-        block_hash,
-        100,     // height
-        50000,   // total_pow
-        5,       // space_block_count
+        block_hash, 100,        // height
+        50000,      // total_pow
+        5,          // space_block_count
         1700000000, // timestamp
     );
 
@@ -149,7 +148,8 @@ fn test_chain_store_content_block() {
         None, // prev_content_hash
         1700000000,
         BranchPath::root(),
-    ).unwrap();
+    )
+    .unwrap();
 
     let hash = store.put_content_block(&content_block).unwrap();
 
@@ -236,7 +236,8 @@ fn test_block_builder_forms_hierarchy() {
     assert!(builder.should_form_root());
 
     // Build the root block
-    let (root, space_blocks, content_blocks) = builder.build_root_block(1700000000, [0u8; 32], None);
+    let (root, space_blocks, content_blocks) =
+        builder.build_root_block(1700000000, [0u8; 32], None);
 
     assert!(root.height() > 0 || root.prev_root_hash == [0u8; 32]); // Genesis or non-zero height
     assert_eq!(root.total_pow, 20);
@@ -277,7 +278,8 @@ fn test_block_sync_roundtrip() {
 
     builder.add_action(thread_id, space_id, action, BranchPath::root());
 
-    let (root, space_blocks, content_blocks) = builder.build_root_block(1700000000, [0u8; 32], None);
+    let (root, space_blocks, content_blocks) =
+        builder.build_root_block(1700000000, [0u8; 32], None);
 
     // Store all blocks
     for cb in &content_blocks {
@@ -299,7 +301,9 @@ fn test_block_sync_roundtrip() {
 
             for content_hash in &sb.content_block_hashes {
                 if let Ok(Some(cb)) = store.get_content_block(content_hash) {
-                    payload.content_blocks.push(bincode::serialize(&cb).unwrap());
+                    payload
+                        .content_blocks
+                        .push(bincode::serialize(&cb).unwrap());
                 }
             }
         }
@@ -327,9 +331,9 @@ fn test_block_announce_triggers_request() {
     let unknown_hash = [0xFFu8; 32];
     let announce = BlockAnnouncePayload::new(
         unknown_hash,
-        1,      // height
-        100,    // pow
-        1,      // spaces
+        1,   // height
+        100, // pow
+        1,   // spaces
         1700000000,
     );
 
@@ -381,8 +385,8 @@ fn test_e2e_block_chain_continuity() {
 
 // ============ Block Range Sync Tests ============
 
-use swimchain::network::messages::{GetBlocksPayload, BlocksPayload, SerializedBlock};
-use swimchain::types::serialize::{Serialize, Deserialize};
+use swimchain::network::messages::{BlocksPayload, GetBlocksPayload, SerializedBlock};
+use swimchain::types::serialize::{Deserialize, Serialize};
 
 /// Test GetBlocksPayload serialization
 #[test]
@@ -409,8 +413,12 @@ fn test_getblocks_payload_serialization() {
 fn test_blocks_payload_serialization() {
     let response = BlocksPayload {
         blocks: vec![
-            SerializedBlock { data: vec![1, 2, 3, 4, 5] },
-            SerializedBlock { data: vec![10, 20, 30] },
+            SerializedBlock {
+                data: vec![1, 2, 3, 4, 5],
+            },
+            SerializedBlock {
+                data: vec![10, 20, 30],
+            },
         ],
     };
 

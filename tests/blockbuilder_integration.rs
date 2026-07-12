@@ -210,13 +210,7 @@ fn test_root_block_chain_continuity() {
 /// Test BlockAnnouncePayload serialization roundtrip
 #[test]
 fn test_block_announce_payload_roundtrip() {
-    let payload = BlockAnnouncePayload::new(
-        [0xab; 32],
-        100,
-        500,
-        5,
-        1735600000,
-    );
+    let payload = BlockAnnouncePayload::new([0xab; 32], 100, 500, 5, 1735600000);
 
     let bytes = payload.to_bytes();
     assert_eq!(bytes.len(), BlockAnnouncePayload::SIZE);
@@ -359,7 +353,7 @@ fn test_multiple_small_actions_reach_threshold() {
             emoji: None,
             media_refs: vec![],
             display_name: None,
-        replaces_pending: None,
+            replaces_pending: None,
         };
 
         builder.add_action([10 + i; 32], [20u8; 32], action, BranchPath::root());
@@ -404,7 +398,7 @@ fn test_replies_stay_with_parent_thread() {
         actor: [2u8; 32],
         timestamp: 1001,
         content_hash: Some([50u8; 32]), // Reply content
-        parent_id: Some(thread_id),      // References parent
+        parent_id: Some(thread_id),     // References parent
         pow_nonce: 43,
         pow_work: 15,
         pow_target: [3u8; 32],
@@ -478,7 +472,7 @@ fn test_concurrent_builder_access() {
                 emoji: None,
                 media_refs: vec![],
                 display_name: None,
-        replaces_pending: None,
+                replaces_pending: None,
             };
 
             let mut builder = builder_clone.write().unwrap();
@@ -661,7 +655,7 @@ fn test_vision_pow_aggregation() {
             emoji: None,
             media_refs: vec![],
             display_name: None,
-        replaces_pending: None,
+            replaces_pending: None,
         };
 
         builder.add_action([i as u8; 32], [20u8; 32], action, BranchPath::root());

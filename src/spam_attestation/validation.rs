@@ -40,10 +40,7 @@ impl AttesterEligibility {
     }
 
     /// Create eligibility result for an ineligible attester.
-    pub fn ineligible(
-        attestation_count: u32,
-        reason: SpamAttestationError,
-    ) -> Self {
+    pub fn ineligible(attestation_count: u32, reason: SpamAttestationError) -> Self {
         Self {
             is_eligible: false,
             attestation_count_in_window: attestation_count,
@@ -59,9 +56,7 @@ impl AttesterEligibility {
 ///
 /// # Arguments
 /// * `attestations_in_window` - Number of attestations submitted in the current hour
-pub fn check_attester_eligibility(
-    attestations_in_window: u32,
-) -> AttesterEligibility {
+pub fn check_attester_eligibility(attestations_in_window: u32) -> AttesterEligibility {
     // Check rate limit
     if attestations_in_window >= SPAM_ATTESTATION_RATE_LIMIT_HOURLY {
         return AttesterEligibility::ineligible(
@@ -80,9 +75,7 @@ pub fn check_attester_eligibility(
 /// Check if an identity is eligible to submit counter-attestations.
 ///
 /// Counter-attestations share the same rate limit.
-pub fn check_counter_attester_eligibility(
-    attestations_in_window: u32,
-) -> AttesterEligibility {
+pub fn check_counter_attester_eligibility(attestations_in_window: u32) -> AttesterEligibility {
     // Counter-attestations share the same rate limit
     if attestations_in_window >= SPAM_ATTESTATION_RATE_LIMIT_HOURLY {
         return AttesterEligibility::ineligible(
@@ -138,13 +131,19 @@ where
         // Future timestamp - allow small clock skew (5 minutes)
         let future = attestation.timestamp - current_time;
         if future > 300 {
-            return Err(SpamAttestationError::TimestampInFuture { future_secs: future });
+            return Err(SpamAttestationError::TimestampInFuture {
+                future_secs: future,
+            });
         }
     }
 
     // 3. Verify signature
     let signing_message = attestation.signing_message();
-    if !verify_signature(&attestation.attester, &signing_message, &attestation.signature) {
+    if !verify_signature(
+        &attestation.attester,
+        &signing_message,
+        &attestation.signature,
+    ) {
         return Err(SpamAttestationError::InvalidSignature);
     }
 

@@ -406,11 +406,11 @@ mod tests {
     #[test]
     fn test_combined_scenario() {
         let mut rep = create_test_reputation();
-        rep.identity_age_days = 100;        // +100
-        rep.quality_attestations = 5;       // +25
+        rep.identity_age_days = 100; // +100
+        rep.quality_attestations = 5; // +25
         rep.counter_attestation_successes = 2; // +6
-        rep.spam_flags_received = 2;        // -40
-        rep.spam_flags_countered = 1;       // +15 + 10 = +25
+        rep.spam_flags_received = 2; // -40
+        rep.spam_flags_countered = 1; // +15 + 10 = +25
 
         let score = calculate_reputation_score(&rep, 30);
         // 100 + 100 + 25 + 6 + 25 + 30 - 40 = 246
@@ -458,10 +458,10 @@ mod tests {
     #[test]
     fn test_calculate_rate_limit() {
         // Base limit 50
-        assert_eq!(calculate_rate_limit(50, 250), 50);  // Trusted: 100%
-        assert_eq!(calculate_rate_limit(50, 75), 25);   // Watched: 50%
-        assert_eq!(calculate_rate_limit(50, 25), 10);   // Restricted: 20%
-        assert_eq!(calculate_rate_limit(50, -10), 5);   // Untrusted: 10%
+        assert_eq!(calculate_rate_limit(50, 250), 50); // Trusted: 100%
+        assert_eq!(calculate_rate_limit(50, 75), 25); // Watched: 50%
+        assert_eq!(calculate_rate_limit(50, 25), 10); // Restricted: 20%
+        assert_eq!(calculate_rate_limit(50, -10), 5); // Untrusted: 10%
     }
 
     #[test]

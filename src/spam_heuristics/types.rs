@@ -73,7 +73,12 @@ impl ContentFingerprint {
     /// - Trims whitespace
     /// - Lowercases
     /// - Removes duplicate spaces
-    pub fn from_content(content: &[u8], space_id: &[u8; 16], author: &[u8; 32], timestamp: u64) -> Self {
+    pub fn from_content(
+        content: &[u8],
+        space_id: &[u8; 16],
+        author: &[u8; 32],
+        timestamp: u64,
+    ) -> Self {
         // Normalize content
         let normalized = normalize_content(content);
 
@@ -220,8 +225,7 @@ impl HeuristicResult {
         self.confidence = (total_weight / self.violations.len() as f32).min(1.0);
 
         // Flag if any high-confidence violation or multiple lower ones
-        self.should_flag = self.violations.iter().any(|v| v.weight >= 0.8)
-            || total_weight >= 1.5;
+        self.should_flag = self.violations.iter().any(|v| v.weight >= 0.8) || total_weight >= 1.5;
     }
 
     /// Merge another result into this one.
@@ -298,13 +302,13 @@ impl ViolationType {
     /// Get the default weight for this violation type.
     pub fn default_weight(&self) -> f32 {
         match self {
-            Self::Repetition => 0.9,      // Very suspicious
-            Self::NearDuplicate => 0.7,   // Suspicious
-            Self::CrossPosting => 0.8,    // Very suspicious
-            Self::RateLimit => 1.0,       // Definitive violation
-            Self::HighLinkDensity => 0.6, // Moderate
+            Self::Repetition => 0.9,        // Very suspicious
+            Self::NearDuplicate => 0.7,     // Suspicious
+            Self::CrossPosting => 0.8,      // Very suspicious
+            Self::RateLimit => 1.0,         // Definitive violation
+            Self::HighLinkDensity => 0.6,   // Moderate
             Self::ExcessiveMentions => 0.5, // Moderate
-            Self::AllCaps => 0.3,         // Low
+            Self::AllCaps => 0.3,           // Low
             Self::SuspiciousPattern => 0.5, // Moderate
         }
     }
@@ -375,7 +379,12 @@ mod tests {
         let sim_1_3 = fp1.similarity(&fp3);
 
         // Similar content should have higher similarity
-        assert!(sim_1_2 > sim_1_3, "sim_1_2={}, sim_1_3={}", sim_1_2, sim_1_3);
+        assert!(
+            sim_1_2 > sim_1_3,
+            "sim_1_2={}, sim_1_3={}",
+            sim_1_2,
+            sim_1_3
+        );
         // Near-duplicates should have high similarity
         assert!(sim_1_2 > 0.7, "sim_1_2={}", sim_1_2);
     }
@@ -412,6 +421,8 @@ mod tests {
     #[test]
     fn test_violation_type_weights() {
         assert_eq!(ViolationType::RateLimit.default_weight(), 1.0);
-        assert!(ViolationType::Repetition.default_weight() > ViolationType::AllCaps.default_weight());
+        assert!(
+            ViolationType::Repetition.default_weight() > ViolationType::AllCaps.default_weight()
+        );
     }
 }

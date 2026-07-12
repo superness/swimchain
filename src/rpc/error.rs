@@ -152,10 +152,12 @@ impl RpcError {
             Self::StorageError(_) => RpcErrorCode::StorageError,
             Self::NetworkError(_) => RpcErrorCode::NetworkError,
             Self::PowInvalid(_) => RpcErrorCode::PowInvalid,
-            Self::Io(_) | Self::Http(_) | Self::ConnectionRefused | Self::Timeout
-            | Self::TlsRequired | Self::TlsConfig(_) => {
-                RpcErrorCode::ServerError
-            }
+            Self::Io(_)
+            | Self::Http(_)
+            | Self::ConnectionRefused
+            | Self::Timeout
+            | Self::TlsRequired
+            | Self::TlsConfig(_) => RpcErrorCode::ServerError,
         }
     }
 }

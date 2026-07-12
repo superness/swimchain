@@ -881,13 +881,11 @@ impl ContentRetrievalManager {
 
         // Create parent directory
         if let Some(parent) = blob_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| StorageError::IoError(e.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|e| StorageError::IoError(e.to_string()))?;
         }
 
         // Write the file
-        std::fs::write(&blob_path, data)
-            .map_err(|e| StorageError::IoError(e.to_string()))?;
+        std::fs::write(&blob_path, data).map_err(|e| StorageError::IoError(e.to_string()))?;
 
         // Clear pending request
         if let Ok(mut pending) = self.pending_requests.write() {

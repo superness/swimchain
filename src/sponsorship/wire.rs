@@ -26,8 +26,7 @@
 use std::fmt;
 
 use crate::sponsorship::types::{
-    PublicSponsorshipOffer, SponsorshipClaim, SponsorshipOfferType,
-    SponsorshipRequirements,
+    PublicSponsorshipOffer, SponsorshipClaim, SponsorshipOfferType, SponsorshipRequirements,
 };
 use crate::types::identity::{IdentityCreationProof, PublicKey, Signature};
 
@@ -46,10 +45,7 @@ pub const MAX_APPLICATION_WIRE_SIZE: usize = 2000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
     /// Buffer is too short
-    BufferTooShort {
-        expected: usize,
-        actual: usize,
-    },
+    BufferTooShort { expected: usize, actual: usize },
     /// Invalid offer type byte
     InvalidOfferType(u8),
     /// Invalid UTF-8 in application text
@@ -57,22 +53,20 @@ pub enum WireError {
     /// Bincode deserialization failed
     BincodeError(String),
     /// Requirements too large
-    RequirementsTooLarge {
-        max: usize,
-        actual: usize,
-    },
+    RequirementsTooLarge { max: usize, actual: usize },
     /// Application too large
-    ApplicationTooLarge {
-        max: usize,
-        actual: usize,
-    },
+    ApplicationTooLarge { max: usize, actual: usize },
 }
 
 impl fmt::Display for WireError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BufferTooShort { expected, actual } => {
-                write!(f, "buffer too short: need {} bytes, got {}", expected, actual)
+                write!(
+                    f,
+                    "buffer too short: need {} bytes, got {}",
+                    expected, actual
+                )
             }
             Self::InvalidOfferType(v) => write!(f, "invalid offer type: {}", v),
             Self::InvalidUtf8 => write!(f, "invalid UTF-8 in application text"),
@@ -117,16 +111,16 @@ pub fn serialize_offer(offer: &PublicSponsorshipOffer) -> Result<Vec<u8>, WireEr
 
     let mut buf = Vec::with_capacity(MIN_OFFER_WIRE_SIZE + requirements_bytes.len());
 
-    buf.extend_from_slice(offer.sponsor.as_bytes());        // 32
-    buf.extend_from_slice(&offer.offer_id);                  // 16
-    buf.extend_from_slice(&offer.created_at.to_le_bytes());  // 8 LE
-    buf.extend_from_slice(&offer.expires_at.to_le_bytes());  // 8 LE
-    buf.push(offer.max_sponsees);                            // 1
-    buf.push(offer.offer_type as u8);                        // 1
+    buf.extend_from_slice(offer.sponsor.as_bytes()); // 32
+    buf.extend_from_slice(&offer.offer_id); // 16
+    buf.extend_from_slice(&offer.created_at.to_le_bytes()); // 8 LE
+    buf.extend_from_slice(&offer.expires_at.to_le_bytes()); // 8 LE
+    buf.push(offer.max_sponsees); // 1
+    buf.push(offer.offer_type as u8); // 1
     buf.extend_from_slice(&(requirements_bytes.len() as u16).to_le_bytes()); // 2 LE
-    buf.extend_from_slice(&requirements_bytes);              // var
-    buf.extend_from_slice(offer.signature.as_bytes());       // 64
-    buf.push(if offer.auto_approve { 1 } else { 0 });        // 1 (trailing, optional)
+    buf.extend_from_slice(&requirements_bytes); // var
+    buf.extend_from_slice(offer.signature.as_bytes()); // 64
+    buf.push(if offer.auto_approve { 1 } else { 0 }); // 1 (trailing, optional)
 
     Ok(buf)
 }
@@ -143,33 +137,19 @@ pub fn deserialize_offer(data: &[u8]) -> Result<PublicSponsorshipOffer, WireErro
     let mut pos = 0;
 
     // sponsor(32)
-    let sponsor = PublicKey::from_bytes(
-        data[pos..pos + 32]
-            .try_into()
-            .expect("slice is 32 bytes"),
-    );
+    let sponsor = PublicKey::from_bytes(data[pos..pos + 32].try_into().expect("slice is 32 bytes"));
     pos += 32;
 
     // offer_id(16)
-    let offer_id: [u8; 16] = data[pos..pos + 16]
-        .try_into()
-        .expect("slice is 16 bytes");
+    let offer_id: [u8; 16] = data[pos..pos + 16].try_into().expect("slice is 16 bytes");
     pos += 16;
 
     // created_at(8 LE)
-    let created_at = u64::from_le_bytes(
-        data[pos..pos + 8]
-            .try_into()
-            .expect("slice is 8 bytes"),
-    );
+    let created_at = u64::from_le_bytes(data[pos..pos + 8].try_into().expect("slice is 8 bytes"));
     pos += 8;
 
     // expires_at(8 LE)
-    let expires_at = u64::from_le_bytes(
-        data[pos..pos + 8]
-            .try_into()
-            .expect("slice is 8 bytes"),
-    );
+    let expires_at = u64::from_le_bytes(data[pos..pos + 8].try_into().expect("slice is 8 bytes"));
     pos += 8;
 
     // max_sponsees(1)
@@ -182,11 +162,8 @@ pub fn deserialize_offer(data: &[u8]) -> Result<PublicSponsorshipOffer, WireErro
     pos += 1;
 
     // requirements_len(2 LE)
-    let requirements_len = u16::from_le_bytes(
-        data[pos..pos + 2]
-            .try_into()
-            .expect("slice is 2 bytes"),
-    ) as usize;
+    let requirements_len =
+        u16::from_le_bytes(data[pos..pos + 2].try_into().expect("slice is 2 bytes")) as usize;
     pos += 2;
 
     // Check we have enough data
@@ -199,16 +176,14 @@ pub fn deserialize_offer(data: &[u8]) -> Result<PublicSponsorshipOffer, WireErro
     }
 
     // requirements(var)
-    let requirements: SponsorshipRequirements = bincode::deserialize(&data[pos..pos + requirements_len])
-        .map_err(|e| WireError::BincodeError(e.to_string()))?;
+    let requirements: SponsorshipRequirements =
+        bincode::deserialize(&data[pos..pos + requirements_len])
+            .map_err(|e| WireError::BincodeError(e.to_string()))?;
     pos += requirements_len;
 
     // signature(64)
-    let signature = Signature::from_bytes(
-        data[pos..pos + 64]
-            .try_into()
-            .expect("slice is 64 bytes"),
-    );
+    let signature =
+        Signature::from_bytes(data[pos..pos + 64].try_into().expect("slice is 64 bytes"));
     pos += 64;
 
     // auto_approve(1) — optional trailing byte for backwards compatibility
@@ -254,19 +229,30 @@ pub fn serialize_claim(claim: &SponsorshipClaim) -> Result<Vec<u8>, WireError> {
         });
     }
 
-    let attestation_size = if claim.attestation_signature.is_some() { 65 } else { 1 };
-    let buf_size = 16 + 32 + 8 + 2 + pow_proof_bytes.len() + 2 + application_bytes.len()
-        + attestation_size + 64;
+    let attestation_size = if claim.attestation_signature.is_some() {
+        65
+    } else {
+        1
+    };
+    let buf_size = 16
+        + 32
+        + 8
+        + 2
+        + pow_proof_bytes.len()
+        + 2
+        + application_bytes.len()
+        + attestation_size
+        + 64;
 
     let mut buf = Vec::with_capacity(buf_size);
 
-    buf.extend_from_slice(&claim.offer_id);                  // 16
-    buf.extend_from_slice(claim.claimant.as_bytes());        // 32
-    buf.extend_from_slice(&claim.claimed_at.to_le_bytes());  // 8 LE
+    buf.extend_from_slice(&claim.offer_id); // 16
+    buf.extend_from_slice(claim.claimant.as_bytes()); // 32
+    buf.extend_from_slice(&claim.claimed_at.to_le_bytes()); // 8 LE
     buf.extend_from_slice(&(pow_proof_bytes.len() as u16).to_le_bytes()); // 2 LE
-    buf.extend_from_slice(&pow_proof_bytes);                 // var
+    buf.extend_from_slice(&pow_proof_bytes); // var
     buf.extend_from_slice(&(application_bytes.len() as u16).to_le_bytes()); // 2 LE
-    buf.extend_from_slice(application_bytes);                // var
+    buf.extend_from_slice(application_bytes); // var
 
     // Attestation signature (optional)
     if let Some(sig) = &claim.attestation_signature {
@@ -296,33 +282,21 @@ pub fn deserialize_claim(data: &[u8]) -> Result<SponsorshipClaim, WireError> {
     let mut pos = 0;
 
     // offer_id(16)
-    let offer_id: [u8; 16] = data[pos..pos + 16]
-        .try_into()
-        .expect("slice is 16 bytes");
+    let offer_id: [u8; 16] = data[pos..pos + 16].try_into().expect("slice is 16 bytes");
     pos += 16;
 
     // claimant(32)
-    let claimant = PublicKey::from_bytes(
-        data[pos..pos + 32]
-            .try_into()
-            .expect("slice is 32 bytes"),
-    );
+    let claimant =
+        PublicKey::from_bytes(data[pos..pos + 32].try_into().expect("slice is 32 bytes"));
     pos += 32;
 
     // claimed_at(8 LE)
-    let claimed_at = u64::from_le_bytes(
-        data[pos..pos + 8]
-            .try_into()
-            .expect("slice is 8 bytes"),
-    );
+    let claimed_at = u64::from_le_bytes(data[pos..pos + 8].try_into().expect("slice is 8 bytes"));
     pos += 8;
 
     // pow_proof_len(2 LE)
-    let pow_proof_len = u16::from_le_bytes(
-        data[pos..pos + 2]
-            .try_into()
-            .expect("slice is 2 bytes"),
-    ) as usize;
+    let pow_proof_len =
+        u16::from_le_bytes(data[pos..pos + 2].try_into().expect("slice is 2 bytes")) as usize;
     pos += 2;
 
     // Check remaining data
@@ -334,8 +308,9 @@ pub fn deserialize_claim(data: &[u8]) -> Result<SponsorshipClaim, WireError> {
     }
 
     // pow_proof(var)
-    let identity_pow_proof: IdentityCreationProof = bincode::deserialize(&data[pos..pos + pow_proof_len])
-        .map_err(|e| WireError::BincodeError(e.to_string()))?;
+    let identity_pow_proof: IdentityCreationProof =
+        bincode::deserialize(&data[pos..pos + pow_proof_len])
+            .map_err(|e| WireError::BincodeError(e.to_string()))?;
     pos += pow_proof_len;
 
     // application_len(2 LE)
@@ -345,11 +320,8 @@ pub fn deserialize_claim(data: &[u8]) -> Result<SponsorshipClaim, WireError> {
             actual: data.len(),
         });
     }
-    let application_len = u16::from_le_bytes(
-        data[pos..pos + 2]
-            .try_into()
-            .expect("slice is 2 bytes"),
-    ) as usize;
+    let application_len =
+        u16::from_le_bytes(data[pos..pos + 2].try_into().expect("slice is 2 bytes")) as usize;
     pos += 2;
 
     // Check remaining data
@@ -388,11 +360,7 @@ pub fn deserialize_claim(data: &[u8]) -> Result<SponsorshipClaim, WireError> {
                 actual: data.len(),
             });
         }
-        let sig = Signature::from_bytes(
-            data[pos..pos + 64]
-                .try_into()
-                .expect("slice is 64 bytes"),
-        );
+        let sig = Signature::from_bytes(data[pos..pos + 64].try_into().expect("slice is 64 bytes"));
         pos += 64;
         Some(sig)
     } else {
@@ -406,11 +374,8 @@ pub fn deserialize_claim(data: &[u8]) -> Result<SponsorshipClaim, WireError> {
             actual: data.len(),
         });
     }
-    let claimant_signature = Signature::from_bytes(
-        data[pos..pos + 64]
-            .try_into()
-            .expect("slice is 64 bytes"),
-    );
+    let claimant_signature =
+        Signature::from_bytes(data[pos..pos + 64].try_into().expect("slice is 64 bytes"));
 
     Ok(SponsorshipClaim {
         offer_id,
@@ -478,12 +443,12 @@ pub fn serialize_claim_response(response: &ClaimResponse) -> Vec<u8> {
 
     let mut buf = Vec::with_capacity(buf_size);
 
-    buf.extend_from_slice(&response.offer_id);              // 16
-    buf.extend_from_slice(response.claimant.as_bytes());    // 32
-    buf.push(response.response_type as u8);                 // 1
+    buf.extend_from_slice(&response.offer_id); // 16
+    buf.extend_from_slice(response.claimant.as_bytes()); // 32
+    buf.push(response.response_type as u8); // 1
 
     if let Some(sig) = &response.approval_signature {
-        buf.extend_from_slice(sig.as_bytes());              // 64
+        buf.extend_from_slice(sig.as_bytes()); // 64
     }
 
     buf
@@ -503,17 +468,12 @@ pub fn deserialize_claim_response(data: &[u8]) -> Result<ClaimResponse, WireErro
     let mut pos = 0;
 
     // offer_id(16)
-    let offer_id: [u8; 16] = data[pos..pos + 16]
-        .try_into()
-        .expect("slice is 16 bytes");
+    let offer_id: [u8; 16] = data[pos..pos + 16].try_into().expect("slice is 16 bytes");
     pos += 16;
 
     // claimant(32)
-    let claimant = PublicKey::from_bytes(
-        data[pos..pos + 32]
-            .try_into()
-            .expect("slice is 32 bytes"),
-    );
+    let claimant =
+        PublicKey::from_bytes(data[pos..pos + 32].try_into().expect("slice is 32 bytes"));
     pos += 32;
 
     // response_type(1)
@@ -530,9 +490,7 @@ pub fn deserialize_claim_response(data: &[u8]) -> Result<ClaimResponse, WireErro
             });
         }
         Some(Signature::from_bytes(
-            data[pos..pos + 64]
-                .try_into()
-                .expect("slice is 64 bytes"),
+            data[pos..pos + 64].try_into().expect("slice is 64 bytes"),
         ))
     } else {
         None
@@ -759,8 +717,11 @@ mod tests {
     fn test_wire_error_display() {
         assert!(WireError::InvalidUtf8.to_string().contains("UTF-8"));
         assert!(WireError::InvalidOfferType(42).to_string().contains("42"));
-        assert!(WireError::BufferTooShort { expected: 100, actual: 50 }
-            .to_string()
-            .contains("100"));
+        assert!(WireError::BufferTooShort {
+            expected: 100,
+            actual: 50
+        }
+        .to_string()
+        .contains("100"));
     }
 }

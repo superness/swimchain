@@ -123,18 +123,26 @@ impl<'a> CounterAttestationManager<'a> {
             // Future timestamp - allow small clock skew (5 minutes)
             let future = counter.timestamp - current_time;
             if future > 300 {
-                return Err(SpamAttestationError::TimestampInFuture { future_secs: future });
+                return Err(SpamAttestationError::TimestampInFuture {
+                    future_secs: future,
+                });
             }
         }
 
         // 3. Verify signature
         let signing_message = counter.signing_message();
-        if !verify_signature(&counter.counter_attester, &signing_message, &counter.signature) {
+        if !verify_signature(
+            &counter.counter_attester,
+            &signing_message,
+            &counter.signature,
+        ) {
             return Err(SpamAttestationError::InvalidSignature);
         }
 
         // 4. Check if content actually has spam attestations
-        let attestations = self.store.get_attestations_for_content(&counter.content_hash)?;
+        let attestations = self
+            .store
+            .get_attestations_for_content(&counter.content_hash)?;
         if attestations.is_empty() {
             return Err(SpamAttestationError::ContentNotFound);
         }
@@ -227,10 +235,7 @@ impl<'a> CounterAttestationManager<'a> {
     /// Calculate the heat bonus for content based on counter-attestations.
     ///
     /// Returns 0 if content is not flagged or has no counter-attestations.
-    pub fn get_heat_bonus(
-        &self,
-        content_hash: &[u8; 32],
-    ) -> Result<u64, SpamAttestationError> {
+    pub fn get_heat_bonus(&self, content_hash: &[u8; 32]) -> Result<u64, SpamAttestationError> {
         let state = self.store.get_counter_state(content_hash)?;
         Ok(calculate_heat_bonus(state.count()))
     }
@@ -336,9 +341,7 @@ mod tests {
         let counter = create_test_counter(content_hash, [2u8; 32]);
 
         // Should pass with no rate limiting
-        let result = manager.validate(&counter, 0, 1735689600, |_, _, _| {
-            true
-        });
+        let result = manager.validate(&counter, 0, 1735689600, |_, _, _| true);
         assert!(result.is_ok());
     }
 
@@ -353,8 +356,7 @@ mod tests {
         let counter = create_test_counter(content_hash, [2u8; 32]);
 
         // At rate limit - should fail
-        let result =
-            manager.validate(&counter, 10, 1735689600, |_, _, _| true);
+        let result = manager.validate(&counter, 10, 1735689600, |_, _, _| true);
         assert!(matches!(
             result,
             Err(SpamAttestationError::RateLimitExceeded { .. })
@@ -370,9 +372,7 @@ mod tests {
         let content_hash = [1u8; 32];
         let counter = create_test_counter(content_hash, [2u8; 32]);
 
-        let result = manager.validate(&counter, 0, 1735689600, |_, _, _| {
-            true
-        });
+        let result = manager.validate(&counter, 0, 1735689600, |_, _, _| true);
         assert!(matches!(result, Err(SpamAttestationError::ContentNotFound)));
     }
 
@@ -387,13 +387,11 @@ mod tests {
 
         // Add first counter-attestation
         let counter = create_test_counter(content_hash, attester);
-        let result =
-            manager.process(&counter, 0, 1735689600, |_, _, _| true);
+        let result = manager.process(&counter, 0, 1735689600, |_, _, _| true);
         assert!(result.accepted);
 
         // Try to add duplicate
-        let result =
-            manager.validate(&counter, 1, 1735689600, |_, _, _| true);
+        let result = manager.validate(&counter, 1, 1735689600, |_, _, _| true);
         assert!(matches!(
             result,
             Err(SpamAttestationError::DuplicateAttestation)
@@ -411,12 +409,7 @@ mod tests {
         let counter = create_test_counter(content_hash, [2u8; 32]);
 
         // Signature verification fails
-        let result = manager.validate(
-            &counter,
-            0,
-            1735689600,
-            |_, _, _| false,
-        );
+        let result = manager.validate(&counter, 0, 1735689600, |_, _, _| false);
         assert!(matches!(
             result,
             Err(SpamAttestationError::InvalidSignature)
@@ -435,9 +428,7 @@ mod tests {
 
         // 2 days later
         let current_time = 1735689600 + 2 * 86400;
-        let result = manager.validate(&counter, 0, current_time, |_, _, _| {
-            true
-        });
+        let result = manager.validate(&counter, 0, current_time, |_, _, _| true);
         assert!(matches!(
             result,
             Err(SpamAttestationError::TimestampTooOld { .. })
@@ -454,8 +445,7 @@ mod tests {
 
         // First counter-attestation
         let counter = create_test_counter(content_hash, [2u8; 32]);
-        let result =
-            manager.process(&counter, 0, 1735689600, |_, _, _| true);
+        let result = manager.process(&counter, 0, 1735689600, |_, _, _| true);
 
         assert!(result.accepted);
         assert_eq!(result.total_counter_attestations, 1);
@@ -474,12 +464,7 @@ mod tests {
         // Add 5 counter-attestations
         for i in 0u8..5 {
             let counter = create_test_counter(content_hash, [10 + i; 32]);
-            let result = manager.process(
-                &counter,
-                i as u32,
-                1735689600 + i as u64,
-                |_, _, _| true,
-            );
+            let result = manager.process(&counter, i as u32, 1735689600 + i as u64, |_, _, _| true);
 
             assert!(result.accepted);
             assert_eq!(result.total_counter_attestations, i + 1);
@@ -510,12 +495,7 @@ mod tests {
         // Add 3 counter-attestations
         for i in 0u8..3 {
             let counter = create_test_counter(content_hash, [10 + i; 32]);
-            manager.process(
-                &counter,
-                i as u32,
-                1735689600,
-                |_, _, _| true,
-            );
+            manager.process(&counter, i as u32, 1735689600, |_, _, _| true);
         }
 
         // Should have +30 heat bonus

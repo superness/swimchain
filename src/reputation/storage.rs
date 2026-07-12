@@ -19,7 +19,9 @@ pub struct ReputationStore {
 impl ReputationStore {
     /// Open a reputation store with the given database.
     pub fn open(db: Db) -> Self {
-        let reputations = db.open_tree(REPUTATION_TREE).expect("Failed to open reputation tree");
+        let reputations = db
+            .open_tree(REPUTATION_TREE)
+            .expect("Failed to open reputation tree");
         Self { reputations }
     }
 
@@ -29,8 +31,9 @@ impl ReputationStore {
     pub fn get(&self, identity: &[u8; 32]) -> Result<Option<PosterReputation>, ReputationError> {
         match self.reputations.get(identity)? {
             Some(bytes) => {
-                let rep = PosterReputation::from_bytes(&bytes)
-                    .ok_or_else(|| ReputationError::StorageError("Invalid reputation bytes".into()))?;
+                let rep = PosterReputation::from_bytes(&bytes).ok_or_else(|| {
+                    ReputationError::StorageError("Invalid reputation bytes".into())
+                })?;
                 Ok(Some(rep))
             }
             None => Ok(None),
@@ -184,7 +187,11 @@ impl ReputationStore {
     }
 
     /// Check if identity is at or below a score threshold.
-    pub fn is_below_threshold(&self, identity: &[u8; 32], threshold: i32) -> Result<bool, ReputationError> {
+    pub fn is_below_threshold(
+        &self,
+        identity: &[u8; 32],
+        threshold: i32,
+    ) -> Result<bool, ReputationError> {
         let score = self.get_score(identity)?;
         Ok(score <= threshold)
     }

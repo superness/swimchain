@@ -4,9 +4,9 @@
 
 use crate::sponsorship::error::SponsorshipError;
 use crate::sponsorship::types::{
-    count_leading_zero_bits, PublicSponsorshipOffer, SponsorshipClaim,
-    SponsorshipOfferType, SponsorshipRequirements, TIMESTAMP_TOLERANCE_SECONDS,
-    MAX_OFFER_SPONSEES, MAX_APPLICATION_TEXT_BYTES,
+    count_leading_zero_bits, PublicSponsorshipOffer, SponsorshipClaim, SponsorshipOfferType,
+    SponsorshipRequirements, MAX_APPLICATION_TEXT_BYTES, MAX_OFFER_SPONSEES,
+    TIMESTAMP_TOLERANCE_SECONDS,
 };
 use crate::types::identity::PublicKey;
 
@@ -241,7 +241,6 @@ where
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,17 +328,11 @@ mod tests {
         let current_time = 1735689600;
 
         let result = validate_offer_creation(&offer, current_time);
-        assert!(matches!(
-            result,
-            Err(SponsorshipError::InvalidInvariant(_))
-        ));
+        assert!(matches!(result, Err(SponsorshipError::InvalidInvariant(_))));
 
         offer.max_sponsees = 11; // > MAX_OFFER_SPONSEES
         let result = validate_offer_creation(&offer, current_time);
-        assert!(matches!(
-            result,
-            Err(SponsorshipError::InvalidInvariant(_))
-        ));
+        assert!(matches!(result, Err(SponsorshipError::InvalidInvariant(_))));
     }
 
     #[test]
@@ -359,7 +352,10 @@ mod tests {
         let result = validate_claim_requirements(&claim, &offer);
         assert!(matches!(
             result,
-            Err(SponsorshipError::InsufficientPow { required: 10, provided: 0 })
+            Err(SponsorshipError::InsufficientPow {
+                required: 10,
+                provided: 0
+            })
         ));
     }
 
@@ -439,11 +435,13 @@ mod tests {
         assert!(result.is_ok());
 
         // Just within tolerance
-        let result = validate_claim_timestamp(&claim, claim.claimed_at + TIMESTAMP_TOLERANCE_SECONDS);
+        let result =
+            validate_claim_timestamp(&claim, claim.claimed_at + TIMESTAMP_TOLERANCE_SECONDS);
         assert!(result.is_ok());
 
         // Outside tolerance
-        let result = validate_claim_timestamp(&claim, claim.claimed_at + TIMESTAMP_TOLERANCE_SECONDS + 1);
+        let result =
+            validate_claim_timestamp(&claim, claim.claimed_at + TIMESTAMP_TOLERANCE_SECONDS + 1);
         assert!(matches!(result, Err(SponsorshipError::StaleTimestamp)));
     }
 
@@ -458,10 +456,7 @@ mod tests {
         // Inconsistent
         claim.identity_pow_proof.public_key = PublicKey::from_bytes([99u8; 32]);
         let result = validate_claim_identity_consistency(&claim);
-        assert!(matches!(
-            result,
-            Err(SponsorshipError::InvalidInvariant(_))
-        ));
+        assert!(matches!(result, Err(SponsorshipError::InvalidInvariant(_))));
     }
 
     #[test]
@@ -490,5 +485,4 @@ mod tests {
         let result = verify_attestation_signature(&claim, &offer, |_, _, _| false);
         assert!(matches!(result, Err(SponsorshipError::InvalidAttestation)));
     }
-
 }

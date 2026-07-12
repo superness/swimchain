@@ -12,7 +12,7 @@ use crate::cli::progress::PowProgress;
 use crate::content::decay::calculate_decay_state;
 use crate::crypto::action_pow::{difficulty, ActionType, ForkPoWConfig, PoWChallenge};
 use crate::network::NetworkContext;
-use crate::rpc::{RpcClient, RpcClientConfig, ListSpaceContentParams};
+use crate::rpc::{ListSpaceContentParams, RpcClient, RpcClientConfig};
 use crate::storage::content::PersistentContentStore;
 use crate::types::constants::HALF_LIFE_SECS;
 use crate::types::content::{ContentType, SpaceId};
@@ -36,7 +36,8 @@ fn create_rpc_client(config: &CliConfig) -> Result<RpcClient> {
             // Fall back to network default port
             let network_mode = NetworkContext::mode();
             let rpc_port = network_mode.default_rpc_port();
-            let addr = format!("127.0.0.1:{}", rpc_port).parse()
+            let addr = format!("127.0.0.1:{}", rpc_port)
+                .parse()
                 .map_err(|e| CliError::Other(format!("Invalid RPC address: {}", e)))?;
             RpcClientConfig {
                 addr,
@@ -45,8 +46,12 @@ fn create_rpc_client(config: &CliConfig) -> Result<RpcClient> {
         }
     };
 
-    let cookie = fs::read_to_string(data_dir.join(".cookie"))
-        .map_err(|e| CliError::Other(format!("Failed to read RPC cookie: {}. Is the node running?", e)))?;
+    let cookie = fs::read_to_string(data_dir.join(".cookie")).map_err(|e| {
+        CliError::Other(format!(
+            "Failed to read RPC cookie: {}. Is the node running?",
+            e
+        ))
+    })?;
 
     let rpc_config = RpcClientConfig {
         cookie: Some(cookie),
@@ -229,7 +234,12 @@ pub fn execute(cmd: SpaceCmd, config: &mut CliConfig) -> Result<()> {
         SpaceCmd::Leave { space_id } => leave(config, &space_id),
         SpaceCmd::List { json } => list(config, json),
         SpaceCmd::Browse { limit, json } => browse(config, limit, json),
-        SpaceCmd::View { space_id, fetch, limit, json } => view(config, &space_id, fetch, limit, json),
+        SpaceCmd::View {
+            space_id,
+            fetch,
+            limit,
+            json,
+        } => view(config, &space_id, fetch, limit, json),
     }
 }
 
@@ -294,13 +304,11 @@ fn create(config: &mut CliConfig, name: &str, no_pow: bool) -> Result<()> {
         crate::network::NetworkMode::Testnet => {
             ForkPoWConfig::testnet() // 8 MiB, 1 iteration - fast for testing
         }
-        crate::network::NetworkMode::Mainnet => {
-            match config.pow_parallelism {
-                2 => ForkPoWConfig::mobile(),
-                4 => ForkPoWConfig::production(),
-                _ => ForkPoWConfig::production(),
-            }
-        }
+        crate::network::NetworkMode::Mainnet => match config.pow_parallelism {
+            2 => ForkPoWConfig::mobile(),
+            4 => ForkPoWConfig::production(),
+            _ => ForkPoWConfig::production(),
+        },
     };
 
     // Mine PoW with cancellation support
@@ -354,8 +362,9 @@ fn create(config: &mut CliConfig, name: &str, no_pow: bool) -> Result<()> {
 
     // Get password and decrypt private key for signing
     let password = crate::cli::commands::identity::prompt_password(false)?;
-    let private_key = crate::identity::decrypt_private_key(&portable.encrypted_private_key, &password)
-        .map_err(|e| CliError::Other(format!("Failed to decrypt identity: {e}")))?;
+    let private_key =
+        crate::identity::decrypt_private_key(&portable.encrypted_private_key, &password)
+            .map_err(|e| CliError::Other(format!("Failed to decrypt identity: {e}")))?;
     let signature = crate::identity::sign(&private_key, &message);
 
     // Call RPC to register space on-chain
@@ -372,18 +381,24 @@ fn create(config: &mut CliConfig, name: &str, no_pow: bool) -> Result<()> {
         "timestamp": challenge_timestamp,
     });
 
-    let response = rpc_client.call("create_space", rpc_params)
+    let response = rpc_client
+        .call("create_space", rpc_params)
         .map_err(|e| CliError::RpcError(e.to_string()))?;
 
     if let Some(err) = response.error {
-        return Err(CliError::RpcError(format!("{} ({})", err.message, err.code)));
+        return Err(CliError::RpcError(format!(
+            "{} ({})",
+            err.message, err.code
+        )));
     }
 
     // Auto-join the space the user just created and store the name locally
     if !config.followed_spaces.contains(&space_id) {
         config.followed_spaces.push(space_id.clone());
     }
-    config.space_names.insert(space_id.clone(), name.to_string());
+    config
+        .space_names
+        .insert(space_id.clone(), name.to_string());
     config.save()?;
 
     println!();
@@ -465,20 +480,28 @@ fn list(config: &CliConfig, json: bool) -> Result<()> {
 fn browse(config: &CliConfig, limit: usize, json_output: bool) -> Result<()> {
     let mut rpc_client = create_rpc_client(config)?;
 
-    let response = rpc_client.call("list_spaces", serde_json::json!({
-        "limit": limit,
-        "offset": 0
-    })).map_err(|e| CliError::RpcError(e.to_string()))?;
+    let response = rpc_client
+        .call(
+            "list_spaces",
+            serde_json::json!({
+                "limit": limit,
+                "offset": 0
+            }),
+        )
+        .map_err(|e| CliError::RpcError(e.to_string()))?;
 
     if response.is_error() {
         if let Some(err) = response.error {
-            return Err(CliError::RpcError(format!("{} ({})", err.message, err.code)));
+            return Err(CliError::RpcError(format!(
+                "{} ({})",
+                err.message, err.code
+            )));
         }
     }
 
-    let result = response.result.ok_or_else(|| {
-        CliError::RpcError("No result in response".to_string())
-    })?;
+    let result = response
+        .result
+        .ok_or_else(|| CliError::RpcError("No result in response".to_string()))?;
 
     let spaces = result.get("spaces").and_then(|v| v.as_array());
     let total = result.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -495,9 +518,15 @@ fn browse(config: &CliConfig, limit: usize, json_output: bool) -> Result<()> {
                 println!();
 
                 for space in spaces {
-                    let space_id = space.get("space_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let space_id = space
+                        .get("space_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
                     let name = space.get("name").and_then(|v| v.as_str());
-                    let post_count = space.get("post_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let post_count = space
+                        .get("post_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
 
                     if let Some(name) = name {
                         println!("  {} \"{}\"", space_id, name);
@@ -528,18 +557,26 @@ fn view_via_rpc(config: &CliConfig, space_id: &str, limit: usize, json: bool) ->
         content_type: None,
     };
 
-    let response = rpc_client.call("list_space_content", serde_json::to_value(&params).map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?)
+    let response = rpc_client
+        .call(
+            "list_space_content",
+            serde_json::to_value(&params)
+                .map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?,
+        )
         .map_err(|e| CliError::RpcError(e.to_string()))?;
 
     if response.is_error() {
         if let Some(err) = response.error {
-            return Err(CliError::RpcError(format!("{} ({})", err.message, err.code)));
+            return Err(CliError::RpcError(format!(
+                "{} ({})",
+                err.message, err.code
+            )));
         }
     }
 
-    let result = response.result.ok_or_else(|| {
-        CliError::RpcError("No result in response".to_string())
-    })?;
+    let result = response
+        .result
+        .ok_or_else(|| CliError::RpcError("No result in response".to_string()))?;
 
     // Parse items from RPC response
     let content_items = result.get("items").and_then(|v| v.as_array());
@@ -554,20 +591,35 @@ fn view_via_rpc(config: &CliConfig, space_id: &str, limit: usize, json: bool) ->
 
     if let Some(content_items) = content_items {
         for item in content_items {
-            let content_id = item.get("content_id").and_then(|v| v.as_str()).unwrap_or("");
-            let content_type = item.get("content_type").and_then(|v| v.as_str()).unwrap_or("Post");
+            let content_id = item
+                .get("content_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let content_type = item
+                .get("content_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Post");
             let author_id = item.get("author_id").and_then(|v| v.as_str()).unwrap_or("");
             let body = item.get("body").and_then(|v| v.as_str()).unwrap_or("");
-            let body_preview = item.get("body_preview").and_then(|v| v.as_str()).unwrap_or(body);
+            let body_preview = item
+                .get("body_preview")
+                .and_then(|v| v.as_str())
+                .unwrap_or(body);
             let title = item.get("title").and_then(|v| v.as_str());
             let created_at = item.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
-            let survival = item.get("survival_probability").and_then(|v| v.as_f64()).unwrap_or(1.0);
+            let survival = item
+                .get("survival_probability")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(1.0);
 
             // Use title if present, otherwise extract from body_preview
             let (display_title, preview) = if let Some(t) = title {
                 (t.to_string(), body_preview.to_string())
             } else if let Some(idx) = body_preview.find("\n\n") {
-                (body_preview[..idx].to_string(), body_preview[idx + 2..].to_string())
+                (
+                    body_preview[..idx].to_string(),
+                    body_preview[idx + 2..].to_string(),
+                )
             } else {
                 (body_preview.to_string(), String::new())
             };
@@ -709,7 +761,11 @@ fn view(config: &CliConfig, space_id: &str, fetch: bool, limit: usize, json: boo
 
                 // Format author ID
                 let author_hex = hex::encode(item.author_id.as_bytes());
-                let author_short = format!("sw1{}...{}", &author_hex[..4], &author_hex[author_hex.len() - 4..]);
+                let author_short = format!(
+                    "sw1{}...{}",
+                    &author_hex[..4],
+                    &author_hex[author_hex.len() - 4..]
+                );
 
                 // Calculate heat
                 let decay_state = calculate_decay_state(&item, now, HALF_LIFE_SECS);
@@ -747,7 +803,8 @@ fn view(config: &CliConfig, space_id: &str, fetch: bool, limit: usize, json: boo
             Err(_) => {
                 let network_mode = NetworkContext::mode();
                 let rpc_port = network_mode.default_rpc_port();
-                let addr = format!("127.0.0.1:{}", rpc_port).parse()
+                let addr = format!("127.0.0.1:{}", rpc_port)
+                    .parse()
                     .map_err(|e| CliError::Other(format!("Invalid RPC address: {}", e)))?;
                 RpcClientConfig {
                     addr,
@@ -756,8 +813,9 @@ fn view(config: &CliConfig, space_id: &str, fetch: bool, limit: usize, json: boo
             }
         };
 
-        let cookie = fs::read_to_string(data_dir.join(".cookie"))
-            .map_err(|_| CliError::Other("No running node. Start with 'sw node start'".to_string()))?;
+        let cookie = fs::read_to_string(data_dir.join(".cookie")).map_err(|_| {
+            CliError::Other("No running node. Start with 'sw node start'".to_string())
+        })?;
 
         let rpc_config = RpcClientConfig {
             cookie: Some(cookie),
@@ -775,7 +833,11 @@ fn view(config: &CliConfig, space_id: &str, fetch: bool, limit: usize, json: boo
             content_type: None,
         };
 
-        match rpc_client.call("list_space_content", serde_json::to_value(&params).map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?) {
+        match rpc_client.call(
+            "list_space_content",
+            serde_json::to_value(&params)
+                .map_err(|e| CliError::Other(format!("JSON serialization error: {}", e)))?,
+        ) {
             Ok(response) => {
                 if response.is_error() {
                     if let Some(err) = response.error {
@@ -784,16 +846,28 @@ fn view(config: &CliConfig, space_id: &str, fetch: bool, limit: usize, json: boo
                 } else if let Some(result) = response.result {
                     // Parse result and display
                     let content_items = result.get("items").and_then(|v| v.as_array());
-                    let result_total = result.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                    let result_total =
+                        result.get("total").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
                     if let Some(content_items) = content_items {
                         total = result_total;
                         for item in content_items {
-                            let content_id = item.get("content_id").and_then(|v| v.as_str()).unwrap_or("");
-                            let content_type = item.get("content_type").and_then(|v| v.as_str()).unwrap_or("Post");
-                            let author_id = item.get("author_id").and_then(|v| v.as_str()).unwrap_or("");
-                            let body_preview = item.get("body_preview").and_then(|v| v.as_str()).unwrap_or("");
-                            let created_at = item.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let content_id = item
+                                .get("content_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let content_type = item
+                                .get("content_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Post");
+                            let author_id =
+                                item.get("author_id").and_then(|v| v.as_str()).unwrap_or("");
+                            let body_preview = item
+                                .get("body_preview")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let created_at =
+                                item.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
 
                             // Parse title from preview
                             let (title, preview) = if let Some(idx) = body_preview.find("\n\n") {

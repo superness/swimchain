@@ -222,14 +222,17 @@ impl NodeMetrics {
     /// Record content stored
     pub fn record_content_stored(&self, bytes: u64) {
         self.content_items_stored.fetch_add(1, Ordering::Relaxed);
-        self.content_bytes_stored.fetch_add(bytes, Ordering::Relaxed);
+        self.content_bytes_stored
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Record content served to peer
     pub fn record_content_served(&self, bytes: u64) {
         self.content_items_served.fetch_add(1, Ordering::Relaxed);
-        self.content_bytes_served.fetch_add(bytes, Ordering::Relaxed);
-        self.bandwidth_served_30d.fetch_add(bytes, Ordering::Relaxed);
+        self.content_bytes_served
+            .fetch_add(bytes, Ordering::Relaxed);
+        self.bandwidth_served_30d
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
     /// Record items decayed

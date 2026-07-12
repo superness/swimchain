@@ -34,11 +34,20 @@ pub use rate_limits::{RateLimitConfig, RateLimitTracker};
 pub use repetition::{RepetitionConfig, RepetitionDetector};
 pub use review_flag::{ReviewFlag, ReviewFlagReason, ReviewFlagStore, ReviewOutcome};
 pub use types::{
-    ContentFingerprint, HeuristicResult, HeuristicViolation, ViolationType,
     default_posts_per_day,
+    ContentFingerprint,
+    HeuristicResult,
+    HeuristicViolation,
+    ViolationType,
+    CROSS_POST_WINDOW_SECS,
     // Constants
     DEFAULT_POSTS_PER_DAY,
-    POSTS_PER_SPACE_PER_HOUR, MAX_CROSS_POST_SPACES, CROSS_POST_WINDOW_SECS,
-    REPETITION_WINDOW_SECS, MAX_EXACT_DUPLICATES, SIMILARITY_THRESHOLD,
-    MAX_LINK_DENSITY, MAX_MENTIONS_PER_POST, MIN_CONTENT_FOR_PATTERNS,
+    MAX_CROSS_POST_SPACES,
+    MAX_EXACT_DUPLICATES,
+    MAX_LINK_DENSITY,
+    MAX_MENTIONS_PER_POST,
+    MIN_CONTENT_FOR_PATTERNS,
+    POSTS_PER_SPACE_PER_HOUR,
+    REPETITION_WINDOW_SECS,
+    SIMILARITY_THRESHOLD,
 };

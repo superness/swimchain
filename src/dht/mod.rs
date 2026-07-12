@@ -53,22 +53,25 @@
 
 pub mod constants;
 pub mod error;
+pub mod lookup;
+pub mod manager;
+pub mod messages;
 pub mod node_id;
+pub mod persistence;
 pub mod provider_store;
 pub mod routing_table;
-pub mod manager;
-pub mod lookup;
-pub mod messages;
 pub mod store_rate_limiter;
-pub mod persistence;
 
 pub use constants::*;
 pub use error::{DhtError, DhtResult};
+pub use lookup::LookupCoordinator;
+pub use manager::DhtManager;
+pub use messages::{
+    AuthenticatedDhtMessage, DhtMessage, DhtMessageType, NodeInfo, SignedProviderInfo,
+    MESSAGE_MAX_AGE_MS,
+};
 pub use node_id::NodeId;
+pub use persistence::{DhtPersistence, DhtPersistenceStats};
 pub use provider_store::{ProviderRecord, ProviderStore};
 pub use routing_table::{KBucket, RoutingTable};
-pub use manager::DhtManager;
-pub use lookup::LookupCoordinator;
-pub use messages::{AuthenticatedDhtMessage, DhtMessage, DhtMessageType, NodeInfo, SignedProviderInfo, MESSAGE_MAX_AGE_MS};
-pub use store_rate_limiter::{StoreRateLimiter, StoreCheckResult};
-pub use persistence::{DhtPersistence, DhtPersistenceStats};
+pub use store_rate_limiter::{StoreCheckResult, StoreRateLimiter};

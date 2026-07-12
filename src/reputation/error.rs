@@ -59,7 +59,11 @@ impl fmt::Display for ReputationError {
                 write!(f, "Rate limit exceeded: {}/{}", current, limit)
             }
             Self::ReputationTooLow { required, actual } => {
-                write!(f, "Reputation too low: {} required, {} actual", required, actual)
+                write!(
+                    f,
+                    "Reputation too low: {} required, {} actual",
+                    required, actual
+                )
             }
             Self::ReputationLocked { reason } => {
                 write!(f, "Reputation locked: {}", reason)

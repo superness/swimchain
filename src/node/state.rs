@@ -76,7 +76,10 @@ impl NodeState {
     pub fn is_active(&self) -> bool {
         matches!(
             self,
-            NodeState::Starting | NodeState::Bootstrapping | NodeState::Syncing | NodeState::Running
+            NodeState::Starting
+                | NodeState::Bootstrapping
+                | NodeState::Syncing
+                | NodeState::Running
         )
     }
 

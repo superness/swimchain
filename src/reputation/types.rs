@@ -181,7 +181,8 @@ impl PosterReputation {
 
     /// Get net spam flags (received minus countered).
     pub fn net_spam_flags(&self) -> u32 {
-        self.spam_flags_received.saturating_sub(self.spam_flags_countered)
+        self.spam_flags_received
+            .saturating_sub(self.spam_flags_countered)
     }
 
     /// Serialize to bytes for storage.
