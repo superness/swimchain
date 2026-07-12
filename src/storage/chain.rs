@@ -428,6 +428,7 @@ impl ChainStore {
                     crate::blocks::ActionType::Sponsor => 13u8,
                     crate::blocks::ActionType::GenesisRegister => 14u8,
                     crate::blocks::ActionType::RenameSpace => 15u8,
+                    crate::blocks::ActionType::FrequencyDrift => 16u8,
                 };
 
                 let entry = ContentIndexEntry {
@@ -533,6 +534,12 @@ impl ChainStore {
                     // Space renames are applied during block ingestion
                     // (router.rs apply_rename_space_actions_from_block)
                     crate::blocks::ActionType::RenameSpace => {
+                        // No additional content indexing needed
+                    }
+                    // Frequency drift is a network-layer audit record applied
+                    // during block ingestion (router.rs
+                    // apply_frequency_drift_actions_from_block); not content.
+                    crate::blocks::ActionType::FrequencyDrift => {
                         // No additional content indexing needed
                     }
                 }

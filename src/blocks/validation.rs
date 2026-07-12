@@ -347,6 +347,25 @@ pub fn validate_action(action: &Action, current_time: u64) -> Result<(), Validat
                 ));
             }
         }
+
+        // === Network Isolation Actions (Frequency) ===
+        ActionType::FrequencyDrift => {
+            // FREQUENCY_DRIFT must have content_hash (packed target frequency)
+            // and parent_id (namespace key, all-zero for a drift back to base).
+            // The drift-specific signature is validated at block-processing time
+            // against local chain state (router); it is self-authored and
+            // log-only, so no cross-node authorization is required.
+            if action.content_hash.is_none() {
+                return Err(ValidationError::ActionError(
+                    "FREQUENCY_DRIFT must have content_hash (packed frequency)".to_string(),
+                ));
+            }
+            if action.parent_id.is_none() {
+                return Err(ValidationError::ActionError(
+                    "FREQUENCY_DRIFT must have parent_id (namespace key)".to_string(),
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -424,6 +443,8 @@ pub fn validate_action_pow(action: &Action) -> Result<(), ValidationError> {
         ActionType::GenesisRegister => 0,
         // Space renames are PoW-costing (same class as space creation)
         ActionType::RenameSpace => 1,
+        // Frequency drift records are PoW-costing (anti-spam on the audit log)
+        ActionType::FrequencyDrift => 1,
     };
 
     if action.pow_work < min_work {

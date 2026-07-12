@@ -1062,6 +1062,24 @@ impl NodeManager {
         // config -- docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md)
         router_builder =
             router_builder.behavioral_branching_mode(self.config.behavioral_branching_mode());
+        // Frequency isolation (network/discovery layer,
+        // docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md): publish the resolved mode
+        // into the process-global context so the wire/discovery/handshake paths
+        // pick it up. The frequency timer (spawned below) keeps the advertised
+        // frequency up to date.
+        crate::network::frequency::FrequencyContext::set_mode(
+            match self.config.frequency_isolation_mode() {
+                crate::node::FrequencyIsolationMode::Off => {
+                    crate::network::frequency::FREQ_MODE_OFF
+                }
+                crate::node::FrequencyIsolationMode::Observe => {
+                    crate::network::frequency::FREQ_MODE_OBSERVE
+                }
+                crate::node::FrequencyIsolationMode::Full => {
+                    crate::network::frequency::FREQ_MODE_FULL
+                }
+            },
+        );
         // Notification service: CommunityFormed delivery to the local user
         // when they are a founding member (SPEC_13 Phase 2 Lane A #4).
         if let Some(ref notification_service) = self.notification_service {
@@ -1243,6 +1261,42 @@ impl NodeManager {
             tasks.spawn_all(self.syncer.clone(), self.connection_manager.clone());
         }
         self.tasks = Some(tasks);
+
+        // 9b. Frequency-isolation timer: keep the advertised frequency current
+        // from realized per-space concentration (or a config pin). Skipped when
+        // isolation is Off. See docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md.
+        if !matches!(
+            self.config.frequency_isolation_mode(),
+            crate::node::FrequencyIsolationMode::Off
+        ) {
+            use crate::network::frequency::{resolve_state, FrequencyContext};
+            let agg = self.aggregation_cache.clone();
+            let pin = self.config.frequency_namespace;
+            let requested_pin = self.config.frequency_requested_namespace;
+            let mut shutdown_rx = self.shutdown_tx.subscribe();
+
+            let recompute = move || {
+                let counts = agg
+                    .as_ref()
+                    .and_then(|a| a.all_space_content_counts().ok())
+                    .unwrap_or_default();
+                let (primary, requested) =
+                    resolve_state(&counts, pin, requested_pin, FrequencyContext::primary());
+                FrequencyContext::set_state(primary, requested);
+            };
+            // Apply immediately so a pinned operator advertises from t=0.
+            recompute();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(120));
+                tick.tick().await; // consume the immediate first tick
+                loop {
+                    tokio::select! {
+                        _ = tick.tick() => recompute(),
+                        _ = shutdown_rx.changed() => break,
+                    }
+                }
+            });
+        }
 
         // 10. Start RPC server (if enabled)
         if self.config.rpc_enabled {
@@ -1962,8 +2016,8 @@ impl NodeManager {
                         | ActionType::DeclineDM => {}
                         // Sponsorship actions don't affect content aggregation counts
                         ActionType::Sponsor | ActionType::GenesisRegister => {}
-                        // Space metadata actions don't affect content aggregation counts
-                        ActionType::RenameSpace => {}
+                        // Space metadata / network actions don't affect content aggregation counts
+                        ActionType::RenameSpace | ActionType::FrequencyDrift => {}
                     }
                 }
             }

@@ -1046,6 +1046,7 @@ impl RpcMethods {
         match method {
             // Node status
             "get_info" => self.get_info(id).await,
+            "get_node_frequency" => self.get_node_frequency(id).await,
             "get_peers" => self.get_peers(id).await,
             "get_sync_status" => self.get_sync_status(id).await,
             "get_chain_stats" => self.get_chain_stats(id).await,
@@ -1220,6 +1221,26 @@ impl RpcMethods {
         };
 
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Report this node's current discovery frequency (network isolation,
+    /// docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md). Gateways and client builders
+    /// use this to know whether a node has drifted off the base network.
+    async fn get_node_frequency(&self, id: Value) -> RpcResponse {
+        use crate::network::frequency::FrequencyContext;
+        let mode = match FrequencyContext::mode() {
+            crate::network::frequency::FREQ_MODE_FULL => "full",
+            crate::network::frequency::FREQ_MODE_OBSERVE => "observe",
+            _ => "off",
+        };
+        let result = serde_json::json!({
+            "mode": mode,
+            "primary": FrequencyContext::primary(),
+            "requested": FrequencyContext::requested(),
+            "isolated": FrequencyContext::primary() != crate::network::frequency::BASE_FREQUENCY,
+            "base": crate::network::frequency::BASE_FREQUENCY,
+        });
+        RpcResponse::success(result, id)
     }
 
     async fn get_peers(&self, id: Value) -> RpcResponse {
@@ -1717,6 +1738,8 @@ impl RpcMethods {
                     ActionType::GenesisRegister => "GenesisRegister",
                     // Space metadata actions
                     ActionType::RenameSpace => "RenameSpace",
+                    // Network isolation actions
+                    ActionType::FrequencyDrift => "FrequencyDrift",
                 };
 
                 ActionInfo {

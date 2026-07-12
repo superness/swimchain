@@ -1559,6 +1559,10 @@ impl BackgroundTaskRunner {
                                 if let Some(info) = peer_info {
                                     let peer_id = info.node_id;
                                     let discovery_addr = info.inbound_discovery_addr();
+                                    let peer_freq = crate::network::frequency::unpack_node_services(
+                                        info.services,
+                                    )
+                                    .0;
 
                                     // Register the connection
                                     match connection_manager.add_connection_with_discovery(
@@ -1566,6 +1570,7 @@ impl BackgroundTaskRunner {
                                         remote_addr,
                                         ConnectionDirection::Inbound,
                                         discovery_addr,
+                                        peer_freq,
                                     ) {
                                         Ok(_) => {
                                             info!(
@@ -1673,6 +1678,10 @@ impl BackgroundTaskRunner {
                                     // The dialable endpoint is (source IP + advertised listen
                                     // port); use it for discovery so others can actually reach it.
                                     let discovery_addr = info.inbound_discovery_addr();
+                                    let peer_freq = crate::network::frequency::unpack_node_services(
+                                        info.services,
+                                    )
+                                    .0;
 
                                     // Register with ConnectionManager (metadata tracking)
                                     match connection_manager.add_connection_with_discovery(
@@ -1680,6 +1689,7 @@ impl BackgroundTaskRunner {
                                         remote_addr,
                                         ConnectionDirection::Inbound,
                                         discovery_addr,
+                                        peer_freq,
                                     ) {
                                         Ok(_) => {
                                             info!(

@@ -1237,6 +1237,8 @@ fn format_action_type(t: crate::blocks::ActionType) -> String {
         crate::blocks::ActionType::GenesisRegister => "GenesisRegister".to_string(),
         // Space metadata actions
         crate::blocks::ActionType::RenameSpace => "RenameSpace".to_string(),
+        // Network isolation actions
+        crate::blocks::ActionType::FrequencyDrift => "FrequencyDrift".to_string(),
     }
 }
 

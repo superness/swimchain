@@ -42,7 +42,9 @@ pub mod state;
 pub mod tasks;
 
 // Re-exports for convenient access
-pub use config::{BehavioralBranchingMode, NodeConfig, SeedEntry, SeedingMode};
+pub use config::{
+    BehavioralBranchingMode, FrequencyIsolationMode, NodeConfig, SeedEntry, SeedingMode,
+};
 pub use connection_event::{ConnectionError, ConnectionEvent, DisconnectReason};
 pub use connection_manager::{
     ConnectionConfig, ConnectionHandle, ConnectionManager, ConnectionManagerError, ReconnectState,

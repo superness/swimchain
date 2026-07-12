@@ -326,18 +326,28 @@ impl ConnectionManager {
             ConnectionDirection::Outbound => Some(addr),
             ConnectionDirection::Inbound => None,
         };
-        self.add_connection_with_discovery(peer_id, addr, direction, discovery_addr)
+        self.add_connection_with_discovery(
+            peer_id,
+            addr,
+            direction,
+            discovery_addr,
+            crate::network::frequency::BASE_FREQUENCY,
+        )
     }
 
     /// As [`add_connection`], but with an explicit dialable `discovery_addr` to
     /// advertise in the peer store / discovery (independent of the socket `addr`).
     /// `None` means "don't advertise this peer" (no reachable address known).
+    /// `peer_frequency` is the peer's advertised primary frequency (from its
+    /// VERSION `node_services`) so the stored peer carries it for later
+    /// frequency-isolation filtering; pass `BASE_FREQUENCY` if unknown.
     pub fn add_connection_with_discovery(
         &self,
         peer_id: [u8; 32],
         addr: SocketAddr,
         direction: ConnectionDirection,
         discovery_addr: Option<SocketAddr>,
+        peer_frequency: u32,
     ) -> Result<(), ConnectionManagerError> {
         let mut inner = self.inner.write().unwrap();
 
@@ -434,6 +444,12 @@ impl ConnectionManager {
                 .unwrap_or(0);
 
             let mut entry = PeerEntry::new(disc, now);
+            // Carry the peer's advertised frequency into the stored record so
+            // frequency-isolation filtering (select_peers_to_connect) can see it.
+            entry.wire_addr.services = crate::network::frequency::pack_services(
+                peer_frequency,
+                crate::network::frequency::services_capabilities(entry.wire_addr.services),
+            );
             entry.record_success(now); // Mark as successful since we connected
 
             if let Err(e) = self.peer_store.put(&entry) {
@@ -592,6 +608,22 @@ impl ConnectionManager {
             let socket_addr = wire_addr_to_socket_addr(&entry.wire_addr);
             if let Some(addr) = socket_addr {
                 if connected_addrs.contains(&addr) {
+                    return false;
+                }
+            }
+            // Frequency isolation (Full mode): don't dial peers whose advertised
+            // primary frequency isn't in our membership. Seed-tagged peers are
+            // always kept as bootstrap anchors. See
+            // docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md.
+            if crate::network::frequency::FrequencyContext::is_enforcing() {
+                let services = entry.wire_addr.services;
+                let is_seed = crate::network::frequency::services_capabilities(services)
+                    & crate::network::frequency::CAP_SEED
+                    != 0;
+                let peer_primary = crate::network::frequency::services_frequency(services);
+                if !is_seed
+                    && !crate::network::frequency::FrequencyContext::dial_eligible(peer_primary)
+                {
                     return false;
                 }
             }

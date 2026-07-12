@@ -110,6 +110,22 @@ pub enum BehavioralBranchingMode {
     Full,
 }
 
+/// Effective frequency-isolation mode for a node (network/discovery-layer
+/// isolation, `docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md`), resolved from
+/// [`NodeConfig::frequency_isolation_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrequencyIsolationMode {
+    /// Frequency is not computed or advertised; peer selection is unaffected.
+    Off,
+    /// Frequency is computed, advertised, and exposed via RPC, but peer
+    /// selection is NOT filtered by it — an observation mode to watch drift on a
+    /// live network before it partitions anything.
+    Observe,
+    /// Frequency is computed, advertised, and used to hard-partition peer
+    /// selection (default for regtest AND testnet).
+    Full,
+}
+
 /// Node configuration
 ///
 /// All configuration options for running a node per SPEC_10 §3.2.
@@ -269,6 +285,31 @@ pub struct NodeConfig {
     /// would never be consulted there unless full is explicitly disabled.
     pub behavioral_branching_log_only: Option<bool>,
 
+    /// Enable network/discovery-layer frequency isolation
+    /// (`docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md`). `Some(true)` forces
+    /// full (peer-filtering) isolation; `Some(false)` forces it off; `None`
+    /// uses the network-mode default.
+    pub frequency_isolation: Option<bool>,
+
+    /// Enable observe-only frequency isolation: compute + advertise + expose
+    /// via RPC, but do NOT filter peer selection. Only consulted when full
+    /// [`Self::frequency_isolation`] is off — see
+    /// [`Self::frequency_isolation_mode`]. `None` defaults OFF (full wins on
+    /// testnet/regtest).
+    pub frequency_isolation_observe: Option<bool>,
+
+    /// Optional deterministic frequency pin: a 16-byte namespace key (space id
+    /// or app-namespace hash) this node should isolate onto regardless of
+    /// realized concentration. This is how a dedicated single-purpose operator
+    /// ("their own server") deploys onto its frequency without waiting for
+    /// organic drift. `None` = auto (drift from realized concentration).
+    pub frequency_namespace: Option<[u8; 16]>,
+
+    /// Optional companion to [`Self::frequency_namespace`]: a namespace this
+    /// node deliberately subscribes to but is not exclusive to, so it stays
+    /// reachable to that namespace's isolated operators while remaining on base.
+    pub frequency_requested_namespace: Option<[u8; 16]>,
+
     // ========== Gossip Origin Privacy (SWIM-PRIV-1) ==========
     /// Enable gossip origin obfuscation for self-originated actions.
     ///
@@ -365,6 +406,10 @@ impl Default for NodeConfig {
             // Behavioral branching defaults to network-mode behavior
             // (ON for regtest, OFF for mainnet/testnet)
             behavioral_branching: None,
+            frequency_isolation: None,
+            frequency_isolation_observe: None,
+            frequency_namespace: None,
+            frequency_requested_namespace: None,
 
             // Log-only behavioral branching defaults to network-mode behavior
             // (ON for testnet -- Phase 1 rollout, OFF for mainnet/regtest)
@@ -514,6 +559,37 @@ impl NodeConfig {
             BehavioralBranchingMode::LogOnly
         } else {
             BehavioralBranchingMode::Disabled
+        }
+    }
+
+    /// Check if full (peer-filtering) frequency isolation is enabled.
+    ///
+    /// Explicit setting wins; otherwise defaults ON for Regtest AND Testnet,
+    /// OFF for Mainnet.
+    pub fn frequency_isolation_enabled(&self) -> bool {
+        self.frequency_isolation.unwrap_or(matches!(
+            self.network_mode,
+            NetworkMode::Regtest | NetworkMode::Testnet
+        ))
+    }
+
+    /// Check if observe-only frequency isolation is enabled. Only consulted when
+    /// full [`Self::frequency_isolation_enabled`] is false — see
+    /// [`Self::frequency_isolation_mode`]. Defaults OFF.
+    pub fn frequency_isolation_observe_enabled(&self) -> bool {
+        self.frequency_isolation_observe.unwrap_or(false)
+    }
+
+    /// Resolve the effective frequency-isolation mode for this node
+    /// (`docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md`). Full peer-filtering wins
+    /// over observe-only if both are (explicitly or by default) enabled.
+    pub fn frequency_isolation_mode(&self) -> FrequencyIsolationMode {
+        if self.frequency_isolation_enabled() {
+            FrequencyIsolationMode::Full
+        } else if self.frequency_isolation_observe_enabled() {
+            FrequencyIsolationMode::Observe
+        } else {
+            FrequencyIsolationMode::Off
         }
     }
 
