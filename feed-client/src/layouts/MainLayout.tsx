@@ -6,6 +6,7 @@
 import { type ReactNode, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
+import { isInIframe } from '../hooks/useParentRpcConfig';
 import { SponsorshipBanner } from '../components/SponsorshipBanner';
 import { NodeStatusBar } from '../components/NodeStatusBar';
 import '../styles/app.css';
@@ -141,6 +142,23 @@ export function MainLayout({ children }: MainLayoutProps): JSX.Element {
     const main = document.getElementById('main');
     if (main) main.focus();
   }, [location.pathname]);
+
+  // When embedded in a shell (mobile/desktop iframe), the WebView won't hand
+  // `target="_blank"` links to the system browser — taps just do nothing. Intercept
+  // clicks on external http(s) links and ask the parent shell to open them natively.
+  useEffect(() => {
+    if (!isInIframe()) return;
+    const onClick = (e: MouseEvent) => {
+      const anchor = (e.target as HTMLElement | null)?.closest?.('a');
+      const href = anchor?.getAttribute('href');
+      if (href && /^https?:\/\//i.test(href)) {
+        e.preventDefault();
+        window.parent.postMessage({ type: 'SWIMCHAIN_OPEN_EXTERNAL', url: href }, '*');
+      }
+    };
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  }, []);
 
   return (
     <div className="app">

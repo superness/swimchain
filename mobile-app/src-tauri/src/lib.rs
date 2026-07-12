@@ -88,9 +88,21 @@ async fn get_node_address(state: tauri::State<'_, AppState>) -> Result<String, S
         .ok_or_else(|| "node not running".to_string())
 }
 
+/// Open a URL in the system browser. The feed-client runs in a WebView iframe
+/// where `target="_blank"` links go nowhere; it posts external URLs up to the
+/// shell, which routes them here to launch an Android ACTION_VIEW intent.
+#[tauri::command]
+async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Default to warn globally, info for our own modules, so node
             // lifecycle logs ([BOOTSTRAP], seed connections, RPC start) reach
@@ -137,7 +149,8 @@ pub fn run() {
             node_status,
             get_rpc_auth,
             get_rpc_endpoint,
-            get_node_address
+            get_node_address,
+            open_external
         ])
         .run(tauri::generate_context!())
         .expect("error while running swimchain mobile");

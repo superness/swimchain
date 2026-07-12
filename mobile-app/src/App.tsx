@@ -53,6 +53,20 @@ export default function App() {
     })().catch(console.error);
   }, [status, rpcAuth]);
 
+  // The feed iframe can't reach the system browser for `target="_blank"` links,
+  // so it posts external URLs up here; open them via the Android opener intent.
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'SWIMCHAIN_OPEN_EXTERNAL' && typeof event.data.url === 'string') {
+        invoke('open_external', { url: event.data.url }).catch((e) =>
+          console.error('open_external failed', e)
+        );
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
   // Hand RPC config to the feed iframe - same SWIMCHAIN_RPC_CONFIG postMessage
   // contract as desktop-app's ClientFrame (send on load + retry for 10s in
   // case the client's listener mounts after the load event).
