@@ -196,6 +196,12 @@ impl MembershipStore {
         reverse_key[32..].copy_from_slice(space_id);
         self.user_spaces.insert(&reverse_key, &[])?;
 
+        // Flush eagerly: sled's time-based auto-flush does not reliably persist on
+        // the mobile node (only large size-triggered flushes land), so a one-shot
+        // membership write like a private-space create would otherwise live only in
+        // memory and vanish on the next app restart.
+        self.db.flush()?;
+
         Ok(())
     }
 
@@ -217,6 +223,8 @@ impl MembershipStore {
         reverse_key[..32].copy_from_slice(member_pk);
         reverse_key[32..].copy_from_slice(space_id);
         self.user_spaces.remove(&reverse_key)?;
+
+        self.db.flush()?;
 
         Ok(existed)
     }
@@ -306,6 +314,7 @@ impl MembershipStore {
                 record.key_version = key_version;
                 let new_data = bincode::serialize(&record)?;
                 self.members.insert(&key, new_data)?;
+                self.db.flush()?;
                 Ok(true)
             }
             None => Ok(false),
@@ -337,6 +346,8 @@ impl MembershipStore {
         invitee_key[32..].copy_from_slice(&record.invite_hash);
         self.invites_by_user.insert(&invitee_key, &[])?;
 
+        self.db.flush()?;
+
         Ok(())
     }
 
@@ -363,6 +374,7 @@ impl MembershipStore {
                 record.status = status;
                 let new_data = bincode::serialize(&record)?;
                 self.pending_invites.insert(invite_hash, new_data)?;
+                self.db.flush()?;
                 Ok(true)
             }
             None => Ok(false),
@@ -438,6 +450,10 @@ impl MembershipStore {
             self.pending_invites.insert(&key, data)?;
         }
 
+        if count > 0 {
+            self.db.flush()?;
+        }
+
         Ok(count)
     }
 
@@ -460,6 +476,8 @@ impl MembershipStore {
         reverse_key[..32].copy_from_slice(&record.recipient_pk);
         reverse_key[32..].copy_from_slice(&record.requester_pk);
         self.dm_requests_by_recipient.insert(&reverse_key, &[])?;
+
+        self.db.flush()?;
 
         Ok(())
     }
@@ -502,6 +520,7 @@ impl MembershipStore {
                 record.space_id = space_id;
                 let new_data = bincode::serialize(&record)?;
                 self.dm_requests.insert(&key, new_data)?;
+                self.db.flush()?;
                 Ok(true)
             }
             None => Ok(false),
