@@ -14,6 +14,7 @@
 //! - [`fracture`] — size-based branch fracture (SPEC_08 threshold + split).
 
 pub mod behavioral;
+pub mod forkchoice;
 pub mod fracture;
 pub mod frequency;
 

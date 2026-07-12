@@ -5,7 +5,7 @@
 //! not a JavaScript re-implementation.
 
 use serde::Serialize;
-use swimchain_core::{behavioral, fracture, frequency};
+use swimchain_core::{behavioral, forkchoice, fracture, frequency};
 use wasm_bindgen::prelude::*;
 
 /// Serialize a core result for JS as plain numbers/objects (no BigInt).
@@ -115,4 +115,42 @@ pub fn fracture_evaluate(items: JsValue) -> JsValue {
 #[wasm_bindgen]
 pub fn fracture_threshold() -> f64 {
     fracture::BRANCH_FRACTURE_THRESHOLD as f64
+}
+
+// ── Fork choice: partition reconverge (baseline global fork choice) ───────────
+
+/// Bridge two partitions (each described since divergence) and run the real
+/// heaviest-work fork choice + reorg re-anchor. Returns the real
+/// `ReconvergeOutcome` — validated against the node in
+/// `tests/frequency_partition_reconverge.rs`.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn forkchoice_reconverge(
+    prefix_work: f64,
+    a_blocks: u32,
+    a_work: f64,
+    a_actions: u32,
+    a_tiebreak: u32,
+    b_blocks: u32,
+    b_work: f64,
+    b_actions: u32,
+    b_tiebreak: u32,
+) -> JsValue {
+    let a = forkchoice::Tip {
+        blocks: a_blocks,
+        work: a_work.max(0.0) as u64,
+        actions: a_actions,
+        tiebreak: a_tiebreak,
+    };
+    let b = forkchoice::Tip {
+        blocks: b_blocks,
+        work: b_work.max(0.0) as u64,
+        actions: b_actions,
+        tiebreak: b_tiebreak,
+    };
+    to_js(&forkchoice::evaluate_reconverge(
+        prefix_work.max(0.0) as u64,
+        &a,
+        &b,
+    ))
 }
