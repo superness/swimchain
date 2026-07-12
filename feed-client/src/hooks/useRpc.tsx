@@ -370,10 +370,13 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
     // clients drop the pre-filter cached list that still held profile/DM spaces.
     const CACHE_KEY = 'spaces_v2';
 
-    // Check memory cache first (fastest)
+    // Check memory cache first (fastest). Ignore an EMPTY cached list: an []
+    // (e.g. cached before the node finished syncing) is truthy, so it used to be
+    // served as a valid hit and left Discover stuck on "No spaces found" — fall
+    // through to a real fetch instead.
     if (!skipCache) {
       const memoryCached = getFromMemory<Space[]>(CACHE_KEY);
-      if (memoryCached) {
+      if (memoryCached && memoryCached.length > 0) {
         setSpaces(memoryCached);
         setLoading(false);
         return;
@@ -381,7 +384,7 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
 
       // Check localStorage cache (persists across refreshes)
       const storageCached = getFromStorage<Space[]>(CACHE_KEY);
-      if (storageCached) {
+      if (storageCached && storageCached.length > 0) {
         setSpaces(storageCached);
         setInMemory(CACHE_KEY, storageCached, 5 * 60 * 1000); // Also populate memory
         setLoading(false);
