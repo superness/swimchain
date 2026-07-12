@@ -849,10 +849,24 @@ impl Action {
         })
     }
 
-    /// Compute hash of this action
+    /// Compute hash of this action.
+    ///
+    /// BACKWARD COMPATIBILITY: a **public** action (`private == false`) is hashed over the
+    /// legacy 465-byte layout, i.e. WITHOUT the trailing `private` byte, so its hash is
+    /// byte-identical to the pre-confidentiality encoding. This keeps the merkle roots of
+    /// all existing (public) content valid on upgraded nodes — the private-space wire fork
+    /// grows the on-wire action to 466 bytes but must not change the identity of content
+    /// that predates it. A **private** action is hashed over the full 466 bytes.
+    /// See `docs/private-spaces.md`.
     #[must_use]
     pub fn hash(&self) -> [u8; 32] {
-        sha256(&self.serialize())
+        let full = self.serialize();
+        let len = if self.private {
+            ACTION_SERIALIZED_SIZE
+        } else {
+            ACTION_SERIALIZED_SIZE_LEGACY
+        };
+        sha256(&full[..len])
     }
 
     /// Create a new RENAME_SPACE action (SPEC_13 Phase 2).
@@ -1126,6 +1140,31 @@ mod tests {
         assert_eq!(action.serialize()[465], 0);
         action.private = true;
         assert_eq!(action.serialize()[465], 1);
+    }
+
+    #[test]
+    fn test_public_action_hash_is_backward_compatible() {
+        // A public action must hash over the legacy 465-byte layout (no trailing private
+        // byte), so existing content identity / merkle roots survive the wire fork.
+        let mut action = make_test_action();
+        action.private = false;
+        let full = action.serialize();
+        assert_eq!(full.len(), 466);
+        assert_eq!(action.hash(), crate::crypto::sha256(&full[..465]));
+        // and NOT the naive full-466 hash (proves the slice matters)
+        assert_ne!(action.hash(), crate::crypto::sha256(&full[..]));
+    }
+
+    #[test]
+    fn test_private_action_hash_covers_full_466() {
+        let mut action = make_test_action();
+        action.private = true;
+        let full = action.serialize();
+        assert_eq!(action.hash(), crate::crypto::sha256(&full[..]));
+        // private flips the trailing byte, so its hash differs from the public hash
+        let mut public = action.clone();
+        public.private = false;
+        assert_ne!(action.hash(), public.hash());
     }
 
     #[test]
