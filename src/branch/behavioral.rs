@@ -77,6 +77,19 @@ pub const MIN_PATTERN_AGE_BLOCKS: u64 = 20160;
 /// Single-participant clusters are flagged differently (spam, §6.1). (§2.2)
 pub const SPAM_CLUSTER_SIZE: usize = 1;
 
+/// Maximum fraction of a space's active participants a cluster may hold and
+/// still qualify for community formation (§2.2 minority gate).
+///
+/// A small space's regulars ARE the space — low diversity + high cohesion
+/// there is the community being itself, not a sub-cluster; splitting would
+/// try to evict a space from itself. Requiring the cluster to be a minority
+/// (cluster_size / unique_participants_in_space <= 0.5) protects heavy
+/// legitimate users of small spaces from false-positive splits. The
+/// participant count is derived purely from chain data (identities with
+/// recorded per-space interaction metrics — the same window as every other
+/// §2.1 metric), so all nodes agree.
+pub const MAX_CLUSTER_SPACE_FRACTION: f64 = 0.5;
+
 /// Minimum directed interaction count for an edge to count in cluster BFS (§3.4).
 ///
 /// SPEC_13 §3.4 references `MIN_INTERACTION_COUNT_FOR_EDGE` but never assigns
@@ -200,6 +213,21 @@ pub struct CommunityFormation {
 }
 
 impl CommunityFormation {
+    /// Derive the deterministic auto-name for a community (Phase 2 UX,
+    /// `docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md` Lane A #5).
+    ///
+    /// `community-<first-8-hex-of-community_id>` — derived purely from chain
+    /// data so every node names the community identically at formation. The
+    /// parent's display name is deliberately NOT baked in: parent names are
+    /// non-consensus metadata (a node may not have learned a synced space's
+    /// name yet), so the canonical name stays parent-independent and RPC
+    /// responses compose `<parent-name>/<name>` at read time for display.
+    /// Ugly is fine — founding members can rename (space-rename action).
+    #[must_use]
+    pub fn derive_auto_name(community_id: &[u8; 32]) -> String {
+        format!("community-{}", hex::encode(&community_id[..4]))
+    }
+
     /// Derive a deterministic community ID from the sorted member set (§4.3).
     #[must_use]
     pub fn derive_community_id(
@@ -215,6 +243,61 @@ impl CommunityFormation {
         }
         buf.extend_from_slice(&formation_height.to_be_bytes());
         sha256(&buf)
+    }
+}
+
+/// Persistent lineage record for a formed community (Phase 2,
+/// `docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md` Lane A #2).
+///
+/// Written alongside [`CommunityFormation`] when a fracture executes, this is
+/// the space-tree/navigation view of the formation: parent pointer, formation
+/// metadata, and naming. `display_name` starts as the deterministic
+/// `auto_name` and diverges only via the space-rename action.
+///
+/// Everything except `display_name`/`renamed_*` is deterministic from chain
+/// data; the rename fields converge when the rename action's metadata is
+/// available (space names are non-consensus display metadata, recovered via
+/// the existing name-resolution protocol when missing).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommunityLineage {
+    /// The community this record describes.
+    pub community_id: [u8; 32],
+    /// Parent space the community formed under.
+    pub parent_space_id: [u8; 32],
+    /// Block height when formation was detected.
+    pub formation_height: u64,
+    /// Wall-clock timestamp of the triggering action (for "formed 2d ago"
+    /// badges; NOT consensus data — heights are the canonical ordering).
+    pub formation_timestamp: u64,
+    /// Number of founding members at formation.
+    pub founding_member_count: u32,
+    /// Deterministic name assigned at formation
+    /// ([`CommunityFormation::derive_auto_name`]).
+    pub auto_name: String,
+    /// Current display name (== `auto_name` until renamed).
+    pub display_name: String,
+    /// Timestamp of the last applied rename, if any.
+    pub renamed_at: Option<u64>,
+    /// Identity that performed the last applied rename, if any.
+    pub renamed_by: Option<[u8; 32]>,
+}
+
+impl CommunityLineage {
+    /// Build the lineage record for a freshly executed formation.
+    #[must_use]
+    pub fn from_formation(formation: &CommunityFormation, timestamp: u64) -> Self {
+        let auto_name = CommunityFormation::derive_auto_name(&formation.community_id);
+        Self {
+            community_id: formation.community_id,
+            parent_space_id: formation.parent_space_id,
+            formation_height: formation.formation_height,
+            formation_timestamp: timestamp,
+            founding_member_count: formation.founding_members.len() as u32,
+            display_name: auto_name.clone(),
+            auto_name,
+            renamed_at: None,
+            renamed_by: None,
+        }
     }
 }
 
@@ -508,6 +591,34 @@ pub fn crosses_insularity_gates(metrics: &ClusterMetrics) -> bool {
         && metrics.age_blocks >= MIN_PATTERN_AGE_BLOCKS
 }
 
+/// Check the §2.2 minority gate: a cluster only qualifies for community
+/// formation if it is a minority of the parent space's active participants
+/// (`cluster_size / participants <= MAX_CLUSTER_SPACE_FRACTION`).
+///
+/// Rationale: a small space's regulars ARE the space. When most of a space's
+/// participants form one tight cluster, the "cluster" is simply the space's
+/// own community being itself — fracturing it would evict the space from
+/// itself. This protects heavy legitimate users from false-positive splits.
+///
+/// Deterministic: both inputs derive from chain data processed in chain
+/// order. Applies to community-sized clusters in BOTH full formation and
+/// log-only detection (the shared [`check_threshold_crossing`] enforces it);
+/// the §6.1 single-participant spam signal is NOT gated — a lone
+/// self-engager is spam regardless of how empty the space is.
+#[must_use]
+pub fn is_minority_of_space(cluster_size: usize, space_participants: usize) -> bool {
+    if space_participants == 0 {
+        // No recorded participants at all (defensive; the cluster's own
+        // members always have metrics). Nothing to be a minority OF.
+        return false;
+    }
+    // Exact integer form of cluster_size / participants <= 0.5. Kept in
+    // integer math so the comparison is exact at the boundary; the named
+    // f64 constant documents the spec threshold.
+    debug_assert!((MAX_CLUSTER_SPACE_FRACTION - 0.5).abs() < f64::EPSILON);
+    cluster_size.saturating_mul(2) <= space_participants
+}
+
 // ============================================================================
 // Threshold checking (§3.3) and outcome classification (§6.1)
 // ============================================================================
@@ -521,8 +632,12 @@ pub fn crosses_insularity_gates(metrics: &ClusterMetrics) -> bool {
 /// 3. Size classification: `>= MIN_COMMUNITY_SIZE` community, `== 1` spam
 ///    signal, otherwise nothing (a 2-identity clique is neither a community
 ///    nor single-participant spam)
-/// 4. Existing membership: identities already in a community never re-trigger
-/// 5. Per-space formation cooldown (§6.3)
+/// 4. Minority gate (§2.2): the cluster must be a minority of the space's
+///    active participants ([`is_minority_of_space`]) — a small space's
+///    regulars ARE the space and must never be split from themselves.
+///    Community-sized clusters only; the spam arm is not gated.
+/// 5. Existing membership: identities already in a community never re-trigger
+/// 6. Per-space formation cooldown (§6.3)
 ///
 /// # Errors
 /// Returns an error if chain-state reads fail.
@@ -545,6 +660,15 @@ pub fn check_threshold_crossing(
     }
 
     if metrics.member_count >= MIN_COMMUNITY_SIZE {
+        // §2.2 minority gate: the cluster must be a minority of the space's
+        // recently-active participants, or it IS the space (see
+        // `is_minority_of_space` for the rationale). Applies identically to
+        // full formation and log-only detection since both share this check.
+        let participants = store.count_space_participants(space_id)?;
+        if !is_minority_of_space(metrics.member_count, participants) {
+            return Ok(ClusterOutcome::None);
+        }
+
         // Never re-form around identities that already belong to a community
         // in this space (Phase A resolution of §6.2 overlap: first wins).
         for member in &cluster {
@@ -660,6 +784,17 @@ mod tests {
             age_blocks: MIN_PATTERN_AGE_BLOCKS - 1,
         };
         assert!(!crosses_insularity_gates(&young));
+    }
+
+    #[test]
+    fn test_minority_gate_boundary() {
+        // Exactly half is allowed (<= 0.5), anything above is blocked.
+        assert!(is_minority_of_space(5, 10)); // 0.50 -> allowed
+        assert!(is_minority_of_space(5, 20)); // 0.25 -> allowed
+        assert!(!is_minority_of_space(5, 9)); // ~0.56 -> blocked
+        assert!(!is_minority_of_space(5, 6)); // ~0.83 -> blocked
+        assert!(!is_minority_of_space(5, 5)); // 1.00 -> blocked (cluster IS the space)
+        assert!(!is_minority_of_space(3, 0)); // degenerate: nothing to be a minority of
     }
 
     #[test]

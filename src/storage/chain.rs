@@ -19,7 +19,7 @@ use sled::Db;
 
 use crate::blocks::{BranchPath, ContentBlock, RootBlock, SpaceBlock};
 use crate::branch::behavioral::{
-    BehavioralEvent, CommunityFormation, IdentitySpaceMetrics, SpamClusterSignal,
+    BehavioralEvent, CommunityFormation, CommunityLineage, IdentitySpaceMetrics, SpamClusterSignal,
 };
 use crate::branch::{BranchMetadata, SpaceBranchState};
 use crate::types::error::StorageError;
@@ -117,6 +117,9 @@ pub struct ChainStore {
     /// Behavioral events by parent space (mirrors `space_communities`):
     /// Key = parent_space_id(32) || event_id(32), Value = detected_height(8, big-endian)
     space_behavioral_events: sled::Tree,
+    /// Community lineage records (Phase 2 space-tree navigation):
+    /// Key = community_id(32), Value = CommunityLineage (bincode)
+    community_lineage: sled::Tree,
 }
 
 /// Compact content metadata for indexed lookups
@@ -219,6 +222,7 @@ impl ChainStore {
         let space_formation_heights = db.open_tree("space_formation_heights")?;
         let behavioral_events = db.open_tree("behavioral_events")?;
         let space_behavioral_events = db.open_tree("space_behavioral_events")?;
+        let community_lineage = db.open_tree("community_lineage")?;
 
         // Calculate initial total bytes
         let mut total = 0u64;
@@ -264,6 +268,7 @@ impl ChainStore {
             space_formation_heights,
             behavioral_events,
             space_behavioral_events,
+            community_lineage,
         })
     }
 
@@ -2504,6 +2509,28 @@ impl ChainStore {
         Ok(())
     }
 
+    /// Count unique active participants in a space (SPEC_13 §2.2 minority gate).
+    ///
+    /// A participant is any identity with recorded per-space interaction
+    /// metrics — i.e. anyone who posted, replied, engaged, or was engaged in
+    /// this space over the same (cumulative) window the other §2.1 metrics
+    /// use. Derived purely from chain data processed in chain order, so all
+    /// nodes agree.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn count_space_participants(&self, space_id: &[u8; 32]) -> Result<usize, StorageError> {
+        let mut count = 0usize;
+        for item in self.identity_space_metrics.scan_prefix(space_id) {
+            let (key, _) = item?;
+            if key.len() == 64 {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     fn new_identity_metrics(current_height: u64) -> IdentitySpaceMetrics {
         IdentitySpaceMetrics {
             first_activity_height: current_height,
@@ -2689,6 +2716,75 @@ impl ChainStore {
                     result.push((path, community_id));
                 }
             }
+        }
+        Ok(result)
+    }
+
+    /// Store a community lineage record (Phase 2 space-tree navigation).
+    ///
+    /// Written at formation time and updated by the space-rename action.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if serialization or database write fails.
+    pub fn put_community_lineage(&self, lineage: &CommunityLineage) -> Result<(), StorageError> {
+        let data = bincode::serialize(lineage)?;
+        self.community_lineage.insert(lineage.community_id, data)?;
+        Ok(())
+    }
+
+    /// Get the lineage record for a community, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_community_lineage(
+        &self,
+        community_id: &[u8; 32],
+    ) -> Result<Option<CommunityLineage>, StorageError> {
+        match self.community_lineage.get(community_id)? {
+            Some(data) => Ok(Some(bincode::deserialize(&data)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List lineage records for all communities formed under a parent space,
+    /// sorted by formation height then community id (deterministic order).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_space_children(
+        &self,
+        space_id: &[u8; 32],
+    ) -> Result<Vec<CommunityLineage>, StorageError> {
+        let mut children = Vec::new();
+        for (community_id, _height) in self.get_space_communities(space_id)? {
+            if let Some(lineage) = self.get_community_lineage(&community_id)? {
+                children.push(lineage);
+            }
+        }
+        children.sort_by(|a, b| {
+            a.formation_height
+                .cmp(&b.formation_height)
+                .then_with(|| a.community_id.cmp(&b.community_id))
+        });
+        Ok(children)
+    }
+
+    /// List ALL community lineage records on this node (Phase 2).
+    ///
+    /// Bounded by the number of formed communities (small — one per space
+    /// per ~14-day cooldown). Used to resolve 16-byte community prefixes.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read or deserialization fails.
+    pub fn get_all_community_lineages(&self) -> Result<Vec<CommunityLineage>, StorageError> {
+        let mut result = Vec::new();
+        for item in self.community_lineage.iter() {
+            let (_, data) = item?;
+            result.push(bincode::deserialize(&data)?);
         }
         Ok(result)
     }
