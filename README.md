@@ -76,7 +76,7 @@ swimchain/
 
 - [SPEC_01: Identity](specs/SPEC_01_IDENTITY.md) - Key generation, signing, verification
 - [SPEC_02: Content & Decay](specs/SPEC_02_CONTENT_DECAY.md) - Heat model, decay mechanics
-- [SPEC_03: Proof of Work](specs/SPEC_03_PROOF_OF_WORK.md) - PoW computation, pooled engagement
+- [SPEC_03: Proof of Work](specs/SPEC_03_PROOF_OF_WORK.md) - PoW computation, engagement PoW
 
 ## License
 

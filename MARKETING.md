@@ -495,7 +495,7 @@ Clarity about who this isn't for is as important as knowing who it's for.
 
 ### "What about illegal content?"
 
-> The protocol includes hash blocklists for known illegal content (CSAM). This isn't speech moderation - it's a legal necessity for node operators. The blocklists are maintained by recognized organizations (NCMEC, IWF), not by us.
+> The protocol includes hash blocklists for known illegal content (CSAM). This isn't speech moderation - it's a legal necessity for node operators. Blocklist entries come from community attestations that cross a signature threshold and from signed lists published by trusted maintainers you configure - not from us. Nodes refuse to store matching content.
 >
 > Beyond that: content moderation happens through decay (unpopular content fades), community migration (communities fork away from content they don't want), and client-side filtering (you choose what to see).
 >

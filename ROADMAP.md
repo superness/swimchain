@@ -10,7 +10,7 @@ This roadmap defines the implementation phases for Swimchain, designed for AI ag
 - Recursive block hierarchy (root → space → content blocks)
 - PoW aggregates upward through the tree
 - Parent-anchored threading (replies stay with parent's branch)
-- Pooled engagement (60s total, distributed contributors)
+- Engagement PoW (a single valid engagement resets a content's decay timer)
 - Hybrid model: Bitcoin-like authority layer + BitTorrent-like content layer
 
 See: `specs/SPEC_08_RECURSIVE_BLOCKS.md` for full architecture.
@@ -36,13 +36,13 @@ See: `specs/SPEC_08_RECURSIVE_BLOCKS.md` for full architecture.
 |------|------|---------|-------------|
 | Identity | `specs/SPEC_01_IDENTITY.md` | 1.0.0 | Key generation, signing, verification (IMPLEMENTED) |
 | Content & Decay | `specs/SPEC_02_CONTENT_DECAY.md` | 0.4.0 | Heat model, decay mechanics, engagement PoW (IMPLEMENTED) |
-| Proof of Work | `specs/SPEC_03_PROOF_OF_WORK.md` | 2.0.0 | PoW computation, difficulty, pooled engagement (IMPLEMENTED) |
+| Proof of Work | `specs/SPEC_03_PROOF_OF_WORK.md` | 2.0.0 | PoW computation, action-scaled difficulty, engagement PoW (IMPLEMENTED) |
 | Spaces | `specs/SPEC_04_SPACES.md` | 1.0 | Space creation, membership, discovery |
 | Forks & Consensus | `specs/SPEC_05_FORKS_CONSENSUS.md` | 1.0 | Fork mechanics, chain selection |
 | Network & Sync | `specs/SPEC_06_NETWORK_SYNC.md` | 0.2.2 | Wire protocol, peer discovery, sync, gossip (PHASE 2 COMPLETE) |
 | Content Distribution | `specs/SPEC_07_CONTENT_DISTRIBUTION.md` | 1.1 | BitTorrent-like content layer (storage IMPLEMENTED) |
-| Recursive Blocks | `specs/SPEC_08_RECURSIVE_BLOCKS.md` | 1.0.0 | **CORE** - Block hierarchy, pooled PoW, branching (IMPLEMENTED) |
-| Social Layer | `specs/SPEC_09_SOCIAL_LAYER.md` | 1.0.0 | Contribution tracking, swimmer levels, benefits, achievements (IMPLEMENTED) |
+| Recursive Blocks | `specs/SPEC_08_RECURSIVE_BLOCKS.md` | 1.0.0 | **CORE** - Block hierarchy, PoW aggregation, branching (IMPLEMENTED) |
+| Social Layer | `specs/SPEC_09_SOCIAL_LAYER.md` | 1.0.0 | Contribution tracking, achievements, poster reputation (IMPLEMENTED) |
 | Node Operations | `specs/SPEC_10_NODE_OPERATIONS.md` | 1.0.0 | Node lifecycle, connection management, background tasks (PHASE 8 IN PROGRESS) |
 | Sponsorship & Access | `specs/SPEC_11_SPONSORSHIP_ACCESS.md` | 1.0.0 | **NEW** - Sponsorship trees, genesis identities, consequence propagation |
 | Anti-Abuse | `specs/SPEC_12_ANTI_ABUSE.md` | 1.0.0 | **NEW** - Attestation-driven decay, content restrictions, blocklist |
@@ -51,12 +51,12 @@ See: `specs/SPEC_08_RECURSIVE_BLOCKS.md` for full architecture.
 
 | Research | Path | Informs |
 |----------|------|---------|
-| Sybil Resistance | `research/RESEARCH_01_SYBIL_RESISTANCE.md` | Identity, engagement pools |
+| Sybil Resistance | `research/RESEARCH_01_SYBIL_RESISTANCE.md` | Identity, engagement PoW |
 | Bootstrap & Discovery | `research/RESEARCH_02_BOOTSTRAP.md` | Network layer, peer discovery |
 | Light Clients | `research/RESEARCH_03_LIGHT_CLIENTS.md` | Mobile viability, sync |
 | Moderation Patterns | `research/RESEARCH_04_MODERATION_PATTERNS.md` | Decay, community norms |
 | Legal Considerations | `research/RESEARCH_05_LEGAL.md` | CSAM handling, liability |
-| Hosting/PoW Economics | `research/RESEARCH_06_HOSTING_POW_ECONOMICS.md` | Contribution-based access, swimmer levels |
+| Hosting/PoW Economics | `research/RESEARCH_06_HOSTING_POW_ECONOMICS.md` | Hosting economics, achievements and reputation |
 | Sponsorship Economics | `research/RESEARCH_07_SPONSORSHIP_ECONOMICS.md` | Sponsorship trees, consequence propagation |
 | Attestation Mechanisms | `research/RESEARCH_08_ATTESTATION_MECHANISMS.md` | Community moderation, spam detection |
 
@@ -2576,10 +2576,10 @@ The prototype is successful if:
 4. **Sync Fast:** Initial sync < 5 minutes for realistic chain size
 5. **Content Available:** Content can be retrieved when seeders exist
 6. **Recursive Blocks Work:** Three-level hierarchy forms correctly, PoW aggregates upward
-7. **Engagement Pools Work:** Pooled PoW for persistence, Sybil-resistant (same total regardless of contributor count)
+7. **Engagement Works:** A single engagement PoW resets a content's decay timer, Sybil-resistant (sockpuppets multiply the cost, they don't amplify the effect)
 8. **Branching Works:** Parent-anchored threading, automatic fracturing, O(log n) lookup
 9. **Thread Integrity:** Replies always stay with parent's branch, threads never split
-10. **Social Layer Works:** Contribution tracking accurate, levels meaningful, benefits applied correctly
+10. **Social Layer Works:** Contribution tracking accurate, achievements awarded correctly, poster reputation displayed
 11. **Gamification Engaging:** Streaks, achievements, and space health create positive engagement loops
 12. **Fully Documented:** All findings are documented with data
 
@@ -2718,8 +2718,8 @@ Architecture:
 - Hybrid: Bitcoin-like authority layer + BitTorrent-like content layer
 - Recursive blocks: root → space → content
 - Parent-anchored threading: replies stay with parent
-- Pooled engagement: 60s total PoW, distributed contributors
-- Social layer: contribution tracking, swimmer levels, non-economic benefits
+- Engagement: individual PoW resets a content's decay timer
+- Social layer: contribution tracking, achievements, poster reputation
 
 Current Phase: [PHASE_NUMBER]
 Current Milestone: [MILESTONE_ID]
@@ -2879,23 +2879,23 @@ Quick reference for all specifications with current versions and primary topics.
 |------|---------|----------------|
 | SPEC_01: Identity | 1.0 | Ed25519 keys, signatures, verification, identity creation |
 | SPEC_02: Content & Decay | 0.3.0 | Heat model, decay timer, engagement PoW requirement, persistence |
-| SPEC_03: Proof of Work | 2.0.0 | PoW computation, difficulty, action costs, **pooled engagement** |
+| SPEC_03: Proof of Work | 2.0.0 | PoW computation, difficulty, action costs, **engagement PoW** |
 | SPEC_04: Spaces | 1.0 | Space creation, membership, discovery, parameters |
 | SPEC_05: Forks & Consensus | 1.0 | Fork mechanics, chain selection, identity across forks |
 | SPEC_06: Network & Sync | 0.2.0 | Wire protocol, messages, peer discovery, chain sync, gossip |
 | SPEC_07: Content Distribution | 1.0 | Content addressing, chunking, retrieval, caching, seeding |
 | SPEC_08: Recursive Blocks | 1.0 | **CORE ARCHITECTURE** - Block hierarchy, PoW aggregation, branching |
-| SPEC_09: Social Layer | 1.0 | **NEW** - Contribution tracking, swimmer levels, benefits, achievements |
+| SPEC_09: Social Layer | 1.0 | **NEW** - Contribution tracking, achievements, poster reputation |
 
 ### Cross-Cutting Concerns
 
 | Topic | Specs Involved |
 |-------|----------------|
-| Engagement/Persistence | SPEC_02 (decay rules), SPEC_03 (pooled PoW), SPEC_08 (content blocks) |
+| Engagement/Persistence | SPEC_02 (decay rules), SPEC_03 (engagement PoW), SPEC_08 (content blocks) |
 | Block Structure | SPEC_08 (hierarchy), SPEC_05 (consensus), SPEC_06 (sync) |
 | Content Availability | SPEC_07 (distribution), SPEC_02 (decay), SPEC_08 (branching) |
 | Identity | SPEC_01 (keys), SPEC_05 (across forks), SPEC_04 (space membership) |
-| Social/Incentives | SPEC_09 (contribution), SPEC_01 (identity), SPEC_02 (decay benefits) |
+| Social/Incentives | SPEC_09 (contribution), SPEC_01 (identity), SPEC_02 (decay) |
 
 ---
 

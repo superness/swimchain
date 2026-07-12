@@ -27,26 +27,16 @@ Swimchain's name embodies its philosophy. The swimming metaphor runs throughout 
 
 ### Social Layer Terms (Updated December 2025)
 
-**Core Insight**: Levels are based on HOSTING contribution (bandwidth served, uptime), NOT posting activity.
-
-| Swimming Term | Level | Hosting Requirement |
-|---------------|-------|---------------------|
-| **New Swimmer** 🏊 | 0 | Just joined, no hosting history yet |
-| **Regular** 🏊‍♂️ | 1 | 7+ days, any bandwidth served |
-| **Resident** 🏊‍♀️ | 2 | 30+ days, 10GB+ served lifetime, 50%+ uptime |
-| **Lifeguard** 🛟 | 3 | 50GB+/month served, 70%+ uptime |
-| **Anchor** ⚓ | 4 | 200GB+/month served, 90%+ uptime |
-| **Pool Keeper** 🏛️ | 5 | 500GB+/month served, 95%+ uptime |
+**Core Insight**: Recognition is based on HOSTING contribution (bandwidth served, uptime) and participation, NOT posting activity. Recognition is purely cosmetic — it never grants protocol privileges.
 
 | Activity Term | Swimchain Concept | Meaning |
 |---------------|-------------------|---------|
 | **Hosting** | Serving content | Storing and serving content to peers (the PRIMARY contribution) |
 | **Swim Streak** 🔥 | Consecutive days | Days in a row with hosting activity |
-| **Keeping Afloat** | Content persistence | Contributing PoW to keep content alive |
+| **Keeping Afloat** | Content persistence | Doing engagement PoW to keep content alive |
 | **Lane Health** | Space health | Hosting coverage of a space (active hosts, uptime, availability) |
-| **Pool Contribution** | Network contribution | Bandwidth served, uptime, peer requests answered |
 
-**Key insight**: An active poster with no hosting stays at Regular forever. A silent node that serves 500GB/month is a Pool Keeper.
+**Key insight**: Hosting is recognized with permanent, non-transferable achievement badges shown on your profile. A silent node that serves 500GB/month earns hosting achievements; an active poster who never hosts does not. The recognition is cosmetic — no one gets faster posting, longer decay, or higher limits from it.
 
 ### Why Swimming? (Updated)
 
@@ -55,7 +45,7 @@ Swimchain's name embodies its philosophy. The swimming metaphor runs throughout 
 3. **Everyone's in the Same Pool**: Shared infrastructure, no privileged swimmers (decentralization)
 4. **You Can Rest, But Not Forever**: Stop swimming, eventually you sink (decay)
 5. **Different Strokes**: Various ways to participate (posts, replies, engagement)
-6. **Lifeguards Emerge**: Active HOSTS earn recognition and benefits (social layer rewards hosting)
+6. **Recognition for Hosts**: Active HOSTS earn achievement badges shown on their profile (social layer recognizes hosting, with no protocol privileges)
 7. **Pool Health Matters**: The network survives through collective participation
 
 ### The Casual Phrase
@@ -97,12 +87,10 @@ These are defined in the protocol specifications and must be implemented consist
 | **Content Hash** | Cryptographic hash pointing to content blob in P2P layer. | SPEC_07_CONTENT_DISTRIBUTION |
 | **Fracturing** | Binary splitting of spaces for storage optimization. | VISION.md |
 | **Contribution Record** | Protocol-level tracking of HOSTING metrics (bandwidth served, uptime, peer requests). | SPEC_09_SOCIAL_LAYER |
-| **Swimmer Level** | Identity-bound level (0-5) based on HOSTING contribution history. | SPEC_09_SOCIAL_LAYER |
 | **Attestation** | Peer verification of hosting contribution claims. | SPEC_09_SOCIAL_LAYER |
-| **PoW Reduction** | Benefit for hosts - faster posting (up to 50%). Give bandwidth, get compute. | SPEC_09_SOCIAL_LAYER |
-| **Decay Extension** | Benefit for hosts - content lives longer (up to 2x). Keep content alive, yours lives longer. | SPEC_09_SOCIAL_LAYER |
 | **Streak** | Consecutive days of hosting activity, tracked in protocol. | SPEC_09_SOCIAL_LAYER |
-| **Achievement** | Permanent, non-transferable recognition for hosting milestones. | SPEC_09_SOCIAL_LAYER |
+| **Achievement** | Permanent, non-transferable badge for hosting/participation milestones. Cosmetic recognition only, zero protocol effect. | SPEC_09_SOCIAL_LAYER |
+| **Poster Reputation** | Per-identity score shown on profiles. Decays when the community files spam attestations against a poster's content and recovers over time; attestations are weighted by the attester's own reputation. A displayed signal with no protocol privileges. | SPEC_09_SOCIAL_LAYER |
 | **Space Health** | Protocol-level indicator of hosting coverage (active hosts, uptime, availability). | SPEC_09_SOCIAL_LAYER |
 
 ### Architectural Layers
@@ -185,16 +173,15 @@ The protocol defines **spaces, threads, and posts**. How clients render these is
 - Identities are keypairs
 - Forks can happen
 - HOSTING contribution is tracked (bandwidth served, uptime, peer requests)
-- Swimmer levels computed from HOSTING history (not posting)
-- Benefits applied based on hosting level (PoW reduction, decay extension)
-- Hosting streaks and achievements recorded
+- Hosting streaks and achievements are recorded
+- Poster reputation is derived from community spam attestations
 
 **Protocol does NOT enforce:**
 - How content is displayed
 - What UX pattern clients use
 - Link handling behavior
 - Filtering or blocking
-- Reputation algorithms beyond swimmer levels
+- How clients display or compute their own reputation scores
 - Badge/achievement display styling
 
 ---

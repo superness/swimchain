@@ -6,11 +6,11 @@ This guide will walk you through running two local nodes, connecting them, and u
 
 Swimchain supports three network modes, each with isolated networks (different magic bytes, data directories, and rules):
 
-| Mode | Usage | Level Checks | PoW Difficulty | Magic Bytes | Data Dir Suffix |
-|------|-------|--------------|----------------|-------------|-----------------|
-| **Mainnet** | Production | Full | 100% | SWIM | (none) |
-| **Testnet** | Public testing | Full | 10% | TEST | `-testnet` |
-| **Regtest** | Local development | Bypassed | 0.1% | REGT | `-regtest` |
+| Mode | Usage | PoW Difficulty | Magic Bytes | Data Dir Suffix |
+|------|-------|----------------|-------------|-----------------|
+| **Mainnet** | Production | 100% | SWIM | (none) |
+| **Testnet** | Public testing | 10% | TEST | `-testnet` |
+| **Regtest** | Local development | 0.1% | REGT | `-regtest` |
 
 ### Network Isolation
 
@@ -20,8 +20,7 @@ Each mode uses different "magic bytes" in the wire protocol, so nodes on differe
 - This ensures your local testing never interferes with production data
 
 For local testing, we use **regtest mode** (`--regtest` flag) which:
-- Bypasses all level checks (you can create spaces immediately)
-- Reduces PoW difficulty to 0.1% of mainnet (near-instant posting)
+- Reduces PoW difficulty to 0.1% of mainnet (near-instant posting and space creation)
 - Allows self-sponsorship (no need for an existing member)
 - Uses isolated data directory and network
 
@@ -119,7 +118,7 @@ You should see:
 ╔══════════════════════════════════════════════════════════════════╗
 ║  REGTEST MODE - Local development network                        ║
 ║                                                                  ║
-║  • Level checks bypassed (all users have Pool Keeper level)      ║
+║  • Anti-abuse gating relaxed for local development testing       ║
 ║  • PoW difficulty reduced to 0.1%                                ║
 ║  • Self-sponsorship allowed                                      ║
 ║  • Network isolation: regtest nodes only connect to regtest      ║
@@ -152,13 +151,13 @@ cd swimchain
 export SWIMCHAIN_DATA_DIR="./node-a-data"
 
 # Create a test space using regtest mode
-# The --regtest flag bypasses level checks and reduces PoW time
+# The --regtest flag reduces PoW difficulty (near-instant space creation)
 ./target/release/sw --regtest space create --name "Test Space"
 
 # You'll see a banner confirming regtest mode:
 # ╔══════════════════════════════════════════════════╗
 # ║  REGTEST MODE - For local development only       ║
-# ║  Level checks bypassed, reduced PoW difficulty   ║
+# ║  Reduced PoW difficulty for fast local testing   ║
 # ╚══════════════════════════════════════════════════╝
 
 # Note the space ID (sp1...)
@@ -166,7 +165,7 @@ export SWIMCHAIN_DATA_DIR="./node-a-data"
 
 The space will propagate to Node B via gossip.
 
-> **Note**: In regtest mode, level checks are bypassed and PoW difficulty is reduced to 0.1% of normal. In mainnet, you'd need to contribute bandwidth and uptime to reach Resident level before creating spaces. This prevents spam and ensures space creators have a stake in the network.
+> **Note**: In regtest mode, PoW difficulty is reduced to 0.1% of normal, so space creation is near-instant. On mainnet, space creation is the highest-difficulty PoW action — that computational cost, not any status or level, is what deters spam and ensures space creators have put in real work.
 
 ## Step 5: Post Content
 
@@ -207,9 +206,10 @@ Content decays without engagement. To extend a post's life:
 ```bash
 ./target/release/sw --regtest post engage sha256:<content-id>
 
-# This contributes to the engagement pool
-# When the pool reaches 60 seconds of combined PoW,
-# the content's decay timer resets
+# A single valid engagement is one PoW action.
+# It immediately resets the content's decay timer.
+# Sockpuppets don't help: each reset costs full engagement PoW
+# regardless of identity, so extra identities only multiply your cost.
 ```
 
 ## Using the Forum Client (Web UI)
@@ -251,7 +251,7 @@ Open `http://localhost:5173` in your browser.
 - **Post Composition**: Create posts with PoW progress indicator
 - **Reply Tree**: View and reply to discussions
 - **Heat Indicator**: See content decay status
-- **Engagement Pool**: Contribute PoW to keep content alive
+- **Engage**: Do a PoW engagement to reset a post's decay timer
 
 ## Architecture Overview
 
@@ -285,28 +285,18 @@ Open `http://localhost:5173` in your browser.
 | **Strokes** | Posts/replies (each costs energy) |
 | **Lanes** | Spaces (communities) |
 | **Drift/Decay** | Content fading without engagement |
-| **Swimmer Level** | Your reputation based on hosting |
 
-### Swimmer Levels
+### Recognition
 
-Your level is based on **hosting** (bandwidth served, uptime), not posting:
-
-| Level | Bandwidth/Month | Uptime | Benefits |
-|-------|-----------------|--------|----------|
-| New Swimmer 🏊 | - | - | Read only |
-| Regular 🏊‍♂️ | Any | - | Can post (5/day) |
-| Resident 🏊‍♀️ | 10GB | 50% | 10% PoW reduction, images |
-| Lifeguard 🛟 | 50GB | 70% | 20% PoW reduction |
-| Anchor ⚓ | 200GB | 90% | 35% PoW reduction |
-| Pool Keeper 🏛️ | 500GB | 95% | 50% PoW reduction |
+Hosting and participation earn **achievements** — permanent, non-transferable badges shown on your profile. Your **poster reputation** is a per-identity score that reflects community spam attestations against your content. Both are cosmetic signals: nothing you earn reduces PoW, extends decay, raises rate limits, or gates space creation. Every identity plays by the same rules, and image posting (500KB cap) is available to everyone.
 
 ### Content Lifecycle
 
 ```
 New Post                              Decayed (Gone)
     │                                      ↑
-    │  Engagement (PoW contributions)      │
-    ├───────────────────────────────→ Pool Complete → Decay Reset
+    │  Engagement (one PoW action)         │
+    ├───────────────────────────────→ Decay Timer Reset
     │                                      │
     ↓                                      │
 Decay Timer Running ──────────────────────→
@@ -408,8 +398,8 @@ sw identity import backup.bin # Restore identity
 
 ### Space Commands
 ```bash
-sw space create --name "My Space"  # Create space (requires Resident level)
-sw --regtest space create --name "My Space"  # Create in regtest (no level check)
+sw space create --name "My Space"  # Create space (highest-difficulty PoW action)
+sw --regtest space create --name "My Space"  # Create in regtest (fast PoW)
 sw space join sp1...               # Join existing space
 sw space leave sp1...              # Leave space
 sw space list                      # List joined spaces
@@ -421,14 +411,14 @@ sw post create --space sp1... --title "Title" --body "Content"
 sw --regtest post create --space sp1... --title "Title" --body "Content"  # Fast PoW
 sw post reply --parent sha256:... --body "Reply text"
 sw post view sha256:...            # View a post
-sw post engage sha256:...          # Contribute to engagement pool
+sw post engage sha256:...          # Engage (one PoW action; resets decay timer)
 ```
 
 ### Network Mode Flags
 ```bash
-sw --regtest <command>   # Local development (bypass levels, fast PoW)
-sw --testnet <command>   # Test network (reduced PoW, full levels)
-sw <command>             # Mainnet (full PoW, full levels)
+sw --regtest <command>   # Local development (fast PoW, relaxed anti-abuse)
+sw --testnet <command>   # Test network (reduced PoW)
+sw <command>             # Mainnet (full PoW)
 ```
 
 ### Node Commands
@@ -453,7 +443,7 @@ sw --help                          # Full command list
 
 1. **Run the other clients**: Try `reddit-client/`, `chat-client/` for different UX
 2. **Read the specs**: See `specs/` for protocol details
-3. **Explore swimmer levels**: Host content to increase your level
+3. **Earn achievements**: Host content to collect hosting badges on your profile
 4. **Test attestation**: Flag spam content, see accelerated decay
 5. **Try sponsorship**: (Phase 9) Sponsor new identities into the network
 
