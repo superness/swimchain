@@ -212,6 +212,40 @@ pub fn decrypt_content_with_space_key(
     Ok(s)
 }
 
+/// Magic header for the binary encrypted-media envelope (`PRVM1\0`, "PRiVate Media v1").
+///
+/// Media attachments in private spaces are AES-256-GCM ciphertext. Unlike text (which is
+/// framed as the printable `[PRIVATE:v1:...]` string), media is binary, so we prefix a
+/// fixed magic so a node can *recognise* an encrypted-media blob without holding the key.
+/// Layout: `magic(6) || iv(12) || ct+tag(>=16)`  → minimum valid length 34 bytes.
+/// See `docs/private-spaces.md` and the confidentiality design spec (write-side).
+pub const ENCRYPTED_MEDIA_MAGIC: &[u8; 6] = b"PRVM1\0";
+
+/// Minimum length of a well-formed `PRVM1` media envelope: magic(6)+iv(12)+tag(16).
+const ENCRYPTED_MEDIA_MIN_LEN: usize = ENCRYPTED_MEDIA_MAGIC.len() + GCM_IV_SIZE + TAG_SIZE;
+
+/// True iff `s` is a well-formed `[PRIVATE:v1:<payload>]` private-content envelope.
+///
+/// Structural check only — it does NOT decrypt or validate the base64/ciphertext (the
+/// caller may not hold the space key). Used by write-side enforcement (reject unencrypted
+/// writes to private spaces) and serve-gating to classify content without a key.
+/// See the private-space confidentiality design spec (write-side enforcement).
+#[must_use]
+pub fn is_private_envelope(s: &str) -> bool {
+    s.len() > PRIVATE_PREFIX.len() + PRIVATE_SUFFIX.len()
+        && s.starts_with(PRIVATE_PREFIX)
+        && s.ends_with(PRIVATE_SUFFIX)
+}
+
+/// True iff `bytes` is a well-formed `PRVM1` encrypted-media envelope (magic + minimum
+/// length). Structural only — it does NOT decrypt (the caller may not hold the key).
+/// Used by write-side enforcement and serve-gating to classify media without a key.
+/// See the private-space confidentiality design spec (write-side enforcement).
+#[must_use]
+pub fn is_encrypted_media_envelope(bytes: &[u8]) -> bool {
+    bytes.len() >= ENCRYPTED_MEDIA_MIN_LEN && bytes.starts_with(ENCRYPTED_MEDIA_MAGIC)
+}
+
 /// Encrypt a space name with the space key — raw `iv(12) || ct+tag` bytes (no framing),
 /// matching JS `encryptSpaceName`.
 pub fn encrypt_space_name(name: &str, key: &[u8; 32]) -> Vec<u8> {
@@ -276,6 +310,31 @@ pub fn unwrap_space_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_private_envelope_recognizes_well_formed() {
+        assert!(is_private_envelope("[PRIVATE:v1:AAAA]"));
+        assert!(!is_private_envelope("hello world"));
+        assert!(!is_private_envelope("[PRIVATE:v1:")); // no suffix
+        assert!(!is_private_envelope("[PRIVATE:v1:]")); // empty payload
+        assert!(!is_private_envelope("[PRIVATE:v2:x]")); // wrong version
+        assert!(!is_private_envelope(""));
+    }
+
+    #[test]
+    fn is_encrypted_media_envelope_checks_magic_and_min_len() {
+        let mut ok = ENCRYPTED_MEDIA_MAGIC.to_vec();
+        ok.extend_from_slice(&[0u8; GCM_IV_SIZE + TAG_SIZE]); // 34 bytes total
+        assert!(is_encrypted_media_envelope(&ok));
+
+        assert!(!is_encrypted_media_envelope(&ok[..ok.len() - 1])); // 33 bytes, too short
+
+        let mut wrong_magic = vec![0u8; ENCRYPTED_MEDIA_MIN_LEN];
+        wrong_magic[0] = b'X';
+        assert!(!is_encrypted_media_envelope(&wrong_magic));
+
+        assert!(!is_encrypted_media_envelope(&[]));
+    }
 
     // The node creates a space (self-wrap, invited_by = 0), then reads it back by
     // unwrapping its own membership key — the exact create->read local flow. This also
