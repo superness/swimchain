@@ -120,6 +120,7 @@ use crate::types::constants::{
 use crate::types::content::{ContentId, Reaction, ReactionType};
 use crate::types::identity::{IdentityId, PublicKey, Signature};
 use crate::types::serialize::{Deserialize, Serialize};
+use crate::types::space_class::{apply_class, SpaceClass};
 
 /// Orphan block entry: block data waiting for its parent to arrive
 #[derive(Clone)]
@@ -5707,8 +5708,7 @@ impl MessageRouter {
                     hex::encode(sorted[1])
                 );
                 let sh = crate::crypto::sha256(preimage.as_bytes());
-                let mut space_id = [0u8; 16];
-                space_id.copy_from_slice(&sh[..16]);
+                let space_id = apply_class(SpaceClass::Dm, &sh);
 
                 match membership_store.update_dm_request_status(
                     &announce.requester,

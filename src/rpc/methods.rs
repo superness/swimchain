@@ -29,6 +29,7 @@ use crate::storage::AggregationCache;
 use crate::sync::SyncState;
 use crate::types::content::{ContentId, Reaction, ReactionType};
 use crate::types::identity::IdentityId;
+use crate::types::space_class::{apply_class, SpaceClass};
 
 /// Map an on-wire emoji code (1..=8) to a `ReactionType`. Returns `None` for
 /// unknown codes. Centralizes the mapping duplicated across engage handlers.
@@ -93,9 +94,7 @@ fn parse_app_space_name(name: &str) -> Option<(String, String)> {
 /// Name-addressed like profile spaces, so a given `@<app>:<display>` is one shared space.
 fn app_space_id_16(app: &str, display: &str) -> [u8; 16] {
     let h = crate::crypto::sha256(format!("app:{}:v1:{}", app, display).as_bytes());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&h[..16]);
-    out
+    apply_class(SpaceClass::App, &h)
 }
 
 /// Authoritative "is this an app space" check for a `(space_id, name)` pair: the name must
@@ -2147,7 +2146,7 @@ impl RpcMethods {
         let is_own_profile_space = {
             let preimage = format!("profile:v1:{}", params.author_id.to_lowercase());
             let hash = crate::crypto::sha256(preimage.as_bytes());
-            hash[..16] == space_id_16
+            apply_class(SpaceClass::Profile, &hash) == space_id_16
         };
         if !is_own_profile_space {
             if let Some(ref chain_store) = self.node.chain_store {
@@ -5600,12 +5599,11 @@ impl RpcMethods {
         // be squatted). PoW is verified either way (anti-abuse) — for app spaces it just no
         // longer determines the id.
         let app_marker = parse_app_space_name(&params.name);
-        let mut space_id_bytes: [u8; 16] = [0u8; 16];
-        if let Some((ref app, ref display)) = app_marker {
-            space_id_bytes = app_space_id_16(app, display);
+        let space_id_bytes: [u8; 16] = if let Some((ref app, ref display)) = app_marker {
+            app_space_id_16(app, display)
         } else {
-            space_id_bytes.copy_from_slice(&pow_hash[..16]);
-        }
+            apply_class(SpaceClass::Social, &pow_hash)
+        };
         let space_id = encode_space_id(&space_id_bytes);
 
         // Check if space already exists on-chain
@@ -7447,9 +7445,7 @@ impl RpcMethods {
         let author_profile_space_16: [u8; 16] = {
             let preimage = format!("profile:v1:{}", hex::encode(author_bytes));
             let h = crate::crypto::sha256(preimage.as_bytes());
-            let mut a = [0u8; 16];
-            a.copy_from_slice(&h[..16]);
-            a
+            apply_class(SpaceClass::Profile, &h)
         };
         let dm_space_ids: std::collections::HashSet<[u8; 16]> = self
             .node
@@ -8376,14 +8372,10 @@ impl RpcMethods {
             );
         };
 
-        // Calculate profile space ID (first 16 bytes of SHA256("profile:v1:<user_id_lowercase>"))
+        // Calculate profile space ID: class byte (Profile) ‖ SHA256("profile:v1:<user_id_lowercase>")[..15]
         let preimage = format!("profile:v1:{}", user_id_norm);
         let profile_space_hash = crate::crypto::sha256(preimage.as_bytes());
-        let profile_space_id: [u8; 16] = {
-            let mut arr = [0u8; 16];
-            arr.copy_from_slice(&profile_space_hash[..16]);
-            arr
-        };
+        let profile_space_id: [u8; 16] = apply_class(SpaceClass::Profile, &profile_space_hash);
 
         // Look up content in the profile space
         let content_store = match &self.node.content_store {
@@ -11041,9 +11033,7 @@ impl RpcMethods {
         let profile_space_id: [u8; 16] = {
             let preimage = format!("profile:v1:{}", params.user.to_lowercase());
             let h = crate::crypto::sha256(preimage.as_bytes());
-            let mut a = [0u8; 16];
-            a.copy_from_slice(&h[..16]);
-            a
+            apply_class(SpaceClass::Profile, &h)
         };
         let dm_space_ids = membership_store
             .get_dm_space_ids(&user_pk)
@@ -11491,8 +11481,7 @@ impl RpcMethods {
             hex::encode(sorted[1])
         );
         let sh = sha256(preimage.as_bytes());
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&sh[..16]);
+        let space_id = apply_class(SpaceClass::Dm, &sh);
 
         // DM space key, wrapped for self (so we can read) and for the recipient (the
         // key_share the request carries — only they can unwrap it).
@@ -11721,8 +11710,7 @@ impl RpcMethods {
             hex::encode(&sorted_keys[1])
         );
         let space_hash = crate::crypto::sha256(preimage.as_bytes());
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&space_hash[..16]);
+        let space_id = apply_class(SpaceClass::Dm, &space_hash);
 
         // Update request status to accepted
         if let Err(e) = membership_store.update_dm_request_status(
@@ -11868,8 +11856,7 @@ impl RpcMethods {
             hex::encode(sorted[1])
         );
         let sh = crate::crypto::sha256(preimage.as_bytes());
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&sh[..16]);
+        let space_id = apply_class(SpaceClass::Dm, &sh);
 
         // Re-wrap the key for our own membership so we can read/post going forward.
         let self_wrap = match wrap_space_key_for(&space_key, &me, &seed) {
@@ -12201,8 +12188,7 @@ impl RpcMethods {
         space_id_input.extend_from_slice(params.name.as_bytes());
         space_id_input.extend_from_slice(&params.timestamp.to_le_bytes());
         let space_hash = crate::crypto::sha256(&space_id_input);
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&space_hash[..16]);
+        let space_id = apply_class(SpaceClass::Private, &space_hash);
 
         // Create SpaceInfo (stored encrypted on chain)
         // For private spaces, name is empty string - actual name is in encrypted_name
@@ -12424,8 +12410,7 @@ impl RpcMethods {
         space_id_input.extend_from_slice(&encrypted_name);
         space_id_input.extend_from_slice(&timestamp.to_le_bytes());
         let space_hash = crate::crypto::sha256(&space_id_input);
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&space_hash[..16]);
+        let space_id = apply_class(SpaceClass::Private, &space_hash);
 
         // Register the space locally (raw encrypted-name blob so the node can decrypt it).
         let space_info = crate::storage::chain::SpaceInfo {
