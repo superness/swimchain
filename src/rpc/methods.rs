@@ -155,50 +155,50 @@ mod app_space_tests {
 }
 
 fn decode_space_id(space_id: &str) -> Result<[u8; 16], String> {
-    use bech32::{Bech32m, Hrp};
+    use bech32::Hrp;
 
-    // Check if it's Bech32m format (starts with sp1)
+    let mut space_bytes = [0u8; 16];
+
+    // Preferred: real bech32m "sp1q..." (what encode_space_id emits).
     if space_id.starts_with("sp1") {
-        let hrp = Hrp::parse(SPACE_HRP).map_err(|e| format!("Invalid HRP: {}", e))?;
-        let (decoded_hrp, data) =
-            bech32::decode(space_id).map_err(|e| format!("Invalid bech32m encoding: {}", e))?;
-
-        if decoded_hrp != hrp {
-            return Err(format!(
-                "Expected HRP '{}', got '{}'",
-                SPACE_HRP, decoded_hrp
-            ));
+        if let Ok((decoded_hrp, data)) = bech32::decode(space_id) {
+            let hrp = Hrp::parse(SPACE_HRP).map_err(|e| format!("Invalid HRP: {}", e))?;
+            if decoded_hrp == hrp && data.len() >= 17 {
+                space_bytes.copy_from_slice(&data[1..17]);
+                return Ok(space_bytes);
+            }
         }
-
-        // Skip version byte (first byte), get the 16-byte space ID
-        if data.len() < 17 {
-            return Err(format!("Space ID data too short: {} bytes", data.len()));
+        // Tolerate the malformed "sp1" + raw-hex form some content RPCs emit
+        // (e.g. "sp1a06a93a6bac68748bfeebb14e7f4f9f9"): strip the prefix and
+        // take the first 16 bytes of hex.
+        let hexpart = &space_id[3..];
+        if hexpart.len() >= 32 && hexpart[..32].chars().all(|c| c.is_ascii_hexdigit()) {
+            let bytes = hex::decode(&hexpart[..32]).map_err(|e| format!("Invalid hex: {}", e))?;
+            space_bytes.copy_from_slice(&bytes);
+            return Ok(space_bytes);
         }
-
-        let mut space_bytes = [0u8; 16];
-        space_bytes.copy_from_slice(&data[1..17]);
-        return Ok(space_bytes);
     }
 
-    // Try hex format (8 or 32 characters)
-    if space_id.chars().all(|c| c.is_ascii_hexdigit()) {
-        let mut space_bytes = [0u8; 16];
-
+    // Raw hex. 8 chars = short id (first 4 bytes). Accept 32 OR MORE chars as a
+    // full 16-byte id — some content RPCs hex-encode a zero-padded 32-byte
+    // space_id (e.g. "00014032…<trailing zeros>"), so take the first 16 bytes
+    // rather than rejecting it (this was the "invalid space id format" on
+    // tapping a space link from a post).
+    if space_id.len() >= 8 && space_id.chars().all(|c| c.is_ascii_hexdigit()) {
         if space_id.len() == 8 {
-            // Short hex: first 4 bytes, rest is zero
             let hex_bytes = hex::decode(space_id).map_err(|e| format!("Invalid hex: {}", e))?;
             space_bytes[..4].copy_from_slice(&hex_bytes);
             return Ok(space_bytes);
-        } else if space_id.len() == 32 {
-            // Full hex: all 16 bytes
-            let hex_bytes = hex::decode(space_id).map_err(|e| format!("Invalid hex: {}", e))?;
+        } else if space_id.len() >= 32 {
+            let hex_bytes =
+                hex::decode(&space_id[..32]).map_err(|e| format!("Invalid hex: {}", e))?;
             space_bytes.copy_from_slice(&hex_bytes);
             return Ok(space_bytes);
         }
     }
 
     Err(format!(
-        "Invalid space ID format. Expected bech32m (sp1...) or hex (8 or 32 chars), got: {}",
+        "Invalid space ID format. Expected bech32m (sp1...) or hex (8 or 32+ chars), got: {}",
         space_id
     ))
 }
