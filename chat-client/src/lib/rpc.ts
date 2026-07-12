@@ -67,21 +67,20 @@ interface SpaceSummary {
   app?: string | null;
   /** True if this is a real public space whose name (and therefore `app`) isn't resolved yet. */
   name_unresolved?: boolean;
+  /** Space class: 'social' | 'profile' | 'dm' | 'private' | 'app' | 'unknown' */
+  class?: string;
 }
 
 /**
  * Allowlist filter for a general "main-view" client: show ONLY a space we can positively
- * confirm is a plain, public, main-view space. Any app-namespaced space (dm/profile/wiki/…),
- * `@app:`-named space, or space whose name/`app` the node hasn't resolved yet (could be a
- * utility space in disguise) is hidden. New utility space types only need the `@<app>:`
- * prefix convention to hide here automatically — this filter never needs per-type updates.
+ * confirm is a plain, public, main-view space.
+ *
+ * The class comes from the space id's first byte (known the instant the space block
+ * syncs — no name lookup needed), so utility spaces (profile/dm/private/app) never leak
+ * in and there is no gap waiting on name resolution.
  */
 export function isMainViewSpace(s: SpaceSummary): boolean {
-  if (typeof s.app === 'string' && s.app.length > 0) return false;
-  const name = typeof s.name === 'string' ? s.name.toLowerCase() : '';
-  if (/^@[a-z0-9-]+:/.test(name)) return false;
-  if (s.name_unresolved) return false;
-  return true;
+  return s.class === 'social';
 }
 
 interface ListSpacesResult {
