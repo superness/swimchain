@@ -3814,6 +3814,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-deep-link",
  "tauri-plugin-shell",
+ "tempfile",
  "tokio",
 ]
 

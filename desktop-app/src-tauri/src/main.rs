@@ -1,7 +1,9 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_manifest;
 mod node_manager;
+mod supervisor;
 
 use node_manager::NodeManager;
 use std::path::PathBuf;
@@ -19,6 +21,10 @@ struct AppState {
     // be picked up by the frontend. Plain std Mutex so the (sync) deep-link
     // callback can store into it without an async runtime.
     pending_deeplink: Arc<std::sync::Mutex<Option<String>>>,
+    // Tracks child processes for launcher apps (feed, forum, chat, ...) spawned
+    // via `launch_app`. Deliberately left running when the launcher window
+    // closes (default per spec); no kill-on-quit wiring here.
+    supervisor: Arc<supervisor::Supervisor>,
 }
 
 impl AppState {
@@ -412,6 +418,50 @@ async fn take_screenshot(
     Ok(path.to_string_lossy().to_string())
 }
 
+/// Resolve the directory containing an app's `app.json` + executable.
+///
+/// Dev builds (`cfg!(debug_assertions)`) read straight from the repo's
+/// `launcher-apps/<id>` so app changes are picked up without a bundle step.
+/// Release builds read from the bundled `apps/<id>` dir under the Tauri
+/// resource directory.
+fn resolve_app_dir(app: &tauri::AppHandle, app_id: &str) -> Result<PathBuf, String> {
+    if cfg!(debug_assertions) {
+        // CARGO_MANIFEST_DIR is desktop-app/src-tauri at compile time;
+        // launcher-apps lives two levels up, alongside desktop-app/.
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let repo_root = manifest_dir
+            .parent() // desktop-app
+            .and_then(|p| p.parent()) // repo root
+            .ok_or_else(|| "Failed to resolve repo root from CARGO_MANIFEST_DIR".to_string())?;
+        Ok(repo_root.join("launcher-apps").join(app_id))
+    } else {
+        let resource_dir = app
+            .path()
+            .resource_dir()
+            .map_err(|e| format!("Failed to get resource directory: {}", e))?;
+        Ok(resource_dir.join("apps").join(app_id))
+    }
+}
+
+/// Spawn a launcher app (feed, forum, chat, ...) as a child process, passing
+/// it the node's current data dir so it can talk to the same node.
+#[tauri::command]
+async fn launch_app(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+) -> Result<(), String> {
+    let app_dir = resolve_app_dir(&app, &app_id)?;
+    let manifest_json = std::fs::read_to_string(app_dir.join("app.json"))
+        .map_err(|e| format!("Failed to read app.json for '{}': {}", app_id, e))?;
+    let m = app_manifest::parse_manifest(&manifest_json)?;
+    let exec = app_dir.join(&m.exec);
+    let data_dir = state.current_data_dir().await;
+    state
+        .supervisor
+        .launch(&m.id, &exec, &data_dir, m.single_instance)
+}
+
 #[derive(serde::Serialize)]
 struct NodeStatus {
     running: bool,
@@ -537,6 +587,7 @@ fn main() {
                 settings_path,
                 cached_cookie: Arc::new(Mutex::new(None)), // Will be populated on first get_rpc_auth call
                 pending_deeplink,
+                supervisor: Arc::new(supervisor::Supervisor::new()),
             };
 
             app.manage(state);
@@ -562,6 +613,7 @@ fn main() {
             reset_identity,
             take_screenshot,
             take_pending_deeplink,
+            launch_app,
         ])
         .on_window_event(|window, event| {
             // Stop node when app closes
