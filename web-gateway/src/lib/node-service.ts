@@ -76,6 +76,17 @@ function publicSpaces(spaces: NodeSpaceSummary[]): NodeSpaceSummary[] {
 }
 
 /**
+ * Set of space ids the gateway treats as public (for filtering user posts,
+ * search, etc.). Built from the cached public directory. Empty on failure so
+ * callers hide rather than leak.
+ */
+async function publicSpaceIdSet(): Promise<Set<string>> {
+  const dir = await fetchAllSpaces();
+  if (!dir) return new Set();
+  return new Set(dir.map(s => s.space_id));
+}
+
+/**
  * Fire name resolution (best-effort, non-blocking) for spaces the node hasn't
  * named yet, so a later directory refresh can classify them public-vs-app.
  */
@@ -549,12 +560,19 @@ export async function fetchIdentityWithPosts(address: string): Promise<{
   let website: string | undefined;
 
   if (userIdHex) {
+    // Set of space ids the public gateway is willing to surface. A user's posts
+    // in private/DM/profile/app (or not-yet-confirmed) spaces must not leak onto
+    // their public profile, so we only show posts whose space is public. On
+    // uncertainty (node blip) this is empty -> hide, never leak.
+    const publicIds = await publicSpaceIdSet();
+
     try {
       const result = await rpc.getUserPosts(userIdHex, 50, 0, true);
       postCount = result.total_posts;
       replyCount = Math.max(0, result.total_content - result.total_posts);
       posts = result.items
         .filter(item => !isDecayed(item))
+        .filter(item => publicIds.has(item.space_id))
         .map(item => summaryToSearchResult(item));
       for (const item of result.items) {
         if (firstSeen === null || item.created_at < firstSeen) {
