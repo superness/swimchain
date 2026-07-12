@@ -196,6 +196,11 @@ harness = false
 name = "multi_node"
 harness = false
 
+# End-to-end RPC latency scenarios (perf CI)
+[[bench]]
+name = "rpc_scenarios"
+harness = false
+
 # CLI tools (Milestone 6.5)
 [[example]]
 name = "generate-man-pages"

@@ -1,0 +1,166 @@
+name: Performance
+
+# Runs the criterion benchmark suites on every push to main (and on PRs that
+# touch node code), then feeds the results to github-action-benchmark:
+#   - main pushes append to the historical dataset on the gh-pages branch,
+#     giving trend charts at https://<owner>.github.io/<repo>/dev/bench/
+#   - PRs are compared against the latest main data; regressions past the
+#     alert threshold get a comment on the commit/PR
+#
+# Benchmarks run with short warm-up/measurement windows: CI runners are noisy,
+# so this tracks meaningful regressions (the 150% alert threshold), not
+# microsecond-level drift.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "benches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/perf.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "benches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/perf.yml"
+  workflow_dispatch:
+
+permissions:
+  # Push benchmark history to gh-pages; comment alerts on commits/PRs.
+  contents: write
+  pull-requests: write
+
+# Serialize runs per ref so gh-pages data pushes don't race.
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Short windows keep the full matrix under control; --output-format bencher
+  # is what github-action-benchmark's `cargo` tool parses.
+  CRITERION_FLAGS: >-
+    --output-format bencher
+    --warm-up-time 1
+    --measurement-time 3
+    --sample-size 10
+    --noplot
+
+jobs:
+  bench:
+    name: Bench (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Protocol-layer hot paths: hashing, merkle/blocks, chunking,
+          # branching, sync planning, decay math.
+          - group: protocol
+            benches: >-
+              --bench benchmarks
+              --bench chunking
+              --bench branching
+              --bench sync
+              --bench decay_simulation
+          # Storage layer: sled stores, caches, mobile storage profile.
+          - group: storage
+            benches: >-
+              --bench storage_benchmarks
+              --bench cache_benchmark
+              --bench mobile_storage
+          # Whole-node scenarios: startup/shutdown, multi-node harness,
+          # end-to-end RPC calls and use cases, PoW and sync on a mobile
+          # performance profile.
+          - group: node-rpc
+            benches: >-
+              --bench multi_node
+              --bench rpc_scenarios
+              --bench mobile_pow
+              --bench mobile_sync
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-bench-${{ matrix.group }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bench-${{ matrix.group }}-
+            ${{ runner.os }}-bench-
+            ${{ runner.os }}-cargo-
+
+      - name: Run benchmarks
+        run: cargo bench ${{ matrix.benches }} -- $CRITERION_FLAGS | tee bench-${{ matrix.group }}.txt
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{ matrix.group }}
+          path: bench-${{ matrix.group }}.txt
+          retention-days: 30
+
+  track:
+    name: Track results
+    needs: bench
+    runs-on: ubuntu-latest
+    # Fork PRs get a read-only token, so comparison/commenting can't work there.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bench-*
+          merge-multiple: true
+
+      - name: Combine results
+        run: cat bench-*.txt > combined-bench.txt
+
+      # github-action-benchmark needs the gh-pages branch to exist before it
+      # can append data; create an empty one on first run.
+      - name: Ensure gh-pages branch exists
+        if: github.event_name != 'pull_request'
+        run: |
+          if ! git ls-remote --exit-code origin gh-pages > /dev/null 2>&1; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git checkout --orphan gh-pages
+            git rm -rf . > /dev/null 2>&1 || true
+            git commit --allow-empty -m "chore: initialize gh-pages for benchmark data"
+            git push origin gh-pages
+            git checkout ${{ github.sha }}
+          fi
+
+      - name: Store / compare benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Swimchain benchmarks
+          tool: cargo
+          output-file-path: combined-bench.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: dev/bench
+          # Only main pushes append to the historical dataset; PRs compare only.
+          auto-push: ${{ github.event_name != 'pull_request' }}
+          save-data-file: ${{ github.event_name != 'pull_request' }}
+          # Comment on the commit/PR when a benchmark slows down >50% vs the
+          # previous main data point. CI runners are noisy — treat alerts as
+          # "go look", not proof.
+          alert-threshold: "150%"
+          comment-on-alert: true
+          fail-on-alert: false
+          summary-always: true

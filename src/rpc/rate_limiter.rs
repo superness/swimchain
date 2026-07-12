@@ -23,7 +23,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
-use governor::{Quota, RateLimiter as GovernorLimiter, clock::Clock};
+use governor::{clock::Clock, Quota, RateLimiter as GovernorLimiter};
 use tokio::sync::RwLock;
 
 /// Rate limit configuration
@@ -52,14 +52,28 @@ impl Default for RateLimitConfig {
             // clients' normal polling (status/peers/spaces/sponsorship/message lists,
             // plus sign_message which is categorised Read), so navigating tripped
             // "Rate limit exceeded for Read methods". Give generous headroom.
-            read_per_minute: 6000,
-            write_per_minute: 120,
-            admin_per_minute: 60,
+            //
+            // The env overrides exist for benchmarks/load tests (benches/rpc_scenarios.rs)
+            // which intentionally hammer the RPC far past the backstop.
+            read_per_minute: env_limit("SWIMCHAIN_RPC_READ_PER_MINUTE", 6000),
+            write_per_minute: env_limit("SWIMCHAIN_RPC_WRITE_PER_MINUTE", 120),
+            admin_per_minute: env_limit("SWIMCHAIN_RPC_ADMIN_PER_MINUTE", 60),
             auth_failure_threshold: 10,
             auth_failure_window_secs: 300, // 5 minutes
             lockout_duration_secs: 300,    // 5 minutes
         }
     }
+}
+
+/// Read a rate-limit override from the environment, keeping the default when
+/// the variable is unset, unparsable, or zero (limits must be non-zero for
+/// governor's `Quota`).
+fn env_limit(var: &str, default: u32) -> u32 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(default)
 }
 
 /// Method category for rate limiting
@@ -81,13 +95,30 @@ impl MethodCategory {
             "stop" | "add_peer" | "remove_peer" => Self::Admin,
 
             // Write methods - content submission
-            "submit_post" | "submit_reply" | "submit_edit" | "submit_engagement"
-            | "upload_media" | "create_space" | "create_fork" | "switch_fork"
-            | "create_pool" | "contribute_to_pool" | "submit_spam_attestation"
-            | "submit_counter_attestation" | "create_private_space" | "invite_to_space"
-            | "accept_invite" | "decline_invite" | "leave_space" | "kick_member"
-            | "request_dm" | "accept_dm" | "decline_dm" | "set_identity_name"
-            | "register_genesis_identity" | "register_sponsored_identity"
+            "submit_post"
+            | "submit_reply"
+            | "submit_edit"
+            | "submit_engagement"
+            | "upload_media"
+            | "create_space"
+            | "create_fork"
+            | "switch_fork"
+            | "create_pool"
+            | "contribute_to_pool"
+            | "submit_spam_attestation"
+            | "submit_counter_attestation"
+            | "create_private_space"
+            | "invite_to_space"
+            | "accept_invite"
+            | "decline_invite"
+            | "leave_space"
+            | "kick_member"
+            | "request_dm"
+            | "accept_dm"
+            | "decline_dm"
+            | "set_identity_name"
+            | "register_genesis_identity"
+            | "register_sponsored_identity"
             | "rebuild_reactions" => Self::Write,
 
             // sign_message is treated as Read because it's called frequently by browser
@@ -102,9 +133,21 @@ impl MethodCategory {
 
 /// Per-client rate limiter state
 struct ClientLimiter {
-    read: GovernorLimiter<governor::state::NotKeyed, governor::state::InMemoryState, governor::clock::DefaultClock>,
-    write: GovernorLimiter<governor::state::NotKeyed, governor::state::InMemoryState, governor::clock::DefaultClock>,
-    admin: GovernorLimiter<governor::state::NotKeyed, governor::state::InMemoryState, governor::clock::DefaultClock>,
+    read: GovernorLimiter<
+        governor::state::NotKeyed,
+        governor::state::InMemoryState,
+        governor::clock::DefaultClock,
+    >,
+    write: GovernorLimiter<
+        governor::state::NotKeyed,
+        governor::state::InMemoryState,
+        governor::clock::DefaultClock,
+    >,
+    admin: GovernorLimiter<
+        governor::state::NotKeyed,
+        governor::state::InMemoryState,
+        governor::clock::DefaultClock,
+    >,
 }
 
 impl ClientLimiter {
@@ -149,9 +192,7 @@ pub enum RateLimitResult {
         retry_after_ms: u64,
     },
     /// Client is locked out due to auth failures
-    LockedOut {
-        remaining_secs: u64,
-    },
+    LockedOut { remaining_secs: u64 },
 }
 
 /// RPC rate limiter
@@ -184,11 +225,7 @@ impl RpcRateLimiter {
     ///
     /// Returns `RateLimitResult::Allowed` if the request can proceed,
     /// or an appropriate error variant if rate limited or locked out.
-    pub async fn check_rate_limit(
-        &self,
-        client_ip: IpAddr,
-        method: &str,
-    ) -> RateLimitResult {
+    pub async fn check_rate_limit(&self, client_ip: IpAddr, method: &str) -> RateLimitResult {
         // Check lockout first
         {
             let auth_failures = self.auth_failures.read().await;
@@ -222,7 +259,8 @@ impl RpcRateLimiter {
         match result {
             Ok(_) => RateLimitResult::Allowed,
             Err(not_until) => {
-                let wait_time = not_until.wait_time_from(governor::clock::DefaultClock::default().now());
+                let wait_time =
+                    not_until.wait_time_from(governor::clock::DefaultClock::default().now());
                 RateLimitResult::RateLimited {
                     category,
                     retry_after_ms: wait_time.as_millis() as u64,
@@ -313,21 +351,51 @@ mod tests {
     fn test_method_categorization() {
         // Admin methods
         assert_eq!(MethodCategory::from_method("stop"), MethodCategory::Admin);
-        assert_eq!(MethodCategory::from_method("add_peer"), MethodCategory::Admin);
-        assert_eq!(MethodCategory::from_method("remove_peer"), MethodCategory::Admin);
+        assert_eq!(
+            MethodCategory::from_method("add_peer"),
+            MethodCategory::Admin
+        );
+        assert_eq!(
+            MethodCategory::from_method("remove_peer"),
+            MethodCategory::Admin
+        );
 
         // Write methods
-        assert_eq!(MethodCategory::from_method("submit_post"), MethodCategory::Write);
-        assert_eq!(MethodCategory::from_method("submit_reply"), MethodCategory::Write);
-        assert_eq!(MethodCategory::from_method("create_space"), MethodCategory::Write);
-        assert_eq!(MethodCategory::from_method("submit_engagement"), MethodCategory::Write);
+        assert_eq!(
+            MethodCategory::from_method("submit_post"),
+            MethodCategory::Write
+        );
+        assert_eq!(
+            MethodCategory::from_method("submit_reply"),
+            MethodCategory::Write
+        );
+        assert_eq!(
+            MethodCategory::from_method("create_space"),
+            MethodCategory::Write
+        );
+        assert_eq!(
+            MethodCategory::from_method("submit_engagement"),
+            MethodCategory::Write
+        );
 
         // Read methods (default)
-        assert_eq!(MethodCategory::from_method("get_info"), MethodCategory::Read);
-        assert_eq!(MethodCategory::from_method("get_peers"), MethodCategory::Read);
-        assert_eq!(MethodCategory::from_method("list_spaces"), MethodCategory::Read);
+        assert_eq!(
+            MethodCategory::from_method("get_info"),
+            MethodCategory::Read
+        );
+        assert_eq!(
+            MethodCategory::from_method("get_peers"),
+            MethodCategory::Read
+        );
+        assert_eq!(
+            MethodCategory::from_method("list_spaces"),
+            MethodCategory::Read
+        );
         assert_eq!(MethodCategory::from_method("search"), MethodCategory::Read);
-        assert_eq!(MethodCategory::from_method("unknown_method"), MethodCategory::Read);
+        assert_eq!(
+            MethodCategory::from_method("unknown_method"),
+            MethodCategory::Read
+        );
     }
 
     #[tokio::test]
@@ -343,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn test_rate_limiter_enforces_limits() {
         let config = RateLimitConfig {
-            read_per_minute: 2,  // Very low for testing
+            read_per_minute: 2, // Very low for testing
             write_per_minute: 1,
             admin_per_minute: 1,
             ..Default::default()
@@ -352,12 +420,24 @@ mod tests {
         let ip = test_ip();
 
         // First two read requests should be allowed
-        assert!(matches!(limiter.check_rate_limit(ip, "get_info").await, RateLimitResult::Allowed));
-        assert!(matches!(limiter.check_rate_limit(ip, "get_info").await, RateLimitResult::Allowed));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "get_info").await,
+            RateLimitResult::Allowed
+        ));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "get_info").await,
+            RateLimitResult::Allowed
+        ));
 
         // Third should be rate limited
         let result = limiter.check_rate_limit(ip, "get_info").await;
-        assert!(matches!(result, RateLimitResult::RateLimited { category: MethodCategory::Read, .. }));
+        assert!(matches!(
+            result,
+            RateLimitResult::RateLimited {
+                category: MethodCategory::Read,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -418,17 +498,38 @@ mod tests {
         let ip = test_ip();
 
         // Exhaust read limit
-        assert!(matches!(limiter.check_rate_limit(ip, "get_info").await, RateLimitResult::Allowed));
-        assert!(matches!(limiter.check_rate_limit(ip, "get_info").await, RateLimitResult::Allowed));
-        assert!(matches!(limiter.check_rate_limit(ip, "get_info").await, RateLimitResult::RateLimited { .. }));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "get_info").await,
+            RateLimitResult::Allowed
+        ));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "get_info").await,
+            RateLimitResult::Allowed
+        ));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "get_info").await,
+            RateLimitResult::RateLimited { .. }
+        ));
 
         // Write should still be allowed
-        assert!(matches!(limiter.check_rate_limit(ip, "submit_post").await, RateLimitResult::Allowed));
-        assert!(matches!(limiter.check_rate_limit(ip, "submit_post").await, RateLimitResult::Allowed));
-        assert!(matches!(limiter.check_rate_limit(ip, "submit_post").await, RateLimitResult::RateLimited { .. }));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "submit_post").await,
+            RateLimitResult::Allowed
+        ));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "submit_post").await,
+            RateLimitResult::Allowed
+        ));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "submit_post").await,
+            RateLimitResult::RateLimited { .. }
+        ));
 
         // Admin should still be allowed
-        assert!(matches!(limiter.check_rate_limit(ip, "stop").await, RateLimitResult::Allowed));
+        assert!(matches!(
+            limiter.check_rate_limit(ip, "stop").await,
+            RateLimitResult::Allowed
+        ));
     }
 
     #[tokio::test]
@@ -442,10 +543,19 @@ mod tests {
         let ip2 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
 
         // Exhaust ip1's limit
-        assert!(matches!(limiter.check_rate_limit(ip1, "get_info").await, RateLimitResult::Allowed));
-        assert!(matches!(limiter.check_rate_limit(ip1, "get_info").await, RateLimitResult::RateLimited { .. }));
+        assert!(matches!(
+            limiter.check_rate_limit(ip1, "get_info").await,
+            RateLimitResult::Allowed
+        ));
+        assert!(matches!(
+            limiter.check_rate_limit(ip1, "get_info").await,
+            RateLimitResult::RateLimited { .. }
+        ));
 
         // ip2 should still be allowed
-        assert!(matches!(limiter.check_rate_limit(ip2, "get_info").await, RateLimitResult::Allowed));
+        assert!(matches!(
+            limiter.check_rate_limit(ip2, "get_info").await,
+            RateLimitResult::Allowed
+        ));
     }
 }
