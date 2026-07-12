@@ -1554,8 +1554,10 @@ impl ChainStore {
 
             let parent_hash = action.parent_id.unwrap_or([0u8; 32]);
 
-            // Add to replies-by-parent index for efficient thread loading
-            if action.parent_id.is_some() {
+            // Add to replies-by-parent index for efficient thread loading.
+            // Guard against self-parent (parent == content) which would make the
+            // reply-tree walk cycle — same guard as the other two write paths.
+            if action.parent_id.is_some() && parent_hash != content_hash {
                 let mut reply_key = [0u8; 40];
                 reply_key[..32].copy_from_slice(&parent_hash);
                 reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
