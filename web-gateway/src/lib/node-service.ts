@@ -62,12 +62,31 @@ function isPublicSpace(space: NodeSpaceSummary): boolean {
   // node returned it as a raw name rather than a parsed `app`.
   const name = typeof space.name === 'string' ? space.name.toLowerCase() : '';
   if (/^@[a-z0-9-]+:/.test(name)) return false;
+  // Unresolved name: the node hasn't learned this space's name, so `app` is
+  // ALSO unknown — it could be a DM/profile/app space in disguise. Don't leak
+  // it into the public directory until it resolves to a confirmed public space.
+  // (fetchAllSpaces triggers resolution so genuine public spaces reappear.)
+  if (space.name_unresolved) return false;
   return true;
 }
 
-/** Drop private/DM/profile spaces from a public listing. */
+/** Drop app/DM/profile and not-yet-confirmed spaces from a public listing. */
 function publicSpaces(spaces: NodeSpaceSummary[]): NodeSpaceSummary[] {
   return spaces.filter(isPublicSpace);
+}
+
+/**
+ * Fire name resolution (best-effort, non-blocking) for spaces the node hasn't
+ * named yet, so a later directory refresh can classify them public-vs-app.
+ */
+function triggerNameResolution(spaces: NodeSpaceSummary[]): void {
+  const rpc = getRpc();
+  for (const s of spaces) {
+    if (s.name_unresolved) {
+      // fire-and-forget; the node queries peers and fills it in for next time
+      rpc.resolveSpaceName(s.space_id).catch(() => {});
+    }
+  }
 }
 
 function isDecayed(summary: { decay_state: string }): boolean {
@@ -261,7 +280,9 @@ export async function fetchAllSpaces(): Promise<SpaceActivitySummary[] | null> {
   const rpc = getRpc();
   let spaces: NodeSpaceSummary[];
   try {
-    spaces = publicSpaces((await rpc.listSpaces(100)).spaces);
+    const _all = (await rpc.listSpaces(100)).spaces;
+    triggerNameResolution(_all);
+    spaces = publicSpaces(_all);
   } catch {
     // On a transient failure, serve stale rather than flashing "offline".
     if (spaceDirCache) return spaceDirCache.data;
@@ -595,7 +616,9 @@ export async function feedSearchIndexer(): Promise<number | null> {
   const rpc = getRpc();
   let spaces: NodeSpaceSummary[];
   try {
-    spaces = publicSpaces((await rpc.listSpaces(100)).spaces);
+    const _all = (await rpc.listSpaces(100)).spaces;
+    triggerNameResolution(_all);
+    spaces = publicSpaces(_all);
   } catch {
     return null;
   }
@@ -668,7 +691,9 @@ export async function fetchSitemapEntries(baseUrl: string): Promise<SitemapEntry
   const rpc = getRpc();
   let spaces: NodeSpaceSummary[];
   try {
-    spaces = publicSpaces((await rpc.listSpaces(100)).spaces);
+    const _all = (await rpc.listSpaces(100)).spaces;
+    triggerNameResolution(_all);
+    spaces = publicSpaces(_all);
   } catch {
     // Node down: static routes only
     return entries;

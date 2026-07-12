@@ -321,6 +321,17 @@ export class SwimchainRpc {
     return this.call<ListSpacesResult>('list_spaces', { limit, offset });
   }
 
+  /**
+   * Ask the node to learn a space's on-chain name from peers. Async on the node
+   * side (returns 'queried'); re-list shortly to see the resolved name/app. Used
+   * so the gateway can tell app/DM/profile spaces from public ones.
+   */
+  async resolveSpaceName(
+    spaceId: string
+  ): Promise<{ status: string; name: string | null }> {
+    return this.call('resolve_space_name', { space_id: spaceId });
+  }
+
   async listSpaceContent(
     spaceId: string,
     limit = 50,
