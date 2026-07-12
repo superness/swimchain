@@ -225,6 +225,9 @@ export function FeedCard({
             <span className="feed-card__time" title={new Date(item.createdAt * 1000).toLocaleString()}>
               {timeAgo}
             </span>
+            {item.isPrivate && (
+              <span className="feed-card__private" title="From a private space you follow">🔒</span>
+            )}
             {item.spaceName && (
               <>
                 <span className="feed-card__separator">in</span>

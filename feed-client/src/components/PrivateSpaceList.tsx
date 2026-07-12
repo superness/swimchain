@@ -11,6 +11,7 @@ import { usePrivateSpaceKeys } from '../hooks/usePrivateSpaceKeys';
 import { usePrivateSpaces } from '../hooks/useRpc';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useIdentityContext } from '../providers/IdentityProvider';
+import { useFeedPreferences } from '../hooks/useFeedPreferences';
 import './PrivateSpaceList.css';
 
 export function PrivateSpaceList(): JSX.Element | null {
@@ -24,6 +25,7 @@ export function PrivateSpaceList(): JSX.Element | null {
   // called unconditionally (rules of hooks); each bails when its id is absent.
   const { listMyPrivateSpaces, loading: browserLoading } = usePrivateSpaceKeys(nodeMode ? undefined : identity?.publicKey);
   const { spaces: nodeSpaces, loading: nodeLoading } = usePrivateSpaces(nodeMode ? (nodePublicKey ?? undefined) : undefined);
+  const { followSpace, unfollowSpace, isFollowingSpace } = useFeedPreferences();
   const location = useLocation();
 
   const loading = nodeMode ? nodeLoading : browserLoading;
@@ -86,22 +88,37 @@ export function PrivateSpaceList(): JSX.Element | null {
         </div>
       ) : (
         <ul className="space-list">
-          {spaces.map((space) => (
-            <li key={space.spaceId} className="space-item">
-              <Link
-                to={`/space/${space.spaceId}`}
-                className={`space-link ${location.pathname === `/space/${space.spaceId}` ? 'active' : ''}`}
-              >
-                <span className="space-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                  </svg>
-                </span>
-                <span className="space-name">{space.name}</span>
-              </Link>
-            </li>
-          ))}
+          {spaces.map((space) => {
+            const following = isFollowingSpace(space.spaceId);
+            return (
+              <li key={space.spaceId} className="space-item">
+                <Link
+                  to={`/space/${space.spaceId}`}
+                  className={`space-link ${location.pathname === `/space/${space.spaceId}` ? 'active' : ''}`}
+                >
+                  <span className="space-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                  </span>
+                  <span className="space-name">{space.name}</span>
+                </Link>
+                {/* Opt-in follow: a followed private space is decrypted into the home feed. */}
+                <button
+                  type="button"
+                  className={`space-follow-btn ${following ? 'following' : ''}`}
+                  onClick={() => {
+                    if (following) unfollowSpace(space.spaceId);
+                    else followSpace(space.spaceId, space.name);
+                  }}
+                  title={following ? 'Following — remove from your feed' : 'Follow — show in your feed'}
+                >
+                  {following ? 'Following' : 'Follow'}
+                </button>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

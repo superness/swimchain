@@ -91,6 +91,9 @@ export interface FeedItem {
 
   // Pending state
   pending?: boolean;
+
+  // True when this post came from a followed private space and was decrypted.
+  isPrivate?: boolean;
 }
 
 /**

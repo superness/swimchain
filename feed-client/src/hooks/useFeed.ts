@@ -6,11 +6,20 @@
  */
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useRpc, stripTitleSeparator } from './useRpc';
+import { useRpc, stripTitleSeparator, usePrivateSpaceIds, usePrivateContent, isPrivateCiphertext } from './useRpc';
 import { useFeedPreferences } from './useFeedPreferences';
 import { useBlocklist } from './useBlocklist';
+import { useIdentityContext } from '../providers/IdentityProvider';
 import { logger } from '../lib/logger';
 import type { FeedItem, FeedCursor, FeedSource } from '../types/feed';
+
+/** Split a decrypted `title\n\nbody` payload back into title + body. */
+function splitPrivate(decrypted: string): { title: string; body: string } {
+  const i = decrypted.indexOf('\n\n');
+  return i === -1
+    ? { title: '', body: decrypted }
+    : { title: decrypted.slice(0, i), body: decrypted.slice(i + 2) };
+}
 
 const ITEMS_PER_PAGE = 20;
 const FETCH_LIMIT_PER_SOURCE = 50;
@@ -198,6 +207,24 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
   const { rpc, connected } = useRpc();
   const { preferences, loading: prefsLoading } = useFeedPreferences();
   const { filterBlocked, isSpaceBlocked } = useBlocklist();
+  // A followed private space's posts come back as [PRIVATE:v1:...] ciphertext.
+  // Decrypt them inline (node-managed mode) so they read like any other feed post.
+  const { identity, mode } = useIdentityContext();
+  const privateSpaceIds = usePrivateSpaceIds(identity?.publicKey);
+  const { decryptForSpace } = usePrivateContent();
+
+  const decryptPrivateItems = useCallback(async (items: FeedItem[]): Promise<FeedItem[]> => {
+    if (mode !== 'node' || privateSpaceIds.size === 0) return items;
+    return Promise.all(items.map(async (item) => {
+      // item.body was already run through stripTitleSeparator in mapContentToFeedItem,
+      // so it is the raw ciphertext for private posts.
+      if (!isPrivateCiphertext(item.body) || !privateSpaceIds.has(item.spaceId)) return item;
+      const plain = await decryptForSpace(item.spaceId, item.body);
+      if (plain == null) return item;
+      const { title, body } = splitPrivate(plain);
+      return { ...item, title: title || item.title, body, isPrivate: true };
+    }));
+  }, [mode, privateSpaceIds, decryptForSpace]);
 
   const [items, setItems] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -307,10 +334,13 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
 
     try {
       // Author-filtered view ("View Posts"): fetch only this author's posts.
-      const allItems = authorFilter
+      const rawItems = authorFilter
         ? (await rpc!.getUserPosts({ userId: authorFilter, limit: FETCH_LIMIT_PER_SOURCE }))
             .items.map(item => mapContentToFeedItem(item, 'user', authorFilter))
         : await fetchFromSources(activeSources.spaces, activeSources.users);
+
+      // Decrypt posts from followed private spaces before filtering/search/sort.
+      const allItems = await decryptPrivateItems(rawItems);
 
       // Filter out blocked content/authors, and — unless "Show Replies in Feed" is
       // on — reply items (the feed fetches posts + replies together; without this the
@@ -343,7 +373,7 @@ export function useFeed(options: UseFeedOptions = {}): UseFeedResult {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [connected, prefsLoading, activeSources, fetchFromSources, sortOrder, preferences.showRepliesInFeed, filterBlocked, isSpaceBlocked, authorFilter, rpc]);
+  }, [connected, prefsLoading, activeSources, fetchFromSources, sortOrder, preferences.showRepliesInFeed, filterBlocked, isSpaceBlocked, authorFilter, rpc, decryptPrivateItems]);
 
   /**
    * Load more items (pagination)
