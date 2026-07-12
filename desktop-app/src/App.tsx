@@ -11,7 +11,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { NodeStatusBar } from "./components/NodeStatusBar";
-import { ClientFrame } from "./components/ClientFrame";
+import AppGrid from "./components/AppGrid";
 import { InviteRedemption } from "./components/InviteRedemption";
 import { parseInviteInput, type InvitePayload } from "./lib/invite";
 
@@ -29,7 +29,6 @@ interface IdentityInfo {
 }
 
 type AppStage = "checking" | "onboarding" | "unlock" | "starting" | "ready" | "error";
-type ClientType = "forum" | "chat" | "feed" | "search" | "wiki";
 type NetworkType = "mainnet" | "testnet" | "regtest";
 
 const NETWORKS: NetworkType[] = ["mainnet", "testnet", "regtest"];
@@ -75,7 +74,6 @@ function App() {
   const [identity, setIdentity] = useState<IdentityInfo | null>(null);
   const [rpcEndpoint, setRpcEndpoint] = useState<string | null>(null);
   const [rpcAuth, setRpcAuth] = useState<string | null>(null);
-  const [selectedClient, setSelectedClient] = useState<ClientType>("forum");
   const [network, setNetwork] = useState<NetworkType>("testnet");
 
   // Onboarding form state
@@ -682,19 +680,11 @@ function App() {
       <NodeStatusBar
         status={nodeStatus}
         identity={identity}
-        selectedClient={selectedClient}
-        onClientChange={setSelectedClient}
         network={network}
         onNetworkChange={(net) => selectNetwork(net as NetworkType)}
         onScreenshot={IS_DEV ? () => takeScreenshot('manual-btn') : undefined}
       />
-      <ClientFrame
-        client={selectedClient}
-        rpcEndpoint={rpcEndpoint}
-        rpcAuth={rpcAuth}
-        nodeAddress={identity?.address ?? null}
-        nodeDisplayName={identity?.name ?? null}
-      />
+      <AppGrid />
     </div>
   );
 }

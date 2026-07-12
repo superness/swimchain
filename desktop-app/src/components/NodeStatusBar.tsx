@@ -1,10 +1,8 @@
 /**
- * NodeStatusBar - Shows node status and client selector at top of app
+ * NodeStatusBar - Shows node status at top of app
  */
 
 import { useMemo } from "react";
-
-type ClientType = "forum" | "chat" | "feed" | "search" | "wiki";
 
 const NETWORKS = ["mainnet", "testnet", "regtest"] as const;
 
@@ -24,8 +22,6 @@ interface IdentityInfo {
 interface Props {
   status: NodeStatus | null;
   identity?: IdentityInfo | null;
-  selectedClient: ClientType;
-  onClientChange: (client: ClientType) => void;
   /** Currently selected network (mainnet/testnet/regtest). */
   network?: string;
   /** Called when the user picks a different network. Switching stops the node. */
@@ -33,15 +29,7 @@ interface Props {
   onScreenshot?: () => void;
 }
 
-const CLIENT_LABELS: Record<ClientType, string> = {
-  forum: "Forum",
-  chat: "Chat",
-  feed: "Feed",
-  search: "Search",
-  wiki: "Wiki",
-};
-
-export function NodeStatusBar({ status, identity, selectedClient, onClientChange, network, onNetworkChange, onScreenshot }: Props) {
+export function NodeStatusBar({ status, identity, network, onNetworkChange, onScreenshot }: Props) {
   const truncatedAddress = useMemo(() => {
     if (!identity?.address) return null;
     const addr = identity.address;
@@ -87,18 +75,6 @@ export function NodeStatusBar({ status, identity, selectedClient, onClientChange
             <span className="peer-count">{status.peer_count} peers</span>
           </>
         )}
-      </div>
-
-      <div className="status-center">
-        <select
-          className="client-selector"
-          value={selectedClient}
-          onChange={(e) => onClientChange(e.target.value as ClientType)}
-        >
-          {Object.entries(CLIENT_LABELS).map(([value, label]) => (
-            <option key={value} value={value}>{label}</option>
-          ))}
-        </select>
       </div>
 
       <div className="status-right">
