@@ -15,22 +15,29 @@ all three splits, so they stop being separate features and become one idea:
 - **Consensus layer** — stays **dumb: heaviest work wins, full stop.** No special
   attack rule (see "Decided against" below). The splits above *are* the defense.
 
+## Where this landed (2026-07-12)
+
+**"Don't rejoin" was dropped.** It was solving a problem that doesn't exist: the
+integration test (`tests/frequency_partition_reconverge.rs`) shows reconciliation
+is **safe** — heavier work wins and the loser's actions re-anchor via the mempool,
+nothing destroyed. Once reconciliation isn't harmful, there's no reason to prevent
+it. The segregation we actually wanted lives at the **discovery + storage** layer
+(don't *hold/serve* what you don't care about), not the **consensus** layer.
+
+- **Keep:** frequency isolation as **discovery-only** (shipped) + later
+  **branch-selective sync** (a node only stores/serves its namespace's branches).
+  Lightweight optimizations over **one shared chain**.
+- **Drop:** frequency-scoped fork choice and overlay/permanent-fork storage (see
+  "Decided against"). Fork choice stays global and simple — which keeps shared
+  security and one canonical history.
+- **Boundary:** genuine *permanent* separation (a sovereign chain) is already a
+  thing — a different network magic (mainnet vs testnet), a deliberate hard split.
+  Frequency stays "isolate my peering + storage within the one network," nothing
+  more; don't overload it into a fork mechanism.
+
 ## What we aligned on
 
-1. **"Segregate, don't rejoin" is a fork-choice decision, not a storage one.**
-   The property that stops a drifted set reconciling with base is
-   **frequency-scoped fork choice** (a node only compares chains within its own
-   frequency; base and a drifted frequency never contest). Storage layout is a
-   separate, independent choice.
-
-2. **Storage = overlay / delta, not multiple chains.** Store the shared prefix
-   `0..N` once; store each frequency's post-`N` divergence as a delta. The
-   drifted set **inherits all prior state** (identities, sponsorship, reputation,
-   blocklists) — not a from-genesis fork — and there is no duplicated history on
-   disk. Frequency is already *derivable* (`derive_frequency(namespace)`), so no
-   new content tagging is needed.
-
-3. **"Shared security" was over-weighted.** Swimchain's real gates are
+1. **"Shared security" was over-weighted.** Swimchain's real gates are
    **sponsorship (Sybil), per-action Argon2id PoW (spam), decay (relevance), and
    exit/fork (capture)** — not aggregate mining hashpower. Frequency-scoping is
    **compartmentalization** (bulkheads; a breach can't leave its frequency), and
@@ -42,7 +49,7 @@ all three splits, so they stop being separate features and become one idea:
      it back to base and its shared weight. The drift signal is also the recovery
      signal.
 
-4. **The defense against capture is EXIT, not a smarter fork choice.** You do not
+2. **The defense against capture is EXIT, not a smarter fork choice.** You do not
    need to *win* the work war to be safe — losing it is just the permission to
    walk away with everything intact. The self-organizing splits *are* the exit,
    automated: an attacked community lands in its own clean space (which is what a
@@ -63,26 +70,27 @@ all three splits, so they stop being separate features and become one idea:
   would protect them) — another reason not to overload behavioral branching for
   this.
 
-## Open questions / risks to spec against
+- **Frequency-scoped fork choice + overlay/permanent-fork storage ("don't rejoin").**
+  Considered making drifted frequencies never reconcile with base (scoped fork
+  choice) and storing them as a shared-prefix + delta. **Dropped** — the
+  partition/reconverge test shows reconciliation is *safe* (loser's actions
+  re-anchor, nothing destroyed), so the motivation evaporated; and it would have
+  meant a consensus change plus weakly-secured sub-forks. Segregation instead
+  lives at discovery + branch-selective sync over one shared chain. Truly
+  permanent separation is a *different network magic*, not a frequency feature.
 
-- Frequency-scoped fork choice is still a consensus change (the riskiest kind) —
-  scope it tightly. (Diversity-weighted / attack-detecting fork choice is out of
-  scope; see "Decided against".)
-- Cross-frequency references after `N` (dangling parents/spaces across the split).
-- Re-entry rules (join a frequency = prefix + overlay; content made in a
-  frequency can't return to base under a permanent fork).
-- Root aggregation over branches a builder doesn't hold (merkle commitments).
-- Wire this onto the existing, unwired `BranchSubscriptionManager`
-  (`src/sync/subscription.rs`) and the `src/fork/` store — check how much
-  delta-storage + fork selection already exists before designing new machinery.
+## Open questions / next work
+
+- **Branch-selective sync** — wire the existing, unwired `BranchSubscriptionManager`
+  (`src/sync/subscription.rs`) into the syncer so a node only stores/serves the
+  branches (namespaces) it cares about. This is the storage-layer segregation we
+  kept; frequency can drive the subscription policy. No consensus change.
 
 ## Simulation candidates (real, via swimchain-core → WASM, like the shipped sims)
 
-- **Partition + reconverge** — split two groups, build divergent work, bridge,
-  assert convergence to the heavier tip and that orphaned actions re-anchor
-  (and which dependency cases don't). Also the harness for testing current behavior first.
-- **Frequency-scoped fork choice** — drift at height N, show the two continuations
-  never contest; contrast with global fork choice reconciling.
+- **Partition + reconverge** — ✅ BUILT: `tests/frequency_partition_reconverge.rs`
+  (real router) + live sim at `/sim/forkchoice`. Heavier tip wins, loser's actions
+  re-anchor. This is what retired the "don't rejoin" idea.
 - **Exit under capture** — flood a space; show the legit community drift/branch to
   its own clean frequency/space with identities + content intact while the
   attacker is left with the abandoned husk (the splits *as* the defense — no fork
