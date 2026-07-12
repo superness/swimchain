@@ -422,9 +422,18 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       // Hide derived/unnamed spaces from the browse UI. Profile spaces (where a
       // user's profile-update posts live) and DM spaces come back with no
       // resolved name (name === null) — they're noise in Discover and the other
-      // clients don't surface them either. Real public spaces always carry a name.
+      // clients don't surface them either.
+      //
+      // BUT keep name_unresolved spaces: the node sets that flag ONLY for spaces
+      // with an on-chain space block (real public spaces) whose name we synced but
+      // haven't fetched yet — it already drops nameless profile/DM/derived spaces
+      // itself (methods.rs list_spaces returns None for those). If we required a
+      // resolved name here, a freshly-synced node would show "No spaces found"
+      // whenever resolution (a peer round-trip that may never complete) hasn't
+      // landed, even though it holds real spaces with posts. Show them now with a
+      // space-id placeholder; the name fills in on the next refetch once resolved.
       const namedSpaces = result.spaces.filter(
-        s => s.name != null && s.name.trim() !== ''
+        s => (s.name != null && s.name.trim() !== '') || s.name_unresolved
       );
 
       // Transform RPC result to Space format
