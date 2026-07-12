@@ -45,11 +45,11 @@ pub mod storage;
 pub mod types;
 
 pub use error::{BlocklistError, BlocklistResult};
-pub use import::{parse_import, ImportParseError, ImportRecord};
 pub use gossip::{
     entry_from_update, parse_blocklist_message, BlocklistGossip, BlocklistMessage,
     BLOCKLIST_UPDATE_MAX_AGE_SECS, MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
 };
+pub use import::{parse_import, ImportParseError, ImportRecord};
 pub use merkle::{
     build_proof, compute_diff, compute_merkle_root, IncrementalMerkleTree, MerkleProof, SyncState,
 };

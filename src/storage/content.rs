@@ -868,7 +868,7 @@ mod tests {
         let store =
             PersistentContentStore::open(dir.path().join("db"), dir.path().join("blobs")).unwrap();
         let cid = ContentId::from_bytes([9u8; 32]);
-        let now = 10_000_000_000u64;
+        let now = 1_700_000_000_000u64; // realistic ms epoch (heuristic treats <1e12 as legacy seconds)
 
         // First heart accepted.
         assert!(store
@@ -895,7 +895,7 @@ mod tests {
         let store =
             PersistentContentStore::open(dir.path().join("db"), dir.path().join("blobs")).unwrap();
         let cid = ContentId::from_bytes([9u8; 32]);
-        let now = 10_000_000_000u64;
+        let now = 1_700_000_000_000u64; // realistic ms epoch (heuristic treats <1e12 as legacy seconds)
 
         assert!(store
             .add_reaction_windowed(
@@ -921,7 +921,7 @@ mod tests {
         let store =
             PersistentContentStore::open(dir.path().join("db"), dir.path().join("blobs")).unwrap();
         let cid = ContentId::from_bytes([9u8; 32]);
-        let now = 10_000_000_000u64;
+        let now = 1_700_000_000_000u64; // realistic ms epoch (heuristic treats <1e12 as legacy seconds)
         let after = now + REACTION_LIFETIME_MS + 1;
 
         assert!(store
@@ -948,7 +948,7 @@ mod tests {
         let store =
             PersistentContentStore::open(dir.path().join("db"), dir.path().join("blobs")).unwrap();
         let cid = ContentId::from_bytes([9u8; 32]);
-        let now = 10_000_000_000u64;
+        let now = 1_700_000_000_000u64; // realistic ms epoch (heuristic treats <1e12 as legacy seconds)
 
         for u in 1u8..=3 {
             assert!(store
