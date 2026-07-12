@@ -9,7 +9,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
-import { usePostSubmit, useSpaces, useMediaUpload, usePrivateContent, usePrivateSpaceIds } from '../hooks/useRpc';
+import { usePostSubmit, useSpaces, useMediaUpload, usePrivateContent, usePrivateSpaceIds, usePrivateSpaces } from '../hooks/useRpc';
 import { usePostPow } from '../hooks/useActionPow';
 import { useSponsorship } from '../hooks/useSponsorship';
 import { solutionToRpcParams } from '../lib/action-pow';
@@ -47,6 +47,11 @@ export function Compose(): JSX.Element {
   // Node-managed private-space crypto (desktop mode): encrypt the post before mining.
   const { encryptForSpace } = usePrivateContent();
   const privateSpaceIds = usePrivateSpaceIds(identity?.publicKey);
+  // Private spaces the user belongs to (with node-decrypted names) — they're not in
+  // the public list_spaces result, so merge them into the space picker as their own
+  // group. Keyed by bech32 id, which usePrivateSpaceIds also indexes for the encrypt
+  // membership check below.
+  const { spaces: privateSpaces } = usePrivateSpaces(identity?.publicKey);
   const { state, minePost, cancel, progress, reset, solution } = usePostPow();
   const { isSponsored } = useSponsorship();
   const { submitPost, submitting, error: rpcError } = usePostSubmit();
@@ -319,6 +324,15 @@ export function Compose(): JSX.Element {
                 {s.name}
               </option>
             ))}
+            {privateSpaces.length > 0 && (
+              <optgroup label="Private spaces">
+                {privateSpaces.map((s) => (
+                  <option key={s.spaceIdBech32} value={s.spaceIdBech32}>
+                    🔒 {s.name ?? `${s.spaceIdBech32.slice(0, 12)}…`}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </div>
 

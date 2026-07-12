@@ -100,9 +100,8 @@ pub enum PostCmd {
     /// Engage a post to help it persist
     #[command(
         about = "Contribute PoW to help content persist",
-        long_about = "Mines proof-of-work to engage with a post. Each engagement is an \
-                      individual PoW action that resets the content's decay timer, helping it \
-                      persist past decay. \
+        long_about = "Mines proof-of-work and contributes to a post's engagement pool. \
+                      The pool needs 60s total PoW to persist content past decay. \
                       Optionally add an emoji reaction: heart, thumbsup, thumbsdown, laugh, thinking, mindblown, fire, swimming.",
         after_help = "EXAMPLES:\n  sw post engage sha256:xxx --seconds 5\n  sw post engage sha256:xxx --emoji heart"
     )]
@@ -1007,7 +1006,7 @@ fn display_content(content_id: &str, content: &ContentItem, json_output: bool) -
     let decay_state = calculate_decay_state(content, current_time_ms, HALF_LIFE_SECS);
     let heat = decay_state.survival_probability * 100.0;
 
-    // Get engagement stats (each engagement is an individual PoW action)
+    // Get engagement pool stats
     let pool_seconds = content.engagement_count as u32;
     let pool_contributors = if content.engagement_count > 0 { 1 } else { 0 };
 
@@ -1036,7 +1035,7 @@ fn display_content(content_id: &str, content: &ContentItem, json_output: bool) -
         }
         if pool_seconds > 0 {
             println!(
-                "Engagements: {} from {} contributors",
+                "Pool: {}s from {} contributors",
                 pool_seconds, pool_contributors
             );
         }
@@ -1149,7 +1148,7 @@ fn view(config: &CliConfig, content_id: &str, fetch: bool, json_output: bool) ->
     let decay_state = calculate_decay_state(&content, current_time_ms, HALF_LIFE_SECS);
     let heat = decay_state.survival_probability * 100.0;
 
-    // Get engagement stats (currently only local engagement count)
+    // Get engagement pool stats (currently only local engagement count)
     let pool_seconds = content.engagement_count as u32;
     let pool_contributors = if content.engagement_count > 0 { 1 } else { 0 };
 
@@ -1179,7 +1178,7 @@ fn view(config: &CliConfig, content_id: &str, fetch: bool, json_output: bool) ->
         println!("Replies: {}", replies);
         if pool_seconds > 0 {
             println!(
-                "Engagements: {} from {} contributors",
+                "Pool: {}s from {} contributors",
                 pool_seconds, pool_contributors
             );
         }

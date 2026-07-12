@@ -27,13 +27,14 @@ use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::content::decay::{
-    calculate_adaptive_half_life, calculate_decay_state, select_half_life, NodeState,
+    calculate_adaptive_half_life, calculate_decay_state, calculate_decay_state_spam_flagged,
+    NodeState,
 };
 use crate::spam_attestation::{aggregate_attestations, SpamAttestationStore};
 use crate::storage::blob::{BlobStore, ContentBlobHash};
 use crate::types::constants::{
-    HALF_LIFE_SECS, MAX_HALF_LIFE_SECS, MIN_HALF_LIFE_SECS, PRUNE_GRACE_PERIOD_MS,
-    TARGET_STORAGE_BYTES,
+    DECAY_FLOOR_SECS, HALF_LIFE_SECS, MAX_HALF_LIFE_SECS, MIN_HALF_LIFE_SECS,
+    PRUNE_GRACE_PERIOD_MS, TARGET_STORAGE_BYTES,
 };
 use crate::types::content::{ContentId, ContentItem, ContentType, SpaceId};
 use crate::types::identity::{IdentityId, Signature};
@@ -353,15 +354,9 @@ impl DecayIntegration {
         let now_ms = current_time_ms();
         let mut stats = DecayPruneStats::default();
 
-        // Batch-fetch spam-flagged content once per tick instead of doing a
-        // per-item attestation lookup for every tracked item (SPEC_12 §4.3).
-        // The prune loop below can then do an O(1) set-membership check per
-        // item instead of a DB scan per item.
-        let flagged_blobs = self.flagged_blob_hashes();
-
         let mut store = self.store.write().map_err(|_| DecayError::LockPoisoned)?;
 
-        let base_half_life_secs = store.half_life_secs;
+        let half_life_secs = store.half_life_secs;
 
         // Collect hashes to prune
         let mut to_prune: Vec<String> = Vec::new();
@@ -375,12 +370,8 @@ impl DecayIntegration {
                 continue;
             }
 
-            // Calculate decay state, using the accelerated half-life for
-            // spam-flagged content — same selection rule as the read path
-            // (get_decay_state) via the shared `select_half_life` helper.
+            // Calculate decay state
             let content_item = metadata.to_content_item();
-            let is_spam_flagged = flagged_blobs.contains(&metadata.blob_hash);
-            let half_life_secs = select_half_life(base_half_life_secs, is_spam_flagged);
             let decay_state = calculate_decay_state(&content_item, now_ms, half_life_secs);
 
             // Skip protected content (in floor period)
@@ -526,20 +517,18 @@ impl DecayIntegration {
             // Check if content is spam-flagged
             let is_spam_flagged = self.is_spam_flagged(blob_hash.as_bytes());
 
-            // Same half-life selection rule as the prune path (see
-            // `select_half_life`), so a single item can never display as
-            // decayed on read but survive on the prune pass, or vice versa.
-            let half_life_secs = select_half_life(HALF_LIFE_SECS, is_spam_flagged);
-            let decay_state =
-                calculate_decay_state(&content_item, current_time_ms(), half_life_secs);
+            let decay_state = calculate_decay_state_spam_flagged(
+                &content_item,
+                current_time_ms(),
+                is_spam_flagged,
+            );
             Ok(Some(decay_state))
         } else {
             Ok(None)
         }
     }
 
-    /// Check if content is flagged as spam (3+ independent sponsor trees attested,
-    /// and not cleared by counter-attestation).
+    /// Check if content is flagged as spam (3+ independent sponsor trees attested)
     pub fn is_spam_flagged(&self, content_hash: &[u8; 32]) -> bool {
         let store = match &self.spam_attestation_store {
             Some(s) => s,
@@ -567,28 +556,6 @@ impl DecayIntegration {
         let aggregation =
             aggregate_attestations(*content_hash, &attestations, counter_state.is_cleared);
         aggregation.should_accelerate_decay
-    }
-
-    /// Get the set of blob hashes that are currently spam-flagged (i.e. have
-    /// reached the attestation threshold and have not been cleared by
-    /// counter-attestation).
-    ///
-    /// This is used by the prune loop, which needs to check flag status for
-    /// every tracked item on every tick. Rather than doing a per-item
-    /// attestation lookup (`is_spam_flagged`, which does its own DB scan per
-    /// call), this fetches all flagged content hashes in a single scan and
-    /// returns them as a set so callers can do O(1) membership checks.
-    fn flagged_blob_hashes(&self) -> std::collections::HashSet<[u8; 32]> {
-        match &self.spam_attestation_store {
-            Some(store) => match store.get_flagged_content() {
-                Ok(flagged) => flagged.into_iter().collect(),
-                Err(e) => {
-                    warn!("[DECAY] Failed to fetch flagged content for pruning: {}", e);
-                    std::collections::HashSet::new()
-                }
-            },
-            None => std::collections::HashSet::new(),
-        }
     }
 
     /// Pin content (makes it immune to decay)
@@ -981,169 +948,5 @@ mod tests {
         let (bytes, count) = integration.storage_stats().unwrap();
         assert_eq!(bytes, 5000);
         assert_eq!(count, 1);
-    }
-
-    fn make_stored_attestation(
-        content_hash: [u8; 32],
-        attester: [u8; 32],
-        tree_root: [u8; 32],
-    ) -> crate::spam_attestation::StoredSpamAttestation {
-        use crate::spam_attestation::{SpamAttestation, SpamReason};
-
-        crate::spam_attestation::StoredSpamAttestation {
-            attestation: SpamAttestation {
-                content_hash,
-                attester,
-                reason: SpamReason::Advertising,
-                timestamp: 1_735_689_600,
-                pow_nonce: 0,
-                signature: [0u8; 64],
-            },
-            sponsor_tree_root: tree_root,
-            is_deduplicated: false,
-        }
-    }
-
-    /// Flag content by writing 3 attestations from 3 distinct sponsor trees
-    /// (SPAM_ATTESTATION_THRESHOLD) directly into a fresh in-memory store.
-    fn flag_content(store: &SpamAttestationStore, blob_hash: [u8; 32]) {
-        for i in 0..3u8 {
-            let attestation = make_stored_attestation(blob_hash, [100 + i; 32], [i; 32]);
-            store.put_attestation(&attestation).unwrap();
-        }
-    }
-
-    fn new_spam_attestation_store() -> Arc<SpamAttestationStore> {
-        let db = sled::Config::new().temporary(true).open().unwrap();
-        Arc::new(SpamAttestationStore::open(db))
-    }
-
-    /// Register content and back it with a real blob file so the prune
-    /// loop's orphan-cleanup pass doesn't remove it out from under the test
-    /// for reasons unrelated to decay.
-    fn register_with_blob(
-        integration: &DecayIntegration,
-        blob_hash: [u8; 32],
-        content_id: [u8; 32],
-        created_at: u64,
-        last_engagement: u64,
-    ) {
-        let blob = ContentBlobHash::from_bytes(blob_hash);
-        let blob_path = integration.blob_store.blob_path(&blob);
-        fs::create_dir_all(blob_path.parent().unwrap()).unwrap();
-        fs::write(&blob_path, b"content").unwrap();
-
-        let metadata = DecayMetadata {
-            blob_hash,
-            content_id,
-            author_id: [3u8; 32],
-            space_id: [4u8; 32],
-            content_type: 0,
-            parent_id: None,
-            created_at,
-            last_engagement,
-            engagement_count: 0,
-            content_size: 7,
-            is_pinned: false,
-        };
-        integration.register(metadata).unwrap();
-    }
-
-    #[test]
-    fn test_prune_accelerates_decay_for_spam_flagged_content() {
-        let (mut integration, _dir) = create_test_integration();
-
-        let spam_store = new_spam_attestation_store();
-        let flagged_blob_hash = [5u8; 32];
-        flag_content(&spam_store, flagged_blob_hash);
-        integration.set_spam_attestation_store(spam_store);
-
-        // 68h old, never engaged: past the 48h floor either way.
-        // Under the normal 7-day half-life this barely decays (~92%
-        // survival). Under the flagged 4h half-life it is long past the
-        // decay threshold (5 half-lives elapsed => ~3% survival).
-        let now = current_time_ms();
-        let old_time = now - 68 * 60 * 60 * 1000;
-
-        register_with_blob(
-            &integration,
-            flagged_blob_hash,
-            [20u8; 32],
-            old_time,
-            old_time,
-        );
-
-        let control_blob_hash = [6u8; 32];
-        register_with_blob(
-            &integration,
-            control_blob_hash,
-            [21u8; 32],
-            old_time,
-            old_time,
-        );
-
-        // Read path and prune path must agree on decay state.
-        let flagged_state = integration
-            .get_decay_state(&ContentBlobHash::from_bytes(flagged_blob_hash))
-            .unwrap()
-            .unwrap();
-        assert!(
-            flagged_state.is_decayed,
-            "flagged content should read as decayed"
-        );
-
-        let control_state = integration
-            .get_decay_state(&ContentBlobHash::from_bytes(control_blob_hash))
-            .unwrap()
-            .unwrap();
-        assert!(
-            !control_state.is_decayed,
-            "unflagged sibling should not read as decayed yet"
-        );
-
-        let stats = integration.prune().unwrap();
-        assert_eq!(stats.items_pruned, 1);
-        assert!(!integration.contains(&ContentBlobHash::from_bytes(flagged_blob_hash)));
-        assert!(integration.contains(&ContentBlobHash::from_bytes(control_blob_hash)));
-    }
-
-    #[test]
-    fn test_prune_restores_normal_half_life_after_counter_attestation_clears_flag() {
-        let (mut integration, _dir) = create_test_integration();
-
-        let spam_store = new_spam_attestation_store();
-        let blob_hash = [8u8; 32];
-        flag_content(&spam_store, blob_hash);
-
-        // Clear the flag with 5 counter-attestations (COUNTER_ATTESTATION_THRESHOLD).
-        let mut counter_state = crate::spam_attestation::CounterAttestationState::empty(blob_hash);
-        for i in 0..5u8 {
-            counter_state.add_counter_attester([200 + i; 32], 1_735_689_600);
-        }
-        assert!(counter_state.is_cleared);
-        spam_store.put_counter_state(&counter_state).unwrap();
-
-        integration.set_spam_attestation_store(spam_store);
-
-        assert!(!integration.is_spam_flagged(&blob_hash));
-
-        // Same 68h-old timeline that decays under the flagged half-life but
-        // not under the normal half-life.
-        let now = current_time_ms();
-        let old_time = now - 68 * 60 * 60 * 1000;
-        register_with_blob(&integration, blob_hash, [22u8; 32], old_time, old_time);
-
-        let state = integration
-            .get_decay_state(&ContentBlobHash::from_bytes(blob_hash))
-            .unwrap()
-            .unwrap();
-        assert!(
-            !state.is_decayed,
-            "cleared content should decay at the normal rate"
-        );
-
-        let stats = integration.prune().unwrap();
-        assert_eq!(stats.items_pruned, 0);
-        assert!(integration.contains(&ContentBlobHash::from_bytes(blob_hash)));
     }
 }
