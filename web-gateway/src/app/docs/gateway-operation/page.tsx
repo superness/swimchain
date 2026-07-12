@@ -71,6 +71,21 @@ export default function GatewayOperationDocsPage() {
           a gateway-shaped frontend scoped to wiki spaces, presented as an ordinary wiki.
         </p>
 
+        <h3>A note on networking: your node may drift onto its own frequency</h3>
+        <p>
+          Worth knowing if you run a single-purpose deployment like this. When a node ends up
+          serving or reading <strong>one namespace and nothing else</strong>, Swimchain&apos;s
+          <strong> frequency isolation</strong> lets it self-tune onto that namespace&apos;s own
+          discovery frequency &mdash; it stops sharing a peer pool with the main network and is
+          optimized out of traffic it never uses. It&apos;s still the same chain and the same
+          content; only <em>who your node discovers</em> changes. It&apos;s deterministic,
+          self-computed (no one can push your node onto a frequency), and reversible &mdash; a
+          node that reads broadly across the network never drifts. If you want your scoped node
+          to also stay reachable to visitors who deliberately want that one space, tune it to
+          that namespace explicitly; otherwise readers reach you through this gateway&apos;s HTTP
+          the same as always.
+        </p>
+
         <h3>Adding interaction, when you want it</h3>
         <p>
           A read-only gateway is deliberately read-only &mdash; that&apos;s what makes it safe
