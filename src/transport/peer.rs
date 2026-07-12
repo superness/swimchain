@@ -32,6 +32,24 @@ pub struct PeerInfo {
     /// This is how a NAT'd node learns its own external endpoint (SPEC_06 discovery /
     /// NAT reflection). None if the peer reported nothing dialable.
     pub observed_external_addr: Option<SocketAddr>,
+    /// The peer's own advertised LISTEN address (their VERSION's `sender_addr`).
+    /// For an inbound connection `remote_addr` is only the peer's ephemeral SOURCE
+    /// port, which nothing listens on — the peer's real listen port lives here, and
+    /// is what must be stored/gossiped so others can dial it. None if not advertised.
+    pub advertised_addr: Option<SocketAddr>,
+}
+
+impl PeerInfo {
+    /// Dialable listen endpoint to advertise for an INBOUND peer: the observed source
+    /// IP (from `remote_addr`, which is correct) combined with the peer's advertised
+    /// listen PORT (from their VERSION `sender_addr`, since `remote_addr`'s port is a
+    /// throwaway ephemeral one). `None` when the peer advertised no usable port — we
+    /// then avoid gossiping an unreachable address for it.
+    pub fn inbound_discovery_addr(&self) -> Option<SocketAddr> {
+        self.advertised_addr
+            .filter(|a| a.port() != 0)
+            .map(|a| SocketAddr::new(self.remote_addr.ip(), a.port()))
+    }
 }
 
 /// Local node information for VERSION message construction
@@ -107,6 +125,7 @@ mod tests {
             remote_addr: "127.0.0.1:9735".parse().unwrap(),
             timestamp: 1700000000,
             observed_external_addr: None,
+            advertised_addr: None,
         };
 
         assert_eq!(peer.protocol_version, 1);

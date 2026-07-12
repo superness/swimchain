@@ -1558,12 +1558,14 @@ impl BackgroundTaskRunner {
 
                                 if let Some(info) = peer_info {
                                     let peer_id = info.node_id;
+                                    let discovery_addr = info.inbound_discovery_addr();
 
                                     // Register the connection
-                                    match connection_manager.add_connection(
+                                    match connection_manager.add_connection_with_discovery(
                                         peer_id,
                                         remote_addr,
                                         ConnectionDirection::Inbound,
+                                        discovery_addr,
                                     ) {
                                         Ok(_) => {
                                             info!(
@@ -1667,18 +1669,24 @@ impl BackgroundTaskRunner {
 
                                 if let Some(info) = peer_info {
                                     let peer_id = info.node_id;
+                                    // Inbound: `remote_addr` is the peer's ephemeral source port.
+                                    // The dialable endpoint is (source IP + advertised listen
+                                    // port); use it for discovery so others can actually reach it.
+                                    let discovery_addr = info.inbound_discovery_addr();
 
                                     // Register with ConnectionManager (metadata tracking)
-                                    match connection_manager.add_connection(
+                                    match connection_manager.add_connection_with_discovery(
                                         peer_id,
                                         remote_addr,
                                         ConnectionDirection::Inbound,
+                                        discovery_addr,
                                     ) {
                                         Ok(_) => {
                                             info!(
-                                                "[ACCEPT] Connection from {} ({}) registered",
+                                                "[ACCEPT] Connection from {} ({}) registered (advertised {:?})",
                                                 remote_addr,
-                                                hex::encode(&peer_id[..8])
+                                                hex::encode(&peer_id[..8]),
+                                                discovery_addr
                                             );
                                         }
                                         Err(e) => {
@@ -1696,9 +1704,10 @@ impl BackgroundTaskRunner {
                                     let stream = conn.into_stream();
                                     let peer_conn = connection_pool.add(stream, peer_id, established).await;
 
-                                    // Add to DHT routing table for peer discovery
+                                    // Add to DHT routing table for peer discovery, keyed by the
+                                    // dialable endpoint (not the ephemeral source port).
                                     let dht_id = DhtNodeId::from_bytes(peer_id);
-                                    if let Err(e) = dht.on_node_seen(dht_id, remote_addr).await {
+                                    if let Err(e) = dht.on_node_seen(dht_id, discovery_addr.unwrap_or(remote_addr)).await {
                                         warn!("[ACCEPT] Failed to add peer to DHT: {:?}", e);
                                     } else {
                                         debug!("[ACCEPT] Added peer {} to DHT routing table", hex::encode(&peer_id[..8]));

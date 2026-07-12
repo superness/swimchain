@@ -310,11 +310,34 @@ impl ConnectionManager {
     /// - Connection limits are exceeded
     /// - Peer is banned
     /// - Peer is already connected
+    /// Register a connection, deriving the discovery address from the direction:
+    /// outbound → the dialed `addr` (which is the peer's listen endpoint); inbound →
+    /// `None`, since `addr` is only the peer's ephemeral source port (nothing listens
+    /// there) and we have no advertised endpoint here. Callers that DO know the peer's
+    /// advertised listen endpoint (the accept loops, from the VERSION handshake) should
+    /// use [`add_connection_with_discovery`] instead so the peer becomes dialable.
     pub fn add_connection(
         &self,
         peer_id: [u8; 32],
         addr: SocketAddr,
         direction: ConnectionDirection,
+    ) -> Result<(), ConnectionManagerError> {
+        let discovery_addr = match direction {
+            ConnectionDirection::Outbound => Some(addr),
+            ConnectionDirection::Inbound => None,
+        };
+        self.add_connection_with_discovery(peer_id, addr, direction, discovery_addr)
+    }
+
+    /// As [`add_connection`], but with an explicit dialable `discovery_addr` to
+    /// advertise in the peer store / discovery (independent of the socket `addr`).
+    /// `None` means "don't advertise this peer" (no reachable address known).
+    pub fn add_connection_with_discovery(
+        &self,
+        peer_id: [u8; 32],
+        addr: SocketAddr,
+        direction: ConnectionDirection,
+        discovery_addr: Option<SocketAddr>,
     ) -> Result<(), ConnectionManagerError> {
         let mut inner = self.inner.write().unwrap();
 
@@ -395,9 +418,13 @@ impl ConnectionManager {
         // Drop lock before emitting event
         drop(inner);
 
-        // Add peer to peer store for GETADDR discovery
-        // This ensures other nodes can discover peers we're connected to
-        if let Some(wire_addr) = socket_addr_to_wire_addr(&addr) {
+        // Add peer to peer store for GETADDR discovery so other nodes can find peers
+        // we're connected to. Advertise the DIALABLE address, not `addr`: for an
+        // inbound connection `addr` is the peer's ephemeral source port (nothing
+        // listens there), so the caller passes the peer's advertised listen endpoint
+        // via `discovery_addr`. `None` means we have no dialable address for this peer
+        // (don't pollute discovery with an unreachable one).
+        if let Some(disc) = discovery_addr.and_then(|a| socket_addr_to_wire_addr(&a)) {
             use crate::discovery::PeerEntry;
             use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -406,7 +433,7 @@ impl ConnectionManager {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
-            let mut entry = PeerEntry::new(wire_addr, now);
+            let mut entry = PeerEntry::new(disc, now);
             entry.record_success(now); // Mark as successful since we connected
 
             if let Err(e) = self.peer_store.put(&entry) {

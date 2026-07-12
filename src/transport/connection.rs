@@ -276,6 +276,7 @@ mod tests {
             remote_addr: addr,
             timestamp: 1700000000,
             observed_external_addr: None,
+            advertised_addr: None,
         };
 
         conn.set_peer_info(peer);

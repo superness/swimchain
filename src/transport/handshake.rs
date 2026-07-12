@@ -237,6 +237,11 @@ fn parse_version_payload(
     // (the source of our connection). For a NAT'd node this is its public endpoint.
     let observed_external_addr = payload.receiver_addr.to_socket_addr();
 
+    // `sender_addr` is the peer's own advertised LISTEN endpoint. The port is the key
+    // datum: for an inbound peer, `remote_addr` carries the correct source IP but an
+    // ephemeral source port, so the dialable address is (source IP + advertised port).
+    let advertised_addr = payload.sender_addr.to_socket_addr();
+
     Ok(PeerInfo {
         node_id,
         protocol_version: payload.protocol_version,
@@ -248,6 +253,7 @@ fn parse_version_payload(
         remote_addr,
         timestamp: payload.timestamp,
         observed_external_addr,
+        advertised_addr,
     })
 }
 
@@ -323,6 +329,7 @@ mod tests {
             remote_addr: "127.0.0.1:9735".parse().unwrap(),
             timestamp: 0,
             observed_external_addr: None,
+            advertised_addr: None,
         };
 
         // Different nonce, same version = OK
@@ -342,6 +349,7 @@ mod tests {
             remote_addr: "127.0.0.1:9735".parse().unwrap(),
             timestamp: 0,
             observed_external_addr: None,
+            advertised_addr: None,
         };
 
         // Same nonce = self-connection
@@ -362,6 +370,7 @@ mod tests {
             remote_addr: "127.0.0.1:9735".parse().unwrap(),
             timestamp: 0,
             observed_external_addr: None,
+            advertised_addr: None,
         };
 
         let result = validate_version(&peer_info, 12345);

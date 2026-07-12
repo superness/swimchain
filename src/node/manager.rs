@@ -1991,6 +1991,7 @@ impl NodeManager {
                         remote_addr: handle.remote_addr,
                         timestamp: 0,
                         observed_external_addr: None,
+                        advertised_addr: None,
                     })
                     .collect()
             })
