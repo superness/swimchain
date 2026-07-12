@@ -55,6 +55,20 @@ Run `node tools/app-automation/cli.js help` for the full command list.
   only to test the browser create-identity flow.
 - Node lifecycle delegates to `scripts/daemon-control.js`.
 
+## Fresh identity (non-genesis)
+
+To drive apps as a brand-new user instead of the genesis/"Super" identity:
+
+    node tools/app-automation/cli.js fresh              # mint identity + start node on 19745/19746
+    # then, as printed:
+    SWIM_AUTO_NODE_RPC=http://127.0.0.1:19746 \
+      SWIM_AUTO_NODE_DATADIR=<root>/swim-user-testnet \
+      node tools/app-automation/cli.js open feed
+    node tools/app-automation/cli.js fresh stop         # stop it
+
+The fresh node uses its own data dir (`<name>-testnet`) and ports, so it coexists
+with the genesis node. Password defaults to `freshpass123` (override `SWIMCHAIN_PASSWORD`).
+
 ## Tests
 
     npm test        # unit + daemon integration (needs Chromium, no node)

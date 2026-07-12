@@ -128,7 +128,10 @@ function runNodeControl(argv) {
 const HELP = `swim-auto — swimchain app automation (daemon + CLI)
 
 Node & clients:
-  node start|stop|status        Manage the testnet node (scripts/daemon-control.js)
+  node start|stop|status        Manage the genesis testnet node (scripts/daemon-control.js)
+  fresh [name]                  Start a node with a FRESH non-genesis identity on alt
+                                ports (19745/19746); prints how to point swim-auto at it
+  fresh stop [name]             Stop that fresh node (default name: swim-user)
   clients build                 Build all bundled clients (desktop-app build-clients.js)
 
 Browser (auto-starts the daemon; add --headed to watch):
@@ -163,6 +166,27 @@ async function main() {
     if (!['start', 'stop', 'status'].includes(sub)) throw new Error('usage: swim-auto node start|stop|status');
     const flags = sub === 'status' ? [sub] : [sub, '--node-only'];
     process.exitCode = runNodeControl(flags);
+    return;
+  }
+  if (cmd === 'fresh') {
+    const fresh = require('./lib/fresh-node');
+    if (args._[1] === 'stop') {
+      const name = args._[2] || 'swim-user';
+      console.log(fresh.stopFresh(name) ? `fresh node '${name}' stopped` : `no fresh node '${name}' running`);
+      return;
+    }
+    const name = args._[1] || 'swim-user';
+    console.log(`Preparing fresh-identity node '${name}' (non-genesis)...`);
+    const created = fresh.ensureIdentity(name);
+    console.log(created ? '  minted a new identity' : '  reusing existing identity');
+    const info = fresh.startFresh(name);
+    console.log(`fresh node started (pid ${info.pid})`);
+    console.log(`  RPC:      ${info.rpc}`);
+    console.log(`  data dir: ${info.dataDir}`);
+    console.log(`  log:      ${info.logPath}`);
+    console.log('\nDrive apps as this fresh user:');
+    console.log(`  SWIM_AUTO_NODE_RPC=${info.rpc} SWIM_AUTO_NODE_DATADIR=${info.dataDir} node cli.js open feed`);
+    console.log(`Stop it with: node cli.js fresh stop ${name}`);
     return;
   }
   if (cmd === 'clients') {
