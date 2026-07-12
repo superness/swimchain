@@ -23,6 +23,10 @@ fn create_test_action(pow_work: u64) -> Action {
         pow_work,
         pow_target: [3u8; 32],
         signature: [4u8; 64],
+        emoji: None,
+        display_name: None,
+        media_refs: vec![],
+        replaces_pending: None,
     }
 }
 
@@ -37,6 +41,7 @@ fn create_test_block(thread_id: [u8; 32], space_id: [u8; 32]) -> ContentBlock {
         timestamp: 1000,
         total_pow: 10,
         branch_path: BranchPath::root(),
+        space_metadata: None,
     }
 }
 

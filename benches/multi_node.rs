@@ -9,7 +9,7 @@
 //! Note: Some benchmarks require the message routing event loop
 //! to be implemented for accurate measurements.
 
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -113,17 +113,11 @@ fn bench_harness_creation(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark gossip_manager access
+/// Benchmark subsystem accessor overhead
 fn bench_subsystem_access(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (mut node, _dir) = create_test_node();
     rt.block_on(async { node.start().await.unwrap() });
-
-    c.bench_function("gossip_manager_access", |b| {
-        b.iter(|| {
-            let _ = node.gossip_manager();
-        });
-    });
 
     c.bench_function("chain_store_access", |b| {
         b.iter(|| {

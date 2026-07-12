@@ -104,6 +104,10 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Run benchmarks
+        # Explicit `shell: bash` enables pipefail, so a cargo failure fails the
+        # step instead of being masked by `tee` (a masked failure uploads an
+        # empty results file and breaks the track job downstream).
+        shell: bash
         run: cargo bench ${{ matrix.benches }} -- $CRITERION_FLAGS | tee bench-${{ matrix.group }}.txt
 
       - name: Upload results
