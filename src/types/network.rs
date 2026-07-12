@@ -299,15 +299,15 @@ pub enum MessageType {
 
     // Branch-Selective Sync (BRANCH_SELECTIVE_SYNC.md)
     /// Request blocks for a specific branch (filtered sync)
-    GetBlocksBranch = 0xA0,
+    GetBlocksBranch = 0x7B,
     /// Subscribe to branch announcements
-    SubscribeBranch = 0xA1,
+    SubscribeBranch = 0x7C,
     /// Unsubscribe from branch announcements
-    UnsubscribeBranch = 0xA2,
+    UnsubscribeBranch = 0x7D,
     /// Announce new content in a branch
-    BranchAnnounce = 0xA3,
+    BranchAnnounce = 0x7E,
     /// Send inventory of branches this peer serves
-    BranchInventory = 0xA4,
+    BranchInventory = 0x7F,
 
     // Space Name Resolution (Bug #4)
     /// Request a single space's display metadata
@@ -405,11 +405,11 @@ impl TryFrom<u8> for MessageType {
             0x86 => Ok(MessageType::DhtStore),
             0x87 => Ok(MessageType::DhtStoreAck),
             // Branch-selective sync messages
-            0xA0 => Ok(MessageType::GetBlocksBranch),
-            0xA1 => Ok(MessageType::SubscribeBranch),
-            0xA2 => Ok(MessageType::UnsubscribeBranch),
-            0xA3 => Ok(MessageType::BranchAnnounce),
-            0xA4 => Ok(MessageType::BranchInventory),
+            0x7B => Ok(MessageType::GetBlocksBranch),
+            0x7C => Ok(MessageType::SubscribeBranch),
+            0x7D => Ok(MessageType::UnsubscribeBranch),
+            0x7E => Ok(MessageType::BranchAnnounce),
+            0x7F => Ok(MessageType::BranchInventory),
             0xC0 => Ok(MessageType::GetSpaceMeta),
             0xC1 => Ok(MessageType::SpaceMeta),
             // Blocklist gossip (SPEC_12 §4.6)

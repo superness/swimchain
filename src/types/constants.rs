@@ -532,23 +532,23 @@ pub const MIN_BRANCH_STORAGE_BUDGET: u64 = 50 * 1024 * 1024;
 
 /// SPAM_ATTESTATION message type - flag content as spam (SPEC_12 §5)
 /// Sent by Resident+ members to attest that content is spam.
-pub const MSG_SPAM_ATTESTATION: u8 = 0x80;
+pub const MSG_SPAM_ATTESTATION: u8 = 0x88;
 
 /// COUNTER_ATTESTATION message type - dispute spam flag (SPEC_12 §5)
 /// Sent by Lifeguard+ members to counter a spam attestation.
-pub const MSG_COUNTER_ATTESTATION: u8 = 0x81;
+pub const MSG_COUNTER_ATTESTATION: u8 = 0x89;
 
 /// QUALITY_ATTESTATION message type - positive quality signal (SPEC_12 §5)
 /// Reserved for future use: positive attestations about content quality.
-pub const MSG_QUALITY_ATTESTATION: u8 = 0x82;
+pub const MSG_QUALITY_ATTESTATION: u8 = 0x8A;
 
 /// REPUTATION_QUERY message type - query reputation state (SPEC_12 §5)
 /// Query the spam attestation state for content.
-pub const MSG_REPUTATION_QUERY: u8 = 0x83;
+pub const MSG_REPUTATION_QUERY: u8 = 0x8B;
 
 /// REPUTATION_RESPONSE message type - reputation state response (SPEC_12 §5)
 /// Response with spam attestation aggregation results.
-pub const MSG_REPUTATION_RESPONSE: u8 = 0x84;
+pub const MSG_REPUTATION_RESPONSE: u8 = 0x8C;
 
 // === SPEC_12: Spam Attestation Constants (§3-4) ===
 
