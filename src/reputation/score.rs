@@ -219,7 +219,11 @@ impl ReputationEffect {
 pub fn get_reputation_effect(score: i32) -> ReputationEffect {
     if score > REPUTATION_TRUSTED_THRESHOLD {
         ReputationEffect::Trusted
-    } else if score > REPUTATION_NORMAL_THRESHOLD {
+    } else if score >= REPUTATION_NORMAL_THRESHOLD {
+        // Inclusive: the base score for a brand-new identity is exactly
+        // REPUTATION_BASE_SCORE (== this threshold), and a fresh account is
+        // Normal, not Watched. Only a score that has dropped *below* base
+        // (spam flags) is Watched.
         ReputationEffect::Normal
     } else if score > REPUTATION_WATCHED_THRESHOLD {
         ReputationEffect::Watched
@@ -432,7 +436,8 @@ mod tests {
         assert_eq!(get_reputation_effect(201), ReputationEffect::Trusted);
         assert_eq!(get_reputation_effect(200), ReputationEffect::Normal);
         assert_eq!(get_reputation_effect(150), ReputationEffect::Normal);
-        assert_eq!(get_reputation_effect(100), ReputationEffect::Watched);
+        assert_eq!(get_reputation_effect(100), ReputationEffect::Normal);
+        assert_eq!(get_reputation_effect(99), ReputationEffect::Watched);
         assert_eq!(get_reputation_effect(75), ReputationEffect::Watched);
         assert_eq!(get_reputation_effect(50), ReputationEffect::Restricted);
         assert_eq!(get_reputation_effect(25), ReputationEffect::Restricted);

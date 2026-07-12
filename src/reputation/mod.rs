@@ -18,10 +18,10 @@
 //! | Score Range | Effect |
 //! |-------------|--------|
 //! | > 200 | Trusted: content decays 1.5x slower |
-//! | 100-200 | Normal: standard treatment |
-//! | 50-100 | Watched: rate limits reduced 50% |
-//! | 0-50 | Restricted: rate limits reduced 80%, new space posting blocked |
-//! | < 0 | Untrusted: all content starts with accelerated decay |
+//! | 100-200 | Normal: standard treatment (base score for new identities) |
+//! | 51-99 | Watched: rate limits reduced 50% |
+//! | 1-50 | Restricted: rate limits reduced 80%, new space posting blocked |
+//! | <= 0 | Untrusted: all content starts with accelerated decay |
 //!
 //! See SPEC_12 for full specification.
 
