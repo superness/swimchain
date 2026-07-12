@@ -27,6 +27,10 @@ fn create_test_node() -> (NodeManager, TempDir) {
         min_peers: 0,
         target_peers: 8,
         seeds: vec![],
+        // These benches never talk RPC, and with rpc_port unset every node
+        // binds the same fixed default port - concurrent nodes in
+        // harness_creation then collide with "Address already in use".
+        rpc_enabled: false,
         ..NodeConfig::default()
     };
 
