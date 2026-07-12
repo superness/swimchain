@@ -246,6 +246,47 @@ pub fn is_encrypted_media_envelope(bytes: &[u8]) -> bool {
     bytes.len() >= ENCRYPTED_MEDIA_MIN_LEN && bytes.starts_with(ENCRYPTED_MEDIA_MAGIC)
 }
 
+/// Write-side policy for content destined for a **private** space (Phase 2 enforcement).
+///
+/// Returns `Some(reason)` if the write must be rejected, or `None` if it satisfies the
+/// encryption contract. The node calls this before accepting a post/reply into a private
+/// space so unencrypted content can never enter the chain (text OR images).
+///
+/// Contract for private spaces:
+/// - `title` (posts only; `None` for replies) must be empty — a private post carries no
+///   plaintext title; any title lives inside the encrypted body.
+/// - `body` must be a well-formed `[PRIVATE:v1:]` envelope.
+/// - every media attachment (`media_blobs`, the raw stored bytes) must be a `PRVM1`
+///   envelope. A missing/unreadable blob is a violation — pass `&[]` for it so it fails.
+///
+/// The reason strings are shown only to the writing member (who is authorized), so they
+/// may be descriptive; reader-facing opacity is handled separately in serve-gating.
+#[must_use]
+pub fn private_write_violation<'a>(
+    title: Option<&str>,
+    body: &str,
+    media_blobs: impl IntoIterator<Item = &'a [u8]>,
+) -> Option<String> {
+    if let Some(t) = title {
+        if !t.is_empty() {
+            return Some("private-space posts must not carry a plaintext title".to_string());
+        }
+    }
+    if !is_private_envelope(body) {
+        return Some(
+            "private-space content must be encrypted client-side ([PRIVATE:v1:...])".to_string(),
+        );
+    }
+    for (i, blob) in media_blobs.into_iter().enumerate() {
+        if !is_encrypted_media_envelope(blob) {
+            return Some(format!(
+                "private-space media attachment #{i} must be encrypted (PRVM1 envelope)"
+            ));
+        }
+    }
+    None
+}
+
 /// Encrypt a space name with the space key — raw `iv(12) || ct+tag` bytes (no framing),
 /// matching JS `encryptSpaceName`.
 pub fn encrypt_space_name(name: &str, key: &[u8; 32]) -> Vec<u8> {
@@ -319,6 +360,53 @@ mod tests {
         assert!(!is_private_envelope("[PRIVATE:v1:]")); // empty payload
         assert!(!is_private_envelope("[PRIVATE:v2:x]")); // wrong version
         assert!(!is_private_envelope(""));
+    }
+
+    fn valid_media() -> Vec<u8> {
+        let mut b = ENCRYPTED_MEDIA_MAGIC.to_vec();
+        b.extend_from_slice(&[0u8; GCM_IV_SIZE + TAG_SIZE]);
+        b
+    }
+
+    #[test]
+    fn private_write_ok_when_body_and_media_encrypted() {
+        let media = valid_media();
+        let blobs: Vec<&[u8]> = vec![&media];
+        assert_eq!(
+            private_write_violation(Some(""), "[PRIVATE:v1:AAAA]", blobs),
+            None
+        );
+        // reply (no title) with no media
+        assert_eq!(
+            private_write_violation(None, "[PRIVATE:v1:AAAA]", std::iter::empty()),
+            None
+        );
+    }
+
+    #[test]
+    fn private_write_rejects_plaintext_title() {
+        let v = private_write_violation(Some("Hello"), "[PRIVATE:v1:AAAA]", std::iter::empty());
+        assert!(v.unwrap().contains("plaintext title"));
+    }
+
+    #[test]
+    fn private_write_rejects_unencrypted_body() {
+        let v = private_write_violation(Some(""), "hello world", std::iter::empty());
+        assert!(v.unwrap().contains("must be encrypted"));
+    }
+
+    #[test]
+    fn private_write_rejects_unencrypted_or_missing_media() {
+        // one good, one plaintext blob
+        let good = valid_media();
+        let bad: &[u8] = b"\xff\xd8\xff plain jpeg";
+        let blobs: Vec<&[u8]> = vec![&good, bad];
+        let v = private_write_violation(Some(""), "[PRIVATE:v1:AAAA]", blobs);
+        assert!(v.unwrap().contains("attachment #1"));
+        // missing blob represented as empty slice -> violation
+        let empty: &[u8] = &[];
+        let blobs2: Vec<&[u8]> = vec![empty];
+        assert!(private_write_violation(Some(""), "[PRIVATE:v1:AAAA]", blobs2).is_some());
     }
 
     #[test]

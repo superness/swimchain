@@ -1,7 +1,7 @@
 # Private Spaces — Node-Enforced Confidentiality
 
-> **Status:** Phase 1 (Foundation) landed. Write-enforcement, serve-gating, and the
-> sealed-sender DM handshake follow in Phases 2–4. See the design spec at
+> **Status:** Phases 1 (Foundation) and 2 (write-side enforcement) landed. Serve-gating
+> and the sealed-sender DM handshake follow in Phases 3–4. See the design spec at
 > [`docs/superpowers/specs/2026-07-11-private-space-confidentiality-design.md`](superpowers/specs/2026-07-11-private-space-confidentiality-design.md)
 > and the Phase 1 plan at
 > [`docs/superpowers/plans/2026-07-11-private-space-confidentiality-foundation.md`](superpowers/plans/2026-07-11-private-space-confidentiality-foundation.md).
@@ -127,11 +127,32 @@ spam-flagged). Going forward, writes to private spaces must be encrypted (Phase 
 - `src/crypto/private_space.rs` — envelope crypto and the `is_private_envelope` /
   `is_encrypted_media_envelope` recognizers, `ENCRYPTED_MEDIA_MAGIC`.
 
+## Write-side enforcement (Phase 2)
+
+The node refuses to let unencrypted content enter a private space. On `submit_post` /
+`submit_reply`, if the target space is registered private (`SpaceInfo.is_private`), the
+node requires (`crypto::private_space::private_write_violation`, wired via
+`rpc::methods::check_private_write`):
+
+- **body** is a well-formed `[PRIVATE:v1:]` envelope;
+- **title** (posts only) is empty — a private post carries no plaintext title; any title
+  lives inside the encrypted body;
+- every referenced **media** blob (looked up in the blob store) is a `PRVM1` envelope; a
+  missing/unreadable blob fails closed.
+
+On any violation the write is rejected (`InvalidParams` with a descriptive reason — shown
+only to the authoring member). On success the node stamps the authenticated
+`Action.private` bit from the space's privacy, so clients cannot spoof it.
+
+> **Known gap (pre-existing, tracked):** the node does not currently call
+> `validate_action_signature` on RPC-submitted or peer-gossiped actions (clients sign a
+> `post:…`/`reply:…` *string*, not the `content_hash‖ts` preimage). So the Phase-1
+> signature-authentication of the `private` bit is latent until action-signature
+> validation is wired into ingest — a broader hardening beyond this phase. Write-side
+> enforcement and the authoritative node-set `private` bit do not depend on it.
+
 ## Roadmap
 
-- **Phase 2 — Write-side enforcement:** reject non-`[PRIVATE:v1:]` bodies / non-`PRVM1`
-  media on writes to a private space; wire the `private` bit through RPC and the client
-  signers so private actions are signed with the v2 preimage.
 - **Phase 3 — Propagation & serve-gating:** membership-filter the block-receipt fetch
   loop; serve private content to members only; opaque denial (no "we said no"); suppress
   `I_HAVE` for private content to non-members.

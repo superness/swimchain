@@ -1982,6 +1982,57 @@ impl RpcMethods {
     // Content Submission Methods
     // ========================================================================
 
+    /// Whether a space is registered as private (`SpaceInfo.is_private`). Returns false if
+    /// the space is unknown — enforcement only applies where the node knows the space is
+    /// private, which is always true at the authoring node (it created/joined the space).
+    fn space_is_private(&self, space_id_16: &[u8; 16]) -> bool {
+        self.node
+            .chain_store
+            .as_ref()
+            .and_then(|cs| cs.get_space(space_id_16).ok().flatten())
+            .map(|s| s.is_private)
+            .unwrap_or(false)
+    }
+
+    /// Phase 2 write-side enforcement for private-space confidentiality.
+    ///
+    /// Returns `Ok(is_private)` when the write may proceed (caller stamps `Action.private`
+    /// with the returned bool), or `Err(reason)` when it must be rejected because content
+    /// bound for a private space is not encrypted (text OR media). For public spaces this
+    /// is a cheap `Ok(false)`. `title` is `None` for replies. `media_hashes` are the raw
+    /// 32-byte blob hashes referenced by the write; their bytes are looked up in the blob
+    /// store and must each be a `PRVM1` envelope.
+    fn check_private_write(
+        &self,
+        space_id_16: &[u8; 16],
+        title: Option<&str>,
+        body: &str,
+        media_hashes: &[[u8; 32]],
+    ) -> Result<bool, String> {
+        if !self.space_is_private(space_id_16) {
+            return Ok(false);
+        }
+
+        // Load each referenced media blob so we can verify it is encrypted. A missing or
+        // unreadable blob yields empty bytes, which fails the PRVM1 check (fail closed).
+        let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
+        let blobs: Vec<Vec<u8>> = media_hashes
+            .iter()
+            .map(|h| {
+                blob_store
+                    .as_ref()
+                    .and_then(|bs| bs.get(&ContentBlobHash::from_bytes(*h)).ok())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let blob_refs: Vec<&[u8]> = blobs.iter().map(Vec::as_slice).collect();
+
+        match crate::crypto::private_space::private_write_violation(title, body, blob_refs) {
+            Some(reason) => Err(reason),
+            None => Ok(true),
+        }
+    }
+
     async fn submit_post(&self, params: Value, id: Value) -> RpcResponse {
         let params: SubmitPostParams = match serde_json::from_value(params) {
             Ok(p) => p,
@@ -2131,6 +2182,26 @@ impl RpcMethods {
         let mut space_id_bytes: [u8; 32] = [0u8; 32];
         space_id_bytes[..16].copy_from_slice(&space_id_16);
 
+        // Phase 2: node-enforced private-space confidentiality. If the target space is
+        // private, the body must be a [PRIVATE:v1:] envelope, the title must be empty, and
+        // every referenced media blob must be a PRVM1 envelope — otherwise reject the write
+        // so unencrypted content never enters a private space. `is_private` stamps the
+        // authenticated Action.private bit.
+        let post_media_hashes: Vec<[u8; 32]> = params
+            .media_refs
+            .iter()
+            .filter_map(|mr| hex::decode(&mr.media_hash).ok()?.try_into().ok())
+            .collect();
+        let is_private = match self.check_private_write(
+            &space_id_16,
+            Some(&params.title),
+            &params.body,
+            &post_media_hashes,
+        ) {
+            Ok(p) => p,
+            Err(reason) => return RpcResponse::error(RpcErrorCode::InvalidParams, &reason, id),
+        };
+
         // Add action to BlockBuilder for block-based propagation (SPEC_08)
         if let Some(ref block_builder) = self.node.block_builder {
             // Create signature bytes
@@ -2201,7 +2272,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: action_media_refs,
                 replaces_pending,
-                private: false,
+                private: is_private,
             };
 
             // Thread ID is the content hash for a new post
@@ -2911,6 +2982,22 @@ impl RpcMethods {
             }
         };
 
+        // Phase 2: node-enforced private-space confidentiality (replies have no title).
+        // Reject unencrypted body/media bound for a private space; `is_private` stamps the
+        // authenticated Action.private bit.
+        let reply_space_id_16: [u8; 16] = space_id_bytes[..16].try_into().unwrap_or([0u8; 16]);
+        let reply_media_hashes: Vec<[u8; 32]> = params
+            .media_refs
+            .iter()
+            .filter_map(|mr| hex::decode(&mr.media_hash).ok()?.try_into().ok())
+            .collect();
+        let is_private =
+            match self.check_private_write(&reply_space_id_16, None, &params.body, &reply_media_hashes)
+            {
+                Ok(p) => p,
+                Err(reason) => return RpcResponse::error(RpcErrorCode::InvalidParams, &reason, id),
+            };
+
         // Add action to BlockBuilder for block-based propagation (SPEC_08)
         if let Some(ref block_builder) = self.node.block_builder {
             // Create signature bytes
@@ -2979,7 +3066,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: action_media_refs,
                 replaces_pending,
-                private: false,
+                private: is_private,
             };
 
             // Thread ID is the parent post's hash (replies belong to parent thread)
