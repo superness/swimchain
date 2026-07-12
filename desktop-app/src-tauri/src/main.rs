@@ -3,6 +3,7 @@
 
 mod app_manifest;
 mod node_manager;
+mod registry;
 mod supervisor;
 
 use node_manager::NodeManager;

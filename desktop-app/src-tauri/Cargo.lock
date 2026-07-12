@@ -3805,6 +3805,7 @@ dependencies = [
  "dirs 5.0.1",
  "hex",
  "libc",
+ "log",
  "reqwest",
  "screenshots",
  "serde",
