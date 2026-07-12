@@ -284,11 +284,15 @@ function ThreadRow({ thread, spaceId, isSelected, movedTo }: ThreadRowProps): JS
 
   if (!movedTo) return rowInner;
 
-  // This thread's conversation grew into its own space — surface the continuity
-  // pointer above the row so the thread is never silently "gone".
+  // This thread's conversation grew into its own community — surface the
+  // continuity pointer above the row so the thread is never silently "gone".
   return (
     <div className="thread-row-with-continuity">
-      <MovedThreadBanner childSpaceId={movedTo.childSpaceId} childSpaceName={movedTo.childSpaceName} />
+      <MovedThreadBanner
+        parentSpaceId={movedTo.parentSpaceId}
+        communityId={movedTo.communityId}
+        communityName={movedTo.communityName}
+      />
       {rowInner}
     </div>
   );

@@ -65,20 +65,14 @@ interface SpaceSummary {
   app?: string | null;
   /** True if this is a real public space whose name hasn't been resolved yet. */
   name_unresolved?: boolean;
-
-  // === Behavioral-branching lineage (SPEC_13, Phase 2) ===
-  // All fields below are ADDITIVE and populated by Lane A once shipped. They are
-  // optional so the client renders identically on nodes that predate them.
-  /** Parent space this space grew out of (hex space id), if it formed via a behavioral split. */
-  parent_space_id?: string | null;
-  /** Child space ids that grew out of this space (hex space ids). */
-  children?: string[] | null;
-  /** UNIX timestamp (seconds) when this space was formed from its parent. */
-  formed_at?: number | null;
-  /** Number of founding members at formation time. */
-  founding_member_count?: number | null;
-  /** Block height at which this space's formation was detected. */
-  formation_height?: number | null;
+  /**
+   * Behavioral communities that grew out of this space (SPEC_13, Phase 2).
+   * ADDITIVE: omitted when empty and absent entirely on pre-Phase-2 nodes.
+   * Communities are deliberately NOT top-level list_spaces entries — their
+   * threads live in the parent space; render them via the community view
+   * (parent thread list filtered to the community's moved_threads).
+   */
+  children?: SpaceChildInfo[];
 }
 
 interface ListSpacesResult {
@@ -86,55 +80,104 @@ interface ListSpacesResult {
   total: number;
 }
 
-// === Behavioral-branching lineage RPC shapes (SPEC_13, Phase 2) ===
-// Lane A owns the exact server shapes; these are permissive and every consumer
-// feature-detects (see isMethodNotFoundError) so absence degrades gracefully.
+// === Behavioral-branching lineage RPC shapes (SPEC_13, Phase 2 — FINAL) ===
+// Exact server shapes per Lane A. Consumers still feature-detect (see
+// isMethodNotFoundError) so absence of the optional RPCs degrades gracefully.
 
-/** A node in the lineage tree returned by get_space_tree. */
+/**
+ * A behaviorally-formed community, as embedded in list_spaces `children` and
+ * returned by get_space_lineage. list_spaces embeds the subset {community_id,
+ * space_id, name, full_name, formed_at, formation_height,
+ * founding_member_count}; get_space_lineage returns every field, so the extras
+ * are optional here.
+ */
+export interface SpaceChildInfo {
+  /** Deterministic community id (64-hex). */
+  community_id: string;
+  /** The community's own space id (bech32 sp1). NOT a navigable space view. */
+  space_id: string;
+  /** Parent space id (get_space_lineage only). */
+  parent_space_id?: string;
+  /** Display name. */
+  name: string;
+  /** Deterministic auto-generated name at formation (get_space_lineage only). */
+  auto_name?: string;
+  /** Fully-qualified display name (e.g. "<parent>/community-xxxx"). */
+  full_name: string;
+  /** True if founding members renamed the community (get_space_lineage only). */
+  renamed?: boolean;
+  /** UNIX seconds when the community formed. */
+  formed_at: number;
+  /** Block height formation was detected at. */
+  formation_height: number;
+  /** Members present at formation. */
+  founding_member_count: number;
+  /** Fractured branch path ("depth:hexpath") or null (get_space_lineage only). */
+  branch_path?: string | null;
+  /** Thread-root content ids ("sha256:<hex>") that moved into this community. */
+  moved_threads?: string[];
+  /** Number of threads in the community (get_space_lineage only). */
+  thread_count?: number;
+}
+
+/** A node in the lineage tree returned by get_space_tree (recursive). */
 export interface SpaceTreeNode {
   space_id: string;
-  name?: string | null;
-  post_count?: number | null;
-  parent_space_id?: string | null;
-  formed_at?: number | null;
-  founding_member_count?: number | null;
-  formation_height?: number | null;
-  /** Children may arrive as nested nodes or as bare id strings. */
-  children?: Array<SpaceTreeNode | string> | null;
+  name: string;
+  /** Set (64-hex) when this node is a community; null for plain spaces. */
+  community_id: string | null;
+  formed_at: number | null;
+  founding_member_count: number | null;
+  children: SpaceTreeNode[];
 }
 
-/** A thread that moved from a parent space into a formed child space. */
-export interface MovedThreadRef {
-  /** Thread root content id (sha256:...) that now lives in the child space. */
-  thread_id: string;
-  /** Child space the thread moved into (hex space id). */
-  child_space_id: string;
-  child_space_name?: string | null;
+/** get_space_tree result. */
+export interface SpaceTreeResult {
+  roots: SpaceTreeNode[];
 }
 
-/** Result of get_space_lineage: a space's parent + children + moved threads. */
+/**
+ * get_space_lineage result. `parent` and `community` are set iff the queried
+ * id IS a community; `children` lists communities formed out of the queried id.
+ */
 export interface SpaceLineageResult {
   space_id: string;
-  parent?: SpaceTreeNode | string | null;
-  children?: Array<SpaceTreeNode | string> | null;
-  formed_at?: number | null;
-  founding_member_count?: number | null;
-  formation_height?: number | null;
-  /** Threads whose roots moved into a child space (parent-side continuity pointers). */
-  moved_threads?: MovedThreadRef[] | null;
+  name: string;
+  parent: { space_id: string; name: string } | null;
+  community: SpaceChildInfo | null;
+  children: SpaceChildInfo[];
 }
 
-/** A CommunityFormed notification (NotificationType::CommunityFormed, SPEC_09). */
-export interface CommunityNotification {
-  id: string;
-  /** The formed community/space id (hex). */
+/** Context payload of a community_formed notification. */
+export interface CommunityFormedContext {
+  /** Parent space id (bech32 sp1). */
+  parent_space_id: string;
+  /** Parent space id (hex). */
+  parent_space_id_hex?: string;
+  /** Community id (64-hex). */
   community_id: string;
-  parent_space_id?: string | null;
-  /** Auto-generated (or renamed) display name of the formed community. */
-  name?: string | null;
-  parent_name?: string | null;
-  created_at?: number | null;
+  /** The community's own space id (bech32 sp1). */
+  community_space_id?: string;
+  /** Deterministic auto-generated community name. */
+  auto_name?: string;
+  founding_member_count?: number;
+}
+
+/** A notification from list_notifications (SPEC_09). */
+export interface NotificationInfo {
+  /** Notification id (32-hex). */
+  id: string;
+  /** e.g. "community_formed". */
+  notification_type: string;
+  message?: string;
+  created_at_ms?: number;
   read?: boolean;
+  context?: Record<string, unknown>;
+}
+
+export interface ListNotificationsResult {
+  notifications: NotificationInfo[];
+  unread_count?: number;
 }
 
 /** A recorded would-be/actual community formation from list_behavioral_events. */
@@ -666,12 +709,14 @@ export class SwimchainRpc {
    * Fetch the lineage tree for navigation. Optionally rooted at a space.
    * Throws (method-not-found) on nodes that predate behavioral branching.
    */
-  async getSpaceTree(root?: string): Promise<{ tree: SpaceTreeNode[] }> {
+  async getSpaceTree(root?: string): Promise<SpaceTreeResult> {
     return this.call('get_space_tree', root ? { root } : {});
   }
 
   /**
-   * Fetch a single space's lineage: parent, children, and moved threads.
+   * Fetch a single space's lineage: parent + community (set iff the queried id
+   * IS a community) and children (communities formed out of the queried id,
+   * each carrying its moved_threads).
    * Throws (method-not-found) on nodes that predate behavioral branching.
    */
   async getSpaceLineage(spaceId: string): Promise<SpaceLineageResult> {
@@ -680,16 +725,25 @@ export class SwimchainRpc {
 
   /**
    * List notifications for the local user (SPEC_09). Used to surface
-   * CommunityFormed graduation notices. Throws (method-not-found) if the node
+   * community_formed graduation notices. Throws (method-not-found) if the node
    * has no notification RPC yet.
    */
-  async listNotifications(options?: { limit?: number; unreadOnly?: boolean }): Promise<{
-    notifications: Array<Record<string, unknown>>;
-  }> {
+  async listNotifications(options?: { limit?: number; unreadOnly?: boolean }): Promise<ListNotificationsResult> {
     return this.call('list_notifications', {
       limit: options?.limit ?? 50,
       unread_only: options?.unreadOnly ?? false,
     });
+  }
+
+  /**
+   * Mark one notification (by id) — or all of them — as read.
+   * Throws (method-not-found) if the node has no notification RPC yet.
+   */
+  async markNotificationRead(params: { notificationId: string } | { all: true }): Promise<unknown> {
+    return this.call(
+      'mark_notification_read',
+      'all' in params ? { all: true } : { notification_id: params.notificationId },
+    );
   }
 
   /**

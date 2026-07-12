@@ -1,0 +1,46 @@
+.community-view {
+  max-width: 100%;
+}
+
+.community-view .space-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
+}
+
+.community-view .space-info h1 {
+  font-size: var(--font-size-2xl);
+  margin: 0 0 var(--spacing-xs);
+}
+
+.community-view .space-description {
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.community-view .no-threads {
+  text-align: center;
+  padding: var(--spacing-2xl);
+  color: var(--color-text-secondary);
+}
+
+.community-view .no-threads p {
+  margin: var(--spacing-sm) 0;
+}
+
+.community-missing {
+  text-align: center;
+  padding: var(--spacing-2xl);
+}
+
+.community-missing h1 {
+  font-size: var(--font-size-2xl);
+  margin-bottom: var(--spacing-md);
+}
+
+.community-missing p {
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-lg);
+}

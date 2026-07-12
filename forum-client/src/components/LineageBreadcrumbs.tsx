@@ -1,21 +1,20 @@
 /**
  * Lineage breadcrumbs (SPEC_13, Phase 2 — Lane B).
  *
- * Shows the ancestor path for a space that grew out of a parent, e.g.
+ * Shows the ancestor path for a community that grew out of a parent space, e.g.
  *   general / general/community-1a2b3c
- * Each segment links to that space. Renders nothing when the space has no known
- * lineage (a normal top-level space), so it is invisible until behavioral
- * branching produces a parent/child relationship.
+ * Each ancestor segment links to its space view. Renders nothing when there are
+ * no ancestors (a normal top-level space), so it is invisible until behavioral
+ * branching produces a parent/community relationship.
  */
 
 import { Link } from 'react-router-dom';
-import type { Space } from '../types';
 import './LineageBreadcrumbs.css';
 
 interface LineageBreadcrumbsProps {
-  /** Ancestor chain, root-first (from useSpaceLineage().ancestors). */
-  ancestors: Space[];
-  /** The current space's display name (rendered as the final, non-link crumb). */
+  /** Ancestor chain, root-first; each crumb links to /spaces/:id. */
+  ancestors: Array<{ id: string; name: string }>;
+  /** The current view's display name (rendered as the final, non-link crumb). */
   currentName: string;
 }
 

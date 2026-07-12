@@ -1,18 +1,20 @@
 /**
- * CommunityFormed notification surface (SPEC_09 §7.1, Phase 2 — Lane B).
+ * community_formed notification surface (SPEC_09 §7.1, Phase 2 — Lane B).
  *
  * Surfaces graduation notices to founding members: "Your group's conversations
  * earned their own lane." The framing is recognition — an achievement, never an
- * eviction or removal. Each notice links into the new community and can be
- * dismissed (remembered locally).
+ * eviction or removal. Each notice links into the community VIEW (the parent's
+ * thread list filtered to the community — communities are not bare spaces) and
+ * can be dismissed, which marks it read on the node.
  *
  * Renders nothing when the node has no notification RPC or there are no
- * CommunityFormed notices, so it is invisible on discovery until a graduation
+ * community_formed notices, so it is invisible on discovery until a graduation
  * actually happens.
  */
 
 import { Link } from 'react-router-dom';
 import { useCommunityNotifications } from '../hooks/useCommunityNotifications';
+import { communityPath } from '../hooks/useLineage';
 import './CommunityFormedNotifications.css';
 
 export function CommunityFormedNotifications(): JSX.Element | null {
@@ -23,7 +25,8 @@ export function CommunityFormedNotifications(): JSX.Element | null {
   return (
     <div className="community-formed-notices" role="status" aria-live="polite">
       {notifications.map((n) => {
-        const name = n.name ?? 'your new community';
+        const name = n.autoName ?? 'your new community';
+        const target = communityPath(n.parentSpaceId, n.communityId);
         return (
           <div key={n.id} className="community-formed-notice">
             <span className="community-formed-badge" aria-hidden="true">
@@ -37,12 +40,13 @@ export function CommunityFormedNotifications(): JSX.Element | null {
                 Your group's conversations earned their own lane
               </p>
               <p className="community-formed-detail">
-                <Link to={`/spaces/${n.community_id}`} className="community-formed-link">{name}</Link>
-                {n.parent_name ? <> grew out of <strong>{n.parent_name}</strong>.</> : <> is ready.</>}{' '}
+                <Link to={target} className="community-formed-link">{name}</Link>
+                {' '}is ready
+                {n.foundingMemberCount ? <> — {n.foundingMemberCount} founding members</> : null}.{' '}
                 Everyone's still welcome in both — this is a new home, not a move.
               </p>
               <div className="community-formed-actions">
-                <Link to={`/spaces/${n.community_id}`} className="btn btn-primary btn-sm">
+                <Link to={target} className="btn btn-primary btn-sm">
                   Visit community
                 </Link>
               </div>

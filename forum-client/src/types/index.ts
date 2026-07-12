@@ -16,12 +16,29 @@ export interface Space {
   createdAt: number;     // UNIX timestamp seconds
   parentId?: string;     // Parent space ID for hierarchical organization
 
-  // === Behavioral-branching lineage (SPEC_13, Phase 2) ===
-  // All optional and additive — present only when the node exposes lineage.
-  childIds?: string[];          // Child spaces that grew out of this one
-  formedAt?: number;            // UNIX seconds when this space formed from its parent
-  foundingMemberCount?: number; // Members present at formation
-  formationHeight?: number;     // Block height formation was detected at
+  /**
+   * Behavioral communities that grew out of this space (SPEC_13, Phase 2).
+   * Optional and additive — present only when the node exposes lineage.
+   * Communities are NOT spaces of their own in listings; they render as the
+   * parent's thread list filtered to the community's moved threads.
+   */
+  communities?: CommunitySummary[];
+}
+
+/**
+ * A behaviorally-formed community (SPEC_13). Lives inside its parent space:
+ * its threads stay in the parent, so navigation goes to the community view
+ * (/spaces/:parentId/community/:communityId), never a bare space view.
+ */
+export interface CommunitySummary {
+  communityId: string;          // Deterministic community id (64-hex)
+  spaceId: string;              // The community's own sp1 space id (not navigable)
+  parentSpaceId: string;        // Parent space (sp1) whose threads it filters
+  name: string;                 // Display name
+  fullName: string;             // Fully-qualified name ("<parent>/community-xxxx")
+  formedAt: number;             // UNIX seconds of formation
+  formationHeight: number;      // Block height formation was detected at
+  foundingMemberCount: number;  // Members present at formation
 }
 
 /**

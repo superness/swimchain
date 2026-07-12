@@ -4,16 +4,14 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, Navigate } from 'react-router-dom';
 import { usePreferences } from '../hooks/usePreferences';
 import { useKeyboardNavigation } from '../hooks/useKeyboardNavigation';
 import { useSpaceThreads, useSpaces } from '../hooks/useRpc';
-import { useSpaceLineage } from '../hooks/useLineage';
+import { useSpaceLineage, communityPath } from '../hooks/useLineage';
 import { ThreadList } from '../components/ThreadList';
 import { ThreadSortControls } from '../components/ThreadSortControls';
 import { Pagination } from '../components/Pagination';
-import { LineageBreadcrumbs } from '../components/LineageBreadcrumbs';
-import { GrewOutOfNote } from '../components/ContinuityBanner';
 import type { ThreadSortOption } from '../types';
 import './SpaceView.css';
 
@@ -23,8 +21,9 @@ export function SpaceView(): JSX.Element {
   const { preferences, updatePreference } = usePreferences();
   const { setItems } = useKeyboardNavigation();
 
-  // Behavioral-branching lineage for this space (SPEC_13, Phase 2). Empty/absent
-  // when the space has no parent/children — breadcrumbs & pointers stay hidden.
+  // Behavioral-branching lineage for this space (SPEC_13, Phase 2). Provides
+  // parent-side continuity pointers (moved threads) and detects deep links to
+  // a community's own space id — which is never a navigable space view.
   const lineage = useSpaceLineage(spaceId);
 
   const [page, setPage] = useState(1);
@@ -86,6 +85,12 @@ export function SpaceView(): JSX.Element {
     return space?.name ?? `Space ${spaceId.substring(0, 12)}...`;
   }, [spaceId, spaces]);
 
+  // Deep link to a community's own space id: a community is not a bare space
+  // (its threads live in the parent), so route to the community view instead.
+  if (lineage.isCommunity && lineage.parent && lineage.community) {
+    return <Navigate to={communityPath(lineage.parent.id, lineage.community.community_id)} replace />;
+  }
+
   if (loading) {
     return (
       <div className="space-view">
@@ -115,11 +120,7 @@ export function SpaceView(): JSX.Element {
     <div className="space-view">
       <header className="space-header">
         <div className="space-info">
-          <LineageBreadcrumbs ancestors={lineage.ancestors} currentName={spaceName} />
           <h1>{spaceName}</h1>
-          {lineage.parent && (
-            <GrewOutOfNote parentSpaceId={lineage.parent.id} parentSpaceName={lineage.parent.name} />
-          )}
           <p className="space-description">
             {total} post{total !== 1 ? 's' : ''} in this space
           </p>

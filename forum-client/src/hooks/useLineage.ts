@@ -1,91 +1,88 @@
 /**
  * Behavioral-branching lineage hooks (SPEC_13, Phase 2 — Lane B).
  *
- * These hooks build a navigable space *lineage* graph (parents -> children formed
- * by behavioral splits) on top of the flat space list. Everything degrades
- * gracefully:
+ * Model (final Lane A shapes): communities are NOT top-level spaces. A
+ * community's threads physically live in its parent space; the community
+ * renders as the parent's thread list filtered to the community's
+ * moved_threads, at /spaces/:parentId/community/:communityId. These hooks
+ * build the navigable lineage view on top of the flat space list:
  *
- *   1. Prefer the get_space_tree RPC (Lane A). If present, use its edges.
- *   2. Else derive edges from the additive lineage fields on list_spaces
- *      (parent_space_id / children), if the node populates them.
- *   3. Else: no lineage is known -> `lineageAvailable` is false and callers fall
- *      back to today's flat list. Nothing errors, nothing is hidden from the user.
+ *   1. Prefer the get_space_tree RPC for the full (possibly nested) tree.
+ *   2. Else derive one level from the additive `children` field on list_spaces.
+ *   3. Else: no lineage is known -> `lineageAvailable` is false and callers
+ *      fall back to today's flat list. Nothing errors, nothing is hidden.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRpc, useSpaces } from './useRpc';
-import { isMethodNotFoundError, type SpaceTreeNode, type MovedThreadRef } from '../lib/rpc';
+import { isMethodNotFoundError, type SpaceTreeNode, type SpaceChildInfo } from '../lib/rpc';
 import { logger } from '../lib/logger';
-import type { Space } from '../types';
+import type { Space, CommunitySummary } from '../types';
 
-/** Pointer for a thread that moved from a parent space into a formed child. */
-export interface MovedThreadPointer {
-  childSpaceId: string;
-  childSpaceName?: string;
+/** Route to a community's view (parent threads filtered to the community). */
+export function communityPath(parentSpaceId: string, communityId: string): string {
+  return `/spaces/${parentSpaceId}/community/${communityId}`;
 }
 
-/** Lineage metadata for a single space, merged from all available sources. */
-export interface LineageMeta {
-  parentId?: string;
-  childIds: string[];
-  formedAt?: number;
-  foundingMemberCount?: number;
-  formationHeight?: number;
-  name?: string;
+/** Pointer for a thread whose conversation grew into a formed community. */
+export interface MovedThreadPointer {
+  communityId: string;
+  /** Space whose thread list the community filters (the thread's home). */
+  parentSpaceId: string;
+  communityName?: string;
+}
+
+/** A node in the client-side lineage tree (space or community). */
+export interface LineageTreeNodeVM {
+  /** This node's own sp1 space id (community space ids are NOT navigable). */
+  spaceId: string;
+  name: string;
+  /** Set (64-hex) when this node is a community; null for plain spaces. */
+  communityId: string | null;
+  /** Enclosing node's space id (null for roots). Community links route here. */
+  parentSpaceId: string | null;
+  formedAt: number | null;
+  foundingMemberCount: number | null;
+  /** Post count for plain spaces (from list_spaces); undefined for communities. */
+  postCount?: number;
+  children: LineageTreeNodeVM[];
+}
+
+/** A recently-formed community plus its parent's display name. */
+export interface RecentCommunity extends CommunitySummary {
+  parentName?: string;
 }
 
 export interface SpaceLineageGraph {
   /** Flat list of spaces (same set the flat list shows). */
   spaces: Space[];
   byId: Map<string, Space>;
-  /** Spaces with no known parent (top of the tree). */
-  roots: Space[];
-  /** id -> child spaces that grew out of it (deduped, sorted newest-first). */
-  childrenOf: (id: string) => Space[];
-  /** id -> parent space, if it grew out of one that we know about. */
-  parentOf: (id: string) => Space | undefined;
-  /** Full ancestor chain (root-first), excluding the space itself. */
-  ancestorsOf: (id: string) => Space[];
-  /** True when at least one lineage edge is known (tree RPC or additive fields). */
+  /** Lineage tree roots (plain spaces, communities nested beneath). */
+  roots: LineageTreeNodeVM[];
+  /** True when at least one community is known (tree RPC or list_spaces children). */
   lineageAvailable: boolean;
-  /** Child spaces sorted by formation time, newest first. */
-  recentlyFormed: Space[];
+  /** Communities sorted by formation time, newest first. */
+  recentlyFormed: RecentCommunity[];
   loading: boolean;
   error: string | null;
 }
 
-/** Walk a (possibly nested) get_space_tree node set into a flat metadata map. */
-function collectTreeMeta(
-  nodes: Array<SpaceTreeNode | string>,
-  parentId: string | undefined,
-  out: Map<string, LineageMeta>,
-): void {
-  for (const node of nodes) {
-    if (typeof node === 'string') {
-      // Bare child id — we only learn the parent edge here.
-      const meta = out.get(node) ?? { childIds: [] };
-      if (parentId) meta.parentId = parentId;
-      out.set(node, meta);
-      continue;
-    }
-    const id = node.space_id;
-    if (!id) continue;
-    const meta = out.get(id) ?? { childIds: [] };
-    if (parentId && !meta.parentId) meta.parentId = parentId;
-    if (node.parent_space_id) meta.parentId = node.parent_space_id;
-    if (node.formed_at != null) meta.formedAt = node.formed_at;
-    if (node.founding_member_count != null) meta.foundingMemberCount = node.founding_member_count;
-    if (node.formation_height != null) meta.formationHeight = node.formation_height;
-    if (node.name) meta.name = node.name;
-    out.set(id, meta);
-
-    const kids = node.children ?? [];
-    for (const kid of kids) {
-      const kidId = typeof kid === 'string' ? kid : kid.space_id;
-      if (kidId && !meta.childIds.includes(kidId)) meta.childIds.push(kidId);
-    }
-    if (kids.length > 0) collectTreeMeta(kids, id, out);
-  }
+/** Convert a get_space_tree node (recursive) into the client VM. */
+function toTreeVM(
+  node: SpaceTreeNode,
+  parentSpaceId: string | null,
+  postCountById: Map<string, number>,
+): LineageTreeNodeVM {
+  return {
+    spaceId: node.space_id,
+    name: node.name,
+    communityId: node.community_id ?? null,
+    parentSpaceId,
+    formedAt: node.formed_at ?? null,
+    foundingMemberCount: node.founding_member_count ?? null,
+    postCount: node.community_id ? undefined : postCountById.get(node.space_id),
+    children: (node.children ?? []).map((c) => toTreeVM(c, node.space_id, postCountById)),
+  };
 }
 
 /**
@@ -95,8 +92,8 @@ export function useSpaceLineageGraph(): SpaceLineageGraph {
   const { spaces, loading, error } = useSpaces();
   const { rpc, connected, authReady } = useRpc();
 
-  // Metadata overlaid from get_space_tree (when the node exposes it).
-  const [treeMeta, setTreeMeta] = useState<Map<string, LineageMeta> | null>(null);
+  // Tree from get_space_tree (when the node exposes it); null = unavailable.
+  const [treeRoots, setTreeRoots] = useState<SpaceTreeNode[] | null>(null);
 
   useEffect(() => {
     if (!rpc || !connected || !authReady) return;
@@ -106,20 +103,18 @@ export function useSpaceLineageGraph(): SpaceLineageGraph {
       try {
         const res = await rpc.getSpaceTree();
         if (cancelled) return;
-        const map = new Map<string, LineageMeta>();
-        collectTreeMeta(res?.tree ?? [], undefined, map);
-        setTreeMeta(map);
-        logger.info('[Lineage] get_space_tree overlay loaded', { nodes: map.size });
+        setTreeRoots(res?.roots ?? []);
+        logger.info('[Lineage] get_space_tree loaded', { roots: res?.roots?.length ?? 0 });
       } catch (err) {
         if (cancelled) return;
         if (isMethodNotFoundError(err)) {
           // Expected on nodes that predate behavioral branching. Fall back to
-          // additive fields (or the flat list). Not an error the user sees.
-          logger.info('[Lineage] get_space_tree not available; using additive fields / flat list');
+          // list_spaces children (or the flat list). Not an error the user sees.
+          logger.info('[Lineage] get_space_tree not available; using list_spaces children');
         } else {
           logger.warn('[Lineage] get_space_tree failed; falling back', err);
         }
-        setTreeMeta(null);
+        setTreeRoots(null);
       }
     })();
 
@@ -128,134 +123,100 @@ export function useSpaceLineageGraph(): SpaceLineageGraph {
 
   return useMemo<SpaceLineageGraph>(() => {
     const byId = new Map<string, Space>();
-    for (const s of spaces) byId.set(s.id, s);
-
-    // Merge lineage metadata: additive fields on each space, then tree overlay.
-    const parentById = new Map<string, string>();
-    const childrenById = new Map<string, Set<string>>();
-    const metaById = new Map<string, LineageMeta>();
-
-    const ensureMeta = (id: string): LineageMeta => {
-      let m = metaById.get(id);
-      if (!m) { m = { childIds: [] }; metaById.set(id, m); }
-      return m;
-    };
-    const addChild = (parent: string, child: string) => {
-      if (parent === child) return;
-      let set = childrenById.get(parent);
-      if (!set) { set = new Set(); childrenById.set(parent, set); }
-      set.add(child);
-    };
-
-    // 1. Additive fields carried on each Space (from list_spaces).
+    const postCountById = new Map<string, number>();
     for (const s of spaces) {
-      const m = ensureMeta(s.id);
-      if (s.parentId) { m.parentId = s.parentId; parentById.set(s.id, s.parentId); }
-      if (s.formedAt != null) m.formedAt = s.formedAt;
-      if (s.foundingMemberCount != null) m.foundingMemberCount = s.foundingMemberCount;
-      if (s.formationHeight != null) m.formationHeight = s.formationHeight;
-      for (const c of s.childIds ?? []) { m.childIds.push(c); addChild(s.id, c); }
+      byId.set(s.id, s);
+      postCountById.set(s.id, s.postCount);
     }
 
-    // 2. Tree RPC overlay (authoritative where present).
-    if (treeMeta) {
-      for (const [id, tm] of treeMeta) {
-        const m = ensureMeta(id);
-        if (tm.parentId) { m.parentId = tm.parentId; parentById.set(id, tm.parentId); }
-        if (tm.formedAt != null) m.formedAt = tm.formedAt;
-        if (tm.foundingMemberCount != null) m.foundingMemberCount = tm.foundingMemberCount;
-        if (tm.formationHeight != null) m.formationHeight = tm.formationHeight;
-        for (const c of tm.childIds) { addChild(id, c); }
-        if (tm.parentId) addChild(tm.parentId, id);
+    // Build the tree: prefer get_space_tree (full, possibly nested); else one
+    // level derived from list_spaces `children`.
+    let roots: LineageTreeNodeVM[];
+    if (treeRoots && treeRoots.length > 0) {
+      // Only show roots the flat list also shows (list_spaces filters app
+      // spaces client-side; the tree must not resurface them).
+      roots = treeRoots
+        .filter((r) => byId.has(r.space_id))
+        .map((r) => toTreeVM(r, null, postCountById));
+    } else {
+      roots = spaces.map((s) => ({
+        spaceId: s.id,
+        name: s.name,
+        communityId: null,
+        parentSpaceId: null,
+        formedAt: null,
+        foundingMemberCount: null,
+        postCount: s.postCount,
+        children: (s.communities ?? []).map((c) => ({
+          spaceId: c.spaceId,
+          name: c.fullName || c.name,
+          communityId: c.communityId,
+          parentSpaceId: s.id,
+          formedAt: c.formedAt,
+          foundingMemberCount: c.foundingMemberCount,
+          children: [],
+        })),
+      }));
+    }
+    roots.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Any community anywhere => lineage exists.
+    const hasTreeCommunity = (n: LineageTreeNodeVM): boolean =>
+      n.communityId !== null || n.children.some(hasTreeCommunity);
+    const lineageAvailable = roots.some(hasTreeCommunity);
+
+    // Recently formed communities, newest first. list_spaces `children` is the
+    // primary source; the tree adds any (e.g. nested) the list doesn't carry.
+    const recentById = new Map<string, RecentCommunity>();
+    for (const s of spaces) {
+      for (const c of s.communities ?? []) {
+        recentById.set(c.communityId, { ...c, parentName: s.name });
       }
     }
-
-    // Reverse-link: every known parent edge implies a child edge.
-    for (const [child, parent] of parentById) addChild(parent, child);
-
-    // Enrich Space objects with the merged lineage so downstream consumers
-    // (breadcrumbs, badges) can read formedAt / member counts uniformly.
-    const enrich = (s: Space): Space => {
-      const m = metaById.get(s.id);
-      if (!m) return s;
-      return {
-        ...s,
-        parentId: m.parentId ?? s.parentId,
-        formedAt: m.formedAt ?? s.formedAt,
-        foundingMemberCount: m.foundingMemberCount ?? s.foundingMemberCount,
-        formationHeight: m.formationHeight ?? s.formationHeight,
-        childIds: Array.from(childrenById.get(s.id) ?? s.childIds ?? []),
-      };
-    };
-
-    const enrichedById = new Map<string, Space>();
-    for (const s of spaces) enrichedById.set(s.id, enrich(s));
-
-    const childrenOf = (id: string): Space[] => {
-      const ids = childrenById.get(id);
-      if (!ids) return [];
-      return Array.from(ids)
-        .map((cid) => enrichedById.get(cid))
-        .filter((s): s is Space => !!s)
-        .sort((a, b) => (b.formedAt ?? b.createdAt ?? 0) - (a.formedAt ?? a.createdAt ?? 0));
-    };
-
-    const parentOf = (id: string): Space | undefined => {
-      const pid = parentById.get(id);
-      return pid ? enrichedById.get(pid) : undefined;
-    };
-
-    const ancestorsOf = (id: string): Space[] => {
-      const chain: Space[] = [];
-      const seen = new Set<string>([id]);
-      let cur = parentById.get(id);
-      while (cur && !seen.has(cur)) {
-        seen.add(cur);
-        const s = enrichedById.get(cur);
-        if (s) chain.unshift(s);
-        cur = parentById.get(cur);
+    const collectTreeCommunities = (n: LineageTreeNodeVM, parentName?: string): void => {
+      if (n.communityId && n.parentSpaceId && !recentById.has(n.communityId)) {
+        recentById.set(n.communityId, {
+          communityId: n.communityId,
+          spaceId: n.spaceId,
+          parentSpaceId: n.parentSpaceId,
+          name: n.name,
+          fullName: n.name,
+          formedAt: n.formedAt ?? 0,
+          formationHeight: 0,
+          foundingMemberCount: n.foundingMemberCount ?? 0,
+          parentName,
+        });
       }
-      return chain;
+      for (const c of n.children) collectTreeCommunities(c, n.name);
     };
+    for (const r of roots) collectTreeCommunities(r);
 
-    // Roots: spaces whose parent is unknown to us (either no parent, or a parent
-    // we haven't synced). Presenting orphaned children as roots keeps them
-    // visible rather than hiding them under a missing parent.
-    const roots = Array.from(enrichedById.values())
-      .filter((s) => {
-        const pid = parentById.get(s.id);
-        return !pid || !enrichedById.has(pid);
-      })
-      .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || a.name.localeCompare(b.name));
-
-    const lineageAvailable = parentById.size > 0 || childrenById.size > 0;
-
-    // Communities that grew out of a parent, newest formation first.
-    const recentlyFormed = Array.from(enrichedById.values())
-      .filter((s) => parentById.has(s.id))
-      .sort((a, b) => (b.formedAt ?? b.createdAt ?? 0) - (a.formedAt ?? a.createdAt ?? 0));
+    const recentlyFormed = Array.from(recentById.values())
+      .sort((a, b) => (b.formedAt ?? 0) - (a.formedAt ?? 0));
 
     return {
-      spaces: Array.from(enrichedById.values()),
-      byId: enrichedById,
+      spaces,
+      byId,
       roots,
-      childrenOf,
-      parentOf,
-      ancestorsOf,
       lineageAvailable,
       recentlyFormed,
       loading,
       error,
     };
-  }, [spaces, treeMeta, loading, error]);
+  }, [spaces, treeRoots, loading, error]);
 }
 
-/** Per-space lineage: parent, children, and threads that moved into children. */
+/** Per-space lineage from get_space_lineage (feature-detected). */
 export interface SpaceLineage {
-  parent?: Space;
-  ancestors: Space[];
-  children: Space[];
-  /** Map of thread root id -> the child space it moved into (parent-side). */
+  /** Set iff the queried id IS a community (someone deep-linked to its sp1 id). */
+  isCommunity: boolean;
+  /** Parent space {id, name} — set iff isCommunity. */
+  parent?: { id: string; name: string };
+  /** The community's own info — set iff isCommunity. */
+  community?: SpaceChildInfo;
+  /** Communities formed out of this space. */
+  children: SpaceChildInfo[];
+  /** Thread root id ("sha256:<hex>") -> the community it grew into. */
   movedThreads: Map<string, MovedThreadPointer>;
   lineageAvailable: boolean;
   loading: boolean;
@@ -266,35 +227,45 @@ function normalizeThreadId(id: string): string {
 }
 
 /**
- * Lineage for a single space: parent + children (from the shared graph) plus the
- * set of threads that moved out of this space into a formed child (from the
- * optional get_space_lineage RPC). When that RPC is absent, movedThreads is
- * empty and continuity banners simply don't render.
+ * Lineage for a single space, from the optional get_space_lineage RPC. When the
+ * RPC is absent (-32601) children fall back to list_spaces data and
+ * movedThreads stays empty, so continuity banners simply don't render.
  */
 export function useSpaceLineage(spaceId: string | undefined): SpaceLineage {
-  const graph = useSpaceLineageGraph();
   const { rpc, connected, authReady } = useRpc();
-  const [moved, setMoved] = useState<MovedThreadRef[] | null>(null);
-  const [movedLoading, setMovedLoading] = useState(false);
+  const { spaces } = useSpaces();
+  const [result, setResult] = useState<{
+    parent: { space_id: string; name: string } | null;
+    community: SpaceChildInfo | null;
+    children: SpaceChildInfo[];
+  } | null>(null);
+  const [rpcAvailable, setRpcAvailable] = useState(false);
+  const [lineageLoading, setLineageLoading] = useState(false);
 
   useEffect(() => {
     if (!rpc || !connected || !authReady || !spaceId) return;
     let cancelled = false;
-    setMovedLoading(true);
+    setLineageLoading(true);
 
     (async () => {
       try {
         const res = await rpc.getSpaceLineage(spaceId);
         if (cancelled) return;
-        setMoved(res?.moved_threads ?? []);
+        setResult({
+          parent: res.parent ?? null,
+          community: res.community ?? null,
+          children: res.children ?? [],
+        });
+        setRpcAvailable(true);
       } catch (err) {
         if (cancelled) return;
         if (!isMethodNotFoundError(err)) {
           logger.warn('[Lineage] get_space_lineage failed; continuity pointers hidden', err);
         }
-        setMoved(null);
+        setResult(null);
+        setRpcAvailable(false);
       } finally {
-        if (!cancelled) setMovedLoading(false);
+        if (!cancelled) setLineageLoading(false);
       }
     })();
 
@@ -302,24 +273,47 @@ export function useSpaceLineage(spaceId: string | undefined): SpaceLineage {
   }, [rpc, connected, authReady, spaceId]);
 
   return useMemo<SpaceLineage>(() => {
+    // Fallback children from list_spaces when the lineage RPC is absent
+    // (no moved_threads there, but the tree/rail still work).
+    let children: SpaceChildInfo[] = result?.children ?? [];
+    if (!result && spaceId) {
+      const s = spaces.find((sp) => sp.id === spaceId);
+      children = (s?.communities ?? []).map((c) => ({
+        community_id: c.communityId,
+        space_id: c.spaceId,
+        parent_space_id: c.parentSpaceId,
+        name: c.name,
+        full_name: c.fullName,
+        formed_at: c.formedAt,
+        formation_height: c.formationHeight,
+        founding_member_count: c.foundingMemberCount,
+      }));
+    }
+
+    // Parent-side continuity pointers: thread root -> community it grew into.
     const movedThreads = new Map<string, MovedThreadPointer>();
-    for (const m of moved ?? []) {
-      if (!m?.thread_id || !m?.child_space_id) continue;
-      const ptr: MovedThreadPointer = {
-        childSpaceId: m.child_space_id,
-        childSpaceName: m.child_space_name ?? graph.byId.get(m.child_space_id)?.name,
-      };
-      movedThreads.set(m.thread_id, ptr);
-      movedThreads.set(normalizeThreadId(m.thread_id), ptr);
+    if (spaceId) {
+      for (const child of children) {
+        for (const threadId of child.moved_threads ?? []) {
+          const ptr: MovedThreadPointer = {
+            communityId: child.community_id,
+            parentSpaceId: spaceId,
+            communityName: child.full_name || child.name,
+          };
+          movedThreads.set(threadId, ptr);
+          movedThreads.set(normalizeThreadId(threadId), ptr);
+        }
+      }
     }
 
     return {
-      parent: spaceId ? graph.parentOf(spaceId) : undefined,
-      ancestors: spaceId ? graph.ancestorsOf(spaceId) : [],
-      children: spaceId ? graph.childrenOf(spaceId) : [],
+      isCommunity: result?.community != null,
+      parent: result?.parent ? { id: result.parent.space_id, name: result.parent.name } : undefined,
+      community: result?.community ?? undefined,
+      children,
       movedThreads,
-      lineageAvailable: graph.lineageAvailable,
-      loading: graph.loading || movedLoading,
+      lineageAvailable: rpcAvailable || children.length > 0,
+      loading: lineageLoading,
     };
-  }, [graph, spaceId, moved, movedLoading]);
+  }, [result, rpcAvailable, lineageLoading, spaceId, spaces]);
 }
