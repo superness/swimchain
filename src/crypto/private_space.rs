@@ -246,6 +246,33 @@ pub fn is_encrypted_media_envelope(bytes: &[u8]) -> bool {
     bytes.len() >= ENCRYPTED_MEDIA_MIN_LEN && bytes.starts_with(ENCRYPTED_MEDIA_MAGIC)
 }
 
+/// Encrypt media bytes into a `PRVM1` envelope: `magic(6) || iv(12) || ciphertext+tag`.
+///
+/// The binary analogue of `encrypt_content_with_space_key` — same AES-256-GCM primitive
+/// and space key, just a binary magic frame instead of the printable `[PRIVATE:v1:]`
+/// framing. The node calls this at `upload_media` time so the stored blob (and therefore
+/// the `media_hash` bound into the post's PoW/signature) is the encrypted blob.
+#[must_use]
+pub fn encrypt_media_with_space_key(plaintext: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    let body = aes_gcm_encrypt(plaintext, key); // iv || ct+tag
+    let mut out = Vec::with_capacity(ENCRYPTED_MEDIA_MAGIC.len() + body.len());
+    out.extend_from_slice(ENCRYPTED_MEDIA_MAGIC);
+    out.extend_from_slice(&body);
+    out
+}
+
+/// Decrypt a `PRVM1` media envelope with the space key back to the original bytes.
+/// Strips the 6-byte magic, then AES-256-GCM-decrypts `iv || ct+tag`.
+pub fn decrypt_media_with_space_key(
+    blob: &[u8],
+    key: &[u8; 32],
+) -> Result<Vec<u8>, PrivateCryptoError> {
+    if !is_encrypted_media_envelope(blob) {
+        return Err(PrivateCryptoError::MalformedCiphertext);
+    }
+    aes_gcm_decrypt(&blob[ENCRYPTED_MEDIA_MAGIC.len()..], key)
+}
+
 /// Write-side policy for content destined for a **private** space (Phase 2 enforcement).
 ///
 /// Returns `Some(reason)` if the write must be rejected, or `None` if it satisfies the
@@ -366,6 +393,23 @@ mod tests {
         let mut b = ENCRYPTED_MEDIA_MAGIC.to_vec();
         b.extend_from_slice(&[0u8; GCM_IV_SIZE + TAG_SIZE]);
         b
+    }
+
+    #[test]
+    fn media_encrypt_decrypt_roundtrip_and_envelope_shape() {
+        let key = generate_space_key();
+        let plaintext = b"\xff\xd8\xff\xe0 fake jpeg bytes \x00\x01\x02 with binary";
+        let blob = encrypt_media_with_space_key(plaintext, &key);
+        // Well-formed PRVM1 envelope the recognizer accepts.
+        assert!(is_encrypted_media_envelope(&blob));
+        assert!(blob.starts_with(ENCRYPTED_MEDIA_MAGIC));
+        assert_eq!(blob.len(), ENCRYPTED_MEDIA_MAGIC.len() + GCM_IV_SIZE + plaintext.len() + TAG_SIZE);
+        // Round-trips back to the original bytes.
+        assert_eq!(decrypt_media_with_space_key(&blob, &key).unwrap(), plaintext);
+        // Wrong key fails; non-envelope input is rejected structurally.
+        let other = generate_space_key();
+        assert!(decrypt_media_with_space_key(&blob, &other).is_err());
+        assert!(decrypt_media_with_space_key(b"not-prvm1", &key).is_err());
     }
 
     #[test]

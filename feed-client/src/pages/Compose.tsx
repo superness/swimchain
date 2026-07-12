@@ -89,7 +89,12 @@ export function Compose(): JSX.Element {
     }
 
     setSubmitError(null);
-    const result = await uploadImage(file);
+    // For a private space in node mode, hand the space id to the upload so the node
+    // encrypts the image (PRVM1) and returns the encrypted blob's hash — which is what the
+    // post's PoW/signature then commits to. (Pick the space before adding images.)
+    const uploadSpaceId =
+      mode === 'node' && privateSpaceIds.has(selectedSpace) ? selectedSpace : undefined;
+    const result = await uploadImage(file, uploadSpaceId);
 
     // Check if compression is needed
     if (result.needsCompression && result.originalSize) {
@@ -114,13 +119,15 @@ export function Compose(): JSX.Element {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
-  }, [images.length, uploadImage]);
+  }, [images.length, uploadImage, mode, privateSpaceIds, selectedSpace]);
 
   // Handle compression confirmation
   const handleCompressConfirm = useCallback(async () => {
     if (!pendingCompression) return;
 
-    const result = await compressAndUpload(pendingCompression.file);
+    const uploadSpaceId =
+      mode === 'node' && privateSpaceIds.has(selectedSpace) ? selectedSpace : undefined;
+    const result = await compressAndUpload(pendingCompression.file, uploadSpaceId);
 
     if (result.success && result.result) {
       const newImage: UploadedImage = {
@@ -130,7 +137,7 @@ export function Compose(): JSX.Element {
       setImages(prev => [...prev, newImage]);
     }
     setPendingCompression(null);
-  }, [pendingCompression, compressAndUpload]);
+  }, [pendingCompression, compressAndUpload, mode, privateSpaceIds, selectedSpace]);
 
   // Handle compression cancel
   const handleCompressCancel = useCallback(() => {

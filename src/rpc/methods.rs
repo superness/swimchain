@@ -2614,17 +2614,16 @@ impl RpcMethods {
             );
         }
 
-        // Hash the media
-        let media_hash = crate::crypto::sha256(&media_bytes);
-        let media_hash_hex = hex::encode(media_hash);
-
-        // BLOCKLIST CHECK: Reject media that matches blocklist
+        // BLOCKLIST CHECK: run on the PLAINTEXT bytes (the node can see them at upload
+        // time) so known-harmful media is rejected even for private spaces, where the
+        // stored ciphertext hash could never match a blocklist entry.
+        let plaintext_hash = crate::crypto::sha256(&media_bytes);
         if let Some(ref blocklist) = self.node.blocklist {
             let store = blocklist.read().unwrap();
-            if store.is_blocked(&media_hash) {
+            if store.is_blocked(&plaintext_hash) {
                 warn!(
                     "[BLOCKLIST] Rejected MEDIA from {} - matches blocklist",
-                    hex::encode(&media_hash[..8])
+                    hex::encode(&plaintext_hash[..8])
                 );
                 return RpcResponse::error(
                     RpcErrorCode::ContentBlocked,
@@ -2634,9 +2633,36 @@ impl RpcMethods {
             }
         }
 
+        // Private-space media confidentiality: when a private space id is supplied and the
+        // node is a member, encrypt to a PRVM1 envelope BEFORE hashing/storing. The
+        // returned media_hash is then the hash of the ENCRYPTED blob, which is what the
+        // composer mines PoW over, what the on-chain media_ref carries, and what write-side
+        // enforcement re-checks as a stored PRVM1 blob. Public spaces store plaintext.
+        let stored_bytes: Vec<u8> = if let Some(ref sid) = params.space_id {
+            match Self::parse_space_id_16(sid) {
+                Ok(space_id_16) if self.space_is_private(&space_id_16) => {
+                    match self.node_space_key(&space_id_16) {
+                        Ok(key) => crate::crypto::private_space::encrypt_media_with_space_key(
+                            &media_bytes,
+                            &key,
+                        ),
+                        Err((code, msg)) => return RpcResponse::error(code, &msg, id),
+                    }
+                }
+                Ok(_) => media_bytes, // known public space → store plaintext
+                Err((code, msg)) => return RpcResponse::error(code, &msg, id),
+            }
+        } else {
+            media_bytes
+        };
+
+        // Hash the bytes we actually store (encrypted for private media).
+        let media_hash = crate::crypto::sha256(&stored_bytes);
+        let media_hash_hex = hex::encode(media_hash);
+
         // Store in blob store
         if let Ok(blob_store) = BlobStore::new(&self.node.sync_blob_path) {
-            if let Err(e) = blob_store.put(&media_bytes) {
+            if let Err(e) = blob_store.put(&stored_bytes) {
                 warn!("[MEDIA] Failed to store media: {}", e);
                 return RpcResponse::error(
                     RpcErrorCode::InternalError,
@@ -2647,15 +2673,16 @@ impl RpcMethods {
         }
 
         info!(
-            "[MEDIA] Uploaded {} bytes ({}) hash={}",
-            media_bytes.len(),
+            "[MEDIA] Uploaded {} bytes ({}{}) hash={}",
+            stored_bytes.len(),
             params.media_type,
+            if params.space_id.is_some() { ", private?" } else { "" },
             &media_hash_hex[..16]
         );
 
         let result = UploadMediaResult {
             media_hash: media_hash_hex,
-            size_bytes: media_bytes.len() as u32,
+            size_bytes: stored_bytes.len() as u32,
             success: true,
         };
 
@@ -2757,6 +2784,35 @@ impl RpcMethods {
                     );
                 }
             }
+        };
+
+        // Private-space media: if the stored blob is a PRVM1 envelope, it is encrypted.
+        // Trial-decrypt with the keys of every private space this node is a member of — the
+        // AES-GCM tag authenticates the correct one. A non-member has no key that decrypts,
+        // so they get an opaque not-found and never the ciphertext (serve-gating).
+        let media_bytes = if crate::crypto::private_space::is_encrypted_media_envelope(&media_bytes)
+        {
+            let mut plaintext = None;
+            for key in self.node_member_space_keys() {
+                if let Ok(plain) =
+                    crate::crypto::private_space::decrypt_media_with_space_key(&media_bytes, &key)
+                {
+                    plaintext = Some(plain);
+                    break;
+                }
+            }
+            match plaintext {
+                Some(plain) => plain,
+                None => {
+                    return RpcResponse::error(
+                        RpcErrorCode::ContentNotFound,
+                        "Media not found",
+                        id,
+                    )
+                }
+            }
+        } else {
+            media_bytes
         };
 
         // Detect media type from magic bytes
@@ -12551,6 +12607,24 @@ impl RpcMethods {
                 format!("recover space key: {e}"),
             )
         })
+    }
+
+    /// Space keys for every private space the node's identity is a member of. Used for
+    /// trial-decryption of PRVM1 media on `get_media` so viewing works without the caller
+    /// having to name the space — the AES-GCM tag authenticates the one correct key, and
+    /// a non-member simply has no key that decrypts (opaque failure).
+    fn node_member_space_keys(&self) -> Vec<[u8; 32]> {
+        let Some(membership) = self.node.membership_store.as_ref() else {
+            return Vec::new();
+        };
+        let me = self.node.keypair.public_key.0;
+        let Ok(spaces) = membership.get_user_spaces(&me) else {
+            return Vec::new();
+        };
+        spaces
+            .iter()
+            .filter_map(|sid| self.node_space_key(sid).ok())
+            .collect()
     }
 
     /// Parse a hex 16-byte space id from a request field.

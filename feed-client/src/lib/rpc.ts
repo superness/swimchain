@@ -654,10 +654,13 @@ export class SwimchainRpc {
   async uploadMedia(params: {
     data: string;  // Base64-encoded image data
     mediaType: string;  // image/jpeg, image/png, image/gif, image/webp
+    spaceId?: string;  // target space; if it's a private space the node encrypts (PRVM1)
+                       // and returns the hash of the ENCRYPTED blob
   }): Promise<{ media_hash: string; size_bytes: number; success: boolean }> {
     return this.call('upload_media', {
       data: params.data,
       media_type: params.mediaType,
+      ...(params.spaceId ? { space_id: params.spaceId } : {}),
     });
   }
 

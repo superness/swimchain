@@ -311,6 +311,12 @@ pub struct UploadMediaParams {
     /// Author public key (32-byte hex) - optional, for tracking purposes
     #[serde(default)]
     pub author_id: Option<String>,
+    /// Target space id (bech32m `sp1...` or hex). When present and it is a private space
+    /// the node is a member of, the node encrypts the media to a PRVM1 envelope BEFORE
+    /// storing, and the returned `media_hash` is the hash of the ENCRYPTED blob (so it
+    /// matches the PoW/signature the composer mines over, and the on-chain media_ref).
+    #[serde(default)]
+    pub space_id: Option<String>,
 }
 
 /// upload_media result

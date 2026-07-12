@@ -1217,7 +1217,8 @@ export function useMediaUpload() {
    * @returns MediaUploadResponse - may indicate needsCompression if file > 1MB
    */
   const uploadImage = useCallback(async (
-    file: File
+    file: File,
+    spaceId?: string
   ): Promise<MediaUploadResponse> => {
     if (!rpc || !connected) {
       setError('Not connected to node');
@@ -1259,10 +1260,12 @@ export function useMediaUpload() {
         reader.readAsDataURL(file);
       });
 
-      // Upload to node
+      // Upload to node. When spaceId names a private space, the node encrypts to PRVM1
+      // and returns the hash of the encrypted blob (bound to the post's PoW/signature).
       const result = await rpc.uploadMedia({
         data: base64,
         mediaType: file.type,
+        spaceId,
       });
 
       if (result.success) {
@@ -1295,7 +1298,8 @@ export function useMediaUpload() {
    * @returns MediaUploadResult with hash, type, and size
    */
   const compressAndUpload = useCallback(async (
-    file: File
+    file: File,
+    spaceId?: string
   ): Promise<MediaUploadResponse> => {
     if (!rpc || !connected) {
       setError('Not connected to node');
@@ -1321,10 +1325,11 @@ export function useMediaUpload() {
         reader.readAsDataURL(compressedFile);
       });
 
-      // Upload to node
+      // Upload to node (private space → node encrypts to PRVM1, returns encrypted hash).
       const result = await rpc.uploadMedia({
         data: base64,
         mediaType: 'image/jpeg', // Compression converts to JPEG
+        spaceId,
       });
 
       if (result.success) {
