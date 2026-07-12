@@ -2122,8 +2122,12 @@ impl BackgroundTaskRunner {
                         };
 
                         if !is_eligible {
-                            // Schedule next check for when we become eligible (plus small buffer)
-                            let next_check = std::cmp::max(eta_secs + 1, 5); // Min 5 seconds
+                            // Schedule next check for when we become eligible (plus small
+                            // buffer), but CAP it: on a small/quiet network `eta_secs` can be
+                            // huge, and sleeping that long lets the task miss the moment it
+                            // becomes eligible — stalling block formation until a restart.
+                            // Re-check at least every 15s so formation can't sleep into a stall.
+                            let next_check = std::cmp::max(eta_secs + 1, 5).min(15); // 5..=15s
                             debug!("[BLOCKS] Not eligible yet, scheduling check in {}s (ETA: {}s)", next_check, eta_secs);
                             ticker = interval(Duration::from_secs(next_check));
                             ticker.tick().await; // Consume first immediate tick
@@ -2187,11 +2191,17 @@ impl BackgroundTaskRunner {
                                         let creator_bytes = action.actor;
                                         let creator_pk = crate::types::identity::PublicKey::from_bytes(creator_bytes);
 
-                                        // Check if sponsored on-chain OR in this block
+                                        // Check if sponsored on-chain OR in this block OR a
+                                        // hardcoded genesis identity (genesis is the sponsor
+                                        // root and never has a sponsorship_store record, so
+                                        // without this its own CreateSpace actions would fail
+                                        // validation and reject the whole block — a bootstrap
+                                        // deadlock on a fresh chain).
                                         let is_sponsored_on_chain = ss.exists(&creator_pk).unwrap_or(false);
                                         let is_sponsored_in_block = identities_sponsored_in_block.contains(&creator_bytes);
+                                        let is_genesis = crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&creator_pk);
 
-                                        if !is_sponsored_on_chain && !is_sponsored_in_block {
+                                        if !is_sponsored_on_chain && !is_sponsored_in_block && !is_genesis {
                                             warn!(
                                                 "[BLOCKS] VALIDATION FAILED: Block contains CreateSpace by unsponsored identity {}. Block rejected.",
                                                 hex::encode(&creator_bytes[..8])
