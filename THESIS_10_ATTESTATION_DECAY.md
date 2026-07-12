@@ -14,7 +14,7 @@ A content-neutral protocol treats all content equally—decay happens on a fixed
 
 ## Thesis Statement
 
-**Attestation-driven decay enables community abuse response without central moderation: when 3 Resident-level members (30+ days, 10GB+ hosted) independently attest that content is harmful, its decay rate accelerates from weeks to hours—not deletion, but accelerated ephemerality. Every attestation is permanently recorded, creating full transparency: who attested, when, against what content. This is distributed judgment with receipts.**
+**Attestation-driven decay enables community abuse response without central moderation: when 3 community members independently attest that content is harmful—their attestations weighted by each attester's own reputation—its decay rate accelerates from weeks to hours—not deletion, but accelerated ephemerality. Every attestation is permanently recorded, creating full transparency: who attested, when, against what content. This is distributed judgment with receipts.**
 
 **The cost is departing from content neutrality. Attestation enables suppression of unpopular-but-legitimate speech through coordination. The mechanism that removes spam can remove dissent. This is not a bug to be engineered away—it is the inherent tradeoff of any system that responds to community harm.**
 
@@ -79,7 +79,7 @@ This doesn't prevent abuse—a coordinated group can still suppress content they
 
 Attestation is not free. The requirements create friction that prevents casual suppression:
 
-1. **Status requirement**: Must be Resident level (30 days, 10GB hosted) to attest. This eliminates drive-by accounts.
+1. **Reputation weighting**: Attestations are weighted by each attester's own reputation, so drive-by accounts with no standing carry almost no weight.
 
 2. **Proof-of-work cost**: Attesting requires computational work. You can't attest thousands of times without significant resource expenditure.
 
@@ -137,7 +137,7 @@ This may have legal implications. A protocol that enables community suppression 
 
 2. **Transparency**: Every attestation is recorded. Moderation decisions on centralized platforms are not.
 
-3. **Distribution**: No single authority decides. 3 Residents must agree, and those 3 are themselves accountable.
+3. **Distribution**: No single authority decides. Several independent attesters must agree, and those attesters are themselves accountable.
 
 4. **Self-governance**: The rules are protocol rules, not platform policy. Changing them requires fork, not memo.
 
@@ -165,13 +165,13 @@ But honestly: if a community decides to suppress certain viewpoints, these mitig
 
 ### Counterargument 3: Sybil Attacks on Attestation
 
-**The critique:** 3 Resident-level accounts (achievable in ~3 months) can suppress any content. An attacker manufactures accounts specifically to suppress target content.
+**The critique:** 3 accounts with enough accumulated reputation (achievable over a few months of participation) can suppress any content. An attacker manufactures accounts specifically to suppress target content.
 
 **Response:** This attack is technically viable. The question is whether it meaningfully threatens the system.
 
 Analysis:
 
-1. **Cost**: 3 Resident accounts means 3 × 90 days of hosting contribution. 270 account-days of investment to suppress one piece of content.
+1. **Cost**: three accounts each need months of genuine participation to accumulate meaningful attestation weight—hundreds of account-days of investment to suppress one piece of content.
 
 2. **Visibility**: The 3 accounts attesting are recorded. Patterns of coordinated attestation are detectable.
 
@@ -194,7 +194,7 @@ Comparison:
 
 Attestation creates chilling effect for content that the community will actually attest against. This includes spam and harassment (good) and potentially unpopular views (bad). The question is calibration: are attestation thresholds and costs set so that only genuinely problematic content triggers them?
 
-If 3 attestations from any Residents can suppress anything, the threshold is too low. If 30 attestations from Anchors are required, the threshold may be too high to be useful against abuse. The right answer is empirical.
+If 3 attestations from any accounts can suppress anything, the threshold is too low. If 30 high-reputation attestations are required, the threshold may be too high to be useful against abuse. The right answer is empirical.
 
 ---
 
@@ -228,7 +228,7 @@ This is the ultimate check. If you don't like how attestation works, fork to a v
 
 2. **Threshold research**: What number of attesters at what reputation level optimally balances abuse response with suppression risk?
 
-3. **Sybil-resistance validation**: Can Resident-level requirements prevent meaningful coordination attacks on attestation?
+3. **Sybil-resistance validation**: Can proof-of-work and reputation-weighting requirements prevent meaningful coordination attacks on attestation?
 
 4. **Community response timing**: How fast does a real community respond to abuse? Is accelerated decay fast enough to be useful?
 
@@ -276,9 +276,9 @@ Swimchain's choice to include attestation is a choice to be a governed community
 
 ### REFINED_THESIS
 
-**Attestation-driven decay trades content neutrality for transparent community judgment: by encoding suppression mechanisms directly into protocol rules—where 3 Resident-level accounts can reduce content half-life from 30 days to 4 hours—Swimchain makes the inevitable reality of community response visible, auditable, and forkable rather than opaque and arbitrary. This is not a solution to the moderation problem but an honest acknowledgment that any system where humans interact with content is a system where humans judge content; the question is only whether that judgment happens inside the protocol (where it leaves receipts) or outside it (where it doesn't).**
+**Attestation-driven decay trades content neutrality for transparent community judgment: by encoding suppression mechanisms directly into protocol rules—where 3 sufficiently reputable accounts can reduce content half-life from weeks to 4 hours—Swimchain makes the inevitable reality of community response visible, auditable, and forkable rather than opaque and arbitrary. This is not a solution to the moderation problem but an honest acknowledgment that any system where humans interact with content is a system where humans judge content; the question is only whether that judgment happens inside the protocol (where it leaves receipts) or outside it (where it doesn't).**
 
-**The cost is substantial and cannot be engineered away: 270 account-days of investment enables targeted suppression, transparency provides adversaries a legible map of community vulnerabilities, fork-as-exit offers cold comfort to users lacking technical sophistication or social capital, and the distinction between "accelerated ephemerality" and "deletion" may be more semantic than substantive when content effectively disappears within hours.**
+**The cost is substantial and cannot be engineered away: a few reputable accounts built over months enable targeted suppression, transparency provides adversaries a legible map of community vulnerabilities, fork-as-exit offers cold comfort to users lacking technical sophistication or social capital, and the distinction between "accelerated ephemerality" and "deletion" may be more semantic than substantive when content effectively disappears within hours.**
 
 ### ARGUMENT_OUTLINE
 
@@ -306,7 +306,7 @@ Swimchain's choice to include attestation is a choice to be a governed community
 The thesis draws a sharp line between "acceleration" and "removal," but when content's half-life drops from 30 days to 4 hours, the practical effect is indistinguishable from deletion for most users. The framing of "accelerated ephemerality" may provide rhetorical cover for what is functionally centralized moderation distributed across a small group (3 accounts). Transparency of the mechanism does not change the experience of having one's content suppressed.
 
 **Secondary Counterargument: Inadequate Protection for Marginalized Groups**
-The 270 account-day Sybil threshold (3 Resident accounts × 90 days) is trivially achievable for state actors, well-resourced hate groups, and coordinated harassment campaigns—precisely the adversaries most likely to target marginalized communities. The cost structure that prevents "casual abuse" does not prevent determined abuse, and the populations most vulnerable to suppression are least likely to have the technical sophistication or social capital to coordinate successful forks.
+The Sybil threshold—three accounts each built over months of participation—is trivially achievable for state actors, well-resourced hate groups, and coordinated harassment campaigns—precisely the adversaries most likely to target marginalized communities. The cost structure that prevents "casual abuse" does not prevent determined abuse, and the populations most vulnerable to suppression are least likely to have the technical sophistication or social capital to coordinate successful forks.
 
 **Tertiary Counterargument: Transparency as Tactical Liability**
 Publicly recorded attestation patterns provide a legible map to sophisticated adversaries: which content provokes community response, which attesters to cultivate or target, where community vulnerabilities lie. The claim that "visible abuse can be opposed" assumes defenders can coordinate as effectively as attackers, but transparency may disproportionately benefit well-organized adversaries over distributed community defense.
@@ -318,7 +318,7 @@ The thesis conflates emergent user behavior (selective viewing, organic migratio
 
 **Empirical Evidence Needed:**
 1. **Comparative moderation studies**: User experience research on time-limited content vs. permanent deletion—is the distinction meaningful to affected users or purely semantic?
-2. **Adversary capability analysis**: Documented cases of sustained harassment campaigns, state-sponsored manipulation, and coordinated attacks to establish realistic threat models for the 270 account-day threshold
+2. **Adversary capability analysis**: Documented cases of sustained harassment campaigns, state-sponsored manipulation, and coordinated attacks to establish realistic threat models for the reputation-accumulation threshold
 3. **Fork migration studies**: Analysis of Diaspora, Mastodon, and other decentralized platform migrations to assess realistic switching costs and who successfully exits vs. who remains trapped
 4. **Transparency backfire research**: Cases where transparent moderation systems were gamed or where visibility helped attackers more than defenders
 
@@ -348,7 +348,7 @@ The thesis conflates emergent user behavior (selective viewing, organic migratio
 
 7. **Engage with the category error critique**: The thesis's foundational claim—that neutrality is already impossible—depends on conflating emergent behavior with encoded mechanisms. Either defend this conflation explicitly or acknowledge the distinction and argue that it doesn't matter practically.
 
-8. **Avoid false precision**: The 270 account-day calculation creates an appearance of rigor, but without empirical data on actual adversary investment patterns, it's speculation. Present thresholds as tunable parameters requiring empirical validation rather than as analyzed security properties.
+8. **Avoid false precision**: The account-day calculation creates an appearance of rigor, but without empirical data on actual adversary investment patterns, it's speculation. Present thresholds as tunable parameters requiring empirical validation rather than as analyzed security properties.
 
 ---
 

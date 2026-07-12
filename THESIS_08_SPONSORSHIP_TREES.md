@@ -14,7 +14,7 @@ The sponsorship model forces a choice between two values that Swimchain claims t
 
 ## Thesis Statement
 
-**Sponsorship trees create accountability through mutual reputation risk: by requiring every identity to be vouched for by a Resident-level member (30+ days, 10GB+ hosted) who faces graduated consequences for their sponsee's behavior—100% reputation impact at 1-hop, 50% at 2-hop, negligible beyond—Swimchain achieves Sybil resistance and distributed moderation without central authority. The cost is transformation from an open network to a web-of-trust community where access requires finding someone willing to stake their standing on you.**
+**Sponsorship trees create accountability through mutual reputation risk: by requiring every identity to be vouched for by an existing member who faces graduated consequences for their sponsee's behavior—100% reputation impact at 1-hop, 50% at 2-hop, negligible beyond, and aging out over time—Swimchain achieves Sybil resistance and distributed moderation without central authority. The cost is transformation from an open network to a web-of-trust community where access requires finding someone willing to stake their standing on you.**
 
 This thesis argues that sponsorship is the least-bad solution to the Sybil problem in a decentralized context—it is neither pure openness nor pure gatekeeping, but a structured form of social responsibility that distributes the costs of bad behavior across the community. Unlike computational proof-of-work (purchasable), economic staking (also purchasable), or centralized identity verification (requires trusted authority), social sponsorship creates costs that cannot be parallelized, automated, or bought.
 
@@ -76,7 +76,7 @@ This concern is valid but overstated. Several factors mitigate the genesis conce
 
 2. **Multiple roots**: Swimchain can launch with multiple genesis identities, creating a forest rather than a single tree. No single root dominates.
 
-3. **Reputation is not structural**: Genesis identities don't have permanent extra powers. Their sponsorship capacity depends on their ongoing hosting contribution and behavior, same as everyone else.
+3. **Reputation is not structural**: Genesis identities don't have permanent extra powers. Their sponsorship capacity depends on their ongoing behavior, same as everyone else.
 
 4. **Precedent from real communities**: Every community has founders. Bitcoin had Satoshi. Linux had Linus. The question is whether founder influence diminishes over time—and in trust trees, it does.
 

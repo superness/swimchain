@@ -92,13 +92,13 @@ Community members can accelerate content decay through attestations. This enable
 
 ## Topic 11: No Video Ever
 
-Video is permanently excluded from the protocol. Images allowed at Resident+ level. This is architectural, not temporary: video economics are incompatible with full-node-per-user decentralization.
+Video is permanently excluded from the protocol. Images are allowed to everyone, subject to a 500KB size cap and proof-of-work. This is architectural, not temporary: video economics are incompatible with full-node-per-user decentralization.
 
 **Core tension:** Viability vs. expressiveness
 
 **Detailed analysis:** See THESIS_11_TEXT_ONLY_LAUNCH.md
 
-**Status:** RESOLVED - No video, images at Resident+
+**Status:** RESOLVED - No video; images allowed to everyone within the size cap
 
 ---
 

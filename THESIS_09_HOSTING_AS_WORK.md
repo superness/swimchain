@@ -2,7 +2,7 @@
 
 ## The Question
 
-Traditional proof-of-work burns computational energy to demonstrate commitment, producing nothing but scarcity. Swimchain proposes replacing CPU cycles with hosting contribution: your ability to post depends on how much network infrastructure you provide. Is useful work a superior form of commitment, or does it create new inequalities worse than the old ones?
+Traditional proof-of-work burns computational energy to demonstrate commitment, producing nothing but scarcity. Swimchain leans on hosting contribution as much as on computation: because every participant hosts the content they actually view, the effort of participating simultaneously builds real network infrastructure rather than burning cycles for their own sake. Is useful work a superior form of commitment, or does it create new inequalities worse than the old ones?
 
 ## Core Tension
 
@@ -14,7 +14,7 @@ The elegance of CPU proof-of-work is its universality: anyone with a processor c
 
 ## Thesis Statement
 
-**Hosting as proof-of-work transforms participation costs from pure computational waste into genuine network infrastructure: every joule spent proving commitment simultaneously serves content to the network. This creates self-sustaining capacity—network throughput automatically scales with community size because each new participant adds hosting capability. The users ARE the infrastructure, with tiered thresholds reflecting contribution: Swimmer (5GB/month, basic posting), Resident (30GB/month, sponsorship rights), Anchor (200GB/month, governance weight). The cost is excluding the ~60% of internet users who cannot maintain persistent, well-connected nodes—mobile-only and intermittently-connected users become observers, not full participants.**
+**Hosting as proof-of-work transforms participation costs from pure computational waste into genuine network infrastructure: every joule spent proving commitment simultaneously serves content to the network. This creates self-sustaining capacity—network throughput automatically scales with community size because each new participant adds hosting capability. The users ARE the infrastructure: because you host the content you view, capacity grows with the community itself. Hosting milestones are recognized with permanent, cosmetic achievement badges shown on your profile—they carry no protocol privileges, grant no posting or sponsorship rights, and reduce no proof-of-work. The cost is excluding the ~60% of internet users who cannot maintain persistent, well-connected nodes—mobile-only and intermittently-connected users become observers, not full participants.**
 
 This thesis argues that the tradeoff is favorable: wasteful work was always a placeholder for "real" work, and Swimchain achieves what proof-of-work always gestured toward. Bitcoin's ASICs produce nothing but heat; Swimchain's contribution produces the network itself.
 
@@ -47,9 +47,9 @@ Decentralized networks partially address this by making users into node operator
 Swimchain's hosting-as-work model eliminates this distinction entirely. Every user who posts must also host. There is no separate infrastructure class subsidizing content creators. The network's capacity to serve content exactly matches its community's contribution to serving content.
 
 This creates elegant economics:
-- Want to post a lot? You must host a lot.
-- Want to be a prolific contributor? You must be a prolific infrastructure provider.
-- Power users subsidize their own power usage.
+- Everyone who reads and posts also hosts the content they view.
+- Active participants are, by the same token, active infrastructure providers.
+- Power users carry their own share of the load.
 - The network can never grow beyond its capacity to serve itself.
 
 ### Argument 3: Attack Economics Favor Defense
@@ -58,31 +58,31 @@ In traditional proof-of-work, attacking the network requires temporary computati
 
 Hosting-as-work fundamentally changes attack economics. To attack, you must:
 
-1. **Contribute first**: Reach Anchor level (200GB/month, 90% uptime) before you can sponsor or post at high volume. This takes months of genuine contribution.
+1. **Build first**: Establishing a credible, well-sponsored identity takes months of genuine participation. You cannot conjure standing from nothing.
 
-2. **Maintain contribution during attack**: Your attack capacity depends on ongoing hosting. You cannot pre-mine attack potential.
+2. **Maintain standing during the attack**: Your influence depends on ongoing good-faith participation and the sponsors who vouch for you; misbehavior erodes both in real time.
 
 3. **Burn reputation, not just resources**: Misbehavior damages your identity, which required months to build. Unlike hash power, reputation cannot be rented.
 
-The cost structure now includes time (months of contribution before attack capability), ongoing resources (continued hosting during attack), and opportunity cost (destroying an identity with months of investment).
+The cost structure now includes time (months of participation before attack capability), ongoing effort (sustained proof-of-work and good standing during the attack), and opportunity cost (destroying an identity with months of investment).
 
-This dramatically raises the bar for casual attacks. A spammer cannot simply spin up 1000 accounts—they would need 1000 accounts each with months of hosting history. A coordinated manipulation campaign requires sustained infrastructure investment from all participants.
+This dramatically raises the bar for casual attacks. A spammer cannot simply spin up 1000 accounts—they would need 1000 accounts each with months of participation history and a sponsor willing to vouch for them. A coordinated manipulation campaign requires sustained investment from all participants.
 
 ### Argument 4: Aligns Incentives Through Scarcity
 
 Many social platforms suffer from a common failure mode: low-quality content floods out high-quality content because posting is nearly free. Anyone can tweet, comment, or post, regardless of their contribution to the platform's health.
 
-Swimchain's hosting requirement creates a different dynamic. Posting capacity is scarce—tied to your hosting contribution. If you want to post more, you must host more. This creates natural incentives:
+Swimchain's proof-of-work requirement creates a different dynamic. Posting is never free—every space, post, reply, and engagement carries a proof-of-work cost scaled to the action. If you want to post more, you must spend more work. This creates natural incentives:
 
-1. **Self-rationing**: Users with limited hosting will be selective about what they post, preserving capacity for content they consider important.
+1. **Self-rationing**: Users will be selective about what they post, preserving effort for content they consider important.
 
-2. **Quality over quantity**: Prolific posting requires prolific hosting. Most users will fall into moderate posting with moderate hosting.
+2. **Quality over quantity**: Prolific posting requires prolific work. Most users will fall into moderate posting.
 
-3. **Earned attention**: High-volume posters have demonstrated commitment through infrastructure contribution. Their volume is credentialed, not just noise.
+3. **Earned attention**: High-volume posters have demonstrably invested effort. Their volume is credentialed, not just noise.
 
-4. **No freeloaders**: Unlike platforms where viral content creates infrastructure costs borne by others, Swimchain requires popular posters to bear their own infrastructure load.
+4. **No freeloaders**: Because every participant hosts the content they view, the cost of serving popular content is spread across the very people who consume it, rather than dumped on uninvolved infrastructure.
 
-This doesn't guarantee quality—someone can host 500GB/month and post garbage. But it guarantees commitment. Volume is earned, not assumed.
+This doesn't guarantee quality—someone can grind proof-of-work and post garbage. But it guarantees commitment. Volume is earned, not assumed.
 
 ---
 
@@ -150,32 +150,32 @@ The honest answer: yes, mobile-only users are second-class citizens in this mode
 
 ### Counterargument 2: The Rich Get Richer
 
-**The critique:** Users with always-on desktops, good bandwidth, and generous storage earn posting capacity faster than those without. This correlates with wealth and geography. Is this acceptable inequality?
+**The critique:** Users with always-on desktops, good bandwidth, and generous storage can host more and reach full participation more easily than those without. This correlates with wealth and geography. Is this acceptable inequality?
 
 **Response:** The critique is accurate: hosting capacity correlates with resources. But several factors mitigate the concern:
 
-1. **Ceiling effects**: Beyond moderate hosting (say, 500GB/month), additional capacity provides diminishing returns. A billionaire with a server farm doesn't dominate discourse—they just hit the posting ceiling earlier.
+1. **Ceiling effects**: Beyond moderate hosting, additional capacity provides diminishing returns—you can only host the content you and your communities actually view. A billionaire with a server farm doesn't dominate discourse; hosting more bytes buys no louder voice.
 
-2. **Marginal cost is low**: The hosting requirement is calibrated to be achievable on modest residential hardware. A $35 Raspberry Pi with a decent connection can reach Anchor level.
+2. **Marginal cost is low**: Hosting is calibrated to be achievable on modest residential hardware. A $35 Raspberry Pi with a decent connection can comfortably host its share.
 
-3. **Inequality vs. exclusion**: The concern is whether resource differences create structural exclusion, not whether they create any difference at all. Someone hosting 100GB/month versus 300GB/month has different capabilities, but both can meaningfully participate.
+3. **Inequality vs. exclusion**: The concern is whether resource differences create structural exclusion, not whether they create any difference at all. Someone hosting 100GB/month versus 300GB/month serves different amounts, but both participate on equal protocol terms.
 
 4. **Compared to what?**: Centralized platforms also advantage the wealthy (through promoted content, verified badges, and time to post). Swimchain's inequality is legible and based on contribution; platform inequality is opaque and based on corporate judgment.
 
 ### Counterargument 3: Gaming Through Content
 
-**The critique:** Users will create content specifically designed to be viewed—memes, outrage, clickbait—to farm views and earn hosting credit. This recreates engagement optimization with extra steps.
+**The critique:** Users will create content specifically designed to be viewed—memes, outrage, clickbait—to farm views and earn hosting recognition. This recreates engagement optimization with extra steps.
 
-**Response:** This objection conflates views with hosting credit.
+**Response:** This objection conflates views with hosting recognition.
 
-In Swimchain, hosting credit comes from serving content—being the node that delivers bytes to viewers. Popular content increases your hosting contribution only if your node serves that content to others. If popular content is served primarily from other nodes, the original poster gets no hosting credit.
+In Swimchain, hosting recognition comes from serving content—being the node that delivers bytes to viewers. Popular content increases your hosting contribution only if your node serves that content to others. If popular content is served primarily from other nodes, the original poster gets no hosting recognition.
 
 The gaming strategy would require:
 1. Create popular content
 2. Ensure your node is the one serving it
 3. Maintain uptime and connectivity
 
-Point 2 is not under the creator's control. Content replication distributes serving across many nodes. The creator's hosting credit reflects only their own serving, not their content's popularity.
+Point 2 is not under the creator's control. Content replication distributes serving across many nodes. The creator's hosting recognition reflects only their own serving, not their content's popularity.
 
 ### Counterargument 4: Complexity Barrier
 
@@ -201,13 +201,13 @@ This is harder than "click to tweet." It is comparable to running a personal web
 
 ## Evidence Needed
 
-1. **Bandwidth requirement modeling**: What hosting levels are achievable for median users in various regions? What percentage of global internet users could reach Anchor level?
+1. **Bandwidth requirement modeling**: What hosting loads are achievable for median users in various regions? What percentage of global internet users could sustain a persistent, well-connected node?
 
 2. **Mobile participation research**: How do mobile-primary users participate in hosting-required networks? What hybrid approaches are viable?
 
-3. **Gaming analysis**: Can view-farming be distinguished from genuine popularity? What hosting credit patterns indicate manipulation?
+3. **Gaming analysis**: Can view-farming be distinguished from genuine popularity? What hosting patterns indicate manipulation?
 
-4. **Threshold calibration**: What hosting level should be required for each permission level? How do these relate to median capabilities?
+4. **Load calibration**: What hosting loads are realistic for median users in various regions? How do these relate to median capabilities?
 
 5. **Comparative infrastructure analysis**: How do other decentralized networks handle the infrastructure contribution problem?
 
@@ -219,7 +219,7 @@ This is harder than "click to tweet." It is comparable to running a personal web
 
 2. **Hosting verification**: How do you verify a node actually served 200GB, rather than claiming to?
 
-3. **Threshold levels**: What hosting thresholds correspond to Swimmer, Resident, and Anchor?
+3. **Recognition milestones**: What hosting milestones should earn achievement badges, and how demanding should they be?
 
 4. **Geographic equity**: Should hosting requirements adjust for regional bandwidth availability?
 
@@ -267,7 +267,7 @@ But the honest acknowledgment is that "useful work" comes with "specific users."
 **"Hosting-as-work confronts a fundamental contradiction: any mechanism to include mobile users—proxy hosting, commercial services, delegation—recreates the infrastructure/user split the model was designed to eliminate, as Filecoin's storage provider concentration demonstrates, forcing a choice between principled exclusion and centralization reintroduced through accommodation."**
 
 #### Position 4 (Asymmetric Security Thesis):
-**"Hosting-as-work provides asymmetric security: while it effectively deters amateur spam through months of required contribution, it creates a predictable pathway for patient state-sponsored attackers who can establish distributed nodes over 18-24 months, achieve Anchor status across hundreds of identities, and execute coordinated campaigns wielding credentials indistinguishable from genuine long-term participants—revealing a design choice about which adversaries the system optimizes against."**
+**"Hosting-as-work provides asymmetric security: while it effectively deters amateur spam through months of required contribution, it creates a predictable pathway for patient state-sponsored attackers who can establish distributed nodes over 18-24 months, build established standing across hundreds of identities, and execute coordinated campaigns wielding credentials indistinguishable from genuine long-term participants—revealing a design choice about which adversaries the system optimizes against."**
 
 #### Position 5 (Structural Regression Thesis):
 **"The correlation between hosting capacity and economic privilege—stable housing, reliable electricity, uncapped bandwidth, always-on hardware—makes hosting-as-work a structurally regressive model that systematically advantages Global North users while erecting infrastructure barriers for the Global South, creating networks decentralized in architecture but centralized in geography."**
@@ -282,7 +282,7 @@ But the honest acknowledgment is that "useful work" comes with "specific users."
 3. **Emergent Property**: Infrastructure symmetry emerges naturally—network capacity scales with community size because each new participant adds hosting capability
 
 #### Position 2 - Ethical Exclusion:
-1. **Transparency Principle**: Explicit infrastructure requirements (200GB/month, 90% uptime) are knowable and plannable, unlike algorithmic shadowbans and unexplained deplatforming
+1. **Transparency Principle**: Explicit infrastructure requirements (running a persistent, well-connected node) are knowable and plannable, unlike algorithmic shadowbans and unexplained deplatforming
 2. **Agency Preservation**: Users can acquire capability through action ($35 Raspberry Pi) rather than appealing to opaque corporate judgment
 3. **Democratic Legitimacy**: Systems with visible gatekeeping rules have greater moral standing than those with hidden ones, even if the rules are strict
 
@@ -352,8 +352,8 @@ But the honest acknowledgment is that "useful work" comes with "specific users."
 - Deplatforming case studies showing lack of recourse
 
 #### Technical Specifications:
-- Swimchain threshold requirements (5GB Swimmer, 30GB Resident, 200GB Anchor)
-- Uptime requirements (90%) and their global achievability
+- Swimchain hosting figures (illustrative monthly loads such as 5GB, 30GB, and 200GB)
+- Uptime expectations (~90%) and their global achievability
 - Bandwidth calculations (0.6 Mbps average for 200GB/month)
 
 ---
