@@ -128,18 +128,18 @@ export default function AboutPage() {
           <tbody>
             <tr>
               <td>Text Relevance</td>
-              <td>40%</td>
+              <td>45%</td>
               <td>How well content matches your search</td>
             </tr>
             <tr>
               <td>Heat (Decay)</td>
-              <td>25%</td>
+              <td>30%</td>
               <td>Content&rsquo;s survival probability</td>
             </tr>
             <tr>
               <td>Engagement</td>
-              <td>20%</td>
-              <td>Pool progress (0-60 seconds)</td>
+              <td>10%</td>
+              <td>How many times content was engaged and how recently</td>
             </tr>
             <tr>
               <td>Recency</td>

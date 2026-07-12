@@ -136,9 +136,13 @@ pub struct RpcServer {
 
 /// Load TLS certificates from PEM files (H-RPC-3)
 fn load_tls_config(tls_config: &TlsConfig) -> Result<rustls::ServerConfig, RpcError> {
-    let cert_path = tls_config.cert_path.as_ref()
+    let cert_path = tls_config
+        .cert_path
+        .as_ref()
         .ok_or_else(|| RpcError::TlsConfig("Certificate path not configured".to_string()))?;
-    let key_path = tls_config.key_path.as_ref()
+    let key_path = tls_config
+        .key_path
+        .as_ref()
         .ok_or_else(|| RpcError::TlsConfig("Private key path not configured".to_string()))?;
 
     // Load certificate chain
@@ -150,7 +154,9 @@ fn load_tls_config(tls_config: &TlsConfig) -> Result<rustls::ServerConfig, RpcEr
         .map_err(|e| RpcError::TlsConfig(format!("Failed to parse certificates: {}", e)))?;
 
     if certs.is_empty() {
-        return Err(RpcError::TlsConfig("No certificates found in certificate file".to_string()));
+        return Err(RpcError::TlsConfig(
+            "No certificates found in certificate file".to_string(),
+        ));
     }
 
     // Load private key
@@ -174,7 +180,10 @@ impl RpcServer {
     /// # Security (H-RPC-3)
     /// Non-localhost bindings require TLS configuration. This prevents accidental
     /// exposure of the RPC API over unencrypted connections.
-    pub fn new(config: RpcServerConfig, shutdown_rx: watch::Receiver<bool>) -> Result<Self, RpcError> {
+    pub fn new(
+        config: RpcServerConfig,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> Result<Self, RpcError> {
         // Reject non-localhost without TLS (H-RPC-3)
         if config.is_exposed() && !config.tls.is_enabled() {
             return Err(RpcError::TlsRequired);
@@ -199,7 +208,8 @@ impl RpcServer {
     ///
     /// Returns the actual bound address (useful when port is 0)
     pub async fn start(mut self, methods: RpcMethods) -> Result<SocketAddr, RpcError> {
-        self.start_with_events(methods, Arc::new(EventManager::new())).await
+        self.start_with_events(methods, Arc::new(EventManager::new()))
+            .await
     }
 
     /// Start the RPC server with a shared event manager
@@ -215,7 +225,8 @@ impl RpcServer {
         let cookie = AuthCookie::generate(&self.config.data_dir)?;
 
         // Build authenticator
-        let auth = if let (Some(user), Some(pass)) = (&self.config.username, &self.config.password) {
+        let auth = if let (Some(user), Some(pass)) = (&self.config.username, &self.config.password)
+        {
             Authenticator::with_both(cookie.clone(), user.clone(), pass.clone())
         } else {
             Authenticator::with_cookie(cookie.clone())
@@ -238,7 +249,9 @@ impl RpcServer {
         };
 
         // Bind to address
-        let addr = self.config.bind_addr()
+        let addr = self
+            .config
+            .bind_addr()
             .map_err(|e| RpcError::InternalError(format!("Invalid bind address: {}", e)))?;
 
         let listener = TcpListener::bind(addr).await?;
@@ -375,22 +388,26 @@ async fn handle_request(
     }
 
     // Extract auth-related headers before consuming the request
-    let auth_header = req.headers()
+    let auth_header = req
+        .headers()
         .get(hyper::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    let cs_identity = req.headers()
+    let cs_identity = req
+        .headers()
         .get(HEADER_CS_IDENTITY)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    let cs_timestamp = req.headers()
+    let cs_timestamp = req
+        .headers()
         .get(HEADER_CS_TIMESTAMP)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    let cs_signature = req.headers()
+    let cs_signature = req
+        .headers()
         .get(HEADER_CS_SIGNATURE)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
@@ -456,6 +473,9 @@ async fn handle_request(
         "get_identity_level",
         "get_identity_name",
         "get_user_profile",
+        "get_reputation", // public trust signal (SPEC_12 §3.4), read-only
+        // Recognition badges (SPEC_09 §5.3) — public, read-only data
+        "get_achievements",
         // Sponsorship actions - these contain verifiable signatures in params
         "create_sponsorship_offer",
         "cancel_sponsorship_offer",
@@ -463,7 +483,7 @@ async fn handle_request(
         "approve_sponsorship_claim",
         "reject_sponsorship_claim",
         "list_my_sponsorship_offers",
-        "get_sponsorship_offer",        // Alias used by forum-client
+        "get_sponsorship_offer", // Alias used by forum-client
     ];
 
     // In regtest mode, exempt all read-only methods from auth for easier testing
@@ -499,6 +519,7 @@ async fn handle_request(
         "get_identity_level",
         "get_identity_name",
         "get_user_profile",
+        "get_achievements",
         "search_content",
         "search_spaces",
         "search_threads",
@@ -507,6 +528,9 @@ async fn handle_request(
         "list_blocklist",
         "list_private_spaces",
         "list_dms",
+        // Behavioral branching observation (SPEC_13 Phase A / Phase 1 rollout):
+        // read-only, chain-derived diagnostic data, same treatment as list_blocklist.
+        "list_behavioral_events",
     ];
 
     let is_auth_exempt = AUTH_EXEMPT_METHODS.contains(&rpc_req.method.as_str())
@@ -514,19 +538,39 @@ async fn handle_request(
 
     // Authenticate the request
     // Try signature auth first (for browser clients), then fall back to cookie/credential auth
-    let has_signature_headers = cs_identity.is_some() && cs_timestamp.is_some() && cs_signature.is_some();
+    let has_signature_headers =
+        cs_identity.is_some() && cs_timestamp.is_some() && cs_signature.is_some();
 
     // Log only presence/absence of auth headers, never values (security: avoid leaking credentials)
     log::debug!(
         "Auth headers - Identity: {}, Timestamp: {}, Signature: {}, AuthHeader: {}",
-        if cs_identity.is_some() { "present" } else { "absent" },
-        if cs_timestamp.is_some() { "present" } else { "absent" },
-        if cs_signature.is_some() { "present" } else { "absent" },
-        if auth_header.is_some() { "present" } else { "absent" },
+        if cs_identity.is_some() {
+            "present"
+        } else {
+            "absent"
+        },
+        if cs_timestamp.is_some() {
+            "present"
+        } else {
+            "absent"
+        },
+        if cs_signature.is_some() {
+            "present"
+        } else {
+            "absent"
+        },
+        if auth_header.is_some() {
+            "present"
+        } else {
+            "absent"
+        },
     );
 
     let auth_result = if has_signature_headers {
-        log::info!("Attempting signature authentication for method: {}", rpc_req.method);
+        log::info!(
+            "Attempting signature authentication for method: {}",
+            rpc_req.method
+        );
         // Signature authentication - extract raw params JSON from body to preserve key ordering.
         // serde_json::Value doesn't preserve key order, so we need to parse with RawValue.
         //
@@ -560,7 +604,10 @@ async fn handle_request(
                 serde_json::to_vec(&rpc_req.params).unwrap_or_default()
             }
         };
-        log::debug!("Params JSON for signature: {}", String::from_utf8_lossy(&params_json));
+        log::debug!(
+            "Params JSON for signature: {}",
+            String::from_utf8_lossy(&params_json)
+        );
         let result = state.auth.validate_signature(
             cs_identity.as_deref(),
             cs_timestamp.as_deref(),
@@ -610,20 +657,32 @@ async fn handle_request(
     }
 
     // Check rate limit for this method
-    match state.rate_limiter.check_rate_limit(client_ip, &rpc_req.method).await {
+    match state
+        .rate_limiter
+        .check_rate_limit(client_ip, &rpc_req.method)
+        .await
+    {
         RateLimitResult::Allowed => {
             // Proceed with method dispatch
         }
-        RateLimitResult::RateLimited { category, retry_after_ms } => {
+        RateLimitResult::RateLimited {
+            category,
+            retry_after_ms,
+        } => {
             log::warn!(
                 "Rate limit exceeded for {} from {} (category: {:?})",
-                rpc_req.method, client_ip, category
+                rpc_req.method,
+                client_ip,
+                category
             );
             let mut response = json_response(
                 StatusCode::TOO_MANY_REQUESTS,
                 &RpcResponse::error(
                     RpcErrorCode::RateLimited,
-                    &format!("Rate limit exceeded for {:?} methods. Retry after {}ms", category, retry_after_ms),
+                    &format!(
+                        "Rate limit exceeded for {:?} methods. Retry after {}ms",
+                        category, retry_after_ms
+                    ),
                     rpc_req.id.clone(),
                 ),
             );
@@ -647,7 +706,10 @@ async fn handle_request(
     }
 
     // Dispatch to method handler
-    let response = state.methods.dispatch(&rpc_req.method, rpc_req.params, rpc_req.id.clone()).await;
+    let response = state
+        .methods
+        .dispatch(&rpc_req.method, rpc_req.params, rpc_req.id.clone())
+        .await;
 
     Ok(cors_response(json_response(StatusCode::OK, &response)))
 }
@@ -658,7 +720,11 @@ async fn read_body(body: Incoming, max_size: usize) -> Result<Bytes, String> {
     let bytes = collected.to_bytes();
 
     if bytes.len() > max_size {
-        return Err(format!("Request body too large ({} > {})", bytes.len(), max_size));
+        return Err(format!(
+            "Request body too large ({} > {})",
+            bytes.len(),
+            max_size
+        ));
     }
 
     Ok(bytes)
@@ -688,7 +754,9 @@ fn cors_response(response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
     );
     parts.headers.insert(
         hyper::header::ACCESS_CONTROL_ALLOW_HEADERS,
-        "Content-Type, Authorization, X-CS-Identity, X-CS-Timestamp, X-CS-Signature".parse().unwrap(),
+        "Content-Type, Authorization, X-CS-Identity, X-CS-Timestamp, X-CS-Signature"
+            .parse()
+            .unwrap(),
     );
     Response::from_parts(parts, body)
 }
@@ -698,8 +766,14 @@ fn cors_preflight() -> Response<Full<Bytes>> {
     Response::builder()
         .status(StatusCode::NO_CONTENT)
         .header(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(hyper::header::ACCESS_CONTROL_ALLOW_METHODS, "POST, GET, OPTIONS")
-        .header(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type, Authorization, X-CS-Identity, X-CS-Timestamp, X-CS-Signature")
+        .header(
+            hyper::header::ACCESS_CONTROL_ALLOW_METHODS,
+            "POST, GET, OPTIONS",
+        )
+        .header(
+            hyper::header::ACCESS_CONTROL_ALLOW_HEADERS,
+            "Content-Type, Authorization, X-CS-Identity, X-CS-Timestamp, X-CS-Signature",
+        )
         .header(hyper::header::ACCESS_CONTROL_MAX_AGE, "86400")
         .body(Full::new(Bytes::new()))
         .unwrap()
@@ -982,7 +1056,10 @@ async fn handle_websocket(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Check connection limits
     if !state.event_manager.can_accept_connection(client_ip).await {
-        warn!("WebSocket connection rejected: too many connections from {}", client_ip);
+        warn!(
+            "WebSocket connection rejected: too many connections from {}",
+            client_ip
+        );
         return Ok(());
     }
 
@@ -1006,7 +1083,8 @@ async fn handle_websocket(
 
     // Subscribe to events
     let mut event_rx = state.event_manager.subscribe();
-    let mut subscribed_events: std::collections::HashSet<EventType> = std::collections::HashSet::new();
+    let mut subscribed_events: std::collections::HashSet<EventType> =
+        std::collections::HashSet::new();
     let mut subscription_id: Option<String> = None;
 
     // Send welcome message
@@ -1204,7 +1282,10 @@ async fn handle_tls_websocket(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Check connection limits
     if !state.event_manager.can_accept_connection(client_ip).await {
-        warn!("WebSocket TLS connection rejected: too many connections from {}", client_ip);
+        warn!(
+            "WebSocket TLS connection rejected: too many connections from {}",
+            client_ip
+        );
         return Ok(());
     }
 
@@ -1228,7 +1309,8 @@ async fn handle_tls_websocket(
 
     // Subscribe to events
     let mut event_rx = state.event_manager.subscribe();
-    let mut subscribed_events: std::collections::HashSet<EventType> = std::collections::HashSet::new();
+    let mut subscribed_events: std::collections::HashSet<EventType> =
+        std::collections::HashSet::new();
     let mut subscription_id: Option<String> = None;
 
     // Send welcome message

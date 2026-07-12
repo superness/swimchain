@@ -165,3 +165,27 @@
   border-radius: 50%;
   object-fit: cover;
 }
+
+/* Reputation trust signal (SPEC_12 §3.4) — informational, no privileges */
+.user-profile-modal__reputation {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  cursor: help;
+}
+.user-profile-modal__reputation-badge {
+  line-height: 1;
+}
+.user-profile-modal__reputation-label {
+  font-weight: 600;
+}
+.user-profile-modal__reputation-score {
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}

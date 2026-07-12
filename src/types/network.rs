@@ -259,14 +259,6 @@ pub enum MessageType {
     /// Block data response
     BlockData = 0x77,
 
-    // Engagement pools (SPEC_03 §7, SPEC_08 §3.3)
-    /// Pool announcement (new pool created)
-    PoolAnnounce = 0x90,
-    /// Pool contribution (PoW work submission)
-    PoolContribution = 0x91,
-    /// Pool status query/response
-    PoolStatus = 0x92,
-
     // Mempool gossip (action broadcast)
     /// Action announcement (broadcast pending action to peers)
     ActionAnnounce = 0x93,
@@ -330,6 +322,8 @@ pub enum MessageType {
     BlocklistSync = 0xB1,
     /// Request specific blocklist entries
     BlocklistRequest = 0xB2,
+    /// Signed, versioned blocklist bundle (trust-anchored bulk distribution)
+    BlocklistBundle = 0xB3,
 
     // Social Layer / Peer Attestation (SPEC_09 §8.2)
     /// Contribution claim (announce contribution for attestation)
@@ -394,9 +388,6 @@ impl TryFrom<u8> for MessageType {
             0x77 => Ok(MessageType::BlockData),
             0x78 => Ok(MessageType::GetBlocksLocator),
             0x7A => Ok(MessageType::GetHeadersLocator),
-            0x90 => Ok(MessageType::PoolAnnounce),
-            0x91 => Ok(MessageType::PoolContribution),
-            0x92 => Ok(MessageType::PoolStatus),
             // Mempool gossip
             0x93 => Ok(MessageType::ActionAnnounce),
             0x94 => Ok(MessageType::GetMempool),
@@ -425,6 +416,7 @@ impl TryFrom<u8> for MessageType {
             0xB0 => Ok(MessageType::BlocklistUpdate),
             0xB1 => Ok(MessageType::BlocklistSync),
             0xB2 => Ok(MessageType::BlocklistRequest),
+            0xB3 => Ok(MessageType::BlocklistBundle),
             // Social layer / Peer attestation (SPEC_09 §8.2)
             0x30 => Ok(MessageType::ContributionClaim),
             0x31 => Ok(MessageType::ContributionAttest),

@@ -13,9 +13,6 @@ use tokio::sync::{broadcast, RwLock};
 use crate::blocklist::{BlocklistEntry, BlocklistReason, BlocklistStore};
 use crate::blocks::{Action, BranchPath};
 use crate::content::decay_integration::DecayIntegration;
-use crate::content::pool::{
-    compute_pool_pow_target, CompletionResult, PoolContribution, PoolError, PoolManager,
-};
 use crate::content::retrieval::ContentRetrievalManager;
 use crate::crypto::action_pow::{
     compute_pow, verify_pow, ActionType, ForkPoWConfig, PoWChallenge, PoWSolution,
@@ -532,12 +529,17 @@ pub struct NodeRef {
     pub aggregation_cache: Option<Arc<AggregationCache>>,
     /// Spam attestation store for community flagging (SPEC_12 §3)
     pub spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5)
+    pub reputation_store: Option<Arc<crate::reputation::ReputationStore>>,
     /// Membership store for private spaces (DMs, group chats)
     pub membership_store: Option<Arc<MembershipStore>>,
     /// Sponsorship store for identity chain enforcement
     pub sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
     /// Offer store for public sponsorship offer lifecycle
     pub offer_store: Option<Arc<crate::sponsorship::offer_store::OfferStore>>,
+    /// Achievement service for recognition badges (SPEC_09 §5.3).
+    /// Recognition ONLY: exposes/awards badges, grants no protocol privileges.
+    pub achievement_service: Option<Arc<crate::achievement::AchievementService>>,
     /// Branch subscription manager (selective sync; SPEC_06/BRANCH_SELECTIVE_SYNC).
     /// Uses std::sync::RwLock to match manager.rs construction.
     pub branch_subscription_manager:
@@ -550,8 +552,6 @@ pub struct NodeRef {
     pub identity_name: Arc<RwLock<Option<String>>>,
     /// Full-text search index (Tantivy) for content search
     pub search_index: Option<Arc<std::sync::RwLock<SearchIndex>>>,
-    /// Pool manager for engagement pool operations (shared with the message router)
-    pub pool_manager: Option<Arc<std::sync::RwLock<PoolManager>>>,
     /// Event manager for publishing real-time WebSocket events (H-RPC-2)
     pub event_manager: Option<Arc<crate::rpc::events::EventManager>>,
     /// Gossip origin-privacy settings (SWIM-PRIV-1). Controls whether/how
@@ -591,6 +591,26 @@ impl RpcMethods {
     /// Get the network mode (mainnet, testnet, regtest)
     pub fn network(&self) -> &str {
         &self.node.network
+    }
+
+    /// Resolve the branch path to stamp on a mempool action (SPEC_08 §4).
+    ///
+    /// Threads already indexed on-chain inherit their branch (replies,
+    /// engagements and edits stay with their thread); new threads get the
+    /// hash-derived active leaf for their space. Deterministic given the
+    /// local chain state; falls back to the root path when no chain store
+    /// is available (minimal/test configurations).
+    fn resolve_branch_path(
+        &self,
+        space_id: &[u8; 32],
+        thread_root_id: &[u8; 32],
+        author: Option<&[u8; 32]>,
+    ) -> BranchPath {
+        match self.node.chain_store {
+            Some(ref store) => crate::branch::BranchManager::new(store)
+                .resolve_mempool_branch_path(space_id, thread_root_id, author),
+            None => BranchPath::root(),
+        }
     }
 
     /// Per-space content count with a short-TTL cache. `count_content_in_space` is a prefix
@@ -956,10 +976,22 @@ impl RpcMethods {
 
         // Store blocks in ChainStore
         if let Some(ref store) = self.node.chain_store {
-            // Store content blocks first (referenced by space blocks)
+            // Store content blocks first (referenced by space blocks).
+            // Branch-aware write: registers size tracking and runs the 50MB
+            // fracture check (SPEC_08 §5) without mutating the built block.
+            let branch_store = crate::branch::BranchAwareStore::new(store);
             for content_block in &content_blocks {
-                if let Err(e) = store.put_content_block(content_block) {
-                    warn!("[BLOCKS] Failed to store content block: {}", e);
+                match branch_store.put_built_content_block(content_block) {
+                    Ok(result) => {
+                        if result.fracture_triggered {
+                            info!(
+                                "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                                hex::encode(&content_block.space_id[..8]),
+                                result.branch_path.depth()
+                            );
+                        }
+                    }
+                    Err(e) => warn!("[BLOCKS] Failed to store content block: {}", e),
                 }
             }
 
@@ -1066,18 +1098,14 @@ impl RpcMethods {
             "get_identity_name" => self.get_identity_name(id).await,
             "set_identity_name" => self.set_identity_name(params, id).await,
             "get_user_profile" => self.get_user_profile(params, id).await,
+            "get_reputation" => self.get_reputation(params, id).await,
+            "get_achievements" => self.get_achievements(params, id).await,
 
             // Reaction methods (reactions come from PoW engagement via submit_engagement)
             "get_reactions" => self.get_reactions(params, id).await,
             "get_user_reactions" => self.get_user_reactions(params, id).await,
             "get_chain_engagements" => self.get_chain_engagements(params, id).await,
             "rebuild_reactions" => self.rebuild_reactions(id).await,
-
-            // Engagement pool methods
-            "create_pool" => self.create_pool(params, id).await,
-            "contribute_to_pool" => self.contribute_to_pool(params, id).await,
-            "get_pool_info" => self.get_pool_info(params, id).await,
-            "get_pool_for_content" => self.get_pool_for_content(params, id).await,
 
             // Fork methods
             "create_fork" => self.create_fork(params, id).await,
@@ -1101,6 +1129,10 @@ impl RpcMethods {
             // Blocklist management methods (SPEC_12 §3.6)
             "list_blocklist" => self.list_blocklist(params, id).await,
             "manage_blocklist" => self.manage_blocklist(params, id).await,
+            "import_blocklist" => self.import_blocklist(params, id).await,
+
+            // Behavioral branching methods (SPEC_13 Phase A / Phase 1 log-only rollout)
+            "list_behavioral_events" => self.list_behavioral_events(params, id).await,
 
             // Private space methods (DMs, group chats)
             "create_private_space" => self.create_private_space(params, id).await,
@@ -2160,15 +2192,15 @@ impl RpcMethods {
             // Thread ID is the content hash for a new post
             let thread_id = content_hash;
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path =
+                self.resolve_branch_path(&space_id_bytes, &thread_id, Some(&author_bytes));
+
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(
-                        thread_id,
-                        space_id_bytes,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    let added =
+                        builder.add_action(thread_id, space_id_bytes, action.clone(), branch_path);
                     if added {
                         info!(
                             "[BLOCKS] Added POST action to block builder, total_pow={}",
@@ -2399,6 +2431,24 @@ impl RpcMethods {
                 &content_id[..24],
                 recipients
             );
+        }
+
+        // Recognition: the post was accepted (PoW-valid, stored). Award FirstStroke
+        // on the author's first accepted post (SPEC_09 §5.3). Recognition ONLY —
+        // this does not alter PoW, decay, or rate limits, and never blocks the post.
+        if let Some(ref achievements) = self.node.achievement_service {
+            match achievements.record_post(&author_bytes, params.timestamp) {
+                Ok(unlocked) => {
+                    for a in unlocked {
+                        info!(
+                            "[ACHIEVEMENT] Unlocked {} {} (first post)",
+                            a.badge(),
+                            a.name()
+                        );
+                    }
+                }
+                Err(e) => warn!("[ACHIEVEMENT] Failed to record post: {}", e),
+            }
         }
 
         let result = SubmitPostResult {
@@ -2919,15 +2969,15 @@ impl RpcMethods {
             // Thread ID is the parent post's hash (replies belong to parent thread)
             let thread_id = parent_hash_bytes;
 
+            // Replies inherit the parent thread's branch (SPEC_08 §4.3)
+            let branch_path =
+                self.resolve_branch_path(&space_id_bytes, &thread_id, Some(&author_bytes));
+
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(
-                        thread_id,
-                        space_id_bytes,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    let added =
+                        builder.add_action(thread_id, space_id_bytes, action.clone(), branch_path);
                     if added {
                         info!(
                             "[BLOCKS] Added REPLY action to block builder, total_pow={}",
@@ -3406,14 +3456,13 @@ impl RpcMethods {
 
         // Add to block builder
         if let Some(ref block_builder) = self.node.block_builder {
+            // Edits stay with their thread's branch (SPEC_08 §4.3)
+            let branch_path =
+                self.resolve_branch_path(&space_id_bytes, &thread_id, Some(&author_bytes));
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(
-                        thread_id,
-                        space_id_bytes,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    let added =
+                        builder.add_action(thread_id, space_id_bytes, action.clone(), branch_path);
                     if added {
                         info!(
                             "[BLOCKS] Added EDIT action to block builder, total_pow={}",
@@ -3702,12 +3751,18 @@ impl RpcMethods {
                             replaces_pending: None,
                         };
 
+                        // Engagements go to the TARGET content's branch (SPEC_08 §4.3)
+                        let branch_path = self.resolve_branch_path(
+                            &space_id_bytes,
+                            &thread_id,
+                            Some(&author_bytes),
+                        );
                         let added = if let Ok(mut builder) = block_builder.write() {
                             let added = builder.add_action(
                                 thread_id,
                                 space_id_bytes,
                                 action.clone(),
-                                BranchPath::root(),
+                                branch_path,
                             );
                             if added {
                                 info!("[BLOCKS] Added ENGAGE action to block builder, total_pow={}, emoji={:?}",
@@ -4502,7 +4557,16 @@ impl RpcMethods {
             };
 
             if let Some(entries) = tantivy_results {
-                // Convert Tantivy results to JSON response format
+                // Convert Tantivy results to JSON response format.
+                //
+                // SEARCH PARITY (SPEC_08 §5 / branch partitioning): the Tantivy
+                // index is a GLOBAL metadata index — it is fed from every synced
+                // content record regardless of branch subscription (see the
+                // DATA_CONTENT handler in node/router) and is never pruned when
+                // local blobs decay. Hits may therefore reference content this
+                // node no longer (or never) hosts; `hosted: false` tells clients
+                // to resolve the hit via `request_content` (view-to-host
+                // on-demand fetch) instead of `get_content`.
                 for entry in entries {
                     // Parse title and body from snippet (Tantivy stores the full body)
                     let (title, body_preview) = if entry.title.is_empty() {
@@ -4521,10 +4585,40 @@ impl RpcMethods {
                         entry.space_id.clone()
                     };
 
+                    // Is the content locally available (metadata store or blob layer)?
+                    let hosted = {
+                        let id_hex = entry.content_id.replace("sha256:", "");
+                        match hex::decode(&id_hex).ok().filter(|b| b.len() == 32) {
+                            Some(bytes) => {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&bytes);
+                                let in_store = self
+                                    .node
+                                    .content_store
+                                    .as_ref()
+                                    .and_then(|cs| {
+                                        cs.get(&crate::types::content::ContentId::from_bytes(arr))
+                                            .ok()
+                                            .flatten()
+                                    })
+                                    .is_some();
+                                let in_blobs = self
+                                    .node
+                                    .content_retrieval
+                                    .as_ref()
+                                    .map(|mgr| mgr.has_content(&ContentBlobHash::from_bytes(arr)))
+                                    .unwrap_or(false);
+                                in_store || in_blobs
+                            }
+                            None => false,
+                        }
+                    };
+
                     results.push(serde_json::json!({
                         "id": entry.content_id.replace("sha256:", ""),
                         "type": "thread",
                         "score": entry.score as f64,
+                        "hosted": hosted,
                         "highlights": {
                             "content": body_preview,
                             "name": if !entry.title.is_empty() { Some(&entry.title) } else { None }
@@ -5413,16 +5507,18 @@ impl RpcMethods {
             );
 
             // Add to block builder using space_id as thread_id (each space is its own "thread")
-            use crate::blocks::branch_path::BranchPath;
             use crate::blocks::content_block::SpaceCreationMetadata;
 
             let action_clone = action.clone();
 
+            // Space creation uses the space_id as the thread_id; the branch is
+            // hash-derived from it like any other new thread (SPEC_08 §4)
+            let branch_path =
+                self.resolve_branch_path(&space_id_32, &space_id_32, Some(&creator_bytes));
+
             // Scope the lock to avoid holding it across await
             {
                 let mut builder = block_builder.write().unwrap();
-                // Space creation uses the space_id as the thread_id and a root-level branch path
-                let branch_path = BranchPath::root();
                 // Include space metadata so other nodes can register the space when syncing
                 let metadata = SpaceCreationMetadata {
                     name: params.name.clone(),
@@ -5507,6 +5603,24 @@ impl RpcMethods {
             "[CREATE_SPACE] Created space {} ({})",
             space_id, params.name
         );
+
+        // Recognition: space registered successfully. Award LaneOpener on the
+        // creator's first space (SPEC_09 §5.3). Re-specified for the PoW-only
+        // model — no swimmer-level gate. Recognition ONLY: never blocks creation.
+        if let Some(ref achievements) = self.node.achievement_service {
+            match achievements.record_space_created(&creator_bytes, current_time) {
+                Ok(unlocked) => {
+                    for a in unlocked {
+                        info!(
+                            "[ACHIEVEMENT] Unlocked {} {} (created space)",
+                            a.badge(),
+                            a.name()
+                        );
+                    }
+                }
+                Err(e) => warn!("[ACHIEVEMENT] Failed to record space creation: {}", e),
+            }
+        }
 
         let result = CreateSpaceResult {
             space_id,
@@ -7822,6 +7936,11 @@ impl RpcMethods {
             return RpcResponse::success(serde_json::Value::Null, id);
         }
 
+        // Attach the poster's reputation as a trust signal (SPEC_12 §3.4). Purely
+        // informational — carries no protocol privilege. Defaults to the neutral
+        // base-score summary when no record exists yet.
+        let reputation = self.reputation_summary_json(&user_id_norm);
+
         // Return profile info. avatar_content_id is the content hash of the avatar image;
         // clients fetch it like any media (get_media / getMediaUrl).
         RpcResponse::success(
@@ -7832,396 +7951,288 @@ impl RpcMethods {
                 "avatar_url": avatar_content_id.clone(),
                 "avatar_content_id": avatar_content_id,
                 "updated_at": updated_at,
+                "reputation": reputation,
+                "achievements": self.achievements_json(&user_id_norm),
             }),
             id,
         )
     }
 
-    // ========================================================================
-    // Engagement Pool Methods (SPEC_03 §7)
-    // ========================================================================
-
-    /// Create a new engagement pool for content (DEPRECATED)
-    /// Use submit_engagement with emoji param instead
-    async fn create_pool(&self, _params: Value, id: Value) -> RpcResponse {
-        RpcResponse::error(
-            RpcErrorCode::MethodNotFound,
-            "Pool system deprecated. Use submit_engagement with emoji param for reactions.",
-            id,
-        )
+    /// Build the achievements JSON array for a hex identity (empty if the
+    /// service is unavailable or the id is unparseable). Each entry carries the
+    /// stable id, badge emoji, name, and description so clients need no local
+    /// achievement table. Recognition metadata ONLY.
+    fn achievements_json(&self, user_id_hex: &str) -> Vec<serde_json::Value> {
+        let Some(service) = &self.node.achievement_service else {
+            return Vec::new();
+        };
+        let Some(identity) = hex::decode(user_id_hex)
+            .ok()
+            .and_then(|v| <[u8; 32]>::try_from(v).ok())
+        else {
+            return Vec::new();
+        };
+        let tracker = match service.get_tracker(&identity) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("[ACHIEVEMENT] Failed to load achievements: {}", e);
+                return Vec::new();
+            }
+        };
+        // Sort by stable wire id so the badge row order is deterministic.
+        let mut records = tracker.all_achievements();
+        records.sort_by_key(|r| r.achievement.as_u8());
+        records
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "id": r.achievement.as_u8(),
+                    "key": format!("{:?}", r.achievement),
+                    "badge": r.achievement.badge(),
+                    "name": r.achievement.name(),
+                    "description": r.achievement.description(),
+                    "unlocked_at": r.unlocked_at_secs,
+                })
+            })
+            .collect()
     }
 
-    /// Contribute PoW to an engagement pool (SPEC_03 §7, SPEC_08 §3.3)
-    ///
-    /// Adds a proof-of-work contribution to an existing engagement pool.
-    /// If the pool reaches its required total, it completes and the target
-    /// content's decay timer is reset.
-    ///
-    /// # Parameters
-    /// Accepts the full `ContributeToPoolParams` shape, or a simplified form
-    /// with just `pool_id` and `amount`/`pow_work` (seconds of work):
-    /// - `pool_id`: 32-byte hex pool identifier (required)
-    /// - `pow_work` / `amount`: Amount of work in seconds (required, min 1)
-    /// - `contributor_id`: 32-byte hex contributor public key (defaults to node identity)
-    /// - `pow_nonce`: PoW nonce
-    /// - `pow_target`: 32-byte hex target hash (validated against the pool's expected target)
-    /// - `nonce_space`: 8-byte hex nonce space
-    /// - `signature`: 64-byte hex Ed25519 signature
-    /// - `emoji`: Optional emoji code (1-8)
-    async fn contribute_to_pool(&self, params: Value, id: Value) -> RpcResponse {
-        // Parse parameters: try the full ContributeToPoolParams shape first,
-        // then fall back to the simplified {pool_id, amount} form.
-        let (
-            pool_id,
-            contributor_id,
-            pow_nonce,
-            pow_work,
-            pow_target,
-            nonce_space,
-            signature,
-            emoji,
-        ) = if let Ok(p) = serde_json::from_value::<ContributeToPoolParams>(params.clone()) {
-            (
-                p.pool_id,
-                p.contributor_id,
-                p.pow_nonce,
-                p.pow_work,
-                p.pow_target,
-                p.nonce_space,
-                p.signature,
-                p.emoji,
-            )
-        } else {
-            let pool_id = match params.get("pool_id").and_then(|v| v.as_str()) {
-                Some(s) => s.to_string(),
-                None => {
-                    return RpcResponse::error(
-                        RpcErrorCode::InvalidParams,
-                        "Missing required parameter: pool_id",
-                        id,
-                    );
-                }
-            };
-            let pow_work = match params
-                .get("amount")
-                .and_then(|v| v.as_u64())
-                .or_else(|| params.get("pow_work").and_then(|v| v.as_u64()))
-            {
-                Some(w) => w,
-                None => {
-                    return RpcResponse::error(
-                        RpcErrorCode::InvalidParams,
-                        "Missing required parameter: amount or pow_work",
-                        id,
-                    );
-                }
-            };
-            let contributor_id = params
-                .get("contributor_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let pow_nonce = params
-                .get("pow_nonce")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let pow_target = params
-                .get("pow_target")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let nonce_space = params
-                .get("nonce_space")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let signature = params
-                .get("signature")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let emoji = params
-                .get("emoji")
-                .and_then(|v| v.as_u64())
-                .map(|e| e as u8);
-            (
-                pool_id,
-                contributor_id,
-                pow_nonce,
-                pow_work,
-                pow_target,
-                nonce_space,
-                signature,
-                emoji,
-            )
+    /// get_achievements(user_id) — return the recognition badges an identity has
+    /// earned (SPEC_09 §5.3). Read-only, public data. `user_id` may be a 32-byte
+    /// hex pubkey or a cs1 address. Recognition ONLY — no protocol effect.
+    async fn get_achievements(&self, params: Value, id: Value) -> RpcResponse {
+        let user_id = match params.get("user_id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing user_id parameter",
+                    id,
+                );
+            }
         };
 
-        // Validate work amount
-        if pow_work == 0 {
+        // Normalize to a lowercase hex pubkey (accept hex or cs1 address), same
+        // as get_user_profile.
+        let user_id_norm: String = if user_id.len() == 64 && hex::decode(user_id).is_ok() {
+            user_id.to_lowercase()
+        } else if let Ok(pk) = crate::crypto::address::decode_address_to_pubkey(user_id) {
+            hex::encode(pk.0)
+        } else {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
-                "pow_work must be positive",
+                "Invalid user_id: must be 32-byte hex or a cs1 address",
+                id,
+            );
+        };
+
+        if self.node.achievement_service.is_none() {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                "Achievement service not available",
                 id,
             );
         }
 
-        // Validate pool_id format
-        let pool_id_bytes: [u8; 32] = match hex::decode(&pool_id) {
+        let achievements = self.achievements_json(&user_id_norm);
+        RpcResponse::success(
+            json!({
+                "user_id": user_id_norm,
+                "achievements": achievements,
+            }),
+            id,
+        )
+    }
+
+    /// Build a small reputation JSON object for a hex-encoded identity pubkey, used
+    /// to embed reputation in profile responses. Returns `null` if the id is not a
+    /// valid 32-byte hex pubkey.
+    fn reputation_summary_json(&self, user_id_hex: &str) -> Value {
+        let identity: [u8; 32] = match hex::decode(user_id_hex) {
             Ok(bytes) if bytes.len() == 32 => {
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&bytes);
                 arr
             }
-            _ => {
-                return RpcResponse::error(
-                    RpcErrorCode::InvalidParams,
-                    "Invalid pool_id: must be 32-byte hex",
-                    id,
-                );
-            }
+            _ => return Value::Null,
         };
-
-        // Parse contributor_id (defaults to this node's identity if not provided)
-        let contributor_bytes: [u8; 32] = if contributor_id.is_empty() {
-            *self.node.keypair.public_key.as_bytes()
-        } else {
-            match hex::decode(&contributor_id) {
-                Ok(bytes) if bytes.len() == 32 => {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(&bytes);
-                    arr
-                }
-                _ => {
-                    return RpcResponse::error(
-                        RpcErrorCode::InvalidParams,
-                        "Invalid contributor_id: must be 32-byte hex",
-                        id,
-                    );
-                }
-            }
+        let rep = match &self.node.reputation_store {
+            Some(store) => store
+                .get(&identity)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| crate::reputation::PosterReputation::new(identity)),
+            None => crate::reputation::PosterReputation::new(identity),
         };
+        let summary = crate::reputation::types::ReputationSummary::from_reputation(&rep);
+        json!({
+            "score": summary.score,
+            "effect": summary.effect,
+            "badge": summary.badge,
+            "age_days": summary.age_days,
+            "net_spam_flags": summary.net_spam_flags,
+            "has_illegal_flags": summary.has_illegal_flags,
+            "total_posts": summary.total_posts,
+        })
+    }
 
-        // Parse pow_target (optional; validated against the expected target below)
-        let pow_target_bytes: [u8; 32] = if pow_target.is_empty() {
-            [0u8; 32]
-        } else {
-            match hex::decode(&pow_target) {
-                Ok(bytes) if bytes.len() == 32 => {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(&bytes);
-                    arr
-                }
-                _ => {
-                    return RpcResponse::error(
-                        RpcErrorCode::InvalidParams,
-                        "Invalid pow_target: must be 32-byte hex",
-                        id,
-                    );
-                }
-            }
-        };
-
-        // Parse nonce_space (optional)
-        let nonce_space_bytes: [u8; 8] = if nonce_space.is_empty() {
-            [0u8; 8]
-        } else {
-            match hex::decode(&nonce_space) {
-                Ok(bytes) if bytes.len() == 8 => {
-                    let mut arr = [0u8; 8];
-                    arr.copy_from_slice(&bytes);
-                    arr
-                }
-                _ => {
-                    return RpcResponse::error(
-                        RpcErrorCode::InvalidParams,
-                        "Invalid nonce_space: must be 8-byte hex",
-                        id,
-                    );
-                }
-            }
-        };
-
-        // Parse signature (optional)
-        let signature_bytes: [u8; 64] = if signature.is_empty() {
-            [0u8; 64]
-        } else {
-            match hex::decode(&signature) {
-                Ok(bytes) if bytes.len() == 64 => {
-                    let mut arr = [0u8; 64];
-                    arr.copy_from_slice(&bytes);
-                    arr
-                }
-                _ => {
-                    return RpcResponse::error(
-                        RpcErrorCode::InvalidParams,
-                        "Invalid signature: must be 64-byte hex",
-                        id,
-                    );
-                }
-            }
-        };
-
-        // Get pool manager
-        let pool_manager = match &self.node.pool_manager {
-            Some(pm) => pm,
+    /// Get an identity's poster reputation (SPEC_12 §3.4/§4.5).
+    ///
+    /// Reputation is a public, informational trust signal derived from community
+    /// spam attestations and time-based recovery. It is read-only here and carries
+    /// NO protocol privileges: a high score never reduces PoW cost, extends content
+    /// decay, or raises rate limits — it only reflects standing for display and for
+    /// down-weighting abusive attesters (see `spam_attestation::aggregation`).
+    ///
+    /// Params:
+    /// - `identity` (or `user_id`): 32-byte hex pubkey or a cs1 address.
+    ///
+    /// Returns a reputation summary, or a default (base-score) summary for an
+    /// identity that has no record yet.
+    async fn get_reputation(&self, params: Value, id: Value) -> RpcResponse {
+        let raw = params
+            .get("identity")
+            .or_else(|| params.get("user_id"))
+            .and_then(|v| v.as_str());
+        let raw = match raw {
+            Some(s) => s,
             None => {
                 return RpcResponse::error(
-                    RpcErrorCode::SubsystemUnavailable,
-                    "Pool manager not available",
+                    RpcErrorCode::InvalidParams,
+                    "Missing identity parameter",
                     id,
                 );
             }
         };
 
-        let current_time_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-
-        // Compute the expected PoW target for this pool (SPEC_03 §7.4)
-        let expected_target = {
-            let pm = match pool_manager.read() {
-                Ok(pm) => pm,
-                Err(_) => {
-                    return RpcResponse::error(
-                        RpcErrorCode::InternalError,
-                        "Pool manager lock poisoned",
-                        id,
-                    );
-                }
-            };
-            match pm.get_pool(&pool_id_bytes) {
-                Some(pool) => compute_pool_pow_target(&pool.target_content, &pool_id_bytes, None),
-                None => {
-                    return RpcResponse::error(
-                        RpcErrorCode::ContentNotFound,
-                        &format!("Pool not found: {}", &pool_id[..16.min(pool_id.len())]),
-                        id,
-                    );
-                }
-            }
-        };
-
-        // If the caller supplied an explicit target, it must match the expected one
-        if pow_target_bytes != [0u8; 32] && pow_target_bytes != expected_target {
+        // Accept either a 32-byte hex pubkey or a cs1 address.
+        let identity: [u8; 32] = if raw.len() == 64 && hex::decode(raw).is_ok() {
+            let bytes = hex::decode(raw).unwrap();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            arr
+        } else if let Ok(pk) = crate::crypto::address::decode_address_to_pubkey(raw) {
+            pk.0
+        } else {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
-                "PoW target does not match expected target for this pool",
+                "Invalid identity: must be 32-byte hex or a cs1 address",
                 id,
             );
-        }
-
-        // Build and add the contribution (validation happens inside add_contribution)
-        let contribution = PoolContribution {
-            contributor: contributor_bytes,
-            pow_nonce,
-            pow_work,
-            pow_target: expected_target,
-            timestamp: current_time_ms,
-            signature: signature_bytes,
-            nonce_space: nonce_space_bytes,
-            emoji,
         };
 
-        let config = ForkPoWConfig::default();
-        let result = {
-            let mut pm = match pool_manager.write() {
-                Ok(pm) => pm,
-                Err(_) => {
+        let summary = match &self.node.reputation_store {
+            Some(store) => match store.get(&identity) {
+                Ok(Some(rep)) => crate::reputation::types::ReputationSummary::from_reputation(&rep),
+                // No record yet: report the neutral base-score summary.
+                Ok(None) => crate::reputation::types::ReputationSummary::from_reputation(
+                    &crate::reputation::PosterReputation::new(identity),
+                ),
+                Err(e) => {
                     return RpcResponse::error(
                         RpcErrorCode::InternalError,
-                        "Pool manager lock poisoned",
+                        &format!("Failed to read reputation: {}", e),
                         id,
                     );
                 }
-            };
-            pm.add_contribution(pool_id_bytes, contribution, current_time_ms, &config)
-                .map(|()| {
-                    let total_pow = pm.get_pool_total(&pool_id_bytes).unwrap_or(0);
-                    let completion = pm.check_completion(pool_id_bytes);
-                    let pool_complete =
-                        matches!(completion, Ok(CompletionResult::Completed { .. }));
-                    (total_pow, pool_complete)
-                })
+            },
+            None => crate::reputation::types::ReputationSummary::from_reputation(
+                &crate::reputation::PosterReputation::new(identity),
+            ),
         };
 
-        match result {
-            Ok((total_pow, pool_complete)) => {
-                // Pool completed: reset the content's decay timer (mirrors router behavior)
-                if pool_complete {
-                    if let Some(ref decay) = self.node.decay_integration {
-                        let target_content = pool_manager
-                            .read()
-                            .ok()
-                            .and_then(|pm| pm.get_pool(&pool_id_bytes).map(|p| p.target_content));
-                        if let Some(target_content) = target_content {
-                            let blob_hash = ContentBlobHash::from_bytes(target_content);
-                            if let Err(e) = decay.on_engagement(&blob_hash) {
-                                warn!("[POOL] Failed to record engagement: {}", e);
-                            }
-                        }
-                    }
-                }
+        RpcResponse::success(
+            json!({
+                "identity": hex::encode(identity),
+                "score": summary.score,
+                "effect": summary.effect,
+                "badge": summary.badge,
+                "age_days": summary.age_days,
+                "net_spam_flags": summary.net_spam_flags,
+                "has_illegal_flags": summary.has_illegal_flags,
+                "total_posts": summary.total_posts,
+            }),
+            id,
+        )
+    }
 
-                let status = if pool_complete { "completed" } else { "open" };
-                let response = ContributeToPoolResult {
-                    accepted: true,
-                    total_pow,
-                    pool_complete,
-                    status: status.to_string(),
-                };
-                RpcResponse::success(serde_json::to_value(response).unwrap(), id)
-            }
-            Err(e) => {
-                let (code, msg) = match &e {
-                    PoolError::PoolNotFound(_) => (RpcErrorCode::ContentNotFound, format!("{}", e)),
-                    PoolError::PoolNotOpen(_) => (
-                        RpcErrorCode::InvalidParams,
-                        "Pool is not open for contributions".to_string(),
-                    ),
-                    PoolError::PoolExpired(_) => {
-                        (RpcErrorCode::InvalidParams, "Pool has expired".to_string())
-                    }
-                    PoolError::ContributionTooSmall { .. }
-                    | PoolError::ContentMismatch
-                    | PoolError::ContributionAfterDeadline { .. } => {
-                        (RpcErrorCode::InvalidParams, format!("{}", e))
-                    }
-                    PoolError::InvalidPoW(_) => (RpcErrorCode::PowInvalid, format!("{}", e)),
-                    PoolError::InvalidSignature => {
-                        (RpcErrorCode::InvalidSignature, format!("{}", e))
-                    }
-                    PoolError::InvalidStatus(_) => (
-                        RpcErrorCode::InternalError,
-                        format!("Internal error: {}", e),
-                    ),
-                };
-                RpcResponse::error(code, &msg, id)
-            }
+    /// Apply a reputation spam-flag penalty to the author of `content_hash` when a
+    /// community spam threshold is first reached. Resolves author via the content
+    /// store; a no-op if either store is unavailable or the content is unknown.
+    ///
+    /// This only ever LOWERS reputation (decay on spam). It never grants privileges.
+    fn record_spam_flag_for_content(&self, content_hash: &[u8; 32], timestamp: u64) {
+        let (rep_store, content_store) =
+            match (&self.node.reputation_store, &self.node.content_store) {
+                (Some(r), Some(c)) => (r, c),
+                _ => return,
+            };
+        let content_id = ContentId::from_bytes(*content_hash);
+        let author = match content_store.get(&content_id) {
+            Ok(Some(item)) => item.author_id.0,
+            _ => return,
+        };
+        if let Err(e) = rep_store.record_spam_flag(&author, timestamp) {
+            warn!("[REPUTATION] Failed to record spam flag: {}", e);
+        } else {
+            debug!(
+                "[REPUTATION] Spam flag recorded against author {} for content {}",
+                hex::encode(&author[..8]),
+                hex::encode(&content_hash[..8])
+            );
         }
     }
 
-    /// Get information about an engagement pool (DEPRECATED)
-    async fn get_pool_info(&self, _params: Value, id: Value) -> RpcResponse {
-        RpcResponse::error(
-            RpcErrorCode::MethodNotFound,
-            "Pool system deprecated. Use get_reactions to get reaction counts.",
-            id,
-        )
+    /// Apply reputation recovery to the author of `content_hash` when its spam flag
+    /// is cleared by counter-attestations. No-op if stores/content are unavailable.
+    fn record_counter_for_content(&self, content_hash: &[u8; 32], timestamp: u64) {
+        let (rep_store, content_store) =
+            match (&self.node.reputation_store, &self.node.content_store) {
+                (Some(r), Some(c)) => (r, c),
+                _ => return,
+            };
+        let content_id = ContentId::from_bytes(*content_hash);
+        let author = match content_store.get(&content_id) {
+            Ok(Some(item)) => item.author_id.0,
+            _ => return,
+        };
+        if let Err(e) = rep_store.record_counter(&author, timestamp) {
+            warn!("[REPUTATION] Failed to record counter recovery: {}", e);
+        }
     }
 
-    /// Get pool info for a content item (DEPRECATED)
-    async fn get_pool_for_content(&self, _params: Value, id: Value) -> RpcResponse {
-        RpcResponse::error(
-            RpcErrorCode::MethodNotFound,
-            "Pool system deprecated. Use get_reactions to get reaction counts.",
-            id,
-        )
+    /// Aggregate spam attestations for `content_hash`, weighting each attester's
+    /// contribution by its poster reputation when a reputation store is available
+    /// (SPEC_12 §4.2 + attester weighting). Falls back to plain unique-tree
+    /// aggregation when reputation is unavailable.
+    ///
+    /// Weighting is strictly defensive: a low-reputation attester counts for LESS,
+    /// and a high-reputation attester is capped at the default weight (never more).
+    fn aggregate_with_reputation(
+        &self,
+        content_hash: [u8; 32],
+        attestations: &[StoredSpamAttestation],
+        is_cleared: bool,
+    ) -> crate::spam_attestation::AttestationAggregation {
+        match &self.node.reputation_store {
+            Some(store) => {
+                let weight_of = |attester: &[u8; 32]| -> f64 {
+                    // Absent record => neutral base score (fresh identity).
+                    let score = store
+                        .get_score(attester)
+                        .unwrap_or(crate::reputation::score::REPUTATION_BASE_SCORE);
+                    crate::reputation::score::attester_weight(score)
+                };
+                crate::spam_attestation::aggregate_attestations_weighted(
+                    content_hash,
+                    attestations,
+                    is_cleared,
+                    weight_of,
+                )
+            }
+            None => aggregate_attestations(content_hash, attestations, is_cleared),
+        }
     }
-
-    // NOTE: create_pool, get_pool_info, and get_pool_for_content remain deprecated
-    // (use submit_engagement with emoji param for reactions). contribute_to_pool is
-    // live again so nodes can contribute PoW to pools announced over the network.
 
     // === Reply Methods ===
 
@@ -9832,6 +9843,20 @@ impl RpcMethods {
             None => attester,
         };
 
+        // Snapshot whether this content was already spam-flagged BEFORE adding this
+        // attestation, so we only apply the reputation penalty on the FIRST crossing
+        // of the threshold (not once per attestation after it is reached).
+        let counter_state_pre = store.get_counter_state(&content_hash).unwrap_or_else(|_| {
+            crate::spam_attestation::CounterAttestationState::empty(content_hash)
+        });
+        let was_flagged = {
+            let prior = store
+                .get_attestations_for_content(&content_hash)
+                .unwrap_or_default();
+            self.aggregate_with_reputation(content_hash, &prior, counter_state_pre.is_cleared)
+                .should_accelerate_decay
+        };
+
         // Store attestation
         let stored = StoredSpamAttestation {
             attestation: attestation.clone(),
@@ -9855,7 +9880,13 @@ impl RpcMethods {
             crate::spam_attestation::CounterAttestationState::empty(content_hash)
         });
         let aggregation =
-            aggregate_attestations(content_hash, &attestations, counter_state.is_cleared);
+            self.aggregate_with_reputation(content_hash, &attestations, counter_state.is_cleared);
+
+        // On the first crossing of the spam threshold, decay the content author's
+        // identity-level reputation (SPEC_12 §3.4). Idempotent per crossing.
+        if !was_flagged && aggregation.should_accelerate_decay {
+            self.record_spam_flag_for_content(&content_hash, timestamp);
+        }
 
         // Increment rate limit
         store.increment_attestation_count(&attester, timestamp);
@@ -10047,6 +10078,12 @@ impl RpcMethods {
             state.count(),
             crate::spam_attestation::COUNTER_ATTESTATION_THRESHOLD
         );
+
+        // When counter-attestations clear the spam flag, credit the content author's
+        // reputation with fast recovery (SPEC_12 §4.5). Only on the crossing.
+        if threshold_reached {
+            self.record_counter_for_content(&content_hash, timestamp);
+        }
 
         RpcResponse::success(
             json!({
@@ -11605,15 +11642,14 @@ impl RpcMethods {
             let mut space_id_32 = [0u8; 32];
             space_id_32[..16].copy_from_slice(&space_id);
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = self.resolve_branch_path(&space_id_32, &thread_id, Some(&creator_pk));
+
             // Add to block builder
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    let added = builder.add_action(
-                        thread_id,
-                        space_id_32,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    let added =
+                        builder.add_action(thread_id, space_id_32, action.clone(), branch_path);
                     if added {
                         info!("[BLOCKS] Added CREATE_PRIVATE_SPACE action to block builder");
                     }
@@ -11805,6 +11841,7 @@ impl RpcMethods {
         // on testnet/mainnet where SpaceCreation PoW takes tens of seconds.
         let block_builder = self.node.block_builder.clone();
         let connection_pool = self.node.connection_pool.clone();
+        let chain_store = self.node.chain_store.clone();
         tokio::spawn(async move {
             let solution =
                 match tokio::task::spawn_blocking(move || compute_pow(&challenge, &config)).await {
@@ -11846,9 +11883,16 @@ impl RpcMethods {
             let mut space_id_32 = [0u8; 32];
             space_id_32[..16].copy_from_slice(&space_id);
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = match chain_store {
+                Some(ref store) => crate::branch::BranchManager::new(store)
+                    .resolve_mempool_branch_path(&space_id_32, &thread_id, Some(&creator_pk)),
+                None => BranchPath::root(),
+            };
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(thread_id, space_id_32, action.clone(), branch_path)
                 }
                 Err(e) => {
                     warn!("[BLOCKS] Failed to acquire block builder lock: {:?}", e);
@@ -12432,9 +12476,12 @@ impl RpcMethods {
             let mut space_id_32 = [0u8; 32];
             space_id_32[..16].copy_from_slice(&space_id);
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = self.resolve_branch_path(&space_id_32, &thread_id, Some(&inviter_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(thread_id, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -12618,9 +12665,13 @@ impl RpcMethods {
                 replaces_pending: None,
             };
 
+            // Accept joins the invite's thread branch (SPEC_08 §4)
+            let branch_path =
+                self.resolve_branch_path(&space_id_32, &invite_hash, Some(&acceptor_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(invite_hash, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(invite_hash, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -12850,9 +12901,12 @@ impl RpcMethods {
             let mut space_id_32 = [0u8; 32];
             space_id_32[..16].copy_from_slice(&space_id);
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = self.resolve_branch_path(&space_id_32, &thread_id, Some(&inviter_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(thread_id, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(thread_id, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -13025,9 +13079,13 @@ impl RpcMethods {
                 replaces_pending: None,
             };
 
+            // Accept joins the invite's thread branch (SPEC_08 §4)
+            let branch_path =
+                self.resolve_branch_path(&space_id_32, &invite_hash, Some(&acceptor_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(invite_hash, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(invite_hash, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -13310,9 +13368,12 @@ impl RpcMethods {
                 replaces_pending: None,
             };
 
+            // New thread: hash-derived branch placement (SPEC_08 §4)
+            let branch_path = self.resolve_branch_path(&space_id_32, &leave_hash, Some(&member_pk));
+
             let added = match block_builder.write() {
                 Ok(mut builder) => {
-                    builder.add_action(leave_hash, space_id_32, action.clone(), BranchPath::root())
+                    builder.add_action(leave_hash, space_id_32, action.clone(), branch_path)
                 }
                 Err(_) => false,
             };
@@ -13614,20 +13675,20 @@ impl RpcMethods {
                 replaces_pending: None,
             };
 
+            // New threads: hash-derived branch placement (SPEC_08 §4)
+            let kick_branch = self.resolve_branch_path(&space_id_32, &kick_hash, Some(&admin_pk));
+            let rotation_branch =
+                self.resolve_branch_path(&space_id_32, &rotation_hash, Some(&admin_pk));
+
             // Add both actions to the mempool, then announce whichever were accepted
             let (added_kick, added_rotation) = match block_builder.write() {
                 Ok(mut builder) => (
-                    builder.add_action(
-                        kick_hash,
-                        space_id_32,
-                        kick_action.clone(),
-                        BranchPath::root(),
-                    ),
+                    builder.add_action(kick_hash, space_id_32, kick_action.clone(), kick_branch),
                     builder.add_action(
                         rotation_hash,
                         space_id_32,
                         rotation_action.clone(),
-                        BranchPath::root(),
+                        rotation_branch,
                     ),
                 ),
                 Err(_) => (false, false),
@@ -13874,6 +13935,216 @@ impl RpcMethods {
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
     }
 
+    /// Bulk-import external hash-list entries into the blocklist (operator-only).
+    ///
+    /// Seeds `ExternalList`-family entries (SPEC_12 CSAM hash seeding). The
+    /// caller supplies the list body inline (`list`) or a server-side file
+    /// (`path`); the format is documented in the operator guide. Imported
+    /// SHA-256 entries participate in gossip/bundles; SHA-1/MD5 digests are
+    /// indexed for recompute-and-match at content ingest.
+    ///
+    /// This method is guarded by the RPC server's cookie authentication.
+    async fn import_blocklist(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ImportBlocklistParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Resolve the list body: inline `list` wins, else read `path`.
+        let body = match (params.list, params.path) {
+            (Some(list), _) => list,
+            (None, Some(path)) => match std::fs::read_to_string(&path) {
+                Ok(contents) => contents,
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Failed to read list file '{}': {}", path, e),
+                        id,
+                    );
+                }
+            },
+            (None, None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Provide either 'list' (inline) or 'path' (server-side file)",
+                    id,
+                );
+            }
+        };
+
+        let records = match crate::blocklist::parse_import(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Failed to parse import list: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let blocklist = match &self.node.blocklist {
+            Some(bl) => bl,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Blocklist store not available",
+                    id,
+                );
+            }
+        };
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut store = match blocklist.write() {
+            Ok(store) => store,
+            Err(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Blocklist store lock poisoned",
+                    id,
+                );
+            }
+        };
+
+        let source_node = *self.node.keypair.public_key.as_bytes();
+        let stats = match store.import_records(&records, source_node, timestamp) {
+            Ok(s) => s,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Import failed: {}", e),
+                    id,
+                );
+            }
+        };
+
+        info!(
+            "[BLOCKLIST] Imported {} records via RPC: +{} sha256, +{} sha1, +{} md5, {} skipped",
+            records.len(),
+            stats.sha256_added,
+            stats.sha1_indexed,
+            stats.md5_indexed,
+            stats.sha256_skipped
+        );
+
+        let result = ImportBlocklistResult {
+            sha256_added: stats.sha256_added,
+            sha256_skipped: stats.sha256_skipped,
+            sha1_indexed: stats.sha1_indexed,
+            md5_indexed: stats.md5_indexed,
+            count: store.count(),
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    // ========================================================================
+    // Behavioral Branching Methods (SPEC_13 Phase A / Phase 1 log-only rollout)
+    // ========================================================================
+
+    /// List recorded behavioral-branching events (`docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`
+    /// Phase 1): would-be community formations detected while running in
+    /// log-only mode. Optionally scoped to one space.
+    ///
+    /// Optional parameters:
+    /// - `space_id`: restrict results to one space (32-byte hex)
+    async fn list_behavioral_events(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ListBehavioralEventsParams = if params.is_null() {
+            ListBehavioralEventsParams { space_id: None }
+        } else {
+            match serde_json::from_value(params) {
+                Ok(p) => p,
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Invalid params: {}", e),
+                        id,
+                    );
+                }
+            }
+        };
+
+        let chain_store = match &self.node.chain_store {
+            Some(cs) => cs,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Chain store not available",
+                    id,
+                );
+            }
+        };
+
+        let events = if let Some(space_id_hex) = &params.space_id {
+            let space_id: [u8; 32] = match hex::decode(space_id_hex) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    arr
+                }
+                _ => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Invalid space_id: must be 32-byte hex",
+                        id,
+                    );
+                }
+            };
+            chain_store.get_space_behavioral_events(&space_id)
+        } else {
+            chain_store.get_all_behavioral_events()
+        };
+
+        let mut events = match events {
+            Ok(events) => events,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to read behavioral events: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Most recently detected first.
+        events.sort_by(|a, b| {
+            b.detected_height
+                .cmp(&a.detected_height)
+                .then_with(|| b.timestamp.cmp(&a.timestamp))
+        });
+
+        let events: Vec<BehavioralEventInfo> = events
+            .iter()
+            .map(|e| BehavioralEventInfo {
+                event_id: hex::encode(e.event_id),
+                space_id: hex::encode(e.parent_space_id),
+                cluster_members: e.cluster_members.iter().map(hex::encode).collect(),
+                engagement_diversity: e.metrics.engagement_diversity,
+                external_interaction: e.metrics.external_interaction,
+                internal_cohesion: e.metrics.internal_cohesion,
+                member_count: e.metrics.member_count,
+                age_blocks: e.metrics.age_blocks,
+                detected_height: e.detected_height,
+                timestamp: e.timestamp,
+            })
+            .collect();
+
+        let result = ListBehavioralEventsResult {
+            count: events.len() as u32,
+            events,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
     // ========================================================================
     // Sponsorship Methods
     // ========================================================================
@@ -13990,7 +14261,6 @@ impl RpcMethods {
         // SPEC_11 Phase 6: Create on-chain GenesisRegister action and add to block builder
         {
             use crate::blocks::action::Action;
-            use crate::blocks::BranchPath;
 
             let action = Action::new_genesis_register(
                 identity_bytes,
@@ -14003,13 +14273,16 @@ impl RpcMethods {
             let action_hash = action.hash();
 
             if let Some(ref block_builder) = self.node.block_builder {
+                // New thread in the system space: hash-derived branch (SPEC_08 §4)
+                let branch_path =
+                    self.resolve_branch_path(&system_space_id, &action_hash, Some(&identity_bytes));
                 match block_builder.write() {
                     Ok(mut builder) => {
                         let added = builder.add_action(
                             action_hash,
                             system_space_id,
                             action.clone(),
-                            BranchPath::root(),
+                            branch_path,
                         );
                         if added {
                             info!("[SPONSORSHIP] Added GenesisRegister action to block builder");
@@ -14280,7 +14553,6 @@ impl RpcMethods {
         // SPEC_11 Phase 6: Create on-chain Sponsor action and add to block builder
         {
             use crate::blocks::action::Action;
-            use crate::blocks::BranchPath;
 
             // Parse PoW fields from params if provided
             let pow_target_bytes: [u8; 32] = params
@@ -14313,13 +14585,16 @@ impl RpcMethods {
             let action_hash = action.hash();
 
             if let Some(ref block_builder) = self.node.block_builder {
+                // New thread in the system space: hash-derived branch (SPEC_08 §4)
+                let branch_path =
+                    self.resolve_branch_path(&system_space_id, &action_hash, Some(&sponsor_bytes));
                 match block_builder.write() {
                     Ok(mut builder) => {
                         let added = builder.add_action(
                             action_hash,
                             system_space_id,
                             action.clone(),
-                            BranchPath::root(),
+                            branch_path,
                         );
                         if added {
                             info!("[SPONSORSHIP] Added Sponsor action to block builder");
@@ -15522,7 +15797,6 @@ impl RpcMethods {
         // Create on-chain Sponsor action
         {
             use crate::blocks::action::Action;
-            use crate::blocks::BranchPath;
 
             // Compute actual pow_work from the claim's PoW proof
             let pow_work = {
@@ -15548,13 +15822,11 @@ impl RpcMethods {
             let action_hash = action.hash();
 
             if let Some(ref block_builder) = self.node.block_builder {
+                // New thread in the system space: hash-derived branch (SPEC_08 §4)
+                let branch_path =
+                    self.resolve_branch_path(&system_space_id, &action_hash, Some(&sponsor_bytes));
                 if let Ok(mut builder) = block_builder.write() {
-                    builder.add_action(
-                        action_hash,
-                        system_space_id,
-                        action.clone(),
-                        BranchPath::root(),
-                    );
+                    builder.add_action(action_hash, system_space_id, action.clone(), branch_path);
                 }
             }
 

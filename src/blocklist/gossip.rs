@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::spam_attestation::{SpamAttestation, SpamReason};
 
+use super::bundle::BlocklistBundle;
 use super::error::{BlocklistError, BlocklistResult};
 use super::types::{
     BlocklistEntry, BlocklistReason, BlocklistRequest, BlocklistSync, BlocklistUpdate,
@@ -26,6 +27,9 @@ pub const MSG_BLOCKLIST_SYNC: u8 = 0xB1;
 
 /// Message type for blocklist request (0xB2)
 pub const MSG_BLOCKLIST_REQUEST: u8 = 0xB2;
+
+/// Message type for a signed, versioned blocklist bundle (0xB3)
+pub const MSG_BLOCKLIST_BUNDLE: u8 = 0xB3;
 
 /// Maximum age for blocklist updates (24 hours)
 pub const BLOCKLIST_UPDATE_MAX_AGE_SECS: u64 = 86_400;
@@ -190,6 +194,54 @@ impl BlocklistGossip {
         Ok(())
     }
 
+    /// Validate an incoming blocklist update with a trust-anchor fast path.
+    ///
+    /// Two acceptance paths (SPEC_12 CSAM-seeding workstream A.2):
+    ///
+    /// 1. **Trust-anchored:** if `update.reporting_node` is in `trusted_keys`
+    ///    (the configured list-maintainer set) and the Ed25519 signature is
+    ///    valid, the update is accepted *without* community attestations. This
+    ///    lets a signed seed entry propagate network-wide without every node
+    ///    importing it manually. Freshness is still enforced.
+    /// 2. **Community-attested:** otherwise the update must satisfy the existing
+    ///    attestation threshold (delegates to [`Self::validate_update`]).
+    ///
+    /// This keeps "any peer can gossip a blocklist entry" impossible: an
+    /// untrusted key still needs the full attestation set.
+    pub fn validate_update_with_trust<F>(
+        &self,
+        update: &BlocklistUpdate,
+        current_time: u64,
+        trusted_keys: &HashSet<[u8; 32]>,
+        verify_signature: F,
+    ) -> BlocklistResult<()>
+    where
+        F: Fn(&[u8; 32], &[u8], &[u8; 64]) -> bool,
+    {
+        // Freshness applies to both paths.
+        if current_time > update.timestamp
+            && current_time - update.timestamp > BLOCKLIST_UPDATE_MAX_AGE_SECS
+        {
+            return Err(BlocklistError::UpdateTooOld {
+                max_age_secs: BLOCKLIST_UPDATE_MAX_AGE_SECS,
+            });
+        }
+
+        // Trust-anchored fast path.
+        if trusted_keys.contains(&update.reporting_node) {
+            let signing_message = update.signing_message();
+            if verify_signature(&update.reporting_node, &signing_message, &update.signature) {
+                return Ok(());
+            }
+            return Err(BlocklistError::InvalidSignature);
+        }
+
+        // Otherwise require the community-attestation path.
+        self.validate_update(update, current_time, |pk, msg, sig| {
+            verify_signature(pk, msg, sig)
+        })
+    }
+
     /// Determine which peers should receive a blocklist update.
     ///
     /// Returns peer IDs that haven't seen this update yet.
@@ -312,6 +364,12 @@ pub fn parse_blocklist_message(msg_type: u8, payload: &[u8]) -> BlocklistResult<
             })?;
             Ok(BlocklistMessage::Request(request))
         }
+        MSG_BLOCKLIST_BUNDLE => {
+            let bundle = BlocklistBundle::from_bytes(payload).ok_or_else(|| {
+                BlocklistError::InvalidUpdateMessage("Failed to parse bundle".to_string())
+            })?;
+            Ok(BlocklistMessage::Bundle(bundle))
+        }
         _ => Err(BlocklistError::InvalidUpdateMessage(format!(
             "Unknown message type: 0x{:02X}",
             msg_type
@@ -328,6 +386,8 @@ pub enum BlocklistMessage {
     Sync(BlocklistSync),
     /// Request for specific blocklist entries
     Request(BlocklistRequest),
+    /// Signed, versioned bundle of blocklist entries
+    Bundle(BlocklistBundle),
 }
 
 impl BlocklistMessage {
@@ -337,6 +397,7 @@ impl BlocklistMessage {
             Self::Update(_) => MSG_BLOCKLIST_UPDATE,
             Self::Sync(_) => MSG_BLOCKLIST_SYNC,
             Self::Request(_) => MSG_BLOCKLIST_REQUEST,
+            Self::Bundle(_) => MSG_BLOCKLIST_BUNDLE,
         }
     }
 
@@ -346,6 +407,7 @@ impl BlocklistMessage {
             Self::Update(u) => u.to_bytes(),
             Self::Sync(s) => s.to_bytes(),
             Self::Request(r) => r.to_bytes(),
+            Self::Bundle(b) => b.to_bytes(),
         }
     }
 }
@@ -470,6 +532,60 @@ mod tests {
         // Valid signature callback
         let result = gossip.validate_update(&update, 1735689600, |_, _, _| true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_trust_anchored_update_bypasses_attestations() {
+        let gossip = BlocklistGossip::new([1u8; 32]);
+        let content_hash = [10u8; 32];
+        let maintainer = [77u8; 32];
+
+        // Zero attestations — would fail the community path.
+        let update = BlocklistUpdate {
+            update_type: BlocklistUpdateType::Add,
+            content_hash,
+            reason: BlocklistReason::CSAM,
+            reporting_node: maintainer,
+            attestations: vec![],
+            timestamp: 1735689600,
+            signature: [4u8; 64],
+        };
+
+        let mut trusted = HashSet::new();
+        trusted.insert(maintainer);
+
+        // Trusted key + valid sig → accepted despite no attestations.
+        let ok = gossip.validate_update_with_trust(&update, 1735689600, &trusted, |_, _, _| true);
+        assert!(ok.is_ok());
+
+        // Trusted key but bad sig → rejected.
+        let bad = gossip.validate_update_with_trust(&update, 1735689600, &trusted, |_, _, _| false);
+        assert!(matches!(bad, Err(BlocklistError::InvalidSignature)));
+    }
+
+    #[test]
+    fn test_untrusted_update_still_requires_attestations() {
+        let gossip = BlocklistGossip::new([1u8; 32]);
+        let content_hash = [10u8; 32];
+
+        // Untrusted reporter with zero attestations → must be rejected even
+        // with a valid signature.
+        let update = BlocklistUpdate {
+            update_type: BlocklistUpdateType::Add,
+            content_hash,
+            reason: BlocklistReason::CSAM,
+            reporting_node: [2u8; 32],
+            attestations: vec![],
+            timestamp: 1735689600,
+            signature: [4u8; 64],
+        };
+
+        let trusted = HashSet::new(); // empty: nobody trusted
+        let res = gossip.validate_update_with_trust(&update, 1735689600, &trusted, |_, _, _| true);
+        assert!(matches!(
+            res,
+            Err(BlocklistError::InsufficientAttestations { .. })
+        ));
     }
 
     #[test]

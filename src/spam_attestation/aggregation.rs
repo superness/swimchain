@@ -59,6 +59,12 @@ pub struct AttestationAggregation {
     /// Deduplicated count results
     pub count: TreeDeduplicatedCount,
 
+    /// Reputation-weighted unique-tree count. Each unique sponsor tree contributes
+    /// the weight of its best-standing attester (in `[0.0, 1.0]`), so fresh /
+    /// low-reputation attesters count for less. For the unweighted
+    /// [`aggregate_attestations`] path this equals `count.unique_tree_count`.
+    pub weighted_tree_count: f64,
+
     /// Whether accelerated decay should be applied
     pub should_accelerate_decay: bool,
 
@@ -75,6 +81,7 @@ impl AttestationAggregation {
         Self {
             content_hash,
             count: TreeDeduplicatedCount::empty(),
+            weighted_tree_count: 0.0,
             should_accelerate_decay: false,
             primary_reason: None,
             is_cleared: false,
@@ -134,7 +141,89 @@ pub fn aggregate_attestations(
 
     AttestationAggregation {
         content_hash,
+        weighted_tree_count: count.unique_tree_count as f64,
         count,
+        should_accelerate_decay: threshold_reached && !is_cleared,
+        primary_reason,
+        is_cleared,
+    }
+}
+
+/// Aggregate attestations with per-attester reputation weighting (SPEC_12 §4).
+///
+/// Identical to [`aggregate_attestations`] (sponsor-tree Sybil dedup), except the
+/// spam threshold is evaluated against a REPUTATION-WEIGHTED tree count instead of a
+/// raw unique-tree count. Each unique sponsor tree contributes the weight of its
+/// best-standing attester, where `weight_of` returns a value in `[0.0, 1.0]`:
+///
+/// - Fresh / low-reputation attesters weigh LESS than 1.0, so a cluster of throwaway
+///   or bad-faith identities needs *more* independent trees to flag content — blunting
+///   attestation-bombing.
+/// - High reputation is capped at the default weight of 1.0 (see
+///   [`crate::reputation::score::attester_weight`]); good standing never grants
+///   attestation power beyond the well-behaved baseline.
+///
+/// Because every weight is `<= 1.0`, the weighted count never exceeds the unweighted
+/// count: weighting can only make flagging *harder*, never easier.
+///
+/// # Arguments
+/// * `content_hash` - Hash of the content being evaluated
+/// * `attestations` - List of stored attestations (with pre-computed tree roots)
+/// * `is_cleared` - Whether the content has been cleared by counter-attestations
+/// * `weight_of` - Maps an attester public key to its attestation weight in `[0.0, 1.0]`
+pub fn aggregate_attestations_weighted<F>(
+    content_hash: [u8; 32],
+    attestations: &[StoredSpamAttestation],
+    is_cleared: bool,
+    weight_of: F,
+) -> AttestationAggregation
+where
+    F: Fn(&[u8; 32]) -> f64,
+{
+    if attestations.is_empty() {
+        return AttestationAggregation::empty(content_hash);
+    }
+
+    let mut tree_roots: HashSet<[u8; 32]> = HashSet::new();
+    let mut reason_counts: HashMap<SpamReason, u8> = HashMap::new();
+    // Best-standing attester weight seen per sponsor tree root.
+    let mut tree_weights: HashMap<[u8; 32], f64> = HashMap::new();
+
+    for stored in attestations {
+        tree_roots.insert(stored.sponsor_tree_root);
+
+        *reason_counts.entry(stored.attestation.reason).or_insert(0) += 1;
+
+        // A tree is as strong as its best-standing member. Clamp defensively so a
+        // misbehaving `weight_of` can never push a tree above the default weight.
+        let w = weight_of(&stored.attestation.attester).clamp(0.0, 1.0);
+        let entry = tree_weights.entry(stored.sponsor_tree_root).or_insert(0.0);
+        if w > *entry {
+            *entry = w;
+        }
+    }
+
+    let unique_tree_count = tree_roots.len() as u8;
+    let weighted_tree_count: f64 = tree_weights.values().sum();
+    let threshold_reached = weighted_tree_count >= SPAM_ATTESTATION_THRESHOLD as f64;
+
+    let primary_reason = reason_counts
+        .iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(reason, _)| *reason);
+
+    let count = TreeDeduplicatedCount {
+        unique_tree_count,
+        total_attestations: attestations.len() as u32,
+        threshold_reached,
+        tree_roots,
+        reason_counts,
+    };
+
+    AttestationAggregation {
+        content_hash,
+        count,
+        weighted_tree_count,
         should_accelerate_decay: threshold_reached && !is_cleared,
         primary_reason,
         is_cleared,
@@ -327,6 +416,95 @@ mod tests {
 
         let root = find_sponsor_tree_root(&identity, get_sponsor).unwrap();
         assert_eq!(root, genesis);
+    }
+
+    #[test]
+    fn test_weighted_fresh_attesters_weigh_less() {
+        // Three independent trees, each attested by a single "fresh" attester whose
+        // reputation weight is 0.5 (base score 100). Unweighted this reaches the
+        // 3-tree threshold; weighted it sums to only 1.5 and does NOT.
+        let attestations = vec![
+            make_attestation([10u8; 32], [1u8; 32], SpamReason::Advertising),
+            make_attestation([20u8; 32], [2u8; 32], SpamReason::Advertising),
+            make_attestation([30u8; 32], [3u8; 32], SpamReason::Advertising),
+        ];
+
+        // Unweighted: threshold reached.
+        let plain = aggregate_attestations([0u8; 32], &attestations, false);
+        assert!(plain.should_accelerate_decay);
+        assert_eq!(plain.weighted_tree_count, 3.0);
+
+        // Weighted with fresh (0.5) attesters: measurably less, below threshold.
+        let weighted = aggregate_attestations_weighted([0u8; 32], &attestations, false, |_| 0.5);
+        assert_eq!(weighted.count.unique_tree_count, 3);
+        assert_eq!(weighted.weighted_tree_count, 1.5);
+        assert!(!weighted.should_accelerate_decay);
+        // Weighting can only make flagging harder, never easier.
+        assert!(weighted.weighted_tree_count <= plain.weighted_tree_count);
+    }
+
+    #[test]
+    fn test_weighted_high_reputation_reaches_threshold() {
+        // Three trees attested by full-weight (1.0) attesters reach the threshold.
+        let attestations = vec![
+            make_attestation([10u8; 32], [1u8; 32], SpamReason::Advertising),
+            make_attestation([20u8; 32], [2u8; 32], SpamReason::Advertising),
+            make_attestation([30u8; 32], [3u8; 32], SpamReason::Advertising),
+        ];
+        let weighted = aggregate_attestations_weighted([0u8; 32], &attestations, false, |_| 1.0);
+        assert_eq!(weighted.weighted_tree_count, 3.0);
+        assert!(weighted.should_accelerate_decay);
+    }
+
+    #[test]
+    fn test_weighted_tree_takes_best_standing_member() {
+        // Two attesters in the SAME tree: one untrusted (0.0), one full (1.0). The
+        // tree contributes its best member's weight (1.0), deduplicated to one tree.
+        let attestations = vec![
+            make_attestation([10u8; 32], [1u8; 32], SpamReason::Advertising),
+            make_attestation([11u8; 32], [1u8; 32], SpamReason::Advertising),
+        ];
+        let weighted = aggregate_attestations_weighted([0u8; 32], &attestations, false, |a| {
+            if *a == [11u8; 32] {
+                1.0
+            } else {
+                0.0
+            }
+        });
+        assert_eq!(weighted.count.unique_tree_count, 1);
+        assert_eq!(weighted.weighted_tree_count, 1.0);
+    }
+
+    #[test]
+    fn test_weighted_untrusted_attesters_contribute_nothing() {
+        // Untrusted attesters (weight 0.0) cannot flag content regardless of count.
+        let attestations = vec![
+            make_attestation([10u8; 32], [1u8; 32], SpamReason::Advertising),
+            make_attestation([20u8; 32], [2u8; 32], SpamReason::Advertising),
+            make_attestation([30u8; 32], [3u8; 32], SpamReason::Advertising),
+        ];
+        let weighted = aggregate_attestations_weighted([0u8; 32], &attestations, false, |_| 0.0);
+        assert_eq!(weighted.weighted_tree_count, 0.0);
+        assert!(!weighted.should_accelerate_decay);
+    }
+
+    #[test]
+    fn test_weighted_never_exceeds_unweighted() {
+        // For arbitrary in-range weights, the weighted count never exceeds the raw
+        // unique-tree count — weighting only ever reduces attestation power.
+        let attestations = vec![
+            make_attestation([10u8; 32], [1u8; 32], SpamReason::Advertising),
+            make_attestation([20u8; 32], [2u8; 32], SpamReason::Repetitive),
+            make_attestation([30u8; 32], [3u8; 32], SpamReason::Advertising),
+            make_attestation([40u8; 32], [4u8; 32], SpamReason::Harassment),
+        ];
+        let weighted = aggregate_attestations_weighted([0u8; 32], &attestations, false, |_| 0.9);
+        assert!(
+            weighted.weighted_tree_count <= weighted.count.unique_tree_count as f64,
+            "weighted {} exceeded unique {}",
+            weighted.weighted_tree_count,
+            weighted.count.unique_tree_count
+        );
     }
 
     #[test]

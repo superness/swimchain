@@ -1,13 +1,17 @@
 import type { PoolSummary } from './gateway';
 
 /**
- * Ranking weights from CLIENT_DESIGN.md Section 7.4
- * MUST sum to 1.0 for proper weighting
+ * Ranking weights.
+ * MUST sum to 1.0 for proper weighting.
+ *
+ * ENGAGEMENT measures real engagement (count of engagements and how recently
+ * the content was last engaged). Each engagement is an individual proof-of-work
+ * action that resets the content's decay timer.
  */
 export const RANKING_WEIGHTS = {
-  TEXT_RELEVANCE: 0.40,
-  HEAT_DECAY: 0.25,
-  ENGAGEMENT_POOL: 0.20,
+  TEXT_RELEVANCE: 0.45,
+  HEAT_DECAY: 0.30,
+  ENGAGEMENT: 0.10,
   RECENCY: 0.15,
 } as const;
 
@@ -15,7 +19,7 @@ export const RANKING_WEIGHTS = {
 const _weightSum: 1 = (
   RANKING_WEIGHTS.TEXT_RELEVANCE +
   RANKING_WEIGHTS.HEAT_DECAY +
-  RANKING_WEIGHTS.ENGAGEMENT_POOL +
+  RANKING_WEIGHTS.ENGAGEMENT +
   RANKING_WEIGHTS.RECENCY
 ) as 1;
 
@@ -33,17 +37,17 @@ export interface ScoreBreakdown {
   textRelevance: number;
   /** survival_probability * 100 (0-100) */
   heatDecay: number;
-  /** (pool_seconds/60) * 100 (0-100) */
-  engagementPool: number;
+  /** Engagement signal from real engagement count + recency (0-100) */
+  engagement: number;
   /** Time-based decay from now (0-100) */
   recency: number;
   /** Weighted sum (0-100) */
   totalScore: number;
   /** Show contribution of each factor */
   contributions: {
-    textRelevance: number;    // textRelevance * 0.40
-    heatDecay: number;        // heatDecay * 0.25
-    engagementPool: number;   // engagementPool * 0.20
+    textRelevance: number;    // textRelevance * 0.45
+    heatDecay: number;        // heatDecay * 0.30
+    engagement: number;       // engagement * 0.10
     recency: number;          // recency * 0.15
   };
 }

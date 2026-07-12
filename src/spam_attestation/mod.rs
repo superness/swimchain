@@ -29,7 +29,8 @@ pub mod types;
 pub mod validation;
 
 pub use aggregation::{
-    aggregate_attestations, find_sponsor_tree_root, AttestationAggregation, TreeDeduplicatedCount,
+    aggregate_attestations, aggregate_attestations_weighted, find_sponsor_tree_root,
+    AttestationAggregation, TreeDeduplicatedCount,
 };
 pub use counter::{CounterAttestation, CounterAttestationState};
 pub use error::SpamAttestationError;

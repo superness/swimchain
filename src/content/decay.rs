@@ -128,6 +128,29 @@ pub fn calculate_adaptive_half_life(state: &NodeState) -> u64 {
     smoothed.round() as u64
 }
 
+/// Select the effective half-life for content based on its spam-flag state
+/// (SPEC_12 §4.3).
+///
+/// This is the single source of truth for half-life selection. Both the
+/// read path (`DecayIntegration::get_decay_state`) and the prune path
+/// (`DecayIntegration::prune`) call this helper so the two paths cannot
+/// silently diverge again — flagged content always decays with
+/// `FLAGGED_DECAY_HALF_LIFE_SECS` regardless of which path is asking.
+///
+/// # Arguments
+/// * `base_half_life_secs` - The half-life that would apply if the content were not flagged
+/// * `is_spam_flagged` - Whether the content has reached the spam threshold and has not been cleared by counter-attestation
+///
+/// # Returns
+/// The half-life in seconds to use for decay calculations.
+#[must_use]
+pub fn select_half_life(base_half_life_secs: u64, is_spam_flagged: bool) -> u64 {
+    if is_spam_flagged {
+        FLAGGED_DECAY_HALF_LIFE_SECS
+    } else {
+        base_half_life_secs
+    }
+}
 
 /// Calculate decay state for spam-flagged content per SPEC_12 §4.3.
 ///
@@ -151,11 +174,12 @@ pub fn calculate_decay_state_spam_flagged(
     current_time_ms: u64,
     is_spam_flagged: bool,
 ) -> DecayState {
-    if is_spam_flagged {
-        calculate_decay_state(content, current_time_ms, FLAGGED_DECAY_HALF_LIFE_SECS)
-    } else {
-        calculate_decay_state(content, current_time_ms, crate::types::constants::HALF_LIFE_SECS)
-    }
+    calculate_decay_state_full(
+        content,
+        current_time_ms,
+        crate::types::constants::HALF_LIFE_SECS,
+        is_spam_flagged,
+    )
 }
 
 /// Calculate decay state combining spam flagging.
@@ -179,13 +203,8 @@ pub fn calculate_decay_state_full(
     base_half_life_secs: u64,
     is_spam_flagged: bool,
 ) -> DecayState {
-    if is_spam_flagged {
-        // Spam flagging causes rapid decay
-        calculate_decay_state(content, current_time_ms, FLAGGED_DECAY_HALF_LIFE_SECS)
-    } else {
-        // Normal decay
-        calculate_decay_state(content, current_time_ms, base_half_life_secs)
-    }
+    let half_life_secs = select_half_life(base_half_life_secs, is_spam_flagged);
+    calculate_decay_state(content, current_time_ms, half_life_secs)
 }
 
 #[cfg(test)]
@@ -372,7 +391,6 @@ mod tests {
         assert!(state.is_decayed);
     }
 
-
     #[test]
     fn test_spam_flagged_decay_accelerated() {
         // Content created 3 days ago, no engagement
@@ -417,21 +435,13 @@ mod tests {
         let content = make_test_content(created_at_ms, created_at_ms);
 
         // Not spam flagged - high survival
-        let state_normal = calculate_decay_state_full(
-            &content,
-            current_time_ms,
-            HALF_LIFE_SECS,
-            false,
-        );
+        let state_normal =
+            calculate_decay_state_full(&content, current_time_ms, HALF_LIFE_SECS, false);
         assert!(state_normal.survival_probability > 0.8);
 
         // Spam flagged - rapid decay
-        let state_flagged = calculate_decay_state_full(
-            &content,
-            current_time_ms,
-            HALF_LIFE_SECS,
-            true,
-        );
+        let state_flagged =
+            calculate_decay_state_full(&content, current_time_ms, HALF_LIFE_SECS, true);
         assert!(state_flagged.survival_probability < 0.05);
         assert!(state_flagged.is_decayed);
     }

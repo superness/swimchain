@@ -41,7 +41,10 @@ pub struct SeedEntry {
 impl SeedEntry {
     /// Create a new seed entry with just an address
     pub fn new(addr: SocketAddr) -> Self {
-        Self { addr, node_id: None }
+        Self {
+            addr,
+            node_id: None,
+        }
     }
 
     /// Create a new seed entry with address and node ID
@@ -88,6 +91,23 @@ impl SeedingMode {
             SeedingMode::Disabled => "Disabled",
         }
     }
+}
+
+/// Effective behavioral-branching mode for a node (SPEC_13 Phase A,
+/// `docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md` Phase 1), resolved from
+/// [`NodeConfig::behavioral_branching_mode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BehavioralBranchingMode {
+    /// Detection does not run at all.
+    Disabled,
+    /// Detection runs; qualifying formations are recorded as
+    /// [`crate::branch::BehavioralEvent`]s but no fracture executes and no
+    /// space/branch is created (Phase 1 observation rollout).
+    LogOnly,
+    /// Detection runs; qualifying formations execute the fracture and are
+    /// recorded as a real [`crate::branch::CommunityFormation`] (pre-rollout
+    /// behavior, currently regtest-only by default).
+    Full,
 }
 
 /// Node configuration
@@ -234,6 +254,21 @@ pub struct NodeConfig {
     /// avoids state divergence with nodes that don't run detection yet.
     pub behavioral_branching: Option<bool>,
 
+    /// Enable log-only behavioral branching (Phase 1 observation rollout,
+    /// `docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`).
+    ///
+    /// When on (and full [`Self::behavioral_branching`] is off), detection
+    /// still runs and qualifying clusters are persisted as
+    /// [`crate::branch::BehavioralEvent`]s — queryable via the
+    /// `list_behavioral_events` RPC — but no fracture executes and no
+    /// space/branch is created.
+    ///
+    /// `None` uses the network-mode default: ON for Testnet (Phase 1
+    /// rollout), OFF for Mainnet/Regtest. Regtest defaults to full formation
+    /// instead (see [`Self::behavioral_branching_enabled`]), so log-only
+    /// would never be consulted there unless full is explicitly disabled.
+    pub behavioral_branching_log_only: Option<bool>,
+
     // ========== Gossip Origin Privacy (SWIM-PRIV-1) ==========
     /// Enable gossip origin obfuscation for self-originated actions.
     ///
@@ -256,6 +291,17 @@ pub struct NodeConfig {
     /// single random peer before the network-wide diffusion (default: true).
     /// When false, falls back to delay-only diffusion (delay then broadcast).
     pub origin_privacy_stem: bool,
+
+    // ========== Blocklist Trust Anchors (SPEC_12 CSAM seeding) ==========
+    /// Ed25519 public keys of trusted blocklist list-maintainers.
+    ///
+    /// Blocklist updates and signed bundles authored by one of these keys are
+    /// accepted network-wide *without* community spam-attestations (trust is
+    /// anchored in this configured set). Updates from any other key still
+    /// require the full attestation threshold. Empty by default; operators
+    /// populate it from `<data_dir>/blocklist_trusted_keys.txt` via
+    /// [`NodeConfig::load_trusted_blocklist_keys`] or by setting it directly.
+    pub trusted_blocklist_keys: Vec<[u8; 32]>,
 }
 
 impl Default for NodeConfig {
@@ -320,6 +366,10 @@ impl Default for NodeConfig {
             // (ON for regtest, OFF for mainnet/testnet)
             behavioral_branching: None,
 
+            // Log-only behavioral branching defaults to network-mode behavior
+            // (ON for testnet -- Phase 1 rollout, OFF for mainnet/regtest)
+            behavioral_branching_log_only: None,
+
             // Gossip origin privacy (SWIM-PRIV-1) defaults to network-mode
             // behavior (ON for mainnet/testnet, OFF for regtest) with a
             // 2-12s jittered first-announce delay and stem+fluff enabled.
@@ -327,6 +377,9 @@ impl Default for NodeConfig {
             origin_privacy_min_delay: Duration::from_secs(2),
             origin_privacy_max_delay: Duration::from_secs(12),
             origin_privacy_stem: true,
+
+            // No trusted blocklist maintainers by default; operator-configured.
+            trusted_blocklist_keys: Vec::new(),
         }
     }
 }
@@ -334,7 +387,8 @@ impl Default for NodeConfig {
 impl NodeConfig {
     /// Get the RPC port (uses network mode default if not explicitly set)
     pub fn rpc_port(&self) -> u16 {
-        self.rpc_port.unwrap_or_else(|| self.network_mode.default_rpc_port())
+        self.rpc_port
+            .unwrap_or_else(|| self.network_mode.default_rpc_port())
     }
 
     /// Get the full RPC address
@@ -430,6 +484,32 @@ impl NodeConfig {
             .unwrap_or(matches!(self.network_mode, NetworkMode::Regtest))
     }
 
+    /// Check if log-only behavioral branching (Phase 1 rollout) is enabled.
+    ///
+    /// Explicit setting wins; otherwise defaults ON for Testnet and OFF for
+    /// Mainnet/Regtest. Only consulted when [`Self::behavioral_branching_enabled`]
+    /// is false -- see [`Self::behavioral_branching_mode`].
+    pub fn behavioral_branching_log_only_enabled(&self) -> bool {
+        self.behavioral_branching_log_only
+            .unwrap_or(matches!(self.network_mode, NetworkMode::Testnet))
+    }
+
+    /// Resolve the effective behavioral-branching mode for this node
+    /// (`docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`).
+    ///
+    /// Full formation wins over log-only if both are (explicitly or by
+    /// default) enabled -- log-only exists to observe *before* full
+    /// formation is safe to enable, not alongside it.
+    pub fn behavioral_branching_mode(&self) -> BehavioralBranchingMode {
+        if self.behavioral_branching_enabled() {
+            BehavioralBranchingMode::Full
+        } else if self.behavioral_branching_log_only_enabled() {
+            BehavioralBranchingMode::LogOnly
+        } else {
+            BehavioralBranchingMode::Disabled
+        }
+    }
+
     /// Check if gossip origin privacy (SWIM-PRIV-1) is enabled.
     ///
     /// Explicit setting wins; otherwise defaults ON for Mainnet/Testnet and OFF
@@ -503,6 +583,47 @@ impl NodeConfig {
         Ok(())
     }
 
+    /// Path to the operator's trusted blocklist-maintainer key file.
+    pub fn trusted_blocklist_keys_path(&self) -> PathBuf {
+        self.data_dir.join("blocklist_trusted_keys.txt")
+    }
+
+    /// Load trusted blocklist-maintainer keys from
+    /// `<data_dir>/blocklist_trusted_keys.txt` into `trusted_blocklist_keys`.
+    ///
+    /// The file lists one Ed25519 public key per line, either as 64-char hex or
+    /// a `swim1...` bech32m address. Blank lines and `#` comments are ignored.
+    /// Missing file is not an error (no trusted keys configured). Keys loaded
+    /// here are merged with any already present (deduplicated).
+    pub fn load_trusted_blocklist_keys(&mut self) -> Result<usize, NodeError> {
+        let path = self.trusted_blocklist_keys_path();
+        if !path.exists() {
+            return Ok(0);
+        }
+        let contents = std::fs::read_to_string(&path)
+            .map_err(|e| NodeError::InvalidConfig(format!("reading {:?}: {}", path, e)))?;
+
+        let mut loaded = 0;
+        for (idx, raw) in contents.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let key = parse_pubkey(line).ok_or_else(|| {
+                NodeError::InvalidConfig(format!(
+                    "blocklist_trusted_keys.txt line {}: invalid pubkey '{}'",
+                    idx + 1,
+                    line
+                ))
+            })?;
+            if !self.trusted_blocklist_keys.contains(&key) {
+                self.trusted_blocklist_keys.push(key);
+                loaded += 1;
+            }
+        }
+        Ok(loaded)
+    }
+
     /// Get the path for chain storage
     pub fn chain_store_path(&self) -> PathBuf {
         self.data_dir.join("chain")
@@ -568,6 +689,22 @@ impl NodeConfig {
         config.seeds = config.default_seeds_for_network();
         config
     }
+}
+
+/// Parse an Ed25519 public key from either 64-char hex or a bech32m address.
+fn parse_pubkey(s: &str) -> Option<[u8; 32]> {
+    // Try raw hex first.
+    if let Ok(bytes) = hex::decode(s) {
+        if bytes.len() == 32 {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&bytes);
+            return Some(out);
+        }
+    }
+    // Fall back to a bech32m swimchain address.
+    crate::crypto::address::decode_address_to_pubkey(s)
+        .ok()
+        .map(|pk| pk.0)
 }
 
 /// Get the default data directory
@@ -652,7 +789,10 @@ mod tests {
         };
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("storage_target_mb"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("storage_target_mb"));
     }
 
     #[test]
@@ -786,6 +926,66 @@ mod tests {
     }
 
     #[test]
+    fn test_behavioral_branching_mode_network_defaults() {
+        // Phase 1 rollout (docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md):
+        // regtest keeps full formation, testnet gets log-only observation,
+        // mainnet stays fully disabled -- all by default (None/None).
+        let mainnet = NodeConfig::with_network_defaults(NetworkMode::Mainnet);
+        assert_eq!(
+            mainnet.behavioral_branching_mode(),
+            BehavioralBranchingMode::Disabled
+        );
+        assert!(!mainnet.behavioral_branching_enabled());
+        assert!(!mainnet.behavioral_branching_log_only_enabled());
+
+        let testnet = NodeConfig::for_testnet();
+        assert_eq!(
+            testnet.behavioral_branching_mode(),
+            BehavioralBranchingMode::LogOnly
+        );
+        assert!(!testnet.behavioral_branching_enabled());
+        assert!(testnet.behavioral_branching_log_only_enabled());
+
+        let regtest = NodeConfig::for_regtest(29997);
+        assert_eq!(
+            regtest.behavioral_branching_mode(),
+            BehavioralBranchingMode::Full
+        );
+        assert!(regtest.behavioral_branching_enabled());
+
+        // Explicit full override wins over log-only, even on testnet.
+        let forced_full = NodeConfig {
+            behavioral_branching: Some(true),
+            ..NodeConfig::for_testnet()
+        };
+        assert_eq!(
+            forced_full.behavioral_branching_mode(),
+            BehavioralBranchingMode::Full
+        );
+
+        // Explicit log-only override applies on mainnet too.
+        let forced_log_only = NodeConfig {
+            behavioral_branching_log_only: Some(true),
+            ..NodeConfig::with_network_defaults(NetworkMode::Mainnet)
+        };
+        assert_eq!(
+            forced_log_only.behavioral_branching_mode(),
+            BehavioralBranchingMode::LogOnly
+        );
+
+        // Explicit false on both disables regardless of network mode.
+        let forced_off = NodeConfig {
+            behavioral_branching: Some(false),
+            behavioral_branching_log_only: Some(false),
+            ..NodeConfig::for_testnet()
+        };
+        assert_eq!(
+            forced_off.behavioral_branching_mode(),
+            BehavioralBranchingMode::Disabled
+        );
+    }
+
+    #[test]
     fn test_origin_privacy_delay_bounds_default() {
         let cfg = NodeConfig::default();
         assert_eq!(cfg.origin_privacy_min_delay, Duration::from_secs(2));
@@ -803,9 +1003,18 @@ mod tests {
             data_dir: PathBuf::from("/data/swimchain"),
             ..NodeConfig::default()
         };
-        assert_eq!(config.chain_store_path(), PathBuf::from("/data/swimchain/chain"));
-        assert_eq!(config.blob_store_path(), PathBuf::from("/data/swimchain/blobs"));
-        assert_eq!(config.peer_store_path(), PathBuf::from("/data/swimchain/peers"));
+        assert_eq!(
+            config.chain_store_path(),
+            PathBuf::from("/data/swimchain/chain")
+        );
+        assert_eq!(
+            config.blob_store_path(),
+            PathBuf::from("/data/swimchain/blobs")
+        );
+        assert_eq!(
+            config.peer_store_path(),
+            PathBuf::from("/data/swimchain/peers")
+        );
         assert_eq!(
             config.contribution_store_path(),
             PathBuf::from("/data/swimchain/contribution")

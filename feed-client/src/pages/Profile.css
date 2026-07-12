@@ -410,3 +410,35 @@
     margin-bottom: var(--spacing-sm);
   }
 }
+
+/* Achievements — recognition badge row (SPEC_09 §5.3). Decorative only. */
+.profile-badges {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+.profile-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs, 0.25rem);
+  padding: var(--spacing-xs, 0.25rem) var(--spacing-sm);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  color: var(--color-text-primary);
+  cursor: default;
+}
+
+.profile-badge-emoji {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.profile-badge-name {
+  white-space: nowrap;
+}

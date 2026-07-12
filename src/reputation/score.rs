@@ -260,6 +260,41 @@ pub fn calculate_decay_multiplier(score: i32) -> f64 {
     effect.decay_multiplier()
 }
 
+// === Attester Weighting (SPEC_12 §4 — attestation weighting, defensive) ===
+
+/// Reputation score at (or above) which an attester's spam attestation carries the
+/// full, DEFAULT weight of 1.0. Set to the Trusted threshold: an attester earns full
+/// weight once it has established standing (age and/or good behavior), while a fresh
+/// identity (base score 100) is intentionally below it.
+pub const ATTESTER_FULL_WEIGHT_SCORE: i32 = REPUTATION_TRUSTED_THRESHOLD;
+
+/// Weight an attester's spam attestation should carry, as a function of its reputation
+/// score. Used to make attestations from fresh / low-reputation identities count for
+/// LESS in the aggregate, blunting attestation-bombing by throwaway or bad-faith
+/// accounts (SPEC_12 §4).
+///
+/// # Invariant (hard constraint)
+///
+/// The result is ALWAYS in `[0.0, 1.0]`. High reputation can only ever *restore* the
+/// default weight of 1.0 — it can never exceed it, so good standing grants no
+/// attestation power beyond a well-behaved baseline. This is the attestation-side
+/// analogue of "no protocol privileges for good standing".
+///
+/// # Curve
+///
+/// ```text
+/// score <= 0                          -> 0.0   (Untrusted: attestations don't count)
+/// 0 < score < FULL_WEIGHT (200)       -> score / 200   (fresh 100 -> 0.5)
+/// score >= FULL_WEIGHT (200)          -> 1.0   (default, capped — never higher)
+/// ```
+pub fn attester_weight(score: i32) -> f64 {
+    if score <= 0 {
+        return 0.0;
+    }
+    let w = score as f64 / ATTESTER_FULL_WEIGHT_SCORE as f64;
+    w.clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +478,47 @@ mod tests {
         assert!(!ReputationEffect::Trusted.starts_accelerated_decay());
         assert!(!ReputationEffect::Restricted.starts_accelerated_decay());
         assert!(ReputationEffect::Untrusted.starts_accelerated_decay());
+    }
+
+    #[test]
+    fn test_attester_weight_curve() {
+        // Untrusted / non-positive scores contribute nothing.
+        assert_eq!(attester_weight(0), 0.0);
+        assert_eq!(attester_weight(-50), 0.0);
+
+        // Fresh identity (base score 100) is intentionally below the default weight.
+        assert_eq!(attester_weight(100), 0.5);
+        assert_eq!(attester_weight(50), 0.25);
+
+        // Full weight is reached at the Trusted threshold (200) and is the maximum.
+        assert_eq!(attester_weight(ATTESTER_FULL_WEIGHT_SCORE), 1.0);
+    }
+
+    /// Hard constraint: attester weight NEVER exceeds the default of 1.0, no matter
+    /// how high the reputation. Good standing only restores the default weight; it
+    /// grants no attestation power beyond a well-behaved baseline.
+    #[test]
+    fn test_attester_weight_high_reputation_never_exceeds_default() {
+        for score in [200, 250, 465, 1000, i32::MAX] {
+            assert!(
+                attester_weight(score) <= 1.0,
+                "weight for score {score} exceeded the default 1.0"
+            );
+            assert_eq!(attester_weight(score), 1.0);
+        }
+    }
+
+    /// The weight curve is monotonic non-decreasing in score, so a strictly
+    /// higher-reputation attester never counts for LESS than a lower one.
+    #[test]
+    fn test_attester_weight_monotonic() {
+        let mut prev = attester_weight(-100);
+        for score in (-100..=400).step_by(10) {
+            let w = attester_weight(score);
+            assert!(w >= prev, "weight decreased at score {score}");
+            assert!((0.0..=1.0).contains(&w));
+            prev = w;
+        }
     }
 
     #[test]

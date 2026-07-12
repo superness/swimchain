@@ -12,7 +12,7 @@
 //! - **Survival Probability**: `0.5^(effective_decay_time / half_life)`
 //! - **Decay Threshold**: Content with survival < 6.25% is considered decayed
 //! - **Adaptive Decay**: Half-life adjusts based on storage pressure
-//! - **Engagement Pools**: Pooled PoW for collective content engagement
+//! - **Engagement**: Each engagement is an individual PoW action that resets the decay timer
 
 pub mod addressing;
 pub mod chunking;
@@ -21,21 +21,16 @@ pub mod decay;
 pub mod decay_integration;
 pub mod engagement;
 pub mod lifecycle;
-pub mod pool;
 pub mod pruning;
 pub mod retrieval;
 pub mod storage;
 
 pub use decay::{
     calculate_adaptive_half_life, calculate_decay_state, calculate_decay_state_full,
-    NodeState,
+    select_half_life, NodeState,
 };
-pub use engagement::{on_pool_complete, process_engagement, EngagementRejection, EngagementResult};
+pub use engagement::{process_engagement, EngagementRejection, EngagementResult};
 pub use lifecycle::ContentManager;
-pub use pool::{
-    compute_pool_pow_target, CompletionResult, EngagementPool, PoolContribution, PoolError, PoolId,
-    PoolInfo, PoolManager, PoolStatus,
-};
 pub use pruning::{prune_decayed_content, PruneStats};
 pub use storage::{estimate_item_size, ContentStore, InMemoryContentStore};
 

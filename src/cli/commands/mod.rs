@@ -3,6 +3,7 @@
 //! Each submodule implements a command group for the CLI.
 
 pub mod block;
+pub mod blocklist;
 pub mod branch;
 pub mod completions;
 pub mod config;

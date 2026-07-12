@@ -34,7 +34,7 @@ export default function SearchRankingDocsPage() {
           <code>
             score = (TEXT_RELEVANCE × {RANKING_WEIGHTS.TEXT_RELEVANCE}) +
                     (HEAT_DECAY × {RANKING_WEIGHTS.HEAT_DECAY}) +
-                    (ENGAGEMENT_POOL × {RANKING_WEIGHTS.ENGAGEMENT_POOL}) +
+                    (ENGAGEMENT × {RANKING_WEIGHTS.ENGAGEMENT}) +
                     (RECENCY × {RANKING_WEIGHTS.RECENCY})
           </code>
         </div>
@@ -59,9 +59,9 @@ export default function SearchRankingDocsPage() {
               <td>Content&apos;s survival probability based on decay</td>
             </tr>
             <tr>
-              <td>Engagement Pool</td>
-              <td>{(RANKING_WEIGHTS.ENGAGEMENT_POOL * 100).toFixed(0)}%</td>
-              <td>Progress toward engagement threshold (0-60 seconds)</td>
+              <td>Engagement</td>
+              <td>{(RANKING_WEIGHTS.ENGAGEMENT * 100).toFixed(0)}%</td>
+              <td>How many times the content was engaged and how recently</td>
             </tr>
             <tr>
               <td>Recency</td>
@@ -95,14 +95,18 @@ export default function SearchRankingDocsPage() {
           return survivalProbability;
         </code>
 
-        <h3>Engagement Pool (0-1)</h3>
+        <h3>Engagement (0-1)</h3>
         <p>
-          Pool progress is normalized as a percentage of the 60-second requirement:
+          Each engagement is an individual proof-of-work action that resets the
+          content&apos;s decay timer. The engagement signal combines how many times
+          the content was engaged with how recently it was last engaged:
         </p>
         <code className="code-block">
-          normalized = min(1, contributedSeconds / 60)
+          countScore = min(1, engagementCount / 5)
+          recencyScore = e^(-hoursSinceLastEngagement / 72)
+          normalized = 0.5 × countScore + 0.5 × recencyScore
         </code>
-        <p>Content with no active pool returns 0.</p>
+        <p>Content with no engagements returns 0.</p>
 
         <h3>Recency (0-1)</h3>
         <p>
@@ -119,24 +123,25 @@ export default function SearchRankingDocsPage() {
       <section className="docs-section">
         <h2>Why These Weights?</h2>
 
-        <h3>Text Relevance (40%)</h3>
+        <h3>Text Relevance (45%)</h3>
         <p>
           Search should primarily return relevant results. If you search for &quot;rust async&quot;,
           content about Rust async programming should rank higher than unrelated content,
           even if that content has more engagement.
         </p>
 
-        <h3>Heat/Decay (25%)</h3>
+        <h3>Heat/Decay (30%)</h3>
         <p>
           Content that the community values (keeps alive through engagement) should
           rank higher. This reflects the core Swimchain principle: valuable content
           persists, low-quality content fades.
         </p>
 
-        <h3>Engagement Pool (20%)</h3>
+        <h3>Engagement (10%)</h3>
         <p>
-          Active engagement is a signal of current interest. Content being actively
-          preserved right now is likely valuable to searchers.
+          Engagement is a signal of current interest. Content that has been engaged
+          recently &mdash; each engagement an individual proof-of-work action &mdash;
+          is likely valuable to searchers.
         </p>
 
         <h3>Recency (15%)</h3>

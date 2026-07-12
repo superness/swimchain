@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::content::pool::{PoolId, PoolInfo};
 use crate::types::content::ContentItem;
 
 /// Response containing content with decay state information
@@ -20,44 +19,6 @@ pub struct ContentResponse {
     pub is_protected: bool,
     /// Hours until content decays. None if protected or already decayed.
     pub hours_until_decay: Option<u64>,
-    /// Associated pool summary, if any
-    pub pool: Option<PoolSummary>,
-}
-
-/// Summary of an engagement pool
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PoolSummary {
-    /// Unique pool identifier
-    pub pool_id: PoolId,
-    /// Total seconds contributed so far
-    pub contributed_seconds: u64,
-    /// Required total seconds for completion
-    pub required_seconds: u64,
-    /// Number of contributions (not unique contributors)
-    pub contributor_count: usize,
-    /// Milliseconds remaining in pool window. None if completed/expired.
-    pub time_remaining_ms: Option<u64>,
-    /// Progress percentage, capped at 100.0
-    pub progress_percentage: f64,
-}
-
-impl From<PoolInfo> for PoolSummary {
-    fn from(info: PoolInfo) -> Self {
-        let progress = if info.required > 0 {
-            (info.total_contributed as f64 / info.required as f64 * 100.0).min(100.0)
-        } else {
-            100.0
-        };
-
-        Self {
-            pool_id: info.pool_id,
-            contributed_seconds: info.total_contributed,
-            required_seconds: info.required,
-            contributor_count: info.contributor_count,
-            time_remaining_ms: info.time_remaining_ms,
-            progress_percentage: progress,
-        }
-    }
 }
 
 /// Sync state enum
@@ -110,42 +71,6 @@ impl SyncStatusResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::pool::PoolStatus;
-
-    #[test]
-    fn test_pool_summary_from_info() {
-        let info = PoolInfo {
-            pool_id: [0u8; 32],
-            target_content: [1u8; 32],
-            status: PoolStatus::Open,
-            total_contributed: 30,
-            required: 60,
-            contributor_count: 3,
-            time_remaining_ms: Some(300_000),
-        };
-
-        let summary = PoolSummary::from(info);
-        assert_eq!(summary.contributed_seconds, 30);
-        assert_eq!(summary.required_seconds, 60);
-        assert_eq!(summary.contributor_count, 3);
-        assert_eq!(summary.progress_percentage, 50.0);
-    }
-
-    #[test]
-    fn test_pool_summary_caps_at_100() {
-        let info = PoolInfo {
-            pool_id: [0u8; 32],
-            target_content: [1u8; 32],
-            status: PoolStatus::Completed,
-            total_contributed: 120,
-            required: 60,
-            contributor_count: 1,
-            time_remaining_ms: None,
-        };
-
-        let summary = PoolSummary::from(info);
-        assert_eq!(summary.progress_percentage, 100.0);
-    }
 
     #[test]
     fn test_sync_status_idle() {

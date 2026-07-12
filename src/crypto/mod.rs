@@ -20,7 +20,7 @@ pub use address::{
     is_valid_address,
 };
 pub use hash::{
-    blake3_hash, checksum, content_hash, leading_zeros, merkle_root, pow_hash, sha256,
+    blake3_hash, checksum, content_hash, leading_zeros, md5, merkle_root, pow_hash, sha1, sha256,
     verify_pow_difficulty,
 };
 pub use pow::{

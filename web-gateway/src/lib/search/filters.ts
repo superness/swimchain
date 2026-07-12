@@ -38,10 +38,10 @@ export function applyFilters(
       }
     }
 
-    // Engagement filter
+    // Engagement filter (0-100 engagement score from real engagement data)
     if (filters.minEngagement !== undefined && filters.minEngagement > 0) {
-      const engagementSeconds = result.pool?.contributedSeconds ?? 0;
-      if (engagementSeconds < filters.minEngagement) {
+      const engagementScore = result.scoreBreakdown.engagement;
+      if (engagementScore < filters.minEngagement) {
         return false;
       }
     }
@@ -91,11 +91,9 @@ export function sortResults(
       break;
 
     case 'engagement':
-      sorted.sort((a, b) => {
-        const aProgress = a.pool?.contributedSeconds ?? 0;
-        const bProgress = b.pool?.contributedSeconds ?? 0;
-        return bProgress - aProgress;
-      });
+      sorted.sort(
+        (a, b) => b.scoreBreakdown.engagement - a.scoreBreakdown.engagement
+      );
       break;
 
     case 'newest':

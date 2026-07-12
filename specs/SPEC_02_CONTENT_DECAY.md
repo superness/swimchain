@@ -284,7 +284,7 @@ enum PinType {
 
 ### 3.5 Engagement Record
 
-**IMPORTANT: ALL engagement costs PoW.** This is a critical design change in v0.3.0. Engagement is not free - it requires computational work, either individually or through pooled contributions.
+**IMPORTANT: ALL engagement costs PoW.** This is a critical design change in v0.3.0. Engagement is not free - each engagement is an individual proof-of-work action.
 
 ```
 EngagementRecord {
@@ -294,16 +294,15 @@ EngagementRecord {
     timestamp:      Timestamp
     signature:      Signature
 
-    // PoW proof (individual or pool contribution)
+    // PoW proof
     pow_nonce:      uint64         // PoW solution nonce
     pow_work:       uint64         // Work amount in seconds
-    pool_id:        Hash?          // Optional: pool this contributes to
 }
 
 enum EngagementType {
     REPLY   = 0x01,    // Weight: 1.0 - Created reply (has own PoW cost)
     QUOTE   = 0x02,    // Weight: 1.0 - Quoted content (has own PoW cost)
-    ENGAGE  = 0x03     // Pooled engagement - requires pool completion
+    ENGAGE  = 0x03     // Weight: 1.0 - Engagement (individual PoW action)
 }
 ```
 
@@ -313,11 +312,11 @@ enum EngagementType {
 |------|----------------|--------------|
 | REPLY | ~15s (action cost) | Resets decay (reply itself persists) |
 | QUOTE | ~30s (action cost) | Resets decay (quote is separate content) |
-| ENGAGE | Pool contribution | Resets decay only when pool completes (60s total) |
+| ENGAGE | ~5s (action cost) | Resets decay (individual PoW action) |
 
 **Note on Views:** Views are NOT tracked as engagement. This is a deliberate design decision to ensure passive consumption does not preserve content. Only active participation counts.
 
-**Note on Pooled Engagement:** ENGAGE actions contribute to a pooled PoW target (see SPEC_03 Section 7 and SPEC_08). Decay is only reset when the pool completes (total contributions >= 60s). Incomplete pools do not affect decay.
+**Note on Engagement:** Each ENGAGE action is an individual proof-of-work action (see SPEC_03 Section 7 and SPEC_08). A valid ENGAGE resets the content's decay timer immediately, exactly like REPLY and QUOTE.
 
 ### 3.6 Decay State (Computed)
 
@@ -527,7 +526,6 @@ This is NOT consensus-breaking because:
 **Input:**
 - `content`: ContentItem being engaged with
 - `engagement`: EngagementRecord
-- `pool_state`: EngagementPool? (for ENGAGE type)
 
 **Output:** Updated ContentItem
 
@@ -536,48 +534,29 @@ This is NOT consensus-breaking because:
 ```
 function process_engagement(
     content: ContentItem,
-    engagement: EngagementRecord,
-    pool_state: EngagementPool?
+    engagement: EngagementRecord
 ) -> ContentItem:
 
     // 1. Validate engagement PoW
     if not validate_engagement_pow(engagement):
         return REJECT
 
-    // 2. Handle by engagement type
+    // 2. All engagement types reset decay immediately
     match engagement.engagement_type:
 
-        REPLY | QUOTE:
-            // These have their own PoW cost and create new content
-            // They reset parent's decay as a side effect
+        REPLY | QUOTE | ENGAGE:
+            // Each is an individual PoW action.
+            // A valid engagement resets the content's decay timer.
             content.engagement_count += 1
             content.last_engagement = engagement.timestamp
             return content
 
-        ENGAGE:
-            // Pooled engagement - only resets decay when pool completes
-            if pool_state == null:
-                return REJECT  // Must have pool context
-
-            // Add contribution to pool (handled by pool system)
-            pool_state.add_contribution(engagement)
-
-            // Only reset decay if pool is NOW complete
-            if pool_state.status == COMPLETED:
-                content.engagement_count += pool_state.contributor_count
-                content.last_engagement = engagement.timestamp
-                return content
-
-            // Pool incomplete - no decay change yet
-            return content
-
 function validate_engagement_pow(engagement: EngagementRecord) -> bool:
     // All engagement requires PoW proof
-    // Verify: H(nonce || content_hash || pool_id || prev_block) < difficulty
+    // Verify: H(nonce || content_hash || prev_block) < difficulty
     return verify_pow(
         engagement.pow_nonce,
         engagement.content_id,
-        engagement.pool_id,
         current_block_hash(),
         get_engage_difficulty()
     )
@@ -590,20 +569,18 @@ Unlike v0.2.0, self-engagement is no longer blocked - it just costs the same as 
 ```
 // Self-engagement now ALLOWED but COSTS PoW
 if engagement.engager_id == content.author_id:
-    // Author pays same 60s pool total as anyone else
+    // Author pays the same per-engagement PoW as anyone else
     // No free ride, no special treatment
     // Just expensive self-persistence
 ```
 
-**Rationale:** With pooled PoW, blocking self-engagement is unnecessary. The attacker pays the full pool cost (60s) regardless of whether they use their own identity or create sock puppets. The economic disincentive replaces the identity-based block.
+**Rationale:** With per-engagement PoW, blocking self-engagement is unnecessary. The attacker pays the same PoW cost per engagement regardless of whether they use their own identity or create sock puppets. The economic disincentive replaces the identity-based block.
 
 **Complexity:** O(1)
 
 **Edge Cases:**
-- **Self-engagement:** Now allowed but costs full pool PoW (60s). No economic advantage.
+- **Self-engagement:** Allowed but costs the same per-engagement PoW as any engagement. No economic advantage.
 - **Engagement on decayed content:** Not allowed. Content must be non-decayed to receive engagement.
-- **Incomplete pools:** Contributions do NOT reset decay. Work is lost if pool expires.
-- **Multiple pools on same content:** Allowed, but only one needs to complete to reset decay.
 
 ### 4.3 Deterministic Decay Evaluation
 
@@ -1412,5 +1389,5 @@ Expected:
 **Changelog:**
 - v0.4.1 (2025-12-25): **IMPLEMENTED** in Milestone 1.3. Core decay engine with adaptive decay, engagement tracking, pruning with tombstone support. 156 unit tests. Some features deferred: SC-02 (community-relative engagement) to Phase 2, SC-03 (community pinning) to Phase 3, SC-04 (author preservation) fields added but full implementation Phase 2.
 - v0.4.0 (2025-12-25): **MAJOR: Adaptive decay.** Half-life is no longer fixed - it adapts to meet storage targets. Prevents stale storage attacks where fixed 30-day decay allows garbage to persist too long. Added Section 4.1.1 with storage-targeted decay algorithm. MIN_HALF_LIFE=1day, MAX_HALF_LIFE=30days. Per-node adaptation based on local storage pressure.
-- v0.3.0 (2024-12-25): ALL engagement now requires PoW. Added pooled engagement model. Self-engagement allowed but costs same PoW as external engagement. Removed REACT type (replaced by ENGAGE pools). Integrated with SPEC_08 recursive blocks.
+- v0.3.0 (2024-12-25): ALL engagement now requires PoW. Each engagement is an individual PoW action that resets the content's decay timer. Self-engagement allowed but costs same PoW as external engagement. Removed REACT type (replaced by ENGAGE action). Integrated with SPEC_08 recursive blocks.
 - v0.2.0 (2024-12-24): Added two-layer architecture, SPEC_07 integration

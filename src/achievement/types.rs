@@ -21,13 +21,17 @@ pub enum Achievement {
     /// First content served to a peer
     FirstServe = 1,
 
-    /// 7-day hosting streak
+    /// 7-day hosting streak.
+    /// DEFERRED: needs a persistent daily hosting-streak ledger that does not yet
+    /// exist. Threshold logic is retained for when it lands.
     WeekSwimmer = 2,
 
-    /// 30-day hosting streak
+    /// 30-day hosting streak.
+    /// DEFERRED: see WeekSwimmer — depends on the same daily streak ledger.
     MonthSwimmer = 3,
 
-    /// 100-day hosting streak
+    /// 100-day hosting streak.
+    /// DEFERRED: see WeekSwimmer — depends on the same daily streak ledger.
     Centurion = 4,
 
     /// Served 100GB lifetime (changed badge from 📡 to 🏅 to avoid duplicate)
@@ -36,19 +40,28 @@ pub enum Achievement {
     /// Served 1TB lifetime
     TerabyteClub = 6,
 
-    /// 30 days at 95%+ uptime (placeholder - needs daily tracking)
+    /// 30 days at 95%+ uptime.
+    /// DEFERRED: requires a persistent daily uptime ledger the node does not yet
+    /// keep, so nothing awards this in the live path. The threshold logic exists
+    /// for when that ledger lands.
     AlwaysOn = 7,
 
-    /// First time reaching Anchor level
+    /// DEPRECATED: originally "first time reaching Anchor level". The swimmer
+    /// level ladder was removed (PoW-only gating), so there is no Anchor level to
+    /// reach and nothing awards this. The variant is retained for stable wire
+    /// format; its trigger is permanently unsatisfiable.
     AnchorDrop = 8,
 
-    /// Created first space (requires Resident+)
+    /// Created first space. Re-specified for the PoW-only model: no swimmer-level
+    /// gate — creating any space qualifies. Awarded on the space-creation path.
     LaneOpener = 9,
 
     /// Kept 100+ posts alive through engagement
     KeeperOfTheFlame = 10,
 
-    /// High contribution with low resource use (provisional)
+    /// High contribution with low resource use.
+    /// DEFERRED: provisional metric with no resource-cost accounting in the node,
+    /// so nothing awards it in the live path.
     EfficientSwimmer = 11,
 }
 
@@ -130,7 +143,7 @@ impl Achievement {
             Self::TerabyteClub => "Served 1TB of content lifetime",
             Self::AlwaysOn => "30 days with 95%+ uptime",
             Self::AnchorDrop => "[DEPRECATED] Reached Anchor level - level system removed",
-            Self::LaneOpener => "Created your first space (requires Resident+)",
+            Self::LaneOpener => "Created your first space",
             Self::KeeperOfTheFlame => "Kept 100+ posts alive through engagement",
             Self::EfficientSwimmer => "High contribution with low resource usage",
         }

@@ -626,124 +626,6 @@ pub struct GetIdentityLevelResult {
 }
 
 // ============================================================================
-// Engagement Pool Types (SPEC_03 §7)
-// ============================================================================
-
-/// create_pool params
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreatePoolParams {
-    /// Content ID to create pool for (sha256:xxx format)
-    pub content_id: String,
-    /// Initiator identity (32-byte hex)
-    pub initiator_id: String,
-}
-
-/// create_pool result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreatePoolResult {
-    /// Pool ID (32-byte hex)
-    pub pool_id: String,
-    /// Target content ID
-    pub content_id: String,
-    /// Pool expires at (unix ms)
-    pub expires_at: u64,
-    /// Required PoW total (seconds)
-    pub required_pow: u64,
-}
-
-/// contribute_to_pool params
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContributeToPoolParams {
-    /// Pool ID (32-byte hex)
-    pub pool_id: String,
-    /// Contributor identity (32-byte hex)
-    pub contributor_id: String,
-    /// PoW nonce
-    pub pow_nonce: u64,
-    /// PoW work done (seconds)
-    pub pow_work: u64,
-    /// PoW target hash (32-byte hex)
-    pub pow_target: String,
-    /// Nonce space (8-byte hex)
-    pub nonce_space: String,
-    /// Signature (64-byte hex)
-    pub signature: String,
-    /// Optional emoji code (1-8) for the reaction
-    #[serde(default)]
-    pub emoji: Option<u8>,
-}
-
-/// contribute_to_pool result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContributeToPoolResult {
-    /// Whether contribution was accepted
-    pub accepted: bool,
-    /// Current total PoW in pool (seconds)
-    pub total_pow: u64,
-    /// Whether pool is now complete
-    pub pool_complete: bool,
-    /// Pool status ("open", "completed", "expired")
-    pub status: String,
-}
-
-/// get_pool_info params
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetPoolInfoParams {
-    /// Pool ID (32-byte hex)
-    pub pool_id: String,
-}
-
-/// get_pool_for_content params
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetPoolForContentParams {
-    /// Content ID (e.g., "sha256:abc123...")
-    pub content_id: String,
-}
-
-/// get_pool_for_content result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetPoolForContentResult {
-    /// Whether a pool exists for this content
-    pub has_pool: bool,
-    /// Pool ID if exists (32-byte hex)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool_id: Option<String>,
-    /// Current total PoW (seconds)
-    #[serde(default)]
-    pub total_pow: u64,
-    /// Required PoW (seconds)
-    #[serde(default)]
-    pub required_pow: u64,
-    /// Pool status ("open", "completed", "expired", or "none")
-    pub status: String,
-    /// Number of contributors
-    #[serde(default)]
-    pub contributor_count: u64,
-    /// Pool expires at (unix ms) - 0 if no pool
-    #[serde(default)]
-    pub expires_at: u64,
-}
-
-/// get_pool_info result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GetPoolInfoResult {
-    /// Pool ID (32-byte hex)
-    pub pool_id: String,
-    /// Target content ID
-    pub content_id: String,
-    /// Current total PoW (seconds)
-    pub total_pow: u64,
-    /// Required PoW (seconds)
-    pub required_pow: u64,
-    /// Pool status
-    pub status: String,
-    /// Number of contributors
-    pub contributor_count: u64,
-    /// Pool expires at (unix ms)
-    pub expires_at: u64,
-}
-
-// ============================================================================
 // Reply Types
 // ============================================================================
 
@@ -1458,6 +1340,35 @@ pub struct ManageBlocklistResult {
     pub count: u32,
 }
 
+/// import_blocklist params (operator-only, cookie-authed).
+///
+/// Provide the list body inline via `list`, or a server-side file `path`. The
+/// format is documented in `docs/operators/blocklist-seeding.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportBlocklistParams {
+    /// Inline list body (one record per line). Takes precedence over `path`.
+    #[serde(default)]
+    pub list: Option<String>,
+    /// Path to a list file on the node host to read and import.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// import_blocklist result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportBlocklistResult {
+    /// New SHA-256 primary entries added.
+    pub sha256_added: u64,
+    /// SHA-256 records skipped because already present.
+    pub sha256_skipped: u64,
+    /// SHA-1 auxiliary digests indexed.
+    pub sha1_indexed: u64,
+    /// MD5 auxiliary digests indexed.
+    pub md5_indexed: u64,
+    /// Total blocklist SHA-256 entry count after the import.
+    pub count: u32,
+}
+
 /// get_my_invites params
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetMyInvitesParams {
@@ -2051,4 +1962,51 @@ pub struct GetUserPostsResult {
     pub total_posts: usize,
     /// Total content items by this user (posts + replies)
     pub total_content: usize,
+}
+
+// ============================================================================
+// Behavioral Branching Types (SPEC_13 Phase A / Phase 1 log-only rollout)
+// ============================================================================
+
+/// list_behavioral_events params
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListBehavioralEventsParams {
+    /// Restrict results to a single space (32-byte hex). Omit for all spaces.
+    #[serde(default)]
+    pub space_id: Option<String>,
+}
+
+/// A recorded would-be community formation (log-only Phase 1 rollout) for
+/// `list_behavioral_events` result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BehavioralEventInfo {
+    /// Deterministic event identifier (hex)
+    pub event_id: String,
+    /// Parent space the cluster was detected in (hex)
+    pub space_id: String,
+    /// Member identities of the would-be community (hex)
+    pub cluster_members: Vec<String>,
+    /// Engagement diversity metric at detection time (§2.1.1)
+    pub engagement_diversity: f64,
+    /// External interaction ratio at detection time (§2.1.2)
+    pub external_interaction: f64,
+    /// Internal cohesion metric at detection time (§2.1.3)
+    pub internal_cohesion: f64,
+    /// Cluster member count at detection time (§2.1.4)
+    pub member_count: usize,
+    /// Pattern age in blocks at detection time (§2.1.5)
+    pub age_blocks: u64,
+    /// Block height when the would-be formation was detected
+    pub detected_height: u64,
+    /// Wall-clock timestamp of the triggering action
+    pub timestamp: u64,
+}
+
+/// list_behavioral_events result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListBehavioralEventsResult {
+    /// Recorded would-be formations, most recently detected first
+    pub events: Vec<BehavioralEventInfo>,
+    /// Total number of events returned
+    pub count: u32,
 }

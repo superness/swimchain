@@ -137,6 +137,24 @@ export function UserProfileModal({
             </div>
           </div>
 
+          {/* Reputation trust signal (SPEC_12 §3.4) — informational only. */}
+          {profile?.reputation && (
+            <div
+              className="user-profile-modal__reputation"
+              title={`Reputation score ${profile.reputation.score} — ${profile.reputation.effect}. A community trust signal; it grants no posting privileges.`}
+            >
+              <span className="user-profile-modal__reputation-badge">
+                {profile.reputation.badge}
+              </span>
+              <span className="user-profile-modal__reputation-label">
+                {profile.reputation.effect}
+              </span>
+              <span className="user-profile-modal__reputation-score">
+                {profile.reputation.score}
+              </span>
+            </div>
+          )}
+
           {/* Bio if available */}
           {profile?.info?.bio && (
             <p className="user-profile-modal__bio">

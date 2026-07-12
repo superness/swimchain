@@ -5,10 +5,12 @@ import { RANKING_WEIGHTS } from '@/types/search';
 /**
  * Calculate the search ranking score for a content item.
  *
- * Ranking is based on 4 transparent factors from CLIENT_DESIGN.md Section 7.4:
- * - TEXT_RELEVANCE (40%): How well content matches search query
- * - HEAT_DECAY (25%): Content's survival probability (engagement health)
- * - ENGAGEMENT_POOL (20%): Progress toward 60-second engagement pool
+ * Ranking is based on 4 transparent factors:
+ * - TEXT_RELEVANCE (45%): How well content matches search query
+ * - HEAT_DECAY (30%): Content's survival probability (engagement health)
+ * - ENGAGEMENT (10%): Real engagement — how many times content was engaged
+ *   and how recently. Each engagement is an individual proof-of-work action
+ *   that resets the content's decay timer.
  * - RECENCY (15%): How recently content was created
  *
  * All factors are normalized to 0-100 scale, then weighted.
@@ -27,14 +29,14 @@ export function calculateScore(
   // Normalize all factors to 0-100
   const textRelevance = normalizeTextRelevance(textScore);
   const heatDecay = normalizeHeatDecay(content.survival_probability);
-  const engagementPool = normalizeEngagementPool(content.pool);
+  const engagement = normalizeEngagement(content, nowMs);
   const recency = normalizeRecency(content.item.created_at, nowMs);
 
   // Calculate weighted contributions
   const contributions = {
     textRelevance: textRelevance * RANKING_WEIGHTS.TEXT_RELEVANCE,
     heatDecay: heatDecay * RANKING_WEIGHTS.HEAT_DECAY,
-    engagementPool: engagementPool * RANKING_WEIGHTS.ENGAGEMENT_POOL,
+    engagement: engagement * RANKING_WEIGHTS.ENGAGEMENT,
     recency: recency * RANKING_WEIGHTS.RECENCY,
   };
 
@@ -42,13 +44,13 @@ export function calculateScore(
   const totalScore =
     contributions.textRelevance +
     contributions.heatDecay +
-    contributions.engagementPool +
+    contributions.engagement +
     contributions.recency;
 
   return {
     textRelevance,
     heatDecay,
-    engagementPool,
+    engagement,
     recency,
     totalScore,
     contributions,
@@ -72,19 +74,32 @@ function normalizeHeatDecay(survivalProbability: number): number {
 }
 
 /**
- * Normalize engagement pool progress to 0-100.
- * Pool requires 60 seconds to complete.
- * No pool = 0, complete pool = 100.
+ * Normalize real engagement to 0-100.
+ *
+ * Combines how much content has been engaged (engagement_count) with how
+ * recently it was last engaged (last_engagement). Each engagement is an
+ * individual proof-of-work action, so counts stay small — a handful of
+ * engagements already signals strong community investment.
+ *
+ * No engagements = 0. Engagement count saturates at ~5, weighted equally
+ * with recency of the most recent engagement (72-hour decay).
  */
-function normalizeEngagementPool(
-  pool: ContentResponse['pool']
-): number {
-  if (!pool) {
+function normalizeEngagement(content: ContentResponse, nowMs: number): number {
+  const count = content.item.engagement_count ?? 0;
+  if (count <= 0) {
     return 0;
   }
-  // contributedSeconds is 0-60, convert to percentage
-  const progress = (pool.contributedSeconds / 60) * 100;
-  return Math.min(100, Math.max(0, progress));
+
+  // Count signal: saturates at 5 engagements (each is expensive PoW).
+  const countScore = Math.min(100, count * 20);
+
+  // Recency signal: exponential decay on time since last engagement (72h).
+  const ageMs = nowMs - content.item.last_engagement;
+  const hoursSince = ageMs > 0 ? ageMs / (1000 * 60 * 60) : 0;
+  const recencyScore = 100 * Math.exp(-hoursSince / 72);
+
+  const score = 0.5 * countScore + 0.5 * recencyScore;
+  return Math.min(100, Math.max(0, score));
 }
 
 /**
@@ -123,7 +138,7 @@ export function sortResults(
       results.sort((a, b) => b.scoreBreakdown.heatDecay - a.scoreBreakdown.heatDecay);
       break;
     case 'engagement':
-      results.sort((a, b) => b.scoreBreakdown.engagementPool - a.scoreBreakdown.engagementPool);
+      results.sort((a, b) => b.scoreBreakdown.engagement - a.scoreBreakdown.engagement);
       break;
     case 'newest':
       results.sort((a, b) => b.scoreBreakdown.recency - a.scoreBreakdown.recency);
@@ -144,9 +159,9 @@ export function formatScoreExplanation(breakdown: ScoreBreakdown): string {
     `Total Score: ${breakdown.totalScore.toFixed(1)}/100`,
     '',
     'Breakdown:',
-    `  Text Match:  ${breakdown.textRelevance.toFixed(0)}% × 40% = ${breakdown.contributions.textRelevance.toFixed(1)}`,
-    `  Heat:        ${breakdown.heatDecay.toFixed(0)}% × 25% = ${breakdown.contributions.heatDecay.toFixed(1)}`,
-    `  Engagement:  ${breakdown.engagementPool.toFixed(0)}% × 20% = ${breakdown.contributions.engagementPool.toFixed(1)}`,
+    `  Text Match:  ${breakdown.textRelevance.toFixed(0)}% × 45% = ${breakdown.contributions.textRelevance.toFixed(1)}`,
+    `  Heat:        ${breakdown.heatDecay.toFixed(0)}% × 30% = ${breakdown.contributions.heatDecay.toFixed(1)}`,
+    `  Engagement:  ${breakdown.engagement.toFixed(0)}% × 10% = ${breakdown.contributions.engagement.toFixed(1)}`,
     `  Recency:     ${breakdown.recency.toFixed(0)}% × 15% = ${breakdown.contributions.recency.toFixed(1)}`,
   ];
   return lines.join('\n');
@@ -159,7 +174,7 @@ export function verifyWeights(): boolean {
   const sum =
     RANKING_WEIGHTS.TEXT_RELEVANCE +
     RANKING_WEIGHTS.HEAT_DECAY +
-    RANKING_WEIGHTS.ENGAGEMENT_POOL +
+    RANKING_WEIGHTS.ENGAGEMENT +
     RANKING_WEIGHTS.RECENCY;
   return Math.abs(sum - 1.0) < 0.0001;
 }

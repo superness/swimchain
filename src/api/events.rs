@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::content::pool::PoolId;
 use crate::types::content::{ContentId, SpaceId};
 use crate::types::identity::IdentityId;
 
@@ -20,8 +19,6 @@ pub enum ApiEvent {
     Content(ContentEvent),
     /// Network-related events
     Network(NetworkEvent),
-    /// Pool-related events
-    Pool(PoolEvent),
     /// PoW-related events
     Pow(PowEvent),
     /// Notification-related events
@@ -93,32 +90,6 @@ pub enum NetworkEvent {
     ForkDetected { fork_id: [u8; 32], height: u64 },
 }
 
-/// Events related to engagement pools
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind")]
-pub enum PoolEvent {
-    /// A new pool was created
-    PoolCreated {
-        pool_id: PoolId,
-        content_id: ContentId,
-    },
-    /// Pool contribution progress
-    PoolProgress {
-        pool_id: PoolId,
-        contributed: u64,
-        required: u64,
-        percent: f64,
-    },
-    /// Pool completed successfully
-    PoolCompleted {
-        pool_id: PoolId,
-        content_id: ContentId,
-        contributor_count: usize,
-    },
-    /// Pool expired without completion
-    PoolExpired { pool_id: PoolId },
-}
-
 /// Events related to proof-of-work operations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -174,18 +145,6 @@ mod tests {
         assert!(json.contains("\"type\":\"Network\""));
         assert!(json.contains("\"kind\":\"SyncProgress\""));
         assert!(json.contains("\"percent\":50.0"));
-    }
-
-    #[test]
-    fn test_pool_event_serialization() {
-        let event = ApiEvent::Pool(PoolEvent::PoolCreated {
-            pool_id: [1u8; 32],
-            content_id: ContentId::from_bytes([2u8; 32]),
-        });
-
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"type\":\"Pool\""));
-        assert!(json.contains("\"kind\":\"PoolCreated\""));
     }
 
     #[test]

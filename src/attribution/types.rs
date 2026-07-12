@@ -1,11 +1,11 @@
 //! Content Attribution data types (SPEC_09 §6.3)
 //!
 //! Types for tracking and displaying who keeps content alive through
-//! engagement pool contributions.
+//! their engagement.
 
 /// Attribution entry for a single contributor.
 ///
-/// Tracks an individual's contribution to keeping content alive via engagement pools.
+/// Tracks an individual's engagement toward keeping content alive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttributionEntry {
     /// Contributor's Ed25519 public key (32 bytes)
@@ -23,7 +23,11 @@ impl AttributionEntry {
     pub const WIRE_SIZE: usize = 48;
 
     /// Create a new AttributionEntry
-    pub fn new(identity: [u8; 32], pow_contributed: u64, first_contribution_timestamp: u64) -> Self {
+    pub fn new(
+        identity: [u8; 32],
+        pow_contributed: u64,
+        first_contribution_timestamp: u64,
+    ) -> Self {
         Self {
             identity,
             pow_contributed,
@@ -60,7 +64,7 @@ pub struct ContentAttribution {
     /// Total PoW from all contributors (in seconds)
     pub total_pow_contributed: u64,
 
-    /// Pool completion timestamp if any pool completed (UNIX milliseconds)
+    /// Timestamp of the most recent qualifying engagement (UNIX milliseconds)
     pub pool_completion_timestamp: Option<u64>,
 }
 
@@ -230,7 +234,8 @@ mod tests {
         let mut attr = ContentAttribution::new([1u8; 32]);
         assert!(!attr.has_contributors());
 
-        attr.contributors.push(AttributionEntry::new([2u8; 32], 10, 0));
+        attr.contributors
+            .push(AttributionEntry::new([2u8; 32], 10, 0));
         assert!(attr.has_contributors());
     }
 
@@ -252,7 +257,11 @@ mod tests {
 
     #[test]
     fn test_decay_status_roundtrip() {
-        for status in [DecayStatus::Active, DecayStatus::Protected, DecayStatus::Decayed] {
+        for status in [
+            DecayStatus::Active,
+            DecayStatus::Protected,
+            DecayStatus::Decayed,
+        ] {
             let byte = status.to_byte();
             let restored = DecayStatus::try_from(byte).unwrap();
             assert_eq!(status, restored);

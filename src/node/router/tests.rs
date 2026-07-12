@@ -377,6 +377,103 @@ fn test_builder_build_panics_without_metrics() {
     let _ = MessageRouterBuilder::new().build();
 }
 
+// ========== Reputation Wiring Tests (SPEC_12 §3.4) ==========
+
+/// Build a router wired with temp content + reputation stores, plus the author key
+/// and the content_hash of a single stored content item authored by that key.
+fn make_reputation_router() -> (
+    MessageRouter,
+    Arc<crate::reputation::ReputationStore>,
+    [u8; 32], // author
+    [u8; 32], // content_hash
+    tempfile::TempDir,
+) {
+    use crate::storage::content::PersistentContentStore;
+    use crate::types::content::{ContentId, ContentItem, ContentType, SpaceId};
+    use crate::types::identity::{IdentityId, Signature};
+
+    let dir = tempfile::tempdir().unwrap();
+    let content_store = Arc::new(
+        PersistentContentStore::open(dir.path().join("content-db"), dir.path().join("blobs"))
+            .unwrap(),
+    );
+    let rep_db = sled::Config::new().temporary(true).open().unwrap();
+    let reputation_store = Arc::new(crate::reputation::ReputationStore::open(rep_db));
+
+    let author = [7u8; 32];
+    let content_hash = [9u8; 32];
+    let item = ContentItem {
+        content_id: ContentId::from_bytes(content_hash),
+        author_id: IdentityId::from_bytes(author),
+        content_type: ContentType::Post,
+        space_id: SpaceId::from_bytes([2u8; 32]),
+        parent_id: None,
+        created_at: 0,
+        last_engagement: 0,
+        body_inline: Some("hi".to_string()),
+        content_hash: None,
+        content_size: None,
+        content_type_mime: None,
+        media_refs: vec![],
+        pin_state: None,
+        engagement_count: 0,
+        signature: Signature::from_bytes([0u8; 64]),
+        pow_nonce: 0,
+        pow_difficulty: 0,
+        preservation_pow: None,
+        display_name: None,
+    };
+    content_store.put(&item).unwrap();
+
+    let metrics = Arc::new(NodeMetrics::new());
+    let router = MessageRouter::builder()
+        .metrics(metrics)
+        .reputation_store(reputation_store.clone())
+        .content_store(content_store)
+        .build();
+
+    (router, reputation_store, author, content_hash, dir)
+}
+
+/// Score wiring: a spam-flag threshold crossing resolves the content author from the
+/// content store and decays their identity-level reputation by exactly one spam-flag
+/// penalty (100 -> 80). A subsequent counter-clear credits fast recovery.
+///
+/// This documents the hard constraint: the only reputation effects wired into the
+/// attestation path are a PENALTY (score DOWN) and a RECOVERY (restores standing).
+/// Neither reduces PoW cost, extends decay, nor raises rate limits — reputation
+/// carries no protocol privilege here.
+#[test]
+fn test_reputation_penalty_and_recovery_wiring() {
+    let (router, reputation_store, author, content_hash, _dir) = make_reputation_router();
+
+    // Baseline: neutral base score.
+    assert_eq!(reputation_store.get_score(&author).unwrap(), 100);
+
+    // Spam-flag crossing decays the author by one penalty (100 -> 80).
+    router.record_spam_flag_for_content(&content_hash, 1_700_000_000);
+    assert_eq!(reputation_store.get_score(&author).unwrap(), 80);
+
+    // Counter-clear credits fast recovery (SPEC_12 §4.5): +15 counter bonus +10 fast
+    // recovery on top of the -20 penalty => 105.
+    router.record_counter_for_content(&content_hash, 1_700_000_100);
+    assert_eq!(reputation_store.get_score(&author).unwrap(), 105);
+}
+
+/// The penalty is a no-op when the content author cannot be resolved (content not
+/// held locally): unknown content must never mutate any reputation record.
+#[test]
+fn test_reputation_penalty_noop_for_unknown_content() {
+    let (router, reputation_store, author, _content_hash, _dir) = make_reputation_router();
+
+    let unknown = [0xEE; 32];
+    router.record_spam_flag_for_content(&unknown, 1_700_000_000);
+
+    // The known author is untouched, and no record was created for the unknown hash.
+    assert_eq!(reputation_store.get_score(&author).unwrap(), 100);
+    assert_eq!(reputation_store.count(), 0);
+}
+
 // ========== All Message Types Coverage ==========
 
 #[tokio::test]

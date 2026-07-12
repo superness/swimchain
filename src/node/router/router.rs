@@ -12,7 +12,7 @@ use super::RouteError;
 use crate::attribution::{AttributionQueryPayload, AttributionResponsePayload};
 use crate::blocklist::gossip::{
     entry_from_update, parse_blocklist_message, BlocklistGossip, BlocklistMessage,
-    MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
+    MSG_BLOCKLIST_BUNDLE, MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
 };
 use crate::blocks::validation::validate_reply_parents;
 use crate::cli::search_index::{IndexableContent, SearchIndex};
@@ -30,12 +30,12 @@ use crate::engagement_graph::{EngagementGraphStore, EngagementType};
 use crate::network::messages::{
     BlockAnnouncePayload, BlockDataPayload, BlocksPayload, DataPayload, GetBlockPayload,
     GetBlocksLocatorPayload, GetBlocksPayload, GetHeadersLocatorPayload, GetPayload, GossipPayload,
-    HeadersPayload, IHavePayload, InvItem, InvPayload, NotFoundPayload, PoolAnnouncePayload,
-    PoolContributionPayload, PoolStatusPayload, SerializedBlock, SpaceHealthQueryPayload,
-    SpaceHealthResponsePayload, WhoHasPayload, WireAddr,
+    HeadersPayload, IHavePayload, InvItem, InvPayload, NotFoundPayload, SerializedBlock,
+    SpaceHealthQueryPayload, SpaceHealthResponsePayload, WhoHasPayload, WireAddr,
 };
 use crate::node::peer_connections::PeerConnectionPool;
-use crate::node::NodeMetrics;
+use crate::node::{BehavioralBranchingMode, NodeMetrics};
+use crate::reputation::ReputationStore;
 use crate::spam_attestation::{
     aggregate_attestations, validate_attestation, CounterAttestation, CounterAttestationState,
     SpamAttestation, SpamAttestationStore, StoredSpamAttestation,
@@ -101,9 +101,6 @@ use crate::types::constants::{
     MSG_NOTFOUND_CONTENT,
     MSG_PING,
     MSG_PONG,
-    MSG_POOL_ANNOUNCE,
-    MSG_POOL_CONTRIBUTION,
-    MSG_POOL_STATUS,
     MSG_REJECT,
     MSG_SPACE_HEALTH_QUERY,
     MSG_SPACE_HEALTH_RESPONSE,
@@ -190,8 +187,11 @@ pub struct MessageRouter {
     /// Blocklist gossip manager for peer tracking (H-BLOCKLIST-2)
     blocklist_gossip: Option<Arc<RwLock<BlocklistGossip>>>,
 
-    /// Pool manager for engagement pools (SPEC_03 §7, SPEC_08 §3.3)
-    pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
+    /// Trusted blocklist list-maintainer public keys (SPEC_12 CSAM seeding).
+    /// Updates/bundles signed by these keys bypass the community-attestation
+    /// requirement; all other keys still require the attestation threshold.
+    trusted_blocklist_keys: std::collections::HashSet<[u8; 32]>,
+
 
     /// Connection pool for block relay broadcasting
     connection_pool: Option<Arc<PeerConnectionPool>>,
@@ -207,6 +207,9 @@ pub struct MessageRouter {
 
     /// Spam attestation store for community flagging (SPEC_12 §3)
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5). Fed from the
+    /// attestation-processing path when spam thresholds are reached/cleared.
+    reputation_store: Option<Arc<ReputationStore>>,
     membership_store: Option<Arc<crate::storage::membership::MembershipStore>>,
     /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
     /// Used to recognize DM requests addressed to us.
@@ -219,6 +222,10 @@ pub struct MessageRouter {
 
     /// Engagement graph for tracking who engages with whom
     engagement_graph: Option<Arc<EngagementGraphStore>>,
+
+    /// Achievement service — awards serve/engagement recognition badges
+    /// (SPEC_09 §5.3). Recognition ONLY: no protocol privileges.
+    achievement_service: Option<Arc<crate::achievement::AchievementService>>,
 
     /// Sponsorship store for applying on-chain sponsorship actions (SPEC_11 Phase 6)
     sponsorship_store: Option<Arc<SponsorshipStore>>,
@@ -244,9 +251,10 @@ pub struct MessageRouter {
     /// Event manager for publishing real-time WebSocket events (H-RPC-2)
     event_manager: Option<Arc<crate::rpc::events::EventManager>>,
 
-    /// Behavioral branching enabled (SPEC_13 Phase A)
-    /// Gates organic community detection during block processing.
-    behavioral_branching_enabled: bool,
+    /// Behavioral branching mode (SPEC_13 Phase A / Phase 1 rollout)
+    /// Gates organic community detection during block processing, and whether
+    /// a qualifying cluster fractures (`Full`) or is only logged (`LogOnly`).
+    behavioral_branching_mode: BehavioralBranchingMode,
 }
 
 impl MessageRouter {
@@ -265,16 +273,18 @@ impl MessageRouter {
             chain_store: None,
             blocklist: None,
             blocklist_gossip: None,
-            pool_manager: None,
+            trusted_blocklist_keys: std::collections::HashSet::new(),
             connection_pool: None,
             dht: None,
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            reputation_store: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
             engagement_graph: None,
+            achievement_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -283,7 +293,7 @@ impl MessageRouter {
             node_id: None,
             search_index: None,
             event_manager: None,
-            behavioral_branching_enabled: false,
+            behavioral_branching_mode: BehavioralBranchingMode::Disabled,
         }
     }
 
@@ -309,16 +319,18 @@ impl MessageRouter {
             chain_store,
             blocklist: None,
             blocklist_gossip: None,
-            pool_manager: None,
+            trusted_blocklist_keys: std::collections::HashSet::new(),
             connection_pool: None,
             dht: None,
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            reputation_store: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
             engagement_graph: None,
+            achievement_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -327,7 +339,7 @@ impl MessageRouter {
             node_id: None,
             search_index: None,
             event_manager: None,
-            behavioral_branching_enabled: false,
+            behavioral_branching_mode: BehavioralBranchingMode::Disabled,
         }
     }
 
@@ -445,9 +457,6 @@ impl MessageRouter {
             MSG_GETBLOCKS_LOCATOR => self.handle_getblocks_locator(peer_id, payload).await,
 
             // === Pool Gossip (SPEC_03 §7, SPEC_08 §3.3) ===
-            MSG_POOL_ANNOUNCE => self.handle_pool_announce(peer_id, payload).await,
-            MSG_POOL_CONTRIBUTION => self.handle_pool_contribution(peer_id, payload).await,
-            MSG_POOL_STATUS => self.handle_pool_status(peer_id, payload).await,
 
             // === Direct Messages (managed DM propagation) ===
             MSG_DM_REQUEST_ANNOUNCE => self.handle_dm_request_announce(peer_id, payload).await,
@@ -465,6 +474,7 @@ impl MessageRouter {
             MSG_BLOCKLIST_UPDATE => self.handle_blocklist_update(peer_id, payload).await,
             MSG_BLOCKLIST_SYNC => self.handle_blocklist_sync(peer_id, payload).await,
             MSG_BLOCKLIST_REQUEST => self.handle_blocklist_request(peer_id, payload).await,
+            MSG_BLOCKLIST_BUNDLE => self.handle_blocklist_bundle(peer_id, payload).await,
 
             // === Headers-First Sync ===
             MSG_GETHEADERS_LOCATOR => self.handle_getheaders_locator(peer_id, payload).await,
@@ -1055,6 +1065,12 @@ impl MessageRouter {
                     hex::encode(&hash_bytes[..8])
                 );
 
+                // Recognition: this node just served content to a peer. Award the
+                // serve badges (FirstServe / BandwidthBaron / TerabyteClub) against
+                // our own identity's persistent lifetime bytes-served counter.
+                // Recognition ONLY — this does not alter what/where we serve.
+                self.award_bandwidth_served(data_len as u64);
+
                 Ok(Some((MSG_DATA_CONTENT, data_payload.data)))
             }
             Err(not_found) => {
@@ -1175,13 +1191,26 @@ impl MessageRouter {
 
         // BLOCKLIST CHECK: Reject content that matches blocklist entries
         // This prevents storing CSAM/illegal content even if received from network
+        // Primary match is on the SHA-256 content id. For seeded external lists
+        // (SPEC_12) we also recompute SHA-1/MD5 over the received bytes and match
+        // the auxiliary indexes, since industry CSAM lists distribute those
+        // legacy digests rather than SHA-256.
         if let Some(ref blocklist) = self.blocklist {
             let store = blocklist.read().unwrap();
+            let mut matched: Option<&str> = None;
             if store.is_blocked(&hash_bytes) {
+                matched = Some("sha256");
+            } else if store.is_blocked_sha1(&crate::crypto::sha1(data)) {
+                matched = Some("sha1");
+            } else if store.is_blocked_md5(&crate::crypto::md5(data)) {
+                matched = Some("md5");
+            }
+            if let Some(kind) = matched {
                 warn!(
-                    "[BLOCKLIST] Rejected DATA_CONTENT from {} - content {} matches blocklist",
+                    "[BLOCKLIST] Rejected DATA_CONTENT from {} - content {} matches blocklist ({})",
                     hex::encode(&peer_id[..8]),
-                    hex::encode(&hash_bytes[..8])
+                    hex::encode(&hash_bytes[..8]),
+                    kind
                 );
                 return Err(RouteError::InvalidData("content blocked".to_string()));
             }
@@ -1236,8 +1265,18 @@ impl MessageRouter {
                     }
                 }
 
-                // Index the content for full-text search if possible
-                // Try to deserialize as ContentItem and extract indexable fields
+                // Index the content for full-text search if possible.
+                // Try to deserialize as ContentItem and extract indexable fields.
+                //
+                // SEARCH PARITY INVARIANT (branch partitioning, SPEC_08 §5):
+                // this is the ingestion point of the GLOBAL metadata index.
+                // Every text record that arrives via block sync is indexed here
+                // REGARDLESS of branch subscription, and index documents are
+                // never removed when the local blob later decays or the branch
+                // is unhosted. That keeps Tantivy search results identical
+                // across nodes; hits in unhosted branches resolve through
+                // `request_content` (view-to-host on-demand fetch). Do NOT
+                // gate this on subscription state.
                 if let Some(ref search_index) = self.search_index {
                     // Try to deserialize the content as a ContentItem
                     if let Ok(item) =
@@ -2388,29 +2427,53 @@ impl MessageRouter {
                 Ok(_) => {} // No duplicates, proceed
             }
 
-            if let Err(e) = chain_store.put_content_block(&content_block) {
-                warn!("[BLOCK] Failed to store content block: {}", e);
-            } else {
-                // Mark all actions in this content block as finalized
-                if let Err(e) =
-                    chain_store.mark_content_block_actions_finalized(&content_block, block_height)
-                {
-                    warn!("[BLOCK] Failed to mark actions as finalized: {}", e);
+            // Branch-aware write: registers the block with the branch indexes
+            // (size tracking + 50MB fracture, SPEC_08 §5). Placement is derived
+            // from chain data, so every node processing this block computes the
+            // identical branch assignment.
+            let branch_store = crate::branch::BranchAwareStore::new(chain_store);
+            match branch_store.put_built_content_block(&content_block) {
+                Err(e) => {
+                    warn!("[BLOCK] Failed to store content block: {}", e);
                 }
-                // Extract and store reactions from Engage actions
-                self.extract_reactions_from_block(&content_block);
-                // Track engagements in the engagement graph
-                self.extract_engagements_from_block(&content_block);
-                // SPEC_13 Phase A: behavioral clustering (organic communities)
-                self.process_behavioral_clustering(&content_block);
-                // Update reply counts in aggregation cache
-                self.update_reply_counts_from_block(&content_block);
+                Ok(put_result) => {
+                    if put_result.fracture_triggered {
+                        info!(
+                            "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                            hex::encode(&content_block.space_id[..8]),
+                            put_result.branch_path.depth()
+                        );
+                    }
+                    // Mark all actions in this content block as finalized
+                    if let Err(e) = chain_store
+                        .mark_content_block_actions_finalized(&content_block, block_height)
+                    {
+                        warn!("[BLOCK] Failed to mark actions as finalized: {}", e);
+                    }
+                    // Extract and store reactions from Engage actions
+                    self.extract_reactions_from_block(&content_block);
+                    // Track engagements in the engagement graph
+                    self.extract_engagements_from_block(&content_block);
+                    // SPEC_13 Phase A: behavioral clustering (organic communities)
+                    self.process_behavioral_clustering(&content_block);
+                    // Update reply counts in aggregation cache
+                    self.update_reply_counts_from_block(&content_block);
+                }
             }
         }
 
         // CRITICAL: Fetch missing content blobs for actions in this block.
         // Block sync only transfers content_hash references, not the actual blob data.
         // We need to request the blobs so users can view the content.
+        //
+        // SEARCH PARITY INVARIANT (branch partitioning, SPEC_08 §5): chain
+        // records carry NO inline text — post text travels as a serialized
+        // ContentItem blob referenced by the action's 32-byte content_hash.
+        // Text-record fetching here must therefore stay subscription-AGNOSTIC:
+        // fetching (and indexing, in the DATA_CONTENT handler) every text
+        // record is what makes the search index global. Branch subscriptions
+        // may bound long-term blob HOSTING (decay/pruning of unhosted
+        // branches), but never which records get fetched-and-indexed.
         //
         // IMPORTANT: We use WHO_HAS/I_HAVE discovery instead of blindly sending GET to the
         // block sender, because the sender may have also synced the block and not have the blobs.
@@ -2783,7 +2846,9 @@ impl MessageRouter {
                         all_content_hashes.push(media_ref.media_hash);
                     }
                 }
-                let _ = chain_store.put_content_block(&content_block);
+                // Branch-aware write: size tracking + 50MB fracture (SPEC_08 §5)
+                let _ = crate::branch::BranchAwareStore::new(chain_store)
+                    .put_built_content_block(&content_block);
                 let _ =
                     chain_store.mark_content_block_actions_finalized(&content_block, block_height);
             }
@@ -3790,9 +3855,21 @@ impl MessageRouter {
                     Ok(_) => {} // No duplicates
                 }
 
-                if let Err(e) = chain_store.put_content_block(content_block) {
+                // Branch-aware write: size tracking + 50MB fracture (SPEC_08 §5)
+                let put_result = crate::branch::BranchAwareStore::new(chain_store)
+                    .put_built_content_block(content_block);
+                if let Err(e) = put_result {
                     warn!("[BLOCK] Failed to store content block: {}", e);
                 } else {
+                    if let Ok(ref result) = put_result {
+                        if result.fracture_triggered {
+                            info!(
+                                "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                                hex::encode(&content_block.space_id[..8]),
+                                result.branch_path.depth()
+                            );
+                        }
+                    }
                     // Mark actions as finalized
                     if let Err(e) = chain_store
                         .mark_content_block_actions_finalized(content_block, block_height)
@@ -4110,6 +4187,38 @@ impl MessageRouter {
         }
     }
 
+    /// Current Unix time in seconds (used for achievement unlock timestamps).
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Award serve badges after this node serves `bytes` of content to a peer.
+    ///
+    /// Recognition ONLY (SPEC_09 §5.3): increments our identity's persistent
+    /// lifetime bytes-served counter and unlocks FirstServe / BandwidthBaron /
+    /// TerabyteClub as thresholds are crossed. No effect on protocol behavior.
+    fn award_bandwidth_served(&self, bytes: u64) {
+        let (Some(service), Some(identity)) = (&self.achievement_service, self.identity_pubkey)
+        else {
+            return;
+        };
+        match service.record_bandwidth_served(&identity, bytes, Self::now_secs()) {
+            Ok(unlocked) => {
+                for achievement in unlocked {
+                    info!(
+                        "[ACHIEVEMENT] Unlocked {} {} (served content)",
+                        achievement.badge(),
+                        achievement.name()
+                    );
+                }
+            }
+            Err(e) => warn!("[ACHIEVEMENT] Failed to record served bandwidth: {}", e),
+        }
+    }
+
     /// Extract and track engagement relationships from actions in a content block
     ///
     /// Tracks who engages with whose content:
@@ -4186,7 +4295,44 @@ impl MessageRouter {
                     hex::encode(&engager[..8]),
                     hex::encode(&author[..8])
                 );
+
+                // Recognition: when OUR identity is the engager, re-evaluate
+                // KeeperOfTheFlame against our updated outgoing-engagement total
+                // (deterministic local proxy for "posts kept alive"). Only for the
+                // local identity — remote engagers' badges are theirs to earn on
+                // their own node. Recognition ONLY.
+                if self.identity_pubkey == Some(engager) {
+                    self.award_posts_supported(&engager);
+                }
             }
+        }
+    }
+
+    /// Re-evaluate KeeperOfTheFlame for `identity` from the engagement graph's
+    /// current outgoing-engagement total. Recognition ONLY (SPEC_09 §5.3).
+    fn award_posts_supported(&self, identity: &[u8; 32]) {
+        let (Some(service), Some(graph)) = (&self.achievement_service, &self.engagement_graph)
+        else {
+            return;
+        };
+        let supported = match graph.get_stats(identity) {
+            Ok(stats) => stats.total_outgoing,
+            Err(e) => {
+                warn!("[ACHIEVEMENT] Failed to read engagement stats: {}", e);
+                return;
+            }
+        };
+        match service.record_posts_supported(identity, supported, Self::now_secs()) {
+            Ok(unlocked) => {
+                for achievement in unlocked {
+                    info!(
+                        "[ACHIEVEMENT] Unlocked {} {} (engagement milestone)",
+                        achievement.badge(),
+                        achievement.name()
+                    );
+                }
+            }
+            Err(e) => warn!("[ACHIEVEMENT] Failed to record posts supported: {}", e),
         }
     }
 
@@ -4194,14 +4340,20 @@ impl MessageRouter {
     ///
     /// Updates per-identity interaction metrics (SPEC_13 §3.1) and applies
     /// detection outcomes (community fracture or spam signal). Gated by
-    /// `behavioral_branching_enabled` (from `NodeConfig`, default ON only for
-    /// regtest until SPEC_13 §7 consensus messages land).
+    /// `behavioral_branching_mode` (from `NodeConfig::behavioral_branching_mode()`):
+    /// `Full` executes the fracture (default ON only for regtest until SPEC_13
+    /// §7 consensus messages land), `LogOnly` records a would-be formation
+    /// without applying it (Phase 1 observation rollout, default ON for
+    /// testnet -- `docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md`), `Disabled`
+    /// skips detection entirely.
     fn process_behavioral_clustering(&self, content_block: &crate::blocks::ContentBlock) {
-        use crate::branch::{BranchManager, ClusterOutcome, ClusteringAction};
+        use crate::branch::{BranchManager, ClusterOutcome, ClusteringAction, ClusteringMode};
 
-        if !self.behavioral_branching_enabled {
-            return;
-        }
+        let clustering_mode = match self.behavioral_branching_mode {
+            BehavioralBranchingMode::Disabled => return,
+            BehavioralBranchingMode::LogOnly => ClusteringMode::LogOnly,
+            BehavioralBranchingMode::Full => ClusteringMode::Full,
+        };
         let chain_store = match &self.chain_store {
             Some(store) => store,
             None => return,
@@ -4237,12 +4389,22 @@ impl MessageRouter {
                 continue;
             };
 
-            match manager.process_action_for_clustering(
+            match manager.process_action_for_clustering_with_mode(
                 &content_block.space_id,
                 &clustering_action,
                 current_height,
                 action.timestamp,
+                clustering_mode,
             ) {
+                Ok(ClusterOutcome::Community(formation))
+                    if clustering_mode == ClusteringMode::LogOnly =>
+                {
+                    info!(
+                        "[SPEC13] Would-be community formation logged in space {}: {} members (log-only, Phase 1)",
+                        hex::encode(&content_block.space_id[..8]),
+                        formation.founding_members.len(),
+                    );
+                }
                 Ok(ClusterOutcome::Community(formation)) => {
                     info!(
                         "[SPEC13] Community formed in space {}: {} members, branch {:?}",
@@ -4857,284 +5019,6 @@ impl MessageRouter {
         Ok(None)
     }
 
-    // ========== Pool Gossip Handlers (SPEC_03 §7, SPEC_08 §3.3) ==========
-
-    /// Handle POOL_ANNOUNCE - receive and store pool announcement
-    ///
-    /// When a peer announces a new engagement pool, we store it locally
-    /// so users can discover and contribute to it.
-    ///
-    /// Payload format: PoolAnnouncePayload (176 bytes)
-    async fn handle_pool_announce(
-        &self,
-        peer_id: &[u8; 32],
-        payload: &[u8],
-    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let announce = PoolAnnouncePayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::PayloadTooSmall {
-                expected: PoolAnnouncePayload::SIZE,
-                actual: payload.len(),
-            }
-        })?;
-
-        info!(
-            "[POOL] Received POOL_ANNOUNCE from peer {}: pool={} content={} required={}s",
-            hex::encode(&peer_id[..8]),
-            hex::encode(&announce.pool_id[..8]),
-            hex::encode(&announce.target_content[..8]),
-            announce.required_pow
-        );
-
-        let pool_manager = match &self.pool_manager {
-            Some(pm) => pm,
-            None => {
-                debug!("[POOL] No pool manager configured, ignoring announcement");
-                return Err(RouteError::SubsystemUnavailable("pool_manager"));
-            }
-        };
-
-        // Check if we already have this pool (read lock)
-        {
-            let pm_read = pool_manager
-                .read()
-                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-            if pm_read.get_pool(&announce.pool_id).is_some() {
-                debug!(
-                    "[POOL] Already have pool {}, ignoring",
-                    hex::encode(&announce.pool_id[..8])
-                );
-                return Ok(None);
-            }
-        }
-
-        // Create the pool from the announcement
-        // Note: In a full implementation, we would verify the signature
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        // Only create if pool hasn't expired
-        if announce.window_end > now_ms {
-            let mut pm_write = pool_manager
-                .write()
-                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-            let new_pool_id =
-                pm_write.create_pool(announce.target_content, announce.creator, now_ms);
-            info!(
-                "[POOL] Created pool {} from announcement",
-                hex::encode(&new_pool_id[..8])
-            );
-        } else {
-            debug!(
-                "[POOL] Pool {} already expired, ignoring",
-                hex::encode(&announce.pool_id[..8])
-            );
-        }
-
-        // Forward the announcement to other peers (gossip propagation)
-        // This would be done via the gossip manager if configured
-
-        Ok(None)
-    }
-
-    /// Handle POOL_CONTRIBUTION - receive and add contribution to pool
-    ///
-    /// When a peer contributes PoW to a pool, we validate and add it.
-    /// If the pool completes, we trigger decay reset for the content.
-    ///
-    /// Payload format: PoolContributionPayload (192 bytes)
-    async fn handle_pool_contribution(
-        &self,
-        peer_id: &[u8; 32],
-        payload: &[u8],
-    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let contribution = PoolContributionPayload::from_bytes(payload).ok_or_else(|| {
-            RouteError::PayloadTooSmall {
-                expected: PoolContributionPayload::SIZE,
-                actual: payload.len(),
-            }
-        })?;
-
-        info!(
-            "[POOL] Received POOL_CONTRIBUTION from peer {}: pool={} contributor={} work={}s",
-            hex::encode(&peer_id[..8]),
-            hex::encode(&contribution.pool_id[..8]),
-            hex::encode(&contribution.contributor[..8]),
-            contribution.pow_work
-        );
-
-        let pool_manager = match &self.pool_manager {
-            Some(pm) => pm,
-            None => {
-                debug!("[POOL] No pool manager configured, ignoring contribution");
-                return Err(RouteError::SubsystemUnavailable("pool_manager"));
-            }
-        };
-
-        // Convert to internal PoolContribution type
-        let internal_contribution = crate::content::pool::PoolContribution {
-            contributor: contribution.contributor,
-            pow_nonce: contribution.pow_nonce,
-            pow_work: contribution.pow_work,
-            pow_target: contribution.pow_target,
-            timestamp: contribution.timestamp,
-            signature: contribution.signature,
-            nonce_space: contribution.nonce_space,
-            emoji: None, // Network gossip doesn't carry emoji (yet)
-        };
-
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        // Default PoW config for validation
-        let config = crate::crypto::action_pow::ForkPoWConfig::default();
-
-        // Add contribution to pool (validation happens inside)
-        let mut pm_write = pool_manager
-            .write()
-            .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-
-        match pm_write.add_contribution(
-            contribution.pool_id,
-            internal_contribution,
-            now_ms,
-            &config,
-        ) {
-            Ok(()) => {
-                // Check if pool completed after adding contribution
-                match pm_write.check_completion(contribution.pool_id) {
-                    Ok(result) => {
-                        match result {
-                            crate::content::pool::CompletionResult::Completed {
-                                total_pow,
-                                contributor_count,
-                                ..
-                            } => {
-                                info!(
-                                    "[POOL] Pool {} completed! total_pow={}s contributors={}",
-                                    hex::encode(&contribution.pool_id[..8]),
-                                    total_pow,
-                                    contributor_count
-                                );
-
-                                // Trigger decay reset if we have decay integration
-                                if let Some(ref decay) = self.decay_integration {
-                                    if let Some(pool) = pm_write.get_pool(&contribution.pool_id) {
-                                        let blob_hash =
-                                            ContentBlobHash::from_bytes(pool.target_content);
-                                        if let Err(e) = decay.on_engagement(&blob_hash) {
-                                            warn!("[POOL] Failed to record engagement: {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                            crate::content::pool::CompletionResult::Incomplete {
-                                current,
-                                required,
-                            } => {
-                                debug!(
-                                    "[POOL] Pool {} now at {}/{}s",
-                                    hex::encode(&contribution.pool_id[..8]),
-                                    current,
-                                    required
-                                );
-                            }
-                            crate::content::pool::CompletionResult::Expired => {
-                                debug!(
-                                    "[POOL] Pool {} has expired",
-                                    hex::encode(&contribution.pool_id[..8])
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!("[POOL] Failed to check completion: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                warn!("[POOL] Failed to add contribution: {}", e);
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Handle POOL_STATUS - query or receive pool status
-    ///
-    /// If status=0, this is a query - respond with current pool state.
-    /// Otherwise, this is a status update from a peer.
-    ///
-    /// Payload format: PoolStatusPayload (43 bytes)
-    async fn handle_pool_status(
-        &self,
-        peer_id: &[u8; 32],
-        payload: &[u8],
-    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
-        let status_msg =
-            PoolStatusPayload::from_bytes(payload).ok_or_else(|| RouteError::PayloadTooSmall {
-                expected: PoolStatusPayload::SIZE,
-                actual: payload.len(),
-            })?;
-
-        // If status=0, this is a query
-        if status_msg.status == 0 {
-            info!(
-                "[POOL] Received POOL_STATUS query from peer {}: pool={}",
-                hex::encode(&peer_id[..8]),
-                hex::encode(&status_msg.pool_id[..8])
-            );
-
-            let pool_manager = match &self.pool_manager {
-                Some(pm) => pm,
-                None => {
-                    return Err(RouteError::SubsystemUnavailable("pool_manager"));
-                }
-            };
-
-            // Look up the pool (read lock)
-            let pm_read = pool_manager
-                .read()
-                .map_err(|_| RouteError::SubsystemUnavailable("pool_manager lock poisoned"))?;
-            if let Some(pool) = pm_read.get_pool(&status_msg.pool_id) {
-                let status_code = match pool.status {
-                    crate::content::pool::PoolStatus::Open => 1,
-                    crate::content::pool::PoolStatus::Completed => 2,
-                    crate::content::pool::PoolStatus::Expired => 3,
-                };
-
-                let total_pow: u64 = pool.contributions.iter().map(|c| c.pow_work).sum();
-
-                let response = PoolStatusPayload::response(
-                    status_msg.pool_id,
-                    status_code,
-                    total_pow,
-                    pool.contributions.len() as u16,
-                );
-
-                return Ok(Some((MSG_POOL_STATUS, response.to_bytes().to_vec())));
-            } else {
-                // Pool not found - return NOTFOUND
-                return Ok(Some((MSG_NOTFOUND, status_msg.pool_id.to_vec())));
-            }
-        }
-
-        // Otherwise this is a status update - just log it
-        info!(
-            "[POOL] Received POOL_STATUS update from peer {}: pool={} status={} pow={}s contributors={}",
-            hex::encode(&peer_id[..8]),
-            hex::encode(&status_msg.pool_id[..8]),
-            status_msg.status,
-            status_msg.total_pow,
-            status_msg.contributor_count
-        );
-
-        Ok(None)
-    }
-
     // ========== Mempool Gossip Handlers ==========
 
     /// Handle ACTION_ANNOUNCE - receive pending action from peer and add to mempool
@@ -5217,6 +5101,18 @@ impl MessageRouter {
             }
         }
 
+        // Resolve branch placement for the gossiped action (SPEC_08 §4).
+        // Deterministic from local chain state, so every node stamps the same
+        // path when it later builds a block from this mempool entry.
+        let branch_path = match &self.chain_store {
+            Some(store) => crate::branch::BranchManager::new(store).resolve_mempool_branch_path(
+                &announce.space_id,
+                &announce.thread_id,
+                Some(&action.actor),
+            ),
+            None => BranchPath::root(),
+        };
+
         // Add to block builder
         let added = {
             let mut bb_write = block_builder
@@ -5227,7 +5123,7 @@ impl MessageRouter {
                 announce.thread_id,
                 announce.space_id,
                 action.clone(),
-                BranchPath::root(),
+                branch_path,
             );
 
             if added {
@@ -6024,16 +5920,28 @@ impl MessageRouter {
         if let Some(ref store) = self.chain_store {
             let block_height = root.height();
 
-            // Store content blocks first (referenced by space blocks)
+            // Store content blocks first (referenced by space blocks).
+            // Branch-aware write: size tracking + 50MB fracture (SPEC_08 §5).
+            let branch_store = crate::branch::BranchAwareStore::new(store);
             for content_block in &content_blocks {
-                if let Err(e) = store.put_content_block(content_block) {
-                    warn!("[BLOCKS] Failed to store content block: {}", e);
-                } else {
-                    // Mark all actions as finalized so duplicate blocks from other nodes are rejected
-                    if let Err(e) =
-                        store.mark_content_block_actions_finalized(content_block, block_height)
-                    {
-                        warn!("[BLOCKS] Failed to mark actions as finalized: {}", e);
+                match branch_store.put_built_content_block(content_block) {
+                    Err(e) => {
+                        warn!("[BLOCKS] Failed to store content block: {}", e);
+                    }
+                    Ok(result) => {
+                        if result.fracture_triggered {
+                            info!(
+                                "[BRANCH] Fracture triggered in space {} at branch depth {}",
+                                hex::encode(&content_block.space_id[..8]),
+                                result.branch_path.depth()
+                            );
+                        }
+                        // Mark all actions as finalized so duplicate blocks from other nodes are rejected
+                        if let Err(e) =
+                            store.mark_content_block_actions_finalized(content_block, block_height)
+                        {
+                            warn!("[BLOCKS] Failed to mark actions as finalized: {}", e);
+                        }
                     }
                 }
             }
@@ -6163,10 +6071,16 @@ impl MessageRouter {
 
         if let Some(ref blocklist_gossip) = self.blocklist_gossip {
             let gossip = blocklist_gossip.read().unwrap();
+            // Trust-anchored fast path: updates signed by a configured
+            // list-maintainer key are accepted without community attestations;
+            // all other keys still require the attestation threshold.
             gossip
-                .validate_update(&update, current_time, |pubkey, msg, sig| {
-                    ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-                })
+                .validate_update_with_trust(
+                    &update,
+                    current_time,
+                    &self.trusted_blocklist_keys,
+                    |pubkey, msg, sig| ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig)),
+                )
                 .map_err(|e| {
                     warn!(
                         "[BLOCKLIST] Invalid update from peer {}: {}",
@@ -6368,6 +6282,132 @@ impl MessageRouter {
 
         // Would send individual BLOCKLIST_UPDATE for each found entry
         // For now, just acknowledge
+
+        Ok(None)
+    }
+
+    /// Handle BLOCKLIST_BUNDLE - receive a signed, versioned blocklist bundle.
+    ///
+    /// Bundles are the trust-anchored bulk-distribution path (SPEC_12 CSAM
+    /// seeding A.3): validate the maintainer signature against the configured
+    /// trusted-key set, apply entries if the version is newer than what we
+    /// hold, and forward to peers that haven't seen it. Unlike updates, bundles
+    /// carry no attestations — an untrusted or unsigned bundle is dropped.
+    ///
+    /// Payload format: BlocklistBundle
+    async fn handle_blocklist_bundle(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        let message = parse_blocklist_message(MSG_BLOCKLIST_BUNDLE, payload)
+            .map_err(|e| RouteError::DeserializationError(format!("{}", e)))?;
+
+        let bundle = match message {
+            BlocklistMessage::Bundle(b) => b,
+            _ => {
+                return Err(RouteError::DeserializationError(
+                    "Expected Bundle".to_string(),
+                ))
+            }
+        };
+
+        info!(
+            "[BLOCKLIST] Received BLOCKLIST_BUNDLE from peer {}: version={} entries={} maintainer={}",
+            hex::encode(&peer_id[..8]),
+            bundle.bundle_version,
+            bundle.entries.len(),
+            hex::encode(&bundle.maintainer[..8])
+        );
+
+        let blocklist = match &self.blocklist {
+            Some(bl) => bl,
+            None => {
+                debug!("[BLOCKLIST] No blocklist store configured");
+                return Err(RouteError::SubsystemUnavailable("blocklist"));
+            }
+        };
+
+        // Trust-anchor validation: maintainer must be configured-trusted and the
+        // Ed25519 signature must verify over the canonical bundle bytes.
+        bundle
+            .validate(&self.trusted_blocklist_keys, |pubkey, msg, sig| {
+                ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
+            })
+            .map_err(|e| {
+                warn!(
+                    "[BLOCKLIST] Rejected bundle from peer {}: {}",
+                    hex::encode(&peer_id[..8]),
+                    e
+                );
+                RouteError::HandlerError(format!("blocklist bundle validation error: {}", e))
+            })?;
+
+        // Apply if newer than our current version.
+        let applied = {
+            let mut store = blocklist.write().unwrap();
+            store.apply_bundle(&bundle).map_err(|e| {
+                RouteError::HandlerError(format!("blocklist bundle apply error: {}", e))
+            })?
+        };
+
+        match applied {
+            Some(stats) => {
+                info!(
+                    "[BLOCKLIST] Applied bundle v{}: +{} entries (+{} sha1, +{} md5, {} skipped)",
+                    bundle.bundle_version,
+                    stats.sha256_added,
+                    stats.sha1_indexed,
+                    stats.md5_indexed,
+                    stats.sha256_skipped
+                );
+            }
+            None => {
+                debug!(
+                    "[BLOCKLIST] Bundle v{} not newer than stored; ignoring",
+                    bundle.bundle_version
+                );
+                // Stale bundle: do not re-forward.
+                return Ok(None);
+            }
+        }
+
+        // Forward the (freshly applied) bundle to peers that haven't seen it.
+        // Reuse the gossip seen-tracking keyed by the maintainer + version so we
+        // don't loop bundles endlessly.
+        if let (Some(ref connection_pool), Some(ref blocklist_gossip)) =
+            (&self.connection_pool, &self.blocklist_gossip)
+        {
+            // Derive a stable dedup key for this bundle version.
+            let mut dedup_key = [0u8; 32];
+            dedup_key[..8].copy_from_slice(&bundle.bundle_version.to_le_bytes());
+            dedup_key[8..16].copy_from_slice(&bundle.maintainer[..8]);
+
+            let all_peers = connection_pool.peer_ids().await;
+            let all_peers_arr: Vec<[u8; 32]> = all_peers.iter().copied().collect();
+
+            let peers_to_forward = {
+                let mut gossip = blocklist_gossip.write().unwrap();
+                gossip.peers_to_forward(&dedup_key, &all_peers_arr, Some(*peer_id))
+            };
+
+            if !peers_to_forward.is_empty() {
+                let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                    crate::types::network::MessageType::BlocklistBundle,
+                    payload.to_vec(),
+                );
+                for target_peer_id in peers_to_forward {
+                    if connection_pool
+                        .send_to(&target_peer_id, &envelope)
+                        .await
+                        .is_ok()
+                    {
+                        let mut gossip = blocklist_gossip.write().unwrap();
+                        gossip.mark_peer_seen(&dedup_key, target_peer_id);
+                    }
+                }
+            }
+        }
 
         Ok(None)
     }
@@ -6707,6 +6747,23 @@ impl MessageRouter {
         // In production, this would be looked up from the chain
         let sponsor_tree_root = attestation.attester;
 
+        // Snapshot whether this content was already flagged BEFORE this attestation,
+        // so the author's reputation is penalized only on the first threshold crossing.
+        let counter_state_pre = store
+            .get_counter_state(&attestation.content_hash)
+            .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+        let was_flagged = {
+            let prior = store
+                .get_attestations_for_content(&attestation.content_hash)
+                .map_err(|e| RouteError::HandlerError(e.to_string()))?;
+            aggregate_attestations(
+                attestation.content_hash,
+                &prior,
+                counter_state_pre.is_cleared,
+            )
+            .should_accelerate_decay
+        };
+
         // Store the attestation
         let stored = StoredSpamAttestation {
             attestation: attestation.clone(),
@@ -6732,6 +6789,10 @@ impl MessageRouter {
         );
 
         if aggregation.should_accelerate_decay {
+            // First crossing: decay the content author's identity-level reputation.
+            if !was_flagged {
+                self.record_spam_flag_for_content(&attestation.content_hash, current_time);
+            }
             info!(
                 "[SPAM] Content {} flagged by {} independent trees (threshold reached)",
                 hex::encode(&attestation.content_hash[..8]),
@@ -6801,6 +6862,9 @@ impl MessageRouter {
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
         if threshold_reached {
+            // Spam flag cleared: credit the content author's reputation with fast
+            // recovery (SPEC_12 §4.5). Only on the crossing.
+            self.record_counter_for_content(&counter.content_hash, counter.timestamp);
             info!(
                 "[SPAM] Content {} cleared by {} counter-attestations",
                 hex::encode(&counter.content_hash[..8]),
@@ -6816,6 +6880,42 @@ impl MessageRouter {
         }
 
         Ok(None)
+    }
+
+    /// Decay the reputation of the author of `content_hash` on a spam-flag threshold
+    /// crossing (SPEC_12 §3.4). Resolves the author via the content store; a no-op if
+    /// either store is unavailable or the content is not held locally. Reputation is
+    /// only ever LOWERED here — it grants no protocol privileges.
+    pub(crate) fn record_spam_flag_for_content(&self, content_hash: &[u8; 32], timestamp: u64) {
+        let (rep_store, content_store) = match (&self.reputation_store, &self.content_store) {
+            (Some(r), Some(c)) => (r, c),
+            _ => return,
+        };
+        let content_id = crate::types::content::ContentId::from_bytes(*content_hash);
+        let author = match content_store.get(&content_id) {
+            Ok(Some(item)) => item.author_id.0,
+            _ => return,
+        };
+        if let Err(e) = rep_store.record_spam_flag(&author, timestamp) {
+            warn!("[REPUTATION] Failed to record spam flag: {}", e);
+        }
+    }
+
+    /// Credit fast reputation recovery to the author of `content_hash` when its spam
+    /// flag is cleared by counter-attestations (SPEC_12 §4.5). No-op if unavailable.
+    pub(crate) fn record_counter_for_content(&self, content_hash: &[u8; 32], timestamp: u64) {
+        let (rep_store, content_store) = match (&self.reputation_store, &self.content_store) {
+            (Some(r), Some(c)) => (r, c),
+            _ => return,
+        };
+        let content_id = crate::types::content::ContentId::from_bytes(*content_hash);
+        let author = match content_store.get(&content_id) {
+            Ok(Some(item)) => item.author_id.0,
+            _ => return,
+        };
+        if let Err(e) = rep_store.record_counter(&author, timestamp) {
+            warn!("[REPUTATION] Failed to record counter recovery: {}", e);
+        }
     }
 
     // ========== Sponsorship Offer Handlers (SPEC_11 §3.11) ==========
@@ -7705,18 +7805,20 @@ pub struct MessageRouterBuilder {
     chain_store: Option<Arc<ChainStore>>,
     blocklist: Option<Arc<RwLock<crate::blocklist::BlocklistStore>>>,
     blocklist_gossip: Option<Arc<RwLock<BlocklistGossip>>>,
-    pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
+    trusted_blocklist_keys: std::collections::HashSet<[u8; 32]>,
     connection_pool: Option<Arc<PeerConnectionPool>>,
     dht: Option<Arc<DhtManager>>,
     content_store: Option<Arc<PersistentContentStore>>,
     block_builder: Option<Arc<RwLock<crate::blocks::builder::BlockBuilder>>>,
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    reputation_store: Option<Arc<ReputationStore>>,
     membership_store: Option<Arc<crate::storage::membership::MembershipStore>>,
     /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
     /// Used to recognize DM requests addressed to us.
     identity_pubkey: Option<[u8; 32]>,
     hole_punch_tx: Option<tokio::sync::mpsc::UnboundedSender<HolePunchRequest>>,
     engagement_graph: Option<Arc<EngagementGraphStore>>,
+    achievement_service: Option<Arc<crate::achievement::AchievementService>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     offer_store: Option<Arc<OfferStore>>,
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
@@ -7725,7 +7827,7 @@ pub struct MessageRouterBuilder {
     node_id: Option<[u8; 32]>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
     event_manager: Option<Arc<crate::rpc::events::EventManager>>,
-    behavioral_branching_enabled: bool,
+    behavioral_branching_mode: BehavioralBranchingMode,
 }
 
 impl MessageRouterBuilder {
@@ -7740,16 +7842,18 @@ impl MessageRouterBuilder {
             chain_store: None,
             blocklist: None,
             blocklist_gossip: None,
-            pool_manager: None,
+            trusted_blocklist_keys: std::collections::HashSet::new(),
             connection_pool: None,
             dht: None,
             content_store: None,
             block_builder: None,
             spam_attestation_store: None,
+            reputation_store: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
             engagement_graph: None,
+            achievement_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -7758,7 +7862,7 @@ impl MessageRouterBuilder {
             node_id: None,
             search_index: None,
             event_manager: None,
-            behavioral_branching_enabled: false,
+            behavioral_branching_mode: BehavioralBranchingMode::Disabled,
         }
     }
 
@@ -7821,14 +7925,12 @@ impl MessageRouterBuilder {
         self
     }
 
-    /// Set the pool manager for engagement pools
-    pub fn pool_manager(
-        mut self,
-        pool_manager: Arc<RwLock<crate::content::pool::PoolManager>>,
-    ) -> Self {
-        self.pool_manager = Some(pool_manager);
+    /// Set the trusted blocklist list-maintainer keys (SPEC_12 CSAM seeding).
+    pub fn trusted_blocklist_keys(mut self, keys: std::collections::HashSet<[u8; 32]>) -> Self {
+        self.trusted_blocklist_keys = keys;
         self
     }
+
 
     /// Set the connection pool for block relay broadcasting
     pub fn connection_pool(mut self, pool: Arc<PeerConnectionPool>) -> Self {
@@ -7863,6 +7965,12 @@ impl MessageRouterBuilder {
         self
     }
 
+    /// Set the identity-level poster reputation store (SPEC_12 §3.4/§4.5)
+    pub fn reputation_store(mut self, store: Arc<ReputationStore>) -> Self {
+        self.reputation_store = Some(store);
+        self
+    }
+
     /// Set the membership store for private-space / DM request handling (SPEC_11)
     pub fn membership_store(
         mut self,
@@ -7882,6 +7990,16 @@ impl MessageRouterBuilder {
     /// Set the engagement graph for tracking who engages with whom
     pub fn engagement_graph(mut self, graph: Arc<EngagementGraphStore>) -> Self {
         self.engagement_graph = Some(graph);
+        self
+    }
+
+    /// Set the achievement service for awarding serve/engagement badges
+    /// (SPEC_09 §5.3). Recognition only — no protocol privileges.
+    pub fn achievement_service(
+        mut self,
+        service: Arc<crate::achievement::AchievementService>,
+    ) -> Self {
+        self.achievement_service = Some(service);
         self
     }
 
@@ -7936,9 +8054,10 @@ impl MessageRouterBuilder {
         self
     }
 
-    /// Enable behavioral branching (SPEC_13 Phase A organic community detection)
-    pub fn behavioral_branching(mut self, enabled: bool) -> Self {
-        self.behavioral_branching_enabled = enabled;
+    /// Set the behavioral branching mode (SPEC_13 Phase A organic community
+    /// detection: `Disabled`, `LogOnly` observation, or `Full` formation).
+    pub fn behavioral_branching_mode(mut self, mode: BehavioralBranchingMode) -> Self {
+        self.behavioral_branching_mode = mode;
         self
     }
 
@@ -7962,16 +8081,18 @@ impl MessageRouterBuilder {
             chain_store: self.chain_store,
             blocklist: self.blocklist,
             blocklist_gossip: self.blocklist_gossip,
-            pool_manager: self.pool_manager,
+            trusted_blocklist_keys: self.trusted_blocklist_keys,
             connection_pool: self.connection_pool,
             dht: self.dht,
             content_store: self.content_store,
             block_builder: self.block_builder,
             spam_attestation_store: self.spam_attestation_store,
+            reputation_store: self.reputation_store,
             membership_store: self.membership_store,
             identity_pubkey: self.identity_pubkey,
             hole_punch_tx: self.hole_punch_tx,
             engagement_graph: self.engagement_graph,
+            achievement_service: self.achievement_service,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,
             branch_subscription_manager: self.branch_subscription_manager,
@@ -7980,7 +8101,7 @@ impl MessageRouterBuilder {
             node_id: self.node_id,
             search_index: self.search_index,
             event_manager: self.event_manager,
-            behavioral_branching_enabled: self.behavioral_branching_enabled,
+            behavioral_branching_mode: self.behavioral_branching_mode,
         }
     }
 
@@ -8000,16 +8121,18 @@ impl MessageRouterBuilder {
             chain_store: self.chain_store,
             blocklist: self.blocklist,
             blocklist_gossip: self.blocklist_gossip,
-            pool_manager: self.pool_manager,
+            trusted_blocklist_keys: self.trusted_blocklist_keys,
             connection_pool: self.connection_pool,
             dht: self.dht,
             content_store: self.content_store,
             block_builder: self.block_builder,
             spam_attestation_store: self.spam_attestation_store,
+            reputation_store: self.reputation_store,
             membership_store: self.membership_store,
             identity_pubkey: self.identity_pubkey,
             hole_punch_tx: self.hole_punch_tx,
             engagement_graph: self.engagement_graph,
+            achievement_service: self.achievement_service,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,
             branch_subscription_manager: self.branch_subscription_manager,
@@ -8018,7 +8141,7 @@ impl MessageRouterBuilder {
             node_id: self.node_id,
             search_index: self.search_index,
             event_manager: self.event_manager,
-            behavioral_branching_enabled: self.behavioral_branching_enabled,
+            behavioral_branching_mode: self.behavioral_branching_mode,
         })
     }
 }

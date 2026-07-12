@@ -4,7 +4,7 @@
 //! the Swimchain protocol. The API layer includes:
 //!
 //! - **Event-driven subscriptions**: Real-time notifications for content, network,
-//!   pool, and PoW events via broadcast channels
+//!   and PoW events via broadcast channels
 //! - **Request/response queries**: Synchronous reads for content, sync status, etc.
 //! - **Command handlers**: Write operations with proof-of-work
 //! - **Type-safe bindings**: All types are serializable for cross-process communication
@@ -87,15 +87,14 @@ pub use client::{ApiClient, ApiClientBuilder};
 pub use commands::{CommandHandler, PowProgressCallback, PowResult};
 pub use config::ApiConfig;
 pub use error::ApiError;
-pub use events::{ApiEvent, ContentEvent, NetworkEvent, NotificationApiEvent, PoolEvent, PowEvent};
+pub use events::{ApiEvent, ContentEvent, NetworkEvent, NotificationApiEvent, PowEvent};
 pub use queries::QueryHandler;
 pub use subscription::SubscriptionManager;
-pub use types::{ContentResponse, PoolSummary, SyncState, SyncStatusResponse};
+pub use types::{ContentResponse, SyncState, SyncStatusResponse};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::content::pool::{PoolInfo, PoolManager, PoolStatus};
     use crate::storage::{StorageConfig, StorageManager};
     use crate::types::content::{ContentId, SpaceId};
     use crate::types::identity::IdentityId;
@@ -168,31 +167,14 @@ mod tests {
         let mut rx2 = manager.subscribe();
         let mut rx3 = manager.subscribe();
 
-        let event = ApiEvent::Pool(PoolEvent::PoolCreated {
-            pool_id: [1u8; 32],
-            content_id: ContentId::from_bytes([2u8; 32]),
+        let event = ApiEvent::Network(NetworkEvent::SyncFailed {
+            reason: "test".to_string(),
         });
         manager.send(event);
 
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());
         assert!(rx3.try_recv().is_ok());
-    }
-
-    #[test]
-    fn test_pool_summary_progress_caps_at_100() {
-        let info = PoolInfo {
-            pool_id: [0u8; 32],
-            target_content: [0u8; 32],
-            status: PoolStatus::Open,
-            total_contributed: 120, // More than required
-            required: 60,
-            contributor_count: 1,
-            time_remaining_ms: Some(1000),
-        };
-
-        let summary = PoolSummary::from(info);
-        assert_eq!(summary.progress_percentage, 100.0);
     }
 
     #[test]
@@ -248,11 +230,9 @@ mod tests {
         // 1. Create storage
         let storage = create_test_storage();
 
-        // 2. Build client with pool manager
-        let pool_manager = Arc::new(RwLock::new(PoolManager::new()));
+        // 2. Build client
         let client = ApiClient::builder()
             .storage(storage)
-            .pool_manager(pool_manager)
             .use_test_pow()
             .build()
             .unwrap();

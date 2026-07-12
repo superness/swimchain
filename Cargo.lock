@@ -1580,6 +1580,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08ab2867e3eeeca90e844d1940eab391c9dc5228783db2ed999acbc0a9ed375a"
 
 [[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
+
+[[package]]
 name = "mdns-sd"
 version = "0.11.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2603,6 +2613,7 @@ dependencies = [
  "indicatif",
  "log",
  "lru",
+ "md-5",
  "mdns-sd",
  "predicates",
  "rand",
@@ -2615,6 +2626,7 @@ dependencies = [
  "serde",
  "serde-big-array",
  "serde_json",
+ "sha1",
  "sha2",
  "sled",
  "tantivy",

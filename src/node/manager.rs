@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 use log::{debug, info, warn};
 use tokio::sync::{broadcast, watch};
 
+use crate::achievement::{AchievementService, AchievementStore};
 use crate::blocklist::BlocklistStore;
 use crate::blocks::BlockBuilder;
 use crate::cli::search_index::SearchIndex;
@@ -22,6 +23,7 @@ use crate::discovery::peer_branches::PeerBranchTracker;
 use crate::discovery::PeerStore;
 use crate::engagement_graph::EngagementGraphStore;
 use crate::identity::KeyPair;
+use crate::reputation::ReputationStore;
 use crate::rpc::{NodeRef, RpcMethods, RpcServer, RpcServerConfig};
 use crate::spam_attestation::SpamAttestationStore;
 use crate::sponsorship::storage::SponsorshipStore;
@@ -94,14 +96,18 @@ pub struct NodeManager {
     dht: Option<Arc<DhtManager>>,
     aggregation_cache: Option<Arc<AggregationCache>>,
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
+    /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5).
+    reputation_store: Option<Arc<ReputationStore>>,
     membership_store: Option<Arc<MembershipStore>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     offer_store: Option<Arc<crate::sponsorship::offer_store::OfferStore>>,
     engagement_graph: Option<Arc<EngagementGraphStore>>,
+    /// Achievement service — awards recognition badges (SPEC_09 §5.3).
+    /// Recognition only: grants no protocol privileges.
+    achievement_service: Option<Arc<AchievementService>>,
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
     peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
-    pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
 
     /// Shared event manager for real-time WebSocket events (H-RPC-2).
     /// Shared between the message router (gossip ingestion) and the RPC server.
@@ -165,14 +171,15 @@ impl NodeManager {
             dht: None,
             aggregation_cache: None,
             spam_attestation_store: None,
+            reputation_store: None,
             membership_store: None,
             sponsorship_store: None,
             offer_store: None,
             engagement_graph: None,
+            achievement_service: None,
             branch_subscription_manager: None,
             peer_branch_tracker: None,
             search_index: None,
-            pool_manager: None,
             event_manager: Arc::new(crate::rpc::EventManager::new()),
             state: Arc::new(RwLock::new(NodeState::Stopped)),
             sync_state: Arc::new(tokio::sync::RwLock::new(SyncState::Idle)),
@@ -316,6 +323,29 @@ impl NodeManager {
             }
             Err(e) => {
                 warn!("[INDEX] Failed to check index status: {}", e);
+            }
+        }
+
+        // 3.1b. Ensure branch placement state is built (SPEC_08 §5).
+        // Deterministic rebuild from canonical chain data: runs once per
+        // BRANCH_STATE_VERSION (first startup after upgrade / fresh node),
+        // so every node derives identical branch placements and fracture
+        // points regardless of when it upgraded.
+        match crate::branch::ensure_branch_state(
+            &chain_store,
+            crate::branch::BRANCH_FRACTURE_THRESHOLD,
+        ) {
+            Ok(Some(stats)) => {
+                info!(
+                    "[BRANCH] Rebuilt branch state from chain: {} blocks registered, {} fractures ({} errors)",
+                    stats.blocks_registered, stats.fractures, stats.errors
+                );
+            }
+            Ok(None) => {
+                debug!("[BRANCH] Branch state is up to date");
+            }
+            Err(e) => {
+                warn!("[BRANCH] Failed to ensure branch state: {}. Placement indexes may lag until next restart.", e);
             }
         }
 
@@ -527,6 +557,19 @@ impl NodeManager {
             }
         }
 
+        // 4.5.2b. Load operator-configured trusted blocklist maintainer keys
+        // (SPEC_12 CSAM seeding): updates/bundles signed by these keys are
+        // accepted without community attestations.
+        match self.config.load_trusted_blocklist_keys() {
+            Ok(n) if n > 0 => info!(
+                "[BLOCKLIST] Loaded {} trusted list-maintainer key(s) ({} total)",
+                n,
+                self.config.trusted_blocklist_keys.len()
+            ),
+            Ok(_) => {}
+            Err(e) => warn!("[BLOCKLIST] Failed to load trusted keys: {}", e),
+        }
+
         // 4.5.3. Initialize spam attestation store for community flagging (SPEC_12 §3)
         let spam_path = self.config.data_dir.join("spam_attestations");
         std::fs::create_dir_all(&spam_path).ok();
@@ -541,6 +584,24 @@ impl NodeManager {
             }
             Err(e) => {
                 warn!("[SPAM] Failed to open spam attestation database: {}", e);
+            }
+        }
+
+        // 4.5.3a. Initialize identity-level poster reputation store (SPEC_12 §3.4/§4.5).
+        // Fed from the attestation-processing path: when community spam attestations
+        // reach threshold, the content author's reputation decays; it recovers over
+        // time and on counter-attestation. Reputation is informational/defensive only —
+        // it never reduces PoW cost, extends decay, or raises rate limits.
+        let reputation_path = self.config.data_dir.join("reputation");
+        std::fs::create_dir_all(&reputation_path).ok();
+        match crate::storage::open_db(&reputation_path) {
+            Ok(reputation_db) => {
+                let reputation_store = Arc::new(ReputationStore::open(reputation_db));
+                self.reputation_store = Some(reputation_store);
+                info!("[REPUTATION] Poster reputation store initialized");
+            }
+            Err(e) => {
+                warn!("[REPUTATION] Failed to open reputation database: {}", e);
             }
         }
 
@@ -562,6 +623,26 @@ impl NodeManager {
                     "[ENGAGEMENT] Failed to open engagement graph database: {}",
                     e
                 );
+            }
+        }
+
+        // 4.5.3b-ii. Initialize achievement service for recognition badges (SPEC_09 §5.3).
+        // Recognition ONLY: awards grant no PoW discount, decay extension, or
+        // rate-limit change. Deterministic from local data; permanent once earned.
+        let achievement_path = self.config.data_dir.join("achievements");
+        match crate::storage::open_db(&achievement_path) {
+            Ok(achievement_db) => match AchievementStore::new(&achievement_db) {
+                Ok(store) => {
+                    let service = Arc::new(AchievementService::new(Arc::new(store)));
+                    self.achievement_service = Some(service);
+                    info!("[ACHIEVEMENT] Achievement service initialized");
+                }
+                Err(e) => {
+                    warn!("[ACHIEVEMENT] Failed to open achievement store: {}", e);
+                }
+            },
+            Err(e) => {
+                warn!("[ACHIEVEMENT] Failed to open achievement database: {}", e);
             }
         }
 
@@ -783,7 +864,11 @@ impl NodeManager {
         if !recovered_actions.is_empty() {
             if let Ok(mut builder) = block_builder.write() {
                 let mut resubmitted = 0;
-                for (thread_id, space_id, action, branch_path) in recovered_actions {
+                for (thread_id, space_id, action, _branch_path) in recovered_actions {
+                    // Re-resolve placement from current chain state (SPEC_08 §4):
+                    // the recovered stamp may predate fractures.
+                    let branch_path = crate::branch::BranchManager::new(&chain_store)
+                        .resolve_mempool_branch_path(&space_id, &thread_id, Some(&action.actor));
                     builder.add_action(thread_id, space_id, action, branch_path);
                     resubmitted += 1;
                 }
@@ -804,11 +889,6 @@ impl NodeManager {
         self.peer_branch_tracker = Some(peer_branch_tracker.clone());
         info!("[BRANCH-SYNC] Branch subscription manager and peer tracker initialized");
 
-        // 4.8. Initialize engagement pool manager (SPEC_03 §7, SPEC_08 §3.3)
-        // Shared between the message router (network gossip) and RPC methods
-        let pool_manager = Arc::new(RwLock::new(crate::content::pool::PoolManager::new()));
-        self.pool_manager = Some(pool_manager.clone());
-
         // 4.8. Initialize message router with all subsystems
         let metrics = Arc::new(NodeMetrics::new());
         // Layer 2 NAT traversal: channel from the router's HOLE_PUNCH_INTRO handler to
@@ -823,7 +903,6 @@ impl NodeManager {
             .decay_integration(decay_integration.clone()) // For decay tracking
             .connection_pool(connection_pool.clone()) // For block relay broadcasting
             .hole_punch_tx(hole_punch_tx) // Layer 2 NAT traversal (hole-punch dial outlet)
-            .pool_manager(pool_manager) // For engagement pool gossip
             .branch_subscription_manager(branch_subscription_manager) // For branch-selective sync
             .peer_branch_tracker(peer_branch_tracker); // For tracking peer branches
 
@@ -845,6 +924,9 @@ impl NodeManager {
         if let Some(ref spam_store) = self.spam_attestation_store {
             router_builder = router_builder.spam_attestation_store(spam_store.clone());
         }
+        if let Some(ref reputation_store) = self.reputation_store {
+            router_builder = router_builder.reputation_store(reputation_store.clone());
+        }
         if let Some(ref membership_store) = self.membership_store {
             router_builder = router_builder.membership_store(membership_store.clone());
         }
@@ -852,15 +934,29 @@ impl NodeManager {
         if let Some(ref engagement_graph) = self.engagement_graph {
             router_builder = router_builder.engagement_graph(engagement_graph.clone());
         }
-        // SPEC_13 Phase A: behavioral branching (default ON for regtest only)
+        // Achievement service: award serve/engagement badges from the router's
+        // real content-serve and block-processing paths (recognition only).
+        if let Some(ref achievement_service) = self.achievement_service {
+            router_builder = router_builder.achievement_service(achievement_service.clone());
+        }
+        // SPEC_13 Phase A / Phase 1 rollout: behavioral branching mode
+        // (Full formation default ON for regtest only; LogOnly observation
+        // default ON for testnet -- docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md)
         router_builder =
-            router_builder.behavioral_branching(self.config.behavioral_branching_enabled());
+            router_builder.behavioral_branching_mode(self.config.behavioral_branching_mode());
         if let Some(ref agg_cache) = self.aggregation_cache {
             router_builder = router_builder.aggregation_cache(agg_cache.clone());
         }
         // C-BLOCKLIST-2: Pass blocklist store to router for network gossip updates
         if let Some(ref blocklist) = self.blocklist {
             router_builder = router_builder.blocklist(blocklist.clone());
+        }
+        // SPEC_12 CSAM seeding: pass trusted list-maintainer keys so signed
+        // updates/bundles from them bypass the community-attestation requirement.
+        if !self.config.trusted_blocklist_keys.is_empty() {
+            let trusted: std::collections::HashSet<[u8; 32]> =
+                self.config.trusted_blocklist_keys.iter().copied().collect();
+            router_builder = router_builder.trusted_blocklist_keys(trusted);
         }
         // SPEC_11 Phase 6: Pass sponsorship store to router for on-chain sponsorship processing
         if let Some(ref sponsorship_store) = self.sponsorship_store {
@@ -1640,15 +1736,16 @@ impl NodeManager {
             dht: self.dht.clone(),
             aggregation_cache: self.aggregation_cache.clone(),
             spam_attestation_store: self.spam_attestation_store.clone(),
+            reputation_store: self.reputation_store.clone(),
             membership_store: self.membership_store.clone(),
             sponsorship_store: self.sponsorship_store.clone(),
             offer_store: self.offer_store.clone(),
+            achievement_service: self.achievement_service.clone(),
             branch_subscription_manager: self.branch_subscription_manager.clone(),
             keypair: self.keypair.clone(),
             shutdown_tx: rpc_shutdown_tx,
             identity_name: Arc::new(tokio::sync::RwLock::new(self.config.identity_name.clone())),
             search_index: self.search_index.clone(),
-            pool_manager: self.pool_manager.clone(),
             event_manager: Some(self.event_manager.clone()),
             origin_privacy: self.config.origin_privacy(),
             space_list_cache: std::sync::Mutex::new(None),
@@ -1886,6 +1983,13 @@ impl NodeManager {
     /// Returns None if the node hasn't been started yet.
     pub fn sponsorship_store(&self) -> Option<Arc<SponsorshipStore>> {
         self.sponsorship_store.clone()
+    }
+
+    /// Get reference to the AchievementService (for testing/advanced usage)
+    ///
+    /// Returns None if the node hasn't been started yet.
+    pub fn achievement_service(&self) -> Option<Arc<AchievementService>> {
+        self.achievement_service.clone()
     }
 
     /// Get reference to the ContentRetrievalManager (for content sync)

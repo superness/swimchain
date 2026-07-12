@@ -11,7 +11,9 @@ use std::collections::BTreeSet;
 
 use swimchain::blocks::{Action, ActionType, BranchDirection, BranchPath, ContentBlock};
 use swimchain::branch::behavioral::MIN_PATTERN_AGE_BLOCKS;
-use swimchain::branch::{BranchAwareStore, BranchManager, ClusterOutcome, ClusteringAction};
+use swimchain::branch::{
+    BranchAwareStore, BranchManager, ClusterOutcome, ClusteringAction, ClusteringMode,
+};
 use swimchain::storage::ChainStore;
 use tempfile::tempdir;
 
@@ -91,6 +93,27 @@ fn reply(
             },
             height,
             1_000_000 + height,
+        )
+        .unwrap()
+}
+
+fn reply_with_mode(
+    manager: &BranchManager,
+    author: [u8; 32],
+    parent_author: [u8; 32],
+    height: u64,
+    mode: ClusteringMode,
+) -> ClusterOutcome {
+    manager
+        .process_action_for_clustering_with_mode(
+            &SPACE,
+            &ClusteringAction::Reply {
+                author,
+                parent_author,
+            },
+            height,
+            1_000_000 + height,
+            mode,
         )
         .unwrap()
 }
@@ -276,6 +299,79 @@ fn loud_cluster_forms_community_and_fractures_by_membership() {
             .unwrap(),
         remainder_branch
     );
+}
+
+// ============================================================================
+// 1b. Log-only mode (Phase 1 rollout): same insular cluster records a
+//     BehavioralEvent instead of fracturing -- no space/branch is created.
+// ============================================================================
+
+#[test]
+fn loud_cluster_in_log_only_mode_records_event_and_does_not_fracture() {
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path()).unwrap();
+    let (members, _member_threads, _outsider_threads) = seed_loud_cluster(&store);
+    let manager = BranchManager::new(&store);
+
+    // Same trigger as the full-mode test, but processed in LogOnly mode.
+    let outcome = reply_with_mode(
+        &manager,
+        members[0],
+        members[1],
+        AGED_HEIGHT,
+        ClusteringMode::LogOnly,
+    );
+
+    let formation = match outcome {
+        ClusterOutcome::Community(f) => f,
+        other => panic!("expected community detection, got {:?}", other),
+    };
+    // Detection still classifies a real community -- the branch is simply
+    // never realized because the caller chose LogOnly.
+    assert_eq!(formation.founding_members.len(), 5);
+    assert!(formation.community_branch.is_none());
+
+    // No space/branch was created: the space never fractured...
+    let state = store.get_space_branch_state(&SPACE).unwrap().unwrap();
+    assert_eq!(state.max_depth, 0, "log-only mode must not fracture");
+    // ...and no CommunityFormation or identity->community mapping exists.
+    assert!(store.get_space_communities(&SPACE).unwrap().is_empty());
+    for m in &members {
+        assert!(store.get_identity_community(&SPACE, m).unwrap().is_none());
+    }
+
+    // The would-be formation IS persisted as a BehavioralEvent, queryable by
+    // space and globally.
+    let expected_members: BTreeSet<[u8; 32]> = members.iter().copied().collect();
+    let space_events = store.get_space_behavioral_events(&SPACE).unwrap();
+    assert_eq!(space_events.len(), 1);
+    let event = &space_events[0];
+    assert_eq!(event.parent_space_id, SPACE);
+    let actual_members: BTreeSet<[u8; 32]> = event.cluster_members.iter().copied().collect();
+    assert_eq!(actual_members, expected_members);
+    assert_eq!(event.detected_height, AGED_HEIGHT);
+    assert!(event.metrics.engagement_diversity < 0.30);
+    assert!(event.metrics.external_interaction < 0.20);
+    assert!(event.metrics.internal_cohesion > 0.80);
+
+    let all_events = store.get_all_behavioral_events().unwrap();
+    assert_eq!(all_events.len(), 1);
+    assert_eq!(all_events[0], *event);
+
+    let by_id = store.get_behavioral_event(&event.event_id).unwrap();
+    assert_eq!(by_id.as_ref(), Some(event));
+
+    // Cooldown still applies in log-only mode: another qualifying action soon
+    // after does not produce a second event flood.
+    let again = reply_with_mode(
+        &manager,
+        members[1],
+        members[2],
+        AGED_HEIGHT + 10,
+        ClusteringMode::LogOnly,
+    );
+    assert_eq!(again, ClusterOutcome::None);
+    assert_eq!(store.get_space_behavioral_events(&SPACE).unwrap().len(), 1);
 }
 
 // ============================================================================
