@@ -465,3 +465,162 @@ fn test_branch_metadata_updates_on_reply() {
     // Total size should increase
     assert!(metadata_after_reply.total_size > metadata_after_post.total_size);
 }
+
+// ============================================================================
+// Production write path: put_built_content_block (hash-committed blocks)
+// ============================================================================
+//
+// These tests exercise the path used by live block formation and network
+// block receive: blocks are already hash-committed, so they are stored
+// unmutated and placement is registered deterministically from chain data.
+
+/// Create a distinct built content block (thread id varies by `seed`).
+fn create_built_block(seed: u8, space_id: [u8; 32], ts: u64) -> ContentBlock {
+    let mut thread_id = [0u8; 32];
+    // Spread the seed across the first byte so hash bits differ per thread
+    thread_id[0] = seed.wrapping_mul(37) ^ 0x5A;
+    thread_id[1] = seed;
+    ContentBlock {
+        thread_root_id: thread_id,
+        space_id,
+        actions: vec![create_test_action(10)],
+        merkle_root: [seed; 32],
+        prev_content_hash: None,
+        timestamp: ts,
+        total_pow: 10,
+        // Old producers stamp root; placement is index-derived, not stamp-derived
+        branch_path: BranchPath::root(),
+        space_metadata: None,
+    }
+}
+
+#[test]
+fn test_built_blocks_two_nodes_identical_placement() {
+    // ACCEPTANCE: fracture on node A must produce identical branch assignment
+    // on node B, from chain data alone. Simulate both nodes receiving the
+    // same built blocks in the same (block) order with a tiny threshold.
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let store_a = ChainStore::open(dir_a.path()).unwrap();
+    let store_b = ChainStore::open(dir_b.path()).unwrap();
+    let node_a = BranchAwareStore::with_fracture_threshold(&store_a, 400);
+    let node_b = BranchAwareStore::with_fracture_threshold(&store_b, 400);
+
+    let space_id = [9u8; 32];
+    let mut fractures_a = 0;
+    let mut fractures_b = 0;
+
+    for seed in 0..16u8 {
+        let block = create_built_block(seed, space_id, 1000 + u64::from(seed));
+        let res_a = node_a.put_built_content_block(&block).unwrap();
+        let res_b = node_b.put_built_content_block(&block).unwrap();
+
+        // Identical placement and identical fracture decisions per block
+        assert_eq!(res_a.branch_path, res_b.branch_path, "seed {seed}");
+        assert_eq!(
+            res_a.fracture_triggered, res_b.fracture_triggered,
+            "seed {seed}"
+        );
+        fractures_a += u32::from(res_a.fracture_triggered);
+        fractures_b += u32::from(res_b.fracture_triggered);
+    }
+
+    assert!(fractures_a > 0, "threshold should have fractured");
+    assert_eq!(fractures_a, fractures_b);
+
+    // Final space state identical
+    let state_a = store_a.get_space_branch_state(&space_id).unwrap().unwrap();
+    let state_b = store_b.get_space_branch_state(&space_id).unwrap().unwrap();
+    assert_eq!(state_a.max_depth, state_b.max_depth);
+    assert_eq!(state_a.active_branches, state_b.active_branches);
+
+    // Every thread's final placement identical
+    for seed in 0..16u8 {
+        let block = create_built_block(seed, space_id, 0);
+        assert_eq!(
+            store_a
+                .get_thread_branch(&space_id, &block.thread_root_id)
+                .unwrap(),
+            store_b
+                .get_thread_branch(&space_id, &block.thread_root_id)
+                .unwrap(),
+            "final placement diverged for seed {seed}"
+        );
+    }
+}
+
+#[test]
+fn test_built_block_redelivery_is_idempotent() {
+    // The same block arriving twice (multiple peers) must not double-count
+    // branch sizes or shift fracture points.
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path()).unwrap();
+    let branch_store = BranchAwareStore::with_fracture_threshold(&store, 100_000);
+
+    let space_id = [9u8; 32];
+    let block = create_built_block(1, space_id, 1000);
+
+    let first = branch_store.put_built_content_block(&block).unwrap();
+    let size_after_first = store
+        .get_branch_metadata(&space_id, &first.branch_path)
+        .unwrap()
+        .unwrap()
+        .total_size;
+
+    let second = branch_store.put_built_content_block(&block).unwrap();
+    assert_eq!(first.branch_path, second.branch_path);
+    assert!(!second.fracture_triggered);
+
+    let size_after_second = store
+        .get_branch_metadata(&space_id, &first.branch_path)
+        .unwrap()
+        .unwrap()
+        .total_size;
+    assert_eq!(
+        size_after_first, size_after_second,
+        "re-delivery must not double-count sizes"
+    );
+}
+
+#[test]
+fn test_built_replies_follow_thread_through_fracture() {
+    // Replies (continuation blocks) must land in their thread's branch even
+    // after the space fractures — thread integrity via the placement index.
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path()).unwrap();
+    let branch_store = BranchAwareStore::with_fracture_threshold(&store, 400);
+
+    let space_id = [9u8; 32];
+
+    // Establish a thread before any fracture
+    let thread_block = create_built_block(1, space_id, 1000);
+    let thread_id = thread_block.thread_root_id;
+    let first = branch_store.put_built_content_block(&thread_block).unwrap();
+
+    // Flood with other threads until the space fractures
+    let mut fractured = false;
+    for seed in 2..32u8 {
+        let block = create_built_block(seed, space_id, 1000 + u64::from(seed));
+        if branch_store
+            .put_built_content_block(&block)
+            .unwrap()
+            .fracture_triggered
+        {
+            fractured = true;
+            break;
+        }
+    }
+    assert!(fractured, "space should have fractured");
+
+    // A continuation block of the original thread inherits the thread's
+    // (possibly reassigned) branch — never a hash-derived new placement.
+    let mut reply_block = create_built_block(1, space_id, 2000);
+    reply_block.prev_content_hash = Some(first.hash);
+    let reply_result = branch_store.put_built_content_block(&reply_block).unwrap();
+
+    let indexed = store
+        .get_thread_branch(&space_id, &thread_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reply_result.branch_path, indexed);
+}
