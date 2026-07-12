@@ -31,7 +31,7 @@
   .lede strong{color:var(--foam)}
   .realchip{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--shallow);border:1px solid var(--line);border-radius:20px;padding:5px 12px;margin-top:16px}
   .realchip b{color:var(--foam)} .realchip .dot{width:7px;height:7px;border-radius:50%;background:var(--shallow)}
-  .sim{display:grid;grid-template-columns:1fr 320px;gap:28px;margin:34px 0 20px;align-items:start}
+  .sim{display:grid;grid-template-columns:1fr 320px;gap:28px;margin:34px auto 20px;align-items:start}
   .stage{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px}
   canvas{display:block;width:100%;height:auto;border-radius:6px}
   .panel{display:flex;flex-direction:column;gap:16px}
@@ -152,16 +152,17 @@
   function draw(res) {
     ctx.clearRect(0,0,W,H);
     const depth = res.depth;
-    const topY = 40, botY = 400, x0=30, x1=650;
-    const levelH = depth>0 ? (botY-topY)/(depth) : 0;
-    // tree spine: draw connectors down to each leaf
-    ctx.strokeStyle='rgba(110,211,194,.25)'; ctx.lineWidth=1.2;
-    // root node
-    const rootX=(x0+x1)/2;
+    const x0=30, x1=650, botY=400, maxBar=120;
+    const thresholdY = botY - maxBar;            // top of a full 50-MiB bar
+    const branchRow = thresholdY - 12;           // where the tree meets the bars
+    // root sits just above the bars at depth 0, higher as the tree deepens.
+    const topY = Math.max(44, branchRow - 30 - depth * 46);
+    const levelH = depth > 0 ? (branchRow - topY) / depth : 0;
+    const rootX = (x0 + x1) / 2;
+
+    // tree spine: connectors from root down to each leaf's column
+    ctx.strokeStyle='rgba(110,211,194,.30)'; ctx.lineWidth=1.2;
     for (const leaf of res.leaves) {
-      const [lx,hx]=leafBox(leaf.path, x0, x1);
-      const cx=(lx+hx)/2, cy=botY;
-      // path from root down through midpoints
       let px=rootX, py=topY, lo=x0, hi=x1;
       for (let d=0; d<leaf.path.length; d++){
         const mid=(lo+hi)/2; const ch=leaf.path[d];
@@ -170,35 +171,33 @@
         ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(nx,ny); ctx.stroke();
         px=nx; py=ny; lo=nlo; hi=nhi;
       }
+      // final stub down to the bar column (also connects the single root branch)
+      const [lx,hx]=leafBox(leaf.path, x0, x1); const cx=(lx+hx)/2;
+      ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(cx, branchRow); ctx.stroke();
     }
     // root marker
     ctx.beginPath(); ctx.arc(rootX,topY,6,0,Math.PI*2); ctx.fillStyle='#6ED3C2'; ctx.fill();
     ctx.font='11px ui-monospace,monospace'; ctx.fillStyle='#8FB0AC'; ctx.textAlign='center';
-    ctx.fillText('space root', rootX, topY-14);
+    ctx.fillText('space root', rootX, topY-12);
+
+    // 50 MiB threshold line across the full width
+    ctx.strokeStyle='rgba(255,158,94,.5)'; ctx.setLineDash([4,4]); ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(x0, thresholdY); ctx.lineTo(x1, thresholdY); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#FF9E5E'; ctx.textAlign='left'; ctx.font='10px ui-monospace,monospace';
+    ctx.fillText('50 MiB', x0, thresholdY-5);
 
     // leaf bars
-    const maxBar = 120;
     for (const leaf of res.leaves) {
       const [lx,hx]=leafBox(leaf.path, x0, x1);
       const w=Math.min(hx-lx-8, 60), cx=(lx+hx)/2;
       const frac=Math.min(leaf.bytes/THRESH, 1.15);
-      const bh=Math.max(4, frac*maxBar);
-      const over=leaf.over_threshold;
-      ctx.fillStyle = over ? '#D8746E' : '#6ED3C2';
-      ctx.globalAlpha=0.9;
-      ctx.fillRect(cx-w/2, botY-bh, w, bh);
-      ctx.globalAlpha=1;
-      // threshold line at this bar
-      ctx.strokeStyle='rgba(255,158,94,.55)'; ctx.setLineDash([3,3]); ctx.lineWidth=1;
-      const ty=botY-maxBar;
-      ctx.beginPath(); ctx.moveTo(cx-w/2-3,ty); ctx.lineTo(cx+w/2+3,ty); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle='#8FB0AC'; ctx.font='10px ui-monospace,monospace';
+      const bh=Math.max(6, frac*maxBar);
+      ctx.fillStyle = leaf.over_threshold ? '#D8746E' : '#6ED3C2';
+      ctx.globalAlpha=0.9; ctx.fillRect(cx-w/2, botY-bh, w, bh); ctx.globalAlpha=1;
+      ctx.fillStyle='#8FB0AC'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
       ctx.fillText((leaf.bytes/MiB).toFixed(0)+'M', cx, botY+14);
       if (leaf.path) { ctx.fillStyle='#5f7a76'; ctx.fillText(leaf.path, cx, botY+27); }
     }
-    // threshold label
-    ctx.fillStyle='#FF9E5E'; ctx.textAlign='left'; ctx.font='10px ui-monospace,monospace';
-    ctx.fillText('— 50 MiB threshold', x0, botY-maxBar-6);
   }
 
   function render(res) {
