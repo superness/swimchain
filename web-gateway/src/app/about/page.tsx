@@ -84,6 +84,16 @@ export default function AboutPage() {
             nothing to collect and no one to sell it to.
           </li>
           <li>
+            <strong>No moderators, no bans</strong> &mdash; There is no
+            Reddit-style moderator who can delete your posts and no one who
+            can ban you: no account to suspend, no server holding your
+            content hostage. Moderation is the community&apos;s job, enforced
+            by protocol &mdash; content people flag as spam decays fast, any
+            node can refuse to carry what it doesn&apos;t want, and a
+            community can fork away from bad actors. Spam and Sybil floods are
+            priced out by proof-of-work and sponsorship, not by a mod.
+          </li>
+          <li>
             <strong>Just social media</strong> &mdash; People, spaces, and
             conversations &mdash; for participants, not consumers. Content
             lives while the community engages with it and drifts away when it
