@@ -430,9 +430,14 @@ export function ProfilePage(): JSX.Element {
         </div>
 
         {isOwnProfile && !isEditing && (
-          <button type="button" className="profile-btn profile-btn--ghost" onClick={handleEdit}>
-            Edit Profile
-          </button>
+          <>
+            <button type="button" className="profile-btn profile-btn--ghost" onClick={handleEdit}>
+              Edit Profile
+            </button>
+            <Link to="/saved" className="profile-btn profile-btn--ghost">
+              Saved Posts
+            </Link>
+          </>
         )}
       </div>
 
