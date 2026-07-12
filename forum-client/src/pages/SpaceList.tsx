@@ -2,7 +2,7 @@
  * Space list page showing all available spaces
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useSpaces, useRpc } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
@@ -12,6 +12,10 @@ import { useSponsorship } from '../hooks/useSponsorship';
 import { useSign } from '../hooks/useSign';
 import { PowProgress } from '../components/PowProgress';
 import { JoinPrivateSpace } from '../components/JoinPrivateSpace';
+import { SpaceLineageTree } from '../components/SpaceLineageTree';
+import { RecentlyFormedRail } from '../components/RecentlyFormedRail';
+import { CommunityFormedNotifications } from '../components/CommunityFormedNotifications';
+import { useSpaceLineageGraph } from '../hooks/useLineage';
 import { logger } from '../lib/logger';
 import { formatErrorMessage, getErrorAction, isAuthenticationError } from '../lib/errorMessages';
 import './SpaceList.css';
@@ -42,6 +46,22 @@ export function SpaceList(): JSX.Element {
   const { isSpaceBlocked } = useBlocklist();
   const { sign } = useSign();
   const navigate = useNavigate();
+
+  // Behavioral-branching lineage graph (SPEC_13, Phase 2). Degrades gracefully:
+  // lineageAvailable is false on nodes without lineage, and we show the flat grid.
+  const lineageGraph = useSpaceLineageGraph();
+  // View mode: prefer the lineage tree when lineage exists, else the flat grid.
+  const [viewMode, setViewMode] = useState<'flat' | 'tree'>('flat');
+  const showTreeToggle = lineageGraph.lineageAvailable;
+  const effectiveView = showTreeToggle ? viewMode : 'flat';
+  // Auto-switch to the tree the first time lineage becomes available.
+  const lineageSeenRef = useRef(false);
+  useEffect(() => {
+    if (lineageGraph.lineageAvailable && !lineageSeenRef.current) {
+      lineageSeenRef.current = true;
+      setViewMode('tree');
+    }
+  }, [lineageGraph.lineageAvailable]);
 
   // Log on every render
   logger.info('[SpaceList] RENDER:', {
@@ -222,8 +242,14 @@ export function SpaceList(): JSX.Element {
         )}
       </header>
 
+      {/* Graduation notices: a group's conversations earned their own lane. */}
+      <CommunityFormedNotifications />
+
       {/* Join a private space via shared invite code (node/desktop mode only) */}
       <JoinPrivateSpace />
+
+      {/* Recently formed communities rail (hidden until lineage exists). */}
+      <RecentlyFormedRail graph={lineageGraph} isSpaceBlocked={isSpaceBlocked} />
 
       {/* Create space form */}
       {showCreateForm && identity && (
@@ -364,7 +390,34 @@ export function SpaceList(): JSX.Element {
         </div>
       )}
 
-      {spaces.length > 0 && (
+      {spaces.length > 0 && showTreeToggle && (
+        <div className="space-view-toggle" role="tablist" aria-label="Space view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveView === 'tree'}
+            className={`space-view-toggle-btn ${effectiveView === 'tree' ? 'active' : ''}`}
+            onClick={() => setViewMode('tree')}
+          >
+            Lineage tree
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveView === 'flat'}
+            className={`space-view-toggle-btn ${effectiveView === 'flat' ? 'active' : ''}`}
+            onClick={() => setViewMode('flat')}
+          >
+            All spaces
+          </button>
+        </div>
+      )}
+
+      {spaces.length > 0 && effectiveView === 'tree' && (
+        <SpaceLineageTree graph={lineageGraph} isSpaceBlocked={isSpaceBlocked} />
+      )}
+
+      {spaces.length > 0 && effectiveView === 'flat' && (
         <div className="spaces-grid">
           {spaces.filter((space) => !isSpaceBlocked(space.id)).map((space) => (
             <Link

@@ -8,9 +8,12 @@ import { useParams, Link } from 'react-router-dom';
 import { usePreferences } from '../hooks/usePreferences';
 import { useKeyboardNavigation } from '../hooks/useKeyboardNavigation';
 import { useSpaceThreads, useSpaces } from '../hooks/useRpc';
+import { useSpaceLineage } from '../hooks/useLineage';
 import { ThreadList } from '../components/ThreadList';
 import { ThreadSortControls } from '../components/ThreadSortControls';
 import { Pagination } from '../components/Pagination';
+import { LineageBreadcrumbs } from '../components/LineageBreadcrumbs';
+import { GrewOutOfNote } from '../components/ContinuityBanner';
 import type { ThreadSortOption } from '../types';
 import './SpaceView.css';
 
@@ -19,6 +22,10 @@ export function SpaceView(): JSX.Element {
   const { spaces } = useSpaces();
   const { preferences, updatePreference } = usePreferences();
   const { setItems } = useKeyboardNavigation();
+
+  // Behavioral-branching lineage for this space (SPEC_13, Phase 2). Empty/absent
+  // when the space has no parent/children — breadcrumbs & pointers stay hidden.
+  const lineage = useSpaceLineage(spaceId);
 
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState<ThreadSortOption>(preferences.threadOrdering);
@@ -108,7 +115,11 @@ export function SpaceView(): JSX.Element {
     <div className="space-view">
       <header className="space-header">
         <div className="space-info">
+          <LineageBreadcrumbs ancestors={lineage.ancestors} currentName={spaceName} />
           <h1>{spaceName}</h1>
+          {lineage.parent && (
+            <GrewOutOfNote parentSpaceId={lineage.parent.id} parentSpaceName={lineage.parent.name} />
+          )}
           <p className="space-description">
             {total} post{total !== 1 ? 's' : ''} in this space
           </p>
@@ -132,7 +143,7 @@ export function SpaceView(): JSX.Element {
 
       {threads.length > 0 ? (
         <>
-          <ThreadList threads={threads} spaceId={spaceId || ''} />
+          <ThreadList threads={threads} spaceId={spaceId || ''} movedThreads={lineage.movedThreads} />
           {totalPages > 1 && (
             <Pagination
               page={page}

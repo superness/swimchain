@@ -510,6 +510,12 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
         createdAt: s.last_activity ?? 0, // Use last activity as proxy
         activePostCount: s.post_count, // No separate active count from RPC
         postCount: s.post_count,
+        // Behavioral-branching lineage (additive; undefined on pre-Phase-2 nodes)
+        parentId: s.parent_space_id ?? undefined,
+        childIds: s.children ?? undefined,
+        formedAt: s.formed_at ?? undefined,
+        foundingMemberCount: s.founding_member_count ?? undefined,
+        formationHeight: s.formation_height ?? undefined,
       }));
 
       // Cache the result

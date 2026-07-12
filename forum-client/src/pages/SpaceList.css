@@ -22,6 +22,32 @@
   margin-bottom: var(--spacing-xl);
 }
 
+/* Lineage-tree / flat-grid view toggle (behavioral branching, SPEC_13). */
+.space-view-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  margin-bottom: var(--spacing-md);
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.space-view-toggle-btn {
+  padding: var(--spacing-xs) var(--spacing-md);
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.space-view-toggle-btn.active {
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
 .space-card {
   display: flex;
   flex-direction: column;

@@ -1,0 +1,83 @@
+.recently-formed {
+  margin-bottom: var(--spacing-xl);
+}
+
+.recently-formed-header {
+  margin-bottom: var(--spacing-md);
+}
+
+.recently-formed-title {
+  font-size: var(--font-size-lg);
+  margin: 0;
+}
+
+.recently-formed-sub {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin: var(--spacing-xs) 0 0;
+}
+
+.recently-formed-rail {
+  display: flex;
+  gap: var(--spacing-md);
+  overflow-x: auto;
+  padding-bottom: var(--spacing-sm);
+  scroll-snap-type: x proximity;
+}
+
+.recently-formed-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 200px;
+  max-width: 240px;
+  flex-shrink: 0;
+  padding: var(--spacing-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  text-decoration: none;
+  color: var(--color-text-primary);
+  scroll-snap-align: start;
+  transition: all var(--transition-fast);
+}
+
+.recently-formed-card:hover {
+  border-color: var(--color-accent-secondary);
+  transform: translateY(-2px);
+  text-decoration: none;
+}
+
+.recently-formed-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-xs);
+}
+
+.recently-formed-icon {
+  display: inline-flex;
+  color: var(--color-accent-secondary);
+}
+
+.recently-formed-when {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+.recently-formed-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recently-formed-parent {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.recently-formed-members {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}

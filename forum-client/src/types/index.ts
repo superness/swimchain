@@ -15,6 +15,13 @@ export interface Space {
   activePostCount: number; // Threads not yet decayed
   createdAt: number;     // UNIX timestamp seconds
   parentId?: string;     // Parent space ID for hierarchical organization
+
+  // === Behavioral-branching lineage (SPEC_13, Phase 2) ===
+  // All optional and additive — present only when the node exposes lineage.
+  childIds?: string[];          // Child spaces that grew out of this one
+  formedAt?: number;            // UNIX seconds when this space formed from its parent
+  foundingMemberCount?: number; // Members present at formation
+  formationHeight?: number;     // Block height formation was detected at
 }
 
 /**

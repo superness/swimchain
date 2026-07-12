@@ -1,0 +1,35 @@
+.lineage-breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--spacing-xs);
+  color: var(--color-text-tertiary);
+}
+
+.lineage-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.lineage-crumb-link {
+  color: var(--color-text-secondary);
+  text-decoration: none;
+}
+
+.lineage-crumb-link:hover {
+  color: var(--color-accent-primary);
+  text-decoration: underline;
+}
+
+.lineage-crumb-sep {
+  color: var(--color-text-tertiary);
+  margin: 0 2px;
+}
+
+.lineage-crumb-current {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
