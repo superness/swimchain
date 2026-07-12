@@ -2675,7 +2675,11 @@ impl RpcMethods {
             "[MEDIA] Uploaded {} bytes ({}{}) hash={}",
             stored_bytes.len(),
             params.media_type,
-            if params.space_id.is_some() { ", private?" } else { "" },
+            if params.space_id.is_some() {
+                ", private?"
+            } else {
+                ""
+            },
             &media_hash_hex[..16]
         );
 
@@ -2803,11 +2807,7 @@ impl RpcMethods {
             match plaintext {
                 Some(plain) => plain,
                 None => {
-                    return RpcResponse::error(
-                        RpcErrorCode::ContentNotFound,
-                        "Media not found",
-                        id,
-                    )
+                    return RpcResponse::error(RpcErrorCode::ContentNotFound, "Media not found", id)
                 }
             }
         } else {
@@ -3046,12 +3046,15 @@ impl RpcMethods {
             .iter()
             .filter_map(|mr| hex::decode(&mr.media_hash).ok()?.try_into().ok())
             .collect();
-        let is_private =
-            match self.check_private_write(&reply_space_id_16, None, &params.body, &reply_media_hashes)
-            {
-                Ok(p) => p,
-                Err(reason) => return RpcResponse::error(RpcErrorCode::InvalidParams, &reason, id),
-            };
+        let is_private = match self.check_private_write(
+            &reply_space_id_16,
+            None,
+            &params.body,
+            &reply_media_hashes,
+        ) {
+            Ok(p) => p,
+            Err(reason) => return RpcResponse::error(RpcErrorCode::InvalidParams, &reason, id),
+        };
 
         // Add action to BlockBuilder for block-based propagation (SPEC_08)
         if let Some(ref block_builder) = self.node.block_builder {
@@ -5613,6 +5616,22 @@ impl RpcMethods {
         };
         let space_id = encode_space_id(&space_id_bytes);
 
+        // Server-side guard: the derived space id's class byte must be a known
+        // SpaceClass. A well-behaved node derives ids honestly (app-namespaced
+        // or `apply_class(SpaceClass::Social, ...)` above) so this should never
+        // trip today — it exists to catch future derivation regressions before
+        // a malformed id is ever accepted into the mempool/chain.
+        if !crate::blocks::validation::space_id_class_is_valid(&space_id_bytes) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!(
+                    "Derived space_id has unknown class byte: 0x{:02x}",
+                    space_id_bytes[0]
+                ),
+                id,
+            );
+        }
+
         // Check if space already exists on-chain
         if let Some(ref chain_store) = self.node.chain_store {
             match chain_store.space_exists(&space_id_bytes) {
@@ -6543,8 +6562,7 @@ impl RpcMethods {
                                 vec![]
                             };
 
-                        let created_at_ms =
-                            item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
+                        let created_at_ms = item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
 
                         items.push(ContentSummary {
                             content_id,
@@ -7215,8 +7233,7 @@ impl RpcMethods {
                                 vec![]
                             };
 
-                        let created_at_ms =
-                            item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
+                        let created_at_ms = item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
 
                         items.push(ContentSummary {
                             content_id,
@@ -7699,8 +7716,7 @@ impl RpcMethods {
                             author_id,
                             space_id: space_id_bech32,
                             parent_id,
-                            created_at: item_created_at_ms
-                                .unwrap_or(metadata.timestamp * 1000),
+                            created_at: item_created_at_ms.unwrap_or(metadata.timestamp * 1000),
                             last_engagement: last_engagement_ms,
                             title,
                             body,

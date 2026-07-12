@@ -479,6 +479,217 @@ fn test_reputation_penalty_noop_for_unknown_content() {
     assert_eq!(reputation_store.count(), 0);
 }
 
+// ========== CreateSpace class-byte guard (router MSG_BLOCKS path) ==========
+
+/// Build a MSG_BLOCKS payload for a single genesis-height (height 0) root
+/// block carrying one space block / content block with a single CreateSpace
+/// action. Height 0 sails through handle_blocks' fork/leader checks
+/// untouched (no existing chain, no leader validation), landing straight in
+/// the PHASE 2 CreateSpace validation this test is targeting.
+fn build_create_space_blocks_payload(creator: [u8; 32], space_id_32: [u8; 32]) -> Vec<u8> {
+    use crate::blocks::action::{Action, ActionType};
+    use crate::blocks::branch_path::BranchPath;
+    use crate::blocks::content_block::SpaceCreationMetadata;
+    use crate::blocks::{ContentBlock, RootBlock, SpaceBlock};
+
+    let action = Action::new_create_space(
+        creator,
+        1_700_000_000,
+        space_id_32,
+        0,
+        1,
+        [0u8; 32],
+        [0u8; 64],
+    );
+    assert_eq!(action.action_type, ActionType::CreateSpace);
+
+    let content_block = ContentBlock::new_with_space_metadata(
+        space_id_32,
+        space_id_32,
+        vec![action],
+        None,
+        1_700_000_000,
+        BranchPath::root(),
+        SpaceCreationMetadata {
+            name: "test-space".to_string(),
+            description: None,
+        },
+    )
+    .expect("non-empty actions");
+
+    let space_block = SpaceBlock::from_content_blocks(
+        space_id_32,
+        std::slice::from_ref(&content_block),
+        None,
+        1_700_000_000,
+    );
+
+    let root_block = RootBlock::genesis(1_700_000_000);
+
+    let root_bytes = bincode::serialize(&root_block).unwrap();
+    let space_bytes = bincode::serialize(&space_block).unwrap();
+    let content_bytes = bincode::serialize(&content_block).unwrap();
+
+    let mut data = Vec::new();
+    data.extend_from_slice(&(root_bytes.len() as u32).to_le_bytes());
+    data.extend_from_slice(&root_bytes);
+    data.extend_from_slice(&1u32.to_le_bytes()); // space_count = 1
+    data.extend_from_slice(&(space_bytes.len() as u32).to_le_bytes());
+    data.extend_from_slice(&space_bytes);
+    data.extend_from_slice(&1u32.to_le_bytes()); // content_count = 1
+    data.extend_from_slice(&(content_bytes.len() as u32).to_le_bytes());
+    data.extend_from_slice(&content_bytes);
+
+    data
+}
+
+/// Router wired with a real chain_store + sponsorship_store (both temp sled
+/// DBs) so PHASE 2 CreateSpace validation in `handle_blocks` actually runs,
+/// plus a pre-sponsored creator identity so only the class-byte check is
+/// under test (sponsorship must pass either way).
+fn make_blocks_router(
+    creator: [u8; 32],
+) -> (
+    MessageRouter,
+    Arc<crate::storage::chain::ChainStore>,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
+    use crate::sponsorship::storage::SponsorshipStore;
+    use crate::sponsorship::types::{SponsorshipStatus, StoredSponsorship};
+    use crate::types::identity::PublicKey;
+
+    let chain_dir = tempfile::tempdir().unwrap();
+    let chain_store = Arc::new(crate::storage::chain::ChainStore::open(chain_dir.path()).unwrap());
+
+    let sponsorship_dir = tempfile::tempdir().unwrap();
+    let sponsorship_store = Arc::new(SponsorshipStore::open(sponsorship_dir.path()).unwrap());
+    sponsorship_store
+        .put(&StoredSponsorship {
+            sponsored_identity: PublicKey::from_bytes(creator),
+            sponsor: None,
+            creation_timestamp: 1_700_000_000,
+            status: SponsorshipStatus::Active,
+            penalty_until: None,
+            depth: 0,
+            probationary: false,
+            probation_expires: None,
+            positive_contribution_score: 0,
+            is_genesis: true,
+            orphaned_at: None,
+        })
+        .unwrap();
+
+    let metrics = Arc::new(NodeMetrics::new());
+    let router = MessageRouter::builder()
+        .metrics(metrics)
+        .chain_store(chain_store.clone())
+        .sponsorship_store(sponsorship_store)
+        .build();
+
+    (router, chain_store, chain_dir, sponsorship_dir)
+}
+
+/// A CreateSpace action whose derived space id carries an unknown class byte
+/// (0x00) must be rejected on the router MSG_BLOCKS acceptance path, not
+/// just by the (dead) `validate_action` predicate. This is the code path a
+/// peer's gossiped block actually goes through - see PHASE 2 CreateSpace
+/// validation in `handle_blocks`.
+#[tokio::test]
+async fn test_handle_blocks_rejects_create_space_with_unknown_class_byte() {
+    let creator = [0x11u8; 32];
+    let (router, chain_store, _chain_dir, _sponsorship_dir) = make_blocks_router(creator);
+
+    // space_id_32[..16] all zero => class byte 0x00, which is not a known
+    // SpaceClass (see crate::types::space_class::class_of).
+    let bad_space_id_32 = [0u8; 32];
+    assert!(!crate::blocks::validation::space_id_class_is_valid(
+        &[0u8; 16]
+    ));
+
+    let data = build_create_space_blocks_payload(creator, bad_space_id_32);
+    let blocks_payload = crate::network::messages::BlocksPayload {
+        blocks: vec![crate::network::messages::SerializedBlock { data }],
+    };
+
+    let peer_id = [0xabu8; 32];
+    let fork_id = [0u8; 32];
+    let result = router
+        .route(
+            &peer_id,
+            crate::types::constants::MSG_BLOCKS,
+            &fork_id,
+            &blocks_payload.to_bytes(),
+        )
+        .await;
+
+    // Routing itself succeeds (rejection happens inside handle_blocks via
+    // `continue`, not by returning an Err) - the important assertion is
+    // that nothing got persisted.
+    assert!(result.is_ok(), "route() should not error: {:?}", result);
+
+    let latest_height = chain_store.get_latest_height().unwrap();
+    assert_eq!(
+        latest_height, None,
+        "block with malformed CreateSpace class byte must not be stored"
+    );
+
+    let bad_space_id_16 = [0u8; 16];
+    assert_eq!(
+        chain_store.space_exists(&bad_space_id_16).unwrap(),
+        false,
+        "space with unknown class byte must not be registered"
+    );
+}
+
+/// Sanity check: the same flow with a well-classed space id (Social, 0x01)
+/// is accepted and stored, proving the rejection above is due to the class
+/// byte specifically and not some other defect in the test harness.
+#[tokio::test]
+async fn test_handle_blocks_accepts_create_space_with_known_class_byte() {
+    let creator = [0x22u8; 32];
+    let (router, chain_store, _chain_dir, _sponsorship_dir) = make_blocks_router(creator);
+
+    let mut good_space_id_32 = [0u8; 32];
+    good_space_id_32[0] = 0x01; // SpaceClass::Social
+    let mut good_space_id_16 = [0u8; 16];
+    good_space_id_16.copy_from_slice(&good_space_id_32[..16]);
+    assert!(crate::blocks::validation::space_id_class_is_valid(
+        &good_space_id_16
+    ));
+
+    let data = build_create_space_blocks_payload(creator, good_space_id_32);
+    let blocks_payload = crate::network::messages::BlocksPayload {
+        blocks: vec![crate::network::messages::SerializedBlock { data }],
+    };
+
+    let peer_id = [0xcdu8; 32];
+    let fork_id = [0u8; 32];
+    let result = router
+        .route(
+            &peer_id,
+            crate::types::constants::MSG_BLOCKS,
+            &fork_id,
+            &blocks_payload.to_bytes(),
+        )
+        .await;
+
+    assert!(result.is_ok(), "route() should not error: {:?}", result);
+
+    let latest_height = chain_store.get_latest_height().unwrap();
+    assert_eq!(
+        latest_height,
+        Some(0),
+        "well-classed CreateSpace block should be stored at height 0"
+    );
+
+    assert_eq!(
+        chain_store.space_exists(&good_space_id_16).unwrap(),
+        true,
+        "space with known class byte should be registered"
+    );
+}
+
 // ========== All Message Types Coverage ==========
 
 #[tokio::test]

@@ -14,7 +14,7 @@ use crate::blocklist::gossip::{
     entry_from_update, parse_blocklist_message, BlocklistGossip, BlocklistMessage,
     MSG_BLOCKLIST_BUNDLE, MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
 };
-use crate::blocks::validation::validate_reply_parents;
+use crate::blocks::validation::{space_id_class_is_valid, validate_reply_parents};
 use crate::cli::search_index::{IndexableContent, SearchIndex};
 use crate::content::decay_integration::DecayIntegration;
 use crate::content::retrieval::ContentRetrievalManager;
@@ -3786,6 +3786,23 @@ impl MessageRouter {
                                 );
                                 is_valid = false;
                                 break;
+                            }
+
+                            // Class-byte check: the space id's class byte (space_id_16[0])
+                            // must be a known SpaceClass, or the CreateSpace action is
+                            // malformed and must be rejected before it ever reaches storage.
+                            if let Some(space_id_32) = action.content_hash {
+                                let mut space_id_16 = [0u8; 16];
+                                space_id_16.copy_from_slice(&space_id_32[..16]);
+                                if !space_id_class_is_valid(&space_id_16) {
+                                    warn!(
+                                        "[BLOCK] VALIDATION FAILED: Block {} contains CreateSpace with unknown class byte 0x{:02x}",
+                                        hex::encode(&computed_hash[..8]),
+                                        space_id_16[0]
+                                    );
+                                    is_valid = false;
+                                    break;
+                                }
                             }
                         }
                     }
