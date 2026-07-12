@@ -51,26 +51,13 @@ export function HomePageContent() {
       </section>
 
       <section className="trending">
-        <h2>Trending Spaces</h2>
-        <div className="space-grid">
-          <a href={withBase('/spaces/rust')} className="space-preview">
-            <strong>s/rust</strong>
-            <span>Systems programming discussions</span>
-          </a>
-          <a href={withBase('/spaces/python')} className="space-preview">
-            <strong>s/python</strong>
-            <span>Python development community</span>
-          </a>
-          <a href={withBase('/spaces/crypto')} className="space-preview">
-            <strong>s/crypto</strong>
-            <span>Cryptography and blockchain</span>
-          </a>
-          <a href={withBase('/spaces/javascript')} className="space-preview">
-            <strong>s/javascript</strong>
-            <span>Web development and JS ecosystem</span>
-          </a>
-        </div>
-        <a href={withBase('/spaces')} className="view-all">View all spaces</a>
+        <h2>Spaces</h2>
+        <p>
+          Browse the spaces this gateway currently sees on the network &mdash;
+          communities are created and named by their participants, not
+          pre-seeded here.
+        </p>
+        <a href={withBase('/spaces')} className="view-all">Browse all spaces</a>
       </section>
 
       <section className="cta-section">
