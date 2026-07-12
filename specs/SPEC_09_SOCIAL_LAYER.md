@@ -3,7 +3,7 @@
 **Version:** 1.0.0
 **Status:** Draft
 **Created:** 2025-12-25
-**Dependencies:** SPEC_01 (Identity), SPEC_02 (Content/Decay), SPEC_07 (Content Distribution)
+**Dependencies:** SPEC_01 (Identity), SPEC_02 (Content/Decay), SPEC_07 (Content Distribution), SPEC_12 (Spam Attestation)
 
 ---
 
@@ -14,9 +14,9 @@
 The Social Layer makes visible the contribution and participation that keeps the network alive. This is NOT gamification added on top—it is **first-class protocol infrastructure** that:
 
 1. Tracks contribution at the protocol level
-2. Provides non-transferable, identity-bound benefits
+2. Recognizes hosting and participation with permanent, non-transferable badges
 3. Creates social visibility for participation
-4. Incentivizes network health without creating an economy
+4. Surfaces a community-driven reputation signal—without ever granting privileges
 
 ### 1.2 Core Philosophy
 
@@ -41,9 +41,9 @@ The social layer makes this visible:
 |-----------|---------|
 | **Visible** | Contribution is shown, not hidden |
 | **Social** | Recognition comes from community, not system |
-| **Non-transferable** | Benefits are tied to identity, not tradeable |
+| **Non-transferable** | Recognition is tied to identity, not tradeable |
 | **Non-economic** | No tokens, no markets, no speculation |
-| **Capability-based** | Contribution earns abilities, not currency |
+| **Non-privileging** | Recognition is a display, never a protocol privilege |
 | **Sustainable** | Incentives align with network health |
 
 ---
@@ -58,7 +58,7 @@ The social layer makes this visible:
 THE CORE EXCHANGE
 ═══════════════════════════════════════════════════════════════════════
 
-What the network NEEDS:          What we REWARD:
+What the network NEEDS:          What we RECOGNIZE:
 ├── Content to be HOSTED         ├── Hosting other people's content
 ├── Bandwidth to be SERVED       ├── Serving bandwidth to peers
 ├── Nodes to be ONLINE           ├── Being online when others need you
@@ -75,12 +75,12 @@ THE DISTINCTION:
     ├── NO natural incentive
     ├── Uses YOUR resources for OTHERS
     ├── Battery, bandwidth, storage
-    └── THIS is what needs rewarding
+    └── THIS is what recognition makes visible
 ```
 
 ### 2.2 What Gets Tracked
 
-The protocol tracks **hosting contribution** at the identity level:
+The protocol tracks **hosting contribution** at the identity level. Tracking feeds badges and profile display—it never grants a privilege:
 
 | Metric | What It Measures | How Tracked | Weight |
 |--------|------------------|-------------|--------|
@@ -88,7 +88,7 @@ The protocol tracks **hosting contribution** at the identity level:
 | `content_hosted_hours` | GB-hours of content stored | Local measurement × uptime | **Primary** |
 | `uptime_ratio` | Time online vs. offline (0.0-1.0) | Peer observations | **Primary** |
 | `peer_requests_served` | Number of peer requests answered | Request logs | **Secondary** |
-| `posts_kept_alive` | Content you contributed PoW to | Engagement records | Secondary |
+| `posts_kept_alive` | Content you contributed PoW to | Individual engagement PoW records | Secondary |
 | `streak_days` | Consecutive days with hosting activity | Daily heartbeat | Tertiary |
 
 **Note**: `spaces_active` and post counts are NOT contribution metrics. Those are participation, not infrastructure.
@@ -111,7 +111,7 @@ pub fn contribution_score(metrics: &HostingMetrics) -> u64 {
 
 // Example calculations:
 //
-// Good hosting citizen (Lifeguard candidate):
+// Good hosting citizen:
 // ├── Served 50GB this month: 5000 points
 // ├── Hosted 5GB × 70% uptime × 10: 35 points
 // ├── 5000 requests / 100: 50 points
@@ -125,8 +125,10 @@ pub fn contribution_score(metrics: &HostingMetrics) -> u64 {
 // └── 50 posts kept alive: 50 points
 // Total: 152 points
 //
-// The difference is MASSIVE. Hosting dominates.
+// The difference is MASSIVE. Hosting dominates the score.
 ```
+
+The contribution score is a displayed number. It decides which badges you have earned and how you rank on space contributor lists. It changes nothing about how the protocol treats your posts.
 
 ### 2.4 Contribution Record Structure
 
@@ -212,239 +214,184 @@ Anti-gaming:
 
 ---
 
-## 3. Swimmer Levels
+## 3. Recognition
 
-### 3.1 Level Definitions
+Recognition is visible and social. It is never a protocol privilege. Nothing on your profile reduces PoW, extends decay, raises a rate limit, or gates space creation, attestation, or sponsorship. Those are governed entirely by PoW and the anti-abuse rules, flat for everyone.
 
-Levels are computed from **hosting contribution**, not activity or post counts:
+```
+RECOGNITION, NOT RANK
+═══════════════════════════════════════════════════════════════════════
 
-| Level | Name | Icon | Hosting Requirements |
-|-------|------|------|----------------------|
-| 0 | **New Swimmer** | 🏊 | Just joined, no hosting history yet |
-| 1 | **Regular** | 🏊‍♂️ | 7+ days, any bandwidth served |
-| 2 | **Resident** | 🏊‍♀️ | 30+ days, 10GB+ served lifetime, 50%+ uptime |
-| 3 | **Lifeguard** | 🛟 | 50GB+/month served, 70%+ uptime, background sync enabled |
-| 4 | **Anchor** | ⚓ | 200GB+/month served, 90%+ uptime |
-| 5 | **Pool Keeper** | 🏛️ | 500GB+/month served, 95%+ uptime, basically a seed node |
+There are no levels, no tiers, no ranks.
 
-**Key insight**: Levels are about HOSTING, not posting. An active poster with no hosting stays at Regular. A silent node that serves 500GB/month is a Pool Keeper.
+Two signals live on your profile:
+├── Badges — permanent milestones you have achieved
+└── Reputation — what the community currently thinks of your posting
 
-### 3.2 Level Computation
+Both are things people SEE. Neither is a thing you SPEND.
+The protocol treats every identity's posts by the same rules.
+```
+
+### 3.1 Achievements
+
+Achievements are permanent, non-transferable badges awarded for hosting and participation milestones. They are purely cosmetic recognition with **zero protocol effect**—earning a badge never reduces your PoW, extends your decay, or raises any limit.
+
+| Achievement | Trigger | Badge |
+|-------------|---------|-------|
+| **First Stroke** | First post ever | 🌊 |
+| **First Serve** | First content served to a peer | 📡 |
+| **Week Swimmer** | 7-day hosting streak | 📅 |
+| **Month Swimmer** | 30-day hosting streak | 📆 |
+| **Centurion** | 100-day hosting streak | 💯 |
+| **Terabyte Club** | Served 1TB lifetime | 🏆 |
+| **Bandwidth Baron** | Served 100GB lifetime | 📶 |
+| **Always On** | 30 days at 95%+ uptime | ⚡ |
+| **Anchor Drop** | Served 200GB in a single month | ⚓ |
+| **Lane Opener** | Created your first space | 🏗️ |
+| **Keeper of the Flame** | Kept 100+ posts alive | 🔥 |
+| **Efficient Swimmer** | High contribution with low battery/data use | 🌱 |
+
+**Achievement Focus**: Most achievements recognize HOSTING behavior, not content creation. "First Stroke" is the only content-focused achievement—after that, it's all about infrastructure contribution.
+
+Achievements are:
+- Permanent once earned
+- Visible on profile
+- Non-transferable
+- Social proof, not currency—and never a capability
+
+### 3.2 Poster Reputation
+
+Poster reputation is a per-identity score shown on profiles. It reflects how the community currently regards a poster's content. Like achievements, it is a **displayed signal only**—reputation has zero protocol privileges. It never affects PoW, decay, rate limits, or any gate.
+
+Reputation moves on two forces:
+
+- **It decays** when the community files spam attestations (SPEC_12) against that poster's content.
+- **It recovers** over time when no new attestations land, and recovers fast when a flag is cleared by counter-attestation.
+
+Attestations are **weighted by the attester's own reputation**: a well-regarded account's spam report carries more weight than a fresh or low-reputation account's, and filing attestations that the community counter-attests costs the attester reputation. This makes coordinated brigading expensive: a mob of throwaway identities barely dents a score, and burns its own standing trying.
 
 ```rust
-// Hosting thresholds (per month)
-const POOL_KEEPER_BANDWIDTH_GB: u64 = 500;
-const ANCHOR_BANDWIDTH_GB: u64 = 200;
-const LIFEGUARD_BANDWIDTH_GB: u64 = 50;
-const RESIDENT_LIFETIME_GB: u64 = 10;
+/// Poster reputation is a displayed signal, not a privilege.
+/// It NEVER affects PoW, decay, rate limits, or any protocol gate.
+pub struct PosterReputation {
+    pub identity: PublicKey,
+    pub spam_flags_received: u32,     // spam attestations against this poster's content
+    pub spam_flags_countered: u32,    // flags cleared by counter-attestation
+    pub attester_countered_count: u32, // attestations this identity filed that got countered
+    pub illegal_content_flags: u32,
+    pub last_flag_at: Option<Timestamp>,
+}
 
-/// Compute swimmer level from HOSTING contribution (not activity)
-pub fn compute_level(history: &[ContributionRecord]) -> SwimmerLevel {
-    let total_days = count_active_days(history);
-    let avg_uptime = average_uptime_ratio(history);
-    let monthly_bandwidth_gb = bandwidth_served_last_30_days(history);
-    let lifetime_bandwidth_gb = total_bandwidth_served(history);
-    let recent_hosting = has_served_anything(history, 7); // last 7 days
+pub const REPUTATION_BASE_SCORE: i32 = 100;   // where every identity starts
+pub const REPUTATION_MIN_SCORE: i32 = -1000;  // floor
 
-    // Must have recent hosting activity to maintain high level
-    if !recent_hosting {
-        // Cap at Regular if not actively hosting
-        return SwimmerLevel::Regular.min(
-            compute_base_level(total_days, lifetime_bandwidth_gb)
-        );
-    }
+const SPAM_PENALTY_PER_FLAG: i32 = 20;        // per spam flag received
+const ATTESTER_PENALTY_PER_COUNTER: i32 = 30; // per attestation you filed that got countered
+const ILLEGAL_PENALTY_PER_FLAG: i32 = 1000;   // per illegal-content flag
 
-    // Pool Keeper: 500GB+/month, 95%+ uptime
-    if monthly_bandwidth_gb >= POOL_KEEPER_BANDWIDTH_GB && avg_uptime >= 0.95 {
-        return SwimmerLevel::PoolKeeper;
-    }
+pub const REPUTATION_RECOVERY_PER_DAY: i32 = 1;         // per quiet day
+pub const REPUTATION_RECOVERY_MAX_DAYS: i32 = 90;       // recovery bonus cap
+pub const REPUTATION_FAST_RECOVERY_PER_COUNTER: i32 = 10; // per counter-attested flag
 
-    // Anchor: 200GB+/month, 90%+ uptime
-    if monthly_bandwidth_gb >= ANCHOR_BANDWIDTH_GB && avg_uptime >= 0.90 {
-        return SwimmerLevel::Anchor;
-    }
+/// score = base
+///       - spam_flags_received × 20
+///       - attester_countered_count × 30
+///       - illegal_content_flags × 1000
+///       + min(days_since_last_flag, 90)   // recovery
+///       + spam_flags_countered × 10       // fast recovery
+/// clamped to REPUTATION_MIN_SCORE.
+pub fn calculate_score(rep: &PosterReputation, days_since_last_flag: u64) -> i32 {
+    let spam_penalty = (rep.spam_flags_received as i32) * SPAM_PENALTY_PER_FLAG;
+    let attester_penalty = (rep.attester_countered_count as i32) * ATTESTER_PENALTY_PER_COUNTER;
+    let illegal_penalty = (rep.illegal_content_flags as i32) * ILLEGAL_PENALTY_PER_FLAG;
+    let recovery = std::cmp::min(days_since_last_flag as i32, REPUTATION_RECOVERY_MAX_DAYS);
+    let fast_recovery = (rep.spam_flags_countered as i32) * REPUTATION_FAST_RECOVERY_PER_COUNTER;
 
-    // Lifeguard: 50GB+/month, 70%+ uptime
-    if monthly_bandwidth_gb >= LIFEGUARD_BANDWIDTH_GB && avg_uptime >= 0.70 {
-        return SwimmerLevel::Lifeguard;
-    }
-
-    // Resident: 30+ days, 10GB+ lifetime, 50%+ uptime
-    if total_days >= 30 && lifetime_bandwidth_gb >= RESIDENT_LIFETIME_GB && avg_uptime >= 0.50 {
-        return SwimmerLevel::Resident;
-    }
-
-    // Regular: 7+ days with any hosting
-    if total_days >= 7 && lifetime_bandwidth_gb > 0 {
-        return SwimmerLevel::Regular;
-    }
-
-    SwimmerLevel::NewSwimmer
+    let score = REPUTATION_BASE_SCORE - spam_penalty - attester_penalty - illegal_penalty
+        + recovery + fast_recovery;
+    std::cmp::max(score, REPUTATION_MIN_SCORE)
 }
 ```
 
-**What matters for levels:**
-- Bandwidth served (primary - how much did you help others?)
-- Uptime (primary - are you available when needed?)
-- Time in network (secondary - trust builds over time)
+The displayed score maps to a tier — a label for humans, never a gate:
 
-**What does NOT matter for levels:**
-- Number of posts created
-- Engagement received
-- Spaces joined
-- Follower count
+| Tier | Score | Meaning |
+|------|-------|---------|
+| Trusted | > 200 | Long history of clean posting |
+| Normal | > 100 | Standing at or above baseline |
+| Watched | > 50 | Recent spam flags |
+| Restricted | > 0 | Repeated flags, still recovering |
+| — | ≤ 0 | Heavily flagged |
 
-### 3.3 Level Display
+**Rationale:**
+- The signal is community-driven, not system-decreed
+- Weighting by attester reputation resists Sybil pile-ons
+- Recovery over time keeps mistakes forgivable
+- Because it grants nothing, gaming it buys you nothing but a number
 
-Levels are visible on identity in protocol:
+### 3.3 Profile Display
+
+Recognition surfaces on the identity profile: badges, reputation, and hosting stats. The struct carries the display data—not any entitlement.
 
 ```rust
 pub struct IdentityProfile {
     pub public_key: PublicKey,
     pub display_name: Option<String>,
 
-    /// Current swimmer level (protocol-computed)
-    pub swimmer_level: SwimmerLevel,
+    /// Poster reputation (displayed signal; starts at 100, floor -1000)
+    pub reputation: i32,
 
-    /// Current streak
+    /// Badges earned (permanent, non-transferable)
+    pub achievements: Vec<Achievement>,
+
+    /// Current hosting streak
     pub streak_days: u16,
 
     /// Spaces where this identity is active
     pub active_spaces: Vec<SpaceId>,
 
-    /// Contribution summary (last 30 days)
+    /// Hosting contribution summary (last 30 days) — shown, not spent
     pub contribution_summary: ContributionSummary,
 }
 ```
 
----
-
-## 4. Contribution Benefits
-
-### 4.1 The Fair Exchange
-
-Benefits are **personal and non-transferable**. The trade is explicit:
+A rendered profile emphasizes HOSTING metrics and recognition, not post counts or engagement received. This is a hosting profile, not a content profile:
 
 ```
-THE BENEFIT EXCHANGE
+PROFILE: @alice
 ═══════════════════════════════════════════════════════════════════════
 
-YOU GIVE                      →  YOU GET
-────────────────────────────────────────────────────────────────────
-Bandwidth (serving others)    →  Reduced PoW (post faster)
-Storage (hosting content)     →  Extended decay (your content lives longer)
-Uptime (being available)      →  Priority sync (served first when busy)
-Consistency (streaks)         →  Space creation rights
+⭐ Reputation: 214 (Trusted)
 
-This is FAIR EXCHANGE:
-├── Not charity
-├── Not altruism
-├── You give network resources
-├── You get personal benefits
-└── Everyone wins
+🏅 BADGES:
+   🌊 First Stroke · 📡 First Serve · 📅 Week Swimmer · 📆 Month Swimmer
+   📶 Bandwidth Baron · 🔥 Keeper of the Flame
+
+🔥 14-day hosting streak
+   Best: 42 days | Total: 156 days active
+
+📡 HOSTING STATS (Last 30 days):
+   ├── Bandwidth served: 67GB
+   ├── Content hosted: 12GB
+   ├── Uptime: 73%
+   ├── Peer requests served: 8,234
+   └── Posts kept alive: 47
+
+📈 LIFETIME:
+   ├── Total bandwidth served: 892GB
+   ├── Hosting streak record: 42 days
+   └── Contribution score: 89,247
 ```
 
-### 4.2 Benefit Types
-
-| Benefit | What It Does | Who Gets It | Rationale |
-|---------|--------------|-------------|-----------|
-| **PoW Reduction** | Faster posting | Hosts | You gave compute to network, get compute back |
-| **Decay Extension** | Your content lives longer | Hosts | You keep content alive, yours lives longer |
-| **Space Creation** | Ability to create new spaces | Residents+ | Earned capability, prevents spam |
-| **Priority Sync** | Your requests served first when busy | Lifeguards+ | You serve others, you get served |
-| **Governance Weight** | More say in space decisions | Active hosts | Skin in the game |
-
-### 4.3 PoW Reduction
-
-Contributors spend less compute to post:
-
-```rust
-/// Calculate PoW difficulty for an identity
-pub fn adjusted_difficulty(base: Difficulty, level: SwimmerLevel) -> Difficulty {
-    let reduction = match level {
-        SwimmerLevel::NewSwimmer => 0,     // 0% reduction
-        SwimmerLevel::Regular => 0,         // 0% reduction
-        SwimmerLevel::Resident => 10,       // 10% reduction
-        SwimmerLevel::Lifeguard => 20,      // 20% reduction
-        SwimmerLevel::Anchor => 35,         // 35% reduction
-        SwimmerLevel::PoolKeeper => 50,     // 50% reduction (max)
-    };
-
-    base.reduce_by_percent(reduction)
-}
-```
-
-**Rationale:**
-- Contribution = bandwidth/compute given to network
-- Reduced PoW = compute returned
-- Fair trade, not currency
-
-### 4.4 Decay Extension
-
-Your content survives longer:
-
-```rust
-/// Calculate decay multiplier for content author
-pub fn decay_multiplier(level: SwimmerLevel) -> f32 {
-    match level {
-        SwimmerLevel::NewSwimmer => 1.0,   // Normal decay
-        SwimmerLevel::Regular => 1.0,       // Normal decay
-        SwimmerLevel::Resident => 1.2,      // 20% longer
-        SwimmerLevel::Lifeguard => 1.5,     // 50% longer
-        SwimmerLevel::Anchor => 1.8,        // 80% longer
-        SwimmerLevel::PoolKeeper => 2.0,    // 2x longer (max)
-    };
-}
-```
-
-**Rationale:**
-- You keep content alive for others → yours lives longer
-- Reciprocity without currency
-
-### 4.5 Space Creation Rights
-
-Only engaged users can create spaces:
-
-```rust
-/// Check if identity can create a new space
-pub fn can_create_space(level: SwimmerLevel) -> bool {
-    level >= SwimmerLevel::Resident
-}
-```
-
-**Rationale:**
-- Prevents space spam
-- Rewards engagement with capability
-- Not purchasable
-
-### 4.6 Priority Sync
-
-When network is congested, contributors get priority:
-
-```rust
-/// Priority tier for request handling
-pub fn sync_priority(level: SwimmerLevel) -> Priority {
-    match level {
-        SwimmerLevel::PoolKeeper => Priority::Highest,
-        SwimmerLevel::Anchor => Priority::High,
-        SwimmerLevel::Lifeguard => Priority::AboveNormal,
-        _ => Priority::Normal,
-    }
-}
-```
-
-**Rationale:**
-- You help serve others → you get served faster
-- Only matters under load
-- Fair priority, not gatekeeping
+**Note**: Everything on this profile is for recognition. None of it changes how the protocol treats @alice's posts—her PoW, decay, and limits are identical to any other swimmer's.
 
 ---
 
-## 5. Streaks and Achievements
+## 4. Streaks
 
-### 5.1 Swim Streaks
+### 4.1 Swim Streaks
 
-Consecutive days of activity:
+Consecutive days of activity. A streak is a tracked stat that feeds badges and profile display—another purely cosmetic signal:
 
 ```rust
 pub struct StreakTracker {
@@ -486,69 +433,15 @@ impl StreakTracker {
 }
 ```
 
-### 5.2 Streak Display
+### 4.2 Streak Display
 
-```
-PROFILE: @alice
-═══════════════════════════════════════════════════════════════════════
-
-🛟 Lifeguard
-
-🔥 14-day hosting streak
-   Best: 42 days | Total: 156 days active
-
-📡 HOSTING STATS (Last 30 days):
-   ├── Bandwidth served: 67GB
-   ├── Content hosted: 12GB
-   ├── Uptime: 73%
-   ├── Peer requests served: 8,234
-   └── Posts kept alive: 47
-
-📈 LIFETIME:
-   ├── Total bandwidth served: 892GB
-   ├── Hosting streak record: 42 days
-   └── Contribution score: 89,247
-
-💪 EARNED BENEFITS:
-   ├── PoW reduction: 20%
-   ├── Decay extension: 1.5x
-   └── Can create spaces: Yes
-```
-
-**Note**: The profile emphasizes HOSTING metrics, not post counts or engagement received. This is a hosting profile, not a content profile.
-
-### 5.3 Achievements
-
-Protocol-tracked accomplishments (mostly hosting-focused):
-
-| Achievement | Trigger | Badge |
-|-------------|---------|-------|
-| **First Stroke** | First post ever | 🌊 |
-| **First Serve** | First content served to a peer | 📡 |
-| **Week Swimmer** | 7-day hosting streak | 📅 |
-| **Month Swimmer** | 30-day hosting streak | 📆 |
-| **Centurion** | 100-day hosting streak | 💯 |
-| **Terabyte Club** | Served 1TB lifetime | 🏆 |
-| **Bandwidth Baron** | Served 100GB lifetime | 📡 |
-| **Always On** | 30 days at 95%+ uptime | ⚡ |
-| **Anchor Drop** | First time reaching Anchor level | ⚓ |
-| **Lane Opener** | Created first space (requires Resident+) | 🏗️ |
-| **Keeper of the Flame** | Kept 100+ posts alive | 🔥 |
-| **Efficient Swimmer** | High contribution with low battery/data use | 🌱 |
-
-**Achievement Focus**: Most achievements reward HOSTING behavior, not content creation. "First Stroke" is the only content-focused achievement - after that, it's all about infrastructure contribution.
-
-Achievements are:
-- Permanent once earned
-- Visible on profile
-- Non-transferable
-- Social proof, not currency
+Streaks appear on the profile alongside badges and reputation (see §3.3). They mark consistency; they unlock the streak-based badges in §3.1 (Week Swimmer, Month Swimmer, Centurion) and nothing more.
 
 ---
 
-## 6. Space-Level Social Features
+## 5. Space-Level Social Features
 
-### 6.1 Space Health Indicators
+### 5.1 Space Health Indicators
 
 Each space displays its health:
 
@@ -593,7 +486,7 @@ pub struct SpaceContributor {
 }
 ```
 
-### 6.1.1 Health Score Calculation
+### 5.1.1 Health Score Calculation
 
 The health score is a weighted composite of space health factors:
 
@@ -649,7 +542,7 @@ pub fn calculate_space_health(
 // Total: 33.5 → 34
 ```
 
-### 6.1.2 Posts At Risk Detection
+### 5.1.2 Posts At Risk Detection
 
 A post is "at risk" when its survival probability falls below 25%:
 
@@ -671,7 +564,7 @@ pub fn count_posts_at_risk(space_id: &SpaceId, now: Timestamp) -> u32 {
 }
 ```
 
-### 6.1.3 Active Swimmer Detection
+### 5.1.3 Active Swimmer Detection
 
 A swimmer is "active" if they've been online in the last 5 minutes:
 
@@ -696,7 +589,7 @@ pub fn count_active_swimmers(space_id: &SpaceId, now: Timestamp) -> u32 {
 }
 ```
 
-### 6.1.4 Protocol Message for Space Health Query
+### 5.1.4 Protocol Message for Space Health Query
 
 ```rust
 /// MSG_SPACE_HEALTH_QUERY (0x34)
@@ -733,7 +626,7 @@ pub struct SpaceContributorPayload {
 // Max with 10 contributors: 68 + 500 = 568 bytes
 ```
 
-### 6.2 Space Display
+### 5.2 Space Display
 
 ```
 SPACE: /gardening
@@ -759,14 +652,14 @@ TOP HOSTS THIS WEEK:
 📈 SPACE MILESTONES:
 ├── ☀️ Never Dark (24/7 availability for 30 days)
 ├── 🌱 Thriving Lane (1000+ total members)
-└── 🏆 12 Anchors (high-contribution hosts)
+└── 🏆 12 dedicated hosts (sustained high hosting contribution)
 ```
 
 **Note**: Space health is about HOSTING health, not post activity. An "active" space is one with good hosting coverage, not necessarily high posting volume.
 
-### 6.3 Content Attribution
+### 5.3 Content Attribution
 
-Posts show who keeps them alive:
+Posts show who keeps them alive. Attribution is derived from the individual engagement PoW records filed against a post—each contributor is credited for the resets they paid for:
 
 ```
 POST by @dave (3 days ago)
@@ -782,7 +675,7 @@ KEPT ALIVE BY: @alice, @bob, @carol, and 7 others
 └── Decays in 12 days without engagement
 ```
 
-### 6.4 Collective Achievements
+### 5.4 Collective Achievements
 
 Spaces earn achievements together:
 
@@ -796,22 +689,22 @@ Spaces earn achievements together:
 
 ---
 
-## 7. Notifications and Nudges
+## 6. Notifications and Nudges
 
-### 7.1 Types of Notifications
+### 6.1 Types of Notifications
 
 Light-touch notifications encourage participation:
 
 | Type | When | Message Example |
 |------|------|-----------------|
 | **Streak** | Streak milestone | "🔥 7-day streak! Keep swimming!" |
-| **Level Up** | Level increases | "⬆️ You're now a Resident!" |
+| **Reputation** | Notable reputation change | "📉 Your reputation shifted after community spam reports" |
 | **Achievement** | Achievement earned | "🎉 Earned: Keeper of the Flame" |
-| **Space Health** | Space needs help | "/gardening could use an anchor" |
+| **Space Health** | Space needs help | "/gardening could use more hosts" |
 | **Content Risk** | Your content at risk | "3 of your posts decay tomorrow" |
 | **Contribution Thanks** | Significant contribution | "You kept 50 posts alive this week!" |
 
-### 7.2 Notification Preferences
+### 6.2 Notification Preferences
 
 Users control notification volume:
 
@@ -820,8 +713,8 @@ pub struct NotificationPreferences {
     /// Show streak notifications
     pub streak_notifications: bool,
 
-    /// Show level/achievement notifications
-    pub achievement_notifications: bool,
+    /// Show reputation and achievement notifications
+    pub recognition_notifications: bool,
 
     /// Show space health nudges
     pub space_health_nudges: bool,
@@ -836,21 +729,21 @@ pub struct NotificationPreferences {
 
 ---
 
-## 8. Anti-Gaming Measures
+## 7. Anti-Gaming Measures
 
-### 8.1 Threat Model
+### 7.1 Threat Model
 
 | Attack | Description | Mitigation |
 |--------|-------------|------------|
 | **Fake bandwidth** | Claim to serve data you didn't | Peer attestation required |
 | **Fake uptime** | Claim online when offline | Peer pings verify |
 | **Sybil attestations** | Create fake peers to attest | Attesters need contribution too |
-| **Streak farming** | Bot maintains streak | Streak alone doesn't give benefits |
-| **Contribution selling** | Sell account with level | Identity = keys, non-transferable |
+| **Streak farming** | Bot maintains streak | Streak is cosmetic; it unlocks nothing but a badge |
+| **Reputation brigading** | Mass spam reports to sink a poster | Attestations weighted by attester reputation |
 
-### 8.2 Attestation Requirements
+### 7.2 Attestation Requirements
 
-Attestations only count if:
+Contribution attestations only count if:
 - Attester is a known identity (not new)
 - Attester has own contribution history
 - Attestation is recent (within period)
@@ -892,9 +785,9 @@ pub fn validate_contribution(
 }
 ```
 
-### 8.3 Decay of Contribution
+### 7.3 Decay of Contribution
 
-Old contribution fades:
+Old contribution fades from the displayed score:
 
 ```rust
 /// Contribution value decays over time
@@ -918,14 +811,14 @@ pub fn contribution_weight(record: &ContributionRecord, now: Period) -> f32 {
 
 **Rationale:**
 - Recent contribution matters more
-- Can't coast on old reputation forever
-- Must keep swimming to keep level
+- The profile reflects who is hosting NOW, not who once did
+- Keeps the contributor lists and badges honest
 
 ---
 
-## 9. Device Constraints
+## 8. Device Constraints
 
-### 9.1 Good App Citizenship
+### 8.1 Good App Citizenship
 
 The social layer respects device limits:
 
@@ -956,18 +849,20 @@ impl Default for ContributionSettings {
 }
 ```
 
-### 9.2 Contribution Modes
+### 8.2 Contribution Modes
 
-Users choose their commitment:
+Users choose how much they contribute. Modes are presets for hosting behavior, not rungs on a ladder—every mode is treated identically by the protocol:
 
-| Mode | Description | Benefits |
-|------|-------------|----------|
-| **Swimmer** | Foreground only, minimal background | Base level only |
-| **Active Swimmer** | Background on WiFi, daily cap | Can reach Lifeguard |
-| **Dedicated Swimmer** | Background always, high cap | Can reach Anchor |
-| **Anchor Mode** | Always-on, no cap | Pool Keeper eligible |
+| Mode | Description | What It Does |
+|------|-------------|--------------|
+| **Swimmer** | Foreground only, minimal background | Serves while the app is open |
+| **Active Swimmer** | Background on WiFi, daily cap | Keeps serving in the background on WiFi |
+| **Dedicated Swimmer** | Background always, high cap | Serves continuously within your caps |
+| **Anchor Mode** | Always-on, no cap | Runs like a seed node |
 
-### 9.3 Efficient Contributor Recognition
+Serving more earns more recognition (more bandwidth toward badges, a higher spot on contributor lists). It never earns a privilege.
+
+### 8.3 Efficient Contributor Recognition
 
 Efficiency is celebrated, not just volume:
 
@@ -986,39 +881,40 @@ pub fn efficiency_score(
 }
 ```
 
-Badge: **Efficient Swimmer** - high contribution with low resource use.
+Badge: **Efficient Swimmer** — high contribution with low resource use.
 
 ---
 
-## 10. Integration Points
+## 9. Integration Points
 
-### 10.1 With Identity (SPEC_01)
+### 9.1 With Identity (SPEC_01)
 
 ```rust
 // Identity includes social layer data
 pub struct Identity {
     pub keypair: Keypair,
-    pub profile: IdentityProfile,      // Includes level, streaks
+    pub profile: IdentityProfile,      // Includes reputation, badges, streaks
     pub contribution_history: Vec<ContributionRecord>,
     pub achievements: HashSet<Achievement>,
 }
 ```
 
-### 10.2 With Content/Decay (SPEC_02)
+### 9.2 With Content/Decay (SPEC_02)
+
+Decay is status-independent. Every author's content follows the same half-life; the social layer only *reads* decay state to display it, never modifies it:
 
 ```rust
-// Decay considers author's level
-pub fn calculate_decay(
-    content: &Content,
-    author_level: SwimmerLevel,
-    base_half_life: Duration,
-) -> Duration {
-    let multiplier = decay_multiplier(author_level);
-    base_half_life.mul_f32(multiplier)
+// The social layer reads decay state for display (posts-at-risk, countdowns).
+// It does not alter the half-life for any author.
+pub fn posts_at_risk_for_display(
+    space_id: &SpaceId,
+    now: Timestamp,
+) -> u32 {
+    count_posts_at_risk(space_id, now)
 }
 ```
 
-### 10.3 With Content Distribution (SPEC_07)
+### 9.3 With Content Distribution (SPEC_07)
 
 ```rust
 // Serving content creates attestable contribution
@@ -1042,20 +938,18 @@ impl ContentServer {
 
 ---
 
-## 11. Protocol Messages
+## 10. Protocol Messages
 
-### 11.1 New Message Types
+### 10.1 Message Types
 
 | Type | ID | Purpose | Wire Size |
 |------|-----|---------|-----------|
 | `CONTRIBUTION_CLAIM` | 0x30 | Publish contribution record | 152+ bytes |
 | `CONTRIBUTION_ATTEST` | 0x31 | Attest to peer's contribution | 117 bytes |
-| `LEVEL_QUERY` | 0x32 | Query identity's current level | 32 bytes |
-| `LEVEL_RESPONSE` | 0x33 | Response with level info | 53 bytes |
 | `SPACE_HEALTH_QUERY` | 0x34 | Query space health status | 32 bytes |
 | `SPACE_HEALTH_RESPONSE` | 0x35 | Response with health info | 68+ bytes |
 
-### 11.2 Message Structures
+### 10.2 Message Structures
 
 ```rust
 // Contribution claim (see §2.4)
@@ -1063,7 +957,7 @@ pub struct ContributionClaimPayload {
     pub record: ContributionRecord,  // 152 bytes base
 }
 
-// Contribution attestation (see §8.2)
+// Contribution attestation (see §7.2)
 pub struct ContributionAttestPayload {
     pub target: PublicKey,           // 32 bytes
     pub period: u32,                 // 4 bytes
@@ -1071,32 +965,13 @@ pub struct ContributionAttestPayload {
 }
 // Total: 117 bytes
 
-// Level query
-pub struct LevelQueryPayload {
-    pub identity: PublicKey,         // 32 bytes
-}
-// Total: 32 bytes
-
-// Level response
-pub struct LevelResponsePayload {
-    pub identity: PublicKey,         // 32 bytes
-    pub level: u8,                   // 1 byte (SwimmerLevel as u8)
-    pub streak_days: u16,            // 2 bytes
-    pub bandwidth_30d_gb: u16,       // 2 bytes
-    pub uptime_ratio: u16,           // 2 bytes (0-10000)
-    pub lifetime_bandwidth_gb: u64,  // 8 bytes
-    pub active_days: u16,            // 2 bytes
-    pub contribution_score: u32,     // 4 bytes
-}
-// Total: 53 bytes
-
-// Space health query (see §6.1.4)
+// Space health query (see §5.1.4)
 pub struct SpaceHealthQueryPayload {
     pub space_id: SpaceId,           // 32 bytes
 }
 // Total: 32 bytes
 
-// Space health response (see §6.1.4)
+// Space health response (see §5.1.4)
 pub struct SpaceHealthResponsePayload {
     pub space_id: SpaceId,           // 32 bytes
     pub health_score: u8,            // 1 byte
@@ -1115,66 +990,57 @@ pub struct SpaceHealthResponsePayload {
 
 ---
 
-## 12. Open Questions
+## 11. Open Questions
 
-### 12.1 Technical
+### 11.1 Technical
 
 - How to handle attestation spam?
-- What's the minimum attestation threshold?
-- How to bootstrap attestation network?
+- What's the minimum attestation threshold for a contribution claim?
+- How to bootstrap the attestation network?
 - Cold start: how do new users get attested?
 
-### 12.2 Social
+### 11.2 Social
 
-- Do levels create status anxiety?
+- Does the displayed reputation create status anxiety or public pile-ons?
 - Does streak pressure cause unhealthy usage?
-- How to handle level loss gracefully?
-- Cultural differences in gamification reception?
+- How should reputation recovery be paced so mistakes stay forgivable?
+- Cultural differences in how badges and recognition land?
 
-### 12.3 Economic
+### 11.3 Recognition Integrity
 
-- Do benefits create perverse incentives?
-- Is PoW reduction enough motivation?
-- Should there be more/fewer benefit tiers?
-- How to prevent benefit "inflation"?
+- How to keep reputation resistant to coordinated spam-attestation brigading beyond attester-weighting?
+- Should achievement sets be extensible per client, or fixed by the protocol?
+- How to guarantee recognition stays purely cosmetic as clients evolve—never letting a client quietly turn a badge or score into a gate?
 
 ---
 
-## 13. Implementation Notes
+## 12. Implementation Notes
 
-### 13.1 Phase 1: Basic Tracking ✅ COMPLETE (Milestone 7.1)
+### 12.1 Phase 1: Basic Tracking ✅ COMPLETE
 
 - Contribution metrics recorded locally
 - No attestation yet (trust self-report initially)
-- Level display only (no benefits)
 - Streak tracking
 
-### 13.2 Phase 2: Attestation Network ✅ COMPLETE (Milestone 7.2)
+### 12.2 Phase 2: Attestation Network ✅ COMPLETE
 
 - Peer attestation protocol
 - Verified contribution
 - Sybil resistance measures
 
-### 13.3 Phase 3: Swimmer Levels ✅ COMPLETE (Milestone 7.3)
+### 12.3 Phase 3: Achievements ✅ COMPLETE
 
-- Level computation from contribution
-- Level caching and queries
+- Badge triggers for the 12-badge set
+- Permanent, non-transferable badges
 - Profile integration
 
-### 13.4 Phase 4: Contribution Benefits ✅ COMPLETE (Milestone 7.4)
+### 12.4 Phase 4: Poster Reputation ✅ COMPLETE
 
-- PoW reduction based on level
-- Decay extension for contributors
-- Space creation gating
-- Sync priority
-
-### 13.5 Phase 5: Streaks and Achievements ✅ COMPLETE (Milestone 7.5)
-
-- Streak tracking
-- Achievement triggers
+- Reputation scoring driven by weighted spam attestations
+- Recovery over time
 - Profile display
 
-### 13.6 Phase 6: Space Health ✅ COMPLETE (Milestone 7.6)
+### 12.5 Phase 5: Space Health ✅ COMPLETE
 
 - Space health indicators
 - Active swimmer detection
@@ -1182,30 +1048,27 @@ pub struct SpaceHealthResponsePayload {
 - Health score calculation
 - Space health query messages
 
-### 13.7 Phase 7: Content Attribution ✅ COMPLETE (Milestone 7.7)
+### 12.6 Phase 6: Content Attribution ✅ COMPLETE
 
 - Who kept this alive display
-- Engagement attribution
 - Decay timeline display
-- Wire protocol (MSG_ATTRIBUTION_QUERY 0x50, MSG_ATTRIBUTION_RESPONSE 0x51)
+- Attribution wire protocol
 
-### 13.8 Phase 8: Device Constraints ✅ COMPLETE (Milestone 7.8)
+### 12.7 Phase 7: Device Constraints ✅ COMPLETE
 
-- ContributionSettings with SPEC_09 §9.1 defaults
-- Contribution modes (Swimmer → AnchorMode) with level gating
+- ContributionSettings with SPEC_09 §8.1 defaults
+- Contribution modes (Swimmer → Anchor Mode)
 - Battery-aware pause/resume with 5% hysteresis
 - Bandwidth limiting with midnight UTC reset
-- Efficiency tracking per §9.3 formula
+- Efficiency tracking per §8.3 formula
 
-### 13.9 Phase 9: Notifications (Milestone 7.9) ✓ COMPLETE
+### 12.8 Phase 8: Notifications ✅ COMPLETE
 
-**Implemented 2025-12-26** in `src/notification/` (8 files):
-
-- NotificationType enum with 6 types per §7.1
-- NotificationPreferences per §7.2 with streak_notify_threshold
+- NotificationType enum with 6 types per §6.1
+- NotificationPreferences per §6.2 with streak_notify_threshold
 - ThrottleConfig with per-type cooldowns:
   - Streak: PerMilestone (7, 14, 30, 100)
-  - LevelUp: PerLevelChange
+  - Reputation: 24h
   - Achievement: PerAchievement
   - SpaceHealth: 4h per space
   - ContentRisk: 24h
@@ -1213,39 +1076,33 @@ pub struct SpaceHealthResponsePayload {
 - Global daily limit (10) with optional quiet hours
 - NotificationStore with 30-day expiry
 - API events: NotificationApiEvent (New, Read, Cleared)
-- Documentation: `docs/notifications.md`
 
 ---
 
-## 14. Summary
+## 13. Summary
 
 The Social Layer transforms Swimchain from "infrastructure with social features" to "social network where participation matters." Key points:
 
 1. **Contribution is visible** - Your effort is seen and recognized
-2. **Benefits are personal** - Non-transferable, tied to identity
+2. **Recognition is personal** - Non-transferable, tied to identity
 3. **Nothing is tradeable** - No tokens, no markets
-4. **Reciprocity is fair** - Give bandwidth → get faster posting
-5. **Community is the reward** - Recognition from peers, not points
+4. **Nothing is a privilege** - Recognition never touches PoW, decay, or limits
+5. **Community is the reward** - Badges and reputation come from peers, not points
 6. **Device limits respected** - Good app citizenship built in
 
 This is social media. The social layer makes it feel that way.
 
 ---
 
-*Last updated: 2025-12-26*
-*Status: Draft - Phase 7 (Social Layer) COMPLETE. All 9 milestones implemented. Ready for Phase 8: Node Operations.*
-
----
-
 ## Changelog
 
-- **2025-12-26**: Phase 9 (Notification System) implemented in Milestone 7.9 - **PHASE 7 COMPLETE**
-  - Notification module: `src/notification/` (8 files: mod.rs, error.rs, types.rs, preferences.rs, throttle.rs, triggers.rs, storage.rs, service.rs)
-  - NotificationType enum (§7.1): 6 types (Streak, LevelUp, Achievement, SpaceHealth, ContentRisk, ContributionThanks)
-  - NotificationPreferences (§7.2): 5 fields with streak_notify_threshold for milestone control
+- **2025-12-26**: Notification System implemented
+  - Notification module: `src/notification/` (mod.rs, error.rs, types.rs, preferences.rs, throttle.rs, triggers.rs, storage.rs, service.rs)
+  - NotificationType enum (§6.1): 6 types (Streak, Reputation, Achievement, SpaceHealth, ContentRisk, ContributionThanks)
+  - NotificationPreferences (§6.2): fields including streak_notify_threshold for milestone control
   - ThrottleConfig with per-type cooldowns:
     - Streak: PerMilestone (7, 14, 30, 100 days)
-    - LevelUp: PerLevelChange
+    - Reputation: 24h cooldown
     - Achievement: PerAchievement
     - SpaceHealth: 4h per space
     - ContentRisk: 24h cooldown
@@ -1253,104 +1110,84 @@ This is social media. The social layer makes it feel that way.
   - Global daily limit (default: 10) with optional quiet hours support
   - NotificationStore: key format identity[32]+timestamp[8BE]+id[16] for efficient range scans
   - 30-day notification expiry with automatic cleanup
-  - TriggerSources: detect_streak(), detect_level_up(), detect_achievement(), etc.
+  - TriggerSources: detect_streak(), detect_reputation_change(), detect_achievement(), etc.
   - NotificationService: coordinates all components with check_* methods
   - API integration: NotificationApiEvent (New, Read, Cleared) in src/api/events.rs
-  - Tests: 66 passing (12 types, 22 throttle, 27 triggers, 5 service)
   - Documentation: `docs/notifications.md`
-- **2025-12-26**: Phase 8 (Device Constraints) implemented in Milestone 7.8
-  - Device constraints module: `src/device_constraints/` (8 files: mod.rs, error.rs, types.rs, battery.rs, bandwidth.rs, efficiency.rs, storage.rs, manager.rs)
-  - ContributionSettings (§9.1): wifi_only=true, daily_bandwidth_cap=500MB, battery_threshold=20%, thermal_pause=true
-  - ContributionMode enum (§9.2): Swimmer, ActiveSwimmer, DedicatedSwimmer, AnchorMode with level gating
-    - Swimmer→Regular, ActiveSwimmer→Lifeguard, DedicatedSwimmer→Anchor, AnchorMode→PoolKeeper
+- **2025-12-26**: Device Constraints implemented
+  - Device constraints module: `src/device_constraints/` (mod.rs, error.rs, types.rs, battery.rs, bandwidth.rs, efficiency.rs, storage.rs, manager.rs)
+  - ContributionSettings (§8.1): wifi_only=true, daily_bandwidth_cap=500MB, battery_threshold=20%, thermal_pause=true
+  - ContributionMode enum (§8.2): Swimmer, ActiveSwimmer, DedicatedSwimmer, AnchorMode as hosting-behavior presets
   - BatteryChecker: pause below threshold with 5% hysteresis (resume at threshold+5%)
   - Charging bypass: contribution allowed when device is charging
   - ThermalState handling: Critical always pauses, Serious respects thermal_pause setting
   - DailyBandwidthLimiter: wraps TokenBucketLimiter with midnight UTC reset
-  - EfficiencyTracker (§9.3): efficiency_score = bandwidth_served / (battery_consumed + data_used)
+  - EfficiencyTracker (§8.3): efficiency_score = bandwidth_served / (battery_consumed + data_used)
   - EFFICIENT_SWIMMER_THRESHOLD = 2.0 for badge qualification
   - DeviceConstraintManager: coordinates all constraints with should_contribute() and try_serve() APIs
   - ConstraintStatus for UI display
   - Sled persistence for mode and settings
-  - Tests: 95 passing covering all constraint scenarios
   - Documentation: `docs/device-constraints.md`, `docs/contribution-modes.md`
-- **2025-12-26**: Phase 7 (Content Attribution) implemented in Milestone 7.7
-  - Attribution module: `src/attribution/` (6 files: mod.rs, types.rs, error.rs, compute.rs, manager.rs, handler.rs)
-  - AttributionEntry (§6.3): 48-byte wire format (identity:32 + pow_contributed:8 + timestamp:8)
-  - ContentAttribution: aggregates contributors from engagements, sorted by PoW DESC
+- **2025-12-26**: Content Attribution implemented
+  - Attribution module: `src/attribution/` (mod.rs, types.rs, error.rs, compute.rs, manager.rs, handler.rs)
+  - AttributionEntry (§5.3): 48-byte wire format (identity:32 + pow_contributed:8 + timestamp:8)
+  - ContentAttribution: aggregates contributors from individual engagement PoW records, sorted by PoW DESC
   - ContentAttributionDisplay: format_attribution_display() generates "KEPT ALIVE BY: @alice, @bob, and X others"
   - MAX_DISPLAY_CONTRIBUTORS = 10 limit per display
   - DecayStatus enum: Active (0x01), Protected (0x02), Decayed (0x03)
   - decay_countdown_days(): floor protection, active decay, decayed states
-  - decay_countdown_days_with_level(): level multipliers per §4.4 (1.0x→2.0x for NewSwimmer→PoolKeeper)
-  - extract_contributors_from_engagements(): HashMap-based O(n) deduplication
+  - extract_contributors(): HashMap-based O(n) deduplication over engagement PoW records
   - IdentityResolver trait: name resolution for display
-  - Protocol messages (§11.1):
+  - Protocol messages:
     - MSG_ATTRIBUTION_QUERY (0x50): 32 bytes (content_id)
     - MSG_ATTRIBUTION_RESPONSE (0x51): 49-57+ bytes (fixed portion + 48 bytes per contributor)
   - AttributionHandler: handle_query() for wire protocol
   - AttributionManager: 5-minute cache TTL with explicit invalidation
-  - Tests: 50 passing (contributor extraction, decay countdown, wire format roundtrip, display formatting)
-  - Documentation: `docs/content-attribution.md` (190 lines)
-- **2025-12-26**: Phase 6 (Space Health) specification completed for Milestone 7.6
-  - Expanded SpaceHealth struct (§6.1): Added space_id, total_posts, average_uptime, total_bandwidth_served, computed_at
+  - Documentation: `docs/content-attribution.md`
+- **2025-12-26**: Space Health specification completed
+  - Expanded SpaceHealth struct (§5.1): space_id, total_posts, average_uptime, total_bandwidth_served, computed_at
   - SpaceContributor struct: identity, bandwidth_served, uptime_ratio, contribution_score
-  - Health score calculation (§6.1.1): Weighted formula with 30% swimmers, 30% uptime, 20% decay risk, 20% freshness
+  - Health score calculation (§5.1.1): Weighted formula with 30% swimmers, 30% uptime, 20% decay risk, 20% freshness
     - Swimmer score: 0 swimmers = 0, 10+ swimmers = 100
     - Uptime score: direct percentage
     - Decay score: inverse of at-risk percentage
     - Freshness score: 0 min = 100, 15+ min = 0
-  - Posts at risk detection (§6.1.2): RISK_THRESHOLD = 0.25 (25% survival probability)
-  - Active swimmer detection (§6.1.3): ACTIVE_WINDOW_SECS = 300 (5 minutes)
-  - Protocol messages (§6.1.4):
+  - Posts at risk detection (§5.1.2): RISK_THRESHOLD = 0.25 (25% survival probability)
+  - Active swimmer detection (§5.1.3): ACTIVE_WINDOW_SECS = 300 (5 minutes)
+  - Protocol messages (§5.1.4):
     - MSG_SPACE_HEALTH_QUERY (0x34): 32 bytes
     - MSG_SPACE_HEALTH_RESPONSE (0x35): 68 bytes fixed + 50 bytes per contributor
-  - Updated message table (§11.1) with all 6 social layer message types and wire sizes
-  - Implementation phases (§13) updated to show progress through 7.5 complete, 7.6 in progress
-- **2025-12-26**: Phase 4 (Contribution Benefits) implemented in Milestone 7.4
-  - Benefits module: `src/benefits/` (6 files: mod.rs, types.rs, pow_reduction.rs, decay_extension.rs, space_rights.rs, sync_priority.rs)
-  - Priority enum (§4.6): Highest, High, AboveNormal, Normal
-  - PoW reduction (§4.3): `adjusted_difficulty()` with reductions 0%/0%/10%/20%/35%/50% for NewSwimmer→PoolKeeper
-  - Decay extension (§4.4): `decay_multiplier()` with multipliers 1.0x/1.0x/1.2x/1.5x/1.8x/2.0x
-  - Space creation gating (§4.5): `can_create_space()` requires Resident+, MIN_LEVEL_FOR_SPACE_CREATION constant
-  - Sync priority (§4.6): `sync_priority()` maps level to Priority
-  - SyncPriorityQueue in `src/sync/priority_queue.rs`: Binary heap with FIFO fallback under 50 requests
-  - Integration: `get_difficulty_for_level()` in action_pow.rs, `calculate_decay_state_with_level()` in decay.rs
-  - CLI integration: Level check in space.rs with `--skip-level-check` flag, `InsufficientLevel` error variant
-  - Tests: 12 PoW, 11 decay, 8 space rights, 8 sync priority unit tests; integration tests passing
-  - Documentation: `docs/contribution-benefits.md`, `docs/benefit-integration.md`, updated `docs/swimmer-levels.md`
-- **2025-12-26**: Phase 3 (Swimmer Levels) implemented in Milestone 7.3
-  - SwimmerLevel enum (§3.1): 6 levels (NewSwimmer=0, Regular=1, Resident=2, Lifeguard=3, Anchor=4, PoolKeeper=5)
-  - Threshold constants: POOL_KEEPER_BANDWIDTH_GB=500, ANCHOR_BANDWIDTH_GB=200, LIFEGUARD_BANDWIDTH_GB=50, RESIDENT_LIFETIME_GB=10
-  - Uptime thresholds: 95% (PoolKeeper), 90% (Anchor), 70% (Lifeguard), 50% (Resident)
-  - compute_level() function per §3.2 algorithm
-  - Contribution weight decay per §8.3: full weight 4 weeks, linear decay to 0.1 over weeks 5-12
-  - Inactivity cap: min(base_level, Regular) when no recent hosting (7 days)
-  - LevelCache with sled "swimmer_levels" tree, period-based freshness check
-  - LevelManager coordinates caching and computation
-  - LEVEL_QUERY message (0x32): 32 bytes (identity only)
-  - LEVEL_RESPONSE message (0x33): 53 bytes (identity + level + streak + bandwidth_30d_gb + uptime_ratio + lifetime_bandwidth_gb)
-  - IdentityProfile (§3.3): build() method integrates LevelManager and ContributionStore, meets_level() for requirements checking
-  - LevelQueryHandler for message handling
-  - Implementation: `src/level/` (8 modules: mod.rs, types.rs, compute.rs, cache.rs, manager.rs, handler.rs, profile.rs, error.rs)
-  - Tests: 23 tests covering all threshold transitions, inactivity capping, cache behavior, decay warnings
-  - Documentation: `docs/swimmer-levels.md`
-- **2025-12-26**: Phase 2 (Attestation Network) implemented in Milestone 7.2
+  - Updated message table (§10.1) with the social layer message types and wire sizes
+- **2025-12-26**: Poster Reputation implemented
+  - Reputation module: `src/reputation/`
+  - PosterReputation (§3.2): per-identity score, base 100, floor -1000, tiered display
+  - calculate_score(): penalties per spam flag (SPEC_12 spam attestations), recovery per quiet day, fast recovery per counter-attested flag
+  - Constants: REPUTATION_BASE_SCORE=100, SPAM_PENALTY_PER_FLAG=20, REPUTATION_RECOVERY_PER_DAY=1 (max 90), REPUTATION_FAST_RECOVERY_PER_COUNTER=10
+  - Displayed signal only — no protocol privileges of any kind
+  - Profile integration: reputation field on IdentityProfile (§3.3)
+  - Documentation: `docs/poster-reputation.md`
+- **2025-12-26**: Achievements implemented
+  - Achievement module: `src/achievement/`
+  - 12-badge set (§3.1): FirstStroke, FirstServe, WeekSwimmer, MonthSwimmer, Centurion, TerabyteClub, BandwidthBaron, AlwaysOn, AnchorDrop, LaneOpener, KeeperOfTheFlame, EfficientSwimmer
+  - Badge triggers wired to contribution, streak, and hosting milestones
+  - Permanent, non-transferable, cosmetic — zero protocol effect
+  - IdentityProfile (§3.3): achievements field, profile display integration
+  - Documentation: `docs/achievements.md`
+- **2025-12-26**: Attestation Network implemented
   - Attestation data structure (§2.4): `Attestation` struct with attester, attestation_type, observed_value, timestamp, signature
   - `AttestationType` enum: Bandwidth (0x01), Uptime (0x02), ContentAvailability (0x03)
   - CONTRIBUTION_CLAIM message type (0x30) with `ContributionClaimPayload`
   - CONTRIBUTION_ATTEST message type (0x31) with `ContributionAttestPayload`
-  - Attestation verification (§8.2): `validate_contribution()` with full anti-gaming measures
+  - Attestation verification (§7.2): `validate_contribution()` with full anti-gaming measures
   - Median value calculation: `median_value()` in aggregation.rs, resists outliers
   - Variance checking: `compute_variance()` with MAX_ATTESTATION_VARIANCE_PERCENT=20
   - Attester validation: `is_established_identity()` requires MIN_IDENTITY_AGE_SECS=604800 (7 days) + MIN_ATTESTER_CONTRIBUTION_PERIODS=1
   - Attestation recency: `is_attestation_recent()` with ATTESTATION_PERIOD_WINDOW_SECS
   - Sled storage: `AttestationStore` for persistent attestation storage
   - Constants: MIN_ATTESTERS=3 per validation
-  - Sybil resistance tests: fresh identity rejection, self-attestation blocked, duplicate attester blocked, high variance rejected
-  - Implementation: `src/attestation/` (6 modules: types.rs, validation.rs, aggregation.rs, verifier.rs, storage.rs, error.rs)
-  - Documentation: `docs/peer-attestation.md` (200 lines), `docs/attestation-security.md` (224 lines)
-- **2025-12-26**: Phase 1 (Basic Tracking) implemented in Milestone 7.1
+  - Implementation: `src/attestation/` (types.rs, validation.rs, aggregation.rs, verifier.rs, storage.rs, error.rs)
+  - Documentation: `docs/peer-attestation.md`, `docs/attestation-security.md`
+- **2025-12-26**: Basic Tracking implemented
   - ContributionRecord structure (§2.4) fully implemented with all fields
   - Local contribution tracking: bandwidth_served, content_served_count, posts_supported, spaces_active
   - UptimeTracker with 5-minute sample-based measurement (ratio 0-10000)
@@ -1359,7 +1196,7 @@ This is social media. The social layer makes it feel that way.
   - Hash chain linking via SHA-256
   - Score calculation per §2.3 formula implemented
   - Sled storage with 3 trees (contribution_records, contribution_streaks, contribution_uptime)
-  - 79 tests passing, 152 bytes serialized record size
-  - Implementation: `src/contribution/` (9 modules)
+  - 152 bytes serialized record size
+  - Implementation: `src/contribution/`
   - Documentation: `docs/contribution-tracking.md`
 - **2025-12-25**: Initial specification created

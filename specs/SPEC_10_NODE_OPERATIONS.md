@@ -30,7 +30,7 @@ The Node Operations System defines how a Swimchain node orchestrates its subsyst
 | SPEC_06 | Wire protocol, sync, gossip | Actually connects, syncs, gossips |
 | SPEC_07 | Content distribution | Fetches/serves content blobs |
 | SPEC_08 | Block hierarchy | Produces blocks, validates chain |
-| SPEC_09 | Social layer | Tracks contributions, computes levels |
+| SPEC_09 | Social layer | Tracks contributions, reputation, and achievements |
 
 **This spec is the glue.** It doesn't introduce new protocol rules—it defines how the existing rules are executed together.
 
@@ -199,8 +199,10 @@ pub struct NodeConfig {
 
 5. BOOTSTRAP
    ├── Load cached peers from PeerStore
-   ├── If insufficient, connect to seeds
-   ├── Perform initial peer exchange
+   ├── Discover local peers via mDNS (on by default)
+   ├── If insufficient, connect to seed nodes
+   ├── Query the DHT for additional peers
+   ├── Perform peer exchange (GETADDR/ADDR)
    └── Verify minimum peers connected
 
 6. INITIAL SYNC
@@ -402,8 +404,6 @@ pub enum ConnectionEvent {
 | NOTFOUND | Content | Try next peer |
 | CONTRIBUTION_CLAIM | Social | Verify and store |
 | CONTRIBUTION_ATTEST | Social | Validate and aggregate |
-| LEVEL_QUERY | Social | Return identity level |
-| LEVEL_RESPONSE | Social | Update cache |
 
 ### 5.2 Router Implementation
 
@@ -414,7 +414,6 @@ pub struct MessageRouter {
     content: Arc<ContentRetrievalManager>,
     discovery: Arc<DiscoveryManager>,
     contribution: Arc<ContributionManager>,
-    level: Arc<LevelManager>,
 }
 
 impl MessageRouter {
@@ -449,8 +448,6 @@ impl MessageRouter {
             // Social Layer
             MSG_CONTRIBUTION_CLAIM => { self.contribution.handle_claim(peer_id, &msg).await?; Ok(None) }
             MSG_CONTRIBUTION_ATTEST => { self.contribution.handle_attest(peer_id, &msg).await?; Ok(None) }
-            MSG_LEVEL_QUERY => Ok(Some(self.level.handle_query(peer_id, &msg).await?)),
-            MSG_LEVEL_RESPONSE => { self.level.handle_response(peer_id, &msg).await?; Ok(None) }
 
             _ => Err(RouteError::UnknownMessageType(msg.message_type)),
         }
@@ -687,7 +684,7 @@ pub struct NodeMetrics {
     pub storage_usage_percent: f32,
 
     // Contribution
-    pub swimmer_level: SwimmerLevel,
+    pub achievements_earned: u32,
     pub bandwidth_served_30d: u64,
     pub uptime_ratio: f32,
     pub current_streak: u32,
@@ -705,7 +702,7 @@ pub struct NodeStatus {
     pub sync_percent: f32,         // 0.0-100.0
     pub storage_used_mb: u64,
     pub storage_percent: f32,
-    pub swimmer_level: String,
+    pub achievements_earned: u32,
 }
 
 pub enum NodeState {

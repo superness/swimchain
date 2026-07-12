@@ -13,13 +13,15 @@
 
 ### 1.1 Purpose
 
-This specification defines behavioral branching—automatic community formation based on interaction patterns. Unlike hash-based fracturing (SPEC_08) which optimizes storage, behavioral branching recognizes organic communities and gives them their own space.
+This specification defines behavioral branching—automatic community formation based on interaction patterns. Behavioral branching is enabled. Unlike hash-based fracturing (SPEC_08) which optimizes storage, behavioral branching recognizes organic communities and lets them graduate into their own space.
+
+When a tight interaction cluster forms (per the thresholds in Section 2), it graduates into its own space. This is a positive event: the cluster is a real community that has earned its own room. The thread continues, and the parent space keeps a visible pointer to the graduated space so participants can follow it. Graduated spaces are discoverable and carry visible lineage back to their origin.
 
 ### 1.2 Design Philosophy
 
 **This is NOT moderation.** The system does not judge content quality or punish users. It recognizes natural community boundaries:
 
-- Tight-knit groups that mostly interact with each other → get their own space
+- Tight-knit groups that mostly interact with each other → graduate into their own space
 - Self-referential content (spam) → becomes a "community of one"
 - Both outcomes use the same mechanism with different results
 
@@ -300,8 +302,8 @@ pub struct CommunityFormation {
     /// Member identities at formation time
     pub founding_members: Vec<[u8; 32]>,
 
-    /// Content IDs moved to new space
-    pub migrated_content: Vec<ContentId>,
+    /// Content IDs of the originating thread the new space points back to
+    pub origin_content: Vec<ContentId>,
 
     /// Metrics at time of formation (for verification)
     pub metrics: ClusterMetrics,
@@ -397,34 +399,34 @@ pub const DETECTION_INTERVAL_BLOCKS: u64 = 1000; // ~8 hours
 
 ## 5. Community Lifecycle
 
-### 5.1 Formation
+### 5.1 Graduation
 
-When a community is detected and recorded:
+When a community is detected and recorded, it graduates into its own space:
 
-1. **New space created**: Derived from parent space + community ID
-2. **Content migrated**: Existing content from cluster members moved (index update only)
-3. **Members notified**: Clients show "Your community now has its own space"
-4. **Discoverable**: New space appears in space listings
+1. **New space created**: Derived from parent space + community ID, with a lineage link back to the parent space.
+2. **Thread continues**: Existing content stays where it is. The parent space keeps a visible pointer to the new space so the thread continues without interruption. New posts from members route to the new space; replies stay with their parent thread (parent-anchored, per SPEC_08).
+3. **Renameable**: The new space starts with an auto-generated name that members can rename.
+4. **Members notified**: Clients show "Your community has graduated into its own space."
+5. **Discoverable**: The new space appears in space listings with visible lineage back to its origin.
 
 ```rust
 pub fn execute_community_formation(
     chain: &mut ChainStore,
     formation: &CommunityFormation,
 ) -> Result<(), FormationError> {
-    // 1. Create new space
+    // 1. Create new space with lineage back to the parent
     let new_space = Space {
         id: formation.new_space_id,
-        name: generate_community_name(&formation),
+        name: generate_community_name(&formation), // auto-generated; members can rename
         parent: Some(formation.parent_space_id),
         formed_from_community: true,
         formation_height: formation.formation_height,
     };
     chain.create_space(&new_space)?;
 
-    // 2. Update content indexes (not data, just pointers)
-    for content_id in &formation.migrated_content {
-        chain.update_content_space(content_id, &formation.new_space_id)?;
-    }
+    // 2. Record a visible pointer from the parent space to the new space,
+    //    so the thread continues and participants can follow it.
+    chain.link_space_pointer(&formation.parent_space_id, &formation.new_space_id)?;
 
     // 3. Record formation in community registry
     chain.record_community_formation(formation)?;
@@ -485,7 +487,7 @@ pub fn handle_single_participant_cluster(
         parent_space_id: cluster.space_id,
         new_space_id: derive_spam_space_id(&cluster),
         founding_members: cluster.members.clone(),
-        migrated_content: cluster.content_ids.clone(),
+        origin_content: cluster.content_ids.clone(),
         metrics: cluster.metrics.clone(),
         formation_height: cluster.detected_at,
     };
@@ -655,7 +657,7 @@ This is O(actions in space) but only runs when threshold checking is needed, not
 
 ### 9.1 Discovery
 
-Clients should show organic communities as discoverable subcommunities:
+Navigating the space tree is a first-class client concern. Each graduated space carries visible lineage back to its origin, and clients present these relationships so users can move up and down the tree. Clients should show organic communities as discoverable subcommunities:
 
 ```
 Space: /tech
@@ -666,16 +668,19 @@ Space: /tech
 │   └── /tech/embedded-systems (formed 3 days ago, 8 members)
 ```
 
+Parent spaces show a visible pointer to each space that graduated from them, and graduated spaces link back to their parent, so a reader can always trace lineage in either direction.
+
 ### 9.2 Notifications
 
 When a user's community forms:
 
 ```
-"Your discussions with @alice and @bob have grown into their own community!
-You're now part of /tech/rust-enthusiasts. Your existing conversations
-have been organized there."
+"Your discussions with @alice and @bob have graduated into their own community!
+You're now part of /tech/rust-enthusiasts. Your existing conversations stay
+where they are, and /tech now points to your new space so the thread continues.
+You can rename the space any time."
 
-[View Community] [Continue in /tech]
+[View Community] [Rename Space] [Continue in /tech]
 ```
 
 ### 9.3 Spam Handling
@@ -721,7 +726,7 @@ Attempting to force someone else into a community:
 
 ### Phase 2: Manual Formation
 - Add RPC for manual community formation
-- Test formation/migration mechanics
+- Test formation and space-linking (pointer/lineage) mechanics
 - Validate consensus across nodes
 
 ### Phase 3: Automatic Formation
@@ -738,11 +743,10 @@ Attempting to force someone else into a community:
 
 ## 12. Open Questions
 
-1. **Naming**: How are organic communities named? User-chosen? Auto-generated?
-2. **Governance**: Do communities have any special governance rights?
-3. **Cross-community content**: Can content exist in multiple communities?
-4. **Formation voting**: Should community members approve formation?
-5. **Threshold tuning**: How do we adjust thresholds based on network growth?
+1. **Governance**: Do communities have any special governance rights?
+2. **Cross-community content**: Can content exist in multiple communities?
+3. **Formation voting**: Should community members approve formation?
+4. **Threshold tuning**: How do we adjust thresholds based on network growth?
 
 ---
 
@@ -750,7 +754,7 @@ Attempting to force someone else into a community:
 
 ### Thesis 9: Organic Boundaries Over Imposed Moderation (Score: TBD)
 
-**Statement:** "Algorithmic community detection based on interaction patterns provides content organization and spam isolation without requiring human moderators or central authority. By recognizing natural social boundaries and giving tight-knit groups their own spaces, the network achieves moderation outcomes through structure rather than judgment—turning the spammer's self-referential behavior into self-imposed exile while rewarding genuine communities with autonomy."
+**Statement:** "Algorithmic community detection based on interaction patterns provides content organization and spam isolation without requiring human moderators or central authority. By recognizing natural social boundaries and giving tight-knit groups their own spaces, the network achieves moderation outcomes through structure rather than judgment—turning the spammer's self-referential behavior into a community of one while rewarding genuine communities with graduation into their own autonomous space."
 
 **Argument Outline:**
 
@@ -803,7 +807,7 @@ pub const MIN_INTERACTIONS_FOR_DETECTION: u64 = 100;
 pub const OBSERVATION_MODE_ENABLED: bool = true;
 ```
 
-Phase 1 runs in observation mode. Collect data before enabling automatic formation.
+Conservative thresholds keep automatic graduation rare, and near-threshold clusters are logged for ongoing tuning as real-world data accumulates.
 
 ### 13.2 Issue: Content Migration Complexity
 
@@ -953,8 +957,8 @@ ORGANIC BRANCHING - INCREMENTAL MODEL
 5. TIERED DISCOVERY
    └── Spam clusters unlisted; legitimate communities discoverable
 
-6. OBSERVATION MODE FIRST
-   └── Log detections without acting; validate before enabling
+6. CONSERVATIVE + OBSERVABLE
+   └── Conservative thresholds keep graduation rare; near-threshold clusters logged for tuning
 ```
 
 **Key insight:** This is just another chain computation, like PoW aggregation or decay.

@@ -185,7 +185,7 @@ SpaceCreationProof {
 
 **Invariants:**
 - `pow_hash` MUST equal `SHA-256(space_id || timestamp_le || nonce_le)`
-- `pow_hash` MUST have at least SPACE_CREATION_DIFFICULTY leading zero bits (default: 24)
+- `pow_hash` MUST have at least SPACE_CREATION_DIFFICULTY leading zero bits (default: 22)
 - `timestamp` MUST be within 24 hours of current time
 
 ### 3.4 Space Parameters
@@ -303,12 +303,12 @@ Nodes maintain a local index of known spaces for search/discovery. This is NOT a
 
 **Complexity:** O(2^SPACE_CREATION_DIFFICULTY) expected hash operations
 
-**Difficulty:** SPACE_CREATION_DIFFICULTY = 24 bits (default)
-- At 24 bits: ~16 million hashes expected
-- On modern CPU: ~2-10 minutes
-- On mobile: ~10-30 minutes
+**Difficulty:** SPACE_CREATION_DIFFICULTY = 22 bits (default)
+- At 22 bits: ~4 million hashes expected
+- On modern CPU: ~1-5 minutes
+- On mobile: ~5-15 minutes
 
-This is intentionally high. Space creation is a significant action that should require commitment.
+Space creation is the highest-PoW action in the protocol (higher than posts, replies, or engagements). This is intentionally the case: space creation is a significant action that should require commitment.
 
 ```
 function create_space(creator: Identity, name: string, description: string,
@@ -748,8 +748,8 @@ SpaceContentResponse {
 - *Acknowledged limitation*: Popular names may be squatted
 
 **TH-SP02 (Spam space creation):**
-- SPACE_CREATION_DIFFICULTY (24 bits) requires significant computation
-- Each space costs 2-30 minutes of CPU time
+- SPACE_CREATION_DIFFICULTY (22 bits) requires significant computation
+- Each space costs 1-15 minutes of CPU time
 - Economic irrationality: spam spaces serve no purpose without algorithmic discovery
 - Decay ensures unused spaces fade
 
@@ -951,13 +951,13 @@ sp1qyp5jf8e4xkv0z9r3n7m6w2d5t4h8g7f6
 **Input:**
 - space_id: [16 bytes from 11.1]
 - timestamp: `1703462400`
-- difficulty: 24 bits
+- difficulty: 22 bits
 
 **Verification:**
 ```
 for nonce in 0..u64::MAX:
     hash = sha256(space_id || timestamp_le || nonce_le)
-    if leading_zeros(hash) >= 24:
+    if leading_zeros(hash) >= 22:
         print("Found at nonce:", nonce)
         print("Hash:", hex(hash))
         break
@@ -1001,7 +1001,7 @@ SpaceParameters {
 
 1. **What defines a space?** RESOLVED: A space is defined by SpaceID derived from name + creator + timestamp, with associated metadata and parameters.
 
-2. **How are spaces created?** RESOLVED: PoW cost (24-bit difficulty, ~16M hashes), creator signature, validation against chain state.
+2. **How are spaces created?** RESOLVED: PoW cost (22-bit difficulty, ~4M hashes), creator signature, validation against chain state.
 
 3. **Who "owns" a space?** RESOLVED: Nobody. Creator is recorded but has no special powers. No ownership transfer, no moderation authority.
 
@@ -1017,7 +1017,7 @@ SpaceParameters {
 
 ### 12.3 Questions for Community Input
 
-1. **SPACE_CREATION_DIFFICULTY value**: Is 24 bits appropriate? Should it be adjustable per-fork?
+1. **SPACE_CREATION_DIFFICULTY value**: Is 22 bits appropriate? Should it be adjustable per-fork?
 
 2. **Space parameter ranges**: Are the current ranges appropriate? Should decay modifier have wider range?
 

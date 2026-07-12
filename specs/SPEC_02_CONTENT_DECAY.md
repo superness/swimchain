@@ -23,7 +23,7 @@ This system serves dual purposes:
 | Layer | What It Stores | This Spec Covers |
 |-------|----------------|------------------|
 | **Authoritative (Chain)** | Post metadata, PoW proofs, signatures, **content hashes** | ✅ Yes |
-| **Content (P2P)** | Actual media files (videos, images, large text) | See SPEC_07 |
+| **Content (P2P)** | Actual media files (images, large text) | See SPEC_07 |
 
 **Key Insight:** The chain is small because it only stores post records (~500 bytes each), not the actual content blobs. Content blobs are fetched on-demand from peers (like BitTorrent).
 
@@ -35,7 +35,7 @@ This system serves dual purposes:
 │   CHAIN RECORD (this spec)         CONTENT BLOB (SPEC_07)       │
 │   ────────────────────────         ──────────────────────       │
 │   {                                                              │
-│     author: pubkey,                Qm7x9abc... → 50MB video     │
+│     author: pubkey,                Qm7x9abc... → 500KB image    │
 │     space: "tech-projects",        ├── Stored by creator        │
 │     timestamp: 1703456789,         ├── Cached by viewers        │
 │     pow_nonce: 847291,     ──────► └── Seeded by enthusiasts    │
@@ -262,7 +262,7 @@ enum MediaType {
 
 **Constraints:**
 - Maximum 4 media references per content item
-- Maximum media size: 5MB per item
+- Maximum image size: 500KB per item (compressed), max dimension 2048px
 - Media is content-addressed and stored off-chain
 - Nodes MAY refuse to store/propagate media
 
@@ -284,7 +284,7 @@ enum PinType {
 
 ### 3.5 Engagement Record
 
-**IMPORTANT: ALL engagement costs PoW.** This is a critical design change in v0.3.0. Engagement is not free - each engagement is an individual proof-of-work action.
+**IMPORTANT: ALL engagement costs PoW.** Engagement is not free - it requires computational work. Each engagement is an individual proof.
 
 ```
 EngagementRecord {
@@ -296,13 +296,13 @@ EngagementRecord {
 
     // PoW proof
     pow_nonce:      uint64         // PoW solution nonce
-    pow_work:       uint64         // Work amount in seconds
+    pow_difficulty: uint8          // Difficulty met (ENGAGE minimum)
 }
 
 enum EngagementType {
     REPLY   = 0x01,    // Weight: 1.0 - Created reply (has own PoW cost)
     QUOTE   = 0x02,    // Weight: 1.0 - Quoted content (has own PoW cost)
-    ENGAGE  = 0x03     // Weight: 1.0 - Engagement (individual PoW action)
+    ENGAGE  = 0x03     // Engagement proof that resets the decay timer
 }
 ```
 
@@ -312,11 +312,11 @@ enum EngagementType {
 |------|----------------|--------------|
 | REPLY | ~15s (action cost) | Resets decay (reply itself persists) |
 | QUOTE | ~30s (action cost) | Resets decay (quote is separate content) |
-| ENGAGE | ~5s (action cost) | Resets decay (individual PoW action) |
+| ENGAGE | ~5s (action cost) | Resets decay on a single valid proof |
 
 **Note on Views:** Views are NOT tracked as engagement. This is a deliberate design decision to ensure passive consumption does not preserve content. Only active participation counts.
 
-**Note on Engagement:** Each ENGAGE action is an individual proof-of-work action (see SPEC_03 Section 7 and SPEC_08). A valid ENGAGE resets the content's decay timer immediately, exactly like REPLY and QUOTE.
+**Note on Engagement PoW:** Each ENGAGE action is an individual proof bound to the target content (see SPEC_03 Section 7). A single valid proof immediately resets the content's decay timer. Keeping a piece of content alive costs one engagement proof per decay cycle, forever.
 
 ### 3.6 Decay State (Computed)
 
@@ -517,11 +517,21 @@ This is NOT consensus-breaking because:
 
 **Complexity:** O(1) - runs periodically with simple arithmetic
 
+### 4.1.2 Spam-Flagged Decay
+
+Content that crosses the spam-flag threshold (see SPEC_12) decays on an accelerated half-life of 4 hours instead of the normal 7-day half-life. The accelerated half-life drives both display decay and the prune loop: flagged content fades from view and is removed from node storage far faster than normal content.
+
+```
+SPAM_HALF_LIFE_SECONDS = 14400   // 4 hours - accelerated half-life for spam-flagged content
+```
+
+A valid counter-attestation clears the spam flag and restores the normal half-life, returning the content to standard decay timing. This lets the community correct false flags without moderators, and it applies to both the display curve and the prune loop.
+
 ### 4.2 Engagement Processing
 
 **Purpose:** Update content decay state when meaningful engagement occurs.
 
-**CRITICAL CHANGE (v0.3.0):** All engagement now requires PoW. The processing differs by engagement type:
+**All engagement requires PoW.** The processing differs by engagement type:
 
 **Input:**
 - `content`: ContentItem being engaged with
@@ -541,12 +551,18 @@ function process_engagement(
     if not validate_engagement_pow(engagement):
         return REJECT
 
-    // 2. All engagement types reset decay immediately
+    // 2. A single valid proof resets the decay timer, regardless of type
     match engagement.engagement_type:
 
-        REPLY | QUOTE | ENGAGE:
-            // Each is an individual PoW action.
-            // A valid engagement resets the content's decay timer.
+        REPLY | QUOTE:
+            // These have their own PoW cost and create new content
+            // They reset parent's decay as a side effect
+            content.engagement_count += 1
+            content.last_engagement = engagement.timestamp
+            return content
+
+        ENGAGE:
+            // Individual engagement proof - resets decay immediately
             content.engagement_count += 1
             content.last_engagement = engagement.timestamp
             return content
@@ -564,23 +580,24 @@ function validate_engagement_pow(engagement: EngagementRecord) -> bool:
 
 **Self-Engagement Economics:**
 
-Unlike v0.2.0, self-engagement is no longer blocked - it just costs the same as anyone else:
+Self-engagement is allowed - it just costs the same as anyone else:
 
 ```
-// Self-engagement now ALLOWED but COSTS PoW
+// Self-engagement ALLOWED but COSTS full engagement PoW
 if engagement.engager_id == content.author_id:
-    // Author pays the same per-engagement PoW as anyone else
+    // Author computes a full engagement proof per reset
     // No free ride, no special treatment
     // Just expensive self-persistence
 ```
 
-**Rationale:** With per-engagement PoW, blocking self-engagement is unnecessary. The attacker pays the same PoW cost per engagement regardless of whether they use their own identity or create sock puppets. The economic disincentive replaces the identity-based block.
+**Rationale:** Self-engagement is allowed because it is pointless to do cheaply. Each reset costs a full engagement proof regardless of identity, so sockpuppets only multiply your cost. The economic disincentive replaces any identity-based block.
 
 **Complexity:** O(1)
 
 **Edge Cases:**
-- **Self-engagement:** Allowed but costs the same per-engagement PoW as any engagement. No economic advantage.
+- **Self-engagement:** Allowed but costs a full engagement proof per reset. No economic advantage.
 - **Engagement on decayed content:** Not allowed. Content must be non-decayed to receive engagement.
+- **Replayed proofs:** A replayed engagement proof is rejected; each reset requires a fresh proof bound to current chain state.
 
 ### 4.3 Deterministic Decay Evaluation
 
@@ -765,7 +782,7 @@ function should_reset_decay_timer(content: ContentItem, engagement: EngagementRe
     base_weight = get_engagement_weight(engagement.engagement_type)
     effective_engagement = calculate_effective_engagement(content)
 
-    // In high-density scenarios, even REACTs can reset timer
+    // In high-density scenarios, even a single ENGAGE proof can reset timer
     // In low-density scenarios, only high-weight engagements reset
     threshold = 1.0 / (1.0 + log2(max(1.0, effective_engagement / content.engagement_count)))
 
@@ -987,9 +1004,8 @@ These fields are either computed, mutable, or derived from other protocol messag
 - `pow_nonce` satisfies minimal engagement PoW
 
 **Behavioral Validation:**
-- `engager_id` != content's `author_id` for decay extension
 - `timestamp` within ±5 minutes of node's local time
-- No duplicate engagement from same engager (same type, same content)
+- Each engagement proof is bound to current chain state; replayed proofs are rejected
 
 ### 6.3 Preservation Validation
 
@@ -1026,7 +1042,7 @@ Nodes MUST retain tombstones for content with non-decayed children until childre
 |--------|-------------|--------|
 | Self-interaction spam | Attacker keeps content alive via self-engagement | Medium - wastes attacker resources |
 | Bot engagement farms | Automated accounts providing engagement | High - could keep arbitrary content alive |
-| Sybil engagement | Multiple identities engaging same content | High - circumvents anti-spam |
+| Sybil engagement | Multiple identities engaging same content | Low - each identity pays full engagement PoW; work only multiplies |
 
 **Storage Attacks:**
 | Threat | Description | Impact |
@@ -1045,7 +1061,7 @@ Nodes MUST retain tombstones for content with non-decayed children until childre
 
 **Anti-Gaming Measures:**
 
-1. **Self-engagement prevention:** Engagement from content author does NOT extend decay timer. Authors cannot preserve their own content through engagement.
+1. **Self-engagement costs full PoW:** Engagement from the content author is allowed but costs a full engagement proof per reset, exactly like anyone else. Sockpuppets only multiply the cost, so there is no cheap self-persistence.
 
 2. **Engagement PoW:** Every engagement requires minimal PoW. This makes bot farms economically expensive:
    ```
@@ -1184,7 +1200,7 @@ When a chain record decays:
 
 **Phase 2: Preservation**
 1. Add author preservation with PoW verification
-2. Add REACT engagement type
+2. Add ENGAGE engagement type
 3. Implement preservation cost scaling
 
 **Phase 3: Community Pinning**
@@ -1302,18 +1318,21 @@ Expected content_id (SHA256 of canonical serialization):
 
 ### 11.3 Engagement Processing
 
-**Test Case: Self-Engagement Rejection**
+**Test Case: Self-Engagement Allowed**
 
 ```
 Input:
   content.author_id: 0xAABB...
+  content.last_engagement: T
   engagement.engager_id: 0xAABB... (same)
-  engagement.type: REPLY
+  engagement.type: ENGAGE
+  engagement.timestamp: T + 86400
+  (valid engagement PoW attached)
 
 Expected:
-  last_engagement: unchanged
-  engagement_count: unchanged
-  Result: content returned without modification
+  last_engagement: T + 86400 (reset to engagement time)
+  engagement_count: +1
+  Result: decay timer reset; author paid full engagement PoW
 ```
 
 **Test Case: Valid Engagement**
@@ -1340,7 +1359,7 @@ Expected:
 | Question | Resolution |
 |----------|------------|
 | What's the decay function? | Logarithmic half-life model, 7-day half-life, 48-hour floor |
-| What counts as interaction? | REPLY, QUOTE (full reset), REACT (partial); NOT views |
+| What counts as interaction? | REPLY, QUOTE, ENGAGE (each a single valid proof resets decay); NOT views |
 | Can content be preserved? | Yes: author PoW (max 365 days) or community pin (governance) |
 | How is decayed content pruned? | Periodic pruning, tombstones for parents with live children |
 | Community-relative engagement weighting? | Engagement density normalization (see Section 4.6): content engagement compared to space average, with logarithmic scaling and bounds clamping |
@@ -1389,5 +1408,5 @@ Expected:
 **Changelog:**
 - v0.4.1 (2025-12-25): **IMPLEMENTED** in Milestone 1.3. Core decay engine with adaptive decay, engagement tracking, pruning with tombstone support. 156 unit tests. Some features deferred: SC-02 (community-relative engagement) to Phase 2, SC-03 (community pinning) to Phase 3, SC-04 (author preservation) fields added but full implementation Phase 2.
 - v0.4.0 (2025-12-25): **MAJOR: Adaptive decay.** Half-life is no longer fixed - it adapts to meet storage targets. Prevents stale storage attacks where fixed 30-day decay allows garbage to persist too long. Added Section 4.1.1 with storage-targeted decay algorithm. MIN_HALF_LIFE=1day, MAX_HALF_LIFE=30days. Per-node adaptation based on local storage pressure.
-- v0.3.0 (2024-12-25): ALL engagement now requires PoW. Each engagement is an individual PoW action that resets the content's decay timer. Self-engagement allowed but costs same PoW as external engagement. Removed REACT type (replaced by ENGAGE action). Integrated with SPEC_08 recursive blocks.
+- v0.3.0 (2024-12-25): ALL engagement requires PoW. Each engagement is an individual proof that resets the decay timer. Self-engagement allowed but costs full engagement PoW. Integrated with SPEC_08 recursive blocks.
 - v0.2.0 (2024-12-24): Added two-layer architecture, SPEC_07 integration

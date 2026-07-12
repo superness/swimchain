@@ -20,9 +20,9 @@ The Proof of Work (PoW) system implements computational friction for ALL actions
 
 **Economic Foundation:**
 - **ALL engagement costs PoW** - no free persistence
-- Each engagement is an individual PoW action that resets content decay
+- Each engagement is an individual proof; a single valid proof resets the content's decay timer
 - Content persistence reflects actual community investment
-- Sybil attacks provide zero advantage (each engagement costs the same work)
+- Sybil identities only multiply the cost - they never reduce the work required
 
 **Key Insight: Mining IS Paying.** There is no distinction between "mining" and "paying for actions." Users mine to post, mine to engage, mine to persist content. The mechanism is identical to Bitcoin - the difference is that reward is the action itself, not a token.
 
@@ -40,7 +40,7 @@ The delay IS the feature, not a cost to minimize.
 
 5. **Anti-Exploitation**: Friction resists attention extraction by making participation intentional rather than compulsive.
 
-6. **Action Proportionality**: More significant actions (creating spaces, starting threads) require more work than reactive actions (replies, reactions).
+6. **Action Proportionality**: More significant actions (creating spaces, starting threads) require more work than reactive actions (replies, engagements).
 
 ### 1.3 Scope
 
@@ -106,11 +106,9 @@ enum ActionType {
     SPACE_CREATION = 0x01,        // Creating a new space
     POST = 0x02,                  // Creating a new post/thread
     REPLY = 0x03,                 // Replying to existing content
-    ENGAGE = 0x04,                // Engagement action (persistence)
+    ENGAGE = 0x04,                // Engagement that resets content's decay timer
     IDENTITY_UPDATE = 0x05,       // Updating identity metadata
 }
-
-// Note: REACTION (0x04) renamed to ENGAGE in v2.0.0 to reflect the per-engagement PoW model
 ```
 
 ### 3.2 PoWSolution
@@ -366,24 +364,24 @@ Per-action minimum difficulties (leading zero bits):
 | SPACE_CREATION | 22 | ~60 seconds | One-time per space |
 | POST | 20 | ~30 seconds | Creates new thread |
 | REPLY | 18 | ~15 seconds | Adds to existing thread |
-| ENGAGE | 16 | ~5 seconds | Individual PoW action, resets decay |
+| ENGAGE | 16 | ~5 seconds | Resets content's decay timer |
 | IDENTITY_UPDATE | 20 | ~30 seconds | Updating profile |
 
 **Engagement (ENGAGE action):**
 
-Engagement to persist content is an **individual PoW action**. Each engagement is a self-contained proof of work, comparable in cost to a REPLY, and a valid engagement resets the target content's decay timer immediately.
+Engagement to persist content is an individual proof of work. A single valid ENGAGE proof immediately resets the target content's decay timer:
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| Difficulty | 16 leading zero bits | ~5 seconds on reference hardware |
-| Effect | Resets decay timer | Updates last_engagement, increments engagement_count |
-| Repeatable | Yes | Any identity can engage again later to keep resetting decay |
+| Difficulty | 16 | ~5 seconds of work per proof |
+| Decay effect | Full reset | One valid proof resets the timer |
+| Repeat cost | Full PoW each time | Every reset costs another engagement proof |
 
-**Why Sybils don't help:** Each engagement costs the same PoW regardless of identity. Splitting engagement across 100 identities costs 100 separate proofs of work, not a discount.
+**Why Sybils don't help:** Each reset costs a full engagement proof regardless of identity. There is no shared total to split, so spreading work across 100 identities means computing 100 proofs to achieve 100 resets - sockpuppets only multiply the cost.
 
 Note: These are reference values. Actual difficulty should be calibrated through prototyping to achieve target times on reference hardware.
 
-## 7. Engagement PoW System
+## 7. Engagement PoW
 
 ### 7.1 Purpose
 
@@ -396,45 +394,43 @@ Without engagement PoW:
 
 With engagement PoW:
 - Attacker posts content (30s PoW)
-- Each engagement to persist content costs its own PoW
+- Attacker must compute a fresh engagement proof for every decay cycle
 - Ongoing cost makes abuse economically irrational
 
-### 7.2 Engagement Mechanics
+### 7.2 Engagement Records
 
-Each engagement is a self-contained PoW action carried in the normal action/mempool flow. There is no shared accumulator and no multi-contributor coordination - one valid engagement resets the target content's decay timer on its own.
+Each engagement is an individual proof. A single valid proof resets the target content's decay timer.
 
 ```
-Engagement {
-    target_content:     ContentHash     // Content being engaged
-    engager:            PublicKey        // Who engaged
-    pow_nonce:          uint64          // PoW solution
-    pow_work:           uint64          // Work amount in seconds
-    timestamp:          Timestamp       // When engaged
-    signature:          Signature       // Proof of engagement
+EngagementRecord {
+    content_id:     ContentHash     // Content being engaged
+    engager_id:     PublicKey       // Who engaged
+    pow_nonce:      uint64          // Their PoW solution
+    pow_difficulty: uint8           // Difficulty met (ENGAGE minimum)
+    timestamp:      Timestamp       // When engaged
+    signature:      Signature       // Proof of authorship
 }
 ```
 
-### 7.3 Engagement Lifecycle
+### 7.3 Engagement Flow
 
 ```
-1. COMPUTE
-   ├── User selects content X to keep alive
+1. INTENT
+   ├── User chooses to engage with content X
+   └── Client begins computing an engagement proof
+
+2. COMPUTATION
    ├── PoW target: H(nonce || content_hash || prev_block)
-   └── User computes a solution meeting ENGAGE difficulty
+   ├── Difficulty: ENGAGE minimum (16)
+   └── Solution broadcast to peers
 
-2. BROADCAST
-   ├── Engagement action broadcast to peers via the mempool
-   ├── Peers validate the PoW and signature
-   └── Valid engagement is included in the content block
+3. VALIDATION
+   ├── Peers verify the proof binds to content X and current chain state
+   └── Record accepted into the content block
 
-3. EFFECT
-   ├── Content decay timer reset (last_engagement updated)
-   ├── engagement_count incremented
-   └── Engager credited as keeping content alive
-
-4. REPEAT
-   ├── Any identity can engage again later
-   └── Each new engagement resets decay again
+4. RESET
+   ├── Content decay timer reset immediately
+   └── Engagement recorded in the content block
 ```
 
 ### 7.4 Content-Specific PoW
@@ -456,7 +452,7 @@ This ensures:
 ```
 Attack: Use private space as personal storage
 ├── Post 100 files: 100 × 30s = 50 min initial
-├── Ongoing persistence: an engagement per content, repeatedly
+├── Ongoing persistence: 100 proofs per decay cycle
 └── Vs. actual hosting: $0.10/month
 
 Result: Economically irrational
@@ -464,11 +460,11 @@ Result: Economically irrational
 
 **Sybil Attack:**
 ```
-Attack: Create 100 identities to cheapen engagement
-├── Each engagement costs its own PoW
-├── 100 identities × full engagement PoW each
-├── 1 identity × full engagement PoW per engagement
-└── Same per-engagement cost regardless
+Attack: Create 100 identities to cheapen persistence
+├── Each reset needs a full engagement proof
+├── 100 identities × 1 reset each = 100 proofs
+├── 1 identity × 100 resets = 100 proofs
+└── Same cost - there is nothing to split
 
 Result: No advantage to Sybils
 ```
@@ -476,7 +472,7 @@ Result: No advantage to Sybils
 **Self-Persistence:**
 ```
 Attack: Keep own content alive via self-engagement
-├── Author pays full engagement PoW per engagement
+├── Author computes a full engagement proof per reset
 ├── Same cost as anyone else
 ├── No free ride
 └── Must actually invest compute
@@ -497,7 +493,7 @@ Result: Expensive, can't scale
 | Replay attacks | Challenge includes timestamp, author, content hash |
 | Difficulty manipulation | Fork consensus governs parameters |
 
-### 7.2 Mitigations
+### 8.2 Mitigations
 
 **Pre-computation Prevention:**
 - Challenge includes content hash, forcing PoW after content is composed
@@ -630,7 +626,7 @@ Config:
   parallelism: 1
 
 Challenge:
-  action_type: REACTION (0x04)
+  action_type: ENGAGE (0x04)
   content_hash: sha256("test")
   author_id: zeros(32)
   timestamp: 0
@@ -697,12 +693,6 @@ Expected: REJECT with reason 0x03 (Content mismatch)
 
 8. **Difficulty Calibration**: What benchmark suite should be used for calibrating difficulty targets?
 
-### 12.1 Engagement-Specific Questions
-
-9. **Engagement Difficulty**: Is 16 leading zero bits (~5 seconds) the right cost for a single engagement?
-
-10. **Engagement Rate**: Should there be a limit on how frequently the same identity can re-engage the same content?
-
 ## 13. References
 
 - RFC 9106: Argon2 Memory-Hard Function
@@ -718,8 +708,6 @@ Expected: REJECT with reason 0x03 (Content mismatch)
 *Specification Version: 2.0.0 DRAFT*
 *Last Updated: 2024-12-25*
 *Changes in 2.0.0:*
-- *Added per-engagement PoW (Section 7)*
-- *Renamed REACTION to ENGAGE action type*
-- *Added content-specific PoW targeting*
+- *Content-specific engagement PoW that binds each proof to the target content*
 - *Integrated with recursive block architecture*
 *Authors: Swimchain Protocol Team*

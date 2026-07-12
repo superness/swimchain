@@ -10,7 +10,7 @@
 
 The Proof of Work (PoW) system provides computational friction for content creation in Swimchain. Unlike cryptocurrency mining, this PoW exists purely as a behavioral intervention—a mandatory deliberation period that disrupts impulsive engagement loops and prevents spam without central moderation.
 
-The core insight is that the delay IS the feature. Every post, reply, and reaction requires computational work that forces users to wait, creating space for reflection and discouraging reactive, emotionally-charged participation.
+The core insight is that the delay IS the feature. Every post, reply, and engagement requires computational work that forces users to wait, creating space for reflection and discouraging reactive, emotionally-charged participation.
 
 ### 1.2 Design Principles
 
@@ -134,7 +134,7 @@ enum ActionType {
   SPACE_CREATION = 0x01,   // ~60 seconds target
   POST_CREATION = 0x02,    // ~30 seconds target
   REPLY = 0x03,            // ~15 seconds target
-  REACTION = 0x04,         // ~5 seconds target
+  ENGAGE = 0x04,           // ~5 seconds target
   PERSIST = 0x05,          // ~5 seconds target
 }
 
@@ -664,7 +664,7 @@ Based on benchmarking goals (reference: mid-range 2024 laptop with 16GB RAM):
 | SPACE_CREATION | ~60s | 262144 (256MB) | 3 | 4 | 12 |
 | POST_CREATION | ~30s | 131072 (128MB) | 3 | 4 | 10 |
 | REPLY | ~15s | 65536 (64MB) | 2 | 4 | 8 |
-| REACTION | ~5s | 32768 (32MB) | 1 | 4 | 6 |
+| ENGAGE | ~5s | 32768 (32MB) | 1 | 4 | 6 |
 | PERSIST | ~5s | 32768 (32MB) | 1 | 4 | 6 |
 
 **Note:** These are initial estimates. Actual values require prototyping and user testing. The leading zeros values may need adjustment based on Argon2id output distribution.
@@ -791,7 +791,7 @@ This test uses minimal difficulty for quick verification during development.
 ```
 content = "test"
 content_hash = SHA3-256("test")
-action_type = REACTION (0x04)
+action_type = ENGAGE (0x04)
 timestamp = 1704067200
 expires_at = 1704067800
 salt = 0x00000000000000000000000000000000
@@ -878,9 +878,7 @@ fork_config.difficulties[POST_CREATION].leading_zeros = 10
 
 6. **PoW Service Providers:** Should the protocol explicitly forbid third-party PoW computation services? (Technically unenforceable, but could be social norm.)
 
-7. **Reaction Batching:** Should multiple reactions within a time window be batchable into single PoW? Reduces friction for active readers.
-
-8. **Failed Attempt Handling:** If PoW computation fails (timeout, crash), should there be any state preserved? Or always start fresh?
+7. **Failed Attempt Handling:** If PoW computation fails (timeout, crash), should there be any state preserved? Or always start fresh?
 
 ## 13. References
 

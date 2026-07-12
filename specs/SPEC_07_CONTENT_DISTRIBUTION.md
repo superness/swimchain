@@ -30,7 +30,7 @@ The chain provides **authority** (who posted what, when, with valid PoW). The co
 ```
 AUTHORITATIVE RECORD (in chain)          CONTENT BLOB (in P2P network)
 {
-  author: pubkey,                        Qm7x9abc... → 50MB video file
+  author: pubkey,                        Qm7x9abc... → 8MB image file
   space: "tech-projects",
   timestamp: 1703456789,                 ├── Stored by creator
   pow_nonce: 847291,         ───hash───► ├── Cached by viewers
@@ -81,7 +81,6 @@ Nodes choose what content to store:
 | Short text (<1KB) | <1KB | Chain (inline) |
 | Long text (>1KB) | 1KB-1MB | Content layer |
 | Images | 100KB-10MB | Content layer |
-| Videos | 10MB-1GB | Content layer |
 | Attachments | Varies | Content layer |
 
 **Threshold rule:** Content >1KB is stored in the content layer and referenced by hash. Content ≤1KB may be stored inline in the chain record.
@@ -112,10 +111,10 @@ For larger content (>1KB), the chain record references by hash:
   "space": "tech-projects",
   "timestamp": 1703456789,
   "pow_nonce": 847291,
-  "content_type": "video/mp4",
+  "content_type": "image/png",
   "content_hash": "sha256:7x9abc123...",
-  "content_size": 52428800,
-  "content_chunks": 50,
+  "content_size": 8388608,
+  "content_chunks": 8,
   "signature": "sig..."
 }
 ```
@@ -139,11 +138,11 @@ Large files are split into chunks for efficient distribution:
 Each chunk is content-addressed:
 
 ```
-File: video.mp4 (50MB)
+File: photo.png (8MB)
 ├── Chunk 0: sha256:chunk0hash... (1MB)
 ├── Chunk 1: sha256:chunk1hash... (1MB)
 ├── ...
-├── Chunk 49: sha256:chunk49hash... (50KB remainder)
+├── Chunk 7: sha256:chunk7hash... (1MB)
 └── Manifest: sha256:7x9abc123... (list of chunk hashes)
 ```
 
@@ -154,13 +153,13 @@ The `content_hash` in the chain record points to the **manifest**, which lists c
 ```json
 {
   "version": 1,
-  "total_size": 52428800,
+  "total_size": 8388608,
   "chunk_size": 1048576,
   "chunks": [
     {"index": 0, "hash": "sha256:chunk0hash...", "size": 1048576},
     {"index": 1, "hash": "sha256:chunk1hash...", "size": 1048576},
     ...
-    {"index": 49, "hash": "sha256:chunk49hash...", "size": 51200}
+    {"index": 7, "hash": "sha256:chunk7hash...", "size": 1048576}
   ]
 }
 ```
@@ -172,7 +171,7 @@ The `content_hash` in the chain record points to the **manifest**, which lists c
 ### Request Flow
 
 ```
-1. User wants to view Albert's video post
+1. User wants to view Albert's image post
    ├── Has chain record: content_hash = "sha256:manifest..."
 
 2. Request manifest from peers
@@ -439,8 +438,7 @@ when the user explicitly views it - there is no proactive/background content fet
 
 1. **DHT choice:** Build custom, use Kademlia, or adapt existing (Mainline DHT)?
 2. **Content encryption:** Encrypt all content? Only private content? Key distribution?
-3. **Large file limits:** Maximum content size? (1GB? 10GB? Unlimited?)
-4. **Streaming:** Support for streaming video vs. download-first?
+3. **Large file limits:** Maximum content size for images and large text?
 
 ### For Prototyping
 

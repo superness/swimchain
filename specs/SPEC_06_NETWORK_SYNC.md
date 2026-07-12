@@ -15,7 +15,7 @@ The Network & Sync System defines how Swimchain nodes discover each other, propa
 | Layer | Model | What It Syncs | Spec Reference |
 |-------|-------|---------------|----------------|
 | **Authoritative** | Bitcoin-like | Post metadata, PoW proofs, signatures, content hashes | This spec |
-| **Content** | BitTorrent-like | Actual media files (videos, images, large text) | SPEC_07 |
+| **Content** | BitTorrent-like | Actual content blobs (images, large text) | SPEC_07 |
 
 This specification focuses on the **authoritative layer** (chain sync) and coordinates with SPEC_07 for content distribution.
 
@@ -329,9 +329,9 @@ DHTRecord {
 
 **A website listing peer addresses is "infrastructure" in the same way a phone book is infrastructure.** It helps you find people; it doesn't control your conversations.
 
-#### 4.1.2 Six-Layer Discovery Stack
+#### 4.1.2 Five-Layer Discovery Stack
 
-Swimchain uses a defense-in-depth approach to bootstrap, where any single method failing doesn't prevent network access.
+Node-level discovery uses a defense-in-depth approach to bootstrap, where any single method failing doesn't prevent network access. The five node-level layers are cached peers, mDNS, seed nodes (introduction points), DHT, and peer exchange. Social bootstrap (QR codes, invite links) is a client-layer concern that feeds addresses into the node as ordinary peers — it is not a node discovery layer.
 
 ```
 function bootstrap_network() -> Vec<PeerInfo> {
@@ -342,27 +342,23 @@ function bootstrap_network() -> Vec<PeerInfo> {
     peers.extend(load_cached_peers())
 
     // Layer 1: Local network discovery (mDNS)
-    // Zero infrastructure, works without internet
+    // On by default. Zero infrastructure, works without internet
     peers.extend(mdns_discovery())
 
-    // Layer 2: Social graph bootstrap
-    // QR codes, direct exchange, manual entry
-    peers.extend(load_manual_peers())
-
-    // Layer 3: Community introduction points
+    // Layer 2: Community introduction points (seed nodes)
     // Well-known addresses, multiple operators
     // NOT authoritative - just always-on nodes you know about
     if peers.len() < MIN_PEERS {
         peers.extend(load_introduction_points())
     }
 
-    // Layer 4: DHT bootstrap
+    // Layer 3: DHT bootstrap
     // Once we have any peer, DHT finds more
     if peers.len() < MIN_PEERS && peers.len() > 0 {
         peers.extend(dht_bootstrap())
     }
 
-    // Layer 5: Peer exchange
+    // Layer 4: Peer exchange
     // Connected peers share their peer lists
     for peer in peers {
         if connect(peer).is_ok() {
@@ -410,10 +406,10 @@ While simpler, DNS seeds are explicitly rejected because:
 
 Introduction points avoid this by being direct IP/onion addresses.
 
-**mDNS Local Discovery:**
+**mDNS Local Discovery (on by default):**
 ```
 function mdns_discovery() -> Vec<PeerAddress> {
-    // Discover Swimchain nodes on local network
+    // Discover Swimchain nodes on local network. Enabled by default.
     // Useful for home networks, office LANs
     // Works without any internet connectivity
     let service = "_swimchain._tcp.local"
@@ -422,11 +418,16 @@ function mdns_discovery() -> Vec<PeerAddress> {
 }
 ```
 
-**Social Bootstrap (Layer 2):**
+**Social Bootstrap (client layer):**
+
+QR codes and invite links are a client-layer concern, not a node discovery layer. Clients
+encode peer connection info for users to share in person or via messaging apps, then hand
+any resulting addresses to the node as ordinary peers. The social network IS the discovery
+network at this layer.
+
 ```
 // QR codes encode peer connection info
 // Users share via messaging apps, in-person, etc.
-// The social network IS the discovery network
 
 struct PeerQRCode {
     addresses: Vec<PeerAddress>,
@@ -666,7 +667,7 @@ The hybrid architecture separates sync into two distinct processes:
 
 **Key Insight:** The chain is small (post metadata only, ~500 bytes per post). Decay keeps it bounded. Every node can verify the full authoritative chain.
 
-Content blobs (videos, images) are fetched on-demand when a user wants to view them, similar to BitTorrent.
+Content blobs (images, large text) are fetched on-demand when a user wants to view them, similar to BitTorrent.
 
 **Sync Phases:**
 
@@ -748,7 +749,7 @@ function initial_chain_sync(fork_id: ForkIdentifier) {
 
     emit_progress("Chain sync complete", relevant_blocks.len(), relevant_blocks.len())
 
-    // NOTE: Content blobs (videos, images, etc.) are NOT synced here.
+    // NOTE: Content blobs (images, large text) are NOT synced here.
     // They are fetched on-demand when user views a post (see SPEC_07).
     // This keeps initial sync fast - only chain data is required.
 }
@@ -832,10 +833,10 @@ Because the chain only contains post records (~500 bytes each) and not content b
 | 180 days | ~500K posts | ~250 MB | < 2 minutes |
 | 1 year | ~1M posts | ~500 MB | < 5 minutes |
 
-*Note: These are CHAIN sizes only. Content blobs (videos, images) are fetched on-demand via SPEC_07 and are not included in initial sync. This keeps first-time sync fast.*
+*Note: These are CHAIN sizes only. Content blobs (images, large text) are fetched on-demand via SPEC_07 and are not included in initial sync. This keeps first-time sync fast.*
 
 **What's NOT synced here:**
-- Videos, images, long text (content blobs) - fetched on-demand
+- Images, large text (content blobs) - fetched on-demand
 - Content from decayed posts - already pruned from chain
 
 **After chain sync, content fetching is lazy:**
@@ -1499,7 +1500,7 @@ Initiator                     Responder
 - I2P eepsite support
 - QUIC transport (harder to deep-packet inspect)
 - Domain fronting may be possible (client choice)
-- Local network discovery (mDNS) for closed environments
+- Local network discovery (mDNS), enabled by default
 
 **TH-NET-06 (Gossip Spam):**
 - TTL limits propagation distance
@@ -1620,14 +1621,14 @@ User views post ─────────┼───────────�
                          │    │     (on-demand)             │
                          │    │                             │
                          │    ▼                             │
-                         │  "I have the actual video"      │
+                         │  "I have the actual image"      │
                          │                                 │
 ```
 
 **Data Flow:**
 
 1. **Chain sync provides:** Post metadata, author signatures, content hashes
-2. **Content layer provides:** Actual bytes (videos, images, text)
+2. **Content layer provides:** Actual bytes (images, large text)
 3. **Chain record references content:** `content_hash: "sha256:abc123..."`
 4. **Content verified by hash:** After fetch, verify hash matches chain record
 
@@ -1855,7 +1856,7 @@ Response:
 
 | Question | Resolution |
 |----------|------------|
-| How do nodes discover each other? | Multi-layer bootstrap: cached peers, DNS seeds, DHT, mDNS, manual |
+| How do nodes discover each other? | Multi-layer bootstrap: cached peers, mDNS, seed nodes, DHT, peer exchange |
 | What's the gossip protocol? | Epidemic gossip with TTL=6, fanout=8, seen-cache |
 | How does initial sync work? | Header-first sync, then content for non-decayed blocks |
 | How do nodes stay in sync? | Continuous sync loop + gossip-driven updates |

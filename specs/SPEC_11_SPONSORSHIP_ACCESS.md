@@ -1,4 +1,4 @@
-# Protocol Specification: Sponsorship & Contribution-Based Access
+# Protocol Specification: Sponsorship & Access Control
 
 ## Status: DRAFT
 
@@ -14,7 +14,7 @@ This specification defines Swimchain's Sybil resistance and access control mecha
 
 1. **Sponsorship Trees**: Every non-genesis identity must be vouched for by an existing member, creating accountability chains where sponsors face graduated consequences for sponsee misbehavior.
 
-2. **Contribution-Based Access**: Posting and action privileges are gated by demonstrated network contribution (hosting content), not by computational proof-of-work or economic staking.
+2. **Access Control**: Posting and action rights are gated by proof-of-work (per SPEC_03), identity age gates, and flat per-identity rate limits. Access is never tied to status, reputation, or hosting standing — the limits are the same for everyone.
 
 Together, these mechanisms achieve distributed moderation without central authority by making identity creation require social cost that cannot be parallelized, automated, or purchased.
 
@@ -24,7 +24,7 @@ Together, these mechanisms achieve distributed moderation without central author
 
 1. **Friction filters for commitment, not access**: Difficulty joining is acceptable; impossibility is not. The barrier filters for commitment, not for social connections.
 
-2. **Hierarchy reflects demonstrated contribution**: Trust is inherently relational and contextual. Sponsor privileges depend on hosting contribution, not arbitrary status.
+2. **Accountability is relational, not ranked**: Trust is inherently relational and contextual. The right to sponsor depends on being an identity in good standing, not on any status tier or hosting rank.
 
 3. **Accountability through stake, not authority**: Sponsors naturally become careful because their reputation depends on sponsees' behavior. No moderators required.
 
@@ -39,8 +39,7 @@ Together, these mechanisms achieve distributed moderation without central author
 **In scope:**
 - Identity sponsorship requirements and verification
 - Consequence propagation through sponsorship trees
-- Contribution-based access levels (swimmer levels)
-- Action rate limits and age gates
+- Flat action rate limits and age gates
 - Genesis identity bootstrapping
 - Penalty and recovery mechanisms
 - Linear chain attack detection
@@ -60,7 +59,7 @@ Together, these mechanisms achieve distributed moderation without central author
 
 1. **MUST**: Every non-genesis identity requires a sponsor (THESIS_08 §Thesis Statement)
 
-2. **MUST**: Sponsors must be Resident-level minimum (30+ days, 10GB+ served) for all sponsorships (THESIS_08 §Thesis Statement)
+2. **MUST**: Sponsors must be identities in good standing (not revoked and not under an active sponsorship penalty) for all sponsorships (THESIS_08 §Thesis Statement)
 
 3. **MUST**: Consequence propagation must be graduated: 100% at 1-hop, 50% at 2-hop, negligible beyond 3 hops (THESIS_08 §Argument 2)
 
@@ -155,7 +154,6 @@ struct StoredSponsorship {
     depth: u8,                           // Distance from genesis (0 = genesis)
     probationary: bool,                  // Probationary status
     probation_expires: Option<u64>,      // When probation ends
-    positive_contribution_score: u32,    // Sponsee contribution bonus (0-1000)
     is_genesis: bool,                    // True if this is a genesis identity
 }
 
@@ -176,17 +174,18 @@ enum SponsorshipStatus {
 - `depth`: Distance from nearest genesis identity (genesis = 0)
 - `probationary`: Whether this is a probationary sponsorship
 - `probation_expires`: When probationary status ends (see §3.6 for constant)
-- `positive_contribution_score`: Accumulated score for sponsee's positive contributions (see §4.7)
 - `is_genesis`: True if this identity was created without a sponsor during genesis
 
 **Invariants:**
 - If `is_genesis == true`, then `sponsor == None` and `depth == 0`
 - If `is_genesis == false`, then `sponsor` must be Some
 - If `sponsor` is Some, `depth` must equal `sponsor.depth + 1`
-- If `status == Orphaned`, identity cannot sponsor new identities until Anchor level
-- `positive_contribution_score` caps at 1000
+- If `status == Orphaned`, the identity cannot sponsor new identities until it is adopted back into a sponsorship tree (see §4.6) or its orphan grace period resolves
 
 ### 3.3 ContributionRecord
+
+**Purpose:** Record a node's hosting contribution over a measurement window. Hosting is real work (a node hosts what its operator views, per SPEC_06), but it grants no access, capacity, or sponsorship rights. This record is a displayed signal only — it feeds hosting-based achievements and profile display (see SPEC_12), never a gate on posting, attestation, or sponsorship.
+
 
 ```rust
 struct ContributionRecord {
@@ -210,10 +209,10 @@ struct ContributionRecord {
 - `uptime_ratio`: Percentage of period online (scaled to 0-10000)
 - `content_served_count`: Number of distinct content requests served
 - `unique_peers_served`: Number of distinct identities served
-- `attestation_count`: Minimum 3 required for validity
+- `attestation_count`: Minimum 3 required for the record to be counted
 
 **Invariants:**
-- `attestation_count >= 3` for contribution to be valid
+- `attestation_count >= 3` for the contribution record to be counted toward displayed hosting reputation
 - Attesters must not be in sponsor relationship with identity
 - Bandwidth from self, tree members, or <7 day old identities is excluded
 
@@ -222,7 +221,7 @@ struct ContributionRecord {
 ```rust
 enum MisbehaviorSeverity {
     None = 0,           // No misbehavior
-    Spam = 1,           // Flagged as spam by 3+ Residents
+    Spam = 1,           // Flagged as spam by 3+ independent attesters
     Abuse = 2,          // Pattern of harassment (5+ spam flags in 7 days)
     Illegal = 3,        // CSAM, terrorism content (hash match + 3 attestations)
 }
@@ -249,27 +248,29 @@ struct PenaltyRecord {
     identity: PublicKey,
     penalty_type: PenaltyType,
     started_at: u64,
-    base_expires_at: u64,                // Original expiration
-    current_expires_at: u64,             // May be reduced by contribution
+    base_expires_at: u64,                // Expiration (when the consequence ages out)
+    current_expires_at: u64,             // Same as base_expires_at; consequences only age out
     caused_by: Option<PublicKey>,        // Sponsee who triggered this
     severity: MisbehaviorSeverity,
     hop_distance: u8,                    // 0 = offender, 1 = direct sponsor, etc.
 }
 
 enum PenaltyType {
-    RestrictedPosting = 0,               // View-only mode
-    LostInviteSlots = 1,                 // Cannot sponsor
-    AcceleratedDecay = 2,                // Content decays faster
-    PermanentRevocation = 3,             // Identity revoked forever
+    ReducedSponsorshipSlots = 0,         // Fewer available sponsorship slots
+    SuspendedSponsorship = 1,            // Cannot sponsor or take on new sponsees
+    RestrictedOfferAcceptance = 2,       // Cannot accept public sponsorship offers
+    PermanentRevocation = 3,             // Identity revoked (illegal-content blocklist match only)
 }
 ```
+
+All propagated consequences stay inside the sponsorship domain: they reduce or suspend an identity's ability to sponsor and to accept sponsorship offers. They never touch posting rights, decay, PoW, or rate limits (those are governed by flat anti-abuse rules). `PermanentRevocation` is reserved for identities whose content matches the illegal-content blocklist (see SPEC_12).
 
 **Fields:**
 - `identity`: Identity under penalty
 - `penalty_type`: Type of restriction applied
 - `started_at`: When penalty began
-- `base_expires_at`: Original penalty duration
-- `current_expires_at`: Adjusted duration (may be reduced through contribution)
+- `base_expires_at`: Penalty duration; the consequence ages out at this time
+- `current_expires_at`: Equal to `base_expires_at` — consequences only age out, they are never shortened or extended
 - `caused_by`: The sponsee whose behavior triggered this (for sponsors)
 - `severity`: What level of misbehavior caused this
 - `hop_distance`: Distance from offender (0 = offender themselves)
@@ -292,6 +293,9 @@ const CONSEQUENCE_DECAY_HOP_1: f32 = 1.0;   // 100% at direct sponsor
 const CONSEQUENCE_DECAY_HOP_2: f32 = 0.5;   // 50% at sponsor's sponsor
 const CONSEQUENCE_DECAY_HOP_3_PLUS: f32 = 0.0; // Negligible beyond
 
+// Sponsorship pacing (flat — identical for every identity in good standing)
+const SPONSORSHIP_COOLDOWN_SECONDS: u64 = 3600; // Minimum time between sponsorships (1 hour)
+
 // Probationary sponsorship constant
 const PROBATION_CONSEQUENCE_MULTIPLIER: f32 = 0.25; // 25% of normal
 
@@ -304,7 +308,6 @@ const MAX_GENESIS_IDENTITIES: u32 = 100;
 
 // Contribution attestation requirements
 const MIN_ATTESTATION_COUNT: u8 = 3;
-const MIN_PENALTY_RECOVERY_ATTESTATION_COUNT: u8 = 3; // Same as normal
 ```
 
 ### 3.7 DailyRateLimits
@@ -330,7 +333,7 @@ const MAX_REPLIES_PER_SPACE_PER_HOUR: u32 = 20;
 ```
 
 **Invariants:**
-- Limits apply regardless of swimmer level
+- Limits are flat: they apply equally to every identity, regardless of age beyond the age gate, hosting contribution, reputation, or sponsorship standing
 - `hourly_space_posts` entries older than 1 hour are pruned
 
 ### 3.8 ProbationarySponsorship
@@ -357,7 +360,7 @@ struct ProbationarySponsorship {
 - `graduated`: Set to true when probation successfully completed
 
 **Invariants:**
-- Probationary sponsees have same capabilities as NewSwimmer for first 30 days
+- Probationary sponsees have the same posting rights and flat rate limits as any other identity past the age gate
 - During probation, sponsor bears only 25% of normal consequence for sponsee behavior
 - After graduation, consequence multiplier becomes 1.0
 - `probation_ends` must equal `created_at + PROBATION_PERIOD_SECONDS`
@@ -488,8 +491,7 @@ struct SponsorshipClaim {
 **Invariants:**
 - `claimed_count <= max_sponsees`
 - `expires_at > created_at`
-- Sponsor must be Resident+ level to create offers
-- Offers for non-probationary sponsorship require Anchor+ level
+- Any identity in good standing may create offers; sponsorships are paced by `SPONSORSHIP_COOLDOWN_SECONDS` between claims
 - All claimed sponsorships still require final sponsor signature (prevents automated claiming)
 
 ---
@@ -534,20 +536,21 @@ fn verify_sponsorship(creation: &SponsoredIdentityCreation) -> Result<(), Sponso
         return Err(SponsorshipError::IdentityExists);
     }
 
-    // 5. Check sponsor eligibility (Resident level minimum per THESIS_08)
-    let sponsor_level = get_swimmer_level(sponsor_pubkey)?;
-    if sponsor_level < SwimmerLevel::Resident {
-        return Err(SponsorshipError::InsufficientLevel);
+    // 5. Check sponsor is in good standing (not revoked)
+    if get_sponsorship_status(sponsor_pubkey) == SponsorshipStatus::Revoked {
+        return Err(SponsorshipError::SponsorRevoked);
     }
 
-    // 6. Check sponsor has available slots
-    let slots_used = count_active_sponsees(sponsor_pubkey);
-    let max_slots = max_sponsees_for_level(sponsor_level);
-    if slots_used >= max_slots {
-        return Err(SponsorshipError::NoAvailableSlots);
+    // 6. Check sponsorship cooldown (flat pacing, same for everyone)
+    if let Some(last) = last_sponsorship_at(sponsor_pubkey) {
+        if now < last + SPONSORSHIP_COOLDOWN_SECONDS {
+            return Err(SponsorshipError::SponsorOnCooldown {
+                available_at: last + SPONSORSHIP_COOLDOWN_SECONDS,
+            });
+        }
     }
 
-    // 7. Check sponsor not under penalty
+    // 7. Check sponsor not under a sponsorship penalty
     if is_under_sponsorship_penalty(sponsor_pubkey) {
         return Err(SponsorshipError::SponsorRestricted);
     }
@@ -621,14 +624,14 @@ fn verify_genesis_creation(creation: &SponsoredIdentityCreation) -> Result<(), S
 **Complexity:** O(1) for signature verification, O(log n) for database lookups, O(g) for genesis attestation verification where g = attestation count
 
 **Edge Cases:**
-- Sponsor's level changes during verification → recheck at commit time
+- Sponsor's standing or available capacity changes during verification → recheck at commit time
 - New identity pubkey collision → reject with `IdentityExists`
 - Clock skew → 1-hour window provides tolerance
 - Genesis slot race condition → first valid claim wins
 
 ### 4.2 Consequence Propagation
 
-**Purpose:** Propagate penalties up sponsorship tree when misbehavior occurs.
+**Purpose:** When a sponsee's content crosses the spam-flag threshold, propagate consequences up the sponsor chain. Every consequence stays inside the sponsorship domain — it reduces or suspends the ability to sponsor and to accept sponsorship offers, nothing else. Consequences attenuate with each hop up the chain and age out over time (each carries an expiry), so a distant or old misbehavior fades from a sponsor's standing on its own.
 
 **Input:** `offender: PublicKey, severity: MisbehaviorSeverity`
 
@@ -642,18 +645,19 @@ fn propagate_consequences(
 ) -> Vec<PenaltyRecord> {
     let mut penalties = Vec::new();
 
-    // 1. Apply penalty to offender
+    // 1. Apply penalty to offender (sponsorship-domain only; the flagged
+    //    content itself decays and prunes on the accelerated half-life per SPEC_12)
     let offender_penalty = match severity {
         Spam => PenaltyRecord {
             identity: offender,
-            penalty_type: PenaltyType::RestrictedPosting,
+            penalty_type: PenaltyType::ReducedSponsorshipSlots,
             base_expires_at: now() + 7 * DAY,
             hop_distance: 0,
             ..
         },
         Abuse => PenaltyRecord {
             identity: offender,
-            penalty_type: PenaltyType::RestrictedPosting,
+            penalty_type: PenaltyType::SuspendedSponsorship,
             base_expires_at: now() + 30 * DAY,
             hop_distance: 0,
             ..
@@ -719,22 +723,22 @@ fn compute_sponsor_penalty(
     match (severity, hop_distance) {
         // Direct sponsor (hop 1)
         (Spam, 1) => PenaltyRecord {
-            penalty_type: PenaltyType::LostInviteSlots,
+            penalty_type: PenaltyType::ReducedSponsorshipSlots,
             base_expires_at: now() + (7 * DAY * multiplier as u64),
             slots_lost: 1,
             ..
         },
         (Abuse, 1) => PenaltyRecord {
-            penalty_type: PenaltyType::LostInviteSlots,
+            penalty_type: PenaltyType::SuspendedSponsorship,
             base_expires_at: now() + (30 * DAY * multiplier as u64),
             slots_lost: ALL,
             ..
         },
         (Illegal, 1) => PenaltyRecord {
-            penalty_type: PenaltyType::LostInviteSlots,
+            penalty_type: PenaltyType::SuspendedSponsorship,
             base_expires_at: now() + (90 * DAY * multiplier as u64),
             slots_lost: ALL,
-            additional: PenaltyType::AcceleratedDecay,
+            additional: PenaltyType::RestrictedOfferAcceptance,
             ..
         },
 
@@ -744,13 +748,13 @@ fn compute_sponsor_penalty(
             ..
         },
         (Abuse, 2) => PenaltyRecord {
-            penalty_type: PenaltyType::LostInviteSlots,
+            penalty_type: PenaltyType::ReducedSponsorshipSlots,
             base_expires_at: now() + (7 * DAY * multiplier as u64),
             slots_lost: 1,
             ..
         },
         (Illegal, 2) => PenaltyRecord {
-            penalty_type: PenaltyType::LostInviteSlots,
+            penalty_type: PenaltyType::ReducedSponsorshipSlots,
             base_expires_at: now() + (30 * DAY * multiplier as u64),
             slots_lost: 1,
             ..
@@ -806,7 +810,9 @@ fn check_access(
         return AccessResult::denied(AccessReason::RateLimit);
     }
 
-    // 4. Check active penalties
+    // 4. Check active penalties relevant to this action. Sponsorship-domain
+    //    penalties gate only sponsor/offer-acceptance actions; a PermanentRevocation
+    //    is already caught by the status check in step 1.
     if is_under_penalty(identity, action) {
         let penalty = get_active_penalty(identity);
         return AccessResult::denied(AccessReason::Penalty {
@@ -814,39 +820,19 @@ fn check_access(
         });
     }
 
-    // 5. Check swimmer level
-    let level = get_swimmer_level(identity);
-    let required_level = get_required_level_for_action(action);
-
-    if level >= required_level {
-        let remaining = action_limit - daily_limits.get(action);
-        return AccessResult::allowed(remaining);
-    }
-
-    // 6. Check recent contribution as fallback
-    let recent_contribution = get_recent_contribution(identity, 7 * DAY);
-    let contribution_threshold = get_contribution_threshold_for_action(action);
-
-    if recent_contribution.bandwidth_served >= contribution_threshold {
-        let remaining = action_limit - daily_limits.get(action);
-        return AccessResult::allowed(remaining);
-    }
-
-    // 7. Denied - insufficient level and contribution
-    AccessResult::denied(AccessReason::InsufficientContribution {
-        current_level: level,
-        required_level: required_level,
-        current_contribution: recent_contribution.bandwidth_served,
-        required_contribution: contribution_threshold,
-    })
+    // 5. All flat anti-abuse checks passed. Posting, reply, engage, and
+    //    space-creation rights are gated only by proof-of-work (SPEC_03), the
+    //    age gate, and flat rate limits — never by status, reputation, or
+    //    hosting contribution. The limits are identical for every identity.
+    let remaining = action_limit - daily_limits.get(action);
+    AccessResult::allowed(remaining)
 }
 ```
 
 **Complexity:** O(1) with indexed lookups
 
 **Edge Cases:**
-- New identity in grace period (days 7-14) → allow limited posting without contribution
-- Identity with contribution but low level → contribution fallback applies
+- New identity past the age gate → posts under the same flat rate limits as everyone else
 - Space-specific limits → check `hourly_space_posts` for per-space throttling
 
 ### 4.4 Linear Chain Detection
@@ -908,7 +894,7 @@ fn analyze_chain_structure(identity: PublicKey) -> LinearChainMetrics {
 
 ### 4.5 Penalty Recovery
 
-**Purpose:** Allow sponsors to recover from penalties through time and contribution.
+**Purpose:** Sponsorship consequences age out on their own. Recovery is purely time-based: when a penalty's duration elapses, it lifts automatically.
 
 **Input:** `identity: PublicKey, penalty: PenaltyRecord`
 
@@ -917,187 +903,80 @@ fn analyze_chain_structure(identity: PublicKey) -> LinearChainMetrics {
 **Steps:**
 ```rust
 fn calculate_recovery(identity: PublicKey, penalty: &PenaltyRecord) -> RecoveryResult {
-    // 1. Time-based recovery (automatic)
-    let elapsed = now() - penalty.started_at;
-    let base_duration = penalty.base_expires_at - penalty.started_at;
-
-    if elapsed >= base_duration {
-        return RecoveryResult { fully_recovered: true, .. };
-    }
-
-    // 2. Contribution-based acceleration
-    let contribution_during_penalty = get_contribution_since(identity, penalty.started_at);
-
-    // Verify contribution has sufficient attestations during penalty period
-    if contribution_during_penalty.attestation_count < MIN_PENALTY_RECOVERY_ATTESTATION_COUNT {
-        // Insufficient attestation - no acceleration
+    // Permanent revocation (illegal-content blocklist match) never recovers.
+    if penalty.penalty_type == PenaltyType::PermanentRevocation {
         return RecoveryResult {
-            new_expires_at: penalty.base_expires_at,
+            new_expires_at: u64::MAX,
             fully_recovered: false,
         };
     }
 
-    let normal_rate = get_expected_contribution_rate(identity);
-
-    // 2x normal contribution = 50% penalty reduction
-    let contribution_ratio = contribution_during_penalty.bandwidth_served
-        / (normal_rate * elapsed);
-
-    let reduction_factor = if contribution_ratio >= 2.0 {
-        0.5  // 50% reduction
-    } else if contribution_ratio >= 1.5 {
-        0.25 // 25% reduction
-    } else {
-        0.0  // No reduction
-    };
-
-    let new_duration = base_duration * (1.0 - reduction_factor);
-    let new_expires_at = penalty.started_at + new_duration;
-
+    // Every other consequence simply ages out at its expiry. No standing,
+    // reputation, or hosting contribution can speed it up or slow it down.
     RecoveryResult {
-        new_expires_at,
-        fully_recovered: now() >= new_expires_at,
+        new_expires_at: penalty.base_expires_at,
+        fully_recovered: now() >= penalty.base_expires_at,
     }
 }
 ```
 
 **Invariants:**
-- Recovery never extends penalty beyond original duration
+- Recovery is time-based only; nothing shortens or extends a penalty beyond its original duration
 - PermanentRevocation cannot be recovered
-- Contribution during penalty must be verifiable with at least `MIN_PENALTY_RECOVERY_ATTESTATION_COUNT` (3) attestations
 
 **Complexity:** O(1)
 
-### 4.6 Swimmer Level Calculation
+### 4.6 Orphan Adoption
 
-**Purpose:** Determine a user's swimmer level based on identity age and contribution.
+**Purpose:** Restore an orphaned identity (one whose sponsor became inactive or was revoked) into an active sponsorship tree so it regains a live accountability chain.
 
-**Input:** `identity: PublicKey`
+**Input:** `orphan: PublicKey, adopter: PublicKey`
 
-**Output:** `SwimmerLevel`
+**Output:** `Result<(), SponsorshipError>`
 
 **Steps:**
 ```rust
-fn calculate_swimmer_level(identity: PublicKey) -> SwimmerLevel {
-    let age_days = get_identity_age_days(identity);
-    let contribution = get_contribution_record(identity);
-    let monthly_served = get_bandwidth_served_last_30_days(identity);
+fn adopt_orphan(orphan: PublicKey, adopter: PublicKey) -> Result<(), SponsorshipError> {
+    let orphan_record = get_sponsorship(orphan);
 
-    // Level 5: PoolKeeper
-    if monthly_served >= 500_GB
-        && contribution.uptime_ratio >= 9500  // 95%
-        && age_days >= 90
-    {
-        return SwimmerLevel::PoolKeeper;
+    // 1. Target must actually be orphaned and past its grace period
+    if orphan_record.status != SponsorshipStatus::Orphaned {
+        return Err(SponsorshipError::NotOrphaned);
     }
 
-    // Level 4: Anchor
-    if monthly_served >= 200_GB
-        && contribution.uptime_ratio >= 9000  // 90%
-        && age_days >= 60
-    {
-        return SwimmerLevel::Anchor;
+    // 2. Adopter must be an identity in good standing. No level or hosting
+    //    rank is required — any identity in good standing may adopt, including
+    //    an existing sponsor already in the orphan's former tree.
+    if get_sponsorship_status(adopter) == SponsorshipStatus::Revoked
+        || is_under_sponsorship_penalty(adopter) {
+        return Err(SponsorshipError::AdopterNotInGoodStanding);
     }
 
-    // Level 3: Lifeguard
-    if monthly_served >= 50_GB
-        && contribution.uptime_ratio >= 8000  // 80%
-        && age_days >= 30
-    {
-        return SwimmerLevel::Lifeguard;
+    // 3. Adopter must be off sponsorship cooldown
+    if is_on_sponsorship_cooldown(adopter) {
+        return Err(SponsorshipError::SponsorOnCooldown {
+            available_at: cooldown_expires_at(adopter),
+        });
     }
 
-    // Level 2: Resident (THESIS_08: "30+ days, 10GB+ hosted")
-    if contribution.bandwidth_served >= 10_GB  // Total, not monthly
-        && age_days >= 30
-    {
-        return SwimmerLevel::Resident;
-    }
+    // 4. Re-parent the orphan. Adoption starts from a clean slate (any prior
+    //    penalties on the orphan are cleared) and depth is recomputed.
+    reparent(orphan, adopter);
+    clear_penalties(orphan);
+    set_status(orphan, SponsorshipStatus::Active);
 
-    // Level 1: Regular
-    if age_days >= 7
-        && contribution.bandwidth_served > 0
-    {
-        return SwimmerLevel::Regular;
-    }
-
-    // Level 0: NewSwimmer
-    SwimmerLevel::NewSwimmer
+    Ok(())
 }
 ```
 
-**Complexity:** O(1)
+**Invariants:**
+- Genesis identities are never orphaned and cannot be adopted
+- Adoption requires only that the adopter be an identity in good standing and off sponsorship cooldown — there is no level or hosting requirement
+- After adoption, the orphan's depth equals `adopter.depth + 1` and its consequences reset to a clean slate
 
-**Note:** Per THESIS_08, Resident level (30+ days, 10GB+ hosted) is the minimum requirement for sponsoring any identity.
+**Complexity:** O(d) to recompute subtree depth, where d = subtree size
 
-### 4.7 Positive Contribution Reward
-
-**Purpose:** Reward sponsors whose sponsees contribute positively to the network (THESIS_08 §Counterargument 1 Response).
-
-**Input:** `sponsee: PublicKey, contribution_period: ContributionRecord`
-
-**Output:** `SponsorReward`
-
-**Steps:**
-```rust
-fn calculate_sponsor_reward(
-    sponsee: PublicKey,
-    contribution: &ContributionRecord
-) -> Option<SponsorReward> {
-    let sponsorship = get_sponsorship(sponsee)?;
-
-    // Genesis identities have no sponsor to reward
-    if sponsorship.is_genesis {
-        return None;
-    }
-
-    // Only reward after probation period
-    if sponsorship.probationary && !sponsorship.graduated {
-        return None;
-    }
-
-    // Calculate sponsee's contribution quality
-    let expected_for_level = get_expected_contribution(sponsee);
-    let contribution_ratio = contribution.bandwidth_served as f32
-        / expected_for_level as f32;
-
-    if contribution_ratio < 1.5 {
-        return None;  // Only reward above-average contribution
-    }
-
-    // Reward direct sponsor
-    let reward_points = match contribution_ratio {
-        r if r >= 3.0 => 10,   // Exceptional
-        r if r >= 2.0 => 5,    // Great
-        r if r >= 1.5 => 2,    // Good
-        _ => 0,
-    };
-
-    // Apply to sponsor's positive_contribution_score
-    let sponsor = sponsorship.sponsor.unwrap(); // Safe: not genesis
-    let sponsor_record = get_sponsorship(sponsor)?;
-    let new_score = min(
-        sponsor_record.positive_contribution_score + reward_points,
-        1000  // Cap at 1000
-    );
-
-    Some(SponsorReward {
-        sponsor,
-        old_score: sponsor_record.positive_contribution_score,
-        new_score,
-        triggered_by: sponsee,
-    })
-}
-```
-
-**Benefits of positive_contribution_score:**
-- +1 invite slot per 100 points (up to +10)
-- Faster penalty recovery (up to 25% faster)
-- Higher priority in public sponsorship matching
-
-**Complexity:** O(1)
-
-### 4.8 Public Sponsorship Offer Processing
+### 4.7 Public Sponsorship Offer Processing
 
 **Purpose:** Match newcomers with sponsors through public offers (THESIS_08 §Counterargument 1 Response).
 
@@ -1217,7 +1096,7 @@ fn process_sponsorship_claim(
 +----------+--------+------------------+------------------+
 ```
 - `allowed`: 1 byte - 0=no, 1=yes
-- `reason`: 1 byte - 0=ok, 1=age_gate, 2=rate_limit, 3=level_insufficient, 4=contribution_insufficient, 5=penalty, 6=revoked
+- `reason`: 1 byte - 0=ok, 1=age_gate, 2=rate_limit, 3=penalty, 4=revoked
 - `remaining`: 2 bytes - actions remaining today (0xFFFF = unlimited)
 - `unlock_at`: Optional 8 bytes - timestamp when restriction lifts
 
@@ -1297,8 +1176,8 @@ fn process_sponsorship_claim(
 1. **Signature validity**: Sponsor signature must verify against sponsor pubkey over `new_identity || timestamp`
 2. **Timestamp freshness**: Creation timestamp must be within `TIMESTAMP_TOLERANCE_SECONDS` (1 hour) of current time
 3. **Identity uniqueness**: New identity pubkey must not exist in network
-4. **Sponsor eligibility**: Sponsor must be Resident+ level (per THESIS_08: 30+ days, 10GB+ served)
-5. **Slot availability**: Sponsor must have unused invite slots
+4. **Sponsor eligibility**: Sponsor must be an identity in good standing (not revoked, not under an active sponsorship penalty)
+5. **Cooldown**: At least `SPONSORSHIP_COOLDOWN_SECONDS` (1 hour) must have passed since the sponsor's previous sponsorship
 6. **No active penalty**: Sponsor must not be under sponsorship restriction
 7. **Linear chain check**: Flagged sponsors limited to probationary only
 8. **PoW validity**: Identity creation PoW must meet SPEC_01 requirements
@@ -1319,9 +1198,9 @@ fn process_sponsorship_claim(
 
 1. **Identity status**: Revoked identities cannot perform any actions
 2. **Age gates**: Identity must meet minimum age for action type
-3. **Rate limits**: Must be within daily and hourly limits
-4. **Penalty status**: Must not be under relevant penalty
-5. **Level requirement**: Must meet swimmer level OR contribution threshold
+3. **Rate limits**: Must be within the flat daily and hourly limits (identical for every identity)
+4. **Penalty status**: For sponsor/offer-acceptance actions, must not be under a relevant sponsorship penalty
+5. **Proof-of-work**: The action's proof-of-work must be valid (per SPEC_03)
 6. **Space membership**: For space actions, must be space member
 
 ### 6.4 Penalty Validation
@@ -1359,7 +1238,7 @@ fn process_sponsorship_claim(
 |--------|-------------|------------|
 | Sybil flood | Create many identities for spam | Low (requires sponsors) |
 | Linear chain | Manufacture trust chain over time | Medium |
-| Sponsor farming | Create identities to sponsor more | Low (contribution required) |
+| Sponsor farming | Create identities to sponsor more | Low (flat capacity cap, propagating consequences) |
 | Reputation laundering | Use proxies to hide misbehavior | Medium |
 | Revenge through compromise | Damage sponsor via compromised sponsee | Low |
 | Genesis capture | Control majority of genesis slots | Medium (mitigated by distribution) |
@@ -1369,10 +1248,9 @@ fn process_sponsorship_claim(
 
 **Sybil Flood:**
 - Every identity needs sponsor signature
-- Sponsors need Resident level (30+ days, 10GB served)
-- Limited invite slots (3/month at Resident, scales with level)
-- Sponsor consequences for sponsee misbehavior
-- Cannot serve content to self/tree for contribution
+- Sponsors must be identities in good standing
+- The flat sponsorship cooldown (`SPONSORSHIP_COOLDOWN_SECONDS`) paces every identity equally — it cannot be shortened by age, hosting, or status
+- Sponsor consequences for sponsee misbehavior propagate up the chain
 
 **Linear Chain Attack:**
 - Linearity score calculation flags suspicious chains
@@ -1381,10 +1259,9 @@ fn process_sponsorship_claim(
 - Time-to-value: 6-12 months minimum for 3-4 accounts
 
 **Sponsor Farming:**
-- Contribution requirements cannot be gamed (peer attestation)
-- Self-serving excluded
-- Tree-serving excluded
-- Repeat-serving limited
+- Flat capacity cap limits how many sponsees any one identity can hold
+- Sponsor consequences propagate up the chain, so farming raises the farmer's own exposure
+- Linear chain detection flags manufactured trees
 
 **Reputation Laundering:**
 - Consequence propagation up chain
@@ -1425,7 +1302,7 @@ fn process_sponsorship_claim(
 |------|------------|--------|
 | Sponsor relationship | Public | Accountability requires transparency |
 | Sponsorship depth | Public | Verifiable trust distance |
-| Swimmer level | Public | Action eligibility verification |
+| Sponsorship capacity used | Public | Verifiable capacity under the flat cap |
 | Penalty status | Public | Community protection |
 | Contribution metrics | Attested peers only | Privacy-preserving verification |
 | Linearity score | Public | Attack detection transparency |
@@ -1448,7 +1325,7 @@ fn process_sponsorship_claim(
 Sponsorship trees inherently reduce privacy compared to anonymous systems:
 - Your sponsor is visible (social graph edge)
 - Your sponsees are visible (accountability chain)
-- Your level and penalty status are visible
+- Your sponsorship penalty status is visible
 
 This is an intentional tradeoff: accountability requires some transparency. However:
 - Content you consume is not logged
@@ -1465,7 +1342,7 @@ This is an intentional tradeoff: accountability requires some transparency. Howe
 |-----------|------------|---------|
 | SPEC_01 (Identity) | Identity creation, pubkey storage | Base identity operations |
 | SPEC_03 (PoW) | CPU PoW verification | Identity commitment proof |
-| SPEC_09 (Social Layer) | Swimmer levels, contribution tracking | Access determination |
+| SPEC_09 (Social Layer) | Hosting/contribution tracking | Profile display and achievements (not access) |
 | SPEC_02 (Spaces) | Space membership, posting | Context for actions |
 | RESEARCH_05 (Legal) | Hash blocklists | Illegal content classification |
 
@@ -1506,11 +1383,11 @@ fn on_misbehavior(identity: PublicKey, severity: MisbehaviorSeverity) {
 ### 9.3 Fork Behavior
 
 Forks may customize:
-- Swimmer level thresholds (GB requirements)
+- Flat rate-limit values (still flat — the same for every identity)
 - Consequence decay percentages (within 0-100%)
 - Linearity score threshold for flagging
 - Probationary period duration
-- Invite slot limits
+- Sponsorship cooldown duration (`SPONSORSHIP_COOLDOWN_SECONDS`)
 - Public offer requirements
 
 Forks must preserve:
@@ -1534,7 +1411,7 @@ Forks must preserve:
 **Phase 2: Core Sponsorship**
 - Basic sponsorship verification
 - Sponsorship storage with proper depth tracking
-- Simple level checking (Resident minimum per THESIS_08)
+- Good-standing check and flat `SPONSORSHIP_COOLDOWN_SECONDS` pacing enforcement
 - Handle `sponsor = None` edge cases correctly
 
 **Phase 3: Consequence Propagation**
@@ -1552,8 +1429,7 @@ Forks must preserve:
 
 **Phase 5: Advanced Features**
 - Linear chain detection with correct `max(breadth, 1)` guard
-- Positive contribution rewards
-- Contribution-based recovery acceleration
+- Orphan adoption
 - Public sponsorship offers
 
 **Phase 6: Wire Protocol**
@@ -1599,22 +1475,22 @@ new_identity_pubkey: 0x1234...abcd (32 bytes)
 sponsor_pubkey: 0x5678...efgh (32 bytes)
 timestamp: 1735300000
 signature: (valid Ed25519 signature)
-sponsor_level: Resident
-sponsor_active_sponsees: 2
-sponsor_max_slots: 5
+sponsor_status: Active (good standing)
+seconds_since_last_sponsorship: 7200
+SPONSORSHIP_COOLDOWN_SECONDS: 3600
 sponsor_penalty: None
 ```
 
-**Expected Output:** `Ok(())` - sponsorship valid (Resident meets minimum per THESIS_08)
+**Expected Output:** `Ok(())` - sponsor is in good standing and off cooldown
 
 ---
 
 **Input:**
 ```
-(same as above, but sponsor_level: Regular)
+(same as above, but sponsor_penalty: SuspendedSponsorship, active)
 ```
 
-**Expected Output:** `Err(SponsorshipError::InsufficientLevel)` - Regular < Resident minimum
+**Expected Output:** `Err(SponsorshipError::SponsorRestricted)` - sponsor under an active sponsorship penalty
 
 ---
 
@@ -1640,9 +1516,9 @@ severity: Abuse
 **Expected Output:**
 ```
 [
-  PenaltyRecord { identity: C, penalty_type: RestrictedPosting, duration: 30 days, hop: 0 },
-  PenaltyRecord { identity: B, penalty_type: LostInviteSlots(ALL), duration: 30 days, hop: 1 },
-  PenaltyRecord { identity: A, penalty_type: LostInviteSlots(1), duration: 7 days, hop: 2 },
+  PenaltyRecord { identity: C, penalty_type: SuspendedSponsorship, duration: 30 days, hop: 0 },
+  PenaltyRecord { identity: B, penalty_type: SuspendedSponsorship (all slots), duration: 30 days, hop: 1 },
+  PenaltyRecord { identity: A, penalty_type: ReducedSponsorshipSlots(1), duration: 7 days, hop: 2 },
 ]
 ```
 
@@ -1657,7 +1533,7 @@ severity: Spam
 **Expected Output:**
 ```
 [
-  PenaltyRecord { identity: Genesis0, penalty_type: RestrictedPosting, duration: 7 days, hop: 0 },
+  PenaltyRecord { identity: Genesis0, penalty_type: ReducedSponsorshipSlots, duration: 7 days, hop: 0 },
 ]
 ```
 Note: No sponsor penalties because genesis has no sponsor.
@@ -1743,7 +1619,7 @@ AccessResult {
 
 **Input:**
 ```
-identity: ResidentUser (age: 45 days, 15GB served)
+identity: AgedUser (age: 45 days, past the age gate)
 action: Post
 ```
 
@@ -1751,7 +1627,7 @@ action: Post
 ```
 AccessResult {
   allowed: true,
-  remaining_today: 20,
+  remaining_today: 20,   // Flat limit, identical for every identity
 }
 ```
 
@@ -1759,7 +1635,7 @@ AccessResult {
 
 **Input:**
 ```
-sponsor: Alice (Resident level)
+sponsor: Alice (in good standing)
 sponsee: Bob (new, probationary: true)
 Bob misbehavior: Spam
 ```
@@ -1769,21 +1645,19 @@ Bob misbehavior: Spam
 Alice penalty duration: 7 days * PROBATION_CONSEQUENCE_MULTIPLIER (0.25) = 1.75 days (rounds to 2 days)
 ```
 
-### 11.6 Penalty Recovery Attestation
+### 11.6 Penalty Recovery (Time-Based)
 
 **Input:**
 ```
 identity: Carol (under penalty)
-penalty: RestrictedPosting, started 10 days ago, base_duration 30 days
-contribution_during_penalty: 150% of normal rate
-attestation_count: 2  // Below MIN_PENALTY_RECOVERY_ATTESTATION_COUNT
+penalty: SuspendedSponsorship, started 10 days ago, base_duration 30 days
 ```
 
 **Expected Output:**
 ```
 RecoveryResult {
-  new_expires_at: original base_expires_at,  // No acceleration due to insufficient attestation
-  fully_recovered: false,
+  new_expires_at: base_expires_at,   // Consequences only age out
+  fully_recovered: false,            // 20 days remain
 }
 ```
 
@@ -1791,14 +1665,14 @@ RecoveryResult {
 
 **Input:**
 ```
-(same as above, but attestation_count: 3)  // Meets minimum
+(same as above, but 30+ days have elapsed since the penalty started)
 ```
 
 **Expected Output:**
 ```
 RecoveryResult {
-  new_expires_at: base_expires_at - 25% (contribution_ratio >= 1.5),
-  fully_recovered: false,
+  new_expires_at: base_expires_at,
+  fully_recovered: true,             // Penalty has aged out
 }
 ```
 
@@ -1869,7 +1743,7 @@ RecoveryResult {
 ## 13. References
 
 - **THESIS_08**: Sponsorship Trees - Accountability Through Vouching
-  - §Thesis Statement: Core sponsorship requirements (Resident-level = 30+ days, 10GB+)
+  - §Thesis Statement: Core sponsorship requirements (sponsor must be an identity in good standing)
   - §Argument 1: Sybil Resistance Requires Social Cost
   - §Argument 2: Distributed Moderation Through Consequence Propagation
   - §Argument 3: Trust Networks Mirror Natural Community Formation
@@ -1887,7 +1761,7 @@ RecoveryResult {
 
 - **SPEC_03**: Proof of Work - CPU PoW specifications (retained for identity/space creation)
 
-- **SPEC_09**: Social Layer - Swimmer levels, contribution tracking, peer attestation
+- **SPEC_09**: Social Layer - Hosting/contribution tracking and peer attestation (profile display only, not access)
 
 - **RESEARCH_05_LEGAL**: Hash blocklists for illegal content detection
 
@@ -1900,26 +1774,25 @@ RecoveryResult {
 
 ## Changelog
 
-- v0.4.3 (2025-12-27): **IMPLEMENTED - Milestone 9.7 Complete. PHASE 9 COMPLETE.** Orphan handling fully implemented. New files: `src/sponsorship/orphan.rs`, `tests/orphan_handling_tests.rs`, `docs/orphan-handling.md`. Modified: `src/sponsorship/types.rs` (added `orphaned_at` field, grace period methods, `can_sponsor_with_level()`), `src/sponsorship/error.rs` (orphan-related variants), `src/sponsorship/storage.rs` (`orphans` tree and methods). OrphanDetectionTask scans for inactive sponsors (ORPHAN_INACTIVITY_THRESHOLD_SECONDS=7,776,000 = 90 days). SponsorshipStatus::Orphaned with orphaned_at timestamp. 30-day grace period (ORPHAN_GRACE_PERIOD_SECONDS=2,592,000) before adoption eligibility. PoolKeeper adoption mechanism: validate_adoption(), execute_adoption() with clean slate (penalties cleared per RESEARCH_07). Cascade prevention: apply_cascade_protection() only orphans direct sponsees (depth+1). OrphanCapabilities struct defines what orphans can do; Anchor+ retain sponsoring ability per §3.2. Genesis identities protected (CannotOrphanGenesis error). Passing tests: test_orphan_detection_sponsor_inactive, test_orphan_detection_sponsor_revoked, test_adoption_transfers_sponsorship, test_adoption_requires_poolkeeper, test_adoption_clears_penalty, test_cascade_direct_sponsees_only, test_cascade_independent_grace_periods, test_grace_period_during, test_grace_period_boundary, test_orphan_anchor_can_sponsor, test_orphan_resident_cannot_sponsor.
+- v0.4.3 (2025-12-27): **Milestone 9.7 — orphan handling.** OrphanDetectionTask scans for inactive sponsors (ORPHAN_INACTIVITY_THRESHOLD_SECONDS=7,776,000 = 90 days). `SponsorshipStatus::Orphaned` with `orphaned_at` timestamp. 30-day grace period (ORPHAN_GRACE_PERIOD_SECONDS=2,592,000) before adoption eligibility. Adoption is open to any identity in good standing with available capacity, starting the adoptee from a clean slate (penalties cleared). Cascade prevention: only direct sponsees (depth+1) are orphaned. Genesis identities are protected from orphaning.
 
-- v0.4.2 (2025-12-27): **IMPLEMENTED - Milestone 9.6 Complete.** Public sponsorship offers fully implemented. New files: `src/sponsorship/offer_store.rs`, `src/sponsorship/offer_validation.rs`, `src/sponsorship/offer_flow.rs`, `src/sponsorship/wire.rs`. PublicSponsorshipOffer with three types: Open (Anchor+), Probationary (Resident+), Conditional (Anchor+). Claim lifecycle: submit_claim() → pending → approve_claim()/reject_claim(). Wire protocol messages 0x49-0x4D for network discovery. PROBATION_PERIOD_DAYS updated to 180 (from spec's 90). PROBATION_CONSEQUENCE_MULTIPLIER=0.25. 15 integration tests in `tests/public_offer_tests.rs`. Documentation: `docs/public-sponsorship.md`, `docs/newcomer-onboarding.md`.
+- v0.4.2 (2025-12-27): **Milestone 9.6 — public sponsorship offers.** `PublicSponsorshipOffer` with three types (Open, Probationary, Conditional), each creatable by any identity in good standing within the flat capacity cap. Claim lifecycle: submit_claim() → pending → approve_claim()/reject_claim(). Wire protocol messages 0x49-0x4D for network discovery. `PROBATION_CONSEQUENCE_MULTIPLIER=0.25`.
 
 - v0.4.1 (2025-12-27): **IMPLEMENTED - Milestone 9.5 Complete.** Linear chain detection fully implemented in `src/sponsorship/linear_chain.rs`. Implementation details: LinearChainDetector with sled persistence, ReviewStatus enum (Pending/Cleared/Confirmed), appeal mechanism, SpaceHealth integration with 2-point penalty per warning (max 10). Detection algorithm matches spec: (linearity_score > 0.8 AND depth >= 4) OR (depth >= 4 AND direct_sponsees <= 1). 203 tests passing.
 
 - v0.4.0 (2025-12-27): Addressed review feedback:
-  - Clarified sponsor level requirements: Resident (30+ days, 10GB+) is minimum for all sponsorships per THESIS_08
+  - Sponsor eligibility framed around identity good standing
   - Added genesis identity handling (§3.1, §3.2, §3.9) with `GenesisIdentity`, `GenesisProof` structures
   - Fixed linearity score calculation to include `max(breadth, 1)` guard consistently (§3.10, §4.4)
-  - Added `PublicSponsorshipOffer` data structure (§3.11) and processing algorithm (§4.8)
+  - Added `PublicSponsorshipOffer` data structure (§3.11) and processing algorithm (§4.7)
   - Defined named constants including `PROBATION_PERIOD_DAYS = 90` (§3.6)
-  - Added `MIN_PENALTY_RECOVERY_ATTESTATION_COUNT` for penalty recovery verification
   - Added wire protocol messages for public offers and genesis creation
   - Added genesis validation rules (§6.5)
   - Updated test vectors with genesis and edge cases (§11.1, §11.2, §11.3, §11.6)
   - Enhanced security considerations for genesis capture and public offer abuse
 
-- v0.3.0 (2025-12-27): Complete specification rewrite incorporating THESIS_08 requirements. Added: probationary sponsorship (§3.7), linear chain detection (§3.8, §4.4), positive contribution rewards (§4.7), behavioral specificity enforcement, comprehensive security analysis, test vectors.
+- v0.3.0 (2025-12-27): Complete specification rewrite incorporating THESIS_08 requirements. Added: probationary sponsorship (§3.7), linear chain detection (§3.8, §4.4), behavioral specificity enforcement, comprehensive security analysis, test vectors.
 
-- v0.2.0 (2025-12-26): Renamed from "Credits" to "Contribution-Based Access." Removed all credit/coin/token language. Reframed as access levels tied to contribution.
+- v0.2.0 (2025-12-26): Removed all credit/coin/token language. Reframed action rights around flat anti-abuse rules (proof-of-work, age gates, flat rate limits).
 
 - v0.1.0 (2025-12-26): Initial draft (as SPEC_11_SPONSORSHIP_CREDITS)

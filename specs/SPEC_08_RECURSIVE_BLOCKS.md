@@ -15,7 +15,7 @@
 Swimchain uses a **recursive block architecture** where blocks form a hierarchical tree structure mirroring content organization. This design enables:
 
 1. **Content-specific PoW** - Actions target specific content, can't be reused
-2. **Per-engagement PoW** - Each engagement is an individual PoW action that persists shared content
+2. **Individual engagement** - Each engagement is one PoW action that resets shared content's decay
 3. **Efficient lookup** - O(log n) binary tree navigation
 4. **Parent-anchored threading** - Related content stays together for sync efficiency
 5. **Automatic branching** - Tree fractures when branches grow too large
@@ -25,11 +25,10 @@ Swimchain uses a **recursive block architecture** where blocks form a hierarchic
 There is no distinction between "mining" and "paying for actions." Users mine to:
 
 - **Post** - Pay PoW, content enters chain
-- **Engage** - Pay PoW, content persists
+- **Engage** - Pay PoW, content's decay timer resets
 
 The mechanism is identical to Bitcoin - PoW proves work was done. The difference:
 - **Not competitive** - All valid PoW counts
-- **Independent engagements** - Each engagement is its own PoW action against a target
 - **Reward is the action** - Not a token, but the effect (content posted, content persisted)
 
 ### 1.3 Scope
@@ -37,7 +36,7 @@ The mechanism is identical to Bitcoin - PoW proves work was done. The difference
 **In Scope:**
 - Hierarchical block structure (root → space → content)
 - PoW aggregation mechanics
-- Block formation and timing
+- Block formation on accumulated PoW
 - Parent-anchored content placement
 - Automatic branching thresholds
 
@@ -57,7 +56,7 @@ The mechanism is identical to Bitcoin - PoW proves work was done. The difference
                     ROOT BLOCK (CHAIN LEVEL)
                     ├── Contains: space block hashes
                     ├── PoW: sum of space block PoWs
-                    └── Forms every ~30 seconds
+                    └── Forms when accumulated PoW crosses threshold
                             │
             ┌───────────────┼───────────────┐
             │               │               │
@@ -84,7 +83,7 @@ CONTENT BLOCK  CONTENT BLOCK
 
 #### Root Block
 
-The chain tip. Forms periodically from accumulated space blocks.
+The chain tip. Forms when accumulated space-block PoW crosses the formation threshold.
 
 ```
 RootBlock {
@@ -100,7 +99,7 @@ RootBlock {
 
 #### Space Block
 
-Contains all activity within a single space during a time window.
+Contains all activity within a single space accumulated since its previous space block.
 
 ```
 SpaceBlock {
@@ -155,13 +154,13 @@ Action {
 enum ActionType {
     POST    = 0x01,     // New thread root
     REPLY   = 0x02,     // Reply to existing content
-    ENGAGE  = 0x03      // Engagement (individual PoW action)
+    ENGAGE  = 0x03      // Engagement (resets content decay)
 }
 ```
 
 ---
 
-## 3. PoW for Engagement
+## 3. Engagement PoW
 
 ### 3.1 The Core Concept
 
@@ -169,66 +168,66 @@ enum ActionType {
 
 | Action | PoW Cost | Effect |
 |--------|----------|--------|
-| Create space | ~60s | One-time space creation |
-| Create post (new thread) | ~30s | Creates new content block |
-| Reply | ~10s | Adds to existing thread |
-| Engage (persist) | ~5s (individual action) | Resets content decay |
+| Create space | highest difficulty | One-time space creation |
+| Create post (new thread) | high difficulty | Creates new content block |
+| Reply | medium difficulty | Adds to existing thread |
+| Engage (persist) | lowest difficulty | Resets content decay |
 
-### 3.2 Engagement Mechanics
+PoW scales by action type only, in the order space > post > reply > engage.
 
-Content persistence requires an **individual PoW action** per engagement. There is no shared accumulator - one valid engagement resets the target content's decay timer on its own:
+### 3.2 Individual Engagement Mechanics
+
+Each engagement is an **individual PoW action**. A single valid engagement proof immediately resets the target content's decay timer:
 
 ```
 ENGAGEMENT MODEL
 
-Each engagement is a self-contained PoW action.
-├── Engager computes PoW against the target content
-├── A valid engagement resets the content's decay timer
-├── engagement_count is incremented
-├── Engager is credited in the content block
-└── Any identity can engage again later to reset decay again
+One engagement = one valid PoW proof against the target content
+├── Solved by a single identity
+├── Recorded as one ENGAGE action in the content block
+├── Resets the content's decay timer on acceptance
+└── No coordination, no window, no shared total
 
 Example:
-├── User A engages content X → decay reset, A credited
-├── Later, User B engages content X → decay reset again, B credited
-└── Each engagement stands alone; no coordination required
+├── User A wants a post to persist
+├── User A computes one engagement PoW
+└── Decay timer reset ✓
 ```
 
-### 3.3 Engagement Data Structures
+Keeping a piece of content alive costs one engagement-PoW per item per decay cycle, forever. There is no shared total and no partial credit — every reset is a full, self-contained proof.
+
+### 3.3 Engagement Data Structure
+
+An engagement is an `Action` of type `ENGAGE`, carried inside the target content's content block:
 
 ```
-Engagement {
-    target_content:     ContentHash     // Content being engaged
-    engager:            PublicKey        // Who engaged
-    pow_nonce:          uint64          // Their PoW solution
+Engagement (ENGAGE action) {
+    actor:              PublicKey       // Who engaged
+    content_hash:       ContentHash     // Content being engaged
+    pow_nonce:          uint64          // PoW solution
     pow_work:           uint64          // Work amount in seconds
     pow_target:         Hash            // Target including content hash
     timestamp:          Timestamp       // When engaged
-    signature:          Signature       // Proof of engagement
+    signature:          Signature       // Ed25519 signature
 }
 ```
 
 ### 3.4 Engagement Flow
 
 ```
-1. COMPUTE
+1. INTENT
    ├── User sees content approaching decay
-   ├── User computes PoW against: H(nonce || content_hash || prev_block)
-   └── User meets the ENGAGE difficulty
+   └── User starts computing an engagement proof
 
-2. BROADCAST
-   ├── Engagement action broadcast to peers via the mempool
-   ├── Peers validate the PoW and signature
-   └── Valid engagement is included in the content block
+2. PROOF
+   ├── User computes PoW against: H(nonce || content_hash || prev_root_hash)
+   ├── Engagement broadcast to peers
+   └── Peers validate the single proof
 
-3. EFFECT
-   ├── Content decay timer reset (last_engagement updated)
-   ├── engagement_count incremented
-   └── Engager credited as keeping content alive
-
-4. REPEAT
-   ├── Any identity can engage again later
-   └── Each new engagement resets decay again
+3. ACCEPTANCE
+   ├── Valid proof accepted into the content block
+   ├── Content decay timer reset immediately
+   └── Actor recorded in the content block
 ```
 
 ### 3.5 Why Sybils Don't Help
@@ -237,29 +236,14 @@ Engagement {
 ATTACK: Create 100 identities to "split" cost
 
 Reality:
-├── Each engagement costs its own PoW
-├── 100 identities × full engagement PoW each
-├── 1 identity × full engagement PoW per engagement
-├── Same per-engagement cost regardless
-└── No advantage to Sybils
+├── Each reset costs one full engagement PoW
+├── 100 identities = 100 separate full-cost proofs = 100x the work
+├── 1 identity = 1 full-cost proof for the same one reset
+└── Sybils multiply cost, they do not amplify effect
 
-Engagement is priced per action, not per identity.
-Identity count is irrelevant.
-```
-
-### 3.6 Repeated Engagement
-
-Any identity can keep content alive by engaging again over time:
-
-```
-SCENARIO: Small community, few contributors
-
-User A engages content X → decay reset
-Later, User B engages content X → decay reset
-Later, User A engages content X again → decay reset
-
-Each engagement is an independent PoW action.
-Niche content persists as long as someone keeps engaging.
+Self-engagement is allowed because it is pointless: each reset costs
+full engagement PoW regardless of identity, so sockpuppets only
+multiply your own cost for no additional benefit.
 ```
 
 ---
@@ -311,7 +295,7 @@ POST X                 → LEFT (root determines placement)
 ├── Reply A to X       → LEFT (follows parent)
 │   └── Reply B to A   → LEFT (follows thread root)
 ├── Reply C to X       → LEFT (follows parent)
-└── Engagement         → LEFT (targets content in LEFT)
+└── Engagement         → routed to the target content's branch (LEFT)
 
 ALL in same branch. User syncs LEFT, gets complete thread.
 ```
@@ -414,7 +398,10 @@ User syncs:
 ├── RIGHT-LEFT (contains Thread C)
 └── NOT RIGHT-RIGHT (no interactions there)
 
-Storage: only branches with user's content
+Storage: subscribed branches PLUS all chain records
+├── A node hosts the content bodies of branches it subscribes to
+├── A node keeps ALL chain records (the authoritative metadata)
+└── Content in a branch it does not host is fetched on demand when viewed
 ```
 
 ### 5.5 Hybrid Branching (Manual + Automatic)
@@ -443,30 +430,30 @@ PoW aggregates from actions up through the hierarchy:
 
 ```
 LEVEL 0: ACTIONS (atomic)
-├── Post: 30s PoW
-├── Reply: 10s PoW
-├── Engage contribution: 15s PoW
+├── Post: high-difficulty PoW
+├── Reply: medium-difficulty PoW
+├── Engage: lowest-difficulty PoW
 └── Each action has individual PoW proof
 
 LEVEL 1: CONTENT BLOCK
 ├── Sum of action PoWs
 ├── Forms when actions accumulate
-└── e.g., 30s + 10s + 10s + 60s = 110s
+└── e.g., 30s (post) + 10s (reply) + 10s (reply) + 5s (engage) = 55s
 
 LEVEL 2: SPACE BLOCK
 ├── Sum of content block PoWs
 ├── Forms when content blocks accumulate
-└── e.g., 110s + 80s + 120s = 310s
+└── e.g., 55s + 80s + 120s = 255s
 
 LEVEL 3: ROOT BLOCK
 ├── Sum of space block PoWs
-├── Forms when difficulty target met OR time target (~30s)
-└── e.g., 310s + 200s + 150s = 660s
+├── Forms when accumulated PoW crosses the 30 PoW-second threshold
+└── e.g., 255s + 200s + 150s = 605s
 ```
 
 ### 6.2 Root Block Formation
 
-Root blocks form based on accumulated PoW:
+Root blocks form when accumulated PoW crosses a threshold, not on a wall-clock cadence:
 
 ```
 ROOT BLOCK FORMATION
@@ -477,18 +464,18 @@ Actions queue across all spaces:
 ├── Space C: content blocks accumulating
 └── Total PoW accumulating
 
-When total PoW >= difficulty_target:
+When accumulated PoW >= 30 PoW-seconds threshold:
 ├── Collect pending space blocks
 ├── Compute merkle root
 ├── Form root block
 ├── Broadcast to network
 └── New accumulation begins
 
-Difficulty adjustment:
-├── Target: ~30 second block time
-├── More activity → higher difficulty
-├── Less activity → lower difficulty
-└── Classic Bitcoin-style adjustment
+Threshold behavior:
+├── Formation is driven by accumulated proof-of-work, not a timer
+├── More activity → threshold reached sooner
+├── Less activity → threshold reached later
+└── The chain advances exactly as fast as work is done
 ```
 
 ### 6.3 Chain Commitment
@@ -522,7 +509,7 @@ For each action in a content block:
    - prev_root_hash (chain-specific)
 4. Timestamp within acceptable window
 5. For REPLY: parent exists and is not decayed
-6. For ENGAGE: target content exists and is not decayed
+6. For ENGAGE: target content exists and the single PoW proof is valid
 ```
 
 ### 7.2 Content Block Validation
@@ -551,7 +538,7 @@ For each space block in a root block:
 ```
 For each root block:
 1. prev_root_hash matches previous root block
-2. Total PoW meets difficulty target
+2. Total PoW meets the formation threshold
 3. Sum of space block PoWs equals block total_pow
 4. Merkle root matches space block list
 5. Timestamp is within acceptable window
@@ -571,10 +558,10 @@ Setup:
 ├── Posts 1000 files
 ├── Initial cost: 1000 × 30s = 500 minutes
 
-Persistence cost (ongoing):
-├── Each content needs an engagement (individual PoW) to reset decay
-├── Only engager: attacker
-├── Repeated across 1000 files, repeatedly over time
+Persistence cost (monthly):
+├── Each content needs one engagement PoW per decay cycle
+├── Every reset is a full-cost proof paid by the attacker
+├── Monthly: 1000 × (one engagement PoW each)
 └── Ongoing cost makes this expensive
 
 RESULT: Economically irrational vs. actual hosting ($0.10/month)
@@ -592,8 +579,8 @@ Post spam in "rust-lang" (1000 members):
 
 Defense:
 ├── Spam content has no organic engagement
-├── Attacker must pay engagement PoW repeatedly to persist
-├── Nobody else engages the spam
+├── Attacker must pay a full engagement PoW per decay cycle to persist
+├── No one else engages it
 ├── Spam decays without engagement
 └── Community visible, can filter/migrate
 
@@ -603,17 +590,19 @@ RESULT: Visible but expensive and temporary
 ### 8.3 Sybil Engagement Attack
 
 ```
-ATTACK: Create fake identities to reduce per-identity cost
+ATTACK: Create fake identities to cheapen persistence
 
 100 identities engage same content:
-├── Each engagement costs full engagement PoW
-├── 100 engagements = 100 × full PoW
+├── Each reset still costs one full engagement PoW
+├── 100 identities = 100 full-cost proofs = 100x the work
+└── The extra identities buy nothing but extra cost
 
 Single identity:
-├── Each engagement costs full engagement PoW
-├── 1 engagement = 1 × full PoW
+├── One reset costs one full engagement PoW
+└── Same one reset, minimum possible cost
 
-RESULT: Engagement is priced per action. Sybils provide zero advantage.
+RESULT: Sybils multiply cost without amplifying effect. Self-engagement
+is allowed precisely because it is pointless.
 ```
 
 ### 8.4 Block Stuffing
@@ -662,15 +651,21 @@ For space with 1M threads:
 USER SYNC
 
 User follows 12 spaces × 3 branches average:
-├── 36 branch paths to sync
+├── 36 branch paths to host in full
 ├── Each branch: latest content blocks
 ├── Complete threads (parent-anchored)
-└── No cross-branch fetches needed
+├── Plus all chain records (authoritative metadata)
+└── Unhosted content fetched on demand when viewed
 
 Storage target: 500MB per user
 ├── Achievable with decay + selective branching
 ├── Old threads decay → storage reclaimed
 └── Active threads persist → complete conversations
+
+Search consistency:
+├── Search indexes ALL chain records
+├── Every node sees identical search results
+└── A hit outside a hosted branch fetches its content on demand
 ```
 
 ### 9.3 Block Size Targets
@@ -696,20 +691,22 @@ Storage target: 500MB per user
 | GET_SPACE | 0x43 | Request space block |
 | CONTENT_BLOCK | 0x44 | Content block data |
 | GET_CONTENT | 0x45 | Request content block |
-| ACTION_NEW | 0x49 | New action broadcast (POST, REPLY, ENGAGE) |
+| ACTION_NEW | 0x49 | New action broadcast (post, reply, engage) |
 
-### 10.2 Engagement Broadcast
+### 10.2 Action Broadcast
 
-Engagements are not a separate protocol. An ENGAGE is an ordinary action carried in the normal ACTION_NEW (0x49) / mempool flow, alongside POST and REPLY:
+An engagement travels as an ordinary `ACTION_NEW` message; there is no separate engagement message type.
 
 ```
-ACTION_NEW (0x49) for an ENGAGE:
+ACTION BROADCAST (0x49):
 [1 byte: type]
-[1 byte: action_type = ENGAGE]
-[32 bytes: target_content_hash]
-[32 bytes: engager_pubkey]
+[1 byte: action_type]          // POST | REPLY | ENGAGE
+[32 bytes: actor_pubkey]
+[32 bytes: content_hash]
+[32 bytes: parent_id]          // zero for POST
 [8 bytes: pow_nonce]
 [8 bytes: pow_work]
+[32 bytes: pow_target]
 [64 bytes: signature]
 ```
 
@@ -720,15 +717,15 @@ ACTION_NEW (0x49) for an ENGAGE:
 ### 11.1 SPEC_02 (Decay)
 
 - Decay applies at content level (individual posts)
-- A valid engagement resets the target content's decay timer
-- Each engagement counts as engagement for decay purposes
+- A single valid engagement resets the content's decay timer
+- Each engagement counts as one reset for decay purposes
 - Decayed content blocks can be pruned
 
 ### 11.2 SPEC_03 (PoW)
 
 - Action PoW uses same algorithm (Argon2id)
-- Difficulty levels by action type (post > reply > engage)
-- Each engagement is an independent unit of PoW work
+- Difficulty levels by action type (space > post > reply > engage)
+- Each engagement is a single self-contained proof
 
 ### 11.3 SPEC_04 (Spaces)
 
@@ -748,14 +745,13 @@ ACTION_NEW (0x49) for an ENGAGE:
 
 ### 12.1 To Resolve
 
-1. **Engagement difficulty**: Is a ~5s per-engagement PoW the right cost?
-2. **Re-engagement rate**: Should the same identity be limited in how often it re-engages the same content?
+1. **Engagement difficulty**: Is the engage difficulty low enough for niche content to stay alive, yet high enough to price out storage abuse?
+2. **Decay cycle alignment**: How should the engagement cadence line up with the content decay half-life?
 
 ### 12.2 For Prototyping
 
-1. **Branch size thresholds**: 50MB proposed. Optimal value?
-2. **Block timing**: 30s target. Right for social media cadence?
-3. **Engagement economics**: Is the per-engagement PoW cost calibrated correctly?
+1. **Branch fracture threshold**: The 50MB fracture threshold is the current value — is it optimal for storage vs. locality?
+2. **Formation threshold**: The 30 PoW-second root-block threshold — does it give the right chain cadence under real activity?
 
 ---
 
@@ -792,7 +788,7 @@ ACTION_NEW (0x49) for an ENGAGE:
 - **Module location:** `src/blocks/` (content_block.rs, space_block.rs, root_block.rs, branch_path.rs, validation.rs)
 - **Test coverage:** 21 integration tests passing
 - **Key validations:**
-  - PoW aggregation verified with Sybil equivalence test (1@60s == 60@1s)
+  - PoW aggregation verified; engagement is individual (each reset is one full-cost proof, so Sybils multiply cost)
   - Parent-anchored threading via BranchPath::for_reply()
   - Genesis block with zero prev_hash and height=0
   - Chain validation at all three levels (content, space, root)
