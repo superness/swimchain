@@ -21,7 +21,8 @@
  */
 
 import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex, hexToBytes } from './x25519';
+import { hexToBytes } from './x25519';
+import { SpaceClass, applyClass } from './spaceClass';
 
 /** Profile space version for future compatibility */
 const PROFILE_VERSION = 'v1';
@@ -120,8 +121,7 @@ export interface UserProfile {
 export function getProfileSpaceId(userPk: string): string {
   const preimage = `profile:${PROFILE_VERSION}:${userPk.toLowerCase()}`;
   const hash = sha256(new TextEncoder().encode(preimage));
-  // Use first 16 bytes (32 hex chars) for space ID
-  return bytesToHex(hash.slice(0, 16));
+  return applyClass(SpaceClass.Profile, hash);
 }
 
 /**
