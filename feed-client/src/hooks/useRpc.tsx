@@ -13,6 +13,7 @@ import {
   isInTauri,
 } from '../lib/rpc';
 import { getParentConfig, isInIframe } from './useParentRpcConfig';
+import { useNodeEvents } from '@swimchain/frontend';
 
 import type { Space, Thread, Reply, SyncStatus, StoredIdentity } from '../types';
 
@@ -359,7 +360,9 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refetch = useCallback(async (skipCache = false) => {
+  // `silent` = refetch in place without flipping `loading` — used by the
+  // realtime event subscription so live updates never flash/unmount the list.
+  const refetch = useCallback(async (skipCache = false, silent = false) => {
     // Import cache functions
     const { getFromMemory, setInMemory, getFromStorage, setInStorage } = await import('../lib/cache');
     // v2: bumped when derived/unnamed spaces started being filtered out, so
@@ -395,7 +398,7 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       return;
     }
 
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const result = await rpc.listSpaces();
 
@@ -442,6 +445,22 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
   useEffect(() => {
     refetch();
   }, [refetch]);
+
+  // Realtime: silently refetch the spaces list when the node reports a new/updated
+  // space or a freshly formed block, so new spaces appear without an app restart.
+  // Debounced so a burst of events collapses into one in-place refetch (no flash).
+  const spacesEventTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useNodeEvents({
+    url: connected && rpc ? rpc.getEndpoint() : null,
+    events: ['space_updated', 'block_created'],
+    enabled: connected && !!rpc,
+    onEvent: () => {
+      if (spacesEventTimer.current) clearTimeout(spacesEventTimer.current);
+      spacesEventTimer.current = setTimeout(() => {
+        refetch(true, true).catch(() => undefined);
+      }, 400);
+    },
+  });
 
   return { spaces, loading, error, refetch: () => refetch(true) };
 }
@@ -720,6 +739,22 @@ export function useSpaceThreads(spaceId: string, options?: { offset?: number; li
   useEffect(() => {
     refetch();
   }, [refetch]);
+
+  // Realtime: new posts / reactions in THIS space refetch the thread list in place
+  // (refetch(true) skips the loading flip, so no flash). Scoped to spaceId server-side.
+  const threadsEventTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useNodeEvents({
+    url: connected && rpc ? rpc.getEndpoint() : null,
+    events: ['content_new', 'content_engaged'],
+    spaceId,
+    enabled: connected && !!rpc && !!spaceId,
+    onEvent: () => {
+      if (threadsEventTimer.current) clearTimeout(threadsEventTimer.current);
+      threadsEventTimer.current = setTimeout(() => {
+        refetch(true).catch(() => undefined);
+      }, 400);
+    },
+  });
 
   return { threads, loading, error, fetching, total, refetch };
 }

@@ -5505,6 +5505,11 @@ impl MessageRouter {
                             );
                         }
                     }
+                    ActionType::CreateSpace => {
+                        // Let subscribed clients (Discover/spaces list) refresh live when
+                        // a new space is gossiped in, instead of requiring an app restart.
+                        events.publish_space_updated(&space_id_str, "created");
+                    }
                     _ => {}
                 }
             }
