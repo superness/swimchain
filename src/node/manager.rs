@@ -100,6 +100,8 @@ pub struct NodeManager {
     reputation_store: Option<Arc<ReputationStore>>,
     membership_store: Option<Arc<MembershipStore>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
+    /// Sponsorship penalty manager (SPEC_11) — node-local penalty policy
+    sponsorship_manager: Option<Arc<crate::sponsorship::manager::SponsorshipManager>>,
     offer_store: Option<Arc<crate::sponsorship::offer_store::OfferStore>>,
     engagement_graph: Option<Arc<EngagementGraphStore>>,
     /// Achievement service — awards recognition badges (SPEC_09 §5.3).
@@ -174,6 +176,7 @@ impl NodeManager {
             reputation_store: None,
             membership_store: None,
             sponsorship_store: None,
+            sponsorship_manager: None,
             offer_store: None,
             engagement_graph: None,
             achievement_service: None,
@@ -926,6 +929,20 @@ impl NodeManager {
         }
         if let Some(ref reputation_store) = self.reputation_store {
             router_builder = router_builder.reputation_store(reputation_store.clone());
+        }
+        // SPEC_11: penalty manager over the sponsorship store, so spam-flag
+        // threshold crossings propagate consequences up the sponsor chain.
+        if let Some(ref sponsorship_store) = self.sponsorship_store {
+            match crate::sponsorship::manager::SponsorshipManager::new(sponsorship_store.clone()) {
+                Ok(mgr) => {
+                    let mgr = Arc::new(mgr);
+                    self.sponsorship_manager = Some(mgr.clone());
+                    router_builder = router_builder.sponsorship_manager(mgr);
+                }
+                Err(e) => {
+                    warn!("[SPONSORSHIP] Penalty manager init failed: {}", e);
+                }
+            }
         }
         if let Some(ref membership_store) = self.membership_store {
             router_builder = router_builder.membership_store(membership_store.clone());
@@ -1737,6 +1754,7 @@ impl NodeManager {
             aggregation_cache: self.aggregation_cache.clone(),
             spam_attestation_store: self.spam_attestation_store.clone(),
             reputation_store: self.reputation_store.clone(),
+            sponsorship_manager: self.sponsorship_manager.clone(),
             membership_store: self.membership_store.clone(),
             sponsorship_store: self.sponsorship_store.clone(),
             offer_store: self.offer_store.clone(),

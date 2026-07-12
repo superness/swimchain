@@ -473,7 +473,8 @@ async fn handle_request(
         "get_identity_level",
         "get_identity_name",
         "get_user_profile",
-        "get_reputation", // public trust signal (SPEC_12 §3.4), read-only
+        "get_reputation",         // public trust signal (SPEC_12 §3.4), read-only
+        "get_sponsorship_status", // sponsorship standing + penalties (SPEC_11), read-only
         // Recognition badges (SPEC_09 §5.3) — public, read-only data
         "get_achievements",
         // Sponsorship actions - these contain verifiable signatures in params

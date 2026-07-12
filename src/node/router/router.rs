@@ -209,6 +209,7 @@ pub struct MessageRouter {
     /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5). Fed from the
     /// attestation-processing path when spam thresholds are reached/cleared.
     reputation_store: Option<Arc<ReputationStore>>,
+    sponsorship_manager: Option<Arc<crate::sponsorship::manager::SponsorshipManager>>,
     membership_store: Option<Arc<crate::storage::membership::MembershipStore>>,
     /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
     /// Used to recognize DM requests addressed to us.
@@ -279,6 +280,7 @@ impl MessageRouter {
             block_builder: None,
             spam_attestation_store: None,
             reputation_store: None,
+            sponsorship_manager: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
@@ -325,6 +327,7 @@ impl MessageRouter {
             block_builder: None,
             spam_attestation_store: None,
             reputation_store: None,
+            sponsorship_manager: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
@@ -6895,6 +6898,16 @@ impl MessageRouter {
             Ok(Some(item)) => item.author_id.0,
             _ => return,
         };
+        // SPEC_11: the same threshold crossing propagates a Spam penalty up the
+        // author's sponsor chain (node-local policy, best-effort, never fails
+        // the attestation path).
+        if let Some(ref mgr) = self.sponsorship_manager {
+            if let Err(e) =
+                mgr.on_spam_flagged_content(&crate::identity::PublicKey(author), timestamp)
+            {
+                warn!("[SPONSORSHIP] Penalty propagation failed: {}", e);
+            }
+        }
         if let Err(e) = rep_store.record_spam_flag(&author, timestamp) {
             warn!("[REPUTATION] Failed to record spam flag: {}", e);
         }
@@ -7811,6 +7824,7 @@ pub struct MessageRouterBuilder {
     block_builder: Option<Arc<RwLock<crate::blocks::builder::BlockBuilder>>>,
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
     reputation_store: Option<Arc<ReputationStore>>,
+    sponsorship_manager: Option<Arc<crate::sponsorship::manager::SponsorshipManager>>,
     membership_store: Option<Arc<crate::storage::membership::MembershipStore>>,
     /// This node's raw Ed25519 identity public key (NOT the SHA-256 network node_id).
     /// Used to recognize DM requests addressed to us.
@@ -7848,6 +7862,7 @@ impl MessageRouterBuilder {
             block_builder: None,
             spam_attestation_store: None,
             reputation_store: None,
+            sponsorship_manager: None,
             membership_store: None,
             identity_pubkey: None,
             hole_punch_tx: None,
@@ -7964,6 +7979,15 @@ impl MessageRouterBuilder {
     }
 
     /// Set the identity-level poster reputation store (SPEC_12 §3.4/§4.5)
+    /// Set the sponsorship manager for spam-flag penalty propagation (SPEC_11).
+    pub fn sponsorship_manager(
+        mut self,
+        mgr: Arc<crate::sponsorship::manager::SponsorshipManager>,
+    ) -> Self {
+        self.sponsorship_manager = Some(mgr);
+        self
+    }
+
     pub fn reputation_store(mut self, store: Arc<ReputationStore>) -> Self {
         self.reputation_store = Some(store);
         self
@@ -8086,6 +8110,7 @@ impl MessageRouterBuilder {
             block_builder: self.block_builder,
             spam_attestation_store: self.spam_attestation_store,
             reputation_store: self.reputation_store,
+            sponsorship_manager: self.sponsorship_manager,
             membership_store: self.membership_store,
             identity_pubkey: self.identity_pubkey,
             hole_punch_tx: self.hole_punch_tx,
@@ -8126,6 +8151,7 @@ impl MessageRouterBuilder {
             block_builder: self.block_builder,
             spam_attestation_store: self.spam_attestation_store,
             reputation_store: self.reputation_store,
+            sponsorship_manager: self.sponsorship_manager,
             membership_store: self.membership_store,
             identity_pubkey: self.identity_pubkey,
             hole_punch_tx: self.hole_punch_tx,

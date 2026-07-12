@@ -531,6 +531,8 @@ pub struct NodeRef {
     pub spam_attestation_store: Option<Arc<SpamAttestationStore>>,
     /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5)
     pub reputation_store: Option<Arc<crate::reputation::ReputationStore>>,
+    /// Sponsorship penalty manager (SPEC_11) — node-local penalty policy
+    pub sponsorship_manager: Option<Arc<crate::sponsorship::manager::SponsorshipManager>>,
     /// Membership store for private spaces (DMs, group chats)
     pub membership_store: Option<Arc<MembershipStore>>,
     /// Sponsorship store for identity chain enforcement
@@ -1099,6 +1101,7 @@ impl RpcMethods {
             "set_identity_name" => self.set_identity_name(params, id).await,
             "get_user_profile" => self.get_user_profile(params, id).await,
             "get_reputation" => self.get_reputation(params, id).await,
+            "get_sponsorship_status" => self.get_sponsorship_status(params, id).await,
             "get_achievements" => self.get_achievements(params, id).await,
 
             // Reaction methods (reactions come from PoW engagement via submit_engagement)
@@ -8156,6 +8159,83 @@ impl RpcMethods {
         )
     }
 
+    /// get_sponsorship_status — sponsorship standing plus active penalties for an
+    /// identity (SPEC_11). Penalties are node-local policy, never consensus data.
+    async fn get_sponsorship_status(&self, params: Value, id: Value) -> RpcResponse {
+        let raw = params
+            .get("identity")
+            .or_else(|| params.get("user_id"))
+            .and_then(|v| v.as_str());
+        let raw = match raw {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing identity parameter",
+                    id,
+                );
+            }
+        };
+        let identity: [u8; 32] = if raw.len() == 64 && hex::decode(raw).is_ok() {
+            let bytes = hex::decode(raw).unwrap();
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            arr
+        } else if let Ok(pk) = crate::crypto::address::decode_address_to_pubkey(raw) {
+            pk.0
+        } else {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid identity: must be 32-byte hex or a cs1 address",
+                id,
+            );
+        };
+        let mgr = match &self.node.sponsorship_manager {
+            Some(m) => m,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Sponsorship manager not available",
+                    id,
+                );
+            }
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        match mgr.status(&crate::identity::PublicKey(identity), now) {
+            Ok(report) => {
+                let penalties: Vec<Value> = report
+                    .active_penalties
+                    .iter()
+                    .map(|p| {
+                        json!({
+                            "penalty_type": format!("{:?}", p.penalty_type),
+                            "started_at": p.started_at,
+                            "expires_at": p.current_expires_at,
+                            "caused_by": p.caused_by.as_ref().map(|c| hex::encode(c.0)),
+                        })
+                    })
+                    .collect();
+                RpcResponse::success(
+                    json!({
+                        "identity": hex::encode(identity),
+                        "sponsorship_barred": report.sponsorship_barred,
+                        "has_sponsorship": report.sponsorship.is_some(),
+                        "active_penalties": penalties,
+                    }),
+                    id,
+                )
+            }
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Sponsorship status error: {}", e),
+                id,
+            ),
+        }
+    }
+
     /// Apply a reputation spam-flag penalty to the author of `content_hash` when a
     /// community spam threshold is first reached. Resolves author via the content
     /// store; a no-op if either store is unavailable or the content is unknown.
@@ -8172,6 +8252,15 @@ impl RpcMethods {
             Ok(Some(item)) => item.author_id.0,
             _ => return,
         };
+        // SPEC_11: the same threshold crossing propagates a Spam penalty up the
+        // author's sponsor chain (node-local policy, best-effort).
+        if let Some(ref mgr) = self.node.sponsorship_manager {
+            if let Err(e) =
+                mgr.on_spam_flagged_content(&crate::identity::PublicKey(author), timestamp)
+            {
+                warn!("[SPONSORSHIP] Penalty propagation failed: {}", e);
+            }
+        }
         if let Err(e) = rep_store.record_spam_flag(&author, timestamp) {
             warn!("[REPUTATION] Failed to record spam flag: {}", e);
         } else {

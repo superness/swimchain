@@ -42,6 +42,7 @@
 pub mod error;
 pub mod genesis_list;
 pub mod linear_chain;
+pub mod manager;
 pub mod offer_flow;
 pub mod offer_store;
 pub mod offer_validation;
