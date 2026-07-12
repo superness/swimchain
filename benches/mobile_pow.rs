@@ -68,7 +68,7 @@ fn bench_single_hash(c: &mut Criterion) {
 /// - Difficulty 8: ~26s (256 attempts) - TARGET for mobile
 fn bench_mining_by_difficulty(c: &mut Criterion) {
     let mut group = c.benchmark_group("mobile_mining");
-    group.sample_size(5); // Very low due to long mine times
+    group.sample_size(10); // Criterion's minimum; mine times are long
 
     let mobile = ForkPoWConfig::mobile();
 
@@ -116,7 +116,7 @@ fn bench_mining_test_config(c: &mut Criterion) {
 /// Benchmark different action types at same difficulty
 fn bench_action_types(c: &mut Criterion) {
     let mut group = c.benchmark_group("mobile_action_types");
-    group.sample_size(5);
+    group.sample_size(10); // Criterion's minimum
 
     let mobile = ForkPoWConfig::mobile();
     let difficulty = 4; // Low for speed
