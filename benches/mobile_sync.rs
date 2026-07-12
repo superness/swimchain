@@ -50,6 +50,12 @@ impl SimpleRateLimiter {
     }
 
     fn wait_for_tokens(&self, bytes: u64) {
+        // Track how much we still need so partially-acquired tokens count
+        // toward this request. The previous version threw partial tokens away
+        // (store(0) without crediting them), which livelocked once the initial
+        // burst was spent: the ~25 tokens refilled per 100us poll were
+        // discarded every cycle and the bucket could never reach a full chunk.
+        let mut needed = bytes;
         loop {
             // Refill tokens based on elapsed time
             {
@@ -66,20 +72,24 @@ impl SimpleRateLimiter {
                 }
             }
 
-            // Try to acquire tokens
+            // Take whatever is available, up to what we still need
             let current = self.tokens.load(Ordering::Relaxed);
-            if current >= bytes {
-                let new = current - bytes;
-                if self
+            let take = current.min(needed);
+            if take > 0
+                && self
                     .tokens
-                    .compare_exchange(current, new, Ordering::Relaxed, Ordering::Relaxed)
+                    .compare_exchange(
+                        current,
+                        current - take,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
                     .is_ok()
-                {
-                    return;
-                }
-            } else if current > 0 {
-                // Partial acquisition - consume what we can
-                self.tokens.store(0, Ordering::Relaxed);
+            {
+                needed -= take;
+            }
+            if needed == 0 {
+                return;
             }
 
             // Wait a bit for more tokens
