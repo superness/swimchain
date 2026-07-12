@@ -111,10 +111,14 @@
     font-family: var(--mono); font-size: 0.88em; background: var(--surface-2);
     border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; color: var(--foam);
   }
-  .prompt-shot {
-    margin: 14px 0 0; padding: 40px 16px; text-align: center;
-    background: var(--surface); border: 1px dashed var(--line); border-radius: 6px;
-    font-family: var(--mono); font-size: 12px; color: var(--muted);
+  .shot { margin: 16px 0 0; }
+  .shot img {
+    display: block; max-width: 300px; width: 100%; height: auto;
+    border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+  }
+  .shot figcaption {
+    font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 8px;
   }
   .reassure {
     margin-top: 8px; font-size: 15px; color: var(--shallow);
@@ -156,12 +160,18 @@
 
 <section class="wrap">
   <div class="dl">
-    <a class="btn disabled" aria-disabled="true" href="#">Download the APK</a>
-    <span class="pending">Release build in progress</span>
+    <a class="btn primary" href="https://github.com/superness/swimchain/releases/download/mobile-v0.1.0-alpha/swimchain-android-v0.1.0-alpha.apk">
+      Download the APK
+    </a>
+    <span class="pending">Alpha</span>
     <div class="meta">
-      <b>Version:</b> TBD &nbsp;·&nbsp; <b>Requires:</b> Android 8.0+ &nbsp;·&nbsp;
-      <b>Size:</b> TBD &nbsp;·&nbsp; <b>SHA-256:</b> <span style="word-break:break-all">TBD</span><br>
-      Sideloaded apps don't auto-update — check back here for new versions.
+      <b>Version:</b> v0.1.0-alpha &nbsp;·&nbsp; <b>Requires:</b> Android 8.0+ (API 26) &nbsp;·&nbsp;
+      <b>Arch:</b> arm64-v8a &nbsp;·&nbsp; <b>Size:</b> 17.9 MB<br>
+      <b>SHA-256:</b> <span style="word-break:break-all">3fc5bf01496fb385b4ebb1ad42e9c4441c89f0bd633903157124c92c947cdd7d</span><br>
+      This is a <b>pre-release alpha</b>. Sideloaded apps don't auto-update &mdash; note
+      the version and check back here (or the
+      <a href="https://github.com/superness/swimchain/releases/tag/mobile-v0.1.0-alpha">release notes</a>)
+      for new builds.
     </div>
   </div>
 
@@ -179,21 +189,29 @@
     <li>
       <h3>Allow installs from your browser</h3>
       <p>
-        Open the downloaded file. Android will say <em>"can't install unknown apps from
-        this source."</em> Tap <code>Settings</code>, turn on <b>Allow from this source</b>
-        for your browser, then press back.
+        Open the downloaded file. Android will say <em>"For your security, your phone
+        currently isn't allowed to install unknown apps from this source."</em> Tap
+        <code>Settings</code>, turn on <b>Allow from this source</b>, then press back.
       </p>
-      <div class="prompt-shot">[ screenshot: "Allow from this source" toggle for your browser ]</div>
+      <figure class="shot">
+        <img src="/img/android-allow-source.png" alt="Android 'Install unknown apps' screen with the 'Allow from this source' toggle" loading="lazy">
+        <figcaption>Turn on "Allow from this source," then press back.</figcaption>
+      </figure>
     </li>
 
     <li>
       <h3>Get past the Play Protect check</h3>
       <p>
-        You'll see a warning about an <em>"unknown developer / unsafe app."</em> Tap
-        <code>More details</code> → <b>Install anyway</b>. This is expected for any app
-        not distributed through the Play Store.
+        Google Play Protect will say <em>"App scan recommended — Play Protect hasn't
+        seen this app before."</em> You can tap <b>Scan app</b> to send it to Google
+        first (it installs once the scan comes back clean), or tap
+        <code>More details</code> → <b>Install without scanning</b>. This appears for
+        any app not distributed through the Play Store.
       </p>
-      <div class="prompt-shot">[ screenshot: Play Protect "Install anyway" prompt ]</div>
+      <figure class="shot">
+        <img src="/img/android-play-protect.png" alt="Google Play Protect 'App scan recommended' dialog for Swimchain" loading="lazy">
+        <figcaption>Tap "Scan app," or "More details → Install without scanning."</figcaption>
+      </figure>
     </li>
 
     <li>
