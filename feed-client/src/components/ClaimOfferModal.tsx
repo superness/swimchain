@@ -124,6 +124,7 @@ export function ClaimOfferModal({
   const { sign } = useFeedIdentity();
   const [applicationText, setApplicationText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const [mining, setMining] = useState(false);
   const [miningProgress, setMiningProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -160,6 +161,7 @@ export function ClaimOfferModal({
       setMining(false);
       setMiningProgress(0);
       setSubmitting(false);
+      setSubmitted(false);
       cancelledRef.current = false;
     }
   }, [isOpen]);
@@ -229,8 +231,10 @@ export function ClaimOfferModal({
       });
 
       logger.info('[ClaimOffer] Claim submitted successfully');
+      // Show an in-modal confirmation instead of vanishing silently, and refresh
+      // sponsorship/offer state so the banner flips to "pending review" immediately.
+      setSubmitted(true);
       onSuccess();
-      onClose();
     } catch (err) {
       logger.error('[ClaimOffer] Failed to submit claim:', err);
       if (err instanceof Error && err.message.includes('cancelled')) {
@@ -274,6 +278,18 @@ export function ClaimOfferModal({
         </div>
 
         <div className="modal-body">
+          {submitted ? (
+            <div className="claim-success" role="status">
+              <div className="claim-success-icon" aria-hidden="true">✓</div>
+              <strong>Claim submitted!</strong>
+              <p>
+                Your request was sent to the sponsor and is now <em>pending review</em>.
+                You&apos;ll be able to post, reply, and vote once they approve it — the
+                banner updates automatically when that happens.
+              </p>
+            </div>
+          ) : (
+          <>
           <div className="claim-offer-info">
             <div className="claim-offer-row">
               <span className="claim-label">Sponsor:</span>
@@ -327,20 +343,30 @@ export function ClaimOfferModal({
             By claiming, your public key is shared with the sponsor.
             They decide whether to approve your request.
           </p>
+          </>
+          )}
         </div>
 
         <div className="modal-actions">
-          <button type="button" className="btn btn-ghost" onClick={handleCancel} disabled={isBusy}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={handleSubmit}
-            disabled={isBusy}
-          >
-            {mining ? 'Mining...' : submitting ? 'Submitting...' : 'Submit Claim'}
-          </button>
+          {submitted ? (
+            <button type="button" className="btn btn-primary" onClick={onClose}>
+              Done
+            </button>
+          ) : (
+            <>
+              <button type="button" className="btn btn-ghost" onClick={handleCancel} disabled={isBusy}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSubmit}
+                disabled={isBusy}
+              >
+                {mining ? 'Mining...' : submitting ? 'Submitting...' : 'Submit Claim'}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

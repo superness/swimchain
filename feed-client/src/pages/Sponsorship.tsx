@@ -58,7 +58,7 @@ function buildApprovalSignatureMessage(claimantPubkeyHex: string, timestamp: num
 type Tab = 'find' | 'my-offers' | 'status';
 
 export function SponsorshipPage(): JSX.Element {
-  const { isSponsored, pendingClaim } = useSponsorship();
+  const { isSponsored, pendingClaim, refresh: refreshSponsorship } = useSponsorship();
   const { identity } = useIdentityContext();
   const { rpc } = useRpc();
   // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
@@ -122,7 +122,10 @@ export function SponsorshipPage(): JSX.Element {
 
   const handleClaimSuccess = useCallback(() => {
     refreshOffers();
-  }, [refreshOffers]);
+    // Re-check sponsorship now so the banner flips to "pending review" immediately
+    // instead of waiting up to 30s for the next poll.
+    refreshSponsorship();
+  }, [refreshOffers, refreshSponsorship]);
 
   const handleCreateSuccess = useCallback(() => {
     refreshMyOffers();

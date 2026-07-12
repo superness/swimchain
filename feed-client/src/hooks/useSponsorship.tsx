@@ -127,9 +127,11 @@ export function SponsorshipProvider({ children }: { children: ReactNode }) {
       pollRef.current = null;
     }
     if (isSponsored === false && hasValidIdentity && connected) {
+      // Poll fairly briskly while unsponsored so a fresh claim shows as "pending
+      // review" and a sponsor's approval flips the banner without a long wait.
       pollRef.current = setInterval(() => {
         checkSponsorship();
-      }, 30_000);
+      }, 10_000);
     }
     return () => {
       if (pollRef.current) {
