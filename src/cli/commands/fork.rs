@@ -159,9 +159,8 @@ pub fn execute(cmd: ForkCmd, config: &mut CliConfig) -> Result<()> {
 /// Get RPC client for the current config
 fn get_rpc_client(config: &CliConfig) -> RpcClient {
     let rpc_config = if let Some(ref data_dir) = config.data_dir {
-        RpcClientConfig::from_data_dir(data_dir).unwrap_or_else(|_| {
-            RpcClientConfig::for_network(config.network_mode.name())
-        })
+        RpcClientConfig::from_data_dir(data_dir)
+            .unwrap_or_else(|_| RpcClientConfig::for_network(config.network_mode.name()))
     } else {
         RpcClientConfig::for_network(config.network_mode.name())
     };
@@ -185,8 +184,8 @@ fn load_identity(config: &CliConfig) -> Result<KeyPair> {
         std::fs::read(&identity_path).map_err(|e| CliError::Storage(format!("Read error: {e}")))?;
 
     // Parse portable identity
-    let portable = deserialize_portable(&data)
-        .map_err(|e| CliError::InvalidIdentityFile(e.to_string()))?;
+    let portable =
+        deserialize_portable(&data).map_err(|e| CliError::InvalidIdentityFile(e.to_string()))?;
 
     // Get password from environment or prompt
     let password = match std::env::var("SWIMCHAIN_PASSWORD") {
@@ -483,9 +482,7 @@ fn info(config: &CliConfig, fork_id: &str, json_output: bool) -> Result<()> {
                 .get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let parent = result
-                .get("parent_fork")
-                .and_then(|v| v.as_str());
+            let parent = result.get("parent_fork").and_then(|v| v.as_str());
             let parent_height = result
                 .get("parent_height")
                 .and_then(|v| v.as_u64())

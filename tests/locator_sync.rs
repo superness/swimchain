@@ -6,8 +6,8 @@
 //! - Fork resolution with locators
 
 use swimchain::blocks::RootBlock;
-use swimchain::storage::ChainStore;
 use swimchain::network::messages::{GetBlocksLocatorPayload, GetHeadersLocatorPayload};
+use swimchain::storage::ChainStore;
 use tempfile::tempdir;
 
 // =========================================================================
@@ -61,7 +61,10 @@ fn test_locator_empty_chain() {
     let store = ChainStore::open(dir.path()).unwrap();
 
     let locator = store.generate_locator().unwrap();
-    assert!(locator.is_empty(), "Empty chain should produce empty locator");
+    assert!(
+        locator.is_empty(),
+        "Empty chain should produce empty locator"
+    );
 }
 
 #[test]
@@ -72,8 +75,15 @@ fn test_locator_single_block() {
     let blocks = build_chain(&store, 1);
     let locator = store.generate_locator().unwrap();
 
-    assert_eq!(locator.len(), 1, "Single block chain should have 1 locator hash");
-    assert_eq!(locator[0], blocks[0].1, "Locator should contain genesis hash");
+    assert_eq!(
+        locator.len(),
+        1,
+        "Single block chain should have 1 locator hash"
+    );
+    assert_eq!(
+        locator[0], blocks[0].1,
+        "Locator should contain genesis hash"
+    );
 }
 
 #[test]
@@ -87,7 +97,11 @@ fn test_locator_short_chain() {
     // For height 4 (5 blocks): should have tip, then dense, then genesis
     assert!(!locator.is_empty());
     assert_eq!(locator[0], blocks[4].1, "First hash should be tip");
-    assert_eq!(*locator.last().unwrap(), blocks[0].1, "Last hash should be genesis");
+    assert_eq!(
+        *locator.last().unwrap(),
+        blocks[0].1,
+        "Last hash should be genesis"
+    );
 }
 
 #[test]
@@ -106,13 +120,27 @@ fn test_locator_exponential_pattern() {
     assert_eq!(locator[2], blocks[97].1, "Third should be tip-2");
 
     // Last should always be genesis
-    assert_eq!(*locator.last().unwrap(), blocks[0].1, "Last should be genesis");
+    assert_eq!(
+        *locator.last().unwrap(),
+        blocks[0].1,
+        "Last should be genesis"
+    );
 
     // Locator should be logarithmic in size (~15-20 hashes for 100 blocks)
-    assert!(locator.len() < 20, "Locator should be logarithmic, got {} hashes", locator.len());
-    assert!(locator.len() > 5, "Locator should have enough hashes for 100 blocks");
+    assert!(
+        locator.len() < 20,
+        "Locator should be logarithmic, got {} hashes",
+        locator.len()
+    );
+    assert!(
+        locator.len() > 5,
+        "Locator should have enough hashes for 100 blocks"
+    );
 
-    println!("Chain of 100 blocks produced locator with {} hashes", locator.len());
+    println!(
+        "Chain of 100 blocks produced locator with {} hashes",
+        locator.len()
+    );
 }
 
 #[test]
@@ -125,13 +153,24 @@ fn test_locator_very_long_chain() {
     let locator = store.generate_locator().unwrap();
 
     // Even for 10000 blocks, locator should be small (log2(10000) ≈ 13)
-    assert!(locator.len() < 25, "Locator for 10k blocks should be < 25 hashes, got {}", locator.len());
+    assert!(
+        locator.len() < 25,
+        "Locator for 10k blocks should be < 25 hashes, got {}",
+        locator.len()
+    );
 
     // First and last should be correct
     assert_eq!(locator[0], blocks[9999].1, "First should be tip");
-    assert_eq!(*locator.last().unwrap(), blocks[0].1, "Last should be genesis");
+    assert_eq!(
+        *locator.last().unwrap(),
+        blocks[0].1,
+        "Last should be genesis"
+    );
 
-    println!("Chain of 10000 blocks produced locator with {} hashes", locator.len());
+    println!(
+        "Chain of 10000 blocks produced locator with {} hashes",
+        locator.len()
+    );
 }
 
 // =========================================================================
@@ -174,7 +213,11 @@ fn test_find_locator_match_behind() {
 
     // A finds match in B's locator
     let match_height = store_a.find_locator_match(&locator_b).unwrap();
-    assert_eq!(match_height, Some(49), "Should match at B's tip (height 49)");
+    assert_eq!(
+        match_height,
+        Some(49),
+        "Should match at B's tip (height 49)"
+    );
 }
 
 #[test]
@@ -259,9 +302,15 @@ fn test_find_locator_match_fork_scenario() {
     // Only heights ≤29 will match, highest in locator is 14
     let match_height = store_a.find_locator_match(&locator_b).unwrap();
     assert!(match_height.is_some(), "Should find a common ancestor");
-    assert!(match_height.unwrap() <= 29, "Common ancestor should be at or below fork point");
+    assert!(
+        match_height.unwrap() <= 29,
+        "Common ancestor should be at or below fork point"
+    );
     // The exact height depends on locator pattern, but should be reasonable
-    println!("Fork at 29, locator found common ancestor at {:?}", match_height);
+    println!(
+        "Fork at 29, locator found common ancestor at {:?}",
+        match_height
+    );
 }
 
 // =========================================================================
@@ -385,7 +434,10 @@ fn test_fork_resolution_find_common_ancestor() {
 
     assert!(common_height.is_some(), "Should find a common ancestor");
     let height = common_height.unwrap();
-    assert!(height <= 60, "Common ancestor should be at or below fork point 60");
+    assert!(
+        height <= 60,
+        "Common ancestor should be at or below fork point 60"
+    );
     println!("Fork at 60, locator found common ancestor at {}", height);
 
     // Main can send blocks from common_height+1 onwards
@@ -475,11 +527,20 @@ fn test_fork_resolution_deep_reorg() {
     // Common ancestor should be found at or below fork point (height 9)
     // Due to exponential spacing, might find genesis (0) instead of exact fork point
     assert!(match_height.is_some(), "Should find a common ancestor");
-    assert!(match_height.unwrap() <= 9, "Common ancestor should be at or below fork point 9");
-    println!("Fork at 9, locator found common ancestor at {:?}", match_height);
+    assert!(
+        match_height.unwrap() <= 9,
+        "Common ancestor should be at or below fork point 9"
+    );
+    println!(
+        "Fork at 9, locator found common ancestor at {:?}",
+        match_height
+    );
 
     // Verify locator is still small
-    assert!(locator_b.len() < 25, "Locator should be logarithmic even for long chain");
+    assert!(
+        locator_b.len() < 25,
+        "Locator should be logarithmic even for long chain"
+    );
 }
 
 // =========================================================================
@@ -518,7 +579,11 @@ fn test_locator_match_only_genesis() {
     let match_height = store_a.find_locator_match(&locator_b).unwrap();
 
     // Should match at genesis (height 0)
-    assert_eq!(match_height, Some(0), "Should find genesis as only common block");
+    assert_eq!(
+        match_height,
+        Some(0),
+        "Should find genesis as only common block"
+    );
 }
 
 #[test]
@@ -533,10 +598,17 @@ fn test_max_locator_hashes() {
     let locator = store.generate_locator().unwrap();
 
     // Should be bounded (MAX_LOCATOR_HASHES in protocol)
-    assert!(locator.len() <= GetBlocksLocatorPayload::MAX_LOCATOR_HASHES,
-        "Locator {} exceeds max {}", locator.len(), GetBlocksLocatorPayload::MAX_LOCATOR_HASHES);
+    assert!(
+        locator.len() <= GetBlocksLocatorPayload::MAX_LOCATOR_HASHES,
+        "Locator {} exceeds max {}",
+        locator.len(),
+        GetBlocksLocatorPayload::MAX_LOCATOR_HASHES
+    );
 
-    println!("Chain of 50000 blocks produced locator with {} hashes", locator.len());
+    println!(
+        "Chain of 50000 blocks produced locator with {} hashes",
+        locator.len()
+    );
 }
 
 #[test]
@@ -555,7 +627,10 @@ fn test_locator_heights_are_decreasing() {
     let mut prev_height = u64::MAX;
     for hash in &locator {
         if let Some(&height) = hash_to_height.get(hash) {
-            assert!(height < prev_height, "Locator heights must be strictly decreasing");
+            assert!(
+                height < prev_height,
+                "Locator heights must be strictly decreasing"
+            );
             prev_height = height;
         }
     }

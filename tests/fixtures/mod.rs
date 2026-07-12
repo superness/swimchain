@@ -146,7 +146,9 @@ impl TestSpace {
     /// Create multiple test spaces
     #[must_use]
     pub fn create_many(count: usize) -> Vec<Self> {
-        (0..count).map(|i| Self::new(&format!("test-space-{i}"))).collect()
+        (0..count)
+            .map(|i| Self::new(&format!("test-space-{i}")))
+            .collect()
     }
 
     /// Create space ID from name (deterministic)
@@ -273,7 +275,12 @@ impl TestThread {
 
     /// Create a reply to an existing content item
     #[must_use]
-    pub fn reply(author: &TestUser, space: &TestSpace, body: &str, parent: &ContentItem) -> ContentItem {
+    pub fn reply(
+        author: &TestUser,
+        space: &TestSpace,
+        body: &str,
+        parent: &ContentItem,
+    ) -> ContentItem {
         TestThreadBuilder::new(author, space, body)
             .as_reply_to(parent.content_id)
             .build()
@@ -281,7 +288,12 @@ impl TestThread {
 
     /// Create a quote of an existing content item
     #[must_use]
-    pub fn quote(author: &TestUser, space: &TestSpace, body: &str, quoted: &ContentItem) -> ContentItem {
+    pub fn quote(
+        author: &TestUser,
+        space: &TestSpace,
+        body: &str,
+        quoted: &ContentItem,
+    ) -> ContentItem {
         TestThreadBuilder::new(author, space, body)
             .as_quote_of(quoted.content_id)
             .build()

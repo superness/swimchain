@@ -98,7 +98,9 @@ impl HtmlFormatter {
         // Document start
         html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
         html.push_str("<meta charset=\"UTF-8\">\n");
-        html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+        html.push_str(
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n",
+        );
         html.push_str(&format!(
             "<title>Test Report - {}</title>\n",
             Self::escape_html(&report.metadata.suite_name)
@@ -117,10 +119,14 @@ impl HtmlFormatter {
         // Metadata section
         html.push_str("<div class=\"metadata\">\n");
         if let Some(ref version) = report.metadata.version {
-            html.push_str(&format!("<span class=\"meta-item\">Version: {version}</span>\n"));
+            html.push_str(&format!(
+                "<span class=\"meta-item\">Version: {version}</span>\n"
+            ));
         }
         if let Some(ref branch) = report.metadata.branch {
-            html.push_str(&format!("<span class=\"meta-item\">Branch: {branch}</span>\n"));
+            html.push_str(&format!(
+                "<span class=\"meta-item\">Branch: {branch}</span>\n"
+            ));
         }
         if let Some(ref commit) = report.metadata.commit_hash {
             html.push_str(&format!(
@@ -240,10 +246,7 @@ impl HtmlFormatter {
     fn format_test_result(result: &TestResult) -> String {
         let mut html = String::new();
         html.push_str("<div class=\"test-detail failed\">\n");
-        html.push_str(&format!(
-            "<h3>{}</h3>\n",
-            Self::escape_html(&result.name)
-        ));
+        html.push_str(&format!("<h3>{}</h3>\n", Self::escape_html(&result.name)));
         html.push_str(&format!(
             "<p class=\"module\">Module: {}</p>\n",
             Self::escape_html(&result.module)
@@ -517,10 +520,7 @@ impl TextFormatter {
         text.push_str(&format!(
             "═══════════════════════════════════════════════════════════════\n"
         ));
-        text.push_str(&format!(
-            "  TEST REPORT: {}\n",
-            report.metadata.suite_name
-        ));
+        text.push_str(&format!("  TEST REPORT: {}\n", report.metadata.suite_name));
         text.push_str(&format!(
             "═══════════════════════════════════════════════════════════════\n\n"
         ));

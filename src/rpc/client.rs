@@ -58,12 +58,10 @@ impl RpcClientConfig {
     /// This is the preferred method as it works with non-default ports
     pub fn from_data_dir(data_dir: &Path) -> Result<Self, RpcError> {
         let addr_file = data_dir.join(".rpc_addr");
-        let addr_str = std::fs::read_to_string(&addr_file)
-            .map_err(|_| RpcError::NodeNotRunning)?;
-        let addr = addr_str.trim().parse()
-            .map_err(|e| RpcError::InvalidRequest(format!(
-                "Invalid RPC address in {:?}: {}", addr_file, e
-            )))?;
+        let addr_str = std::fs::read_to_string(&addr_file).map_err(|_| RpcError::NodeNotRunning)?;
+        let addr = addr_str.trim().parse().map_err(|e| {
+            RpcError::InvalidRequest(format!("Invalid RPC address in {:?}: {}", addr_file, e))
+        })?;
         Ok(Self {
             addr,
             ..Default::default()
@@ -101,8 +99,7 @@ impl RpcClient {
 
     /// Create client with default config and cookie from data dir
     pub fn from_data_dir(data_dir: &Path, network: &str) -> Result<Self, RpcError> {
-        let config = RpcClientConfig::for_network(network)
-            .with_cookie_from(data_dir)?;
+        let config = RpcClientConfig::for_network(network).with_cookie_from(data_dir)?;
         Ok(Self::new(config))
     }
 
@@ -141,8 +138,8 @@ impl RpcClient {
     /// Send a request and get response
     fn send_request(&self, request: &RpcRequest) -> Result<RpcResponse, RpcError> {
         // Connect with timeout
-        let stream = TcpStream::connect_timeout(&self.config.addr, self.config.timeout)
-            .map_err(|e| {
+        let stream =
+            TcpStream::connect_timeout(&self.config.addr, self.config.timeout).map_err(|e| {
                 if e.kind() == std::io::ErrorKind::ConnectionRefused {
                     RpcError::ConnectionRefused
                 } else {
@@ -169,7 +166,8 @@ impl RpcClient {
         // Build auth header
         let auth_header = if let Some(ref cookie) = self.config.cookie {
             format_cookie_auth(cookie)
-        } else if let (Some(ref user), Some(ref pass)) = (&self.config.username, &self.config.password)
+        } else if let (Some(ref user), Some(ref pass)) =
+            (&self.config.username, &self.config.password)
         {
             super::auth::format_auth_header(user, pass)
         } else {
@@ -185,7 +183,9 @@ impl RpcClient {
              Content-Length: {}\r\n\
              Connection: close\r\n\
              \r\n",
-            self.config.addr, auth_header, body.len()
+            self.config.addr,
+            auth_header,
+            body.len()
         );
 
         // Send request
@@ -219,13 +219,11 @@ impl RpcClient {
 
         if !first_line.contains("200") {
             // Extract status code for better error message
-            let status = first_line
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("unknown");
+            let status = first_line.split_whitespace().nth(1).unwrap_or("unknown");
 
             // Try to parse body as JSON error
-            if let Ok(rpc_response) = serde_json::from_str::<RpcResponse>(&response_str[body_start..])
+            if let Ok(rpc_response) =
+                serde_json::from_str::<RpcResponse>(&response_str[body_start..])
             {
                 if let Some(err) = rpc_response.error {
                     return Err(RpcError::InternalError(format!(
@@ -272,9 +270,12 @@ impl RpcClient {
 
     /// Get block by height
     pub fn get_block(&mut self, height: u64) -> Result<super::types::GetBlockResult, RpcError> {
-        self.call_result("get_block", serde_json::json!({
-            "height": height
-        }))
+        self.call_result(
+            "get_block",
+            serde_json::json!({
+                "height": height
+            }),
+        )
     }
 
     /// Stop the node
@@ -284,17 +285,26 @@ impl RpcClient {
     }
 
     /// Get content by ID
-    pub fn get_content(&mut self, content_id: &str) -> Result<super::types::GetContentResult, RpcError> {
-        self.call_result("get_content", serde_json::json!({
-            "content_id": content_id
-        }))
+    pub fn get_content(
+        &mut self,
+        content_id: &str,
+    ) -> Result<super::types::GetContentResult, RpcError> {
+        self.call_result(
+            "get_content",
+            serde_json::json!({
+                "content_id": content_id
+            }),
+        )
     }
 
     /// Request content from network
     pub fn request_content(&mut self, content_id: &str) -> Result<serde_json::Value, RpcError> {
-        self.call_result("request_content", serde_json::json!({
-            "content_id": content_id
-        }))
+        self.call_result(
+            "request_content",
+            serde_json::json!({
+                "content_id": content_id
+            }),
+        )
     }
 
     /// Submit a post
@@ -308,15 +318,18 @@ impl RpcClient {
         signature: &str,
         timestamp: u64,
     ) -> Result<super::types::SubmitPostResult, RpcError> {
-        self.call_result("submit_post", serde_json::json!({
-            "space_id": space_id,
-            "title": title,
-            "body": body,
-            "pow_nonce": pow_nonce,
-            "pow_difficulty": pow_difficulty,
-            "signature": signature,
-            "timestamp": timestamp,
-        }))
+        self.call_result(
+            "submit_post",
+            serde_json::json!({
+                "space_id": space_id,
+                "title": title,
+                "body": body,
+                "pow_nonce": pow_nonce,
+                "pow_difficulty": pow_difficulty,
+                "signature": signature,
+                "timestamp": timestamp,
+            }),
+        )
     }
 
     /// Submit a reply
@@ -329,14 +342,17 @@ impl RpcClient {
         signature: &str,
         timestamp: u64,
     ) -> Result<super::types::SubmitPostResult, RpcError> {
-        self.call_result("submit_reply", serde_json::json!({
-            "parent_id": parent_id,
-            "body": body,
-            "pow_nonce": pow_nonce,
-            "pow_difficulty": pow_difficulty,
-            "signature": signature,
-            "timestamp": timestamp,
-        }))
+        self.call_result(
+            "submit_reply",
+            serde_json::json!({
+                "parent_id": parent_id,
+                "body": body,
+                "pow_nonce": pow_nonce,
+                "pow_difficulty": pow_difficulty,
+                "signature": signature,
+                "timestamp": timestamp,
+            }),
+        )
     }
 
     /// Check if node is running (by attempting connection)

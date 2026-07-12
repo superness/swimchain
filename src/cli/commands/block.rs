@@ -213,7 +213,11 @@ pub fn execute(cmd: BlockCmd, config: &CliConfig) -> Result<()> {
         BlockCmd::Action { hash, json } => view_action(config, &hash, json),
         BlockCmd::Stats { json } => show_stats(config, json),
         BlockCmd::Content { hash, json } => view_content_block(config, &hash, json),
-        BlockCmd::Engagements { content, verbose, json } => show_engagements(config, content.as_deref(), verbose, json),
+        BlockCmd::Engagements {
+            content,
+            verbose,
+            json,
+        } => show_engagements(config, content.as_deref(), verbose, json),
     }
 }
 
@@ -225,8 +229,7 @@ fn open_chain_store(config: &CliConfig) -> Result<ChainStore> {
     let chain_path = config.data_dir().join("chain");
     ChainStore::open(&chain_path).map_err(|e| {
         let msg = e.to_string();
-        let is_lock =
-            msg.contains("could not acquire lock")
+        let is_lock = msg.contains("could not acquire lock")
             || msg.contains("Resource temporarily unavailable")
             || msg.contains("another process has locked");
         if is_lock {
@@ -237,7 +240,8 @@ fn open_chain_store(config: &CliConfig) -> Result<ChainStore> {
                  sw block stats\n  \
                  sw block content <content-block-hash>\n  \
                  sw space browse\n\
-                 Or stop the running node first.".to_string(),
+                 Or stop the running node first."
+                    .to_string(),
             )
         } else {
             CliError::Storage(msg)
@@ -439,7 +443,11 @@ fn show_stats(config: &CliConfig, json_output: bool) -> Result<()> {
             println!("Space blocks:        {}", stats.space_blocks);
             println!("Content blocks:      {}", stats.content_blocks);
             println!("Registered spaces:   {}", stats.registered_spaces);
-            println!("Total storage:       {} bytes ({:.2} MB)", stats.total_storage_bytes, stats.total_storage_bytes as f64 / 1_048_576.0);
+            println!(
+                "Total storage:       {} bytes ({:.2} MB)",
+                stats.total_storage_bytes,
+                stats.total_storage_bytes as f64 / 1_048_576.0
+            );
         }
         return Ok(());
     }
@@ -486,7 +494,11 @@ fn show_stats(config: &CliConfig, json_output: bool) -> Result<()> {
         println!("Space blocks:        {}", space_count);
         println!("Content blocks:      {}", content_count);
         println!("Registered spaces:   {}", registered_spaces);
-        println!("Total storage:       {} bytes ({:.2} MB)", total_bytes, total_bytes as f64 / 1_048_576.0);
+        println!(
+            "Total storage:       {} bytes ({:.2} MB)",
+            total_bytes,
+            total_bytes as f64 / 1_048_576.0
+        );
     }
 
     Ok(())
@@ -497,7 +509,7 @@ fn show_engagements(
     config: &CliConfig,
     content_filter: Option<&str>,
     verbose: bool,
-    json_output: bool
+    json_output: bool,
 ) -> Result<()> {
     // Try RPC first (when node is running)
     if let Ok(result) = try_rpc_get_engagements(config, content_filter, verbose) {
@@ -528,7 +540,8 @@ fn show_engagements(
 
     // Collect all Engage actions
     let mut actions: Vec<EngageActionInfo> = Vec::new();
-    let mut content_stats: HashMap<[u8; 32], (u32, u64, HashSet<[u8; 32]>, HashMap<String, u32>)> = HashMap::new();
+    let mut content_stats: HashMap<[u8; 32], (u32, u64, HashSet<[u8; 32]>, HashMap<String, u32>)> =
+        HashMap::new();
 
     for block_result in store.iter_content_blocks() {
         let block = block_result.map_err(|e| CliError::Storage(e.to_string()))?;
@@ -566,9 +579,9 @@ fn show_engagements(
             });
 
             // Update aggregated stats
-            let entry = content_stats.entry(target).or_insert_with(|| {
-                (0, 0, HashSet::new(), HashMap::new())
-            });
+            let entry = content_stats
+                .entry(target)
+                .or_insert_with(|| (0, 0, HashSet::new(), HashMap::new()));
             entry.0 += 1; // total engagements
             entry.1 += action.pow_work; // total pow work
             entry.2.insert(action.actor); // unique actors
@@ -584,13 +597,15 @@ fn show_engagements(
     // Build output
     let mut stats_list: Vec<ContentEngagementStats> = content_stats
         .into_iter()
-        .map(|(hash, (count, pow, actors, emojis))| ContentEngagementStats {
-            content_hash: hex::encode(hash),
-            total_engagements: count,
-            total_pow_work: pow,
-            unique_actors: actors.len() as u32,
-            emoji_counts: emojis,
-        })
+        .map(
+            |(hash, (count, pow, actors, emojis))| ContentEngagementStats {
+                content_hash: hex::encode(hash),
+                total_engagements: count,
+                total_pow_work: pow,
+                unique_actors: actors.len() as u32,
+                emoji_counts: emojis,
+            },
+        )
         .collect();
 
     // Sort by total engagements (highest first)
@@ -625,13 +640,19 @@ fn show_engagements(
                 let short_hash = &stats.content_hash[..16];
                 println!();
                 println!("Content: {}...", short_hash);
-                println!("  Engagements: {} ({} unique users)", stats.total_engagements, stats.unique_actors);
+                println!(
+                    "  Engagements: {} ({} unique users)",
+                    stats.total_engagements, stats.unique_actors
+                );
                 println!("  Total PoW:   {} seconds", stats.total_pow_work);
 
                 if !stats.emoji_counts.is_empty() {
-                    let emoji_str: Vec<String> = stats.emoji_counts
+                    let emoji_str: Vec<String> = stats
+                        .emoji_counts
                         .iter()
-                        .map(|(emoji, count)| format!("{}: {}", emoji.split(' ').next().unwrap_or(emoji), count))
+                        .map(|(emoji, count)| {
+                            format!("{}: {}", emoji.split(' ').next().unwrap_or(emoji), count)
+                        })
                         .collect();
                     println!("  Reactions:   {}", emoji_str.join(", "));
                 }
@@ -643,9 +664,18 @@ fn show_engagements(
                 println!("-------------------");
                 for (i, action) in actions.iter().enumerate() {
                     let emoji_display = action.emoji.as_deref().unwrap_or("(none)");
-                    println!("[{}] {} on {}...", i, emoji_display, &action.content_hash[..16]);
+                    println!(
+                        "[{}] {} on {}...",
+                        i,
+                        emoji_display,
+                        &action.content_hash[..16]
+                    );
                     println!("    Actor: {}...", &action.actor[..16]);
-                    println!("    PoW: {}s, Time: {}", action.pow_work, format_timestamp(action.timestamp));
+                    println!(
+                        "    PoW: {}s, Time: {}",
+                        action.pow_work,
+                        format_timestamp(action.timestamp)
+                    );
                 }
             }
         }
@@ -655,7 +685,9 @@ fn show_engagements(
 }
 
 /// Try to get chain stats via RPC (when node is running)
-fn try_rpc_chain_stats(config: &CliConfig) -> std::result::Result<crate::rpc::types::GetChainStatsResult, ()> {
+fn try_rpc_chain_stats(
+    config: &CliConfig,
+) -> std::result::Result<crate::rpc::types::GetChainStatsResult, ()> {
     use crate::rpc::{RpcClient, RpcClientConfig};
 
     // Try to create config from data dir (reads .rpc_addr file)
@@ -670,7 +702,10 @@ fn try_rpc_chain_stats(config: &CliConfig) -> std::result::Result<crate::rpc::ty
 }
 
 /// Try to get block via RPC (when node is running)
-fn try_rpc_get_block(config: &CliConfig, height: u64) -> std::result::Result<crate::rpc::types::GetBlockResult, ()> {
+fn try_rpc_get_block(
+    config: &CliConfig,
+    height: u64,
+) -> std::result::Result<crate::rpc::types::GetBlockResult, ()> {
     use crate::rpc::{RpcClient, RpcClientConfig};
 
     // Try to create config from data dir (reads .rpc_addr file)
@@ -685,7 +720,10 @@ fn try_rpc_get_block(config: &CliConfig, height: u64) -> std::result::Result<cra
 }
 
 /// Try to get content block via RPC (when node is running)
-fn try_rpc_get_content_block(config: &CliConfig, hash: &str) -> std::result::Result<crate::rpc::types::GetContentBlockResult, String> {
+fn try_rpc_get_content_block(
+    config: &CliConfig,
+    hash: &str,
+) -> std::result::Result<crate::rpc::types::GetContentBlockResult, String> {
     use crate::rpc::{RpcClient, RpcClientConfig};
 
     // Try to create config from data dir (reads .rpc_addr file)
@@ -696,7 +734,8 @@ fn try_rpc_get_content_block(config: &CliConfig, hash: &str) -> std::result::Res
 
     // Create RPC client and call get_content_block
     let mut client = RpcClient::new(rpc_config);
-    let response = client.call("get_content_block", serde_json::json!({"hash": hash}))
+    let response = client
+        .call("get_content_block", serde_json::json!({"hash": hash}))
         .map_err(|e| e.to_string())?;
 
     if let Some(err) = response.error {
@@ -711,7 +750,7 @@ fn try_rpc_get_content_block(config: &CliConfig, hash: &str) -> std::result::Res
 fn try_rpc_get_engagements(
     config: &CliConfig,
     content_filter: Option<&str>,
-    verbose: bool
+    verbose: bool,
 ) -> std::result::Result<crate::rpc::types::GetChainEngagementsResult, String> {
     use crate::rpc::{RpcClient, RpcClientConfig};
 
@@ -723,10 +762,14 @@ fn try_rpc_get_engagements(
 
     // Create RPC client and call get_chain_engagements
     let mut client = RpcClient::new(rpc_config);
-    let response = client.call("get_chain_engagements", serde_json::json!({
-        "content_id": content_filter,
-        "verbose": verbose
-    }))
+    let response = client
+        .call(
+            "get_chain_engagements",
+            serde_json::json!({
+                "content_id": content_filter,
+                "verbose": verbose
+            }),
+        )
         .map_err(|e| e.to_string())?;
 
     if let Some(err) = response.error {
@@ -741,7 +784,7 @@ fn try_rpc_get_engagements(
 fn display_engagements_result(
     result: &crate::rpc::types::GetChainEngagementsResult,
     verbose: bool,
-    json_output: bool
+    json_output: bool,
 ) -> Result<()> {
     if json_output {
         crate::cli::output::print_json_pretty(&result)?;
@@ -765,13 +808,19 @@ fn display_engagements_result(
                 let short_hash = &stats.content_hash[..16.min(stats.content_hash.len())];
                 println!();
                 println!("Content: {}...", short_hash);
-                println!("  Engagements: {} ({} unique users)", stats.total_engagements, stats.unique_actors);
+                println!(
+                    "  Engagements: {} ({} unique users)",
+                    stats.total_engagements, stats.unique_actors
+                );
                 println!("  Total PoW:   {} seconds", stats.total_pow_work);
 
                 if !stats.emoji_counts.is_empty() {
-                    let emoji_str: Vec<String> = stats.emoji_counts
+                    let emoji_str: Vec<String> = stats
+                        .emoji_counts
                         .iter()
-                        .map(|(emoji, count)| format!("{}: {}", emoji.split(' ').next().unwrap_or(emoji), count))
+                        .map(|(emoji, count)| {
+                            format!("{}: {}", emoji.split(' ').next().unwrap_or(emoji), count)
+                        })
                         .collect();
                     println!("  Reactions:   {}", emoji_str.join(", "));
                 }
@@ -786,8 +835,15 @@ fn display_engagements_result(
                         let emoji_display = action.emoji.as_deref().unwrap_or("(none)");
                         let short_hash = &action.content_hash[..16.min(action.content_hash.len())];
                         println!("[{}] {} on {}...", i, emoji_display, short_hash);
-                        println!("    Actor: {}...", &action.actor[..16.min(action.actor.len())]);
-                        println!("    PoW: {}s, Time: {}", action.pow_work, format_timestamp(action.timestamp));
+                        println!(
+                            "    Actor: {}...",
+                            &action.actor[..16.min(action.actor.len())]
+                        );
+                        println!(
+                            "    PoW: {}s, Time: {}",
+                            action.pow_work,
+                            format_timestamp(action.timestamp)
+                        );
                     }
                 }
             }
@@ -801,7 +857,9 @@ fn display_engagements_result(
 fn view_content_block(config: &CliConfig, hash: &str, json_output: bool) -> Result<()> {
     // Validate hash format
     if hash.len() != 64 || hex::decode(hash).is_err() {
-        return Err(CliError::Other("Content block hash must be 64 hex characters".into()));
+        return Err(CliError::Other(
+            "Content block hash must be 64 hex characters".into(),
+        ));
     }
 
     // Try RPC first (when node is running)
@@ -825,8 +883,14 @@ fn view_content_block(config: &CliConfig, hash: &str, json_output: bool) -> Resu
                 println!();
 
                 for (i, action) in result.actions.iter().enumerate() {
-                    let emoji_str = action.emoji.map(|e| format!(" (emoji: {})", emoji_to_char(e))).unwrap_or_default();
-                    println!("  [{}] {} {}{}", i, action.action_type, action.actor_address, emoji_str);
+                    let emoji_str = action
+                        .emoji
+                        .map(|e| format!(" (emoji: {})", emoji_to_char(e)))
+                        .unwrap_or_default();
+                    println!(
+                        "  [{}] {} {}{}",
+                        i, action.action_type, action.actor_address, emoji_str
+                    );
                     if let Some(ref content_id) = action.content_id {
                         println!("      Content: {}", content_id);
                     }
@@ -851,8 +915,14 @@ fn view_content_block(config: &CliConfig, hash: &str, json_output: bool) -> Resu
                     print_content_block(&hash_bytes, &block, json_output);
                     Ok(())
                 }
-                Ok(None) => Err(CliError::Other(format!("Content block not found: {}", hash))),
-                Err(storage_err) => Err(CliError::Other(format!("RPC error: {}. Direct DB error: {}", e, storage_err))),
+                Ok(None) => Err(CliError::Other(format!(
+                    "Content block not found: {}",
+                    hash
+                ))),
+                Err(storage_err) => Err(CliError::Other(format!(
+                    "RPC error: {}. Direct DB error: {}",
+                    e, storage_err
+                ))),
             }
         }
     }
@@ -898,7 +968,11 @@ fn print_root_block(hash: &[u8; 32], block: &crate::blocks::RootBlock, json_outp
         println!("==========");
         println!("Hash:             {}", hex::encode(hash));
         println!("Height:           {}", block.height);
-        println!("Timestamp:        {} ({})", block.timestamp, format_timestamp(block.timestamp));
+        println!(
+            "Timestamp:        {} ({})",
+            block.timestamp,
+            format_timestamp(block.timestamp)
+        );
         println!("Prev Root:        {}", hex::encode(block.prev_root_hash));
         println!("Merkle Root:      {}", hex::encode(block.merkle_root));
         println!("Space Blocks:     {}", block.space_block_count);
@@ -934,7 +1008,11 @@ fn print_space_block(hash: &[u8; 32], block: &crate::blocks::SpaceBlock, json_ou
         println!("===========");
         println!("Hash:             {}", hex::encode(hash));
         println!("Space ID:         {}", hex::encode(block.space_id));
-        println!("Timestamp:        {} ({})", block.timestamp, format_timestamp(block.timestamp));
+        println!(
+            "Timestamp:        {} ({})",
+            block.timestamp,
+            format_timestamp(block.timestamp)
+        );
         if let Some(prev) = block.prev_space_hash {
             println!("Prev Space:       {}", hex::encode(prev));
         }
@@ -989,7 +1067,11 @@ fn print_content_block(hash: &[u8; 32], block: &crate::blocks::ContentBlock, jso
         println!("Hash:             {}", hex::encode(hash));
         println!("Thread Root:      {}", hex::encode(block.thread_root_id));
         println!("Space ID:         {}", hex::encode(block.space_id));
-        println!("Timestamp:        {} ({})", block.timestamp, format_timestamp(block.timestamp));
+        println!(
+            "Timestamp:        {} ({})",
+            block.timestamp,
+            format_timestamp(block.timestamp)
+        );
         if let Some(prev) = block.prev_content_hash {
             println!("Prev Content:     {}", hex::encode(prev));
         }
@@ -1001,7 +1083,8 @@ fn print_content_block(hash: &[u8; 32], block: &crate::blocks::ContentBlock, jso
         if !block.actions.is_empty() {
             println!("\nActions:");
             for (i, a) in block.actions.iter().enumerate() {
-                println!("  [{}] {} by {} at {}",
+                println!(
+                    "  [{}] {} by {} at {}",
                     i,
                     format_action_type(a.action_type),
                     &hex::encode(a.actor)[..16],
@@ -1050,9 +1133,16 @@ fn print_action(
         println!("Action");
         println!("======");
         println!("Hash:             {}", hex::encode(action.hash()));
-        println!("Type:             {}", format_action_type(action.action_type));
+        println!(
+            "Type:             {}",
+            format_action_type(action.action_type)
+        );
         println!("Actor:            {}", hex::encode(action.actor));
-        println!("Timestamp:        {} ({})", action.timestamp, format_timestamp(action.timestamp));
+        println!(
+            "Timestamp:        {} ({})",
+            action.timestamp,
+            format_timestamp(action.timestamp)
+        );
         if let Some(ch) = action.content_hash {
             println!("Content Hash:     {}", hex::encode(ch));
         }
@@ -1062,7 +1152,10 @@ fn print_action(
         println!("PoW Nonce:        {}", action.pow_nonce);
         println!("PoW Work:         {} seconds", action.pow_work);
         println!("PoW Target:       {}", hex::encode(action.pow_target));
-        println!("Signature:        {}...", &hex::encode(action.signature)[..32]);
+        println!(
+            "Signature:        {}...",
+            &hex::encode(action.signature)[..32]
+        );
         if let Some(e) = action.emoji {
             println!("Emoji:            {}", format_emoji(e));
         }
@@ -1106,7 +1199,11 @@ fn print_action_from_metadata(
         println!("Content Hash:     {}", hex::encode(hash));
         println!("Type:             {}", action_type);
         println!("Actor:            {}", hex::encode(metadata.author));
-        println!("Timestamp:        {} ({})", metadata.timestamp, format_timestamp(metadata.timestamp));
+        println!(
+            "Timestamp:        {} ({})",
+            metadata.timestamp,
+            format_timestamp(metadata.timestamp)
+        );
         if metadata.parent_hash != [0u8; 32] {
             println!("Parent:           {}", hex::encode(metadata.parent_hash));
         }
@@ -1170,7 +1267,10 @@ fn format_timestamp(ts: u64) -> String {
         let hours = (secs % 86400) / 3600;
         let mins = (secs % 3600) / 60;
         let s = secs % 60;
-        format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", years, months, day, hours, mins, s)
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+            years, months, day, hours, mins, s
+        )
     } else {
         "invalid".to_string()
     }

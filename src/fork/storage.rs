@@ -69,7 +69,8 @@ impl ForkStore {
     /// Verifies the creator signature on load for integrity.
     pub fn get_genesis(&self, fork_id: &ForkId) -> Result<Option<ForkGenesis>, ForkStoreError> {
         if let Some(bytes) = self.genesis_tree.get(fork_id.as_bytes())? {
-            let genesis = ForkGenesis::from_bytes(&bytes).ok_or(ForkStoreError::DeserializationError)?;
+            let genesis =
+                ForkGenesis::from_bytes(&bytes).ok_or(ForkStoreError::DeserializationError)?;
 
             // Verify creator signature on load
             if !Self::verify_creator_signature(&genesis) {
@@ -141,7 +142,8 @@ impl ForkStore {
             return Err(ForkStoreError::NotFound(*fork_id));
         }
 
-        self.active_tree.insert("active", fork_id.as_bytes().as_ref())?;
+        self.active_tree
+            .insert("active", fork_id.as_bytes().as_ref())?;
         Ok(())
     }
 
@@ -164,10 +166,12 @@ impl ForkStore {
     pub fn delete_fork(&self, fork_id: &ForkId) -> Result<(), ForkStoreError> {
         let active = self.get_active_fork()?;
         if active == *fork_id {
-            return Err(ForkStoreError::Storage(sled::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "Cannot delete active fork",
-            ))));
+            return Err(ForkStoreError::Storage(sled::Error::Io(
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "Cannot delete active fork",
+                ),
+            )));
         }
 
         self.genesis_tree.remove(fork_id.as_bytes())?;

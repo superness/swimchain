@@ -7,8 +7,8 @@
 //! 4. Applied to the SponsorshipStore during block ingestion
 
 use swimchain::blocks::action::{Action, ActionType, ACTION_SERIALIZED_SIZE};
-use swimchain::blocks::builder::BlockBuilder;
 use swimchain::blocks::branch_path::BranchPath;
+use swimchain::blocks::builder::BlockBuilder;
 use swimchain::blocks::ContentBlock;
 use swimchain::sponsorship::storage::SponsorshipStore;
 use swimchain::sponsorship::types::{SponsorshipStatus, StoredSponsorship};
@@ -110,7 +110,8 @@ fn test_sponsor_action_in_block_builder() {
 
     // Form the block hierarchy
     let block_creator = [0u8; 32];
-    let (root_block, space_blocks, content_blocks) = builder.build_root_block(1000, block_creator, None);
+    let (root_block, space_blocks, content_blocks) =
+        builder.build_root_block(1000, block_creator, None);
 
     // The root should contain a space block, which contains a content block with the action
     assert!(!root_block.space_block_hashes.is_empty());
@@ -137,11 +138,11 @@ fn test_sponsor_action_stored_in_chain() {
 
     // Create a content block with the sponsor action
     let content_block = ContentBlock::new(
-        action.hash(),    // thread_root_id
-        [0u8; 32],        // space_id (system space)
+        action.hash(), // thread_root_id
+        [0u8; 32],     // space_id (system space)
         vec![action],
-        None,             // no space metadata
-        1000,             // timestamp
+        None, // no space metadata
+        1000, // timestamp
         BranchPath::root(),
     )
     .unwrap();

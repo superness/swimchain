@@ -160,32 +160,77 @@ fn status(config: &CliConfig, json_output: bool) -> Result<()> {
     let storage_target = config.storage_target_mb * 1_000_000;
 
     // Try to get status from node via RPC
-    let (connected_peers, local_height, tip_hash, sync_state, syncing, rpc_available, mempool_pow, mempool_threshold, mempool_actions, mempool_waiting_secs, node_identity, leader_distance, leader_threshold, leader_eligible, leader_eta_secs) =
-        match get_rpc_client(config) {
-            Ok(mut client) => {
-                match (client.get_info(), client.get_sync_status()) {
-                    (Ok(info), Ok(sync)) => (
-                        info.peer_count,
-                        info.block_height,
-                        sync.tip_hash.clone(),
-                        sync.state.clone(),
-                        sync.chain_percent < 100 && sync.state != "synced",
-                        true,
-                        sync.mempool_pow,
-                        sync.mempool_threshold,
-                        sync.mempool_actions,
-                        sync.mempool_waiting_secs,
-                        sync.node_identity.clone(),
-                        sync.leader_distance,
-                        sync.leader_threshold,
-                        sync.leader_eligible,
-                        sync.leader_eta_secs,
-                    ),
-                    _ => (0, 0, None, "Unknown".to_string(), false, false, 0, 0, 0, 0, None, None, None, None, None),
-                }
-            }
-            Err(_) => (0, 0, None, "Idle".to_string(), false, false, 0, 0, 0, 0, None, None, None, None, None),
-        };
+    let (
+        connected_peers,
+        local_height,
+        tip_hash,
+        sync_state,
+        syncing,
+        rpc_available,
+        mempool_pow,
+        mempool_threshold,
+        mempool_actions,
+        mempool_waiting_secs,
+        node_identity,
+        leader_distance,
+        leader_threshold,
+        leader_eligible,
+        leader_eta_secs,
+    ) = match get_rpc_client(config) {
+        Ok(mut client) => match (client.get_info(), client.get_sync_status()) {
+            (Ok(info), Ok(sync)) => (
+                info.peer_count,
+                info.block_height,
+                sync.tip_hash.clone(),
+                sync.state.clone(),
+                sync.chain_percent < 100 && sync.state != "synced",
+                true,
+                sync.mempool_pow,
+                sync.mempool_threshold,
+                sync.mempool_actions,
+                sync.mempool_waiting_secs,
+                sync.node_identity.clone(),
+                sync.leader_distance,
+                sync.leader_threshold,
+                sync.leader_eligible,
+                sync.leader_eta_secs,
+            ),
+            _ => (
+                0,
+                0,
+                None,
+                "Unknown".to_string(),
+                false,
+                false,
+                0,
+                0,
+                0,
+                0,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        },
+        Err(_) => (
+            0,
+            0,
+            None,
+            "Idle".to_string(),
+            false,
+            false,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    };
 
     if json_output {
         let output = SyncStatusOutput {
@@ -263,7 +308,10 @@ fn now(config: &CliConfig) -> Result<()> {
             println!("Current sync state: {}", status.state);
             println!("Progress: {}%", status.chain_percent);
             println!("Peers: {}", status.peer_count);
-            println!("Storage: {}/{} MB", status.storage_mb, status.storage_target_mb);
+            println!(
+                "Storage: {}/{} MB",
+                status.storage_mb, status.storage_target_mb
+            );
             println!();
             println!("Note: Continuous sync runs automatically while node is running.");
             println!("Content is synced via gossip protocol with connected peers.");
@@ -279,23 +327,21 @@ fn now(config: &CliConfig) -> Result<()> {
 /// List connected peers
 fn peers(config: &CliConfig, json_output: bool) -> Result<()> {
     let (peer_list, rpc_available) = match get_rpc_client(config) {
-        Ok(mut client) => {
-            match client.get_peers() {
-                Ok(peers) => {
-                    let converted: Vec<PeerInfo> = peers
-                        .into_iter()
-                        .map(|p| PeerInfo {
-                            peer_id: p.peer_id,
-                            address: p.address,
-                            direction: p.direction,
-                            connected_seconds: p.connected_seconds,
-                        })
-                        .collect();
-                    (converted, true)
-                }
-                Err(_) => (Vec::new(), false),
+        Ok(mut client) => match client.get_peers() {
+            Ok(peers) => {
+                let converted: Vec<PeerInfo> = peers
+                    .into_iter()
+                    .map(|p| PeerInfo {
+                        peer_id: p.peer_id,
+                        address: p.address,
+                        direction: p.direction,
+                        connected_seconds: p.connected_seconds,
+                    })
+                    .collect();
+                (converted, true)
             }
-        }
+            Err(_) => (Vec::new(), false),
+        },
         Err(_) => (Vec::new(), false),
     };
 
@@ -330,7 +376,10 @@ fn peers(config: &CliConfig, json_output: bool) -> Result<()> {
             for peer in &peer_list {
                 println!(
                     "  {} ({}) - {} for {}s",
-                    &peer.peer_id[..16], peer.address, peer.direction, peer.connected_seconds
+                    &peer.peer_id[..16],
+                    peer.address,
+                    peer.direction,
+                    peer.connected_seconds
                 );
             }
             println!();

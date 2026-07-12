@@ -6,20 +6,13 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlocklistError {
     /// Content hash is already in the blocklist
-    AlreadyBlocked {
-        content_hash: [u8; 32],
-    },
+    AlreadyBlocked { content_hash: [u8; 32] },
 
     /// Content hash is not in the blocklist
-    NotBlocked {
-        content_hash: [u8; 32],
-    },
+    NotBlocked { content_hash: [u8; 32] },
 
     /// Not enough attestations to add to blocklist
-    InsufficientAttestations {
-        required: u8,
-        provided: u8,
-    },
+    InsufficientAttestations { required: u8, provided: u8 },
 
     /// Attestation is not for illegal content
     NotIllegalContentAttestation,
@@ -43,18 +36,13 @@ pub enum BlocklistError {
     MerkleVerificationFailed,
 
     /// Update timestamp is too old
-    UpdateTooOld {
-        max_age_secs: u64,
-    },
+    UpdateTooOld { max_age_secs: u64 },
 
     /// Removal requires Anchor-level counter-attestation
     RemovalRequiresAnchor,
 
     /// Not enough counter-attestations to remove
-    InsufficientCounterAttestations {
-        required: u8,
-        provided: u8,
-    },
+    InsufficientCounterAttestations { required: u8, provided: u8 },
 
     /// Duplicate attestation from same sponsor tree
     DuplicateSponsorTree,
@@ -96,7 +84,10 @@ impl fmt::Display for BlocklistError {
                 write!(f, "Update too old (max age: {} seconds)", max_age_secs)
             }
             Self::RemovalRequiresAnchor => {
-                write!(f, "Blocklist removal requires Anchor-level counter-attestation")
+                write!(
+                    f,
+                    "Blocklist removal requires Anchor-level counter-attestation"
+                )
             }
             Self::InsufficientCounterAttestations { required, provided } => {
                 write!(

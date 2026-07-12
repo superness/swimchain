@@ -228,7 +228,6 @@ impl PoWChallenge {
             nonce_space,
         }
     }
-
 }
 
 /// PoW solution per SPEC_03 §3.2
@@ -302,8 +301,8 @@ impl ForkPoWConfig {
     pub fn testnet() -> Self {
         Self {
             memory_kib: 8192, // 8 MiB (reduced for fast testing)
-            iterations: 1,   // Single iteration
-            parallelism: 2,  // Low parallelism
+            iterations: 1,    // Single iteration
+            parallelism: 2,   // Low parallelism
         }
     }
 
@@ -666,7 +665,6 @@ pub fn get_adjusted_difficulty(action: ActionType, _fork_config: &ForkPoWConfig)
         ActionType::Invite => difficulty::INVITE,
     }
 }
-
 
 #[cfg(test)]
 mod tests {

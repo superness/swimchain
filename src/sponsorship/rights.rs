@@ -8,9 +8,7 @@ use serde::{Deserialize, Serialize};
 use sled::{Db, Tree};
 
 use crate::sponsorship::error::SponsorshipError;
-use crate::sponsorship::types::{
-    SPONSORSHIP_COOLDOWN_SECONDS, SPONSORSHIP_WINDOW_SECONDS,
-};
+use crate::sponsorship::types::{SPONSORSHIP_COOLDOWN_SECONDS, SPONSORSHIP_WINDOW_SECONDS};
 use crate::types::identity::PublicKey;
 
 /// Tracks sponsorship activity for capacity enforcement
@@ -114,7 +112,10 @@ impl RightsStore {
     }
 
     /// Get rights record for an identity
-    pub fn get(&self, identity: &PublicKey) -> Result<Option<SponsorshipRightsRecord>, SponsorshipError> {
+    pub fn get(
+        &self,
+        identity: &PublicKey,
+    ) -> Result<Option<SponsorshipRightsRecord>, SponsorshipError> {
         match self.rights.get(identity.as_bytes())? {
             Some(data) => Ok(Some(bincode::deserialize(&data)?)),
             None => Ok(None),
@@ -273,9 +274,7 @@ mod tests {
         let identity = test_identity();
 
         // With PoW-only gating, any identity can sponsor
-        let result = store
-            .can_sponsor(&identity, 1000, |_, _| false)
-            .unwrap();
+        let result = store.can_sponsor(&identity, 1000, |_, _| false).unwrap();
 
         assert!(result.can_sponsor);
         assert_eq!(result.remaining_slots, None); // Unlimited
@@ -291,9 +290,7 @@ mod tests {
         store.record_sponsorship(&identity, 1000).unwrap();
 
         // Try 30 min later (1800 seconds) - cooldown is 3600 seconds
-        let result = store
-            .can_sponsor(&identity, 2800, |_, _| false)
-            .unwrap();
+        let result = store.can_sponsor(&identity, 2800, |_, _| false).unwrap();
 
         assert!(!result.can_sponsor);
         match &result.denial_reason {
@@ -313,9 +310,7 @@ mod tests {
         store.record_sponsorship(&identity, 1000).unwrap();
 
         // Try 2 hours later (7200 seconds) - cooldown is 3600 seconds
-        let result = store
-            .can_sponsor(&identity, 8200, |_, _| false)
-            .unwrap();
+        let result = store.can_sponsor(&identity, 8200, |_, _| false).unwrap();
 
         assert!(result.can_sponsor);
         assert_eq!(result.remaining_slots, None); // Unlimited with PoW-only gating
@@ -428,10 +423,7 @@ mod tests {
 
     #[test]
     fn test_capacity_info_denied() {
-        let info = SponsorshipCapacityInfo::denied(
-            SponsorshipError::InsufficientLevel,
-            Some(5000),
-        );
+        let info = SponsorshipCapacityInfo::denied(SponsorshipError::InsufficientLevel, Some(5000));
         assert!(!info.can_sponsor);
         assert_eq!(info.remaining_slots, Some(0));
         assert_eq!(info.next_available_at, Some(5000));

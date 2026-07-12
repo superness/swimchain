@@ -224,7 +224,11 @@ pub async fn resolve_dns_seeds(dns_seeds: &[DnsSeed]) -> Vec<SeedEntry> {
     for seed in dns_seeds {
         log::info!("[DNS-SEED] Resolving {}...", seed.domain);
         let resolved = seed.resolve_to_entries().await;
-        log::info!("[DNS-SEED] Got {} peers from {}", resolved.len(), seed.domain);
+        log::info!(
+            "[DNS-SEED] Got {} peers from {}",
+            resolved.len(),
+            seed.domain
+        );
         entries.extend(resolved);
     }
     entries

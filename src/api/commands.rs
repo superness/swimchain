@@ -4,9 +4,7 @@
 //! All write operations require proof-of-work to be computed.
 
 use crate::api::error::ApiError;
-use crate::content::{
-    ContentFormat, ContentFormatValidator, MAX_IMAGE_SIZE, MAX_TEXT_LENGTH,
-};
+use crate::content::{ContentFormat, ContentFormatValidator, MAX_IMAGE_SIZE, MAX_TEXT_LENGTH};
 use crate::crypto::action_pow::{
     compute_pow, compute_pow_cancellable, difficulty, ActionType, ForkPoWConfig, PoWChallenge,
 };
@@ -511,5 +509,4 @@ mod tests {
         assert!(pubkey.is_some());
         assert_eq!(pubkey.unwrap(), expected_pubkey);
     }
-
 }

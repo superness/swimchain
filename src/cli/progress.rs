@@ -100,17 +100,20 @@ impl PowProgress {
 
     /// Mark the operation as complete
     pub fn finish_success(&self, message: &str) {
-        self.bar.finish_with_message(format!("{} {message}", success_symbol()));
+        self.bar
+            .finish_with_message(format!("{} {message}", success_symbol()));
     }
 
     /// Mark the operation as cancelled
     pub fn finish_cancelled(&self) {
-        self.bar.finish_with_message(format!("{} Cancelled by user", error_symbol()));
+        self.bar
+            .finish_with_message(format!("{} Cancelled by user", error_symbol()));
     }
 
     /// Mark the operation as failed
     pub fn finish_error(&self, error: &str) {
-        self.bar.finish_with_message(format!("{} Error: {error}", error_symbol()));
+        self.bar
+            .finish_with_message(format!("{} Error: {error}", error_symbol()));
     }
 }
 
@@ -148,12 +151,14 @@ impl Spinner {
 
     /// Finish with success
     pub fn finish_success(&self, message: &str) {
-        self.bar.finish_with_message(format!("{} {message}", success_symbol()));
+        self.bar
+            .finish_with_message(format!("{} {message}", success_symbol()));
     }
 
     /// Finish with error
     pub fn finish_error(&self, message: &str) {
-        self.bar.finish_with_message(format!("{} {message}", error_symbol()));
+        self.bar
+            .finish_with_message(format!("{} {message}", error_symbol()));
     }
 
     /// Just finish (clear the spinner)
@@ -189,11 +194,7 @@ impl Progress {
         } else {
             "{msg} [{bar:40.cyan/blue}] {pos}/{len} ({eta})"
         };
-        let progress_chars = if should_disable_color() {
-            "=#-"
-        } else {
-            "=>-"
-        };
+        let progress_chars = if should_disable_color() { "=#-" } else { "=>-" };
         bar.set_style(
             ProgressStyle::default_bar()
                 .template(template)
@@ -217,12 +218,14 @@ impl Progress {
 
     /// Finish with success
     pub fn finish_success(&self, message: &str) {
-        self.bar.finish_with_message(format!("{} {message}", success_symbol()));
+        self.bar
+            .finish_with_message(format!("{} {message}", success_symbol()));
     }
 
     /// Finish with error
     pub fn finish_error(&self, message: &str) {
-        self.bar.finish_with_message(format!("{} {message}", error_symbol()));
+        self.bar
+            .finish_with_message(format!("{} {message}", error_symbol()));
     }
 }
 

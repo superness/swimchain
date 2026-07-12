@@ -146,28 +146,16 @@ pub enum ContentFormatError {
     VideoNotSupported,
 
     /// Text content exceeds maximum length
-    TextTooLong {
-        size: usize,
-        max: usize,
-    },
+    TextTooLong { size: usize, max: usize },
 
     /// Image size exceeds maximum
-    ImageTooLarge {
-        size: usize,
-        max: usize,
-    },
+    ImageTooLarge { size: usize, max: usize },
 
     /// Image dimension exceeds maximum
-    ImageDimensionTooLarge {
-        width: u32,
-        height: u32,
-        max: u32,
-    },
+    ImageDimensionTooLarge { width: u32, height: u32, max: u32 },
 
     /// Image format not allowed
-    ImageFormatNotAllowed {
-        format: String,
-    },
+    ImageFormatNotAllowed { format: String },
 
     /// Unknown content format
     UnknownFormat(u8),
@@ -345,8 +333,7 @@ impl ContentFormatValidator {
             match format {
                 ContentFormat::Text => Self::validate_text_bytes(data)?,
                 ContentFormat::Image => {
-                    let fmt = extension
-                        .or_else(|| mime_type.and_then(|m| m.split('/').last()));
+                    let fmt = extension.or_else(|| mime_type.and_then(|m| m.split('/').last()));
                     Self::validate_image(data, width, height, fmt)?;
                 }
                 ContentFormat::Link | ContentFormat::Mention => {
@@ -484,26 +471,17 @@ mod tests {
         ));
 
         // Invalid format
-        let result =
-            ContentFormatValidator::validate_image(&image, None, None, Some("gif"));
+        let result = ContentFormatValidator::validate_image(&image, None, None, Some("gif"));
         assert!(matches!(
             result,
             Err(ContentFormatError::ImageFormatNotAllowed { .. })
         ));
 
         // Valid formats
-        assert!(
-            ContentFormatValidator::validate_image(&image, None, None, Some("jpeg")).is_ok()
-        );
-        assert!(
-            ContentFormatValidator::validate_image(&image, None, None, Some("jpg")).is_ok()
-        );
-        assert!(
-            ContentFormatValidator::validate_image(&image, None, None, Some("png")).is_ok()
-        );
-        assert!(
-            ContentFormatValidator::validate_image(&image, None, None, Some("webp")).is_ok()
-        );
+        assert!(ContentFormatValidator::validate_image(&image, None, None, Some("jpeg")).is_ok());
+        assert!(ContentFormatValidator::validate_image(&image, None, None, Some("jpg")).is_ok());
+        assert!(ContentFormatValidator::validate_image(&image, None, None, Some("png")).is_ok());
+        assert!(ContentFormatValidator::validate_image(&image, None, None, Some("webp")).is_ok());
     }
 
     #[test]
@@ -546,27 +524,15 @@ mod tests {
     #[test]
     fn test_image_format_parsing() {
         // From extension
-        assert_eq!(
-            ImageFormat::from_extension("jpeg"),
-            Some(ImageFormat::Jpeg)
-        );
-        assert_eq!(
-            ImageFormat::from_extension("jpg"),
-            Some(ImageFormat::Jpeg)
-        );
+        assert_eq!(ImageFormat::from_extension("jpeg"), Some(ImageFormat::Jpeg));
+        assert_eq!(ImageFormat::from_extension("jpg"), Some(ImageFormat::Jpeg));
         assert_eq!(ImageFormat::from_extension("png"), Some(ImageFormat::Png));
-        assert_eq!(
-            ImageFormat::from_extension("webp"),
-            Some(ImageFormat::WebP)
-        );
+        assert_eq!(ImageFormat::from_extension("webp"), Some(ImageFormat::WebP));
         assert_eq!(ImageFormat::from_extension("gif"), None);
         assert_eq!(ImageFormat::from_extension("bmp"), None);
 
         // Case insensitive
-        assert_eq!(
-            ImageFormat::from_extension("JPEG"),
-            Some(ImageFormat::Jpeg)
-        );
+        assert_eq!(ImageFormat::from_extension("JPEG"), Some(ImageFormat::Jpeg));
         assert_eq!(ImageFormat::from_extension("PNG"), Some(ImageFormat::Png));
 
         // From MIME
@@ -615,11 +581,17 @@ mod tests {
         let err = ContentFormatError::VideoNotSupported;
         assert!(err.to_string().contains("Video"));
 
-        let err = ContentFormatError::TextTooLong { size: 15000, max: 10000 };
+        let err = ContentFormatError::TextTooLong {
+            size: 15000,
+            max: 10000,
+        };
         assert!(err.to_string().contains("15000"));
         assert!(err.to_string().contains("10000"));
 
-        let err = ContentFormatError::ImageTooLarge { size: 600000, max: 500000 };
+        let err = ContentFormatError::ImageTooLarge {
+            size: 600000,
+            max: 500000,
+        };
         assert!(err.to_string().contains("600000"));
         assert!(err.to_string().contains("500000"));
 

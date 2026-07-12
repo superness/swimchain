@@ -38,14 +38,18 @@ impl EngagementGraphStore {
         let edge_key = self.edge_key(engager, author);
         let (mut edge, is_new_edge) = match self.db.get(&edge_key)? {
             Some(data) => {
-                let edge = serde_json::from_slice(&data).map_err(|e| EngagementGraphError::Serialization(e.to_string()))?;
+                let edge = serde_json::from_slice(&data)
+                    .map_err(|e| EngagementGraphError::Serialization(e.to_string()))?;
                 (edge, false)
             }
             None => {
                 // New edge - update adjacency lists
                 self.add_to_adjacency_list(OUT_PREFIX, engager, author)?;
                 self.add_to_adjacency_list(IN_PREFIX, author, engager)?;
-                (EngagementEdge::new(*engager, *author, engagement_type, timestamp), true)
+                (
+                    EngagementEdge::new(*engager, *author, engagement_type, timestamp),
+                    true,
+                )
             }
         };
 
@@ -60,14 +64,30 @@ impl EngagementGraphStore {
         self.db.insert(&edge_key, edge_data)?;
 
         // Update stats for both identities
-        self.update_stats_outgoing(engager, engagement_type, timestamp, engager == author, is_new_edge)?;
-        self.update_stats_incoming(author, engagement_type, timestamp, engager == author, is_new_edge)?;
+        self.update_stats_outgoing(
+            engager,
+            engagement_type,
+            timestamp,
+            engager == author,
+            is_new_edge,
+        )?;
+        self.update_stats_incoming(
+            author,
+            engagement_type,
+            timestamp,
+            engager == author,
+            is_new_edge,
+        )?;
 
         Ok(())
     }
 
     /// Get edge between two identities
-    pub fn get_edge(&self, engager: &[u8; 32], author: &[u8; 32]) -> Result<Option<EngagementEdge>, EngagementGraphError> {
+    pub fn get_edge(
+        &self,
+        engager: &[u8; 32],
+        author: &[u8; 32],
+    ) -> Result<Option<EngagementEdge>, EngagementGraphError> {
         let edge_key = self.edge_key(engager, author);
         match self.db.get(&edge_key)? {
             Some(data) => {
@@ -80,7 +100,11 @@ impl EngagementGraphStore {
     }
 
     /// Get mutual engagement between two identities
-    pub fn get_mutual(&self, identity_a: &[u8; 32], identity_b: &[u8; 32]) -> Result<MutualEngagement, EngagementGraphError> {
+    pub fn get_mutual(
+        &self,
+        identity_a: &[u8; 32],
+        identity_b: &[u8; 32],
+    ) -> Result<MutualEngagement, EngagementGraphError> {
         let a_to_b = self.get_edge(identity_a, identity_b)?;
         let b_to_a = self.get_edge(identity_b, identity_a)?;
         Ok(MutualEngagement {
@@ -95,16 +119,17 @@ impl EngagementGraphStore {
     pub fn get_stats(&self, identity: &[u8; 32]) -> Result<EngagementStats, EngagementGraphError> {
         let stats_key = self.stats_key(identity);
         match self.db.get(&stats_key)? {
-            Some(data) => {
-                serde_json::from_slice(&data)
-                    .map_err(|e| EngagementGraphError::Serialization(e.to_string()))
-            }
+            Some(data) => serde_json::from_slice(&data)
+                .map_err(|e| EngagementGraphError::Serialization(e.to_string())),
             None => Ok(EngagementStats::new(*identity)),
         }
     }
 
     /// Get all authors that an identity has engaged with
-    pub fn get_engaged_authors(&self, engager: &[u8; 32]) -> Result<Vec<[u8; 32]>, EngagementGraphError> {
+    pub fn get_engaged_authors(
+        &self,
+        engager: &[u8; 32],
+    ) -> Result<Vec<[u8; 32]>, EngagementGraphError> {
         self.get_adjacency_list(OUT_PREFIX, engager)
     }
 
@@ -114,12 +139,19 @@ impl EngagementGraphStore {
     }
 
     /// Get top engagers for an author (by engagement count)
-    pub fn get_top_engagers(&self, author: &[u8; 32], limit: usize) -> Result<Vec<(EngagementEdge, u64)>, EngagementGraphError> {
+    pub fn get_top_engagers(
+        &self,
+        author: &[u8; 32],
+        limit: usize,
+    ) -> Result<Vec<(EngagementEdge, u64)>, EngagementGraphError> {
         let engagers = self.get_engagers(author)?;
         let mut edges: Vec<_> = engagers
             .iter()
             .filter_map(|engager| {
-                self.get_edge(engager, author).ok().flatten().map(|e| (e.clone(), e.total_count))
+                self.get_edge(engager, author)
+                    .ok()
+                    .flatten()
+                    .map(|e| (e.clone(), e.total_count))
             })
             .collect();
 
@@ -129,7 +161,11 @@ impl EngagementGraphStore {
     }
 
     /// Find identities with mutual engagement above threshold
-    pub fn find_mutual_connections(&self, identity: &[u8; 32], min_mutual: u64) -> Result<Vec<MutualEngagement>, EngagementGraphError> {
+    pub fn find_mutual_connections(
+        &self,
+        identity: &[u8; 32],
+        min_mutual: u64,
+    ) -> Result<Vec<MutualEngagement>, EngagementGraphError> {
         let engaged_authors = self.get_engaged_authors(identity)?;
         let engagers = self.get_engagers(identity)?;
 
@@ -199,7 +235,12 @@ impl EngagementGraphStore {
         key
     }
 
-    fn add_to_adjacency_list(&self, prefix: &[u8], identity: &[u8; 32], other: &[u8; 32]) -> Result<(), EngagementGraphError> {
+    fn add_to_adjacency_list(
+        &self,
+        prefix: &[u8],
+        identity: &[u8; 32],
+        other: &[u8; 32],
+    ) -> Result<(), EngagementGraphError> {
         let key = self.adjacency_key(prefix, identity);
         let mut list: Vec<[u8; 32]> = match self.db.get(&key)? {
             Some(data) => serde_json::from_slice(&data)
@@ -218,13 +259,15 @@ impl EngagementGraphStore {
         Ok(())
     }
 
-    fn get_adjacency_list(&self, prefix: &[u8], identity: &[u8; 32]) -> Result<Vec<[u8; 32]>, EngagementGraphError> {
+    fn get_adjacency_list(
+        &self,
+        prefix: &[u8],
+        identity: &[u8; 32],
+    ) -> Result<Vec<[u8; 32]>, EngagementGraphError> {
         let key = self.adjacency_key(prefix, identity);
         match self.db.get(&key)? {
-            Some(data) => {
-                serde_json::from_slice(&data)
-                    .map_err(|e| EngagementGraphError::Serialization(e.to_string()))
-            }
+            Some(data) => serde_json::from_slice(&data)
+                .map_err(|e| EngagementGraphError::Serialization(e.to_string())),
             None => Ok(Vec::new()),
         }
     }
@@ -349,7 +392,9 @@ mod tests {
         let engager = [1u8; 32];
         let author = [2u8; 32];
 
-        store.record_engagement(&engager, &author, EngagementType::Reply, 1000).unwrap();
+        store
+            .record_engagement(&engager, &author, EngagementType::Reply, 1000)
+            .unwrap();
 
         let edge = store.get_edge(&engager, &author).unwrap().unwrap();
         assert_eq!(edge.total_count, 1);
@@ -363,9 +408,15 @@ mod tests {
         let engager = [1u8; 32];
         let author = [2u8; 32];
 
-        store.record_engagement(&engager, &author, EngagementType::Reply, 1000).unwrap();
-        store.record_engagement(&engager, &author, EngagementType::Reaction, 2000).unwrap();
-        store.record_engagement(&engager, &author, EngagementType::Reply, 3000).unwrap();
+        store
+            .record_engagement(&engager, &author, EngagementType::Reply, 1000)
+            .unwrap();
+        store
+            .record_engagement(&engager, &author, EngagementType::Reaction, 2000)
+            .unwrap();
+        store
+            .record_engagement(&engager, &author, EngagementType::Reply, 3000)
+            .unwrap();
 
         let edge = store.get_edge(&engager, &author).unwrap().unwrap();
         assert_eq!(edge.total_count, 3);
@@ -380,8 +431,12 @@ mod tests {
         let alice = [1u8; 32];
         let bob = [2u8; 32];
 
-        store.record_engagement(&alice, &bob, EngagementType::Reply, 1000).unwrap();
-        store.record_engagement(&bob, &alice, EngagementType::Reaction, 2000).unwrap();
+        store
+            .record_engagement(&alice, &bob, EngagementType::Reply, 1000)
+            .unwrap();
+        store
+            .record_engagement(&bob, &alice, EngagementType::Reaction, 2000)
+            .unwrap();
 
         let mutual = store.get_mutual(&alice, &bob).unwrap();
         assert!(mutual.is_mutual());
@@ -395,8 +450,12 @@ mod tests {
         let user = [1u8; 32];
 
         // Self-engagement
-        store.record_engagement(&user, &user, EngagementType::Reaction, 1000).unwrap();
-        store.record_engagement(&user, &user, EngagementType::Reaction, 2000).unwrap();
+        store
+            .record_engagement(&user, &user, EngagementType::Reaction, 1000)
+            .unwrap();
+        store
+            .record_engagement(&user, &user, EngagementType::Reaction, 2000)
+            .unwrap();
 
         let stats = store.get_stats(&user).unwrap();
         assert_eq!(stats.self_engagement_count, 2);
@@ -412,9 +471,15 @@ mod tests {
         let carol = [3u8; 32];
 
         // Alice engages with Bob multiple times - should only count as 1 unique author
-        store.record_engagement(&alice, &bob, EngagementType::Reply, 1000).unwrap();
-        store.record_engagement(&alice, &bob, EngagementType::Reaction, 2000).unwrap();
-        store.record_engagement(&alice, &bob, EngagementType::Reply, 3000).unwrap();
+        store
+            .record_engagement(&alice, &bob, EngagementType::Reply, 1000)
+            .unwrap();
+        store
+            .record_engagement(&alice, &bob, EngagementType::Reaction, 2000)
+            .unwrap();
+        store
+            .record_engagement(&alice, &bob, EngagementType::Reply, 3000)
+            .unwrap();
 
         let alice_stats = store.get_stats(&alice).unwrap();
         assert_eq!(alice_stats.unique_authors_engaged, 1);
@@ -425,14 +490,18 @@ mod tests {
         assert_eq!(bob_stats.total_incoming, 3);
 
         // Alice engages with Carol - should now have 2 unique authors
-        store.record_engagement(&alice, &carol, EngagementType::Reply, 4000).unwrap();
+        store
+            .record_engagement(&alice, &carol, EngagementType::Reply, 4000)
+            .unwrap();
 
         let alice_stats = store.get_stats(&alice).unwrap();
         assert_eq!(alice_stats.unique_authors_engaged, 2);
         assert_eq!(alice_stats.total_outgoing, 4);
 
         // Carol also engages with Bob - Bob should now have 2 unique engagers
-        store.record_engagement(&carol, &bob, EngagementType::Reaction, 5000).unwrap();
+        store
+            .record_engagement(&carol, &bob, EngagementType::Reaction, 5000)
+            .unwrap();
 
         let bob_stats = store.get_stats(&bob).unwrap();
         assert_eq!(bob_stats.unique_engagers, 2);

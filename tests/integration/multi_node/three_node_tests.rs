@@ -49,8 +49,14 @@ async fn test_chain_store_isolation() {
     let height_0 = chain_0.get_latest_height().unwrap_or(None);
     let height_1 = chain_1.get_latest_height().unwrap_or(None);
 
-    assert!(height_0.is_none() || height_0 == Some(0), "Node 0 should have empty chain");
-    assert!(height_1.is_none() || height_1 == Some(0), "Node 1 should have empty chain");
+    assert!(
+        height_0.is_none() || height_0 == Some(0),
+        "Node 0 should have empty chain"
+    );
+    assert!(
+        height_1.is_none() || height_1 == Some(0),
+        "Node 1 should have empty chain"
+    );
 
     harness.shutdown_all().await.unwrap();
 }

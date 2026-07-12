@@ -66,7 +66,10 @@ impl PenaltyStore {
     }
 
     /// Get all penalties for an identity
-    pub fn get_penalties(&self, identity: &PublicKey) -> Result<Vec<PenaltyRecord>, SponsorshipError> {
+    pub fn get_penalties(
+        &self,
+        identity: &PublicKey,
+    ) -> Result<Vec<PenaltyRecord>, SponsorshipError> {
         match self.penalties.get(identity.as_bytes())? {
             Some(data) => Ok(bincode::deserialize(&data)?),
             None => Ok(Vec::new()),
@@ -92,7 +95,9 @@ impl PenaltyStore {
         identity: &PublicKey,
         current_time: u64,
     ) -> Result<bool, SponsorshipError> {
-        Ok(!self.get_active_penalties(identity, current_time)?.is_empty())
+        Ok(!self
+            .get_active_penalties(identity, current_time)?
+            .is_empty())
     }
 
     /// Check if identity has specific penalty type active
@@ -173,11 +178,7 @@ impl PenaltyStore {
 
         // Update by_cause index if applicable
         if let Some(ref caused_by) = new_penalty.caused_by {
-            self.add_to_cause_index(
-                caused_by,
-                &new_penalty.identity,
-                new_penalty.penalty_type,
-            )?;
+            self.add_to_cause_index(caused_by, &new_penalty.identity, new_penalty.penalty_type)?;
         }
 
         Ok(())
@@ -202,10 +203,9 @@ impl PenaltyStore {
         };
 
         // Avoid duplicates
-        if !refs
-            .iter()
-            .any(|r| r.identity_bytes == new_ref.identity_bytes && r.penalty_type == new_ref.penalty_type)
-        {
+        if !refs.iter().any(|r| {
+            r.identity_bytes == new_ref.identity_bytes && r.penalty_type == new_ref.penalty_type
+        }) {
             refs.push(new_ref);
             self.by_cause.insert(key, bincode::serialize(&refs)?)?;
         }
@@ -377,11 +377,7 @@ mod tests {
         let (store, _dir) = create_test_store();
         let time = 1735689600;
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         store.apply_penalty(&penalty).unwrap();
 
@@ -395,11 +391,7 @@ mod tests {
         let (store, _dir) = create_test_store();
         let time = 1735689600;
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
 
         store.apply_penalty(&penalty).unwrap();
 
@@ -421,11 +413,7 @@ mod tests {
 
         assert!(!store.has_active_penalty(&test_pubkey(1), time).unwrap());
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
         store.apply_penalty(&penalty).unwrap();
 
         assert!(store.has_active_penalty(&test_pubkey(1), time).unwrap());
@@ -440,19 +428,12 @@ mod tests {
         let time = 1735689600;
 
         // First spam penalty
-        let penalty1 = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty1 = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
         store.apply_penalty(&penalty1).unwrap();
 
         // Second spam penalty at later time
-        let penalty2 = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time + 1000,
-        );
+        let penalty2 =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time + 1000);
         store.apply_penalty(&penalty2).unwrap();
 
         // Should still be one penalty, but extended
@@ -470,11 +451,7 @@ mod tests {
         let time = 1735689600;
 
         // RestrictedPosting penalty
-        let penalty1 = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty1 = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
         store.apply_penalty(&penalty1).unwrap();
 
         // LostInviteSlots penalty
@@ -498,19 +475,13 @@ mod tests {
         let (store, _dir) = create_test_store();
         let time = 1735689600;
 
-        let penalty1 = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Illegal,
-            time,
-        );
+        let penalty1 =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Illegal, time);
         store.apply_penalty(&penalty1).unwrap();
 
         // Try to apply another permanent revocation
-        let penalty2 = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Illegal,
-            time + 1000,
-        );
+        let penalty2 =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Illegal, time + 1000);
         store.apply_penalty(&penalty2).unwrap();
 
         // Should still be just one
@@ -557,11 +528,7 @@ mod tests {
         let (store, _dir) = create_test_store();
         let time = 1735689600;
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
         store.apply_penalty(&penalty).unwrap();
 
         // Before expiration
@@ -604,11 +571,7 @@ mod tests {
         let (store, _dir) = create_test_store();
         let time = 1735689600;
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Abuse,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Abuse, time);
         store.apply_penalty(&penalty).unwrap();
 
         // Apply recovery (50% reduction)
@@ -629,16 +592,17 @@ mod tests {
         let (store, _dir) = create_test_store();
         let time = 1735689600;
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Illegal,
-            time,
-        );
+        let penalty =
+            PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Illegal, time);
         store.apply_penalty(&penalty).unwrap();
 
         // Try to apply recovery to permanent revocation
         let updated = store
-            .apply_recovery(&test_pubkey(1), PenaltyType::PermanentRevocation, time + 1000)
+            .apply_recovery(
+                &test_pubkey(1),
+                PenaltyType::PermanentRevocation,
+                time + 1000,
+            )
             .unwrap();
         assert!(!updated);
     }
@@ -648,11 +612,7 @@ mod tests {
         let (store, _dir) = create_test_store();
         let time = 1735689600;
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
         store.apply_penalty(&penalty).unwrap();
 
         assert!(store
@@ -671,11 +631,7 @@ mod tests {
         assert_eq!(store.total_penalty_count().unwrap(), 0);
         assert_eq!(store.total_warning_count().unwrap(), 0);
 
-        let penalty = PenaltyRecord::for_offender(
-            test_pubkey(1),
-            MisbehaviorSeverity::Spam,
-            time,
-        );
+        let penalty = PenaltyRecord::for_offender(test_pubkey(1), MisbehaviorSeverity::Spam, time);
         store.apply_penalty(&penalty).unwrap();
 
         let warning = Warning {
@@ -702,11 +658,7 @@ mod tests {
             let db = sled::open(temp_dir.path()).unwrap();
             let store = PenaltyStore::from_db(&db).unwrap();
 
-            let penalty = PenaltyRecord::for_offender(
-                identity,
-                MisbehaviorSeverity::Abuse,
-                time,
-            );
+            let penalty = PenaltyRecord::for_offender(identity, MisbehaviorSeverity::Abuse, time);
             store.apply_penalty(&penalty).unwrap();
             store.flush().unwrap();
         }

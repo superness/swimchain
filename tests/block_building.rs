@@ -8,8 +8,8 @@
 //!       - Actions (individual posts, replies, engagements)
 
 use swimchain::blocks::action::{Action, ActionType};
-use swimchain::blocks::builder::BlockBuilder;
 use swimchain::blocks::branch_path::BranchPath;
+use swimchain::blocks::builder::BlockBuilder;
 
 // ============================================================================
 // Unit Tests - BlockBuilder Core Logic
@@ -202,14 +202,34 @@ fn test_content_block_per_thread() {
     let space_id = [1u8; 32];
 
     // Thread A: 2 actions
-    builder.add_action([10u8; 32], space_id, make_test_action([1u8; 32], 20, 1000), BranchPath::root());
-    builder.add_action([10u8; 32], space_id, make_test_action([2u8; 32], 20, 1001), BranchPath::root());
+    builder.add_action(
+        [10u8; 32],
+        space_id,
+        make_test_action([1u8; 32], 20, 1000),
+        BranchPath::root(),
+    );
+    builder.add_action(
+        [10u8; 32],
+        space_id,
+        make_test_action([2u8; 32], 20, 1001),
+        BranchPath::root(),
+    );
 
     // Thread B: 1 action
-    builder.add_action([20u8; 32], space_id, make_test_action([3u8; 32], 30, 1002), BranchPath::root());
+    builder.add_action(
+        [20u8; 32],
+        space_id,
+        make_test_action([3u8; 32], 30, 1002),
+        BranchPath::root(),
+    );
 
     // Thread C: 1 action
-    builder.add_action([30u8; 32], space_id, make_test_action([4u8; 32], 30, 1003), BranchPath::root());
+    builder.add_action(
+        [30u8; 32],
+        space_id,
+        make_test_action([4u8; 32], 30, 1003),
+        BranchPath::root(),
+    );
 
     let (root, spaces, contents) = builder.build_root_block(1004, [0u8; 32], None);
 
@@ -217,7 +237,10 @@ fn test_content_block_per_thread() {
     assert_eq!(contents.len(), 3); // 3 threads = 3 content blocks
 
     // Content blocks should have correct action counts
-    let thread_a_block = contents.iter().find(|c| c.thread_root_id == [10u8; 32]).unwrap();
+    let thread_a_block = contents
+        .iter()
+        .find(|c| c.thread_root_id == [10u8; 32])
+        .unwrap();
     assert_eq!(thread_a_block.action_count(), 2);
 }
 
@@ -226,11 +249,26 @@ fn test_space_block_aggregates_content_blocks() {
     let mut builder = BlockBuilder::new(100);
 
     // Space A: 2 threads
-    builder.add_action([10u8; 32], [1u8; 32], make_test_action([1u8; 32], 25, 1000), BranchPath::root());
-    builder.add_action([20u8; 32], [1u8; 32], make_test_action([2u8; 32], 25, 1001), BranchPath::root());
+    builder.add_action(
+        [10u8; 32],
+        [1u8; 32],
+        make_test_action([1u8; 32], 25, 1000),
+        BranchPath::root(),
+    );
+    builder.add_action(
+        [20u8; 32],
+        [1u8; 32],
+        make_test_action([2u8; 32], 25, 1001),
+        BranchPath::root(),
+    );
 
     // Space B: 1 thread
-    builder.add_action([30u8; 32], [2u8; 32], make_test_action([3u8; 32], 50, 1002), BranchPath::root());
+    builder.add_action(
+        [30u8; 32],
+        [2u8; 32],
+        make_test_action([3u8; 32], 50, 1002),
+        BranchPath::root(),
+    );
 
     let (_root, spaces, contents) = builder.build_root_block(1003, [0u8; 32], None);
 
@@ -255,7 +293,12 @@ fn test_difficulty_target_customization() {
     assert_eq!(builder.difficulty_target(), 50);
 
     // Now 50s PoW should trigger formation
-    builder.add_action([1u8; 32], [1u8; 32], make_test_action([1u8; 32], 50, 1000), BranchPath::root());
+    builder.add_action(
+        [1u8; 32],
+        [1u8; 32],
+        make_test_action([1u8; 32], 50, 1000),
+        BranchPath::root(),
+    );
     assert!(builder.should_form_root());
 }
 
@@ -273,7 +316,12 @@ fn test_from_chain_state() {
 fn test_clear_builder() {
     let mut builder = BlockBuilder::new(100);
 
-    builder.add_action([1u8; 32], [1u8; 32], make_test_action([1u8; 32], 50, 1000), BranchPath::root());
+    builder.add_action(
+        [1u8; 32],
+        [1u8; 32],
+        make_test_action([1u8; 32], 50, 1000),
+        BranchPath::root(),
+    );
     assert_eq!(builder.pending_action_count(), 1);
 
     builder.clear();

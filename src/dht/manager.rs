@@ -10,15 +10,20 @@ use std::time::Duration;
 use log::{info, warn};
 use tokio::sync::{Mutex, RwLock};
 
-use super::constants::{K, MAX_PROVIDERS, MAX_PROVIDERS_PER_SENDER, MAX_STORES_PER_SENDER_PER_MIN, PROVIDER_REFRESH_SECS};
+use super::constants::{
+    K, MAX_PROVIDERS, MAX_PROVIDERS_PER_SENDER, MAX_STORES_PER_SENDER_PER_MIN,
+    PROVIDER_REFRESH_SECS,
+};
 use super::error::{DhtError, DhtResult};
 use super::lookup::LookupCoordinator;
-use super::messages::{AuthenticatedDhtMessage, DhtMessage, DhtMessageType, NodeInfo, SignedProviderInfo};
+use super::messages::{
+    AuthenticatedDhtMessage, DhtMessage, DhtMessageType, NodeInfo, SignedProviderInfo,
+};
 use super::node_id::NodeId;
 use super::persistence::{DhtPersistence, DhtPersistenceStats};
 use super::provider_store::{ProviderRecord, ProviderStore};
 use super::routing_table::RoutingTable;
-use super::store_rate_limiter::{StoreRateLimiter, StoreCheckResult};
+use super::store_rate_limiter::{StoreCheckResult, StoreRateLimiter};
 
 /// Manages all DHT operations
 pub struct DhtManager {
@@ -410,7 +415,9 @@ impl DhtManager {
                 }
 
                 // Check if this is a new provider or refresh
-                let is_new_provider = !self.has_provider_for_content(&content_hash, &sender_id).await;
+                let is_new_provider = !self
+                    .has_provider_for_content(&content_hash, &sender_id)
+                    .await;
 
                 // Record that sender has this content (with signature verification)
                 match self
@@ -506,7 +513,11 @@ impl DhtManager {
 
         // Step 3: Verify signature
         let signing_payload = auth_msg.get_signing_payload();
-        if !verify_signature(&auth_msg.sender_pubkey, &signing_payload, &auth_msg.signature) {
+        if !verify_signature(
+            &auth_msg.sender_pubkey,
+            &signing_payload,
+            &auth_msg.signature,
+        ) {
             warn!(
                 "Invalid message signature from {}",
                 hex::encode(&sender_id.as_bytes()[..8])
@@ -519,12 +530,9 @@ impl DhtManager {
 
         // Step 4: Process the inner message
         let response = self
-            .handle_message(
-                auth_msg.message,
-                sender_id,
-                sender_addr,
-                |pk, msg, sig| verify_signature(pk, msg, sig),
-            )
+            .handle_message(auth_msg.message, sender_id, sender_addr, |pk, msg, sig| {
+                verify_signature(pk, msg, sig)
+            })
             .await?;
 
         // If there's a response, it will need to be signed by the caller
@@ -552,11 +560,8 @@ impl DhtManager {
         timestamp: u64,
     ) -> (AuthenticatedDhtMessage, Vec<u8>) {
         let payload = message.to_bytes();
-        let signing_msg = AuthenticatedDhtMessage::signing_message(
-            message.msg_type(),
-            &payload,
-            timestamp,
-        );
+        let signing_msg =
+            AuthenticatedDhtMessage::signing_message(message.msg_type(), &payload, timestamp);
         let auth_msg = AuthenticatedDhtMessage::new(
             message,
             sender_pubkey,
@@ -642,7 +647,8 @@ impl DhtManager {
     /// Get all nodes in the routing table (for debugging)
     pub async fn get_routing_table_nodes(&self) -> Vec<(NodeId, std::net::SocketAddr)> {
         let table = self.routing_table.read().await;
-        table.all_nodes()
+        table
+            .all_nodes()
             .map(|entry| (entry.id, entry.addr))
             .collect()
     }
@@ -1233,8 +1239,7 @@ mod tests {
 
         // Create manager with one ID and save
         {
-            let manager =
-                DhtManager::with_persistence(make_id(1), local_addr, tmp.path()).unwrap();
+            let manager = DhtManager::with_persistence(make_id(1), local_addr, tmp.path()).unwrap();
             manager
                 .on_node_seen(make_id(10), make_addr(9000))
                 .await
@@ -1244,8 +1249,7 @@ mod tests {
 
         // Reopen with different ID - should start fresh
         {
-            let manager =
-                DhtManager::with_persistence(make_id(2), local_addr, tmp.path()).unwrap();
+            let manager = DhtManager::with_persistence(make_id(2), local_addr, tmp.path()).unwrap();
             // Should have no nodes since ID changed
             assert_eq!(manager.routing_table_size().await, 0);
         }
@@ -1311,12 +1315,8 @@ mod tests {
 
         // Create authenticated ping message
         let inner_msg = DhtMessage::Ping { nonce: 12345 };
-        let auth_msg = AuthenticatedDhtMessage::new(
-            inner_msg,
-            sender_pubkey,
-            current_time,
-            make_signature(1),
-        );
+        let auth_msg =
+            AuthenticatedDhtMessage::new(inner_msg, sender_pubkey, current_time, make_signature(1));
 
         // Handle with always-valid signature verifier
         let response = manager
@@ -1350,12 +1350,8 @@ mod tests {
         let current_time = 1704067200000u64;
 
         let inner_msg = DhtMessage::Ping { nonce: 12345 };
-        let auth_msg = AuthenticatedDhtMessage::new(
-            inner_msg,
-            wrong_pubkey,
-            current_time,
-            make_signature(1),
-        );
+        let auth_msg =
+            AuthenticatedDhtMessage::new(inner_msg, wrong_pubkey, current_time, make_signature(1));
 
         let result = manager
             .handle_authenticated_message(
@@ -1421,12 +1417,8 @@ mod tests {
         let current_time = 1704067200000u64;
 
         let inner_msg = DhtMessage::Ping { nonce: 12345 };
-        let auth_msg = AuthenticatedDhtMessage::new(
-            inner_msg,
-            sender_pubkey,
-            current_time,
-            make_signature(1),
-        );
+        let auth_msg =
+            AuthenticatedDhtMessage::new(inner_msg, sender_pubkey, current_time, make_signature(1));
 
         // Use invalid signature verifier
         let result = manager
@@ -1464,12 +1456,8 @@ mod tests {
             public_key: make_pubkey(1),
             signature: make_signature(1),
         };
-        let auth_msg = AuthenticatedDhtMessage::new(
-            inner_msg,
-            sender_pubkey,
-            current_time,
-            make_signature(1),
-        );
+        let auth_msg =
+            AuthenticatedDhtMessage::new(inner_msg, sender_pubkey, current_time, make_signature(1));
 
         let response = manager
             .handle_authenticated_message(

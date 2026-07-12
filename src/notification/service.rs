@@ -80,10 +80,7 @@ impl NotificationService {
     /// Create a new notification service.
     ///
     /// Opens or creates the required sled trees.
-    pub fn new(
-        db: &sled::Db,
-        trigger_sources: TriggerSources,
-    ) -> Result<Self, NotificationError> {
+    pub fn new(db: &sled::Db, trigger_sources: TriggerSources) -> Result<Self, NotificationError> {
         let preferences_store = Arc::new(PreferencesStore::new(db)?);
         let throttle_store = Arc::new(ThrottleStore::new(db)?);
         let notification_store = Arc::new(NotificationStore::new(db)?);
@@ -136,7 +133,9 @@ impl NotificationService {
         let mut throttle = self.throttle_store.load(identity)?;
 
         // Check if notification would be triggered
-        if let Some(event) = detect_streak_milestone(current_streak, &throttle.notified_streak_milestones) {
+        if let Some(event) =
+            detect_streak_milestone(current_streak, &throttle.notified_streak_milestones)
+        {
             // Check streak threshold from preferences
             if let super::types::NotificationContext::Streak { milestone, .. } = &event.context {
                 if !prefs.should_notify_streak(*milestone) {
@@ -145,8 +144,15 @@ impl NotificationService {
             }
 
             // Check throttle
-            let context = ThrottleContext::Streak { days: current_streak };
-            if !throttle.can_send(NotificationType::Streak, &context, &self.throttle_config, now_ms) {
+            let context = ThrottleContext::Streak {
+                days: current_streak,
+            };
+            if !throttle.can_send(
+                NotificationType::Streak,
+                &context,
+                &self.throttle_config,
+                now_ms,
+            ) {
                 return Ok(None);
             }
 
@@ -195,7 +201,12 @@ impl NotificationService {
             let context = ThrottleContext::Level {
                 new_level: current_level,
             };
-            if !throttle.can_send(NotificationType::LevelUp, &context, &self.throttle_config, now_ms) {
+            if !throttle.can_send(
+                NotificationType::LevelUp,
+                &context,
+                &self.throttle_config,
+                now_ms,
+            ) {
                 return Ok(None);
             }
 
@@ -243,8 +254,12 @@ impl NotificationService {
             let context = ThrottleContext::Achievement {
                 id: achievement.as_u8(),
             };
-            if !throttle.can_send(NotificationType::Achievement, &context, &self.throttle_config, now_ms)
-            {
+            if !throttle.can_send(
+                NotificationType::Achievement,
+                &context,
+                &self.throttle_config,
+                now_ms,
+            ) {
                 return Ok(None);
             }
 
@@ -292,8 +307,12 @@ impl NotificationService {
         if let Some(event) = detect_space_health(space_id, health_score, space_name) {
             // Check throttle
             let context = ThrottleContext::Space { space_id };
-            if !throttle.can_send(NotificationType::SpaceHealth, &context, &self.throttle_config, now_ms)
-            {
+            if !throttle.can_send(
+                NotificationType::SpaceHealth,
+                &context,
+                &self.throttle_config,
+                now_ms,
+            ) {
                 return Ok(None);
             }
 
@@ -340,8 +359,12 @@ impl NotificationService {
         if let Some(event) = detect_content_risk(content_count, days_remaining) {
             // Check throttle
             let context = ThrottleContext::ContentRisk;
-            if !throttle.can_send(NotificationType::ContentRisk, &context, &self.throttle_config, now_ms)
-            {
+            if !throttle.can_send(
+                NotificationType::ContentRisk,
+                &context,
+                &self.throttle_config,
+                now_ms,
+            ) {
                 return Ok(None);
             }
 
@@ -380,7 +403,9 @@ impl NotificationService {
         let mut throttle = self.throttle_store.load(identity)?;
 
         // Check if notification would be triggered
-        if let Some(event) = detect_contribution_thanks(posts_supported, period, throttle.last_notified_period) {
+        if let Some(event) =
+            detect_contribution_thanks(posts_supported, period, throttle.last_notified_period)
+        {
             // Check throttle
             let context = ThrottleContext::Contribution { period };
             if !throttle.can_send(
@@ -436,7 +461,9 @@ impl NotificationService {
         identity: &[u8; 32],
         notification_id: NotificationId,
     ) -> Result<bool, NotificationError> {
-        let marked = self.notification_store.mark_read(identity, notification_id)?;
+        let marked = self
+            .notification_store
+            .mark_read(identity, notification_id)?;
         if marked {
             let _ = self.event_tx.send(NotificationEvent::Read {
                 identity: *identity,
@@ -491,7 +518,8 @@ impl NotificationService {
         identity: &[u8; 32],
         now_ms: u64,
     ) -> Result<usize, NotificationError> {
-        self.notification_store.prune_expired_for_identity(identity, now_ms)
+        self.notification_store
+            .prune_expired_for_identity(identity, now_ms)
     }
 
     /// Get reference to the trigger sources.
@@ -624,7 +652,9 @@ mod tests {
         let identity = [1u8; 32];
 
         // Regular level up
-        let notification = service.check_level_up(&identity, LEVEL_REGULAR, BASE_MS).unwrap();
+        let notification = service
+            .check_level_up(&identity, LEVEL_REGULAR, BASE_MS)
+            .unwrap();
         assert!(notification.is_some());
         assert!(notification.unwrap().message.contains("Regular"));
     }
@@ -635,14 +665,20 @@ mod tests {
         let identity = [1u8; 32];
 
         // Regular
-        service.check_level_up(&identity, LEVEL_REGULAR, BASE_MS).unwrap();
+        service
+            .check_level_up(&identity, LEVEL_REGULAR, BASE_MS)
+            .unwrap();
 
         // Same level - no notification
-        let notification = service.check_level_up(&identity, LEVEL_REGULAR, BASE_MS + 1000).unwrap();
+        let notification = service
+            .check_level_up(&identity, LEVEL_REGULAR, BASE_MS + 1000)
+            .unwrap();
         assert!(notification.is_none());
 
         // Higher level - notification
-        let notification = service.check_level_up(&identity, LEVEL_RESIDENT, BASE_MS + 2000).unwrap();
+        let notification = service
+            .check_level_up(&identity, LEVEL_RESIDENT, BASE_MS + 2000)
+            .unwrap();
         assert!(notification.is_some());
     }
 
@@ -651,7 +687,9 @@ mod tests {
         let (_temp, service) = create_test_service();
         let identity = [1u8; 32];
 
-        let notification = service.check_achievement(&identity, Achievement::FirstStroke, BASE_MS).unwrap();
+        let notification = service
+            .check_achievement(&identity, Achievement::FirstStroke, BASE_MS)
+            .unwrap();
         assert!(notification.is_some());
         assert!(notification.unwrap().message.contains("First Stroke"));
     }
@@ -662,10 +700,14 @@ mod tests {
         let identity = [1u8; 32];
 
         // First
-        service.check_achievement(&identity, Achievement::FirstStroke, BASE_MS).unwrap();
+        service
+            .check_achievement(&identity, Achievement::FirstStroke, BASE_MS)
+            .unwrap();
 
         // Second should be blocked
-        let notification = service.check_achievement(&identity, Achievement::FirstStroke, BASE_MS + 1000).unwrap();
+        let notification = service
+            .check_achievement(&identity, Achievement::FirstStroke, BASE_MS + 1000)
+            .unwrap();
         assert!(notification.is_none());
     }
 
@@ -676,13 +718,15 @@ mod tests {
         let space_id = [0u8; 16];
 
         // Below threshold
-        let notification = service.check_space_health(
-            &identity,
-            space_id,
-            45,
-            Some("/gardening".to_string()),
-            BASE_MS,
-        ).unwrap();
+        let notification = service
+            .check_space_health(
+                &identity,
+                space_id,
+                45,
+                Some("/gardening".to_string()),
+                BASE_MS,
+            )
+            .unwrap();
         assert!(notification.is_some());
         assert!(notification.unwrap().message.contains("/gardening"));
     }
@@ -694,16 +738,22 @@ mod tests {
         let space_id = [0u8; 16];
 
         // First
-        service.check_space_health(&identity, space_id, 45, None, BASE_MS).unwrap();
+        service
+            .check_space_health(&identity, space_id, 45, None, BASE_MS)
+            .unwrap();
 
         // Same space within 4 hours - blocked
         let two_hours = BASE_MS + (2 * 60 * 60 * 1000);
-        let notification = service.check_space_health(&identity, space_id, 45, None, two_hours).unwrap();
+        let notification = service
+            .check_space_health(&identity, space_id, 45, None, two_hours)
+            .unwrap();
         assert!(notification.is_none());
 
         // After 4 hours - allowed
         let five_hours = BASE_MS + (5 * 60 * 60 * 1000);
-        let notification = service.check_space_health(&identity, space_id, 45, None, five_hours).unwrap();
+        let notification = service
+            .check_space_health(&identity, space_id, 45, None, five_hours)
+            .unwrap();
         assert!(notification.is_some());
     }
 
@@ -712,7 +762,9 @@ mod tests {
         let (_temp, service) = create_test_service();
         let identity = [1u8; 32];
 
-        let notification = service.check_content_risk(&identity, 3, 1, BASE_MS).unwrap();
+        let notification = service
+            .check_content_risk(&identity, 3, 1, BASE_MS)
+            .unwrap();
         assert!(notification.is_some());
         assert!(notification.unwrap().message.contains("tomorrow"));
     }
@@ -722,7 +774,9 @@ mod tests {
         let (_temp, service) = create_test_service();
         let identity = [1u8; 32];
 
-        let notification = service.check_contribution_thanks(&identity, 50, 10, BASE_MS).unwrap();
+        let notification = service
+            .check_contribution_thanks(&identity, 50, 10, BASE_MS)
+            .unwrap();
         assert!(notification.is_some());
         assert!(notification.unwrap().message.contains("50"));
     }
@@ -732,7 +786,10 @@ mod tests {
         let (_temp, service) = create_test_service();
         let identity = [1u8; 32];
 
-        let notification = service.check_streak(&identity, 7, BASE_MS).unwrap().unwrap();
+        let notification = service
+            .check_streak(&identity, 7, BASE_MS)
+            .unwrap()
+            .unwrap();
         let id = notification.id;
 
         assert_eq!(service.count_unread(&identity).unwrap(), 1);
@@ -750,7 +807,9 @@ mod tests {
         // Generate some notifications
         service.check_streak(&identity, 7, BASE_MS).unwrap();
         service.check_streak(&identity, 14, BASE_MS + 1000).unwrap();
-        service.check_achievement(&identity, Achievement::FirstStroke, BASE_MS + 2000).unwrap();
+        service
+            .check_achievement(&identity, Achievement::FirstStroke, BASE_MS + 2000)
+            .unwrap();
 
         let pending = service.get_pending(&identity, 10).unwrap();
         assert_eq!(pending.len(), 3);
@@ -792,7 +851,10 @@ mod tests {
         // Should receive event
         let event = rx.try_recv().unwrap();
         match event {
-            NotificationEvent::Emitted { identity: id, notification } => {
+            NotificationEvent::Emitted {
+                identity: id,
+                notification,
+            } => {
                 assert_eq!(id, identity);
                 assert_eq!(notification.notification_type, NotificationType::Streak);
             }

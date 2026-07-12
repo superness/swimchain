@@ -117,9 +117,7 @@ pub fn aggregate_attestations(
         tree_roots.insert(stored.sponsor_tree_root);
 
         // Count reasons
-        *reason_counts
-            .entry(stored.attestation.reason)
-            .or_insert(0) += 1;
+        *reason_counts.entry(stored.attestation.reason).or_insert(0) += 1;
     }
 
     let unique_tree_count = tree_roots.len() as u8;
@@ -383,8 +381,14 @@ mod tests {
 
         // Advertising should be primary (2 vs 1)
         assert_eq!(result.primary_reason, Some(SpamReason::Advertising));
-        assert_eq!(result.count.reason_counts.get(&SpamReason::Advertising), Some(&2));
-        assert_eq!(result.count.reason_counts.get(&SpamReason::Repetitive), Some(&1));
+        assert_eq!(
+            result.count.reason_counts.get(&SpamReason::Advertising),
+            Some(&2)
+        );
+        assert_eq!(
+            result.count.reason_counts.get(&SpamReason::Repetitive),
+            Some(&1)
+        );
     }
 
     #[test]
@@ -516,14 +520,12 @@ mod tests {
         let other_genesis = [99u8; 32];
         let id3 = [100u8; 32];
 
-        let get_sponsor = |pk: &[u8; 32]| {
-            match *pk {
-                x if x == id1 => Some(sponsor),
-                x if x == id2 => Some(sponsor),
-                x if x == sponsor => Some(genesis),
-                x if x == id3 => Some(other_genesis),
-                _ => None,
-            }
+        let get_sponsor = |pk: &[u8; 32]| match *pk {
+            x if x == id1 => Some(sponsor),
+            x if x == id2 => Some(sponsor),
+            x if x == sponsor => Some(genesis),
+            x if x == id3 => Some(other_genesis),
+            _ => None,
         };
 
         // id1 and id2 share the same tree (both under genesis via sponsor)

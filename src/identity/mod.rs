@@ -291,7 +291,11 @@ mod tests {
 
         // Encode as address - HRP is "cs" (ChainSocial)
         let address = encode_address_from_pubkey(&keypair.public_key);
-        assert!(address.starts_with("cs1"), "Expected cs1 prefix, got: {}", address);
+        assert!(
+            address.starts_with("cs1"),
+            "Expected cs1 prefix, got: {}",
+            address
+        );
 
         // Decode back
         let decoded = decode_address_to_pubkey(&address).unwrap();

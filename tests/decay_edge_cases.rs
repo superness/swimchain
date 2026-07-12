@@ -31,7 +31,8 @@ fn current_time_ms() -> u64 {
 fn create_test_integration(target_storage: u64) -> (DecayIntegration, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let blob_store = Arc::new(BlobStore::new(dir.path().join("sync_blobs")).unwrap());
-    let integration = DecayIntegration::new(dir.path().to_path_buf(), blob_store, target_storage).unwrap();
+    let integration =
+        DecayIntegration::new(dir.path().to_path_buf(), blob_store, target_storage).unwrap();
     (integration, dir)
 }
 
@@ -58,7 +59,10 @@ fn test_d1_1_half_life_decreases_under_pressure() {
     let (integration, _dir) = create_test_integration(1024);
 
     let initial_half_life = integration.current_half_life().unwrap();
-    assert_eq!(initial_half_life, HALF_LIFE_SECS, "Should start with default half-life");
+    assert_eq!(
+        initial_half_life, HALF_LIFE_SECS,
+        "Should start with default half-life"
+    );
 
     // Register 10KB of content (10x target)
     for i in 0..10u8 {
@@ -171,7 +175,10 @@ fn test_d1_1_storage_stats_accuracy() {
 
     let (bytes, count) = integration.storage_stats().unwrap();
     let expected_bytes: u64 = sizes.iter().sum();
-    assert_eq!(bytes, expected_bytes, "Total bytes should match sum of sizes");
+    assert_eq!(
+        bytes, expected_bytes,
+        "Total bytes should match sum of sizes"
+    );
     assert_eq!(count, 5, "Count should match number of items");
 }
 
@@ -191,7 +198,12 @@ fn test_d1_2_pinned_content_survives_decay() {
     let blob_path = integration.storage_stats(); // Just to verify it works
     let dir = tempdir().unwrap();
     let blob_store = Arc::new(BlobStore::new(dir.path().join("sync_blobs")).unwrap());
-    let integration2 = DecayIntegration::new(dir.path().to_path_buf(), blob_store.clone(), TARGET_STORAGE_BYTES).unwrap();
+    let integration2 = DecayIntegration::new(
+        dir.path().to_path_buf(),
+        blob_store.clone(),
+        TARGET_STORAGE_BYTES,
+    )
+    .unwrap();
 
     let blob_path = blob_store.blob_path(&blob_hash);
     fs::create_dir_all(blob_path.parent().unwrap()).unwrap();
@@ -215,9 +227,15 @@ fn test_d1_2_pinned_content_survives_decay() {
 
     // Prune should skip it
     let stats = integration2.prune().unwrap();
-    assert_eq!(stats.items_protected, 1, "Pinned content should be protected");
+    assert_eq!(
+        stats.items_protected, 1,
+        "Pinned content should be protected"
+    );
     assert_eq!(stats.items_pruned, 0, "Pinned content should not be pruned");
-    assert!(integration2.contains(&blob_hash), "Pinned content should still exist");
+    assert!(
+        integration2.contains(&blob_hash),
+        "Pinned content should still exist"
+    );
     assert!(blob_path.exists(), "Pinned blob file should still exist");
 }
 
@@ -456,7 +474,8 @@ fn test_d1_4_engagement_resets_timer() {
     assert!(
         survival_after > survival_before,
         "Survival should improve after engagement: {} vs {}",
-        survival_after, survival_before
+        survival_after,
+        survival_before
     );
 
     // Note: Floor period protection is based on content AGE, not engagement time.
@@ -513,7 +532,10 @@ fn test_d1_4_engagement_nonexistent_content() {
     let blob_hash = ContentBlobHash::from_bytes([99u8; 32]);
 
     let engaged = integration.on_engagement(&blob_hash).unwrap();
-    assert!(!engaged, "Engagement on non-existent content should return false");
+    assert!(
+        !engaged,
+        "Engagement on non-existent content should return false"
+    );
 }
 
 /// Test that pruning respects recent engagement
@@ -521,7 +543,12 @@ fn test_d1_4_engagement_nonexistent_content() {
 fn test_d1_4_prune_respects_engagement() {
     let dir = tempdir().unwrap();
     let blob_store = Arc::new(BlobStore::new(dir.path().join("sync_blobs")).unwrap());
-    let integration = DecayIntegration::new(dir.path().to_path_buf(), blob_store.clone(), TARGET_STORAGE_BYTES).unwrap();
+    let integration = DecayIntegration::new(
+        dir.path().to_path_buf(),
+        blob_store.clone(),
+        TARGET_STORAGE_BYTES,
+    )
+    .unwrap();
 
     let blob_hash = ContentBlobHash::from_bytes([1u8; 32]);
 
@@ -554,8 +581,14 @@ fn test_d1_4_prune_respects_engagement() {
 
     // Prune should NOT remove it because engagement is recent
     let stats = integration.prune().unwrap();
-    assert_eq!(stats.items_pruned, 0, "Recently engaged content should not be pruned");
-    assert!(integration.contains(&blob_hash), "Engaged content should still exist");
+    assert_eq!(
+        stats.items_pruned, 0,
+        "Recently engaged content should not be pruned"
+    );
+    assert!(
+        integration.contains(&blob_hash),
+        "Engaged content should still exist"
+    );
     assert!(blob_path.exists(), "Engaged blob should still exist");
 }
 
@@ -572,7 +605,9 @@ fn test_persistence_preserves_engagement() {
     // Register and engage
     {
         let blob_store = Arc::new(BlobStore::new(dir.path().join("sync_blobs")).unwrap());
-        let integration = DecayIntegration::new(dir.path().to_path_buf(), blob_store, TARGET_STORAGE_BYTES).unwrap();
+        let integration =
+            DecayIntegration::new(dir.path().to_path_buf(), blob_store, TARGET_STORAGE_BYTES)
+                .unwrap();
 
         let metadata = DecayMetadata {
             blob_hash: *blob_hash.as_bytes(),
@@ -598,12 +633,20 @@ fn test_persistence_preserves_engagement() {
     // Reload and verify engagement was preserved
     {
         let blob_store = Arc::new(BlobStore::new(dir.path().join("sync_blobs")).unwrap());
-        let integration = DecayIntegration::new(dir.path().to_path_buf(), blob_store, TARGET_STORAGE_BYTES).unwrap();
+        let integration =
+            DecayIntegration::new(dir.path().to_path_buf(), blob_store, TARGET_STORAGE_BYTES)
+                .unwrap();
 
-        assert!(integration.contains(&blob_hash), "Content should still exist after reload");
+        assert!(
+            integration.contains(&blob_hash),
+            "Content should still exist after reload"
+        );
 
         let state = integration.get_decay_state(&blob_hash).unwrap().unwrap();
-        assert!(state.is_protected, "Content should still be in floor period after reload");
+        assert!(
+            state.is_protected,
+            "Content should still be in floor period after reload"
+        );
     }
 }
 
@@ -622,7 +665,8 @@ fn test_scan_and_register_bootstraps_decay() {
     }
 
     // Create integration (no content registered yet)
-    let integration = DecayIntegration::new(dir.path().to_path_buf(), blob_store, TARGET_STORAGE_BYTES).unwrap();
+    let integration =
+        DecayIntegration::new(dir.path().to_path_buf(), blob_store, TARGET_STORAGE_BYTES).unwrap();
     assert_eq!(integration.item_count(), 0, "Should start empty");
 
     // Scan and register
@@ -633,7 +677,11 @@ fn test_scan_and_register_bootstraps_decay() {
     // Verify all items are now tracked
     for i in 0..5u8 {
         let blob_hash = ContentBlobHash::from_bytes([i; 32]);
-        assert!(integration.contains(&blob_hash), "Item {} should be tracked", i);
+        assert!(
+            integration.contains(&blob_hash),
+            "Item {} should be tracked",
+            i
+        );
     }
 }
 
@@ -642,7 +690,12 @@ fn test_scan_and_register_bootstraps_decay() {
 fn test_prune_cleans_orphan_metadata() {
     let dir = tempdir().unwrap();
     let blob_store = Arc::new(BlobStore::new(dir.path().join("sync_blobs")).unwrap());
-    let integration = DecayIntegration::new(dir.path().to_path_buf(), blob_store.clone(), TARGET_STORAGE_BYTES).unwrap();
+    let integration = DecayIntegration::new(
+        dir.path().to_path_buf(),
+        blob_store.clone(),
+        TARGET_STORAGE_BYTES,
+    )
+    .unwrap();
 
     let blob_hash = ContentBlobHash::from_bytes([1u8; 32]);
 
@@ -667,7 +720,10 @@ fn test_prune_cleans_orphan_metadata() {
     // Prune should clean orphan metadata
     let stats = integration.prune().unwrap();
     assert_eq!(stats.orphans_cleaned, 1, "Should clean 1 orphan");
-    assert!(!integration.contains(&blob_hash), "Orphan metadata should be removed");
+    assert!(
+        !integration.contains(&blob_hash),
+        "Orphan metadata should be removed"
+    );
 }
 
 /// Test that empty blobs are ignored during scan
@@ -690,7 +746,8 @@ fn test_scan_ignores_empty_blobs() {
     fs::create_dir_all(valid_path.parent().unwrap()).unwrap();
     fs::write(&valid_path, "valid content").unwrap();
 
-    let integration = DecayIntegration::new(dir.path().to_path_buf(), blob_store, TARGET_STORAGE_BYTES).unwrap();
+    let integration =
+        DecayIntegration::new(dir.path().to_path_buf(), blob_store, TARGET_STORAGE_BYTES).unwrap();
 
     let registered = integration.scan_and_register().unwrap();
     assert_eq!(registered, 1, "Should only register non-empty blob");

@@ -65,10 +65,7 @@ impl PeerBranchInfo {
     /// Add a branch this peer serves
     pub fn add_branch(&mut self, space_id: [u8; 32], branch: BranchPath) {
         let path_key = branch.serialize();
-        self.branches
-            .entry(space_id)
-            .or_default()
-            .insert(path_key);
+        self.branches.entry(space_id).or_default().insert(path_key);
         self.touch();
     }
 
@@ -168,7 +165,10 @@ impl PeerBranchTracker {
         let path_key = branch.serialize();
 
         // Update peer info
-        let peer_info = self.peers.entry(peer_id).or_insert_with(|| PeerBranchInfo::new(peer_id));
+        let peer_info = self
+            .peers
+            .entry(peer_id)
+            .or_insert_with(|| PeerBranchInfo::new(peer_id));
         peer_info.add_branch(space_id, branch);
 
         // Update reverse index
@@ -180,7 +180,10 @@ impl PeerBranchTracker {
 
     /// Set that a peer supports branch-selective sync
     pub fn set_supports_branch_sync(&mut self, peer_id: [u8; 32], supports: bool) {
-        let peer_info = self.peers.entry(peer_id).or_insert_with(|| PeerBranchInfo::new(peer_id));
+        let peer_info = self
+            .peers
+            .entry(peer_id)
+            .or_insert_with(|| PeerBranchInfo::new(peer_id));
         peer_info.supports_branch_sync = supports;
     }
 
@@ -208,7 +211,8 @@ impl PeerBranchTracker {
             // Clean up reverse index
             for (space_id, branches) in peer_info.branches {
                 for path_key in branches {
-                    if let Some(peers) = self.branch_to_peers.get_mut(&(space_id, path_key.clone())) {
+                    if let Some(peers) = self.branch_to_peers.get_mut(&(space_id, path_key.clone()))
+                    {
                         peers.remove(peer_id);
                         if peers.is_empty() {
                             self.branch_to_peers.remove(&(space_id, path_key));

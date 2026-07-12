@@ -111,7 +111,8 @@ impl SpaceHealthManager {
         identity: &[u8; 32],
         timestamp: u64,
     ) -> Result<(), SpaceHealthError> {
-        self.tracker.register_activity(space_id, identity, timestamp)?;
+        self.tracker
+            .register_activity(space_id, identity, timestamp)?;
         self.invalidate(space_id);
         Ok(())
     }
@@ -126,7 +127,8 @@ impl SpaceHealthManager {
         bytes: u64,
     ) -> Result<(), SpaceHealthError> {
         let period = self.current_period();
-        self.ranker.record_bandwidth(space_id, identity, bytes, period)?;
+        self.ranker
+            .record_bandwidth(space_id, identity, bytes, period)?;
         self.invalidate(space_id);
         Ok(())
     }
@@ -139,7 +141,8 @@ impl SpaceHealthManager {
         count: u32,
     ) -> Result<(), SpaceHealthError> {
         let period = self.current_period();
-        self.ranker.record_content_served(space_id, identity, count, period)?;
+        self.ranker
+            .record_content_served(space_id, identity, count, period)?;
         self.invalidate(space_id);
         Ok(())
     }
@@ -223,7 +226,8 @@ impl SpaceHealthManager {
         space_id: &[u8; 16],
         period: u32,
     ) -> Result<Vec<SpaceContributor>, SpaceHealthError> {
-        self.ranker.get_top_contributors(space_id, period, TOP_CONTRIBUTORS_LIMIT)
+        self.ranker
+            .get_top_contributors(space_id, period, TOP_CONTRIBUTORS_LIMIT)
     }
 
     /// Get current period number.

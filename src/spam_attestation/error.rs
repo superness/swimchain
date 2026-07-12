@@ -71,7 +71,10 @@ impl fmt::Display for SpamAttestationError {
                 )
             }
             Self::InvalidSignature => write!(f, "Invalid attestation signature"),
-            Self::TimestampTooOld { age_secs, max_age_secs } => {
+            Self::TimestampTooOld {
+                age_secs,
+                max_age_secs,
+            } => {
                 write!(
                     f,
                     "Attestation timestamp too old: {} seconds (max {})",

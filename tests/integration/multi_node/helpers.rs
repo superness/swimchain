@@ -25,9 +25,9 @@ pub fn create_test_chain(count: u64) -> Vec<RootBlock> {
             merkle_root: [0u8; 32], // Simplified for testing
             space_block_hashes: vec![],
             space_block_count: 0,
-            total_pow: block_pow, // PoW for this block only
+            total_pow: block_pow,       // PoW for this block only
             cumulative_pow: cumulative, // Sum from genesis to here
-            difficulty_target: 30, // 30 second target
+            difficulty_target: 30,      // 30 second target
             height,
             block_creator: [0u8; 32],
         };
@@ -43,7 +43,10 @@ pub fn create_test_chain(count: u64) -> Vec<RootBlock> {
 /// Store a chain in ChainStore
 ///
 /// Stores all blocks and creates height index.
-pub fn store_chain(store: &ChainStore, chain: &[RootBlock]) -> Result<(), swimchain::types::error::StorageError> {
+pub fn store_chain(
+    store: &ChainStore,
+    chain: &[RootBlock],
+) -> Result<(), swimchain::types::error::StorageError> {
     for block in chain {
         let hash = store.put_root_block(block)?;
         store.index_height(block.height, hash)?;
@@ -105,7 +108,9 @@ pub struct PropagationTimer {
 impl PropagationTimer {
     /// Start timing
     pub fn start() -> Self {
-        Self { start: Instant::now() }
+        Self {
+            start: Instant::now(),
+        }
     }
 
     /// Stop timing and return duration in milliseconds

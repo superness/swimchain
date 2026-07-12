@@ -25,12 +25,12 @@ use std::time::Instant;
 
 use lru::LruCache;
 
-use crate::crypto::sha256;
 use super::action::Action;
 use super::branch_path::BranchPath;
 use super::content_block::{ContentBlock, SpaceCreationMetadata};
 use super::root_block::RootBlock;
 use super::space_block::SpaceBlock;
+use crate::crypto::sha256;
 
 /// Thread identifier
 pub type ThreadId = [u8; 32];
@@ -64,8 +64,7 @@ pub const MAX_MEMPOOL_ACTIONS: usize = 10_000;
 pub const MAX_ACTIONS_PER_SPACE: usize = 2_000;
 
 /// Pending thread with accumulated actions
-#[derive(Debug, Clone)]
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PendingThread {
     /// Thread root ID
     thread_id: ThreadId,
@@ -195,7 +194,9 @@ impl BlockBuilder {
     /// Load and restore the pending thread map from disk, rebuilding the
     /// derived indexes (seen_actions, locations, per-space/total counts).
     fn load_persisted(&mut self) {
-        let Some(ref path) = self.persist_path else { return };
+        let Some(ref path) = self.persist_path else {
+            return;
+        };
         let data = match std::fs::read(path) {
             Ok(d) => d,
             Err(_) => return, // no file yet
@@ -231,7 +232,9 @@ impl BlockBuilder {
     /// Persist the pending thread map to disk (atomic + flushed). Best-effort:
     /// a failure is logged, never fatal to the action that triggered it.
     fn persist(&self) {
-        let Some(ref path) = self.persist_path else { return };
+        let Some(ref path) = self.persist_path else {
+            return;
+        };
         let data = match bincode::serialize(&self.threads) {
             Ok(d) => d,
             Err(e) => {
@@ -343,7 +346,13 @@ impl BlockBuilder {
                     .unwrap_or(true);
                 if dominated {
                     let hash = Self::action_hash(action);
-                    lowest = Some((thread.thread_id, thread.space_id, idx, action.pow_work, hash));
+                    lowest = Some((
+                        thread.thread_id,
+                        thread.space_id,
+                        idx,
+                        action.pow_work,
+                        hash,
+                    ));
                 }
             }
         }
@@ -417,7 +426,11 @@ impl BlockBuilder {
         let incoming_pow = action.pow_work;
 
         // H-BLOCK-2: Enforce per-space limit
-        let space_count = self.space_action_counts.get(&space_id).copied().unwrap_or(0);
+        let space_count = self
+            .space_action_counts
+            .get(&space_id)
+            .copied()
+            .unwrap_or(0);
         if space_count >= MAX_ACTIONS_PER_SPACE {
             // Evict lowest PoW action from this space
             if let Some(evicted_pow) = self.evict_lowest_pow_from_space(&space_id) {
@@ -462,7 +475,8 @@ impl BlockBuilder {
         thread.actions.push(action);
 
         // Track location for potential future replacement
-        self.action_locations.insert(hash, (thread_id, action_index));
+        self.action_locations
+            .insert(hash, (thread_id, action_index));
 
         // Update counts (H-BLOCK-2)
         *self.space_action_counts.entry(space_id).or_insert(0) += 1;
@@ -551,7 +565,8 @@ impl BlockBuilder {
 
         let new_index = thread.actions.len();
         thread.actions.push(new_action);
-        self.action_locations.insert(new_hash, (thread_id, new_index));
+        self.action_locations
+            .insert(new_hash, (thread_id, new_index));
 
         log::info!(
             "[RIM] Replaced action {} with {} (same author)",
@@ -591,7 +606,11 @@ impl BlockBuilder {
         let incoming_pow = action.pow_work;
 
         // H-BLOCK-2: Enforce per-space limit
-        let space_count = self.space_action_counts.get(&space_id).copied().unwrap_or(0);
+        let space_count = self
+            .space_action_counts
+            .get(&space_id)
+            .copied()
+            .unwrap_or(0);
         if space_count >= MAX_ACTIONS_PER_SPACE {
             if let Some(evicted_pow) = self.evict_lowest_pow_from_space(&space_id) {
                 if incoming_pow <= evicted_pow {
@@ -748,7 +767,8 @@ impl BlockBuilder {
 
         // DEPENDENCY CHECK: Ensure CreateSpace actions have required Sponsor actions
         // Collect all Sponsor actions in this batch
-        let mut identities_sponsored_in_batch: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        let mut identities_sponsored_in_batch: std::collections::HashSet<[u8; 32]> =
+            std::collections::HashSet::new();
         for threads in space_threads.values() {
             for thread in threads {
                 for action in &thread.actions {
@@ -774,11 +794,13 @@ impl BlockBuilder {
                         let creator_bytes = action.actor;
 
                         // Check if sponsored in this batch
-                        let sponsored_in_batch = identities_sponsored_in_batch.contains(&creator_bytes);
+                        let sponsored_in_batch =
+                            identities_sponsored_in_batch.contains(&creator_bytes);
 
                         // Check if sponsored on-chain
                         let sponsored_on_chain = if let Some(store) = sponsorship_store {
-                            let creator_pk = crate::types::identity::PublicKey::from_bytes(creator_bytes);
+                            let creator_pk =
+                                crate::types::identity::PublicKey::from_bytes(creator_bytes);
                             store.exists(&creator_pk).unwrap_or(false)
                         } else {
                             false // No store = can't verify, exclude to be safe
@@ -1147,7 +1169,10 @@ impl BlockBuilder {
     /// Returns (thread_id, space_id, action) if found.
     /// Used for responding to GETDATA requests for mempool actions.
     #[must_use]
-    pub fn get_pending_action_by_hash(&self, hash: &[u8; 32]) -> Option<(ThreadId, SpaceId, Action)> {
+    pub fn get_pending_action_by_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Option<(ThreadId, SpaceId, Action)> {
         for thread in self.threads.values() {
             for action in &thread.actions {
                 if &Self::action_hash(action) == hash {
@@ -1211,15 +1236,29 @@ mod tests {
         {
             let mut builder = BlockBuilder::new(30);
             builder.set_persistence(path.clone());
-            assert!(builder.add_action([10u8; 32], [11u8; 32], make_test_action(5), BranchPath::root()));
-            assert!(builder.add_action([12u8; 32], [13u8; 32], make_test_action(7), BranchPath::root()));
+            assert!(builder.add_action(
+                [10u8; 32],
+                [11u8; 32],
+                make_test_action(5),
+                BranchPath::root()
+            ));
+            assert!(builder.add_action(
+                [12u8; 32],
+                [13u8; 32],
+                make_test_action(7),
+                BranchPath::root()
+            ));
             assert_eq!(builder.pending_action_count(), 2);
         }
 
         // A fresh builder pointed at the same file recovers the pending set.
         let mut reloaded = BlockBuilder::new(30);
         reloaded.set_persistence(path.clone());
-        assert_eq!(reloaded.pending_action_count(), 2, "pending actions restored from disk");
+        assert_eq!(
+            reloaded.pending_action_count(),
+            2,
+            "pending actions restored from disk"
+        );
         assert_eq!(reloaded.pending_thread_count(), 2);
 
         // Dedup index rebuilt: re-adding a restored action is rejected.
@@ -1234,7 +1273,11 @@ mod tests {
         reloaded.clear();
         let mut after_clear = BlockBuilder::new(30);
         after_clear.set_persistence(path);
-        assert_eq!(after_clear.pending_action_count(), 0, "drained mempool persisted as empty");
+        assert_eq!(
+            after_clear.pending_action_count(),
+            0,
+            "drained mempool persisted as empty"
+        );
     }
 
     #[test]
@@ -1244,9 +1287,12 @@ mod tests {
         use crate::blocks::INITIAL_DIFFICULTY;
         use crate::network::NetworkMode;
 
-        let mainnet = BlockBuilder::new(NetworkMode::Mainnet.scaled_block_difficulty(INITIAL_DIFFICULTY));
-        let testnet = BlockBuilder::new(NetworkMode::Testnet.scaled_block_difficulty(INITIAL_DIFFICULTY));
-        let regtest = BlockBuilder::new(NetworkMode::Regtest.scaled_block_difficulty(INITIAL_DIFFICULTY));
+        let mainnet =
+            BlockBuilder::new(NetworkMode::Mainnet.scaled_block_difficulty(INITIAL_DIFFICULTY));
+        let testnet =
+            BlockBuilder::new(NetworkMode::Testnet.scaled_block_difficulty(INITIAL_DIFFICULTY));
+        let regtest =
+            BlockBuilder::new(NetworkMode::Regtest.scaled_block_difficulty(INITIAL_DIFFICULTY));
 
         assert_eq!(mainnet.difficulty_target(), 30);
         assert_eq!(testnet.difficulty_target(), 3);
@@ -1254,8 +1300,16 @@ mod tests {
 
         // A single small action must seal a block on regtest (near-instant).
         let mut regtest = regtest;
-        regtest.add_action([1u8; 32], [2u8; 32], make_test_action(1), BranchPath::root());
-        assert!(regtest.is_threshold_met(), "regtest should seal on a single pow=1 action");
+        regtest.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(1),
+            BranchPath::root(),
+        );
+        assert!(
+            regtest.is_threshold_met(),
+            "regtest should seal on a single pow=1 action"
+        );
     }
 
     #[test]
@@ -1605,8 +1659,14 @@ mod tests {
         builder.add_action([1u8; 32], [2u8; 32], action2, BranchPath::root());
 
         // After replacement: old hash should be removed, new hash should be present
-        assert!(!builder.seen_actions.contains(&action1_hash), "Old action hash should be removed");
-        assert!(builder.seen_actions.contains(&action2_hash), "New action hash should be tracked");
+        assert!(
+            !builder.seen_actions.contains(&action1_hash),
+            "Old action hash should be removed"
+        );
+        assert!(
+            builder.seen_actions.contains(&action2_hash),
+            "New action hash should be tracked"
+        );
     }
 
     // ============================================================================
@@ -1636,16 +1696,31 @@ mod tests {
         let mut builder = BlockBuilder::new(30);
 
         // Add actions and verify counts are tracked
-        builder.add_action([1u8; 32], [10u8; 32], make_test_action(10), BranchPath::root());
+        builder.add_action(
+            [1u8; 32],
+            [10u8; 32],
+            make_test_action(10),
+            BranchPath::root(),
+        );
         assert_eq!(builder.total_action_count, 1);
         assert_eq!(builder.space_action_counts.get(&[10u8; 32]), Some(&1));
 
-        builder.add_action([2u8; 32], [10u8; 32], make_test_action(15), BranchPath::root());
+        builder.add_action(
+            [2u8; 32],
+            [10u8; 32],
+            make_test_action(15),
+            BranchPath::root(),
+        );
         assert_eq!(builder.total_action_count, 2);
         assert_eq!(builder.space_action_counts.get(&[10u8; 32]), Some(&2));
 
         // Different space
-        builder.add_action([3u8; 32], [20u8; 32], make_test_action(20), BranchPath::root());
+        builder.add_action(
+            [3u8; 32],
+            [20u8; 32],
+            make_test_action(20),
+            BranchPath::root(),
+        );
         assert_eq!(builder.total_action_count, 3);
         assert_eq!(builder.space_action_counts.get(&[20u8; 32]), Some(&1));
     }
@@ -1656,9 +1731,24 @@ mod tests {
         let space_id = [10u8; 32];
 
         // Add actions with different PoW values
-        builder.add_action([1u8; 32], space_id, make_test_action_with_pow(100, 1), BranchPath::root());
-        builder.add_action([2u8; 32], space_id, make_test_action_with_pow(50, 2), BranchPath::root());
-        builder.add_action([3u8; 32], space_id, make_test_action_with_pow(200, 3), BranchPath::root());
+        builder.add_action(
+            [1u8; 32],
+            space_id,
+            make_test_action_with_pow(100, 1),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [2u8; 32],
+            space_id,
+            make_test_action_with_pow(50, 2),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [3u8; 32],
+            space_id,
+            make_test_action_with_pow(200, 3),
+            BranchPath::root(),
+        );
 
         assert_eq!(builder.total_action_count, 3);
 
@@ -1674,9 +1764,24 @@ mod tests {
         let mut builder = BlockBuilder::new(30);
 
         // Add actions in different spaces
-        builder.add_action([1u8; 32], [10u8; 32], make_test_action_with_pow(100, 1), BranchPath::root());
-        builder.add_action([2u8; 32], [20u8; 32], make_test_action_with_pow(25, 2), BranchPath::root()); // Lowest
-        builder.add_action([3u8; 32], [30u8; 32], make_test_action_with_pow(200, 3), BranchPath::root());
+        builder.add_action(
+            [1u8; 32],
+            [10u8; 32],
+            make_test_action_with_pow(100, 1),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [2u8; 32],
+            [20u8; 32],
+            make_test_action_with_pow(25, 2),
+            BranchPath::root(),
+        ); // Lowest
+        builder.add_action(
+            [3u8; 32],
+            [30u8; 32],
+            make_test_action_with_pow(200, 3),
+            BranchPath::root(),
+        );
 
         assert_eq!(builder.total_action_count, 3);
 
@@ -1691,8 +1796,18 @@ mod tests {
     fn test_counts_cleared_on_build_root_block() {
         let mut builder = BlockBuilder::new(30);
 
-        builder.add_action([1u8; 32], [10u8; 32], make_test_action(30), BranchPath::root());
-        builder.add_action([2u8; 32], [20u8; 32], make_test_action(20), BranchPath::root());
+        builder.add_action(
+            [1u8; 32],
+            [10u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [2u8; 32],
+            [20u8; 32],
+            make_test_action(20),
+            BranchPath::root(),
+        );
 
         assert_eq!(builder.total_action_count, 2);
         assert!(!builder.space_action_counts.is_empty());
@@ -1728,8 +1843,18 @@ mod tests {
     fn test_counts_cleared_on_clear() {
         let mut builder = BlockBuilder::new(30);
 
-        builder.add_action([1u8; 32], [10u8; 32], make_test_action(10), BranchPath::root());
-        builder.add_action([2u8; 32], [20u8; 32], make_test_action(20), BranchPath::root());
+        builder.add_action(
+            [1u8; 32],
+            [10u8; 32],
+            make_test_action(10),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [2u8; 32],
+            [20u8; 32],
+            make_test_action(20),
+            BranchPath::root(),
+        );
 
         assert_eq!(builder.total_action_count, 2);
 

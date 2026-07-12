@@ -136,7 +136,10 @@ impl BranchSubscriptionManager {
         let path_key = branch_path.serialize();
 
         // Check if already subscribed
-        if self.subscription_set.contains(&(space_id, path_key.clone())) {
+        if self
+            .subscription_set
+            .contains(&(space_id, path_key.clone()))
+        {
             // Touch to update last access time
             if let Some(space_subs) = self.subscriptions.get_mut(&space_id) {
                 if let Some(entry) = space_subs.get_mut(&path_key) {
@@ -175,8 +178,9 @@ impl BranchSubscriptionManager {
 
         if let Some(space_subs) = self.subscriptions.get_mut(space_id) {
             if let Some(entry) = space_subs.remove(&path_key) {
-                self.current_storage_bytes =
-                    self.current_storage_bytes.saturating_sub(entry.storage_bytes);
+                self.current_storage_bytes = self
+                    .current_storage_bytes
+                    .saturating_sub(entry.storage_bytes);
                 self.subscription_count = self.subscription_count.saturating_sub(1);
 
                 // Clean up empty space entry
@@ -346,7 +350,14 @@ impl BranchSubscriptionManager {
         let mut entries: Vec<_> = self
             .all_subscriptions()
             .into_iter()
-            .map(|e| (e.space_id, e.branch_path.clone(), e.last_access, e.storage_bytes))
+            .map(|e| {
+                (
+                    e.space_id,
+                    e.branch_path.clone(),
+                    e.last_access,
+                    e.storage_bytes,
+                )
+            })
             .collect();
         entries.sort_by_key(|(_, _, last_access, _)| *last_access);
 

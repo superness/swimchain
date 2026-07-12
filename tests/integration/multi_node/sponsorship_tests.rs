@@ -8,9 +8,9 @@
 
 use std::time::Duration;
 
-use swimchain::types::identity::PublicKey;
-use swimchain::sponsorship::types::{StoredSponsorship, SponsorshipStatus};
 use swimchain::sponsorship::genesis_list::is_in_hardcoded_genesis_list;
+use swimchain::sponsorship::types::{SponsorshipStatus, StoredSponsorship};
+use swimchain::types::identity::PublicKey;
 
 use super::harness::MultiNodeTestHarness;
 
@@ -29,15 +29,16 @@ async fn test_genesis_identity_registration() {
     let node = &harness.nodes[0];
 
     // Get sponsorship store
-    let sponsorship_store = node.manager.sponsorship_store()
+    let sponsorship_store = node
+        .manager
+        .sponsorship_store()
         .expect("Sponsorship store should be available");
 
     // The genesis pubkey from genesis_list.rs
     let genesis_bytes: [u8; 32] = [
-        0x10, 0x3d, 0xb5, 0x7f, 0xda, 0xe9, 0x5d, 0x3e,
-        0x3a, 0x8b, 0xcc, 0x40, 0xd9, 0xc7, 0x8d, 0xc6,
-        0x35, 0xe0, 0x39, 0x43, 0xe6, 0x63, 0x5f, 0xb8,
-        0x33, 0x9c, 0x03, 0xc3, 0xaa, 0x77, 0x94, 0xd5,
+        0x10, 0x3d, 0xb5, 0x7f, 0xda, 0xe9, 0x5d, 0x3e, 0x3a, 0x8b, 0xcc, 0x40, 0xd9, 0xc7, 0x8d,
+        0xc6, 0x35, 0xe0, 0x39, 0x43, 0xe6, 0x63, 0x5f, 0xb8, 0x33, 0x9c, 0x03, 0xc3, 0xaa, 0x77,
+        0x94, 0xd5,
     ];
     let genesis_pubkey = PublicKey::from_bytes(genesis_bytes);
 
@@ -67,7 +68,9 @@ async fn test_genesis_identity_registration() {
         orphaned_at: None,
     };
 
-    sponsorship_store.put(&sponsorship).expect("Should store genesis");
+    sponsorship_store
+        .put(&sponsorship)
+        .expect("Should store genesis");
 
     // Should exist now
     assert!(sponsorship_store.exists(&genesis_pubkey).unwrap());
@@ -76,7 +79,9 @@ async fn test_genesis_identity_registration() {
     assert!(sponsorship_store.can_identity_act(&genesis_pubkey).unwrap());
 
     // Verify is_identity_active returns true
-    assert!(sponsorship_store.is_identity_active(&genesis_pubkey).unwrap());
+    assert!(sponsorship_store
+        .is_identity_active(&genesis_pubkey)
+        .unwrap());
 
     harness.shutdown_all().await.unwrap();
 }
@@ -91,7 +96,9 @@ async fn test_unsponsored_cannot_act() {
 
     let node = &harness.nodes[0];
 
-    let sponsorship_store = node.manager.sponsorship_store()
+    let sponsorship_store = node
+        .manager
+        .sponsorship_store()
         .expect("Sponsorship store should be available");
 
     // Random pubkey that's not sponsored
@@ -101,10 +108,14 @@ async fn test_unsponsored_cannot_act() {
     assert!(!sponsorship_store.exists(&unsponsored_pubkey).unwrap());
 
     // can_identity_act should return false for unsponsored
-    assert!(!sponsorship_store.can_identity_act(&unsponsored_pubkey).unwrap());
+    assert!(!sponsorship_store
+        .can_identity_act(&unsponsored_pubkey)
+        .unwrap());
 
     // is_identity_active should return false
-    assert!(!sponsorship_store.is_identity_active(&unsponsored_pubkey).unwrap());
+    assert!(!sponsorship_store
+        .is_identity_active(&unsponsored_pubkey)
+        .unwrap());
 
     harness.shutdown_all().await.unwrap();
 }
@@ -119,7 +130,9 @@ async fn test_sponsorship_chain() {
 
     let node = &harness.nodes[0];
 
-    let sponsorship_store = node.manager.sponsorship_store()
+    let sponsorship_store = node
+        .manager
+        .sponsorship_store()
         .expect("Sponsorship store should be available");
 
     let current_time = std::time::SystemTime::now()
@@ -163,7 +176,9 @@ async fn test_sponsorship_chain() {
 
     // Both should be able to act
     assert!(sponsorship_store.can_identity_act(&genesis_pubkey).unwrap());
-    assert!(sponsorship_store.can_identity_act(&sponsored_pubkey).unwrap());
+    assert!(sponsorship_store
+        .can_identity_act(&sponsored_pubkey)
+        .unwrap());
 
     // Verify depth
     let retrieved = sponsorship_store.get(&sponsored_pubkey).unwrap().unwrap();
@@ -183,7 +198,9 @@ async fn test_restricted_with_penalty_cannot_act() {
 
     let node = &harness.nodes[0];
 
-    let sponsorship_store = node.manager.sponsorship_store()
+    let sponsorship_store = node
+        .manager
+        .sponsorship_store()
         .expect("Sponsorship store should be available");
 
     let current_time = std::time::SystemTime::now()
@@ -210,7 +227,9 @@ async fn test_restricted_with_penalty_cannot_act() {
 
     // can_identity_act should still return true for restricted
     // (restricted can still act, just with limitations)
-    assert!(sponsorship_store.can_identity_act(&penalized_pubkey).unwrap());
+    assert!(sponsorship_store
+        .can_identity_act(&penalized_pubkey)
+        .unwrap());
 
     // But is_identity_active might be different based on status
     // Let's verify the status is retrieved correctly
@@ -231,7 +250,9 @@ async fn test_revoked_cannot_act() {
 
     let node = &harness.nodes[0];
 
-    let sponsorship_store = node.manager.sponsorship_store()
+    let sponsorship_store = node
+        .manager
+        .sponsorship_store()
         .expect("Sponsorship store should be available");
 
     let current_time = std::time::SystemTime::now()
@@ -408,11 +429,20 @@ async fn test_sponsorship_validation_across_connected_nodes() {
         orphaned_at: None,
     };
 
-    harness.nodes[0].manager.sponsorship_store().unwrap().put(&sponsorship).unwrap();
+    harness.nodes[0]
+        .manager
+        .sponsorship_store()
+        .unwrap()
+        .put(&sponsorship)
+        .unwrap();
 
     // Node 0 should validate this identity
-    assert!(harness.nodes[0].manager.sponsorship_store().unwrap()
-        .can_identity_act(&test_pubkey).unwrap());
+    assert!(harness.nodes[0]
+        .manager
+        .sponsorship_store()
+        .unwrap()
+        .can_identity_act(&test_pubkey)
+        .unwrap());
 
     // Node 1 doesn't have the sponsorship yet (would need gossip)
     // This documents the expected behavior - in production, sponsorship

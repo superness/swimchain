@@ -370,7 +370,9 @@ mod tests {
 
         // Space created (PoW-gated, no level requirement)
         let ctx_with_space = TriggerContext::new().with_spaces_created(1);
-        assert!(check_triggers(&ctx_with_space, &empty_tracker()).contains(&Achievement::LaneOpener));
+        assert!(
+            check_triggers(&ctx_with_space, &empty_tracker()).contains(&Achievement::LaneOpener)
+        );
     }
 
     // === KeeperOfTheFlame tests ===

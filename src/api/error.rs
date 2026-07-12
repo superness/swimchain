@@ -47,14 +47,26 @@ impl std::fmt::Display for ApiError {
             }
             ApiError::PowCancelled => write!(f, "Operation cancelled"),
             ApiError::PowFailed(msg) => {
-                write!(f, "Failed to compute proof-of-work: {}. Please try again.", msg)
+                write!(
+                    f,
+                    "Failed to compute proof-of-work: {}. Please try again.",
+                    msg
+                )
             }
             ApiError::Storage(msg) => {
-                write!(f, "Storage error: {}. Please check disk space and permissions.", msg)
+                write!(
+                    f,
+                    "Storage error: {}. Please check disk space and permissions.",
+                    msg
+                )
             }
             ApiError::ContentFormat(err) => write!(f, "Content format error: {}", err),
             ApiError::Internal(msg) => {
-                write!(f, "An unexpected error occurred: {}. Please try again or report this issue.", msg)
+                write!(
+                    f,
+                    "An unexpected error occurred: {}. Please try again or report this issue.",
+                    msg
+                )
             }
         }
     }

@@ -247,7 +247,18 @@ pub async fn execute(cmd: NodeCmd, config: &CliConfig, seed_node_mode: bool) -> 
             proxy,
             proxy_only,
             background,
-        } => start(config, listen, connect, proxy, proxy_only, background, seed_node_mode).await,
+        } => {
+            start(
+                config,
+                listen,
+                connect,
+                proxy,
+                proxy_only,
+                background,
+                seed_node_mode,
+            )
+            .await
+        }
         NodeCmd::Stop => stop(),
         NodeCmd::Status { json } => status(json),
         NodeCmd::Peers { json } => peers(json),
@@ -275,14 +286,22 @@ fn load_identity(config: &CliConfig) -> Result<KeyPair> {
         std::fs::read(&identity_path).map_err(|e| CliError::Storage(format!("Read error: {e}")))?;
 
     // Parse portable identity
-    let portable = deserialize_portable(&data)
-        .map_err(|e| CliError::InvalidIdentityFile(e.to_string()))?;
+    let portable =
+        deserialize_portable(&data).map_err(|e| CliError::InvalidIdentityFile(e.to_string()))?;
 
     // Get password from environment or prompt
     // Debug: print all env vars starting with SWIM
     for (key, value) in std::env::vars() {
         if key.starts_with("SWIM") {
-            eprintln!("DEBUG ENV: {}={}", key, if key.contains("PASSWORD") { "***" } else { &value });
+            eprintln!(
+                "DEBUG ENV: {}={}",
+                key,
+                if key.contains("PASSWORD") {
+                    "***"
+                } else {
+                    &value
+                }
+            );
         }
     }
     let password = match std::env::var("SWIMCHAIN_PASSWORD") {
@@ -625,14 +644,8 @@ mod tests {
             cmd: NodeCmd,
         }
 
-        let w = Wrap::try_parse_from([
-            "sw",
-            "start",
-            "--proxy",
-            "127.0.0.1:9050",
-            "--proxy-only",
-        ])
-        .expect("should parse proxy flags");
+        let w = Wrap::try_parse_from(["sw", "start", "--proxy", "127.0.0.1:9050", "--proxy-only"])
+            .expect("should parse proxy flags");
 
         match w.cmd {
             NodeCmd::Start {

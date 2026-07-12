@@ -506,7 +506,12 @@ mod tests {
 
         summary.add_result(&TestResult::passed("t1", "m", Duration::from_millis(10)));
         summary.add_result(&TestResult::passed("t2", "m", Duration::from_millis(20)));
-        summary.add_result(&TestResult::failed("t3", "m", Duration::from_millis(30), "err"));
+        summary.add_result(&TestResult::failed(
+            "t3",
+            "m",
+            Duration::from_millis(30),
+            "err",
+        ));
 
         assert_eq!(summary.total, 3);
         assert_eq!(summary.passed, 2);
@@ -520,8 +525,17 @@ mod tests {
         let metadata = ReportMetadata::new("Unit Tests").with_version("1.0.0");
         let mut report = TestReport::new(metadata);
 
-        report.add_result(TestResult::passed("test_a", "mod_a", Duration::from_millis(10)));
-        report.add_result(TestResult::failed("test_b", "mod_b", Duration::from_millis(20), "err"));
+        report.add_result(TestResult::passed(
+            "test_a",
+            "mod_a",
+            Duration::from_millis(10),
+        ));
+        report.add_result(TestResult::failed(
+            "test_b",
+            "mod_b",
+            Duration::from_millis(20),
+            "err",
+        ));
 
         assert_eq!(report.summary.total, 2);
         assert_eq!(report.failed_tests().len(), 1);
@@ -533,8 +547,12 @@ mod tests {
         let check = VerificationCheck::pass("build_check", "Verifies build completes");
         assert!(check.passed);
 
-        let failed = VerificationCheck::fail("lint_check", "Verifies no lint errors", VerificationSeverity::Warning)
-            .with_details("Found 3 warnings");
+        let failed = VerificationCheck::fail(
+            "lint_check",
+            "Verifies no lint errors",
+            VerificationSeverity::Warning,
+        )
+        .with_details("Found 3 warnings");
         assert!(!failed.passed);
         assert_eq!(failed.details, Some("Found 3 warnings".to_string()));
     }

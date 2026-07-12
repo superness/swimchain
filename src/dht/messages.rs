@@ -134,9 +134,7 @@ impl AuthenticatedDhtMessage {
         let mut sender_pubkey = [0u8; 32];
         sender_pubkey.copy_from_slice(&data[offset..offset + 32]);
 
-        let timestamp = u64::from_be_bytes(
-            data[offset + 32..offset + 40].try_into().unwrap()
-        );
+        let timestamp = u64::from_be_bytes(data[offset + 32..offset + 40].try_into().unwrap());
 
         let mut signature = [0u8; 64];
         signature.copy_from_slice(&data[offset + 40..offset + 104]);
@@ -375,12 +373,7 @@ impl NodeInfo {
 
 impl SignedProviderInfo {
     /// Create a new SignedProviderInfo
-    pub fn new(
-        id: NodeId,
-        addr: SocketAddr,
-        public_key: [u8; 32],
-        signature: [u8; 64],
-    ) -> Self {
+    pub fn new(id: NodeId, addr: SocketAddr, public_key: [u8; 32], signature: [u8; 64]) -> Self {
         Self {
             id,
             addr,
@@ -924,8 +917,11 @@ mod tests {
 
         // Verify it matches what signing_message would produce
         let inner_payload = inner_msg.to_bytes();
-        let expected =
-            AuthenticatedDhtMessage::signing_message(DhtMessageType::FindNode, &inner_payload, timestamp);
+        let expected = AuthenticatedDhtMessage::signing_message(
+            DhtMessageType::FindNode,
+            &inner_payload,
+            timestamp,
+        );
         assert_eq!(payload, expected);
     }
 

@@ -410,7 +410,10 @@ mod tests {
     fn test_all_context_types() {
         // Verify all context types serialize correctly
         let contexts = [
-            NotificationContext::Streak { days: 7, milestone: 7 },
+            NotificationContext::Streak {
+                days: 7,
+                milestone: 7,
+            },
             NotificationContext::LevelUp {
                 old_level: 1,
                 new_level: 2,

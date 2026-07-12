@@ -117,7 +117,9 @@ async fn test_getaddr_response() {
     payload.extend_from_slice(&[0u8; 32]); // fork_id
     payload.extend_from_slice(&100u16.to_le_bytes()); // max_addrs
 
-    let result = router.route(&peer_id, MSG_GETADDR, &fork_id, &payload).await;
+    let result = router
+        .route(&peer_id, MSG_GETADDR, &fork_id, &payload)
+        .await;
 
     match result {
         Ok(Some((msg_type, response))) => {
@@ -239,7 +241,10 @@ async fn test_chain_sync_unavailable() {
         Err(RouteError::SubsystemUnavailable(name)) => {
             assert_eq!(name, "chain_store");
         }
-        _ => panic!("Expected SubsystemUnavailable(chain_store) error, got {:?}", result),
+        _ => panic!(
+            "Expected SubsystemUnavailable(chain_store) error, got {:?}",
+            result
+        ),
     }
 }
 
@@ -253,7 +258,11 @@ async fn test_gossip_deprecated() {
     let result = router.route(&peer_id, MSG_GOSSIP, &fork_id, &[]).await;
 
     // Deprecated messages should return Ok(None) - silently ignored
-    assert!(matches!(result, Ok(None)), "Expected Ok(None) for deprecated MSG_GOSSIP, got {:?}", result);
+    assert!(
+        matches!(result, Ok(None)),
+        "Expected Ok(None) for deprecated MSG_GOSSIP, got {:?}",
+        result
+    );
 }
 
 // ========== Metrics Tests ==========
@@ -294,9 +303,7 @@ async fn test_metrics_on_no_response() {
     let fork_id = [0u8; 32];
 
     // VERSION generates no response
-    let _ = router
-        .route(&peer_id, MSG_VERSION, &fork_id, &[])
-        .await;
+    let _ = router.route(&peer_id, MSG_VERSION, &fork_id, &[]).await;
 
     assert_eq!(metrics.routing_received.load(Ordering::Relaxed), 1);
     assert_eq!(metrics.routing_processed.load(Ordering::Relaxed), 1);
@@ -330,9 +337,7 @@ async fn test_reject_too_small() {
     let peer_id = [0xab; 32];
     let fork_id = [0u8; 32];
 
-    let result = router
-        .route(&peer_id, MSG_REJECT, &fork_id, &[0, 1])
-        .await;
+    let result = router.route(&peer_id, MSG_REJECT, &fork_id, &[0, 1]).await;
 
     match result {
         Err(RouteError::PayloadTooSmall { expected, actual }) => {

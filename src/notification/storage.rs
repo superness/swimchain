@@ -36,7 +36,11 @@ impl NotificationStore {
     }
 
     /// Build a storage key from components.
-    fn make_key(identity: &[u8; 32], created_at_ms: u64, notification_id: &NotificationId) -> [u8; 56] {
+    fn make_key(
+        identity: &[u8; 32],
+        created_at_ms: u64,
+        notification_id: &NotificationId,
+    ) -> [u8; 56] {
         let mut key = [0u8; 56];
         key[0..32].copy_from_slice(identity);
         // Use big-endian for natural ordering (newest first when reversed)
@@ -238,10 +242,7 @@ impl NotificationStore {
     ///
     /// Keeps the newest MAX_NOTIFICATIONS_PER_IDENTITY notifications.
     /// Returns the count of notifications pruned.
-    pub fn prune_overflow(
-        &self,
-        identity: &[u8; 32],
-    ) -> Result<usize, NotificationError> {
+    pub fn prune_overflow(&self, identity: &[u8; 32]) -> Result<usize, NotificationError> {
         let prefix = Self::make_prefix(identity);
 
         // Collect all keys (oldest to newest due to BE timestamp)
@@ -345,7 +346,8 @@ mod tests {
 
         // Store in chronological order
         for i in 0..5u64 {
-            let notification = create_test_notification(&format!("Message {}", i), BASE_MS + i * 1000);
+            let notification =
+                create_test_notification(&format!("Message {}", i), BASE_MS + i * 1000);
             store.store(&identity, &notification).unwrap();
         }
 
@@ -390,7 +392,8 @@ mod tests {
         let identity = [1u8; 32];
 
         for i in 0..5 {
-            let notification = create_test_notification(&format!("Message {}", i), BASE_MS + i * 1000);
+            let notification =
+                create_test_notification(&format!("Message {}", i), BASE_MS + i * 1000);
             store.store(&identity, &notification).unwrap();
         }
 
@@ -410,7 +413,8 @@ mod tests {
         let identity = [1u8; 32];
 
         for i in 0..3 {
-            let notification = create_test_notification(&format!("Message {}", i), BASE_MS + i * 1000);
+            let notification =
+                create_test_notification(&format!("Message {}", i), BASE_MS + i * 1000);
             store.store(&identity, &notification).unwrap();
         }
 
@@ -458,7 +462,8 @@ mod tests {
         let identity = [1u8; 32];
 
         for i in 0..10 {
-            let notification = create_test_notification(&format!("Message {}", i), BASE_MS + i * 1000);
+            let notification =
+                create_test_notification(&format!("Message {}", i), BASE_MS + i * 1000);
             store.store(&identity, &notification).unwrap();
         }
 

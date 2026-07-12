@@ -115,7 +115,10 @@ impl RequestTracker {
     /// Mark a request as completed and remove it
     pub fn complete_request(&self, peer_id: [u8; 32], start: u64, end: u64) {
         let key = (peer_id, start, end);
-        self.pending.write().expect("RequestTracker lock poisoned").remove(&key);
+        self.pending
+            .write()
+            .expect("RequestTracker lock poisoned")
+            .remove(&key);
     }
 
     /// Get a pending request's details
@@ -139,7 +142,10 @@ impl RequestTracker {
     /// Get number of pending requests
     #[must_use]
     pub fn pending_count(&self) -> usize {
-        self.pending.read().expect("RequestTracker lock poisoned").len()
+        self.pending
+            .read()
+            .expect("RequestTracker lock poisoned")
+            .len()
     }
 
     /// Get all pending requests for a specific peer
@@ -155,7 +161,10 @@ impl RequestTracker {
 
     /// Clear all pending requests
     pub fn clear(&self) {
-        self.pending.write().expect("RequestTracker lock poisoned").clear();
+        self.pending
+            .write()
+            .expect("RequestTracker lock poisoned")
+            .clear();
     }
 
     /// Get the maximum pending requests limit

@@ -796,9 +796,15 @@ mod tests {
         let serialized = bincode::serialize(&state).unwrap();
         let deserialized: ThrottleState = bincode::deserialize(&serialized).unwrap();
 
-        assert_eq!(state.notified_streak_milestones, deserialized.notified_streak_milestones);
+        assert_eq!(
+            state.notified_streak_milestones,
+            deserialized.notified_streak_milestones
+        );
         assert_eq!(state.last_notified_level, deserialized.last_notified_level);
-        assert_eq!(state.notified_achievements, deserialized.notified_achievements);
+        assert_eq!(
+            state.notified_achievements,
+            deserialized.notified_achievements
+        );
         assert_eq!(state.daily_count, deserialized.daily_count);
     }
 }

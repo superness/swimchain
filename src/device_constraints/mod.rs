@@ -37,21 +37,21 @@
 //! let status = manager.check_constraints();
 //! ```
 
-pub mod error;
-pub mod types;
-pub mod battery;
 pub mod bandwidth;
+pub mod battery;
 pub mod efficiency;
-pub mod storage;
+pub mod error;
 pub mod manager;
+pub mod storage;
+pub mod types;
 
-pub use error::DeviceConstraintError;
-pub use types::{ContributionSettings, ContributionMode, ThermalState};
-pub use battery::{BatteryMonitor, BatteryState, BatteryChecker, PauseReason};
 pub use bandwidth::DailyBandwidthLimiter;
+pub use battery::{BatteryChecker, BatteryMonitor, BatteryState, PauseReason};
 pub use efficiency::{EfficiencyTracker, EFFICIENT_SWIMMER_THRESHOLD};
+pub use error::DeviceConstraintError;
+pub use manager::{ConstraintStatus, DeviceConstraintManager, NetworkStateProvider};
 pub use storage::DeviceSettingsStore;
-pub use manager::{DeviceConstraintManager, NetworkStateProvider, ConstraintStatus};
+pub use types::{ContributionMode, ContributionSettings, ThermalState};
 
 #[cfg(test)]
 mod tests {

@@ -178,7 +178,10 @@ impl CargoTestParser {
 
         // Split into module and test name
         let (module, name) = if let Some(pos) = name_part.rfind("::") {
-            (name_part[..pos].to_string(), name_part[pos + 2..].to_string())
+            (
+                name_part[..pos].to_string(),
+                name_part[pos + 2..].to_string(),
+            )
         } else {
             (String::new(), name_part.to_string())
         };

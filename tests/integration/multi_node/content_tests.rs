@@ -33,7 +33,11 @@ async fn test_chain_store_basic_operations() {
     // Retrieve blocks
     for block in &blocks {
         let stored = chain.get_root_block(&block.hash()).unwrap();
-        assert!(stored.is_some(), "Block at height {} should be stored", block.height);
+        assert!(
+            stored.is_some(),
+            "Block at height {} should be stored",
+            block.height
+        );
     }
 
     // Verify height index
@@ -87,7 +91,11 @@ async fn test_block_storage_performance() {
     }
 
     let elapsed = timer.elapsed_ms();
-    log::info!("Stored 100 blocks in {}ms ({}ms per block)", elapsed, elapsed / 100);
+    log::info!(
+        "Stored 100 blocks in {}ms ({}ms per block)",
+        elapsed,
+        elapsed / 100
+    );
 
     // Should be reasonably fast
     assert!(
@@ -135,7 +143,11 @@ async fn test_simulated_content_propagation() {
     // Verify node 0 has all blocks
     for block in &blocks {
         let stored = chain_0.get_root_block(&block.hash()).unwrap();
-        assert!(stored.is_some(), "Node 0 should have block at height {}", block.height);
+        assert!(
+            stored.is_some(),
+            "Node 0 should have block at height {}",
+            block.height
+        );
     }
 
     // Simulate propagation: manually copy blocks to node 1
@@ -153,7 +165,11 @@ async fn test_simulated_content_propagation() {
     // Verify node 1 now has all blocks
     for block in &blocks {
         let stored = chain_1.get_root_block(&block.hash()).unwrap();
-        assert!(stored.is_some(), "Node 1 should have block at height {}", block.height);
+        assert!(
+            stored.is_some(),
+            "Node 1 should have block at height {}",
+            block.height
+        );
     }
 
     // Verify both chains have same tip
@@ -215,12 +231,7 @@ async fn test_multi_node_propagation_performance() {
     for i in 0..node_count {
         let chain = harness.nodes[i].manager.chain_store().unwrap();
         let height = chain.get_latest_height().unwrap();
-        assert_eq!(
-            height,
-            Some(9),
-            "Node {} should have chain height 9",
-            i
-        );
+        assert_eq!(height, Some(9), "Node {} should have chain height 9", i);
     }
 
     harness.shutdown_all().await.unwrap();

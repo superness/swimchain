@@ -116,13 +116,19 @@ impl SpaceHealth {
     /// Count of pending linear chain warnings (unreviewed)
     #[must_use]
     pub fn pending_warning_count(&self) -> usize {
-        self.linear_chain_warnings.iter().filter(|w| w.is_pending()).count()
+        self.linear_chain_warnings
+            .iter()
+            .filter(|w| w.is_pending())
+            .count()
     }
 
     /// Count of confirmed linear chain warnings (verified suspicious)
     #[must_use]
     pub fn confirmed_warning_count(&self) -> usize {
-        self.linear_chain_warnings.iter().filter(|w| w.is_confirmed()).count()
+        self.linear_chain_warnings
+            .iter()
+            .filter(|w| w.is_confirmed())
+            .count()
     }
 }
 
@@ -278,10 +284,18 @@ mod tests {
         let mut health = SpaceHealth::new([1u8; 16]);
 
         // Add warnings with different statuses
-        health.linear_chain_warnings.push(LinearChainWarning::new([1u8; 32], 1.0, 5, 0)); // pending
-        health.linear_chain_warnings.push(LinearChainWarning::new([2u8; 32], 1.0, 5, 0)); // pending
-        health.linear_chain_warnings.push(LinearChainWarning::new([3u8; 32], 1.0, 5, 1)); // cleared
-        health.linear_chain_warnings.push(LinearChainWarning::new([4u8; 32], 1.0, 5, 2)); // confirmed
+        health
+            .linear_chain_warnings
+            .push(LinearChainWarning::new([1u8; 32], 1.0, 5, 0)); // pending
+        health
+            .linear_chain_warnings
+            .push(LinearChainWarning::new([2u8; 32], 1.0, 5, 0)); // pending
+        health
+            .linear_chain_warnings
+            .push(LinearChainWarning::new([3u8; 32], 1.0, 5, 1)); // cleared
+        health
+            .linear_chain_warnings
+            .push(LinearChainWarning::new([4u8; 32], 1.0, 5, 2)); // confirmed
 
         assert_eq!(health.linear_chain_warning_count(), 4);
         assert_eq!(health.pending_warning_count(), 2);

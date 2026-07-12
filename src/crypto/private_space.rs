@@ -119,7 +119,11 @@ fn x25519_box_with_nonce(
 
 /// Encrypt `message` for `recipient_public` using `sender_secret`.
 /// Returns `nonce(24) || ciphertext(+16 tag)`.
-pub fn x25519_box(message: &[u8], recipient_public: &[u8; 32], sender_secret: &[u8; 32]) -> Vec<u8> {
+pub fn x25519_box(
+    message: &[u8],
+    recipient_public: &[u8; 32],
+    sender_secret: &[u8; 32],
+) -> Vec<u8> {
     let mut nonce = [0u8; BOX_NONCE_SIZE];
     rand::rngs::OsRng.fill_bytes(&mut nonce);
     x25519_box_with_nonce(message, recipient_public, sender_secret, &nonce)
@@ -265,7 +269,8 @@ pub fn unwrap_space_key(
     };
     let sender_x_pk = ed25519_public_to_x25519(sender_ed)?;
     let key = x25519_unbox(encrypted_space_key, &sender_x_pk, &my_x_sk)?;
-    key.try_into().map_err(|_| PrivateCryptoError::DecryptionFailed)
+    key.try_into()
+        .map_err(|_| PrivateCryptoError::DecryptionFailed)
 }
 
 #[cfg(test)]

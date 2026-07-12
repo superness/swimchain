@@ -295,10 +295,7 @@ where
 
     // Return the found solution
     let nonce = result_nonce.load(Ordering::SeqCst);
-    let hash = result_hash
-        .read()
-        .map(|guard| *guard)
-        .unwrap_or([0u8; 32]);
+    let hash = result_hash.read().map(|guard| *guard).unwrap_or([0u8; 32]);
 
     IdentityCreationProof {
         public_key: keypair.public_key,

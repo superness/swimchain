@@ -195,7 +195,10 @@ mod tests {
         let route = route_self_originated(&cfg, &mut rng, 5);
 
         // Author's first announce must be deferred, unlike a relayer's.
-        assert!(route.is_delayed(), "self-originated action should be delayed");
+        assert!(
+            route.is_delayed(),
+            "self-originated action should be delayed"
+        );
         let d = route.delay();
         assert!(
             d >= cfg.min_delay && d <= cfg.max_delay,

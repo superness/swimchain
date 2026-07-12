@@ -15,13 +15,13 @@ use swimchain::content::content_format::MAX_IMAGE_SIZE;
 use swimchain::content::decay::{calculate_adaptive_half_life, calculate_decay_state, NodeState};
 use swimchain::content::pruning::{prune_decayed_content, PruneStats};
 use swimchain::content::storage::InMemoryContentStore;
+use swimchain::content::ContentStore;
 use swimchain::types::constants::{
     DECAY_FLOOR_SECS, DECAY_THRESHOLD, HALF_LIFE_SECS, MAX_HALF_LIFE_SECS, MIN_HALF_LIFE_SECS,
     PRUNE_GRACE_PERIOD_MS, TARGET_STORAGE_BYTES,
 };
 use swimchain::types::content::{ContentId, ContentItem, ContentType, SpaceId};
 use swimchain::types::identity::{IdentityId, Signature};
-use swimchain::content::ContentStore;
 
 use super::timing::TimingCollector;
 
@@ -41,11 +41,7 @@ const LARGE_IMAGE_SIZE: u64 = MAX_IMAGE_SIZE as u64;
 // === Helper Functions ===
 
 /// Create a test content item with specified size
-fn create_test_content(
-    id: u64,
-    created_at_ms: u64,
-    content_size: u64,
-) -> ContentItem {
+fn create_test_content(id: u64, created_at_ms: u64, content_size: u64) -> ContentItem {
     let mut content_id = [0u8; 32];
     content_id[0..8].copy_from_slice(&id.to_le_bytes());
 
@@ -103,8 +99,11 @@ fn test_flow7_storage_capacity_analysis() {
     let minutes_to_fill = images_to_fill / images_per_minute;
 
     println!("\n  At {} images/min upload rate:", images_per_minute);
-    println!("    Time to fill 500MB: ~{} minutes ({:.1} hours)",
-             minutes_to_fill, minutes_to_fill as f64 / 60.0);
+    println!(
+        "    Time to fill 500MB: ~{} minutes ({:.1} hours)",
+        minutes_to_fill,
+        minutes_to_fill as f64 / 60.0
+    );
 
     // Without decay, storage would explode
     assert!(images_to_fill > 1000, "Should fit >1000 average images");
@@ -125,11 +124,19 @@ fn test_flow7_storage_pressure_calculation() {
     println!("\n=== Storage Pressure ===");
     for (bytes, expected_pressure, label) in test_cases {
         let pressure = calculate_storage_pressure(bytes);
-        println!("  {} ({} MB): pressure = {:.2}",
-                 label, bytes / 1_000_000, pressure);
-        assert!((pressure - expected_pressure).abs() < 0.01,
-                "Pressure mismatch for {}: expected {}, got {}",
-                label, expected_pressure, pressure);
+        println!(
+            "  {} ({} MB): pressure = {:.2}",
+            label,
+            bytes / 1_000_000,
+            pressure
+        );
+        assert!(
+            (pressure - expected_pressure).abs() < 0.01,
+            "Pressure mismatch for {}: expected {}, got {}",
+            label,
+            expected_pressure,
+            pressure
+        );
     }
 }
 
@@ -164,20 +171,29 @@ fn test_flow7_adaptive_half_life() {
         let days = new_half_life as f64 / 86400.0;
         let pressure = calculate_storage_pressure(storage);
 
-        println!("  Storage {}: pressure={:.2}, half-life={:.1} days",
-                 label, pressure, days);
+        println!(
+            "  Storage {}: pressure={:.2}, half-life={:.1} days",
+            label, pressure, days
+        );
 
         // Verify half-life decreases when over budget
         if pressure > 1.0 {
-            assert!(new_half_life < HALF_LIFE_SECS,
-                    "Half-life should decrease at {} pressure", pressure);
+            assert!(
+                new_half_life < HALF_LIFE_SECS,
+                "Half-life should decrease at {} pressure",
+                pressure
+            );
         }
 
         // Verify bounds are respected
-        assert!(new_half_life >= MIN_HALF_LIFE_SECS,
-                "Half-life should not go below minimum");
-        assert!(new_half_life <= MAX_HALF_LIFE_SECS,
-                "Half-life should not exceed maximum");
+        assert!(
+            new_half_life >= MIN_HALF_LIFE_SECS,
+            "Half-life should not go below minimum"
+        );
+        assert!(
+            new_half_life <= MAX_HALF_LIFE_SECS,
+            "Half-life should not exceed maximum"
+        );
     }
 }
 
@@ -204,14 +220,19 @@ fn test_flow7_half_life_convergence() {
         current_half_life = calculate_adaptive_half_life(&state);
 
         if hour % 12 == 0 {
-            println!("  After {} hours: half-life = {:.2} days",
-                     hour, current_half_life as f64 / 86400.0);
+            println!(
+                "  After {} hours: half-life = {:.2} days",
+                hour,
+                current_half_life as f64 / 86400.0
+            );
         }
     }
 
     // Should converge toward minimum
-    assert!(current_half_life <= HALF_LIFE_SECS / 2,
-            "Half-life should decrease significantly under 200% pressure");
+    assert!(
+        current_half_life <= HALF_LIFE_SECS / 2,
+        "Half-life should decrease significantly under 200% pressure"
+    );
 }
 
 // === Decay Timing Tests ===
@@ -243,17 +264,27 @@ fn test_flow7_decay_timing_analysis() {
 
         println!("  {}:", name);
         println!("    Half-life: {:.1} days", half_life as f64 / 86400.0);
-        println!("    Time to decay: {:.1} days (after floor)",
-                 time_to_decay_secs as f64 / 86400.0);
-        println!("    Total to prune: {:.1} days (floor + decay + grace)",
-                 total_with_grace as f64 / 86400.0);
+        println!(
+            "    Time to decay: {:.1} days (after floor)",
+            time_to_decay_secs as f64 / 86400.0
+        );
+        println!(
+            "    Total to prune: {:.1} days (floor + decay + grace)",
+            total_with_grace as f64 / 86400.0
+        );
     }
 
     // At normal half-life (7 days), content should survive:
     // 48h floor + 28d decay (~4 half-lives) + 24h grace = ~31 days total
     let normal_total = DECAY_FLOOR_SECS + (4 * HALF_LIFE_SECS) + (PRUNE_GRACE_PERIOD_MS / 1000);
-    assert!(normal_total > 25 * 86400, "Normal content should survive >25 days");
-    assert!(normal_total < 35 * 86400, "Normal content should decay <35 days");
+    assert!(
+        normal_total > 25 * 86400,
+        "Normal content should survive >25 days"
+    );
+    assert!(
+        normal_total < 35 * 86400,
+        "Normal content should decay <35 days"
+    );
 }
 
 // === Pruning Simulation Tests ===
@@ -294,14 +325,11 @@ fn test_flow7_upload_decay_simulation() {
         }
 
         // Run pruning at end of day
-        let stats = prune_decayed_content(
-            &mut store,
-            current_time_ms + DAY_MS,
-            current_half_life,
-        );
+        let stats = prune_decayed_content(&mut store, current_time_ms + DAY_MS, current_half_life);
 
         // Calculate current storage
-        let total_storage: u64 = store.iter()
+        let total_storage: u64 = store
+            .iter()
             .map(|c| c.content_size.unwrap_or(0) as u64)
             .sum();
 
@@ -319,12 +347,14 @@ fn test_flow7_upload_decay_simulation() {
         // Print progress every 10 days
         if day % 10 == 0 || day == days_to_simulate - 1 {
             let pressure = calculate_storage_pressure(total_storage);
-            println!("  Day {}: storage={:.1}MB ({:.0}%), half-life={:.1}d, pruned={}",
-                     day,
-                     total_storage as f64 / 1_000_000.0,
-                     pressure * 100.0,
-                     current_half_life as f64 / 86400.0,
-                     stats.items_pruned);
+            println!(
+                "  Day {}: storage={:.1}MB ({:.0}%), half-life={:.1}d, pruned={}",
+                day,
+                total_storage as f64 / 1_000_000.0,
+                pressure * 100.0,
+                current_half_life as f64 / 86400.0,
+                stats.items_pruned
+            );
         }
     }
 
@@ -337,9 +367,18 @@ fn test_flow7_upload_decay_simulation() {
     println!("\n  Simulation complete:");
     println!("    Duration: {} days", days_to_simulate);
     println!("    Images uploaded: {}", images_per_day * days_to_simulate);
-    println!("    Peak storage: {:.1} MB", peak_storage as f64 / 1_000_000.0);
-    println!("    Final storage: {:.1} MB", final_storage as f64 / 1_000_000.0);
-    println!("    Final half-life: {:.1} days", current_half_life as f64 / 86400.0);
+    println!(
+        "    Peak storage: {:.1} MB",
+        peak_storage as f64 / 1_000_000.0
+    );
+    println!(
+        "    Final storage: {:.1} MB",
+        final_storage as f64 / 1_000_000.0
+    );
+    println!(
+        "    Final half-life: {:.1} days",
+        current_half_life as f64 / 86400.0
+    );
     println!("    Items remaining: {}", store.len());
 
     // Assertions
@@ -368,45 +407,53 @@ fn test_flow7_extreme_upload_rate() {
         store.put(content);
     }
 
-    let initial_storage: u64 = store.iter()
+    let initial_storage: u64 = store
+        .iter()
         .map(|c| c.content_size.unwrap_or(0) as u64)
         .sum();
 
-    println!("  Initial: {} images, {:.1} MB storage",
-             store.len(), initial_storage as f64 / 1_000_000.0);
-    println!("  Pressure: {:.0}%", calculate_storage_pressure(initial_storage) * 100.0);
+    println!(
+        "  Initial: {} images, {:.1} MB storage",
+        store.len(),
+        initial_storage as f64 / 1_000_000.0
+    );
+    println!(
+        "  Pressure: {:.0}%",
+        calculate_storage_pressure(initial_storage) * 100.0
+    );
 
     // All content is protected by floor (48h), so no pruning yet
-    let stats = prune_decayed_content(
-        &mut store,
-        base_time + HOUR_MS,
-        HALF_LIFE_SECS,
+    let stats = prune_decayed_content(&mut store, base_time + HOUR_MS, HALF_LIFE_SECS);
+    assert_eq!(
+        stats.items_pruned, 0,
+        "New content should be floor-protected"
     );
-    assert_eq!(stats.items_pruned, 0, "New content should be floor-protected");
 
     // Jump forward past floor + decay + grace
     // At minimum half-life (1 day), decay in ~4 days, +48h floor +24h grace = ~7 days
     let far_future = base_time + (10 * DAY_MS);
 
     // Under extreme pressure, half-life would be at minimum (1 day)
-    let stats = prune_decayed_content(
-        &mut store,
-        far_future,
-        MIN_HALF_LIFE_SECS,
-    );
+    let stats = prune_decayed_content(&mut store, far_future, MIN_HALF_LIFE_SECS);
 
-    let final_storage: u64 = store.iter()
+    let final_storage: u64 = store
+        .iter()
         .map(|c| c.content_size.unwrap_or(0) as u64)
         .sum();
 
     println!("  After 10 days (min half-life):");
     println!("    Pruned: {} items", stats.items_pruned);
-    println!("    Remaining: {} items, {:.1} MB",
-             store.len(), final_storage as f64 / 1_000_000.0);
+    println!(
+        "    Remaining: {} items, {:.1} MB",
+        store.len(),
+        final_storage as f64 / 1_000_000.0
+    );
 
     // Most content should be pruned after 10 days at minimum half-life
-    assert!(stats.items_pruned > 500,
-            "Most content should decay at minimum half-life");
+    assert!(
+        stats.items_pruned > 500,
+        "Most content should decay at minimum half-life"
+    );
 }
 
 /// Test: Sustained upload with engagement (content survival)
@@ -439,20 +486,30 @@ fn test_flow7_engagement_extends_survival() {
 
     println!("  At day 35:");
     println!("    Engaged content (last engagement day 20):");
-    println!("      Survival: {:.1}%", engaged_state.survival_probability * 100.0);
+    println!(
+        "      Survival: {:.1}%",
+        engaged_state.survival_probability * 100.0
+    );
     println!("      Is decayed: {}", engaged_state.is_decayed);
     println!("    Unengaged content:");
-    println!("      Survival: {:.1}%", unengaged_state.survival_probability * 100.0);
+    println!(
+        "      Survival: {:.1}%",
+        unengaged_state.survival_probability * 100.0
+    );
     println!("      Is decayed: {}", unengaged_state.is_decayed);
 
     // Engaged content should have higher survival
-    assert!(engaged_state.survival_probability > unengaged_state.survival_probability,
-            "Engaged content should survive longer");
+    assert!(
+        engaged_state.survival_probability > unengaged_state.survival_probability,
+        "Engaged content should survive longer"
+    );
 
     // Unengaged content should be clearly decayed after 35 days
     // (35 days - 2 day floor = 33 days effective, ~4.7 half-lives, survival ~4%)
-    assert!(unengaged_state.is_decayed,
-            "Unengaged content should decay after 35 days");
+    assert!(
+        unengaged_state.is_decayed,
+        "Unengaged content should decay after 35 days"
+    );
 }
 
 // === Equilibrium Analysis ===
@@ -477,24 +534,34 @@ fn test_flow7_equilibrium_analysis() {
         let pressure = equilibrium_storage / TARGET_STORAGE_BYTES as f64;
 
         println!("  {} images/day @ 250KB:", rate);
-        println!("    Daily upload: {:.1} MB", daily_upload_bytes / 1_000_000.0);
-        println!("    Equilibrium: {:.1} MB ({:.0}% of target)",
-                 equilibrium_storage / 1_000_000.0, pressure * 100.0);
+        println!(
+            "    Daily upload: {:.1} MB",
+            daily_upload_bytes / 1_000_000.0
+        );
+        println!(
+            "    Equilibrium: {:.1} MB ({:.0}% of target)",
+            equilibrium_storage / 1_000_000.0,
+            pressure * 100.0
+        );
 
         if pressure > 1.0 {
             // Calculate reduced half-life at this pressure
             let reduced_survival = survival_days / pressure;
             let reduced_equilibrium = daily_upload_bytes * reduced_survival;
-            println!("    With adaptive decay: {:.1} MB",
-                     reduced_equilibrium / 1_000_000.0);
+            println!(
+                "    With adaptive decay: {:.1} MB",
+                reduced_equilibrium / 1_000_000.0
+            );
         }
     }
 
     // At 100 images/day * 250KB * 31 days = 775 MB (155% pressure)
     // System would adapt to reduce this
     let expected_100_per_day = 100.0 * AVG_IMAGE_SIZE as f64 * survival_days;
-    assert!(expected_100_per_day > TARGET_STORAGE_BYTES as f64,
-            "100 images/day should exceed target without adaptive decay");
+    assert!(
+        expected_100_per_day > TARGET_STORAGE_BYTES as f64,
+        "100 images/day should exceed target without adaptive decay"
+    );
 }
 
 /// Test: Calculate safe upload rates for different pressures
@@ -525,8 +592,10 @@ fn test_flow7_safe_upload_rates() {
 
     // At 250KB average, max ~68 images/day to stay under 500MB
     let max_avg = TARGET_STORAGE_BYTES as f64 / (AVG_IMAGE_SIZE as f64 * survival_days);
-    assert!(max_avg > 50.0 && max_avg < 100.0,
-            "Safe rate for average images should be 50-100/day");
+    assert!(
+        max_avg > 50.0 && max_avg < 100.0,
+        "Safe rate for average images should be 50-100/day"
+    );
 }
 
 // === Performance Tests ===

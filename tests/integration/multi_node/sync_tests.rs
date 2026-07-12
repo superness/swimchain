@@ -84,7 +84,10 @@ async fn test_harness_creation_overhead() {
     );
 
     // Should be reasonably fast
-    assert!(total_time < 10000, "5-node harness should complete in < 10s");
+    assert!(
+        total_time < 10000,
+        "5-node harness should complete in < 10s"
+    );
 }
 
 /// Test sync from scratch scenario (AC3)
@@ -139,7 +142,11 @@ async fn test_sync_from_scratch() {
 
     // Verify node 1 now has the complete chain
     let height_1_after = chain_1.get_latest_height().unwrap();
-    assert_eq!(height_1_after, Some(49), "Node 1 should have synced to height 49");
+    assert_eq!(
+        height_1_after,
+        Some(49),
+        "Node 1 should have synced to height 49"
+    );
 
     // Verify both nodes have same chain tip
     let tip_0 = chain_0.get_root_hash_at_height(49).unwrap().unwrap();

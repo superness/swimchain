@@ -301,7 +301,10 @@ impl Deserialize for GetBlocksPayload {
 impl Serialize for GetBlocksLocatorPayload {
     fn to_bytes(&self) -> Vec<u8> {
         // 1 byte count + (32 * count) locator hashes + 32 stop_hash + 2 max_blocks
-        let count = self.locator_hashes.len().min(GetBlocksLocatorPayload::MAX_LOCATOR_HASHES);
+        let count = self
+            .locator_hashes
+            .len()
+            .min(GetBlocksLocatorPayload::MAX_LOCATOR_HASHES);
         let size = 1 + (32 * count) + 32 + 2;
         let mut w = ByteWriter::with_capacity(size);
 
@@ -354,7 +357,10 @@ impl Deserialize for GetBlocksLocatorPayload {
 impl Serialize for GetHeadersLocatorPayload {
     fn to_bytes(&self) -> Vec<u8> {
         // 1 byte count + (32 * count) locator hashes + 32 stop_hash + 2 max_headers
-        let count = self.locator_hashes.len().min(GetHeadersLocatorPayload::MAX_LOCATOR_HASHES);
+        let count = self
+            .locator_hashes
+            .len()
+            .min(GetHeadersLocatorPayload::MAX_LOCATOR_HASHES);
         let size = 1 + (32 * count) + 32 + 2;
         let mut w = ByteWriter::with_capacity(size);
 

@@ -4,8 +4,8 @@
 //! - FIND_NODE: Find K closest nodes to a target
 //! - FIND_VALUE: Find providers for content
 
-use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;

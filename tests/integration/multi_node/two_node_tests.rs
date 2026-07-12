@@ -41,7 +41,11 @@ async fn test_two_nodes_start_and_run() {
     log::info!("Node 1 listening on {}", addr_1);
 
     // Ports should be different
-    assert_ne!(addr_0.port(), addr_1.port(), "Nodes should have different ports");
+    assert_ne!(
+        addr_0.port(),
+        addr_1.port(),
+        "Nodes should have different ports"
+    );
 
     // Shutdown gracefully
     harness.shutdown_all().await.unwrap();
@@ -59,11 +63,17 @@ async fn test_node_subsystems_accessible() {
 
     // Test chain_store accessor
     let chain = node.manager.chain_store();
-    assert!(chain.is_some(), "chain_store() should return Some after start");
+    assert!(
+        chain.is_some(),
+        "chain_store() should return Some after start"
+    );
 
     // Test connection_manager accessor
     let conn = node.manager.connection_manager();
-    assert!(conn.is_some(), "connection_manager() should return Some after start");
+    assert!(
+        conn.is_some(),
+        "connection_manager() should return Some after start"
+    );
 
     harness.shutdown_all().await.unwrap();
 }
@@ -113,7 +123,10 @@ async fn test_connection_to_nonexistent_node() {
     let result = harness.nodes[0].manager.connect(bad_addr).await;
 
     // Should fail (connection refused or timeout)
-    assert!(result.is_err(), "Connection to non-existent node should fail");
+    assert!(
+        result.is_err(),
+        "Connection to non-existent node should fail"
+    );
     log::info!("Expected error: {:?}", result.err());
 
     // Node should still be running after failed connection

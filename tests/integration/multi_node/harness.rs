@@ -87,10 +87,11 @@ impl MultiNodeTestHarness {
                 ..NodeConfig::default()
             };
 
-            let manager = NodeManager::new(config, keypair.clone()).map_err(|e| TestError::NodeStart {
-                node_index: i,
-                message: e.to_string(),
-            })?;
+            let manager =
+                NodeManager::new(config, keypair.clone()).map_err(|e| TestError::NodeStart {
+                    node_index: i,
+                    message: e.to_string(),
+                })?;
 
             nodes.push(RunningNode {
                 manager,
@@ -124,11 +125,7 @@ impl MultiNodeTestHarness {
                 self.nodes[i].listen_addr = addr;
             }
 
-            log::info!(
-                "Node {} started on {}",
-                i,
-                self.nodes[i].listen_addr
-            );
+            log::info!("Node {} started on {}", i, self.nodes[i].listen_addr);
         }
 
         Ok(())
@@ -212,16 +209,10 @@ impl MultiNodeTestHarness {
         let poll_interval = Duration::from_millis(100);
 
         while start.elapsed() < timeout_duration {
-            let all_connected = self
-                .nodes
-                .iter()
-                .all(|n| n.peer_count() >= min_peers);
+            let all_connected = self.nodes.iter().all(|n| n.peer_count() >= min_peers);
 
             if all_connected {
-                log::debug!(
-                    "All nodes connected with at least {} peers",
-                    min_peers
-                );
+                log::debug!("All nodes connected with at least {} peers", min_peers);
                 return Ok(());
             }
             sleep(poll_interval).await;
@@ -294,7 +285,10 @@ impl Drop for MultiNodeTestHarness {
     fn drop(&mut self) {
         // Nodes are dropped automatically, which triggers their Drop impl
         // TempDir is cleaned up automatically when dropped
-        log::debug!("MultiNodeTestHarness dropped, cleaning up {} nodes", self.nodes.len());
+        log::debug!(
+            "MultiNodeTestHarness dropped, cleaning up {} nodes",
+            self.nodes.len()
+        );
     }
 }
 

@@ -10,8 +10,8 @@
 
 use crate::sponsorship::error::SponsorshipError;
 use crate::sponsorship::penalty::{
-    MisbehaviorSeverity, PenaltyRecord, PenaltyType, ABUSE_PENALTY_SECONDS,
-    ILLEGAL_PENALTY_SECONDS, SPAM_PENALTY_SECONDS, ALL_INVITE_SLOTS,
+    MisbehaviorSeverity, PenaltyRecord, PenaltyType, ABUSE_PENALTY_SECONDS, ALL_INVITE_SLOTS,
+    ILLEGAL_PENALTY_SECONDS, SPAM_PENALTY_SECONDS,
 };
 use crate::sponsorship::penalty_store::Warning;
 use crate::sponsorship::storage::SponsorshipStore;
@@ -255,7 +255,9 @@ mod tests {
         PublicKey::from_bytes([n; 32])
     }
 
-    fn make_genesis_sponsorship(identity: PublicKey) -> crate::sponsorship::types::StoredSponsorship {
+    fn make_genesis_sponsorship(
+        identity: PublicKey,
+    ) -> crate::sponsorship::types::StoredSponsorship {
         crate::sponsorship::types::StoredSponsorship {
             sponsored_identity: identity,
             sponsor: None,
@@ -301,7 +303,8 @@ mod tests {
         let (store, _dir) = create_test_store();
         let time = 1735689600;
 
-        let result = propagate_consequences(&store, &test_pubkey(1), MisbehaviorSeverity::None, time);
+        let result =
+            propagate_consequences(&store, &test_pubkey(1), MisbehaviorSeverity::None, time);
 
         assert!(result.is_err());
     }
@@ -317,19 +320,29 @@ mod tests {
         let b = test_pubkey(2); // offender
 
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        store.put(&make_regular_sponsorship(a, genesis, 1, false)).unwrap();
-        store.put(&make_regular_sponsorship(b, a, 2, false)).unwrap();
+        store
+            .put(&make_regular_sponsorship(a, genesis, 1, false))
+            .unwrap();
+        store
+            .put(&make_regular_sponsorship(b, a, 2, false))
+            .unwrap();
 
         let result = propagate_consequences(&store, &b, MisbehaviorSeverity::Spam, time).unwrap();
 
         // Offender gets RestrictedPosting
-        assert_eq!(result.offender_penalty.penalty_type, PenaltyType::RestrictedPosting);
+        assert_eq!(
+            result.offender_penalty.penalty_type,
+            PenaltyType::RestrictedPosting
+        );
         assert_eq!(result.offender_penalty.hop_distance, 0);
 
         // Sponsor A (hop 1) gets LostInviteSlots(1)
         assert_eq!(result.sponsor_penalties.len(), 1);
         assert_eq!(result.sponsor_penalties[0].identity, a);
-        assert_eq!(result.sponsor_penalties[0].penalty_type, PenaltyType::LostInviteSlots);
+        assert_eq!(
+            result.sponsor_penalties[0].penalty_type,
+            PenaltyType::LostInviteSlots
+        );
         assert_eq!(result.sponsor_penalties[0].slots_lost, 1);
         assert_eq!(result.sponsor_penalties[0].hop_distance, 1);
 
@@ -351,14 +364,23 @@ mod tests {
         let c = test_pubkey(3); // offender
 
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        store.put(&make_regular_sponsorship(a, genesis, 1, false)).unwrap();
-        store.put(&make_regular_sponsorship(b, a, 2, false)).unwrap();
-        store.put(&make_regular_sponsorship(c, b, 3, false)).unwrap();
+        store
+            .put(&make_regular_sponsorship(a, genesis, 1, false))
+            .unwrap();
+        store
+            .put(&make_regular_sponsorship(b, a, 2, false))
+            .unwrap();
+        store
+            .put(&make_regular_sponsorship(c, b, 3, false))
+            .unwrap();
 
         let result = propagate_consequences(&store, &c, MisbehaviorSeverity::Abuse, time).unwrap();
 
         // C (offender): RestrictedPosting, 30 days
-        assert_eq!(result.offender_penalty.penalty_type, PenaltyType::RestrictedPosting);
+        assert_eq!(
+            result.offender_penalty.penalty_type,
+            PenaltyType::RestrictedPosting
+        );
         assert_eq!(
             result.offender_penalty.base_expires_at,
             time + ABUSE_PENALTY_SECONDS
@@ -366,13 +388,21 @@ mod tests {
 
         // B (hop 1): LostInviteSlots(ALL), 30 days
         assert_eq!(result.sponsor_penalties.len(), 2);
-        let b_penalty = result.sponsor_penalties.iter().find(|p| p.identity == b).unwrap();
+        let b_penalty = result
+            .sponsor_penalties
+            .iter()
+            .find(|p| p.identity == b)
+            .unwrap();
         assert_eq!(b_penalty.penalty_type, PenaltyType::LostInviteSlots);
         assert_eq!(b_penalty.slots_lost, ALL_INVITE_SLOTS);
         assert_eq!(b_penalty.hop_distance, 1);
 
         // A (hop 2): LostInviteSlots(1), 7 days (scaled by 0.5)
-        let a_penalty = result.sponsor_penalties.iter().find(|p| p.identity == a).unwrap();
+        let a_penalty = result
+            .sponsor_penalties
+            .iter()
+            .find(|p| p.identity == a)
+            .unwrap();
         assert_eq!(a_penalty.penalty_type, PenaltyType::LostInviteSlots);
         assert_eq!(a_penalty.slots_lost, 1);
         assert_eq!(a_penalty.hop_distance, 2);
@@ -393,24 +423,43 @@ mod tests {
         let b = test_pubkey(2); // offender
 
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        store.put(&make_regular_sponsorship(a, genesis, 1, false)).unwrap();
-        store.put(&make_regular_sponsorship(b, a, 2, false)).unwrap();
+        store
+            .put(&make_regular_sponsorship(a, genesis, 1, false))
+            .unwrap();
+        store
+            .put(&make_regular_sponsorship(b, a, 2, false))
+            .unwrap();
 
-        let result = propagate_consequences(&store, &b, MisbehaviorSeverity::Illegal, time).unwrap();
+        let result =
+            propagate_consequences(&store, &b, MisbehaviorSeverity::Illegal, time).unwrap();
 
         // B (offender): PermanentRevocation
-        assert_eq!(result.offender_penalty.penalty_type, PenaltyType::PermanentRevocation);
+        assert_eq!(
+            result.offender_penalty.penalty_type,
+            PenaltyType::PermanentRevocation
+        );
         assert!(result.offender_penalty.is_permanent());
 
         // A (hop 1): LostInviteSlots(ALL) + AcceleratedDecay, 90 days
         assert_eq!(result.sponsor_penalties.len(), 2);
-        let a_penalty = result.sponsor_penalties.iter().find(|p| p.identity == a).unwrap();
+        let a_penalty = result
+            .sponsor_penalties
+            .iter()
+            .find(|p| p.identity == a)
+            .unwrap();
         assert_eq!(a_penalty.penalty_type, PenaltyType::LostInviteSlots);
         assert_eq!(a_penalty.slots_lost, ALL_INVITE_SLOTS);
-        assert_eq!(a_penalty.additional_penalty, Some(PenaltyType::AcceleratedDecay));
+        assert_eq!(
+            a_penalty.additional_penalty,
+            Some(PenaltyType::AcceleratedDecay)
+        );
 
         // Genesis (hop 2): LostInviteSlots(1), 30 days (scaled by 0.5)
-        let genesis_penalty = result.sponsor_penalties.iter().find(|p| p.identity == genesis).unwrap();
+        let genesis_penalty = result
+            .sponsor_penalties
+            .iter()
+            .find(|p| p.identity == genesis)
+            .unwrap();
         assert_eq!(genesis_penalty.penalty_type, PenaltyType::LostInviteSlots);
         assert_eq!(genesis_penalty.slots_lost, 1);
     }
@@ -424,7 +473,8 @@ mod tests {
         let genesis = test_pubkey(0);
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
 
-        let result = propagate_consequences(&store, &genesis, MisbehaviorSeverity::Spam, time).unwrap();
+        let result =
+            propagate_consequences(&store, &genesis, MisbehaviorSeverity::Spam, time).unwrap();
 
         // Only offender penalty, no sponsor penalties or warnings
         assert_eq!(result.offender_penalty.identity, genesis);
@@ -444,13 +494,19 @@ mod tests {
         let b = test_pubkey(2); // offender
 
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        store.put(&make_regular_sponsorship(a, genesis, 1, false)).unwrap();
+        store
+            .put(&make_regular_sponsorship(a, genesis, 1, false))
+            .unwrap();
         store.put(&make_regular_sponsorship(b, a, 2, true)).unwrap(); // B (offender) is probationary
 
         let result = propagate_consequences(&store, &b, MisbehaviorSeverity::Spam, time).unwrap();
 
         // A (hop 1): Penalty should be 25% of normal because offender B is probationary
-        let a_penalty = result.sponsor_penalties.iter().find(|p| p.identity == a).unwrap();
+        let a_penalty = result
+            .sponsor_penalties
+            .iter()
+            .find(|p| p.identity == a)
+            .unwrap();
 
         // Normal would be 7 days, probationary = 7 days * 0.25 = 1.75 days
         // But we have minimum 1 day floor
@@ -460,11 +516,15 @@ mod tests {
         let actual_duration = a_penalty.base_expires_at - time;
         assert!(
             actual_duration >= expected_min,
-            "Duration {} should be at least minimum {}", actual_duration, expected_min
+            "Duration {} should be at least minimum {}",
+            actual_duration,
+            expected_min
         );
         assert!(
             actual_duration <= expected_max as u64 + 1, // Allow small rounding
-            "Duration {} should be at most {}", actual_duration, expected_max
+            "Duration {} should be at most {}",
+            actual_duration,
+            expected_max
         );
     }
 
@@ -482,11 +542,21 @@ mod tests {
         let e = test_pubkey(5); // offender
 
         store.put(&make_genesis_sponsorship(genesis)).unwrap();
-        store.put(&make_regular_sponsorship(a, genesis, 1, false)).unwrap();
-        store.put(&make_regular_sponsorship(b, a, 2, false)).unwrap();
-        store.put(&make_regular_sponsorship(c, b, 3, false)).unwrap();
-        store.put(&make_regular_sponsorship(d, c, 4, false)).unwrap();
-        store.put(&make_regular_sponsorship(e, d, 5, false)).unwrap();
+        store
+            .put(&make_regular_sponsorship(a, genesis, 1, false))
+            .unwrap();
+        store
+            .put(&make_regular_sponsorship(b, a, 2, false))
+            .unwrap();
+        store
+            .put(&make_regular_sponsorship(c, b, 3, false))
+            .unwrap();
+        store
+            .put(&make_regular_sponsorship(d, c, 4, false))
+            .unwrap();
+        store
+            .put(&make_regular_sponsorship(e, d, 5, false))
+            .unwrap();
 
         let result = propagate_consequences(&store, &e, MisbehaviorSeverity::Abuse, time).unwrap();
 
@@ -508,15 +578,18 @@ mod tests {
         let time = 1735689600;
 
         // Spam: 7 days
-        let spam = compute_single_penalty(&test_pubkey(1), MisbehaviorSeverity::Spam, time).unwrap();
+        let spam =
+            compute_single_penalty(&test_pubkey(1), MisbehaviorSeverity::Spam, time).unwrap();
         assert_eq!(spam.base_expires_at - time, SPAM_PENALTY_SECONDS);
 
         // Abuse: 30 days
-        let abuse = compute_single_penalty(&test_pubkey(2), MisbehaviorSeverity::Abuse, time).unwrap();
+        let abuse =
+            compute_single_penalty(&test_pubkey(2), MisbehaviorSeverity::Abuse, time).unwrap();
         assert_eq!(abuse.base_expires_at - time, ABUSE_PENALTY_SECONDS);
 
         // Illegal: permanent
-        let illegal = compute_single_penalty(&test_pubkey(3), MisbehaviorSeverity::Illegal, time).unwrap();
+        let illegal =
+            compute_single_penalty(&test_pubkey(3), MisbehaviorSeverity::Illegal, time).unwrap();
         assert!(illegal.is_permanent());
         assert_eq!(illegal.base_expires_at, u64::MAX);
     }

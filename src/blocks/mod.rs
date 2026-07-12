@@ -36,16 +36,16 @@ pub use action::{Action, ActionType, ACTION_SERIALIZED_SIZE};
 pub use branch_path::{BranchDirection, BranchPath};
 pub use builder::BlockBuilder;
 pub use content_block::{ContentBlock, ContentBlockError, SpaceCreationMetadata};
+pub use leader::{
+    compute_block_seed, validate_block_leader, BlockEligibility, MAX_ELIGIBILITY_TIME,
+    TARGET_BLOCK_INTERVAL,
+};
 pub use merkle::compute_merkle_root;
 pub use root_block::{RootBlock, INITIAL_DIFFICULTY};
 pub use space_block::SpaceBlock;
 pub use validation::{
     validate_action, validate_content_block, validate_root_block, validate_space_block,
     ValidationError, TIMESTAMP_FUTURE_SECS, TIMESTAMP_WINDOW_SECS,
-};
-pub use leader::{
-    BlockEligibility, validate_block_leader, compute_block_seed,
-    TARGET_BLOCK_INTERVAL, MAX_ELIGIBILITY_TIME,
 };
 
 /// Type aliases for clarity

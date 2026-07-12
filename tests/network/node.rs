@@ -3,8 +3,8 @@
 //! NodeHandle represents a single node in the test network,
 //! maintaining its own chain state and seen cache.
 
-use std::collections::HashSet;
 use super::mock_chain::MockBlock;
+use std::collections::HashSet;
 
 /// Current chain tip information
 #[derive(Clone, Debug, PartialEq, Eq)]

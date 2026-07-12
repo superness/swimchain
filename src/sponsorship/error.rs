@@ -66,7 +66,6 @@ pub enum SponsorshipError {
     SponsorFlaggedForLinearChain,
 
     // === Public Sponsorship Offer Errors (SPEC_11 §3.11) ===
-
     /// Offer has expired
     OfferExpired,
     /// Offer is fully claimed (claimed_count >= max_sponsees)
@@ -112,7 +111,6 @@ pub enum SponsorshipError {
     InvalidClaimantSignature,
 
     // === Orphan Handling Errors (SPEC_11 §3.2) ===
-
     /// Sponsor has been inactive too long
     SponsorInactive {
         /// When sponsor was last active (UNIX seconds)
@@ -162,7 +160,10 @@ impl fmt::Display for SponsorshipError {
                 write!(f, "community vote mechanism not implemented")
             }
             Self::CannotRevokeGenesis => {
-                write!(f, "genesis identities cannot be revoked, only self-deactivate")
+                write!(
+                    f,
+                    "genesis identities cannot be revoked, only self-deactivate"
+                )
             }
             Self::ExceedsMonthlyCapacity {
                 used,
@@ -186,7 +187,11 @@ impl fmt::Display for SponsorshipError {
                     let hours = remaining / 3600;
                     let minutes = (remaining % 3600) / 60;
                     if hours > 0 {
-                        write!(f, "sponsorship cooldown active, available in {}h {}m", hours, minutes)
+                        write!(
+                            f,
+                            "sponsorship cooldown active, available in {}h {}m",
+                            hours, minutes
+                        )
                     } else {
                         write!(f, "sponsorship cooldown active, available in {}m", minutes)
                     }
@@ -392,14 +397,32 @@ mod tests {
 
     #[test]
     fn test_offer_error_display() {
-        assert!(SponsorshipError::OfferNotFound.to_string().contains("not found"));
-        assert!(SponsorshipError::InvalidOfferId.to_string().contains("invalid"));
-        assert!(SponsorshipError::MissingAttestation.to_string().contains("attestation"));
-        assert!(SponsorshipError::InvalidAttestation.to_string().contains("attestation"));
-        assert!(SponsorshipError::ApplicationRequired.to_string().contains("application"));
-        assert!(SponsorshipError::InvalidOfferSignature.to_string().contains("signature"));
-        assert!(SponsorshipError::ClaimNotFound.to_string().contains("not found"));
-        assert!(SponsorshipError::DuplicateClaim.to_string().contains("already"));
-        assert!(SponsorshipError::InvalidClaimantSignature.to_string().contains("signature"));
+        assert!(SponsorshipError::OfferNotFound
+            .to_string()
+            .contains("not found"));
+        assert!(SponsorshipError::InvalidOfferId
+            .to_string()
+            .contains("invalid"));
+        assert!(SponsorshipError::MissingAttestation
+            .to_string()
+            .contains("attestation"));
+        assert!(SponsorshipError::InvalidAttestation
+            .to_string()
+            .contains("attestation"));
+        assert!(SponsorshipError::ApplicationRequired
+            .to_string()
+            .contains("application"));
+        assert!(SponsorshipError::InvalidOfferSignature
+            .to_string()
+            .contains("signature"));
+        assert!(SponsorshipError::ClaimNotFound
+            .to_string()
+            .contains("not found"));
+        assert!(SponsorshipError::DuplicateClaim
+            .to_string()
+            .contains("already"));
+        assert!(SponsorshipError::InvalidClaimantSignature
+            .to_string()
+            .contains("signature"));
     }
 }

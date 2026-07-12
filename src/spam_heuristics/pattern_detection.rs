@@ -4,8 +4,8 @@
 //! excessive mentions, all caps, and other spam indicators.
 
 use super::types::{
-    HeuristicResult, HeuristicViolation, ViolationType, MAX_LINK_DENSITY,
-    MAX_MENTIONS_PER_POST, MIN_CONTENT_FOR_PATTERNS,
+    HeuristicResult, HeuristicViolation, ViolationType, MAX_LINK_DENSITY, MAX_MENTIONS_PER_POST,
+    MIN_CONTENT_FOR_PATTERNS,
 };
 
 /// Types of patterns that can be detected.
@@ -263,7 +263,8 @@ impl PatternDetector {
         if max_repeat >= self.config.repeated_char_threshold {
             Some(PatternMatch {
                 pattern_type: PatternType::RepeatedChars,
-                confidence: (max_repeat as f32 / (self.config.repeated_char_threshold as f32 * 2.0))
+                confidence: (max_repeat as f32
+                    / (self.config.repeated_char_threshold as f32 * 2.0))
                     .min(1.0),
                 description: format!(
                     "'{}' repeated {} times",
@@ -286,7 +287,9 @@ impl PatternDetector {
             PatternType::HighLinkDensity => ViolationType::HighLinkDensity,
             PatternType::ExcessiveMentions => ViolationType::ExcessiveMentions,
             PatternType::AllCaps => ViolationType::AllCaps,
-            PatternType::RepeatedChars | PatternType::SpamPhrase => ViolationType::SuspiciousPattern,
+            PatternType::RepeatedChars | PatternType::SpamPhrase => {
+                ViolationType::SuspiciousPattern
+            }
         };
 
         HeuristicViolation::new(
@@ -307,7 +310,8 @@ impl Default for PatternDetector {
 /// Count URL-like patterns in text.
 fn count_links(text: &str) -> u32 {
     // Deduplicate: count the max of protocol vs domain patterns
-    let protocol_count = (text.matches("http://").count() + text.matches("https://").count()) as u32;
+    let protocol_count =
+        (text.matches("http://").count() + text.matches("https://").count()) as u32;
     let domain_count = (text.matches(".com").count()
         + text.matches(".net").count()
         + text.matches(".org").count()
@@ -387,7 +391,10 @@ mod tests {
         let detector = PatternDetector::new();
         let content = b"Hey @alice @bob @charlie, what do you think about this?";
         let result = detector.check(content);
-        assert!(!result.violations.iter().any(|v| v.violation_type == ViolationType::ExcessiveMentions));
+        assert!(!result
+            .violations
+            .iter()
+            .any(|v| v.violation_type == ViolationType::ExcessiveMentions));
     }
 
     #[test]
@@ -407,7 +414,10 @@ mod tests {
         let detector = PatternDetector::new();
         let content = b"This is Normal Text with Some Capitalization Here and There.";
         let result = detector.check(content);
-        assert!(!result.violations.iter().any(|v| v.violation_type == ViolationType::AllCaps));
+        assert!(!result
+            .violations
+            .iter()
+            .any(|v| v.violation_type == ViolationType::AllCaps));
     }
 
     #[test]
@@ -439,17 +449,24 @@ mod tests {
         // All caps: needs 80%+ uppercase letters
         let all_caps = b"THIS IS ALL CAPS TEXT THAT SHOULD BE DETECTED AS LOUD";
         let patterns = detector.find_patterns(all_caps);
-        assert!(patterns.iter().any(|p| p.pattern_type == PatternType::AllCaps));
+        assert!(patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::AllCaps));
 
         // Repeated chars: needs 5+ repeated chars
         let repeated = b"This has repeated chars!!!!!!!! and that's suspicious";
         let patterns = detector.find_patterns(repeated);
-        assert!(patterns.iter().any(|p| p.pattern_type == PatternType::RepeatedChars));
+        assert!(patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::RepeatedChars));
 
         // Excessive mentions: needs more than threshold
-        let mentions = b"Hey @user1 @user2 @user3 @user4 @user5 @user6 @user7 @user8 @user9 @user10 @user11";
+        let mentions =
+            b"Hey @user1 @user2 @user3 @user4 @user5 @user6 @user7 @user8 @user9 @user10 @user11";
         let patterns = detector.find_patterns(mentions);
-        assert!(patterns.iter().any(|p| p.pattern_type == PatternType::ExcessiveMentions));
+        assert!(patterns
+            .iter()
+            .any(|p| p.pattern_type == PatternType::ExcessiveMentions));
     }
 
     #[test]

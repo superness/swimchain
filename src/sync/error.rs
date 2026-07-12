@@ -238,11 +238,17 @@ mod tests {
         for err in errors {
             let msg = err.user_message();
             // User messages should not contain technical codes
-            assert!(!msg.contains("V-SYNC-"), "User message should not contain V-SYNC codes: {msg}");
+            assert!(
+                !msg.contains("V-SYNC-"),
+                "User message should not contain V-SYNC codes: {msg}"
+            );
             // User messages should not be empty
             assert!(!msg.is_empty());
             // User messages should end with a period
-            assert!(msg.ends_with('.'), "User message should end with period: {msg}");
+            assert!(
+                msg.ends_with('.'),
+                "User message should end with period: {msg}"
+            );
         }
     }
 

@@ -9,38 +9,25 @@ pub type DhtResult<T> = Result<T, DhtError>;
 #[derive(Debug, Clone)]
 pub enum DhtError {
     /// Node ID is invalid (wrong length, zero, etc.)
-    InvalidNodeId {
-        reason: String,
-    },
+    InvalidNodeId { reason: String },
 
     /// Routing table is full and no stale entries to evict
     RoutingTableFull,
 
     /// Lookup operation timed out
-    LookupTimeout {
-        target: [u8; 32],
-    },
+    LookupTimeout { target: [u8; 32] },
 
     /// No providers found for content
-    NoProviders {
-        content_hash: [u8; 32],
-    },
+    NoProviders { content_hash: [u8; 32] },
 
     /// RPC to peer failed
-    RpcFailed {
-        peer: [u8; 32],
-        reason: String,
-    },
+    RpcFailed { peer: [u8; 32], reason: String },
 
     /// Message serialization/deserialization failed
-    SerializationError {
-        reason: String,
-    },
+    SerializationError { reason: String },
 
     /// Storage error (provider store, etc.)
-    StorageError {
-        reason: String,
-    },
+    StorageError { reason: String },
 
     /// Provider record expired
     ProviderExpired {
@@ -49,30 +36,19 @@ pub enum DhtError {
     },
 
     /// Invalid message format
-    InvalidMessage {
-        msg_type: u8,
-        reason: String,
-    },
+    InvalidMessage { msg_type: u8, reason: String },
 
     /// Bucket index out of range
-    BucketIndexOutOfRange {
-        index: usize,
-        max: usize,
-    },
+    BucketIndexOutOfRange { index: usize, max: usize },
 
     /// Self-lookup (target is our own ID)
     SelfLookup,
 
     /// Network error during DHT operation
-    NetworkError {
-        reason: String,
-    },
+    NetworkError { reason: String },
 
     /// Subnet limit exceeded (eclipse attack mitigation)
-    SubnetLimitExceeded {
-        subnet: [u8; 3],
-        limit: usize,
-    },
+    SubnetLimitExceeded { subnet: [u8; 3], limit: usize },
 
     /// Invalid provider record signature
     InvalidProviderSignature {
@@ -87,16 +63,10 @@ pub enum DhtError {
     },
 
     /// Provider limit exceeded (sender has too many provider records)
-    ProviderLimitExceeded {
-        sender: [u8; 32],
-        limit: usize,
-    },
+    ProviderLimitExceeded { sender: [u8; 32], limit: usize },
 
     /// Invalid message signature (H-DHT-3)
-    InvalidMessageSignature {
-        sender: [u8; 32],
-        reason: String,
-    },
+    InvalidMessageSignature { sender: [u8; 32], reason: String },
 
     /// Message timestamp expired or too far in future (H-DHT-3)
     MessageTimestampInvalid {
@@ -112,7 +82,11 @@ impl fmt::Display for DhtError {
             Self::InvalidNodeId { reason } => write!(f, "Invalid node ID: {}", reason),
             Self::RoutingTableFull => write!(f, "Routing table is full"),
             Self::LookupTimeout { target } => {
-                write!(f, "Lookup timed out for target {}", hex::encode(&target[..8]))
+                write!(
+                    f,
+                    "Lookup timed out for target {}",
+                    hex::encode(&target[..8])
+                )
             }
             Self::NoProviders { content_hash } => {
                 write!(
