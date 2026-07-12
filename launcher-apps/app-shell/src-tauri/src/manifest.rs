@@ -47,4 +47,12 @@ mod tests {
         assert!(parse_manifest(r#"{"id":"x","name":"y"}"#).is_err(), "missing exec");
         assert!(parse_manifest("not json").is_err());
     }
+
+    #[test]
+    fn feed_manifest_file_parses() {
+        let json = include_str!("../../../feed/app.json");
+        let m = parse_manifest(json).unwrap();
+        assert_eq!(m.id, "feed");
+        assert_eq!(m.exec, "feed-app.exe");
+    }
 }
