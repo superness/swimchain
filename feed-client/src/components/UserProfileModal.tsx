@@ -39,6 +39,7 @@ export function UserProfileModal({
   // Fetch the avatar image (the modal showed only initials before).
   const { getMediaUrl } = useMediaUpload();
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [showRepInfo, setShowRepInfo] = useState(false);
   const avatarContentId = profile?.avatar?.contentId;
   useEffect(() => {
     let alive = true;
@@ -137,22 +138,41 @@ export function UserProfileModal({
             </div>
           </div>
 
-          {/* Reputation trust signal (SPEC_12 §3.4) — informational only. */}
+          {/* Reputation trust signal (SPEC_12 §3.4) — informational only. Tap to
+              explain (a hover `title` is invisible on touch devices). */}
           {profile?.reputation && (
-            <div
-              className="user-profile-modal__reputation"
-              title={`Reputation score ${profile.reputation.score} — ${profile.reputation.effect}. A community trust signal; it grants no posting privileges.`}
-            >
-              <span className="user-profile-modal__reputation-badge">
-                {profile.reputation.badge}
-              </span>
-              <span className="user-profile-modal__reputation-label">
-                {profile.reputation.effect}
-              </span>
-              <span className="user-profile-modal__reputation-score">
-                {profile.reputation.score}
-              </span>
-            </div>
+            <>
+              <button
+                type="button"
+                className="user-profile-modal__reputation"
+                onClick={() => setShowRepInfo((v) => !v)}
+                aria-expanded={showRepInfo}
+                aria-label={`Trust signal: ${profile.reputation.effect}, score ${profile.reputation.score}. Tap for details.`}
+              >
+                <span className="user-profile-modal__reputation-badge">
+                  {profile.reputation.badge}
+                </span>
+                <span className="user-profile-modal__reputation-label">
+                  {profile.reputation.effect}
+                </span>
+                <span className="user-profile-modal__reputation-score">
+                  {profile.reputation.score}
+                </span>
+                <span className="user-profile-modal__reputation-help" aria-hidden="true">
+                  ⓘ
+                </span>
+              </button>
+              {showRepInfo && (
+                <p className="user-profile-modal__reputation-explainer">
+                  <strong>{profile.reputation.effect}</strong> is a community
+                  <em> trust signal</em> (score {profile.reputation.score}), not a
+                  penalty by default. New accounts start here and rise with age and
+                  positive community attestations; the score drops only if the
+                  community flags posts as spam. It grants no posting privileges —
+                  it just reflects standing.
+                </p>
+              )}
+            </>
           )}
 
           {/* Bio if available */}

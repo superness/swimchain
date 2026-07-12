@@ -189,3 +189,35 @@
   color: var(--color-text-primary);
   font-variant-numeric: tabular-nums;
 }
+
+/* Reputation badge is now a tappable button (mobile-friendly explainer). Reset
+   button chrome and keep the inline-flex layout the old <div> had. */
+button.user-profile-modal__reputation {
+  appearance: none;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+button.user-profile-modal__reputation:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+.user-profile-modal__reputation-help {
+  opacity: 0.55;
+  font-size: 0.85em;
+}
+.user-profile-modal__reputation-explainer {
+  margin: 6px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--text-secondary, #9aa4b2);
+  background: rgba(127, 127, 127, 0.08);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
