@@ -293,6 +293,23 @@ function Build-All {
     } else {
         Write-Warning "app-shell.exe not found; feed-app.exe was not produced"
     }
+    # 5. stage the RUNTIME app files (manifest + exe + icon only, NOT the app-shell
+    #    source) into an in-project `apps/` dir so tauri bundles them to
+    #    resource_dir()/apps/<id>/. This is what the packaged launcher's list_apps /
+    #    launch_app read in prod (resolve via apps_root -> resource_dir()/apps).
+    $bundledApps = "$ProjectRoot/desktop-app/src-tauri/apps"
+    Remove-Item -Recurse -Force $bundledApps -ErrorAction SilentlyContinue
+    foreach ($appDir in Get-ChildItem "$ProjectRoot/launcher-apps" -Directory) {
+        if ($appDir.Name -eq "app-shell") { continue }   # not an app, no app.json
+        $manifest = Join-Path $appDir.FullName "app.json"
+        if (-not (Test-Path $manifest)) { continue }
+        $dest = Join-Path $bundledApps $appDir.Name
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        Copy-Item $manifest $dest -Force
+        Get-ChildItem $appDir.FullName -File | Where-Object { $_.Name -like "*-app.exe" -or $_.Name -like "*.png" -or $_.Name -like "*.ico" } |
+            ForEach-Object { Copy-Item $_.FullName $dest -Force }
+        Write-Success "staged app '$($appDir.Name)' for bundling"
+    }
 
     # Step 8: Install desktop-app dependencies
     Write-Step "Step 8: Installing desktop-app dependencies..."
