@@ -92,17 +92,75 @@ async fn get_node_address(state: tauri::State<'_, AppState>) -> Result<String, S
 /// where `target="_blank"` links go nowhere; it posts external URLs up to the
 /// shell, which routes them here to launch an Android ACTION_VIEW intent.
 #[tauri::command]
-async fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|e| e.to_string())
+async fn open_external(url: String) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        open_url_android(&url)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = url;
+        Ok(())
+    }
+}
+
+/// `startActivity(new Intent(ACTION_VIEW, Uri.parse(url)).addFlags(NEW_TASK))`
+/// via JNI against the current Android activity (from ndk-context, which Tauri
+/// mobile initializes).
+#[cfg(target_os = "android")]
+fn open_url_android(url: &str) -> Result<(), String> {
+    use jni::objects::{JObject, JValue};
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| format!("vm: {e}"))?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|e| format!("attach: {e}"))?;
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+    let url_jstr = env.new_string(url).map_err(|e| format!("new_string: {e}"))?;
+    let uri = env
+        .call_static_method(
+            "android/net/Uri",
+            "parse",
+            "(Ljava/lang/String;)Landroid/net/Uri;",
+            &[JValue::Object(&JObject::from(url_jstr))],
+        )
+        .and_then(|v| v.l())
+        .map_err(|e| format!("Uri.parse: {e}"))?;
+
+    let action = env
+        .new_string("android.intent.action.VIEW")
+        .map_err(|e| format!("action: {e}"))?;
+    let intent = env
+        .new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;Landroid/net/Uri;)V",
+            &[JValue::Object(&JObject::from(action)), JValue::Object(&uri)],
+        )
+        .map_err(|e| format!("new Intent: {e}"))?;
+
+    // FLAG_ACTIVITY_NEW_TASK (0x10000000) — required to start from a non-activity context.
+    env.call_method(
+        &intent,
+        "addFlags",
+        "(I)Landroid/content/Intent;",
+        &[JValue::Int(0x1000_0000)],
+    )
+    .map_err(|e| format!("addFlags: {e}"))?;
+
+    env.call_method(
+        &activity,
+        "startActivity",
+        "(Landroid/content/Intent;)V",
+        &[JValue::Object(&intent)],
+    )
+    .map_err(|e| format!("startActivity: {e}"))?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Default to warn globally, info for our own modules, so node
             // lifecycle logs ([BOOTSTRAP], seed connections, RPC start) reach
