@@ -33,6 +33,13 @@ const spaceNamesAsked = new Set<string>();
  * Load stored identity from localStorage
  */
 function loadStoredIdentity(): StoredIdentity | null {
+  // In node mode (embedded; the node owns the identity) ignore any browser identity
+  // left in localStorage from a prior browser-mode session. Using it would authenticate
+  // RPC calls as a stale key the node doesn't recognize as the user — an identity
+  // split-brain where the signer shows the node address but calls act as the old key.
+  if (getParentConfig() && isInIframe()) {
+    return null;
+  }
   try {
     const stored = localStorage.getItem(IDENTITY_STORAGE_KEY);
     if (stored) {
