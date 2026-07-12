@@ -46,6 +46,7 @@ fn make_content(rng: &mut impl Rng, created_at_ms: u64) -> ContentItem {
         pow_nonce: 0,
         pow_difficulty: 0,
         preservation_pow: None,
+        display_name: None,
     }
 }
 
@@ -56,10 +57,10 @@ fn make_engagement(content_id: ContentId, timestamp: u64, rng: &mut impl Rng) ->
         engager_id: IdentityId::from_bytes([rng.gen(); 32]),
         engagement_type: EngagementType::Reply,
         timestamp,
-        pool_id: None,
         pow_nonce: 0,
         pow_work: 0,
         signature: Signature::from_bytes([0u8; 64]),
+        emoji: None,
     }
 }
 

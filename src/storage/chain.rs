@@ -453,12 +453,27 @@ impl ChainStore {
                     }
                     crate::blocks::ActionType::Reply => {
                         // Index reply by parent: Key = parent_hash(32) || timestamp(8) → content_hash
+                        // Never index content as a reply to ITSELF: a self-parent entry makes the
+                        // reply-tree walk (count_all_replies) cycle forever.
                         if let Some(parent) = action.parent_id {
-                            let mut reply_key = [0u8; 40];
-                            reply_key[..32].copy_from_slice(&parent);
-                            reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                            self.replies_by_parent_index
-                                .insert(&reply_key, &content_hash)?;
+                            if parent != content_hash {
+                                let mut reply_key = [0u8; 40];
+                                reply_key[..32].copy_from_slice(&parent);
+                                reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                                self.replies_by_parent_index
+                                    .insert(&reply_key, &content_hash)?;
+                            } else {
+                                // TRIPWIRE: a self-parenting reply should be impossible
+                                // (you can't reply to a message that doesn't exist yet).
+                                // If this ever fires, capture who/when so the source flow
+                                // can be found — this is the data that pegged mobile.
+                                log::warn!(
+                                    "[SELF-PARENT-TRIPWIRE] Reply {} parents ITSELF — not indexed. author={} ts={}",
+                                    hex::encode(content_hash),
+                                    hex::encode(action.actor),
+                                    action.timestamp
+                                );
+                            }
                         }
                     }
                     crate::blocks::ActionType::CreateSpace => {
@@ -469,13 +484,26 @@ impl ChainStore {
                     }
                     crate::blocks::ActionType::Edit => {
                         // Index edit by original content: Key = parent_hash(32) || timestamp(8) → new content_hash
+                        // Skip self-referential edits (original == this content): a self-parent
+                        // entry makes count_all_replies cycle forever. This is the observed
+                        // source of the mobile CPU peg (self-parenting wiki content).
                         if let Some(original_id) = action.parent_id {
-                            let mut edit_key = [0u8; 40];
-                            edit_key[..32].copy_from_slice(&original_id);
-                            edit_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                            // Reuse replies_by_parent_index for edits (edit is like a special reply to original)
-                            self.replies_by_parent_index
-                                .insert(&edit_key, &content_hash)?;
+                            if original_id != content_hash {
+                                let mut edit_key = [0u8; 40];
+                                edit_key[..32].copy_from_slice(&original_id);
+                                edit_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                                // Reuse replies_by_parent_index for edits (edit is like a special reply to original)
+                                self.replies_by_parent_index
+                                    .insert(&edit_key, &content_hash)?;
+                            } else {
+                                // TRIPWIRE: an edit whose "original" is itself is nonsensical.
+                                log::warn!(
+                                    "[SELF-PARENT-TRIPWIRE] Edit {} edits ITSELF — not indexed. author={} ts={}",
+                                    hex::encode(content_hash),
+                                    hex::encode(action.actor),
+                                    action.timestamp
+                                );
+                            }
                         }
                     }
                     // Private space actions will be indexed via MembershipStore
@@ -1276,22 +1304,70 @@ impl ChainStore {
         let mut total = 0usize;
         let mut stack: Vec<[u8; 32]> = vec![*parent_hash];
 
+        // Cycle guard: the reply index is untrusted (built from synced,
+        // possibly-malformed content), so a self- or mutually-referential reply
+        // would otherwise make this walk loop FOREVER — spinning a core and
+        // growing `stack` without bound (observed pegging every core on mobile).
+        // Expand each node at most once, and count each distinct reply once.
+        let mut visited: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+        visited.insert(*parent_hash);
+
+        // Self-parent rows (an entry whose value equals its own parent key) are
+        // pure corruption — the content is still indexed under its REAL parent by
+        // a separate row, so dropping the self-row is lossless. Collect them during
+        // the walk and purge after, repairing the index in place the first time the
+        // feed touches this thread rather than skipping it on every future call.
+        let mut self_parent_rows: Vec<sled::IVec> = Vec::new();
+
         while let Some(current) = stack.pop() {
             // Get direct children of current node
             for result in self.replies_by_parent_index.scan_prefix(&current) {
                 // Key format: [parent_hash (32 bytes)][timestamp (8 bytes)]
                 // Value: reply_hash (32 bytes)
-                let (_key, value) = result?;
-                total += 1;
+                let (key, value) = result?;
 
                 // The reply hash is in the VALUE, not the key
-                if value.len() == 32 {
-                    let mut reply_hash = [0u8; 32];
-                    reply_hash.copy_from_slice(&value);
-                    // Add this reply to stack to count its children
+                if value.len() != 32 {
+                    continue;
+                }
+                let mut reply_hash = [0u8; 32];
+                reply_hash.copy_from_slice(&value);
+
+                if reply_hash == current {
+                    // Self-parent: this row claims `current` is a reply to itself —
+                    // impossible for valid data. Flag it for targeted repair below.
+                    self_parent_rows.push(key);
+                    continue;
+                }
+
+                // Skip replies already seen so a (non-self) cycle can neither inflate
+                // the count nor loop; recurse into genuinely new ones.
+                if visited.insert(reply_hash) {
+                    total += 1;
                     stack.push(reply_hash);
+                } else {
+                    log::debug!(
+                        "[REPLY-CYCLE] reply {} re-encountered under parent {} (non-self cycle)",
+                        hex::encode(reply_hash),
+                        hex::encode(current)
+                    );
                 }
             }
+        }
+
+        // Targeted self-heal: remove the corrupt self-parent rows. The count above
+        // is already correct without them; this just clears the data that pegged
+        // mobile (and stops it costing anything on future calls) — no full reindex.
+        if !self_parent_rows.is_empty() {
+            let n = self_parent_rows.len();
+            for key in self_parent_rows {
+                let _ = self.replies_by_parent_index.remove(&key);
+            }
+            log::warn!(
+                "[REPLY-INDEX-REPAIR] purged {} self-parent reply-index row(s) under {} (targeted self-heal)",
+                n,
+                hex::encode(parent_hash)
+            );
         }
 
         Ok(total)
@@ -1536,13 +1612,25 @@ impl ChainStore {
 
             let parent_hash = action.parent_id.unwrap_or([0u8; 32]);
 
-            // Add to replies-by-parent index for efficient thread loading
+            // Add to replies-by-parent index for efficient thread loading.
+            // Guard against self-parent (parent == content) which would make the
+            // reply-tree walk cycle — same guard as the other two write paths.
             if action.parent_id.is_some() {
-                let mut reply_key = [0u8; 40];
-                reply_key[..32].copy_from_slice(&parent_hash);
-                reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                self.replies_by_parent_index
-                    .insert(&reply_key, &content_hash)?;
+                if parent_hash != content_hash {
+                    let mut reply_key = [0u8; 40];
+                    reply_key[..32].copy_from_slice(&parent_hash);
+                    reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                    self.replies_by_parent_index
+                        .insert(&reply_key, &content_hash)?;
+                } else {
+                    // TRIPWIRE: self-parenting reply reached the batch indexer.
+                    log::warn!(
+                        "[SELF-PARENT-TRIPWIRE] Reply {} (batch) parents ITSELF — not indexed. author={} ts={}",
+                        hex::encode(content_hash),
+                        hex::encode(action.actor),
+                        action.timestamp
+                    );
+                }
             }
 
             let entry = ContentIndexEntry {

@@ -52,14 +52,28 @@ impl Default for RateLimitConfig {
             // clients' normal polling (status/peers/spaces/sponsorship/message lists,
             // plus sign_message which is categorised Read), so navigating tripped
             // "Rate limit exceeded for Read methods". Give generous headroom.
-            read_per_minute: 6000,
-            write_per_minute: 120,
-            admin_per_minute: 60,
+            //
+            // The env overrides exist for benchmarks/load tests (benches/rpc_scenarios.rs)
+            // which intentionally hammer the RPC far past the backstop.
+            read_per_minute: env_limit("SWIMCHAIN_RPC_READ_PER_MINUTE", 6000),
+            write_per_minute: env_limit("SWIMCHAIN_RPC_WRITE_PER_MINUTE", 120),
+            admin_per_minute: env_limit("SWIMCHAIN_RPC_ADMIN_PER_MINUTE", 60),
             auth_failure_threshold: 10,
             auth_failure_window_secs: 300, // 5 minutes
             lockout_duration_secs: 300,    // 5 minutes
         }
     }
+}
+
+/// Read a rate-limit override from the environment, keeping the default when
+/// the variable is unset, unparsable, or zero (limits must be non-zero for
+/// governor's `Quota`).
+fn env_limit(var: &str, default: u32) -> u32 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(default)
 }
 
 /// Method category for rate limiting
@@ -89,6 +103,8 @@ impl MethodCategory {
             | "create_space"
             | "create_fork"
             | "switch_fork"
+            | "create_pool"
+            | "contribute_to_pool"
             | "submit_spam_attestation"
             | "submit_counter_attestation"
             | "create_private_space"

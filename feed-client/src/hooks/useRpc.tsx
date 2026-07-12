@@ -364,7 +364,9 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
   const refetch = useCallback(async (skipCache = false) => {
     // Import cache functions
     const { getFromMemory, setInMemory, getFromStorage, setInStorage } = await import('../lib/cache');
-    const CACHE_KEY = 'spaces';
+    // v2: bumped when derived/unnamed spaces started being filtered out, so
+    // clients drop the pre-filter cached list that still held profile/DM spaces.
+    const CACHE_KEY = 'spaces_v2';
 
     // Check memory cache first (fastest)
     if (!skipCache) {
@@ -396,8 +398,16 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
     try {
       const result = await rpc.listSpaces();
 
+      // Hide derived/unnamed spaces from the browse UI. Profile spaces (where a
+      // user's profile-update posts live) and DM spaces come back with no
+      // resolved name (name === null) — they're noise in Discover and the other
+      // clients don't surface them either. Real public spaces always carry a name.
+      const namedSpaces = result.spaces.filter(
+        s => s.name != null && s.name.trim() !== ''
+      );
+
       // Transform RPC result to Space format
-      const transformedSpaces: Space[] = result.spaces.map(s => ({
+      const transformedSpaces: Space[] = namedSpaces.map(s => ({
         id: s.space_id,
         name: s.name ?? s.space_id.substring(0, 12) + '...', // Use space_id prefix if no name
         description: `${s.post_count} posts`,

@@ -21,8 +21,10 @@ fn create_test_root_block(height: u64) -> RootBlock {
         space_block_hashes: vec![],
         space_block_count: 0,
         total_pow: 0,
+        cumulative_pow: 0,
         difficulty_target: INITIAL_DIFFICULTY,
         height,
+        block_creator: [0u8; 32],
     }
 }
 
@@ -48,6 +50,7 @@ fn create_test_content_block(id: u8) -> ContentBlock {
         timestamp: 1_000_000,
         total_pow: 0,
         branch_path: BranchPath::root(),
+        space_metadata: None,
     }
 }
 
