@@ -342,8 +342,7 @@ impl BlockBuilder {
                 Err(e) => log::warn!("[MEMPOOL] Failed to serialize pending thread: {}", e),
             }
         }
-        let mut data =
-            Vec::with_capacity(12 + entries.iter().map(|e| e.len() + 4).sum::<usize>());
+        let mut data = Vec::with_capacity(12 + entries.iter().map(|e| e.len() + 4).sum::<usize>());
         data.extend_from_slice(MEMPOOL_MAGIC);
         data.extend_from_slice(&MEMPOOL_FORMAT_VERSION.to_le_bytes());
         data.extend_from_slice(&(entries.len() as u32).to_le_bytes());

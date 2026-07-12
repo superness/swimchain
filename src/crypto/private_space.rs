@@ -403,9 +403,15 @@ mod tests {
         // Well-formed PRVM1 envelope the recognizer accepts.
         assert!(is_encrypted_media_envelope(&blob));
         assert!(blob.starts_with(ENCRYPTED_MEDIA_MAGIC));
-        assert_eq!(blob.len(), ENCRYPTED_MEDIA_MAGIC.len() + GCM_IV_SIZE + plaintext.len() + TAG_SIZE);
+        assert_eq!(
+            blob.len(),
+            ENCRYPTED_MEDIA_MAGIC.len() + GCM_IV_SIZE + plaintext.len() + TAG_SIZE
+        );
         // Round-trips back to the original bytes.
-        assert_eq!(decrypt_media_with_space_key(&blob, &key).unwrap(), plaintext);
+        assert_eq!(
+            decrypt_media_with_space_key(&blob, &key).unwrap(),
+            plaintext
+        );
         // Wrong key fails; non-envelope input is rejected structurally.
         let other = generate_space_key();
         assert!(decrypt_media_with_space_key(&blob, &other).is_err());
