@@ -75,8 +75,8 @@ export interface NodeSpaceSummary {
   name: string | null;
   /** App namespace, e.g. 'wiki'; null for ordinary public spaces. */
   app?: string | null;
-  /** Raw name before resolution (may carry an @app:/@dm: convention prefix). */
-  name_unresolved?: string | null;
+  /** True when the node has a space id but no resolved human name yet. */
+  name_unresolved?: boolean;
 }
 
 export interface ListSpacesResult {

@@ -55,9 +55,12 @@ export interface IdentitySummary {
  */
 const HIDDEN_APPS = new Set(['dm', 'profile', 'private', 'inbox']);
 function isPublicSpace(space: NodeSpaceSummary): boolean {
-  if (space.app && HIDDEN_APPS.has(space.app.toLowerCase())) return false;
-  const raw = (space.name_unresolved || space.name || '').toLowerCase();
-  if (/^@?(dm|profile|private|inbox)[:._-]/.test(raw)) return false;
+  if (typeof space.app === 'string' && HIDDEN_APPS.has(space.app.toLowerCase())) {
+    return false;
+  }
+  // Only `name` is a string; `name_unresolved` is a boolean flag on this node.
+  const name = typeof space.name === 'string' ? space.name.toLowerCase() : '';
+  if (/^@?(dm|profile|private|inbox)[:._-]/.test(name)) return false;
   return true;
 }
 
