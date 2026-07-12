@@ -280,13 +280,6 @@ fn create(config: &mut CliConfig, name: &str, no_pow: bool) -> Result<()> {
         network_mode.name()
     );
 
-    // Create space ID from hash of name + random bytes
-    let mut space_id_bytes = [0u8; 16];
-    {
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut space_id_bytes);
-    }
-
     // Create PoW challenge
     let challenge = PoWChallenge::generate(
         ActionType::SpaceCreation,
@@ -345,8 +338,11 @@ fn create(config: &mut CliConfig, name: &str, no_pow: bool) -> Result<()> {
             .map_err(|e| CliError::Other(e.to_string()))?
     };
 
-    // Use the PoW hash as part of the space ID for uniqueness
-    space_id_bytes.copy_from_slice(&solution.hash[..16]);
+    // Derive the space id exactly like the node's create_space RPC (shared
+    // helper) so the id we print is the id that actually gets registered
+    // on-chain — a normal space is `apply_class(Social, pow_hash)`, not the raw
+    // hash, and app-namespaced names (`@app:display`) are name-addressed.
+    let space_id_bytes = crate::types::space_class::derive_space_id(name, &solution.hash);
 
     let space_id = encode_space_id(&space_id_bytes);
 

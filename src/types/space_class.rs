@@ -47,6 +47,42 @@ pub fn class_of(space_id_16: &[u8; 16]) -> Option<SpaceClass> {
     SpaceClass::from_byte(space_id_16[0])
 }
 
+/// Parse `name` into `(app, display)` if it is a well-formed app marker
+/// (`@<app>:<display>`), else `None`.
+pub fn parse_app_space_name(name: &str) -> Option<(String, String)> {
+    let rest = name.strip_prefix('@')?;
+    let (app, display) = rest.split_once(':')?;
+    if app.is_empty() || app.len() > 32 || display.is_empty() {
+        return None;
+    }
+    if !app
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return None;
+    }
+    Some((app.to_string(), display.to_string()))
+}
+
+/// Deterministic id for an app-namespaced space: `sha256("app:<app>:v1:<display>")[..16]`,
+/// App-classed. Name-addressed like profile spaces, so a given `@<app>:<display>` is one
+/// shared space any client can recognize.
+pub fn app_space_id_16(app: &str, display: &str) -> [u8; 16] {
+    let h = crate::crypto::sha256(format!("app:{}:v1:{}", app, display).as_bytes());
+    apply_class(SpaceClass::App, &h)
+}
+
+/// Canonical space-id derivation, shared by the node's `create_space` RPC and the
+/// `sw space create` CLI so both compute the *same* id. App-namespaced names
+/// (`@app:display`) are name-addressed; everything else is a Social space keyed by
+/// its PoW hash. `pow_hash` must be at least 15 bytes.
+pub fn derive_space_id(name: &str, pow_hash: &[u8]) -> [u8; 16] {
+    match parse_app_space_name(name) {
+        Some((app, display)) => app_space_id_16(&app, &display),
+        None => apply_class(SpaceClass::Social, pow_hash),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

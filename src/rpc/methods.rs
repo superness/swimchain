@@ -73,29 +73,9 @@ const SPACE_HRP: &str = "sp";
 /// `app = [a-z0-9-]{1,32}`) belongs to a specialized client "app". The general social
 /// clients (forum/feed/chat/search) hide ALL app spaces so specialized content never
 /// pollutes the default experience; the matching app client shows only its own.
-///
-/// Parse `name` into `(app, display)` if it is a well-formed app marker, else `None`.
-fn parse_app_space_name(name: &str) -> Option<(String, String)> {
-    let rest = name.strip_prefix('@')?;
-    let (app, display) = rest.split_once(':')?;
-    if app.is_empty() || app.len() > 32 || display.is_empty() {
-        return None;
-    }
-    if !app
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
-        return None;
-    }
-    Some((app.to_string(), display.to_string()))
-}
-
-/// Deterministic id for an app-namespaced space: `sha256("app:<app>:v1:<display>")[..16]`.
-/// Name-addressed like profile spaces, so a given `@<app>:<display>` is one shared space.
-fn app_space_id_16(app: &str, display: &str) -> [u8; 16] {
-    let h = crate::crypto::sha256(format!("app:{}:v1:{}", app, display).as_bytes());
-    apply_class(SpaceClass::App, &h)
-}
+/// App-space helpers now live in `crate::types::space_class` so the node and the
+/// `sw` CLI derive space ids from a single source of truth (see `derive_space_id`).
+use crate::types::space_class::{app_space_id_16, parse_app_space_name};
 
 /// Authoritative "is this an app space" check for a `(space_id, name)` pair: the name must
 /// be a well-formed marker AND its derived id must match the actual space id. The derivation
