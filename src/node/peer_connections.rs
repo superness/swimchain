@@ -183,6 +183,11 @@ pub struct PeerConnectionPool {
 /// How long to wait before re-announcing our full content inventory to the same peer.
 const INVENTORY_THROTTLE: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Max time a single peer send may take before it's abandoned. A stuck or
+/// half-open TCP connection must never hang a caller (e.g. an RPC handler that
+/// gossips a self-originated action inline before responding).
+const PEER_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 impl PeerConnectionPool {
     /// Create a new empty pool
     pub fn new() -> Self {
@@ -284,7 +289,12 @@ impl PeerConnectionPool {
         envelope: &MessageEnvelope,
     ) -> Result<(), SendError> {
         let conn = self.get(peer_id).await.ok_or(SendError::PeerNotFound)?;
-        conn.send(envelope).await.map_err(SendError::Transport)
+        // Bound every peer send: a stuck/half-open TCP connection must never hang
+        // the caller (e.g. an RPC handler broadcasting a self-originated action).
+        match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
+            Ok(res) => res.map_err(SendError::Transport),
+            Err(_) => Err(SendError::Timeout),
+        }
     }
 
     /// Broadcast a message to all connected peers
@@ -295,15 +305,21 @@ impl PeerConnectionPool {
         let mut success_count = 0;
 
         for (peer_id, conn) in connections.iter() {
-            match conn.send(envelope).await {
-                Ok(()) => {
+            match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
+                Ok(Ok(())) => {
                     success_count += 1;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(
                         "[PEER-POOL] Broadcast to {} failed: {}",
                         hex::encode(&peer_id[..8]),
                         e
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        "[PEER-POOL] Broadcast to {} timed out (stuck peer)",
+                        hex::encode(&peer_id[..8]),
                     );
                 }
             }
@@ -326,15 +342,21 @@ impl PeerConnectionPool {
             if peer_id == exclude {
                 continue;
             }
-            match conn.send(envelope).await {
-                Ok(()) => {
+            match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
+                Ok(Ok(())) => {
                     success_count += 1;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(
                         "[PEER-POOL] Broadcast to {} failed: {}",
                         hex::encode(&peer_id[..8]),
                         e
+                    );
+                }
+                Err(_) => {
+                    warn!(
+                        "[PEER-POOL] Broadcast to {} timed out (stuck peer)",
+                        hex::encode(&peer_id[..8]),
                     );
                 }
             }
@@ -357,6 +379,8 @@ pub enum SendError {
     PeerNotFound,
     /// Transport error during send
     Transport(crate::transport::TransportError),
+    /// Send did not complete within PEER_SEND_TIMEOUT (stuck/half-open peer)
+    Timeout,
 }
 
 impl std::fmt::Display for SendError {
@@ -364,6 +388,7 @@ impl std::fmt::Display for SendError {
         match self {
             Self::PeerNotFound => write!(f, "peer not found in connection pool"),
             Self::Transport(e) => write!(f, "transport error: {}", e),
+            Self::Timeout => write!(f, "send timed out (stuck peer)"),
         }
     }
 }
