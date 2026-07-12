@@ -450,6 +450,17 @@ impl ChainStore {
                                 reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
                                 self.replies_by_parent_index
                                     .insert(&reply_key, &content_hash)?;
+                            } else {
+                                // TRIPWIRE: a self-parenting reply should be impossible
+                                // (you can't reply to a message that doesn't exist yet).
+                                // If this ever fires, capture who/when so the source flow
+                                // can be found — this is the data that pegged mobile.
+                                log::warn!(
+                                    "[SELF-PARENT-TRIPWIRE] Reply {} parents ITSELF — not indexed. author={} ts={}",
+                                    hex::encode(content_hash),
+                                    hex::encode(action.actor),
+                                    action.timestamp
+                                );
                             }
                         }
                     }
@@ -472,6 +483,14 @@ impl ChainStore {
                                 // Reuse replies_by_parent_index for edits (edit is like a special reply to original)
                                 self.replies_by_parent_index
                                     .insert(&edit_key, &content_hash)?;
+                            } else {
+                                // TRIPWIRE: an edit whose "original" is itself is nonsensical.
+                                log::warn!(
+                                    "[SELF-PARENT-TRIPWIRE] Edit {} edits ITSELF — not indexed. author={} ts={}",
+                                    hex::encode(content_hash),
+                                    hex::encode(action.actor),
+                                    action.timestamp
+                                );
                             }
                         }
                     }
@@ -1557,12 +1576,22 @@ impl ChainStore {
             // Add to replies-by-parent index for efficient thread loading.
             // Guard against self-parent (parent == content) which would make the
             // reply-tree walk cycle — same guard as the other two write paths.
-            if action.parent_id.is_some() && parent_hash != content_hash {
-                let mut reply_key = [0u8; 40];
-                reply_key[..32].copy_from_slice(&parent_hash);
-                reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
-                self.replies_by_parent_index
-                    .insert(&reply_key, &content_hash)?;
+            if action.parent_id.is_some() {
+                if parent_hash != content_hash {
+                    let mut reply_key = [0u8; 40];
+                    reply_key[..32].copy_from_slice(&parent_hash);
+                    reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                    self.replies_by_parent_index
+                        .insert(&reply_key, &content_hash)?;
+                } else {
+                    // TRIPWIRE: self-parenting reply reached the batch indexer.
+                    log::warn!(
+                        "[SELF-PARENT-TRIPWIRE] Reply {} (batch) parents ITSELF — not indexed. author={} ts={}",
+                        hex::encode(content_hash),
+                        hex::encode(action.actor),
+                        action.timestamp
+                    );
+                }
             }
 
             let entry = ContentIndexEntry {
