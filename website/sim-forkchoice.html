@@ -64,9 +64,9 @@
   <a class="mark" href="/">swimchain<span class="tld">.io</span></a>
   <nav class="site">
     <a href="/protocol">Protocol</a>
-    <a href="/sim/frequency">Frequency</a>
     <a href="/sim/behavioral">Behavioral</a>
     <a href="/sim/size">Size fracture</a>
+    <a href="/browse/">Browse</a>
   </nav>
 </header>
 
@@ -80,7 +80,7 @@
     work, flip the bridge, and watch. The outcome is the real rule, validated by an integration test
     against the node.
   </p>
-  <div class="realchip"><span class="dot"></span> <span>Running <b>swimchain-core::forkchoice</b> &middot; validated by <b>tests/frequency_partition_reconverge.rs</b></span></div>
+  <div class="realchip"><span class="dot"></span> <span>Running <b>swimchain-core::forkchoice</b> &middot; validated by <b>tests/partition_reconverge.rs</b></span></div>
 </div>
 
 <div class="sim wrap">
@@ -115,7 +115,7 @@
   <p class="body">
     Both stacks grow from a shared prefix (the history everyone agrees on). While <strong>unbridged</strong>,
     the two partitions never see each other — two divergent tips, no reconciliation. That&apos;s a real
-    network partition, exactly what frequency isolation can create if there&apos;s no path between groups.
+    network partition, the kind any split (a netsplit, an offline group) can create.
   </p>
   <p class="body" style="margin-top:12px">
     Flip <strong>bridge</strong> and blocks gossip across. The page hands both tips&apos; cumulative
@@ -127,11 +127,9 @@
     actions come back — <strong>content is re-ordered, never obliterated</strong>.
   </p>
   <p class="body" style="margin-top:12px">
-    This is today&apos;s <em>global, frequency-agnostic</em> fork choice — the baseline. The open design
-    question (see the repo&apos;s <code>SELF_ORGANIZING_SPLITS_NOTES.md</code>) is whether to make fork
-    choice <em>frequency-scoped</em> so drifted groups deliberately never reconcile. Here you can feel
-    what the default does first. Companion sims: <a href="/sim/frequency">frequency</a>,
-    <a href="/sim/behavioral">behavioral</a>, <a href="/sim/size">size</a>.
+    One global chain, one heaviest-work rule for everyone — no per-group carve-outs. Any partition
+    reconciles safely the moment a path reappears, which is exactly why the network stays one chain.
+    Companion sims: <a href="/sim/behavioral">behavioral</a>, <a href="/sim/size">size</a>.
   </p>
 </section>
 
@@ -139,8 +137,8 @@
   <span>swimchain.io — content that earns its place</span>
   <span>
     <a href="/protocol">Protocol</a> ·
-    <a href="/sim/frequency">Frequency</a> ·
     <a href="/sim/behavioral">Behavioral</a> ·
+    <a href="/sim/size">Size fracture</a> ·
     <a href="https://github.com/superness/swimchain">GitHub</a>
   </span>
 </footer>

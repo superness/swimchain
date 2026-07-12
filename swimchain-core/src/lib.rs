@@ -9,14 +9,13 @@
 //! works" visualizations run the *same* functions and constants, so the sims
 //! are real, not re-implementations.
 //!
-//! - [`frequency`] — network/discovery-layer isolation (frequency drift).
 //! - [`behavioral`] — content-layer community detection (SPEC_13 gates).
 //! - [`fracture`] — size-based branch fracture (SPEC_08 threshold + split).
+//! - [`forkchoice`] — heaviest-work fork choice + partition reconverge.
 
 pub mod behavioral;
 pub mod forkchoice;
 pub mod fracture;
-pub mod frequency;
 
 /// SHA-256 helper shared by the cores (keeps the crate dependency-light).
 #[must_use]

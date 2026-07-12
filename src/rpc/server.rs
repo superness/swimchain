@@ -460,8 +460,6 @@ async fn handle_request(
     // in their parameters - the signature proves the caller's identity without RPC-level auth
     const AUTH_EXEMPT_METHODS: &[&str] = &[
         "get_info",
-        "get_node_frequency",
-        "list_frequency_drifts",
         "get_identity_info",
         "get_sync_status",
         "get_sponsorship_info",

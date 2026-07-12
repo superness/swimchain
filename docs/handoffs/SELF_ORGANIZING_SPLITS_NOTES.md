@@ -1,19 +1,49 @@
-# Self-organizing splits — design direction (open, not yet built)
+# Network-layer isolation — decision log (explored, then REMOVED)
 
-Captured from a 2026-07-12 design discussion, after frequency isolation +
-behavioral branching + size fracture shipped and the live sims went up. This is
-**direction, not a spec** — it records what we aligned on so a future
-brainstorm/spec starts from here.
+## Conclusion (2026-07-12)
 
-## Core principle
+**Frequency isolation was built, then removed.** The whole idea — isolating
+single-purpose actors away from the main chain at the network layer — was reasoned
+through end to end and **abandoned in favor of keeping one shared chain**. The
+frequency feature (module, config, peer filtering, on-chain `FrequencyDrift`
+action, RPCs, sim page) was torn out; `behavioral` branching, `fracture`, and the
+`forkchoice` partition/reconverge sim stay.
 
-One measured signal — **insularity / diversity / concentration** — can drive
-all three splits, so they stop being separate features and become one idea:
+**Why it was dropped, in order of realization:**
+1. **It didn't isolate anything real.** On one shared chain a node must sync the
+   whole chain regardless of which peers it dials, and it already only *hosts* what
+   it views (consent/view-to-host). So "discovery-only frequency" is cosmetic peer
+   selection and "branch-selective sync to host less" is redundant.
+2. **The only real burden is action *processing*** — every node validates/aggregates
+   every action, including a bespoke app's non-social firehose. But that's a
+   *scaling* problem (bites only at large scale), not a today problem, and its real
+   fix is a careful sharding/app-lane design (commitment-anchored lanes whose work
+   is excluded from main fork choice), solved when measured — not speculatively.
+3. **Genuine isolation requires a separate chain (overlay), which is a weak,
+   cheaply-51%-able chain.** That 51% vulnerability *only exists if you separate*.
+   Keeping everyone on the shared chain eliminates it. And a node that's already
+   hosting/processing is a *valuable* participant you want in the shared pool, not
+   isolated out of it.
+4. **The "spam" is the point.** Universal action processing *is* the shared
+   validation that makes the chain trustless and secure — it's the backbone, not a
+   cost to optimize away.
 
-- **Content layer** — behavioral branching (SPEC_13): an insular cluster graduates.
-- **Network layer** — frequency isolation: an exclusive node drifts off the main peer mesh.
-- **Consensus layer** — stays **dumb: heaviest work wins, full stop.** No special
-  attack rule (see "Decided against" below). The splits above *are* the defense.
+Net: **one shared chain, one heaviest-work fork choice for everyone.** No frequency,
+no overlay, no per-group forks. Revisit processing-scale as its own sharding project
+if/when the numbers demand it.
+
+---
+
+The reasoning below is retained as the decision record.
+
+## Core principle (explored)
+
+One measured signal — **insularity / diversity / concentration** — could in
+principle drive multiple splits:
+
+- **Content layer** — behavioral branching (SPEC_13): an insular cluster graduates. **KEPT.**
+- **Network layer** — frequency isolation: an exclusive node drifts off the main peer mesh. **REMOVED.**
+- **Consensus layer** — stays **dumb: heaviest work wins, full stop.** No special attack rule.
 
 ## Where this landed (2026-07-12)
 

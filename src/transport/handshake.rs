@@ -29,12 +29,7 @@ fn build_version_payload(
 ) -> VersionPayload {
     VersionPayload {
         protocol_version: PROTOCOL_VERSION as u32,
-        // Fold this node's frequency into the high bits of node_services,
-        // preserving capability flags in the low 16 bits (they fit). When
-        // isolation is off the frequency bits are zero, so this is a no-op.
-        node_services: crate::network::frequency::FrequencyContext::node_services(
-            (local_info.services & 0xFFFF) as u16,
-        ),
+        node_services: local_info.services,
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or(std::time::Duration::ZERO)

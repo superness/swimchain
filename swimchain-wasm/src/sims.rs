@@ -5,51 +5,13 @@
 //! not a JavaScript re-implementation.
 
 use serde::Serialize;
-use swimchain_core::{behavioral, forkchoice, fracture, frequency};
+use swimchain_core::{behavioral, forkchoice, fracture};
 use wasm_bindgen::prelude::*;
 
 /// Serialize a core result for JS as plain numbers/objects (no BigInt).
 fn to_js<T: Serialize>(v: &T) -> JsValue {
     v.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .unwrap_or(JsValue::NULL)
-}
-
-// ── Frequency isolation ──────────────────────────────────────────────────────
-
-/// Deterministic 24-bit frequency for a namespace id (real `derive_frequency`).
-#[wasm_bindgen]
-pub fn frequency_derive(namespace_id: u32) -> u32 {
-    let mut key = [0u8; 16];
-    key[..4].copy_from_slice(&namespace_id.to_be_bytes());
-    frequency::derive_frequency(&key)
-}
-
-/// Evaluate a node's drift from per-namespace realized weights.
-/// `weights` is `[[namespace_id, weight], ...]`; returns the real `DriftOutcome`
-/// (dominant share, resolved primary, isolated?, and which threshold governed).
-#[wasm_bindgen]
-pub fn frequency_evaluate(weights: JsValue, current_primary: u32) -> JsValue {
-    let pairs: Vec<(u32, f64)> = serde_wasm_bindgen::from_value(weights).unwrap_or_default();
-    let counts: Vec<([u8; 16], u64)> = pairs
-        .into_iter()
-        .map(|(id, w)| {
-            let mut k = [0u8; 16];
-            k[..4].copy_from_slice(&id.to_be_bytes());
-            (k, w.max(0.0) as u64)
-        })
-        .collect();
-    to_js(&frequency::evaluate_drift(&counts, current_primary))
-}
-
-/// Real set-intersection peer eligibility (`scalars_compatible`).
-#[wasm_bindgen]
-pub fn frequency_eligible(
-    a_primary: u32,
-    a_requested: u32,
-    b_primary: u32,
-    b_requested: u32,
-) -> bool {
-    frequency::scalars_compatible(a_primary, a_requested, b_primary, b_requested)
 }
 
 // ── Behavioral branching (SPEC_13) ───────────────────────────────────────────

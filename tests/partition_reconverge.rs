@@ -1,12 +1,10 @@
-//! Partition + reconverge — measured behavior of today's GLOBAL (frequency-agnostic)
-//! fork choice, driving the REAL router/reorg path (not a model).
+//! Partition + reconverge — measured behavior of the global heaviest-work fork
+//! choice, driving the REAL router/reorg path (not a model).
 //!
-//! Grounds the design discussion in `docs/handoffs/SELF_ORGANIZING_SPLITS_NOTES.md`:
-//! two chains diverge from a common prefix, the heavier tip is delivered to the
+//! Two chains diverge from a common prefix, the heavier tip is delivered to the
 //! node holding the lighter one, and we assert (a) the tip switches to the heavier
 //! chain and (b) the losing tip's actions come back via the mempool (re-anchor),
-//! nothing is destroyed. This is the harness we'd extend for frequency-scoped fork
-//! choice; here it documents the baseline.
+//! nothing is destroyed. One chain, one rule for everyone.
 
 use std::sync::{Arc, RwLock};
 

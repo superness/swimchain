@@ -249,25 +249,6 @@ impl AggregationCache {
         }
     }
 
-    /// Per-space total content counts, `(space_id_16, total_content_count)`.
-    ///
-    /// Used by frequency isolation to measure how concentrated a node's stored
-    /// content is across namespaces
-    /// (`docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md`).
-    pub fn all_space_content_counts(&self) -> Result<Vec<([u8; 16], u64)>, StorageError> {
-        let mut out = Vec::new();
-        for kv in self.space_tree.iter() {
-            let (k, v) = kv?;
-            if k.len() == 16 {
-                let mut id = [0u8; 16];
-                id.copy_from_slice(&k);
-                let agg: SpaceAggregation = bincode::deserialize(&v)?;
-                out.push((id, agg.total_content_count));
-            }
-        }
-        Ok(out)
-    }
-
     /// Set aggregation for a space
     pub fn set_space(
         &self,

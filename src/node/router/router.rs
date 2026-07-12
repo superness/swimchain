@@ -2386,8 +2386,6 @@ impl MessageRouter {
 
             // SPEC_13 Phase 2: Process space-rename actions
             self.apply_rename_space_actions_from_block(&content_block);
-            // Frequency isolation: record any frequency-drift audit actions
-            self.apply_frequency_drift_actions_from_block(&content_block);
 
             // SPEC_11 Phase 6: Process on-chain sponsorship actions
             self.apply_sponsorship_actions_from_block(&content_block);
@@ -3917,8 +3915,6 @@ impl MessageRouter {
                     self.process_behavioral_clustering(content_block);
                     // SPEC_13 Phase 2: Process space-rename actions
                     self.apply_rename_space_actions_from_block(content_block);
-                    // Frequency isolation: record any frequency-drift audit actions
-                    self.apply_frequency_drift_actions_from_block(content_block);
                     // SPEC_11 Phase 6: Process on-chain sponsorship actions from synced blocks
                     self.apply_sponsorship_actions_from_block(content_block);
                 }
@@ -4679,76 +4675,6 @@ impl MessageRouter {
                     );
                 }
                 Err(e) => warn!("[RENAME] Space lookup failed: {}", e),
-            }
-        }
-    }
-
-    /// Record frequency-drift audit actions from a content block into the local
-    /// `frequency_drifts` store. Self-authored + signature-verified; no
-    /// cross-node authorization (a node only records its own drift). Log-only —
-    /// this never affects peer selection, which is self-computed.
-    fn apply_frequency_drift_actions_from_block(
-        &self,
-        content_block: &crate::blocks::ContentBlock,
-    ) {
-        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
-        let chain_store = match &self.chain_store {
-            Some(store) => store,
-            None => return,
-        };
-
-        for action in &content_block.actions {
-            if action.action_type != crate::blocks::ActionType::FrequencyDrift {
-                continue;
-            }
-            let (Some(namespace_key), Some(freq_commit)) = (action.parent_id, action.content_hash)
-            else {
-                warn!("[FREQ] FrequencyDrift action missing namespace/commitment — skipping");
-                continue;
-            };
-
-            // Signature over the domain-separated frequency-drift message.
-            let msg = crate::blocks::Action::frequency_drift_signing_message(
-                &namespace_key,
-                &freq_commit,
-                action.timestamp,
-            );
-            let sig_valid = match VerifyingKey::from_bytes(&action.actor) {
-                Ok(vk) => {
-                    let sig = Signature::from_bytes(&action.signature);
-                    vk.verify(&msg, &sig).is_ok()
-                }
-                Err(_) => false,
-            };
-            if !sig_valid {
-                warn!(
-                    "[FREQ] Invalid frequency-drift signature from {} — skipping",
-                    hex::encode(&action.actor[..8])
-                );
-                continue;
-            }
-
-            let frequency = u32::from_be_bytes([
-                freq_commit[0],
-                freq_commit[1],
-                freq_commit[2],
-                freq_commit[3],
-            ]);
-            let record = crate::storage::chain::FrequencyDriftRecord {
-                actor: action.actor,
-                namespace_key,
-                frequency,
-                timestamp: action.timestamp,
-            };
-            if let Err(e) = chain_store.put_frequency_drift(&record) {
-                warn!("[FREQ] Failed to persist frequency-drift record: {}", e);
-            } else {
-                info!(
-                    "[FREQ] Recorded drift: {} -> frequency {}",
-                    hex::encode(&action.actor[..8]),
-                    frequency
-                );
             }
         }
     }

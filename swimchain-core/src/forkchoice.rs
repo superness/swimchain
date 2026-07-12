@@ -4,11 +4,9 @@
 //! `cumulative_pow`, tiebreak on lower block hash via `ChainStore::hash_wins`)
 //! and the reorg's re-anchor behavior (the losing tip's actions return to the
 //! mempool). Used by the partition/reconverge simulation and validated against
-//! the real router in `tests/frequency_partition_reconverge.rs`.
+//! the real router in `tests/partition_reconverge.rs`.
 //!
-//! Fork choice here is deliberately **frequency-agnostic** — this is the
-//! *current* global behavior, the baseline the design notes want to measure
-//! before considering frequency-scoped fork choice.
+//! One global chain, one heaviest-work rule for everyone.
 
 use serde::{Deserialize, Serialize};
 

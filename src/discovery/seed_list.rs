@@ -80,18 +80,14 @@ impl SeedEntry {
         }
     }
 
-    /// Convert to WireAddr for network transmission.
-    ///
-    /// Tagged with `CAP_SEED` so frequency isolation always treats configured
-    /// seeds as eligible bootstrap anchors (see
-    /// `docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md`).
+    /// Convert to WireAddr for network transmission
     #[must_use]
     pub fn to_wire_addr(&self) -> WireAddr {
         WireAddr {
             transport: self.transport as u8,
             address: self.address,
             port: self.port,
-            services: u32::from(crate::network::frequency::CAP_SEED),
+            services: 0, // Seeds don't advertise services
             last_seen: 0,
         }
     }

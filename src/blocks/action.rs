@@ -137,20 +137,6 @@ pub enum ActionType {
     /// Authorization (validated against local chain state at processing):
     /// the space creator, or a founding member for behavioral communities.
     RenameSpace = 0x0F,
-
-    // === Network Isolation Actions (Frequency) ===
-    /// Auditable record that this actor's node has drifted to (or back from) a
-    /// discovery frequency (`docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md`).
-    /// Self-authored only: `actor` is the drifting node's identity; a node can
-    /// only record its OWN drift. Log/notify only — the network effect is
-    /// self-computed and never waits on this action.
-    /// parent_id = 32-byte namespace key (zero-padded 16-byte space id or app
-    /// namespace hash) the node concentrated on, or all-zero for a drift back
-    /// to base. content_hash = target frequency packed big-endian into the
-    /// first 4 bytes (0 = base). Signature message:
-    /// b"swimchain:frequency_drift:v1" || parent_id(32) || content_hash(32) ||
-    /// timestamp(8 BE).
-    FrequencyDrift = 0x10,
 }
 
 impl TryFrom<u8> for ActionType {
@@ -174,7 +160,6 @@ impl TryFrom<u8> for ActionType {
             0x0D => Ok(ActionType::Sponsor),
             0x0E => Ok(ActionType::GenesisRegister),
             0x0F => Ok(ActionType::RenameSpace),
-            0x10 => Ok(ActionType::FrequencyDrift),
             _ => Err(ActionError::InvalidActionType(value)),
         }
     }
@@ -951,78 +936,6 @@ impl Action {
         self.action_type == ActionType::RenameSpace
     }
 
-    /// Create a new FREQUENCY_DRIFT action (network isolation, audit log).
-    ///
-    /// `namespace_key` is the 32-byte namespace the node concentrated on
-    /// (zero-padded 16-byte space id or app-namespace hash), or all-zero for a
-    /// drift back to base. `frequency` is the target discovery frequency (0 =
-    /// base), packed big-endian into the first 4 bytes of `content_hash`.
-    /// Self-authored only: `actor` is the drifting node's own identity.
-    #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_frequency_drift(
-        actor: [u8; 32],
-        timestamp: u64,
-        namespace_key: [u8; 32],
-        frequency: u32,
-        pow_nonce: u64,
-        pow_work: u64,
-        pow_target: [u8; 32],
-        signature: [u8; 64],
-    ) -> Self {
-        let mut freq_commit = [0u8; 32];
-        freq_commit[..4].copy_from_slice(&frequency.to_be_bytes());
-        Self {
-            action_type: ActionType::FrequencyDrift,
-            actor,
-            timestamp,
-            content_hash: Some(freq_commit),
-            parent_id: Some(namespace_key),
-            pow_nonce,
-            pow_work,
-            pow_target,
-            signature,
-            emoji: None,
-            display_name: None,
-            media_refs: vec![],
-            replaces_pending: None,
-            private: false,
-        }
-    }
-
-    /// Build the signing message for a FrequencyDrift action:
-    /// b"swimchain:frequency_drift:v1" || namespace_key(32) || freq_commit(32) || timestamp(8 BE)
-    #[must_use]
-    pub fn frequency_drift_signing_message(
-        namespace_key: &[u8; 32],
-        freq_commit: &[u8; 32],
-        timestamp: u64,
-    ) -> Vec<u8> {
-        let tag = b"swimchain:frequency_drift:v1";
-        let mut msg = Vec::with_capacity(tag.len() + 32 + 32 + 8);
-        msg.extend_from_slice(tag);
-        msg.extend_from_slice(namespace_key);
-        msg.extend_from_slice(freq_commit);
-        msg.extend_from_slice(&timestamp.to_be_bytes());
-        msg
-    }
-
-    /// Check if this is a frequency-drift action.
-    #[must_use]
-    pub fn is_frequency_drift(&self) -> bool {
-        self.action_type == ActionType::FrequencyDrift
-    }
-
-    /// The target frequency of a FrequencyDrift action (0 = base), read from the
-    /// first 4 bytes of `content_hash`. Returns `None` for other action types.
-    #[must_use]
-    pub fn frequency_drift_target(&self) -> Option<u32> {
-        if self.action_type != ActionType::FrequencyDrift {
-            return None;
-        }
-        self.content_hash
-            .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
-    }
 
     /// Get the target space id for a RenameSpace action
     #[must_use]

@@ -10,7 +10,6 @@
 
 pub mod builder;
 pub mod error;
-pub mod frequency;
 pub mod messages;
 pub mod mode;
 pub mod serialize;
