@@ -199,6 +199,20 @@ pub const MAX_BLOCK_ACTIONS: usize = 1000;
 /// Maximum block size in bytes (SPEC_08 §3.1)
 pub const MAX_BLOCK_SIZE: usize = 1_048_576; // 1 MB
 
+// === SPEC_03: Engagement Pools (§6.4) ===
+
+/// Pool window duration in seconds (10 minutes) (SPEC_03 §6.4)
+pub const POOL_WINDOW_SECS: u64 = 600;
+
+/// Pool window duration in milliseconds (SPEC_03 §6.4)
+pub const POOL_WINDOW_MS: u64 = 600_000;
+
+/// Total PoW required per engagement pool in seconds (SPEC_03 §6.4)
+pub const POOL_REQUIRED_POW_SECS: u64 = 60;
+
+/// Minimum contribution per pool entry in seconds (SPEC_03 §6.4)
+pub const MIN_CONTRIBUTION_SECS: u64 = 1;
+
 // === SPEC_06: Chain Sync (§4.5) ===
 
 /// Sync check interval in seconds (SPEC_06 §4.5)

@@ -36,13 +36,16 @@
 //!
 //! See RESEARCH_08 (Attestation Mechanisms) for prior art analysis.
 
+pub mod bundle;
 pub mod error;
 pub mod gossip;
+pub mod import;
 pub mod merkle;
 pub mod storage;
 pub mod types;
 
 pub use error::{BlocklistError, BlocklistResult};
+pub use import::{parse_import, ImportParseError, ImportRecord};
 pub use gossip::{
     entry_from_update, parse_blocklist_message, BlocklistGossip, BlocklistMessage,
     BLOCKLIST_UPDATE_MAX_AGE_SECS, MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
