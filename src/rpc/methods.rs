@@ -15864,9 +15864,12 @@ impl RpcMethods {
                 RpcResponse::success(serde_json::to_value(result).unwrap(), id)
             }
             Ok(None) => {
-                // Check mempool for pending Sponsor action (SPEC_11 §3.11)
+                // Check mempool for pending Sponsor action (SPEC_11 §3.11).
+                // Best-effort: use try_read so a busy block builder (its write lock held
+                // during heavy initial sync) never blocks this RPC past the client's
+                // timeout — skip the pending-mempool check instead of stalling.
                 if let Some(ref block_builder) = self.node.block_builder {
-                    if let Ok(builder) = block_builder.read() {
+                    if let Ok(builder) = block_builder.try_read() {
                         use crate::blocks::action::ActionType;
                         let pending_actions = builder.get_pending_actions();
                         for (_thread_id, _space_id, action) in pending_actions {
