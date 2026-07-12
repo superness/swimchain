@@ -30,6 +30,9 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   if (result.status === 'not-found') {
     return { title: 'Post Not Found' };
   }
+  if (result.status === 'unavailable') {
+    return { title: 'Post (content not yet available)' };
+  }
 
   const post = result.data;
   const title = extractTitle(post.item.body_inline);
@@ -60,6 +63,33 @@ export default async function PostPage({ params }: PageProps) {
 
   if (result.status === 'not-found') {
     notFound();
+  }
+
+  if (result.status === 'unavailable') {
+    return (
+      <div className="post-page">
+        <div className="breadcrumb">
+          <a href={withBase('/spaces')}>Spaces</a>
+          <span className="separator">/</span>
+          <a href={withBase(`/spaces/${encodeURIComponent(decodedSpace)}`)}>s/{decodedSpace}</a>
+          <span className="separator">/</span>
+          <span>Post</span>
+        </div>
+        <div className="content-unavailable">
+          <h1>Content not yet available</h1>
+          <p>
+            This gateway can see this post on the chain, but no peer served its
+            content in time. Content on Swimchain lives where people keep it
+            alive &mdash; if no one currently online holds this post, its body
+            can&apos;t be shown here. It may reappear once a peer that has it
+            reconnects; try refreshing in a moment.
+          </p>
+          <a href={withBase(`/spaces/${encodeURIComponent(decodedSpace)}`)} className="back-link">
+            &larr; Back to s/{decodedSpace}
+          </a>
+        </div>
+      </div>
+    );
   }
 
   if (result.status === 'offline') {

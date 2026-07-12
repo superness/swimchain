@@ -1007,3 +1007,26 @@ button.primary:hover {
   font-size: 0.9rem;
   margin: 0;
 }
+
+/* Post permalink: chain-visible but body not retrieved from the network */
+.content-unavailable {
+  max-width: 640px;
+  margin: 3rem auto;
+  padding: 2rem;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  text-align: center;
+}
+.content-unavailable h1 {
+  font-size: 1.4rem;
+  margin: 0 0 0.75rem;
+}
+.content-unavailable p {
+  color: var(--text-muted, #999);
+  line-height: 1.6;
+  margin: 0 0 1.5rem;
+}
+.content-unavailable .back-link {
+  display: inline-block;
+  font-size: 0.95rem;
+}

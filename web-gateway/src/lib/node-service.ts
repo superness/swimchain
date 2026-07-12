@@ -30,6 +30,9 @@ export type NodeFetch<T> =
   | { status: 'offline' }
   | { status: 'not-found' };
 
+/** Chain knows the content but no peer served the body in time (view-to-host). */
+export type NodeFetchWithUnavailable<T> = NodeFetch<T> | { status: 'unavailable' };
+
 /** Identity profile assembled from get_user_profile + get_user_posts. */
 export interface IdentitySummary {
   address: string;
@@ -303,9 +306,42 @@ function replyToContentResponse(reply: NodeReply, spaceId: string): ContentRespo
  * Fetch a post plus its reply tree.
  * Returns 'offline' when the node is unreachable, 'not-found' for unknown IDs.
  */
+/**
+ * Trigger network retrieval of a content body and poll for it within a short,
+ * SSR-safe budget. Mirrors the forum/feed client flow (get → request → poll),
+ * bounded so a page render never hangs. Returns the content, null if it didn't
+ * arrive in time, or the NodeUnreachableError if the node dropped.
+ */
+async function requestAndPoll(
+  rpc: ReturnType<typeof getRpc>,
+  contentId: string
+): Promise<NodeContent | null | NodeUnreachableError> {
+  try {
+    const req = await rpc.requestContent(contentId);
+    if (req.status === 'found_locally') {
+      return await rpc.getContent(contentId);
+    }
+  } catch (err) {
+    if (err instanceof NodeUnreachableError) return err;
+    return null; // request_content unsupported or errored — nothing to poll for
+  }
+
+  const maxAttempts = 6; // ~6 x 1s ≈ 6s, safe for SSR
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      return await rpc.getContent(contentId);
+    } catch (err) {
+      if (err instanceof NodeUnreachableError) return err;
+      // still not here — keep polling
+    }
+  }
+  return null;
+}
+
 export async function fetchPost(
   postId: string
-): Promise<NodeFetch<ContentResponse>> {
+): Promise<NodeFetchWithUnavailable<ContentResponse>> {
   const rpc = getRpc();
   const contentId = normalizeContentId(postId);
 
@@ -314,7 +350,15 @@ export async function fetchPost(
     content = await rpc.getContent(contentId);
   } catch (err) {
     if (err instanceof NodeUnreachableError) return { status: 'offline' };
-    return { status: 'not-found' };
+    // View-to-host: the node has chain metadata but not the body yet. Ask it to
+    // retrieve from the network (how real clients work), then poll briefly. SSR
+    // can't hang for 30s, so use a short bounded budget; if the body doesn't
+    // arrive, report 'unavailable' (distinct from a genuine 404) so the page can
+    // show an honest "retrieving / not currently seeded" state.
+    const retrieved = await requestAndPoll(rpc, contentId);
+    if (retrieved instanceof NodeUnreachableError) return { status: 'offline' };
+    if (!retrieved) return { status: 'unavailable' };
+    content = retrieved;
   }
 
   const root: ContentResponse = {

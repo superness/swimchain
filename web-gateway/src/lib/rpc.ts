@@ -289,6 +289,20 @@ export class SwimchainRpc {
     return this.call<NodeContent>('get_content', { content_id: contentId });
   }
 
+  /**
+   * Ask the node to retrieve a content body from the network (view-to-host:
+   * a headless gateway node holds chain metadata but not bodies until it
+   * requests them). Async on the node side — returns immediately with
+   * status 'found_locally' | 'requested'; poll get_content afterwards.
+   */
+  async requestContent(
+    contentId: string
+  ): Promise<{ status: string; message?: string }> {
+    return this.call<{ status: string; message?: string }>('request_content', {
+      content_id: contentId,
+    });
+  }
+
   async getReplies(
     contentId: string,
     limit = 200,
