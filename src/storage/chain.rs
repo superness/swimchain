@@ -1300,35 +1300,62 @@ impl ChainStore {
         let mut visited: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
         visited.insert(*parent_hash);
 
+        // Self-parent rows (an entry whose value equals its own parent key) are
+        // pure corruption — the content is still indexed under its REAL parent by
+        // a separate row, so dropping the self-row is lossless. Collect them during
+        // the walk and purge after, repairing the index in place the first time the
+        // feed touches this thread rather than skipping it on every future call.
+        let mut self_parent_rows: Vec<sled::IVec> = Vec::new();
+
         while let Some(current) = stack.pop() {
             // Get direct children of current node
             for result in self.replies_by_parent_index.scan_prefix(&current) {
                 // Key format: [parent_hash (32 bytes)][timestamp (8 bytes)]
                 // Value: reply_hash (32 bytes)
-                let (_key, value) = result?;
+                let (key, value) = result?;
 
                 // The reply hash is in the VALUE, not the key
-                if value.len() == 32 {
-                    let mut reply_hash = [0u8; 32];
-                    reply_hash.copy_from_slice(&value);
-                    // Skip replies already seen so a cycle can neither inflate
-                    // the count nor loop; recurse into genuinely new ones.
-                    if visited.insert(reply_hash) {
-                        total += 1;
-                        stack.push(reply_hash);
-                    } else {
-                        // Cyclic (or duplicate) edge in the reply index — the walk
-                        // would otherwise loop here. The write path now rejects
-                        // self-parenting entries; older indexes may still carry
-                        // them until re-sync, so this is debug-level, not a warn.
-                        log::debug!(
-                            "[REPLY-CYCLE] reply {} re-encountered under parent {} (cyclic reply index)",
-                            hex::encode(reply_hash),
-                            hex::encode(current)
-                        );
-                    }
+                if value.len() != 32 {
+                    continue;
+                }
+                let mut reply_hash = [0u8; 32];
+                reply_hash.copy_from_slice(&value);
+
+                if reply_hash == current {
+                    // Self-parent: this row claims `current` is a reply to itself —
+                    // impossible for valid data. Flag it for targeted repair below.
+                    self_parent_rows.push(key);
+                    continue;
+                }
+
+                // Skip replies already seen so a (non-self) cycle can neither inflate
+                // the count nor loop; recurse into genuinely new ones.
+                if visited.insert(reply_hash) {
+                    total += 1;
+                    stack.push(reply_hash);
+                } else {
+                    log::debug!(
+                        "[REPLY-CYCLE] reply {} re-encountered under parent {} (non-self cycle)",
+                        hex::encode(reply_hash),
+                        hex::encode(current)
+                    );
                 }
             }
+        }
+
+        // Targeted self-heal: remove the corrupt self-parent rows. The count above
+        // is already correct without them; this just clears the data that pegged
+        // mobile (and stops it costing anything on future calls) — no full reindex.
+        if !self_parent_rows.is_empty() {
+            let n = self_parent_rows.len();
+            for key in self_parent_rows {
+                let _ = self.replies_by_parent_index.remove(&key);
+            }
+            log::warn!(
+                "[REPLY-INDEX-REPAIR] purged {} self-parent reply-index row(s) under {} (targeted self-heal)",
+                n,
+                hex::encode(parent_hash)
+            );
         }
 
         Ok(total)
