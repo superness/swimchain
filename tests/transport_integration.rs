@@ -56,6 +56,7 @@ async fn test_handshake_peer_info() {
         height: 100,
         user_agent: "TestServer/1.0".to_string(),
         relay: true,
+        public_key: [1u8; 32],
     };
 
     let client_info = LocalNodeInfo {
@@ -63,6 +64,7 @@ async fn test_handshake_peer_info() {
         height: 200,
         user_agent: "TestClient/1.0".to_string(),
         relay: false,
+        public_key: [2u8; 32],
     };
 
     let server = TcpTransport::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap(), server_info)
