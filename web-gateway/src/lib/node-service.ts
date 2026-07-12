@@ -53,14 +53,15 @@ export interface IdentitySummary {
  * profile spaces. Those are app-namespaced or use an @app:/@dm:/@profile:
  * naming convention. Wiki and ordinary public spaces stay visible.
  */
-const HIDDEN_APPS = new Set(['dm', 'profile', 'private', 'inbox']);
 function isPublicSpace(space: NodeSpaceSummary): boolean {
-  if (typeof space.app === 'string' && HIDDEN_APPS.has(space.app.toLowerCase())) {
-    return false;
-  }
-  // Only `name` is a string; `name_unresolved` is a boolean flag on this node.
+  // Node doctrine (rpc/methods.rs): "general social clients hide ALL app
+  // spaces so specialized content never pollutes the default experience."
+  // An app-namespaced space has a non-null `app` (dm, profile, wiki, ...).
+  if (typeof space.app === 'string' && space.app.length > 0) return false;
+  // Belt-and-braces: catch the @app:/@dm:/@profile: name convention even if the
+  // node returned it as a raw name rather than a parsed `app`.
   const name = typeof space.name === 'string' ? space.name.toLowerCase() : '';
-  if (/^@?(dm|profile|private|inbox)[:._-]/.test(name)) return false;
+  if (/^@[a-z0-9-]+:/.test(name)) return false;
   return true;
 }
 
@@ -144,6 +145,7 @@ export function summaryToContentResponse(
       pow_nonce: 0,
       pow_difficulty: 0,
       engagement_count: item.engagement_count,
+      media: mapMedia(item.media_refs),
     },
     survival_probability: item.survival_probability,
     is_decayed: isDecayed(item),
@@ -151,6 +153,14 @@ export function summaryToContentResponse(
     hours_until_decay: hoursUntilDecay(item),
     pool: poolFromSummary(item),
   };
+}
+
+/** Node media_refs -> gateway {hash,type} for the media proxy. */
+function mapMedia(
+  refs: { media_hash: string; media_type: string }[] | undefined
+): { hash: string; type: string }[] | undefined {
+  if (!refs || refs.length === 0) return undefined;
+  return refs.map((r) => ({ hash: r.media_hash, type: r.media_type }));
 }
 
 function createSnippet(body: string | null): string {
@@ -332,6 +342,7 @@ function replyToContentResponse(reply: NodeReply, spaceId: string): ContentRespo
       pow_nonce: 0,
       pow_difficulty: 0,
       engagement_count: 0,
+      media: mapMedia(reply.media_refs),
     },
     survival_probability: 1.0,
     is_decayed: false,
@@ -417,6 +428,7 @@ export async function fetchPost(
       pow_nonce: 0,
       pow_difficulty: 0,
       engagement_count: content.engagement_count,
+      media: mapMedia(content.media_refs),
     },
     survival_probability: content.survival_probability,
     is_decayed: content.decay_state === 'decayed',

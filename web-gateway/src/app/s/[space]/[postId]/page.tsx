@@ -176,7 +176,7 @@ export default async function PostPage({ params }: PageProps) {
           </div>
         </header>
 
-        <PostBody body={post.item.body_inline} className="post-body" />
+        <PostBody body={post.item.body_inline} media={post.item.media} className="post-body" />
 
         {/* NO ACTION BUTTONS - READ ONLY GATEWAY */}
       </article>

@@ -65,6 +65,8 @@ export interface ContentItem {
   body_inline: string | null;     // For content <= 1KB
   content_hash: string | null;    // For content > 1KB
   content_size: number | null;
+  /** Attached media (content-addressed), rendered via the media proxy. */
+  media?: { hash: string; type: string }[];
   pow_nonce: number;
   pow_difficulty: number;
   engagement_count: number;

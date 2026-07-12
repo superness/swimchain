@@ -98,6 +98,8 @@ export interface NodeContentSummary {
   body_preview: string | null;
   engagement_count: number;
   reply_count: number;
+  /** Attached media blobs (content-addressed). */
+  media_refs?: { media_hash: string; media_type: string; size_bytes: number }[];
   decay_state: string; // "protected" | "active" | "stale" | "decayed"
   seconds_until_decay: number | null;
   survival_probability: number; // 0.0-1.0
@@ -134,6 +136,8 @@ export interface NodeContent {
   is_protected: boolean;
   time_since_engagement: number;
   reply_count: number;
+  /** Attached media blobs (content-addressed). */
+  media_refs?: { media_hash: string; media_type: string; size_bytes: number }[];
   display_name?: string | null;
 }
 
@@ -148,6 +152,7 @@ export interface NodeReply {
   depth: number;
   child_count: number;
   display_name?: string | null;
+  media_refs?: { media_hash: string; media_type: string; size_bytes: number }[];
 }
 
 export interface GetRepliesResult {

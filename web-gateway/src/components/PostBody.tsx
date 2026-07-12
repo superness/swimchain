@@ -10,11 +10,23 @@ import { withBase } from '@/lib/base-path';
  */
 const MEDIA_RE = /!\[[^\]]*\]\(swim:([0-9a-fA-F]{64})\)|swim:([0-9a-fA-F]{64})/g;
 
-export function PostBody({ body, className }: { body: string | null; className?: string }) {
-  if (!body) return <div className={className}>[Content unavailable]</div>;
+export function PostBody({
+  body,
+  media,
+  className,
+}: {
+  body: string | null;
+  /** Attached media (content-addressed), rendered after the text. */
+  media?: { hash: string; type: string }[];
+  className?: string;
+}) {
+  const hasMedia = media && media.length > 0;
+  if (!body && !hasMedia) {
+    return <div className={className}>[Content unavailable]</div>;
+  }
 
   // Strip HTML-style wiki revision markers: <!--wiki-revision ... -->
-  const cleaned = body.replace(/<!--[\s\S]*?-->/g, '').trim();
+  const cleaned = (body ?? '').replace(/<!--[\s\S]*?-->/g, '').trim();
 
   const parts: React.ReactNode[] = [];
   let last = 0;
@@ -37,6 +49,22 @@ export function PostBody({ body, className }: { body: string | null; className?:
     last = m.index + m[0].length;
   }
   if (last < cleaned.length) parts.push(cleaned.slice(last));
+
+  // Attached media (media_refs) render after the text body.
+  if (hasMedia) {
+    for (const mref of media!) {
+      parts.push(
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={`media-${key++}`}
+          src={withBase(`/api/media/${mref.hash.toLowerCase()}`)}
+          alt="attached media"
+          loading="lazy"
+          className="post-image"
+        />
+      );
+    }
+  }
 
   return <div className={className}>{parts}</div>;
 }

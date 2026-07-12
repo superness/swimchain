@@ -104,7 +104,7 @@ function ReplyNode({ reply, depth, maxDepth }: ReplyNodeProps) {
         />
       </div>
 
-      <PostBody body={reply.item.body_inline} className="reply-body" />
+      <PostBody body={reply.item.body_inline} media={reply.item.media} className="reply-body" />
 
       {/* NO ACTION BUTTONS - READ ONLY */}
 
