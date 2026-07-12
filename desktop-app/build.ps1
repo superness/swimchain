@@ -272,14 +272,36 @@ function Build-All {
         return
     }
 
-    # Step 7: Install desktop-app dependencies
-    Write-Step "Step 7: Installing desktop-app dependencies..."
+    # Step 7: Build feed-app (launcher app-shell + feed-client)
+    Write-Step "Step 7: Building feed-app (app-shell + feed-client)..."
+    # 1. feed-client web bundle
+    Push-Location "$ProjectRoot/feed-client"; npm run build; Pop-Location
+    # 2. stage the client into the shell's web/client
+    $shellWeb = "$ProjectRoot/launcher-apps/app-shell/web/client"
+    Remove-Item -Recurse -Force $shellWeb -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force $shellWeb | Out-Null
+    Copy-Item -Recurse "$ProjectRoot/feed-client/dist/*" $shellWeb
+    # 3. build the shell exe (release)
+    Push-Location "$ProjectRoot/launcher-apps/app-shell/src-tauri"
+    cargo build --release
+    Pop-Location
+    # 4. place the exe next to the manifest as feed-app.exe
+    $ShellExe = "$ProjectRoot/launcher-apps/app-shell/src-tauri/target/release/app-shell.exe"
+    if (Test-Path $ShellExe) {
+        Copy-Item $ShellExe "$ProjectRoot/launcher-apps/feed/feed-app.exe" -Force
+        Write-Success "feed-app.exe built"
+    } else {
+        Write-Warning "app-shell.exe not found; feed-app.exe was not produced"
+    }
+
+    # Step 8: Install desktop-app dependencies
+    Write-Step "Step 8: Installing desktop-app dependencies..."
     Set-Location $ScriptDir
     npm install 2>&1 | Out-Null
     Write-Success "Dependencies installed"
 
-    # Step 8: Build Vite frontend
-    Write-Step "Step 8: Building desktop-app frontend..."
+    # Step 9: Build Vite frontend
+    Write-Step "Step 9: Building desktop-app frontend..."
     $buildOutput = npm run build 2>&1 | Out-String
     if (Test-Path (Join-Path $ScriptDir "dist")) {
         Write-Success "Frontend built"
@@ -288,8 +310,8 @@ function Build-All {
         Write-Host $buildOutput -ForegroundColor Red
     }
 
-    # Step 9: Build Tauri app
-    Write-Step "Step 9: Building Tauri application..."
+    # Step 10: Build Tauri app
+    Write-Step "Step 10: Building Tauri application..."
     $tauriOutput = npx tauri build 2>&1 | Out-String
 
     # Check for output files

@@ -1,0 +1,2 @@
+# Staged client dist, copied in by build scripts (e.g. desktop-app/build.ps1)
+/client/
