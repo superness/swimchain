@@ -238,7 +238,15 @@ pub struct Action {
     /// `blocks::validation::validate_action_signature`), so flipping it on the wire
     /// invalidates the signature. See the private-space confidentiality design spec
     /// and `docs/private-spaces.md`.
-    #[serde(default)]
+    ///
+    /// STORAGE: this field is `#[serde(skip)]` so it is EXCLUDED from the serde/bincode
+    /// encoding used to persist blocks (`ContentBlock` is bincode-serialized, and bincode
+    /// is not self-describing — adding a field to Action would corrupt reads of all
+    /// pre-existing stored blocks). The `private` bit lives only in the manual wire
+    /// `serialize()`/`deserialize()` (the 466-byte format) and in memory; on the storage
+    /// path it defaults to `false`. Re-deriving it for stored private content (so its
+    /// 466-byte hash survives a reload) is handled in the propagation/serve-gating phase.
+    #[serde(skip)]
     pub private: bool,
 }
 
@@ -1140,6 +1148,24 @@ mod tests {
         assert_eq!(action.serialize()[465], 0);
         action.private = true;
         assert_eq!(action.serialize()[465], 1);
+    }
+
+    #[test]
+    fn test_private_flag_excluded_from_bincode_storage() {
+        // ContentBlock is persisted via bincode; the private flag must NOT change the
+        // serde/bincode layout, or existing stored blocks become unreadable. Bincode of a
+        // private and a public action must be byte-identical, and decode to private=false.
+        let mut public = make_test_action();
+        public.private = false;
+        let mut private = make_test_action();
+        private.private = true;
+
+        let pub_bytes = bincode::serialize(&public).unwrap();
+        let priv_bytes = bincode::serialize(&private).unwrap();
+        assert_eq!(pub_bytes, priv_bytes, "private must be skipped in bincode");
+
+        let decoded: Action = bincode::deserialize(&priv_bytes).unwrap();
+        assert!(!decoded.private, "storage path defaults private to false");
     }
 
     #[test]
