@@ -38,6 +38,7 @@ import {
   getConfig,
   hexToBytes,
   bytesToHex,
+  sha256,
 } from '../lib/action-pow';
 import { Keypair } from '@swimchain/core';
 
@@ -628,15 +629,18 @@ export class BridgeEngine {
         }
       );
 
-      // Create signature
-      const signatureData = new Uint8Array(1 + 32 + 8 + 8);
-      signatureData[0] = actionType;
-      signatureData.set(challenge.contentHash, 1);
-      const view = new DataView(signatureData.buffer);
-      view.setBigUint64(33, BigInt(challenge.timestamp), false);
-      view.setBigUint64(41, solution.nonce, false);
+      // Create signature over the canonical action preimage the node verifies:
+      //   content_hash(32) || timestamp_u64_LE(8) || private(1)
+      // content_hash = sha256(post: `${title}\n\n${body}` | reply: body).
+      // powContent already equals that canonical string for both cases, but we
+      // hash it explicitly rather than reuse the PoW challenge hash.
+      const sigContentHash = await sha256(contentBytes);
+      const preimage = new Uint8Array(41);
+      preimage.set(sigContentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(challenge.timestamp), true);
+      preimage[40] = 0; // public space
 
-      const signature = keypair.sign(signatureData);
+      const signature = keypair.sign(preimage);
 
       // Get RPC params
       const powParams = solutionToRpcParams(solution);

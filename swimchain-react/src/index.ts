@@ -162,6 +162,15 @@ export {
   type CancellationCheck,
 } from "./lib/action-pow";
 
+// Canonical action signing (Post / Reply / Edit) — the one preimage the node verifies
+export {
+  signAction,
+  actionSignaturePreimage,
+  contentHashForPost,
+  contentHashForReply,
+  type SignFn,
+} from "./lib/signAction";
+
 // Caching utilities
 export {
   getMediaFromCache,

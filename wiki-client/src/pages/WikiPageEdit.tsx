@@ -18,6 +18,7 @@ import {
   getDifficulty,
   getConfig,
   hexToBytes,
+  sha256,
 } from '@swimchain/frontend';
 import { useWikiIdentity } from '../hooks/useWikiIdentity';
 import { useIsSponsored } from '../hooks/useIsSponsored';
@@ -199,11 +200,18 @@ export function WikiPageEdit(): JSX.Element {
       // when embedded in the desktop shell, or the local WASM keypair when
       // standalone. The signed bytes are identical in both modes — only WHO
       // holds the key changes, so the PoW/hash contract is untouched.
-      const signMessage = isNew
-        ? `post:${namespaceId}:${title.trim()}:${content.trim()}:${powParams.timestamp}`
-        : `reply:${pageId}:${revisionBody}:${powParams.timestamp}`;
-      const msgBytes = new TextEncoder().encode(signMessage);
-      const signature = await identity.sign(msgBytes);
+      //
+      // Sign the canonical action preimage the node verifies (validate_action_signature):
+      //   content_hash(32) || timestamp_LE(8) || private(1)  = 41 bytes
+      // content_hash reuses `contentBytes` (POST: `${title}\n\n${body}`, REPLY: body),
+      // matching the node's submit_post/submit_reply hashing. Wiki namespaces are public,
+      // so the private byte is 0.
+      const contentHash = await sha256(contentBytes);
+      const preimage = new Uint8Array(41);
+      preimage.set(contentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(powParams.timestamp), true);
+      preimage[40] = 0;
+      const signature = await identity.sign(preimage);
       if (!signature) {
         throw new Error('Signing failed — identity unavailable.');
       }

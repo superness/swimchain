@@ -12,6 +12,7 @@ import {
   getDifficulty,
   getConfig,
   bytesToHex,
+  sha256,
 } from '../lib/action-pow';
 
 export interface MiningProgress {
@@ -64,6 +65,7 @@ export function useActionPow(): UseActionPowResult {
   const mine = useCallback(async (
     actionType: ActionType,
     content: Uint8Array,
+    signContent: Uint8Array,
   ): Promise<ActionPowResult | null> => {
     if (!keypair || !publicKey || !publicKeyHex) {
       setError('No identity available');
@@ -103,16 +105,16 @@ export function useActionPow(): UseActionPowResult {
       // Convert to RPC params
       const powParams = solutionToRpcParams(solution);
 
-      // Create signature
-      // Sign: action_type || content_hash || timestamp || nonce
-      const signatureData = new Uint8Array(1 + 32 + 8 + 8);
-      signatureData[0] = actionType;
-      signatureData.set(challenge.contentHash, 1);
-      const view = new DataView(signatureData.buffer);
-      view.setBigUint64(33, BigInt(challenge.timestamp), false);
-      view.setBigUint64(41, solution.nonce, false);
+      // Create signature over the canonical action preimage the node verifies:
+      //   content_hash(32) || timestamp_u64_LE(8) || private(1)
+      // content_hash = sha256(post: `${title}\n\n${body}` | reply: body)
+      const sigContentHash = await sha256(signContent);
+      const preimage = new Uint8Array(41);
+      preimage.set(sigContentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(challenge.timestamp), true);
+      preimage[40] = 0; // public space
 
-      const signature = sign(signatureData);
+      const signature = sign(preimage);
       if (!signature) {
         throw new Error('Failed to sign');
       }
@@ -140,12 +142,15 @@ export function useActionPow(): UseActionPowResult {
 
   const mineForReply = useCallback(async (content: string): Promise<ActionPowResult | null> => {
     const contentBytes = new TextEncoder().encode(content);
-    return mine(ActionType.Reply, contentBytes);
+    // Reply signature content_hash = sha256(body)
+    return mine(ActionType.Reply, contentBytes, contentBytes);
   }, [mine]);
 
   const mineForPost = useCallback(async (title: string, body: string): Promise<ActionPowResult | null> => {
     const contentBytes = new TextEncoder().encode(title + '\n' + body);
-    return mine(ActionType.Post, contentBytes);
+    // Post signature content_hash = sha256(`${title}\n\n${body}`) (double newline, distinct from PoW content)
+    const signContent = new TextEncoder().encode(`${title}\n\n${body}`);
+    return mine(ActionType.Post, contentBytes, signContent);
   }, [mine]);
 
   return {
@@ -189,15 +194,16 @@ export async function mineActionPow(
 
   const powParams = solutionToRpcParams(solution);
 
-  // Create signature
-  const signatureData = new Uint8Array(1 + 32 + 8 + 8);
-  signatureData[0] = actionType;
-  signatureData.set(challenge.contentHash, 1);
-  const view = new DataView(signatureData.buffer);
-  view.setBigUint64(33, BigInt(challenge.timestamp), false);
-  view.setBigUint64(41, solution.nonce, false);
+  // Create signature over the canonical action preimage the node verifies:
+  //   content_hash(32) || timestamp_u64_LE(8) || private(1)
+  // Caller passes the canonical content (post: `${title}\n\n${body}`, reply: body).
+  const sigContentHash = await sha256(content);
+  const preimage = new Uint8Array(41);
+  preimage.set(sigContentHash, 0);
+  new DataView(preimage.buffer).setBigUint64(32, BigInt(challenge.timestamp), true);
+  preimage[40] = 0; // public space
 
-  const signature = signFn(signatureData);
+  const signature = signFn(preimage);
 
   return {
     ...powParams,

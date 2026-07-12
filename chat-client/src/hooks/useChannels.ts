@@ -178,11 +178,18 @@ export function useCreateChannel() {
     setError(null);
 
     try {
-      // Sign the post
-      const signMessage = new TextEncoder().encode(
-        `post:${serverId}:${name}::${powParams.timestamp}`
-      );
-      const signature = await signFn(signMessage);
+      // Sign the canonical action preimage the node verifies (validate_action_signature):
+      //   content_hash(32) || timestamp_LE(8) || private(1)  = 41 bytes
+      // This creates a channel via submit_post with title=name and an empty body, so
+      // content_hash = sha256(`${name}\n\n`). Channels are only created in public
+      // servers (an empty body can't satisfy a private space), so private = 0.
+      const { sha256 } = await import('@swimchain/frontend');
+      const contentHash = await sha256(new TextEncoder().encode(`${name}\n\n`));
+      const preimage = new Uint8Array(41);
+      preimage.set(contentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(powParams.timestamp), true);
+      preimage[40] = 0;
+      const signature = await signFn(preimage);
       const signatureHex = Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
 
       // Submit as a post (thread)

@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { hexToBytes, solutionToRpcParams } from '@swimchain/frontend';
+import { hexToBytes, solutionToRpcParams, sha256 } from '@swimchain/frontend';
 import { useRpc, usePostSubmit, usePrivateContent } from '../hooks/useRpc';
 import { usePostPow, useReplyPow } from '../hooks/useActionPow';
 import { useChatIdentity } from '../hooks/useChatIdentity';
@@ -202,7 +202,16 @@ export function DmConversation(): JSX.Element {
       }
       const solution = await mineReply(cipher, authorBytes(), true);
       const powParams = solutionToRpcParams(solution);
-      const sig = await signAsync(new TextEncoder().encode(`reply:${ch}:${cipher}:${powParams.timestamp}`));
+      // Sign the canonical action preimage the node verifies (validate_action_signature):
+      //   content_hash(32) || timestamp_LE(8) || private(1)  = 41 bytes
+      // This is a private-space (DM) REPLY: content_hash = sha256(cipher) and the body is
+      // a [PRIVATE:v1:] envelope, so the private byte is 1.
+      const contentHash = await sha256(new TextEncoder().encode(cipher));
+      const preimage = new Uint8Array(41);
+      preimage.set(contentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(powParams.timestamp), true);
+      preimage[40] = cipher.startsWith(PRIVATE_PREFIX) ? 1 : 0;
+      const sig = await signAsync(preimage);
       if (!sig) throw new Error('sign failed');
       const result = await rpc.submitReply({
         parentId: ch,

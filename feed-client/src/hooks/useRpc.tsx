@@ -1069,11 +1069,17 @@ export function usePostSubmit() {
     setError(null);
 
     try {
-      // Sign the post - using the timestamp from the PoW challenge
-      const signMessage = new TextEncoder().encode(
-        `post:${spaceId}:${title}:${body}:${powParams.timestamp}`
-      );
-      const signature = await signFn(signMessage);
+      // Sign the canonical action preimage the node verifies (validate_action_signature):
+      //   content_hash(32) || timestamp_LE(8) || private(1)  = 41 bytes
+      // POST content_hash = sha256(`${title}\n\n${body}`), matching the node's
+      // submit_post content hashing. Timestamp MUST be the PoW-challenge timestamp.
+      const { sha256 } = await import('../lib/action-pow');
+      const contentHash = await sha256(new TextEncoder().encode(`${title}\n\n${body}`));
+      const preimage = new Uint8Array(41);
+      preimage.set(contentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(powParams.timestamp), true);
+      preimage[40] = isPrivateCiphertext(body) ? 1 : 0;
+      const signature = await signFn(preimage);
       if (!signature) {
         throw new Error('Failed to sign message');
       }
@@ -1598,11 +1604,16 @@ export function useReplySubmit() {
     setError(null);
 
     try {
-      // Sign the reply - using the timestamp from the PoW challenge
-      const signMessage = new TextEncoder().encode(
-        `reply:${parentId}:${body}:${powParams.timestamp}`
-      );
-      const signature = await signFn(signMessage);
+      // Sign the canonical action preimage the node verifies (validate_action_signature):
+      //   content_hash(32) || timestamp_LE(8) || private(1)  = 41 bytes
+      // REPLY content_hash = sha256(body), matching the node's submit_reply hashing.
+      const { sha256 } = await import('../lib/action-pow');
+      const contentHash = await sha256(new TextEncoder().encode(body));
+      const preimage = new Uint8Array(41);
+      preimage.set(contentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(powParams.timestamp), true);
+      preimage[40] = isPrivateCiphertext(body) ? 1 : 0;
+      const signature = await signFn(preimage);
       if (!signature) {
         throw new Error('Failed to sign reply');
       }
@@ -1681,11 +1692,18 @@ export function useEditSubmit() {
     setError(null);
 
     try {
-      // Sign the edit - using the timestamp from the PoW challenge
-      const signMessage = new TextEncoder().encode(
-        `edit:${originalContentId}:${title || ''}:${body}:${powParams.timestamp}`
-      );
-      const signature = await signFn(signMessage);
+      // Sign the canonical action preimage the node verifies (validate_action_signature):
+      //   content_hash(32) || timestamp_LE(8) || private(1)  = 41 bytes
+      // EDIT content_hash = sha256(title ? `${title}\n\n${body}` : body), matching the
+      // node's submit_edit hashing.
+      const { sha256 } = await import('../lib/action-pow');
+      const editContent = title ? `${title}\n\n${body}` : body;
+      const contentHash = await sha256(new TextEncoder().encode(editContent));
+      const preimage = new Uint8Array(41);
+      preimage.set(contentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(powParams.timestamp), true);
+      preimage[40] = isPrivateCiphertext(body) ? 1 : 0;
+      const signature = await signFn(preimage);
       if (!signature) {
         throw new Error('Failed to sign edit');
       }

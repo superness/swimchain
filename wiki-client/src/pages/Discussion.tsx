@@ -14,6 +14,7 @@ import {
   solutionToRpcParams,
   hexToBytes,
   bytesToHex,
+  sha256,
   TESTNET_DIFFICULTY,
   TESTNET_CONFIG,
   type PoWSolution,
@@ -306,10 +307,17 @@ export function Discussion(): JSX.Element {
       // standalone. The signed bytes are identical in both modes — only WHO
       // holds the key changes, so the PoW/hash contract (PR #45) is untouched.
       const timestamp = powParams.timestamp;
-      const signMessage = new TextEncoder().encode(
-        `reply:${targetParentId}:${replyBody.trim()}:${timestamp}`
-      );
-      const signature = await identity.sign(signMessage);
+      // Sign the canonical action preimage the node verifies (validate_action_signature):
+      //   content_hash(32) || timestamp_LE(8) || private(1)  = 41 bytes
+      // REPLY content_hash = sha256(body) — reuse `contentBytes` (the exact submitted
+      // body bytes), matching the node's submit_reply hashing. Wiki discussion is public,
+      // so the private byte is 0.
+      const contentHash = await sha256(contentBytes);
+      const preimage = new Uint8Array(41);
+      preimage.set(contentHash, 0);
+      new DataView(preimage.buffer).setBigUint64(32, BigInt(timestamp), true);
+      preimage[40] = 0;
+      const signature = await identity.sign(preimage);
       if (!signature) {
         throw new Error('Signing failed — identity unavailable.');
       }

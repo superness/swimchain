@@ -212,8 +212,15 @@ export class SwimchainClient {
       options?.isCancelled,
     );
 
-    // Create signature for the content
-    const signatureBytes = await this.signer.sign(content);
+    // Create signature over the canonical action preimage the node verifies:
+    //   content_hash(32) || timestamp_u64_LE(8) || private(1)
+    // Post content_hash = sha256(`${title}\n\n${body}`)
+    const sigContentHash = await sha256(new TextEncoder().encode(`${title}\n\n${body}`));
+    const preimage = new Uint8Array(41);
+    preimage.set(sigContentHash, 0);
+    new DataView(preimage.buffer).setBigUint64(32, BigInt(challenge.timestamp), true);
+    preimage[40] = 0; // public space
+    const signatureBytes = await this.signer.sign(preimage);
     const signature = bytesToHex(signatureBytes);
 
     // Submit to node
@@ -256,8 +263,15 @@ export class SwimchainClient {
       options?.isCancelled,
     );
 
-    // Create signature
-    const signatureBytes = await this.signer.sign(content);
+    // Create signature over the canonical action preimage the node verifies:
+    //   content_hash(32) || timestamp_u64_LE(8) || private(1)
+    // Reply content_hash = sha256(body)
+    const sigContentHash = await sha256(new TextEncoder().encode(body));
+    const preimage = new Uint8Array(41);
+    preimage.set(sigContentHash, 0);
+    new DataView(preimage.buffer).setBigUint64(32, BigInt(challenge.timestamp), true);
+    preimage[40] = 0; // public space
+    const signatureBytes = await this.signer.sign(preimage);
     const signature = bytesToHex(signatureBytes);
 
     // Submit to node
