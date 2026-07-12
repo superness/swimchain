@@ -1,7 +1,7 @@
 //! Router tests (SPEC_10 §5)
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::error::RouteError;
 use super::router::{MessageRouter, MessageRouterBuilder};
@@ -687,6 +687,132 @@ async fn test_handle_blocks_accepts_create_space_with_known_class_byte() {
         chain_store.space_exists(&good_space_id_16).unwrap(),
         true,
         "space with known class byte should be registered"
+    );
+}
+
+// ========== CreateSpace class-byte guard (router MSG_ACTION_ANNOUNCE path) ==========
+
+/// Router wired with a real chain_store (temp sled DB) and an in-memory
+/// block builder so `handle_action_announce`'s pre-finalization CreateSpace
+/// registration actually runs. No sponsorship_store: `handle_action_announce`
+/// has no sponsorship check at all (a separate, pre-existing gap outside this
+/// fix's scope), so this harness only needs to isolate the class-byte guard.
+fn make_action_announce_router() -> (
+    MessageRouter,
+    Arc<crate::storage::chain::ChainStore>,
+    tempfile::TempDir,
+) {
+    use crate::blocks::builder::BlockBuilder;
+
+    let chain_dir = tempfile::tempdir().unwrap();
+    let chain_store = Arc::new(crate::storage::chain::ChainStore::open(chain_dir.path()).unwrap());
+
+    let block_builder = Arc::new(RwLock::new(BlockBuilder::new(30)));
+
+    let metrics = Arc::new(NodeMetrics::new());
+    let router = MessageRouter::builder()
+        .metrics(metrics)
+        .chain_store(chain_store.clone())
+        .block_builder(block_builder)
+        .build();
+
+    (router, chain_store, chain_dir)
+}
+
+/// Build a MSG_ACTION_ANNOUNCE payload wrapping a single CreateSpace action
+/// for the given (32-byte) space id. For CreateSpace, thread_id == space_id.
+fn build_create_space_announce_payload(creator: [u8; 32], space_id_32: [u8; 32]) -> Vec<u8> {
+    use crate::blocks::action::Action;
+    use crate::network::messages::ActionAnnouncePayload;
+
+    let action = Action::new_create_space(
+        creator,
+        1_700_000_000,
+        space_id_32,
+        0,
+        1,
+        [0u8; 32],
+        [0u8; 64],
+    );
+
+    let payload = ActionAnnouncePayload::new(space_id_32, space_id_32, action.serialize());
+    payload.to_bytes().to_vec()
+}
+
+/// A CreateSpace action gossiped via MSG_ACTION_ANNOUNCE whose space id
+/// carries an unknown class byte (0x00) must not be registered into
+/// chain_store by `handle_action_announce`'s pre-finalization "visible
+/// immediately" path - this is a separate registration site from the
+/// MSG_BLOCKS PHASE 2 path covered above, and was previously unguarded.
+#[tokio::test]
+async fn test_handle_action_announce_rejects_create_space_with_unknown_class_byte() {
+    let creator = [0x33u8; 32];
+    let (router, chain_store, _chain_dir) = make_action_announce_router();
+
+    // space_id_32[..16] all zero => class byte 0x00, not a known SpaceClass.
+    let bad_space_id_32 = [0u8; 32];
+    let bad_space_id_16 = [0u8; 16];
+    assert!(!crate::blocks::validation::space_id_class_is_valid(
+        &bad_space_id_16
+    ));
+
+    let payload = build_create_space_announce_payload(creator, bad_space_id_32);
+
+    let peer_id = [0xabu8; 32];
+    let fork_id = [0u8; 32];
+    let result = router
+        .route(
+            &peer_id,
+            crate::types::constants::MSG_ACTION_ANNOUNCE,
+            &fork_id,
+            &payload,
+        )
+        .await;
+
+    assert!(result.is_ok(), "route() should not error: {:?}", result);
+
+    assert_eq!(
+        chain_store.space_exists(&bad_space_id_16).unwrap(),
+        false,
+        "gossiped CreateSpace with unknown class byte must not be registered"
+    );
+}
+
+/// Sanity check: the same flow with a well-classed space id (Social, 0x01)
+/// is accepted and registered, proving the rejection above is due to the
+/// class byte specifically and not some other defect in the test harness.
+#[tokio::test]
+async fn test_handle_action_announce_accepts_create_space_with_known_class_byte() {
+    let creator = [0x44u8; 32];
+    let (router, chain_store, _chain_dir) = make_action_announce_router();
+
+    let mut good_space_id_32 = [0u8; 32];
+    good_space_id_32[0] = 0x01; // SpaceClass::Social
+    let mut good_space_id_16 = [0u8; 16];
+    good_space_id_16.copy_from_slice(&good_space_id_32[..16]);
+    assert!(crate::blocks::validation::space_id_class_is_valid(
+        &good_space_id_16
+    ));
+
+    let payload = build_create_space_announce_payload(creator, good_space_id_32);
+
+    let peer_id = [0xcdu8; 32];
+    let fork_id = [0u8; 32];
+    let result = router
+        .route(
+            &peer_id,
+            crate::types::constants::MSG_ACTION_ANNOUNCE,
+            &fork_id,
+            &payload,
+        )
+        .await;
+
+    assert!(result.is_ok(), "route() should not error: {:?}", result);
+
+    assert_eq!(
+        chain_store.space_exists(&good_space_id_16).unwrap(),
+        true,
+        "gossiped CreateSpace with known class byte should be registered"
     );
 }
 
