@@ -38,3 +38,44 @@
 - Serve content to a peer (two-node regtest) → FirstServe appears.
 - One client profile page displays earned badges from the RPC.
 - `cargo clippy` clean per CLAUDE.md flags; conventional commit(s).
+
+---
+
+## Implementation status (2026-07-11, worktree-agent-a8ba77bc4f8065f2a)
+
+### Wired (awarded from live event paths)
+
+| Achievement | Trigger path |
+|---|---|
+| FirstStroke 🌊 | `rpc/methods.rs` `submit_post` — after the post passes PoW/blocklist/space checks and is stored |
+| LaneOpener 🏗️ | `rpc/methods.rs` `create_space` — after on-chain registration succeeds. **Re-specified**: no level gate (level system removed); creating any space qualifies |
+| FirstServe 📡 | `node/router/router.rs` `handle_get` — when this node actually serves DATA_CONTENT bytes to a peer |
+| BandwidthBaron 🏅 / TerabyteClub 🏆 | Same serve path; thresholds evaluated against a new persistent per-identity lifetime bytes-served counter (`achievement_bandwidth` sled tree, atomic `update_and_fetch`) |
+| KeeperOfTheFlame 🔥 | `node/router/router.rs` `extract_engagements_from_block` — when a mined block records OUR identity as engager, re-evaluated against the engagement graph's `total_outgoing`. **Re-specified**: the engagement graph tracks total outgoing engagements (not distinct posts), used as the deterministic local proxy for "100+ posts kept alive" |
+
+Service is constructed in `node/manager.rs` (own sled db at `<data_dir>/achievements`, same pattern
+as the other stores), shared with the router (builder setter) and the RPC layer (`NodeRef.achievement_service`).
+
+### RPC surface
+
+- `get_achievements(user_id)` — hex pubkey or cs1 address; returns `{user_id, achievements: [{id, key, badge, name, description, unlocked_at}]}`. Handler in `rpc/methods.rs`, dispatch entry, AND allowlist entries in `rpc/server.rs` (AUTH_EXEMPT + regtest lists) — no phantom-allowlist mismatch.
+- `get_user_profile` now also includes the `achievements` array.
+
+### Deferred (documented in `src/achievement/types.rs` doc comments)
+
+- **WeekSwimmer / MonthSwimmer / Centurion** — need a persistent daily hosting-streak ledger the node does not keep; threshold logic retained for when it lands.
+- **AlwaysOn** — needs the same daily uptime tracking (95%+ per day for 30 days); too large for this lane.
+- **EfficientSwimmer** — provisional metric; the node has no resource-cost accounting.
+- **AnchorDrop** — permanently unsatisfiable: it referenced the removed swimmer-level ladder. Variant retained for stable wire format (`#[repr(u8)]`), trigger returns false, `update_level` stays a documented no-op. Proposing removal would break stored records; recommend leaving it retired.
+
+### Constraint held
+
+Achievements remain recognition ONLY. No award path feeds into PoW difficulty, decay timers,
+or rate limits; all award calls are post-acceptance and non-blocking (errors log a warning and
+never fail the triggering action).
+
+### Client
+
+feed-client profile page (`feed-client/src/pages/Profile.tsx`) renders an "Achievements" badge
+row via the new `useAchievements` hook (`get_achievements` RPC); hidden while editing and when
+no badges are earned.

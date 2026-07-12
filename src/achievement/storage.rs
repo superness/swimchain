@@ -13,6 +13,15 @@ use super::types::AchievementRecord;
 /// Name of the sled tree for achievement data
 const TREE_NAME: &str = "achievements";
 
+/// Name of the sled tree tracking each identity's lifetime bytes served.
+///
+/// This is a persistent, monotonically-increasing counter used to award the
+/// bandwidth achievements (FirstServe, BandwidthBaron, TerabyteClub). It is
+/// kept alongside the achievement records so the award decision is fully
+/// deterministic from local data (SPEC_09 §5.3) and survives restarts. It is
+/// recognition bookkeeping ONLY — it grants no protocol privileges.
+const BANDWIDTH_TREE_NAME: &str = "achievement_bandwidth";
+
 /// Stored format for achievements - versioned for future migrations.
 ///
 /// This structure is what gets persisted to sled. The version field
@@ -58,15 +67,60 @@ impl StoredAchievements {
 pub struct AchievementStore {
     /// The sled tree for achievement storage
     tree: Tree,
+    /// Per-identity lifetime bytes-served counter (drives bandwidth achievements).
+    bandwidth_tree: Tree,
 }
 
 impl AchievementStore {
     /// Create a new achievement store using the given sled database.
     ///
-    /// Opens or creates the "achievements" tree.
+    /// Opens or creates the "achievements" tree and the sibling
+    /// "achievement_bandwidth" counter tree.
     pub fn new(db: &Db) -> Result<Self, AchievementError> {
         let tree = db.open_tree(TREE_NAME)?;
-        Ok(Self { tree })
+        let bandwidth_tree = db.open_tree(BANDWIDTH_TREE_NAME)?;
+        Ok(Self {
+            tree,
+            bandwidth_tree,
+        })
+    }
+
+    /// Add `bytes` to an identity's lifetime bytes-served counter, returning the
+    /// new cumulative total.
+    ///
+    /// The update is atomic per key (sled `update_and_fetch`), so concurrent
+    /// serve events accumulate correctly. Saturating add guards against
+    /// overflow. This total is the sole input to the bandwidth achievement
+    /// triggers (FirstServe / BandwidthBaron / TerabyteClub).
+    pub fn add_bandwidth_served(
+        &self,
+        identity: &[u8; 32],
+        bytes: u64,
+    ) -> Result<u64, AchievementError> {
+        let updated = self.bandwidth_tree.update_and_fetch(identity, |old| {
+            let current = old
+                .and_then(|b| b.try_into().ok())
+                .map(u64::from_be_bytes)
+                .unwrap_or(0);
+            Some(current.saturating_add(bytes).to_be_bytes().to_vec())
+        })?;
+        self.bandwidth_tree.flush()?;
+        let total = updated
+            .and_then(|b| b.as_ref().try_into().ok())
+            .map(u64::from_be_bytes)
+            .unwrap_or(bytes);
+        Ok(total)
+    }
+
+    /// Get an identity's lifetime bytes-served counter (0 if none recorded).
+    pub fn get_bandwidth_served(&self, identity: &[u8; 32]) -> Result<u64, AchievementError> {
+        let total = self
+            .bandwidth_tree
+            .get(identity)?
+            .and_then(|b| b.as_ref().try_into().ok())
+            .map(u64::from_be_bytes)
+            .unwrap_or(0);
+        Ok(total)
     }
 
     /// Load an achievement tracker for an identity.
@@ -268,6 +322,53 @@ mod tests {
     }
 
     #[test]
+    fn test_bandwidth_counter_accumulates() {
+        let (_temp, db) = create_test_db();
+        let store = AchievementStore::new(&db).unwrap();
+        let identity = [7u8; 32];
+
+        // Starts at zero
+        assert_eq!(store.get_bandwidth_served(&identity).unwrap(), 0);
+
+        // Each add returns the new cumulative total
+        assert_eq!(store.add_bandwidth_served(&identity, 100).unwrap(), 100);
+        assert_eq!(store.add_bandwidth_served(&identity, 250).unwrap(), 350);
+        assert_eq!(store.get_bandwidth_served(&identity).unwrap(), 350);
+    }
+
+    #[test]
+    fn test_bandwidth_counter_is_per_identity() {
+        let (_temp, db) = create_test_db();
+        let store = AchievementStore::new(&db).unwrap();
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+
+        store.add_bandwidth_served(&a, 1000).unwrap();
+        store.add_bandwidth_served(&b, 5).unwrap();
+
+        assert_eq!(store.get_bandwidth_served(&a).unwrap(), 1000);
+        assert_eq!(store.get_bandwidth_served(&b).unwrap(), 5);
+    }
+
+    #[test]
+    fn test_bandwidth_counter_persists_across_reopen() {
+        let temp_dir = TempDir::new().unwrap();
+        let identity = [42u8; 32];
+
+        {
+            let db = sled::open(temp_dir.path()).unwrap();
+            let store = AchievementStore::new(&db).unwrap();
+            store.add_bandwidth_served(&identity, 4096).unwrap();
+        }
+
+        {
+            let db = sled::open(temp_dir.path()).unwrap();
+            let store = AchievementStore::new(&db).unwrap();
+            assert_eq!(store.get_bandwidth_served(&identity).unwrap(), 4096);
+        }
+    }
+
+    #[test]
     fn test_persistence_across_reopen() {
         let temp_dir = TempDir::new().unwrap();
         let identity = [42u8; 32];
@@ -295,5 +396,4 @@ mod tests {
             assert!(loaded.has(Achievement::Centurion));
         }
     }
-
 }

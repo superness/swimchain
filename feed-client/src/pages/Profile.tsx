@@ -12,6 +12,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useUserProfile, clearProfileCache } from '../hooks/useUserProfile';
+import { useAchievements } from '../hooks/useAchievements';
 import { useRpc, usePostSubmit, useMediaUpload } from '../hooks/useRpc';
 import { usePostPow } from '../hooks/useActionPow';
 import { useSponsorship } from '../hooks/useSponsorship';
@@ -44,6 +45,9 @@ export function ProfilePage(): JSX.Element {
 
   // Fetch profile data
   const { profile, loading, error, refetch } = useUserProfile(targetPk);
+
+  // Recognition badges (SPEC_09 §5.3) — read-only, decorative, no privileges.
+  const { achievements } = useAchievements(targetPk);
 
   // PoW and submission hooks
   const { state: powState, minePost, cancel: cancelMining, progress, reset: resetPow, solution } = usePostPow();
@@ -459,6 +463,29 @@ export function ProfilePage(): JSX.Element {
                 </p>
               )}
             </section>
+
+            {/* Achievements Section — recognition badges (SPEC_09 §5.3).
+                Only rendered when the user has earned at least one; hidden while
+                editing to keep the edit form focused. */}
+            {!isEditing && achievements.length > 0 && (
+              <section className="profile-section">
+                <h3>Achievements</h3>
+                <ul className="profile-badges">
+                  {achievements.map((a) => (
+                    <li
+                      key={a.id}
+                      className="profile-badge"
+                      title={`${a.name} — ${a.description}`}
+                    >
+                      <span className="profile-badge-emoji" aria-hidden="true">
+                        {a.badge}
+                      </span>
+                      <span className="profile-badge-name">{a.name}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
             {/* Website/Links Section */}
             <section className="profile-section">

@@ -98,6 +98,74 @@ impl AchievementService {
         Ok(newly_unlocked)
     }
 
+    // ========================================================================
+    // Live-event award hooks (SPEC_09 §5.3)
+    //
+    // These are the entry points the running node calls from the real event
+    // paths. Each builds the minimal TriggerContext for its event and defers to
+    // `check_and_unlock`, so awards stay idempotent and permanent. They are
+    // recognition ONLY — none of them grant PoW discounts, decay extension, or
+    // any rate-limit change.
+    // ========================================================================
+
+    /// Record that `identity` had a post accepted. Awards FirstStroke on the
+    /// first accepted post (idempotent thereafter).
+    pub fn record_post(
+        &self,
+        identity: &[u8; 32],
+        timestamp_secs: u64,
+    ) -> Result<Vec<Achievement>, AchievementError> {
+        let ctx = TriggerContext::new().with_post_count(1);
+        self.check_and_unlock(identity, &ctx, timestamp_secs)
+    }
+
+    /// Record that `identity` created a space. Awards LaneOpener on the first
+    /// space created (idempotent thereafter). Re-specified for the PoW-only
+    /// model: there is no longer any swimmer-level gate — creating any space
+    /// qualifies.
+    pub fn record_space_created(
+        &self,
+        identity: &[u8; 32],
+        timestamp_secs: u64,
+    ) -> Result<Vec<Achievement>, AchievementError> {
+        let ctx = TriggerContext::new().with_spaces_created(1);
+        self.check_and_unlock(identity, &ctx, timestamp_secs)
+    }
+
+    /// Record that `identity` served `bytes` of content to a peer. Increments
+    /// the persistent lifetime bytes-served counter and evaluates the bandwidth
+    /// achievements (FirstServe, BandwidthBaron, TerabyteClub) against the new
+    /// cumulative total.
+    pub fn record_bandwidth_served(
+        &self,
+        identity: &[u8; 32],
+        bytes: u64,
+        timestamp_secs: u64,
+    ) -> Result<Vec<Achievement>, AchievementError> {
+        if bytes == 0 {
+            return Ok(Vec::new());
+        }
+        let total = self.store.add_bandwidth_served(identity, bytes)?;
+        let ctx = TriggerContext::new().with_bandwidth(total);
+        self.check_and_unlock(identity, &ctx, timestamp_secs)
+    }
+
+    /// Record that `identity` has supported `posts_supported` posts through
+    /// engagement (cumulative outgoing-engagement count from the local
+    /// engagement graph). Awards KeeperOfTheFlame once the count reaches the
+    /// threshold. Re-specified: the engagement graph tracks total outgoing
+    /// engagements rather than distinct posts, so this uses that count as the
+    /// deterministic local proxy for "posts kept alive".
+    pub fn record_posts_supported(
+        &self,
+        identity: &[u8; 32],
+        posts_supported: u64,
+        timestamp_secs: u64,
+    ) -> Result<Vec<Achievement>, AchievementError> {
+        let ctx = TriggerContext::new().with_posts_supported(posts_supported);
+        self.check_and_unlock(identity, &ctx, timestamp_secs)
+    }
+
     /// Get the achievement tracker for an identity.
     ///
     /// Returns an empty tracker if no achievements exist for this identity.
@@ -325,33 +393,22 @@ mod tests {
     }
 
     #[test]
-    fn test_update_level_anchor_drop() {
+    fn test_update_level_is_deprecated_noop() {
+        // The swimmer level ladder was removed (PoW-only gating), so AnchorDrop is
+        // permanently unsatisfiable and `update_level` is a documented no-op.
+        // Regardless of the level passed, it awards nothing.
         let (_temp, service) = create_test_service();
         let identity = [1u8; 32];
 
-        // Below Anchor - no achievement
-        let is_first = service
-            .update_level(&identity, LEVEL_LIFEGUARD, TEST_TIMESTAMP)
-            .unwrap();
-        assert!(!is_first);
+        for level in [LEVEL_LIFEGUARD, LEVEL_ANCHOR, LEVEL_POOL_KEEPER] {
+            let is_first = service
+                .update_level(&identity, level, TEST_TIMESTAMP)
+                .unwrap();
+            assert!(!is_first, "update_level must be a no-op");
+        }
         assert!(!service
             .has_achievement(&identity, Achievement::AnchorDrop)
             .unwrap());
-
-        // First time Anchor - achievement unlocked
-        let is_first = service
-            .update_level(&identity, LEVEL_ANCHOR, TEST_TIMESTAMP + 1000)
-            .unwrap();
-        assert!(is_first);
-        assert!(service
-            .has_achievement(&identity, Achievement::AnchorDrop)
-            .unwrap());
-
-        // Already was Anchor - no new achievement
-        let is_first = service
-            .update_level(&identity, LEVEL_POOL_KEEPER, TEST_TIMESTAMP + 2000)
-            .unwrap();
-        assert!(!is_first);
     }
 
     #[tokio::test]
@@ -414,14 +471,105 @@ mod tests {
             .unwrap());
     }
 
+    // ========================================================================
+    // Live-event award-hook tests (one per wired trigger)
+    // ========================================================================
+
+    #[test]
+    fn test_record_post_awards_first_stroke() {
+        let (_temp, service) = create_test_service();
+        let identity = [9u8; 32];
+
+        let unlocked = service.record_post(&identity, TEST_TIMESTAMP).unwrap();
+        assert_eq!(unlocked, vec![Achievement::FirstStroke]);
+
+        // Idempotent: a second accepted post awards nothing new.
+        let again = service
+            .record_post(&identity, TEST_TIMESTAMP + 100)
+            .unwrap();
+        assert!(again.is_empty());
+        assert!(service
+            .has_achievement(&identity, Achievement::FirstStroke)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_record_space_created_awards_lane_opener() {
+        let (_temp, service) = create_test_service();
+        let identity = [9u8; 32];
+
+        let unlocked = service
+            .record_space_created(&identity, TEST_TIMESTAMP)
+            .unwrap();
+        assert_eq!(unlocked, vec![Achievement::LaneOpener]);
+
+        // Idempotent across further space creations.
+        let again = service
+            .record_space_created(&identity, TEST_TIMESTAMP + 100)
+            .unwrap();
+        assert!(again.is_empty());
+    }
+
+    #[test]
+    fn test_record_bandwidth_awards_first_serve_then_thresholds() {
+        use crate::achievement::triggers::{BANDWIDTH_BARON_BYTES, TERABYTE_CLUB_BYTES};
+
+        let (_temp, service) = create_test_service();
+        let identity = [9u8; 32];
+
+        // Zero-byte serve records nothing.
+        assert!(service
+            .record_bandwidth_served(&identity, 0, TEST_TIMESTAMP)
+            .unwrap()
+            .is_empty());
+
+        // First real serve awards FirstServe only.
+        let first = service
+            .record_bandwidth_served(&identity, 512, TEST_TIMESTAMP)
+            .unwrap();
+        assert_eq!(first, vec![Achievement::FirstServe]);
+
+        // Crossing 100 GiB (cumulative) awards BandwidthBaron.
+        let baron = service
+            .record_bandwidth_served(&identity, BANDWIDTH_BARON_BYTES, TEST_TIMESTAMP + 10)
+            .unwrap();
+        assert!(baron.contains(&Achievement::BandwidthBaron));
+        assert!(!baron.contains(&Achievement::FirstServe)); // already earned
+
+        // Crossing 1 TiB awards TerabyteClub.
+        let tb = service
+            .record_bandwidth_served(&identity, TERABYTE_CLUB_BYTES, TEST_TIMESTAMP + 20)
+            .unwrap();
+        assert!(tb.contains(&Achievement::TerabyteClub));
+    }
+
+    #[test]
+    fn test_record_posts_supported_awards_keeper_of_flame() {
+        use crate::achievement::triggers::KEEPER_OF_FLAME_POSTS;
+
+        let (_temp, service) = create_test_service();
+        let identity = [9u8; 32];
+
+        // Below threshold awards nothing.
+        assert!(service
+            .record_posts_supported(&identity, KEEPER_OF_FLAME_POSTS - 1, TEST_TIMESTAMP)
+            .unwrap()
+            .is_empty());
+
+        // At threshold awards KeeperOfTheFlame.
+        let unlocked = service
+            .record_posts_supported(&identity, KEEPER_OF_FLAME_POSTS, TEST_TIMESTAMP + 1)
+            .unwrap();
+        assert_eq!(unlocked, vec![Achievement::KeeperOfTheFlame]);
+    }
+
     #[test]
     fn test_lane_opener_integration() {
         let (_temp, service) = create_test_service();
         let identity = [1u8; 32];
 
         // Level system removed - LaneOpener now unlocks with space creation (PoW-gated)
-        let ctx_with_space = TriggerContext::new()
-            .with_spaces_created(1);
+        let ctx_with_space = TriggerContext::new().with_spaces_created(1);
         let unlocked = service
             .check_and_unlock(&identity, &ctx_with_space, TEST_TIMESTAMP)
             .unwrap();

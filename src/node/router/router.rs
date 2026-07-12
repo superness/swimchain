@@ -223,6 +223,10 @@ pub struct MessageRouter {
     /// Engagement graph for tracking who engages with whom
     engagement_graph: Option<Arc<EngagementGraphStore>>,
 
+    /// Achievement service — awards serve/engagement recognition badges
+    /// (SPEC_09 §5.3). Recognition ONLY: no protocol privileges.
+    achievement_service: Option<Arc<crate::achievement::AchievementService>>,
+
     /// Sponsorship store for applying on-chain sponsorship actions (SPEC_11 Phase 6)
     sponsorship_store: Option<Arc<SponsorshipStore>>,
 
@@ -280,6 +284,7 @@ impl MessageRouter {
             identity_pubkey: None,
             hole_punch_tx: None,
             engagement_graph: None,
+            achievement_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -325,6 +330,7 @@ impl MessageRouter {
             identity_pubkey: None,
             hole_punch_tx: None,
             engagement_graph: None,
+            achievement_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -1058,6 +1064,12 @@ impl MessageRouter {
                     hex::encode(&peer_id[..8]),
                     hex::encode(&hash_bytes[..8])
                 );
+
+                // Recognition: this node just served content to a peer. Award the
+                // serve badges (FirstServe / BandwidthBaron / TerabyteClub) against
+                // our own identity's persistent lifetime bytes-served counter.
+                // Recognition ONLY — this does not alter what/where we serve.
+                self.award_bandwidth_served(data_len as u64);
 
                 Ok(Some((MSG_DATA_CONTENT, data_payload.data)))
             }
@@ -4127,6 +4139,38 @@ impl MessageRouter {
         }
     }
 
+    /// Current Unix time in seconds (used for achievement unlock timestamps).
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Award serve badges after this node serves `bytes` of content to a peer.
+    ///
+    /// Recognition ONLY (SPEC_09 §5.3): increments our identity's persistent
+    /// lifetime bytes-served counter and unlocks FirstServe / BandwidthBaron /
+    /// TerabyteClub as thresholds are crossed. No effect on protocol behavior.
+    fn award_bandwidth_served(&self, bytes: u64) {
+        let (Some(service), Some(identity)) = (&self.achievement_service, self.identity_pubkey)
+        else {
+            return;
+        };
+        match service.record_bandwidth_served(&identity, bytes, Self::now_secs()) {
+            Ok(unlocked) => {
+                for achievement in unlocked {
+                    info!(
+                        "[ACHIEVEMENT] Unlocked {} {} (served content)",
+                        achievement.badge(),
+                        achievement.name()
+                    );
+                }
+            }
+            Err(e) => warn!("[ACHIEVEMENT] Failed to record served bandwidth: {}", e),
+        }
+    }
+
     /// Extract and track engagement relationships from actions in a content block
     ///
     /// Tracks who engages with whose content:
@@ -4203,7 +4247,44 @@ impl MessageRouter {
                     hex::encode(&engager[..8]),
                     hex::encode(&author[..8])
                 );
+
+                // Recognition: when OUR identity is the engager, re-evaluate
+                // KeeperOfTheFlame against our updated outgoing-engagement total
+                // (deterministic local proxy for "posts kept alive"). Only for the
+                // local identity — remote engagers' badges are theirs to earn on
+                // their own node. Recognition ONLY.
+                if self.identity_pubkey == Some(engager) {
+                    self.award_posts_supported(&engager);
+                }
             }
+        }
+    }
+
+    /// Re-evaluate KeeperOfTheFlame for `identity` from the engagement graph's
+    /// current outgoing-engagement total. Recognition ONLY (SPEC_09 §5.3).
+    fn award_posts_supported(&self, identity: &[u8; 32]) {
+        let (Some(service), Some(graph)) = (&self.achievement_service, &self.engagement_graph)
+        else {
+            return;
+        };
+        let supported = match graph.get_stats(identity) {
+            Ok(stats) => stats.total_outgoing,
+            Err(e) => {
+                warn!("[ACHIEVEMENT] Failed to read engagement stats: {}", e);
+                return;
+            }
+        };
+        match service.record_posts_supported(identity, supported, Self::now_secs()) {
+            Ok(unlocked) => {
+                for achievement in unlocked {
+                    info!(
+                        "[ACHIEVEMENT] Unlocked {} {} (engagement milestone)",
+                        achievement.badge(),
+                        achievement.name()
+                    );
+                }
+            }
+            Err(e) => warn!("[ACHIEVEMENT] Failed to record posts supported: {}", e),
         }
     }
 
@@ -7665,6 +7746,7 @@ pub struct MessageRouterBuilder {
     identity_pubkey: Option<[u8; 32]>,
     hole_punch_tx: Option<tokio::sync::mpsc::UnboundedSender<HolePunchRequest>>,
     engagement_graph: Option<Arc<EngagementGraphStore>>,
+    achievement_service: Option<Arc<crate::achievement::AchievementService>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     offer_store: Option<Arc<OfferStore>>,
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
@@ -7699,6 +7781,7 @@ impl MessageRouterBuilder {
             identity_pubkey: None,
             hole_punch_tx: None,
             engagement_graph: None,
+            achievement_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -7838,6 +7921,16 @@ impl MessageRouterBuilder {
         self
     }
 
+    /// Set the achievement service for awarding serve/engagement badges
+    /// (SPEC_09 §5.3). Recognition only — no protocol privileges.
+    pub fn achievement_service(
+        mut self,
+        service: Arc<crate::achievement::AchievementService>,
+    ) -> Self {
+        self.achievement_service = Some(service);
+        self
+    }
+
     /// Set the sponsorship store for on-chain sponsorship processing (SPEC_11 Phase 6)
     pub fn sponsorship_store(mut self, store: Arc<SponsorshipStore>) -> Self {
         self.sponsorship_store = Some(store);
@@ -7927,6 +8020,7 @@ impl MessageRouterBuilder {
             identity_pubkey: self.identity_pubkey,
             hole_punch_tx: self.hole_punch_tx,
             engagement_graph: self.engagement_graph,
+            achievement_service: self.achievement_service,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,
             branch_subscription_manager: self.branch_subscription_manager,
@@ -7966,6 +8060,7 @@ impl MessageRouterBuilder {
             identity_pubkey: self.identity_pubkey,
             hole_punch_tx: self.hole_punch_tx,
             engagement_graph: self.engagement_graph,
+            achievement_service: self.achievement_service,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,
             branch_subscription_manager: self.branch_subscription_manager,

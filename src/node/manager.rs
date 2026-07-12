@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 use log::{debug, info, warn};
 use tokio::sync::{broadcast, watch};
 
+use crate::achievement::{AchievementService, AchievementStore};
 use crate::blocklist::BlocklistStore;
 use crate::blocks::BlockBuilder;
 use crate::cli::search_index::SearchIndex;
@@ -101,6 +102,9 @@ pub struct NodeManager {
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     offer_store: Option<Arc<crate::sponsorship::offer_store::OfferStore>>,
     engagement_graph: Option<Arc<EngagementGraphStore>>,
+    /// Achievement service — awards recognition badges (SPEC_09 §5.3).
+    /// Recognition only: grants no protocol privileges.
+    achievement_service: Option<Arc<AchievementService>>,
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
     peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
@@ -172,6 +176,7 @@ impl NodeManager {
             sponsorship_store: None,
             offer_store: None,
             engagement_graph: None,
+            achievement_service: None,
             branch_subscription_manager: None,
             peer_branch_tracker: None,
             search_index: None,
@@ -598,6 +603,26 @@ impl NodeManager {
             }
         }
 
+        // 4.5.3b-ii. Initialize achievement service for recognition badges (SPEC_09 §5.3).
+        // Recognition ONLY: awards grant no PoW discount, decay extension, or
+        // rate-limit change. Deterministic from local data; permanent once earned.
+        let achievement_path = self.config.data_dir.join("achievements");
+        match crate::storage::open_db(&achievement_path) {
+            Ok(achievement_db) => match AchievementStore::new(&achievement_db) {
+                Ok(store) => {
+                    let service = Arc::new(AchievementService::new(Arc::new(store)));
+                    self.achievement_service = Some(service);
+                    info!("[ACHIEVEMENT] Achievement service initialized");
+                }
+                Err(e) => {
+                    warn!("[ACHIEVEMENT] Failed to open achievement store: {}", e);
+                }
+            },
+            Err(e) => {
+                warn!("[ACHIEVEMENT] Failed to open achievement database: {}", e);
+            }
+        }
+
         // 4.5.3c. Initialize membership store for private spaces (DMs, group chats)
         let membership_path = self.config.data_dir.join("membership");
         match MembershipStore::open(&membership_path) {
@@ -881,6 +906,11 @@ impl NodeManager {
         router_builder = router_builder.identity_pubkey(*self.keypair.public_key.as_bytes());
         if let Some(ref engagement_graph) = self.engagement_graph {
             router_builder = router_builder.engagement_graph(engagement_graph.clone());
+        }
+        // Achievement service: award serve/engagement badges from the router's
+        // real content-serve and block-processing paths (recognition only).
+        if let Some(ref achievement_service) = self.achievement_service {
+            router_builder = router_builder.achievement_service(achievement_service.clone());
         }
         // SPEC_13 Phase A / Phase 1 rollout: behavioral branching mode
         // (Full formation default ON for regtest only; LogOnly observation
@@ -1683,6 +1713,7 @@ impl NodeManager {
             membership_store: self.membership_store.clone(),
             sponsorship_store: self.sponsorship_store.clone(),
             offer_store: self.offer_store.clone(),
+            achievement_service: self.achievement_service.clone(),
             branch_subscription_manager: self.branch_subscription_manager.clone(),
             keypair: self.keypair.clone(),
             shutdown_tx: rpc_shutdown_tx,
@@ -1924,6 +1955,13 @@ impl NodeManager {
     /// Returns None if the node hasn't been started yet.
     pub fn sponsorship_store(&self) -> Option<Arc<SponsorshipStore>> {
         self.sponsorship_store.clone()
+    }
+
+    /// Get reference to the AchievementService (for testing/advanced usage)
+    ///
+    /// Returns None if the node hasn't been started yet.
+    pub fn achievement_service(&self) -> Option<Arc<AchievementService>> {
+        self.achievement_service.clone()
     }
 
     /// Get reference to the ContentRetrievalManager (for content sync)

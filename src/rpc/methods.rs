@@ -537,6 +537,9 @@ pub struct NodeRef {
     pub sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
     /// Offer store for public sponsorship offer lifecycle
     pub offer_store: Option<Arc<crate::sponsorship::offer_store::OfferStore>>,
+    /// Achievement service for recognition badges (SPEC_09 §5.3).
+    /// Recognition ONLY: exposes/awards badges, grants no protocol privileges.
+    pub achievement_service: Option<Arc<crate::achievement::AchievementService>>,
     /// Branch subscription manager (selective sync; SPEC_06/BRANCH_SELECTIVE_SYNC).
     /// Uses std::sync::RwLock to match manager.rs construction.
     pub branch_subscription_manager:
@@ -1026,6 +1029,7 @@ impl RpcMethods {
             "set_identity_name" => self.set_identity_name(params, id).await,
             "get_user_profile" => self.get_user_profile(params, id).await,
             "get_reputation" => self.get_reputation(params, id).await,
+            "get_achievements" => self.get_achievements(params, id).await,
 
             // Reaction methods (reactions come from PoW engagement via submit_engagement)
             "get_reactions" => self.get_reactions(params, id).await,
@@ -2357,6 +2361,24 @@ impl RpcMethods {
                 &content_id[..24],
                 recipients
             );
+        }
+
+        // Recognition: the post was accepted (PoW-valid, stored). Award FirstStroke
+        // on the author's first accepted post (SPEC_09 §5.3). Recognition ONLY —
+        // this does not alter PoW, decay, or rate limits, and never blocks the post.
+        if let Some(ref achievements) = self.node.achievement_service {
+            match achievements.record_post(&author_bytes, params.timestamp) {
+                Ok(unlocked) => {
+                    for a in unlocked {
+                        info!(
+                            "[ACHIEVEMENT] Unlocked {} {} (first post)",
+                            a.badge(),
+                            a.name()
+                        );
+                    }
+                }
+                Err(e) => warn!("[ACHIEVEMENT] Failed to record post: {}", e),
+            }
         }
 
         let result = SubmitPostResult {
@@ -5453,6 +5475,24 @@ impl RpcMethods {
             space_id, params.name
         );
 
+        // Recognition: space registered successfully. Award LaneOpener on the
+        // creator's first space (SPEC_09 §5.3). Re-specified for the PoW-only
+        // model — no swimmer-level gate. Recognition ONLY: never blocks creation.
+        if let Some(ref achievements) = self.node.achievement_service {
+            match achievements.record_space_created(&creator_bytes, current_time) {
+                Ok(unlocked) => {
+                    for a in unlocked {
+                        info!(
+                            "[ACHIEVEMENT] Unlocked {} {} (created space)",
+                            a.badge(),
+                            a.name()
+                        );
+                    }
+                }
+                Err(e) => warn!("[ACHIEVEMENT] Failed to record space creation: {}", e),
+            }
+        }
+
         let result = CreateSpaceResult {
             space_id,
             name: params.name,
@@ -7792,6 +7832,93 @@ impl RpcMethods {
                 "avatar_content_id": avatar_content_id,
                 "updated_at": updated_at,
                 "reputation": reputation,
+                "achievements": self.achievements_json(&user_id_norm),
+            }),
+            id,
+        )
+    }
+
+    /// Build the achievements JSON array for a hex identity (empty if the
+    /// service is unavailable or the id is unparseable). Each entry carries the
+    /// stable id, badge emoji, name, and description so clients need no local
+    /// achievement table. Recognition metadata ONLY.
+    fn achievements_json(&self, user_id_hex: &str) -> Vec<serde_json::Value> {
+        let Some(service) = &self.node.achievement_service else {
+            return Vec::new();
+        };
+        let Some(identity) = hex::decode(user_id_hex)
+            .ok()
+            .and_then(|v| <[u8; 32]>::try_from(v).ok())
+        else {
+            return Vec::new();
+        };
+        let tracker = match service.get_tracker(&identity) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("[ACHIEVEMENT] Failed to load achievements: {}", e);
+                return Vec::new();
+            }
+        };
+        // Sort by stable wire id so the badge row order is deterministic.
+        let mut records = tracker.all_achievements();
+        records.sort_by_key(|r| r.achievement.as_u8());
+        records
+            .into_iter()
+            .map(|r| {
+                json!({
+                    "id": r.achievement.as_u8(),
+                    "key": format!("{:?}", r.achievement),
+                    "badge": r.achievement.badge(),
+                    "name": r.achievement.name(),
+                    "description": r.achievement.description(),
+                    "unlocked_at": r.unlocked_at_secs,
+                })
+            })
+            .collect()
+    }
+
+    /// get_achievements(user_id) — return the recognition badges an identity has
+    /// earned (SPEC_09 §5.3). Read-only, public data. `user_id` may be a 32-byte
+    /// hex pubkey or a cs1 address. Recognition ONLY — no protocol effect.
+    async fn get_achievements(&self, params: Value, id: Value) -> RpcResponse {
+        let user_id = match params.get("user_id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing user_id parameter",
+                    id,
+                );
+            }
+        };
+
+        // Normalize to a lowercase hex pubkey (accept hex or cs1 address), same
+        // as get_user_profile.
+        let user_id_norm: String = if user_id.len() == 64 && hex::decode(user_id).is_ok() {
+            user_id.to_lowercase()
+        } else if let Ok(pk) = crate::crypto::address::decode_address_to_pubkey(user_id) {
+            hex::encode(pk.0)
+        } else {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Invalid user_id: must be 32-byte hex or a cs1 address",
+                id,
+            );
+        };
+
+        if self.node.achievement_service.is_none() {
+            return RpcResponse::error(
+                RpcErrorCode::InternalError,
+                "Achievement service not available",
+                id,
+            );
+        }
+
+        let achievements = self.achievements_json(&user_id_norm);
+        RpcResponse::success(
+            json!({
+                "user_id": user_id_norm,
+                "achievements": achievements,
             }),
             id,
         )
