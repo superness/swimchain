@@ -5364,6 +5364,16 @@ impl RpcMethods {
             .filter_map(
                 |(space_id_16, (name, _description, _created_at, _post_count, last_activity))| {
                     let space_id_str = encode_space_id(&space_id_16);
+                    use crate::types::space_class::{class_of, SpaceClass};
+                    let class = match class_of(&space_id_16) {
+                        Some(SpaceClass::Social) => "social",
+                        Some(SpaceClass::Profile) => "profile",
+                        Some(SpaceClass::Dm) => "dm",
+                        Some(SpaceClass::Private) => "private",
+                        Some(SpaceClass::App) => "app",
+                        None => "unknown",
+                    }
+                    .to_string();
                     // Identify app-namespaced spaces from the ON-CHAIN name (not any config
                     // override, which is display-only). For an app space, surface the clean
                     // display name (marker stripped) and the app tag so clients can segregate.
@@ -5383,24 +5393,20 @@ impl RpcMethods {
                             .unwrap_or(resolved_name)
                     };
 
-                    // Private channels and DM spaces register with an EMPTY name (their real
-                    // name is encrypted) — always hide those. A "Space <8 hex>" placeholder
-                    // means we know the space id but not its name. If it's a real public space
-                    // (has an on-chain space block), we synced it from a peer but only the
-                    // creator had the name — expose it flagged `name_unresolved` so the CLIENT
-                    // can resolve it on demand (the node never auto-fetches). Otherwise
-                    // (profile/derived, no space block) hide it.
+                    // Hide non-browsable classes from list_spaces' generic listing.
+                    // Profile/DM/private spaces are reached by their own flows, not
+                    // browse. Social + app spaces are listed (clients filter by class).
+                    match class_of(&space_id_16) {
+                        Some(SpaceClass::Profile)
+                        | Some(SpaceClass::Dm)
+                        | Some(SpaceClass::Private) => return None,
+                        _ => {}
+                    }
                     let trimmed = final_name.trim();
                     let is_placeholder = trimmed.len() == 14
                         && trimmed.starts_with("Space ")
                         && trimmed[6..].chars().all(|c| c.is_ascii_hexdigit());
-                    if trimmed.is_empty() {
-                        return None;
-                    }
                     let name_unresolved = is_placeholder;
-                    if is_placeholder && !has_space_block.contains(&space_id_16) {
-                        return None;
-                    }
 
                     // Get accurate post count from indexed storage
                     let actual_post_count = chain_store_ref
@@ -5447,6 +5453,7 @@ impl RpcMethods {
                         },
                         app,
                         name_unresolved,
+                        class,
                         children,
                     })
                 },
