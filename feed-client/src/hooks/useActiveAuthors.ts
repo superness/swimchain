@@ -9,8 +9,10 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRpc } from './useRpc';
 
 export interface ActiveAuthor {
-  /** Author public key (hex) */
+  /** Author id — the `cs1…` address as returned by list_space_content */
   userPk: string;
+  /** Author's resolved display name, if any (from the content's display_name). */
+  displayName?: string;
   /** Number of recent posts/replies seen from this author */
   postCount: number;
   /** Most recent post timestamp (unix seconds) */
@@ -64,6 +66,7 @@ export function useActiveAuthors(spaceIds: string[], excludePk?: string | null):
             });
             return result.items.map(item => ({
               authorId: item.author_id,
+              displayName: item.display_name ?? undefined,
               spaceId,
               createdAt: item.created_at,
             }));
@@ -74,7 +77,7 @@ export function useActiveAuthors(spaceIds: string[], excludePk?: string | null):
         })
       );
 
-      const byAuthor = new Map<string, { postCount: number; lastActive: number; spaces: Set<string> }>();
+      const byAuthor = new Map<string, { displayName?: string; postCount: number; lastActive: number; spaces: Set<string> }>();
       for (const items of results) {
         for (const item of items) {
           if (!item.authorId) continue;
@@ -83,6 +86,8 @@ export function useActiveAuthors(spaceIds: string[], excludePk?: string | null):
           entry.postCount += 1;
           entry.lastActive = Math.max(entry.lastActive, item.createdAt);
           entry.spaces.add(item.spaceId);
+          // Keep the first non-empty display name we see for this author.
+          if (!entry.displayName && item.displayName) entry.displayName = item.displayName;
           byAuthor.set(item.authorId, entry);
         }
       }
@@ -90,6 +95,7 @@ export function useActiveAuthors(spaceIds: string[], excludePk?: string | null):
       const aggregated: ActiveAuthor[] = Array.from(byAuthor.entries())
         .map(([userPk, info]) => ({
           userPk,
+          displayName: info.displayName,
           postCount: info.postCount,
           lastActive: info.lastActive,
           spaceCount: info.spaces.size,

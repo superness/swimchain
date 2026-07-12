@@ -83,9 +83,12 @@ function ReplyItem({
       style={{ '--depth': actualDepth } as React.CSSProperties}
     >
       <div className="reply-header">
-        <span className="reply-author">
+        <Link
+          to={`/profile/${reply.author}`}
+          className="reply-author"
+        >
           {truncateAddress(reply.author)}
-        </span>
+        </Link>
         <time
           className="reply-time"
           dateTime={new Date(reply.createdAt * 1000).toISOString()}

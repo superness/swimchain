@@ -280,6 +280,12 @@
   font-size: 0.8125rem;
   font-weight: 500;
   color: var(--accent-color, #5865f2);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.reply-author:hover {
+  text-decoration: underline;
 }
 
 .reply-time {

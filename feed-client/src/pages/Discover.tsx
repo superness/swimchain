@@ -60,20 +60,24 @@ function SpaceCard({ spaceId, name, postCount, lastActivity }: SpaceCardProps): 
 
 interface UserCardProps {
   userPk: string;
+  name?: string;
   postCount: number;
   lastActive: number;
   spaceCount: number;
 }
 
-function UserCard({ userPk, postCount, lastActive, spaceCount }: UserCardProps): JSX.Element {
+function UserCard({ userPk, name, postCount, lastActive, spaceCount }: UserCardProps): JSX.Element {
   const { isFollowing, isMuted, toggle, toggleMute, loading } = useFollowUser(userPk);
 
-  const displayName = userPk.substring(0, 10) + '...' + userPk.substring(userPk.length - 4);
+  // Prefer the author's resolved display name; fall back to a truncated address.
+  const displayName = name?.trim()
+    ? name.trim()
+    : userPk.substring(0, 10) + '...' + userPk.substring(userPk.length - 4);
 
   return (
     <div className="space-card">
       <div className="space-card__icon" aria-hidden="true">
-        {userPk.substring(0, 2).toUpperCase()}
+        {displayName.substring(0, 2).toUpperCase()}
       </div>
       <div className="space-card__info">
         <Link to={`/profile/${userPk}`} className="space-card__name">
@@ -141,12 +145,16 @@ export function Discover(): JSX.Element {
     loading: authorsLoading,
     error: authorsError,
     refetch: refetchAuthors,
-  } = useActiveAuthors(authorSourceSpaceIds, identity?.publicKey ?? null);
+    // Exclude self by ADDRESS: list_space_content returns author_id as the cs1
+    // address, so comparing against the hex publicKey never matched (self showed up).
+  } = useActiveAuthors(authorSourceSpaceIds, identity?.address ?? null);
 
   // Filter authors by search query
   const filteredAuthors = authors.filter(author => {
     if (!searchQuery) return true;
-    return author.userPk.toLowerCase().includes(searchQuery.toLowerCase());
+    const q = searchQuery.toLowerCase();
+    return author.userPk.toLowerCase().includes(q)
+      || (author.displayName?.toLowerCase().includes(q) ?? false);
   });
 
   // Filter spaces by search query
@@ -332,6 +340,7 @@ export function Discover(): JSX.Element {
                     <UserCard
                       key={author.userPk}
                       userPk={author.userPk}
+                      name={author.displayName}
                       postCount={author.postCount}
                       lastActive={author.lastActive}
                       spaceCount={author.spaceCount}

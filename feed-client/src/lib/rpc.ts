@@ -48,6 +48,8 @@ interface ContentResult {
   decay_state: string;
   seconds_until_decay: number | null;
   reply_count?: number;
+  /** Author's resolved display name, when the node has it. */
+  display_name?: string | null;
 }
 
 interface SpaceContentResult {
