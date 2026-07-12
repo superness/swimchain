@@ -14,6 +14,7 @@ pub mod error;
 pub mod identity;
 pub mod network;
 pub mod serialize;
+pub mod space_class;
 
 // Re-export commonly used types
 pub use block::{
