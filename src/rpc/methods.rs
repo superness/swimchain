@@ -2190,6 +2190,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: action_media_refs,
                 replaces_pending,
+                private: false,
             };
 
             // Thread ID is the content hash for a new post
@@ -2967,6 +2968,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: action_media_refs,
                 replaces_pending,
+                private: false,
             };
 
             // Thread ID is the parent post's hash (replies belong to parent thread)
@@ -3455,6 +3457,7 @@ impl RpcMethods {
             display_name: self.node.identity_name.read().await.clone(),
             media_refs: vec![],
             replaces_pending,
+            private: false,
         };
 
         // Add to block builder
@@ -3752,6 +3755,7 @@ impl RpcMethods {
                             display_name: None,
                             media_refs: vec![], // ENGAGE actions don't have media
                             replaces_pending: None,
+                            private: false,
                         };
 
                         // Engagements go to the TARGET content's branch (SPEC_08 §4.3)
@@ -5982,10 +5986,25 @@ impl RpcMethods {
                         let (pool_progress, has_pool, pool_status) =
                             (0.0, false, "none".to_string());
 
-                        // Get media_refs from content_store if available
+                        // Get media_refs + original authoring timestamp from content_store.
+                        // We prefer the ContentItem's created_at (the same value
+                        // get_content / the post detail shows) over the on-chain action
+                        // time, so the feed/space ordering and displayed time match the
+                        // detail. metadata.timestamp is when the action entered THIS chain,
+                        // which for bulk-synced/seeded content is import time, not when the
+                        // post was authored.
+                        let mut item_created_at_ms: Option<u64> = None;
                         let media_refs: Vec<MediaRefResult> =
                             if let Some(ref content_store) = self.node.content_store {
                                 if let Ok(Some(item)) = content_store.get(&content_id_bytes) {
+                                    if item.created_at > 0 {
+                                        item_created_at_ms =
+                                            Some(if item.created_at < 10_000_000_000 {
+                                                item.created_at * 1000
+                                            } else {
+                                                item.created_at
+                                            });
+                                    }
                                     item.media_refs
                                         .iter()
                                         .map(|mr| {
@@ -6017,7 +6036,8 @@ impl RpcMethods {
                                 vec![]
                             };
 
-                        let created_at_ms = metadata.timestamp * 1000;
+                        let created_at_ms =
+                            item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
 
                         items.push(ContentSummary {
                             content_id,
@@ -6638,10 +6658,25 @@ impl RpcMethods {
                             count
                         };
 
-                        // Get media_refs from content_store if available
+                        // Get media_refs + original authoring timestamp from content_store.
+                        // We prefer the ContentItem's created_at (the same value
+                        // get_content / the post detail shows) over the on-chain action
+                        // time, so the feed/space ordering and displayed time match the
+                        // detail. metadata.timestamp is when the action entered THIS chain,
+                        // which for bulk-synced/seeded content is import time, not when the
+                        // post was authored.
+                        let mut item_created_at_ms: Option<u64> = None;
                         let media_refs: Vec<MediaRefResult> =
                             if let Some(ref content_store) = self.node.content_store {
                                 if let Ok(Some(item)) = content_store.get(&content_id_bytes) {
+                                    if item.created_at > 0 {
+                                        item_created_at_ms =
+                                            Some(if item.created_at < 10_000_000_000 {
+                                                item.created_at * 1000
+                                            } else {
+                                                item.created_at
+                                            });
+                                    }
                                     item.media_refs
                                         .iter()
                                         .map(|mr| {
@@ -6673,7 +6708,8 @@ impl RpcMethods {
                                 vec![]
                             };
 
-                        let created_at_ms = metadata.timestamp * 1000;
+                        let created_at_ms =
+                            item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
 
                         items.push(ContentSummary {
                             content_id,
@@ -7090,12 +7126,24 @@ impl RpcMethods {
                         // Get reply count (short-TTL cached)
                         let reply_count = self.cached_reply_count(&content_hash);
 
-                        // Get media_refs from content_store if available
+                        // Get media_refs + original authoring timestamp from content_store.
+                        // Prefer the ContentItem's created_at (as get_content/the post
+                        // detail does) so feed ordering + shown time match the detail; the
+                        // on-chain action time is import time for bulk-synced content.
+                        let mut item_created_at_ms: Option<u64> = None;
                         let media_refs: Vec<MediaRefResult> =
                             if let Some(ref content_store) = self.node.content_store {
                                 if let Ok(Some(content)) = content_store
                                     .get(&crate::types::ContentId::from_bytes(content_hash))
                                 {
+                                    if content.created_at > 0 {
+                                        item_created_at_ms =
+                                            Some(if content.created_at < 10_000_000_000 {
+                                                content.created_at * 1000
+                                            } else {
+                                                content.created_at
+                                            });
+                                    }
                                     content
                                         .media_refs
                                         .iter()
@@ -7146,7 +7194,8 @@ impl RpcMethods {
                             author_id,
                             space_id: space_id_bech32,
                             parent_id,
-                            created_at: metadata.timestamp * 1000,
+                            created_at: item_created_at_ms
+                                .unwrap_or(metadata.timestamp * 1000),
                             last_engagement: last_engagement_ms,
                             title,
                             body,
@@ -11721,6 +11770,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             // Thread ID is the space_id (padded to 32 bytes)
@@ -11965,6 +12015,7 @@ impl RpcMethods {
                 display_name,
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             let mut thread_id = [0u8; 32];
@@ -12557,6 +12608,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             let mut thread_id = [0u8; 32];
@@ -12752,6 +12804,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             // Accept joins the invite's thread branch (SPEC_08 §4)
@@ -12983,6 +13036,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             let mut thread_id = [0u8; 32];
@@ -13166,6 +13220,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             // Accept joins the invite's thread branch (SPEC_08 §4)
@@ -13455,6 +13510,7 @@ impl RpcMethods {
                 display_name: self.node.identity_name.read().await.clone(),
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             // New thread: hash-derived branch placement (SPEC_08 §4)
@@ -13731,6 +13787,7 @@ impl RpcMethods {
                 display_name: display_name.clone(),
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             // KeyRotation action: content_hash = hash of the rotation payload
@@ -13762,6 +13819,7 @@ impl RpcMethods {
                 display_name,
                 media_refs: vec![],
                 replaces_pending: None,
+                private: false,
             };
 
             // New threads: hash-derived branch placement (SPEC_08 §4)
