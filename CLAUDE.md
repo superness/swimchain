@@ -49,8 +49,8 @@ The node is structured as a library (`lib.rs`) with two binaries (`main.rs` CLI,
 **Protocol layer:**
 - `types/` — Core protocol types: Identity, Block, Content, network structures
 - `identity/` — Ed25519 key generation, signing, verification (SPEC_01)
-- `crypto/` — Bech32m address encoding, hashing primitives
-- `blocks/` — Block building, merkle trees, recursive block hierarchy (root → space → content)
+- `crypto/` — Bech32m address encoding, hashing primitives, private-space encryption (`private_space.rs`: AES-256-GCM `[PRIVATE:v1:]` text + `PRVM1` media envelopes, X25519 key-wrapping; see `docs/private-spaces.md`)
+- `blocks/` — Block building, merkle trees, recursive block hierarchy (root → space → content). `Action` carries an authenticated `private` bit (folded into the signing preimage); action wire encoding is a fixed 466 bytes (465-byte legacy accepted). See `docs/private-spaces.md`.
 - `content/` — Content chunking, retrieval, decay mechanics (SPEC_02)
 - `sponsorship/` — Sponsorship trees, penalty management (SPEC_11)
 - `spam_attestation/` — Anti-abuse via attestation aggregation (SPEC_12)

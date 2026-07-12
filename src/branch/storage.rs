@@ -208,6 +208,7 @@ mod tests {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         }
     }
 

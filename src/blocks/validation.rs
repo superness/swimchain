@@ -335,20 +335,34 @@ pub fn validate_action_signature(action: &Action) -> Result<(), ValidationError>
         ValidationError::ActionError("Cannot verify signature without content_hash".to_string())
     })?;
 
-    // Construct the signed message: content_hash || timestamp (LE bytes)
-    let mut message = [0u8; 40];
-    message[..32].copy_from_slice(&content_hash);
-    message[32..].copy_from_slice(&action.timestamp.to_le_bytes());
-
-    // Verify the signature
+    // Construct the signed message. The private-space confidentiality change binds the
+    // `private` flag into the preimage so it cannot be flipped on the wire without
+    // invalidating the signature:
+    //   v2 (current): content_hash(32) || timestamp_LE(8) || private(1)  = 41 bytes
+    //   v1 (legacy):  content_hash(32) || timestamp_LE(8)               = 40 bytes
+    // We accept a valid v1 signature only when `private == false`, so already-signed
+    // pre-fork actions keep validating through the network-coordinated rollout while a
+    // private action can never authenticate under the legacy (flag-less) preimage.
     let public_key = PublicKey(action.actor);
     let signature = Signature(action.signature);
 
-    if crate::crypto::signature::verify(&public_key, &message, &signature) {
-        Ok(())
-    } else {
-        Err(ValidationError::SignatureVerificationFailed)
+    let mut message_v2 = [0u8; 41];
+    message_v2[..32].copy_from_slice(&content_hash);
+    message_v2[32..40].copy_from_slice(&action.timestamp.to_le_bytes());
+    message_v2[40] = u8::from(action.private);
+
+    if crate::crypto::signature::verify(&public_key, &message_v2, &signature) {
+        return Ok(());
     }
+
+    // Legacy v1 fallback: only permissible for public actions.
+    if !action.private
+        && crate::crypto::signature::verify(&public_key, &message_v2[..40], &signature)
+    {
+        return Ok(());
+    }
+
+    Err(ValidationError::SignatureVerificationFailed)
 }
 
 /// Validate action PoW
@@ -590,6 +604,7 @@ mod tests {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -618,7 +633,67 @@ mod tests {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         }
+    }
+
+    /// Sign an action over the v2 preimage (content_hash || ts_LE || private).
+    fn sign_action_v2(
+        private_key: &crate::types::identity::PrivateKey,
+        content_hash: &[u8; 32],
+        timestamp: u64,
+        private: bool,
+    ) -> crate::types::identity::Signature {
+        let mut msg = [0u8; 41];
+        msg[..32].copy_from_slice(content_hash);
+        msg[32..40].copy_from_slice(&timestamp.to_le_bytes());
+        msg[40] = u8::from(private);
+        crate::crypto::signature::sign(private_key, &msg)
+    }
+
+    #[test]
+    fn test_private_flag_is_authenticated_by_signature() {
+        let keypair = generate_keypair_from_seed([42u8; 32]);
+        let content_hash = [2u8; 32];
+        let ts = 1000;
+        let sig = sign_action_v2(&keypair.private_key, &content_hash, ts, true);
+
+        let mut action = make_test_action(ActionType::Post, ts);
+        action.actor = keypair.public_key.0;
+        action.content_hash = Some(content_hash);
+        action.signature = sig.0;
+        action.private = true;
+
+        // Correctly signed private action verifies.
+        assert!(validate_action_signature(&action).is_ok());
+
+        // Flipping the flag on the wire (private -> public) breaks verification: the v2
+        // preimage no longer matches and the legacy v1 fallback is disallowed for a sig
+        // made over the 41-byte private preimage.
+        let mut forged = action.clone();
+        forged.private = false;
+        assert!(validate_action_signature(&forged).is_err());
+    }
+
+    #[test]
+    fn test_legacy_v1_signature_only_valid_for_public() {
+        // A signature made with the legacy 40-byte preimage (sign_content) authenticates
+        // a public action, but must NOT authenticate the same action marked private.
+        let keypair = generate_keypair_from_seed([7u8; 32]);
+        let content_hash = [9u8; 32];
+        let ts = 2000;
+        let sig = sign_content(&keypair.private_key, &content_hash, ts);
+
+        let mut action = make_test_action(ActionType::Post, ts);
+        action.actor = keypair.public_key.0;
+        action.content_hash = Some(content_hash);
+        action.signature = sig.0;
+
+        action.private = false;
+        assert!(validate_action_signature(&action).is_ok());
+
+        action.private = true;
+        assert!(validate_action_signature(&action).is_err());
     }
 
     #[test]
@@ -797,6 +872,7 @@ mod tests {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         };
         let content_block = ContentBlock::new(
             [10u8; 32],
@@ -835,6 +911,7 @@ mod tests {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         };
         let cb1 = ContentBlock::new(
             [10u8; 32],
@@ -863,6 +940,7 @@ mod tests {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         };
         let cb2 = ContentBlock::new(
             [11u8; 32],

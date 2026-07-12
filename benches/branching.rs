@@ -27,6 +27,7 @@ fn create_test_action(pow_work: u64) -> Action {
         display_name: None,
         media_refs: vec![],
         replaces_pending: None,
+        private: false,
     }
 }
 

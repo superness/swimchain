@@ -30,6 +30,7 @@ fn make_test_action(actor: [u8; 32], pow_work: u64, timestamp: u64) -> Action {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     }
 }
 

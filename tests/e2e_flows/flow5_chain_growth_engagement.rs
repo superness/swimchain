@@ -91,6 +91,7 @@ fn test_chain_growth_simulation() {
                 media_refs: vec![],
                 display_name: None,
                 replaces_pending: None,
+                private: false,
             };
             actions.push(action);
             action_count += 1;
@@ -564,6 +565,7 @@ fn test_content_lifecycle_full() {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         };
         actions.push(action);
     }
@@ -652,6 +654,7 @@ fn test_content_retrieval_by_space() {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         });
     }
 
@@ -715,6 +718,7 @@ fn test_reply_threading() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     // Create replies to the post
@@ -740,6 +744,7 @@ fn test_reply_threading() {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         });
     }
 
@@ -803,6 +808,7 @@ fn test_content_metadata_indexing() {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         },
         Action {
             action_type: ActionType::Post,
@@ -818,6 +824,7 @@ fn test_content_metadata_indexing() {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         },
     ];
 
@@ -882,6 +889,7 @@ fn test_content_to_engagement_integration() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     // Store the post
@@ -913,6 +921,7 @@ fn test_content_to_engagement_integration() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     let charlie_engage = Action {
@@ -929,6 +938,7 @@ fn test_content_to_engagement_integration() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     let block2 = ContentBlock::new(

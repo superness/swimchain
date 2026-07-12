@@ -139,6 +139,7 @@ fn test_chain_store_content_block() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     }];
 
     let content_block = ContentBlock::new(
@@ -179,6 +180,7 @@ fn test_block_builder_accumulation() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     builder.add_action(thread_id, space_id, action.clone(), BranchPath::root());
@@ -226,6 +228,7 @@ fn test_block_builder_forms_hierarchy() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     builder.add_action(thread1_space1, space1, action(5), BranchPath::root());
@@ -274,6 +277,7 @@ fn test_block_sync_roundtrip() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     builder.add_action(thread_id, space_id, action, BranchPath::root());

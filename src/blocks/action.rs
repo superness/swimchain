@@ -8,7 +8,7 @@
 use crate::crypto::sha256;
 use serde_big_array::BigArray;
 
-/// Action serialized size: 465 bytes
+/// Action serialized size: 466 bytes (was 465 pre private-space confidentiality).
 /// - action_type: 1 byte
 /// - actor: 32 bytes
 /// - timestamp: 8 bytes
@@ -25,7 +25,17 @@ use serde_big_array::BigArray;
 /// - media_refs: 148 bytes (4 x 37 bytes each: 32 hash + 1 type + 4 size)
 /// - replaces_pending_flag: 1 byte (0 = None, 1 = Some)
 /// - replaces_pending: 32 bytes (hash of action to replace, zeros if None)
-pub const ACTION_SERIALIZED_SIZE: usize = 465;
+/// - private: 1 byte (0 = public, 1 = private-space encrypted content)
+///
+/// WIRE FORK: this is a hard fork of the action encoding (465 → 466). `deserialize`
+/// still accepts the 465-byte legacy layout (treated as `private = false`) so
+/// already-signed actions validate through the network-coordinated rollout; `serialize`
+/// always emits 466. See `docs/private-spaces.md`.
+pub const ACTION_SERIALIZED_SIZE: usize = 466;
+
+/// Legacy (pre-confidentiality) action serialized size, without the trailing `private`
+/// byte. Accepted by `deserialize` for backward compatibility during rollout.
+pub const ACTION_SERIALIZED_SIZE_LEGACY: usize = 465;
 
 /// Maximum number of media attachments per action
 pub const MAX_MEDIA_REFS: usize = 4;
@@ -219,6 +229,17 @@ pub struct Action {
     /// The old action must be from the same author and still in the mempool.
     /// This enables coalescing create+edit into a single on-chain action.
     pub replaces_pending: Option<[u8; 32]>,
+    /// Private-space marker: `true` iff this action's content is end-to-end encrypted
+    /// for a private space (text framed `[PRIVATE:v1:]`, media as `PRVM1`).
+    ///
+    /// This lets a node decide — WITHOUT decrypting or even fetching the body — whether
+    /// content is private, so it can gate propagation/serving to members only. It is
+    /// **authenticated**: folded into the signature preimage (see
+    /// `blocks::validation::validate_action_signature`), so flipping it on the wire
+    /// invalidates the signature. See the private-space confidentiality design spec
+    /// and `docs/private-spaces.md`.
+    #[serde(default)]
+    pub private: bool,
 }
 
 impl Action {
@@ -246,6 +267,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -274,6 +296,7 @@ impl Action {
             display_name: None,
             media_refs: media_refs.into_iter().take(MAX_MEDIA_REFS).collect(),
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -302,6 +325,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -331,6 +355,7 @@ impl Action {
             display_name: None,
             media_refs: media_refs.into_iter().take(MAX_MEDIA_REFS).collect(),
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -359,6 +384,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -389,6 +415,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -421,6 +448,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -451,6 +479,7 @@ impl Action {
             display_name: None,
             media_refs: media_refs.into_iter().take(MAX_MEDIA_REFS).collect(),
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -480,6 +509,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -511,6 +541,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -538,6 +569,7 @@ impl Action {
             display_name: None,
             media_refs: vec![],
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -647,18 +679,29 @@ impl Action {
         }
         // Remaining bytes already zero from initialization (flag = 0, hash = zeros)
 
+        // private: 1 byte at the fixed final offset (465). Written by absolute index
+        // because `offset` is not advanced in the replaces_pending == None branch.
+        buf[ACTION_SERIALIZED_SIZE_LEGACY] = u8::from(self.private);
+
         buf
     }
 
-    /// Deserialize action from bytes
+    /// Deserialize action from bytes.
+    ///
+    /// Accepts both the current 466-byte layout and the legacy 465-byte layout
+    /// (pre private-space confidentiality). A legacy buffer is decoded as
+    /// `private = false`. See `ACTION_SERIALIZED_SIZE` for the wire-fork rationale.
     pub fn deserialize(data: &[u8]) -> Result<Self, ActionError> {
-        if data.len() != ACTION_SERIALIZED_SIZE {
+        if data.len() != ACTION_SERIALIZED_SIZE && data.len() != ACTION_SERIALIZED_SIZE_LEGACY {
             return Err(ActionError::DeserializationError(format!(
-                "Expected {} bytes, got {}",
-                ACTION_SERIALIZED_SIZE,
+                "Expected {ACTION_SERIALIZED_SIZE} or {ACTION_SERIALIZED_SIZE_LEGACY} bytes, got {}",
                 data.len()
             )));
         }
+
+        // private: trailing byte, present only in the 466-byte layout.
+        let private =
+            data.len() == ACTION_SERIALIZED_SIZE && data[ACTION_SERIALIZED_SIZE_LEGACY] == 1;
 
         let mut offset = 0;
 
@@ -802,6 +845,7 @@ impl Action {
             display_name,
             media_refs,
             replaces_pending,
+            private,
         })
     }
 
@@ -940,6 +984,7 @@ mod tests {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         }
     }
 
@@ -1070,7 +1115,48 @@ mod tests {
         let action = make_test_action();
         let serialized = action.serialize();
         assert_eq!(serialized.len(), ACTION_SERIALIZED_SIZE);
-        assert_eq!(serialized.len(), 465);
+        assert_eq!(serialized.len(), 466);
+    }
+
+    #[test]
+    fn test_private_flag_serialized_at_final_byte() {
+        let mut action = make_test_action();
+        action.private = false;
+        assert_eq!(action.serialize()[465], 0);
+        action.private = true;
+        assert_eq!(action.serialize()[465], 1);
+    }
+
+    #[test]
+    fn test_private_flag_roundtrip() {
+        for private in [false, true] {
+            let mut action = make_test_action();
+            action.private = private;
+            let de = Action::deserialize(&action.serialize()).unwrap();
+            assert_eq!(de.private, private);
+            assert_eq!(de, action);
+        }
+    }
+
+    #[test]
+    fn test_legacy_465_byte_action_deserializes_as_public() {
+        // A 466-byte private action, truncated to the legacy 465-byte layout, must decode
+        // as public (private = false) so pre-fork wire data still validates.
+        let mut action = make_test_action();
+        action.private = true;
+        let full = action.serialize();
+        let legacy = &full[..ACTION_SERIALIZED_SIZE_LEGACY];
+        assert_eq!(legacy.len(), 465);
+        let de = Action::deserialize(legacy).unwrap();
+        assert!(!de.private);
+        // Every other field is byte-identical to the private original.
+        assert_eq!(
+            de,
+            Action {
+                private: false,
+                ..action
+            }
+        );
     }
 
     #[test]
@@ -1097,6 +1183,7 @@ mod tests {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         };
         let serialized = action.serialize();
         let deserialized = Action::deserialize(&serialized).unwrap();

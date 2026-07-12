@@ -43,6 +43,7 @@ fn test_actions_accumulate_into_content_block() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     let thread_id = [10u8; 32];
@@ -86,6 +87,7 @@ fn test_content_blocks_aggregate_into_space_block() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     // Thread 2 with 30 PoW
@@ -103,6 +105,7 @@ fn test_content_blocks_aggregate_into_space_block() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     let space_id = [20u8; 32];
@@ -145,6 +148,7 @@ fn test_space_blocks_aggregate_into_root_block() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     // Add to two different spaces
@@ -182,6 +186,7 @@ fn test_root_block_chain_continuity() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     // First block
@@ -300,6 +305,7 @@ fn test_block_not_formed_below_threshold() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     builder.add_action([10u8; 32], [20u8; 32], action, BranchPath::root());
@@ -327,6 +333,7 @@ fn test_block_formed_at_threshold() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     builder.add_action([10u8; 32], [20u8; 32], action, BranchPath::root());
@@ -354,6 +361,7 @@ fn test_multiple_small_actions_reach_threshold() {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         };
 
         builder.add_action([10 + i; 32], [20u8; 32], action, BranchPath::root());
@@ -390,6 +398,7 @@ fn test_replies_stay_with_parent_thread() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     // Reply to the post
@@ -407,6 +416,7 @@ fn test_replies_stay_with_parent_thread() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     // Another reply
@@ -424,6 +434,7 @@ fn test_replies_stay_with_parent_thread() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     // All belong to the same thread
@@ -473,6 +484,7 @@ fn test_concurrent_builder_access() {
                 media_refs: vec![],
                 display_name: None,
                 replaces_pending: None,
+                private: false,
             };
 
             let mut builder = builder_clone.write().unwrap();
@@ -601,6 +613,7 @@ fn test_vision_block_hierarchy() {
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     };
 
     let thread_id = [10u8; 32];
@@ -656,6 +669,7 @@ fn test_vision_pow_aggregation() {
             media_refs: vec![],
             display_name: None,
             replaces_pending: None,
+            private: false,
         };
 
         builder.add_action([i as u8; 32], [20u8; 32], action, BranchPath::root());

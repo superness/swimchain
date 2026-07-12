@@ -56,6 +56,7 @@ fn post_action(author: [u8; 32], content_hash: [u8; 32], timestamp: u64) -> Acti
         media_refs: vec![],
         display_name: None,
         replaces_pending: None,
+        private: false,
     }
 }
 
