@@ -168,7 +168,8 @@
         <span class="stat">Storage-pressure half-life &middot; bounded chain</span>
         <h3>Decay adapts. Storage stays small.</h3>
         <p>Content decays unless the community engages — and the half-life adapts to storage pressure. Fast growth means faster decay; quiet water means content lives longer. The chain targets a bounded footprint instead of growing forever.</p>
-        <p>That's why the whole thing fits on a phone — a <strong>full node</strong>, not a light client trusting someone else's server.</p>
+        <p>And any single branch that grows past <strong>50&nbsp;MiB</strong> fractures into sub-branches by content hash, so no leaf ever becomes a monolith. That's why the whole thing fits on a phone — a <strong>full node</strong>, not a light client trusting someone else's server.</p>
+        <p><a href="/sim/size">▶ Run the live simulation</a> — pour content in and watch it split.</p>
       </div>
 
       <div class="law">
@@ -183,6 +184,7 @@
         <h3>Communities form themselves.</h3>
         <p>When a group interacts mostly with each other, the network detects the cluster from chain data and gives it its own discoverable space — automatically, deterministically, with no admin deciding anything. It's a graduation, not an eviction: threads continue with a visible pointer, members keep the parent space, and the new lane is theirs to rename.</p>
         <p>One guard: a cluster only graduates if it's a <strong>minority</strong> of the space's active participants — a space's regulars can never be "split off" from their own space. And spam handles itself: a spammer engaging only with themselves is a community of one, alone in a space nobody visits. <strong>They get exactly what they built.</strong></p>
+        <p><a href="/sim/behavioral">▶ Run the live simulation</a> — the real gates in your browser.</p>
       </div>
 
       <div class="law">
@@ -190,6 +192,7 @@
         <h3>Single-purpose nodes drift onto their own frequency.</h3>
         <p>Communities form themselves in the content; the network layer has a matching move. A node that ends up serving or reading <strong>one namespace and nothing else</strong> — a bespoke news site's node, a client scoped to a single space — quietly tunes to that namespace's own discovery <strong>frequency</strong> and stops sharing a peer pool with the main network. It's optimized out of the crowd it never talks to.</p>
         <p>Every node computes its own frequency from its own behavior — nobody can push you onto one, so it can't be used to isolate you. It's still the <strong>same chain</strong>; only who you discover changes. Read across the whole network and you never drift; go exclusive and you do; broaden again and you're back. <strong>Self-correcting, reversible, no coordinator.</strong></p>
+        <p><a href="/sim/frequency">▶ Run the live simulation</a> — drag the dial and watch it drift.</p>
       </div>
 
       <div class="law">

@@ -16,6 +16,7 @@ pub mod decay;
 pub mod error;
 pub mod identity;
 pub mod pow;
+pub mod sims;
 
 // Re-export main types for convenience
 pub use crypto::{content_id, leading_zeros, sha256};

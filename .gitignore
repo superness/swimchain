@@ -66,3 +66,4 @@ docs/qa/package*.json
 /node-genesis.log
 /.daemon-pids/swim-auto.log
 /target-test/
+swimchain-wasm/pkg/

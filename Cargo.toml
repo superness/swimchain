@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "swimchain-wasm"]
+members = [".", "swimchain-wasm", "swimchain-core"]
 exclude = ["desktop-app/src-tauri", "tools/dns-seeder", "mobile-app/src-tauri", "launcher-apps/app-shell/src-tauri"]
 
 [package]
@@ -25,6 +25,9 @@ name = "sw"
 path = "src/bin/cs.rs"
 
 [dependencies]
+# Pure protocol decision cores shared with the browser WASM simulations
+swimchain-core = { path = "swimchain-core" }
+
 # Async runtime (ROADMAP Appendix B)
 tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
 

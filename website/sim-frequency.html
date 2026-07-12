@@ -1,0 +1,240 @@
+<title>Frequency isolation — live simulation</title>
+<meta name="description" content="A live, in-browser simulation of Swimchain's frequency isolation, running the real protocol code compiled to WebAssembly.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --ink:#071E26; --surface:#0C2A33; --surface-2:#10333E; --line:#1B4450;
+    --foam:#E8F1EF; --muted:#8FB0AC; --heat:#FF9E5E; --heat-deep:#E07B3A;
+    --shallow:#6ED3C2; --cold:#3E7C8A;
+    --serif:'Palatino Linotype','Book Antiqua',Palatino,Georgia,serif;
+    --mono:ui-monospace,'Cascadia Code','JetBrains Mono',Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{background:var(--ink)}
+  body{margin:0;background:
+      radial-gradient(1200px 600px at 70% -10%, rgba(110,211,194,.07), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(255,158,94,.05), transparent 55%),
+      var(--ink);
+    color:var(--foam);font-family:var(--serif);font-size:18px;line-height:1.6}
+  a{color:var(--shallow)} a:hover{color:var(--foam)}
+  .wrap{max-width:1060px;margin:0 auto;padding:0 24px}
+  header.site{display:flex;align-items:baseline;justify-content:space-between;gap:16px;padding:28px 0 0}
+  .mark{font-family:var(--mono);font-size:15px;letter-spacing:.06em;color:var(--foam);text-decoration:none}
+  .mark .tld{color:var(--muted)}
+  nav.site{display:flex;gap:22px;font-family:var(--mono);font-size:13px}
+  nav.site a{color:var(--muted);text-decoration:none} nav.site a:hover{color:var(--foam)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--shallow)}
+  .hero{padding:56px 0 16px}
+  h1{margin:14px 0 16px;font-size:clamp(30px,4.4vw,46px);line-height:1.08;font-weight:600;letter-spacing:-.01em}
+  h1 em{font-style:italic;color:var(--heat)}
+  .lede{max-width:44em;color:var(--muted);font-size:19px;margin:0}
+  .lede strong{color:var(--foam)}
+  .realchip{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;
+    color:var(--shallow);border:1px solid var(--line);border-radius:20px;padding:5px 12px;margin-top:16px}
+  .realchip b{color:var(--foam)}
+  .realchip .dot{width:7px;height:7px;border-radius:50%;background:var(--shallow)}
+
+  .sim{display:grid;grid-template-columns:1fr 320px;gap:28px;margin:34px 0 20px;align-items:start}
+  .stage{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:8px}
+  canvas{display:block;width:100%;height:auto;border-radius:6px}
+  .panel{display:flex;flex-direction:column;gap:16px}
+  .ctl{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px}
+  .ctl label{font-family:var(--mono);font-size:12px;letter-spacing:.04em;color:var(--muted);text-transform:uppercase;display:block;margin-bottom:8px}
+  .ctl .val{font-family:var(--mono);color:var(--heat);font-size:22px}
+  input[type=range]{width:100%;accent-color:var(--heat);margin-top:6px}
+  .readout{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:14px 16px;font-family:var(--mono);font-size:13px}
+  .readout .row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px dotted var(--line)}
+  .readout .row:last-child{border-bottom:none}
+  .readout .k{color:var(--muted)} .readout .v{color:var(--foam)}
+  .readout .v.hot{color:var(--heat)} .readout .v.cool{color:var(--shallow)}
+  .verdict{border-radius:8px;padding:14px 16px;font-size:15px;line-height:1.45}
+  .verdict.base{background:rgba(110,211,194,.08);border:1px solid var(--cold)}
+  .verdict.iso{background:rgba(255,158,94,.10);border:1px solid var(--heat-deep)}
+  .verdict b{color:var(--foam)}
+  section{padding:26px 0;border-top:1px solid var(--line)}
+  h2{font-size:clamp(22px,3vw,28px);margin:8px 0 12px}
+  p.body{color:var(--muted);max-width:44em}
+  p.body strong{color:var(--foam)}
+  code{font-family:var(--mono);font-size:.85em;background:var(--surface-2);border:1px solid var(--line);border-radius:3px;padding:1px 5px;color:var(--foam)}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:10px}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:11px;height:11px;border-radius:50%;display:inline-block}
+  footer.site{border-top:1px solid var(--line);padding:36px 0 56px;margin-top:20px;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;font-family:var(--mono);font-size:13px;color:var(--muted)}
+  footer.site a{color:var(--muted)}
+  @media(max-width:820px){ .sim{grid-template-columns:1fr} nav.site{display:none} }
+</style>
+
+<header class="site wrap">
+  <a class="mark" href="/">swimchain<span class="tld">.io</span></a>
+  <nav class="site">
+    <a href="/protocol">Protocol</a>
+    <a href="/sim/behavioral">Behavioral</a>
+    <a href="/sim/size">Size fracture</a>
+    <a href="/browse/">Browse</a>
+  </nav>
+</header>
+
+<div class="hero wrap">
+  <span class="eyebrow">Live simulation &middot; network layer</span>
+  <h1>Frequency isolation, <em>running for real</em>.</h1>
+  <p class="lede">
+    A node whose traffic collapses onto a single namespace <strong>drifts onto that namespace&apos;s
+    own discovery frequency</strong> and is optimized out of the main peer crowd. Drag the dial and
+    watch it happen &mdash; every number below is computed by the <strong>actual protocol code</strong>,
+    compiled to WebAssembly. Not a mock-up of the logic; the logic.
+  </p>
+  <div class="realchip"><span class="dot"></span> <span>Running <b>swimchain-core</b> &middot; the same Rust the node runs</span></div>
+</div>
+
+<div class="sim wrap">
+  <div class="stage">
+    <canvas id="c" width="680" height="440"></canvas>
+    <div class="legend">
+      <span><i class="sw" style="background:#6ED3C2"></i> main-network peer (base)</span>
+      <span><i class="sw" style="background:#FF9E5E"></i> this node</span>
+      <span><i class="sw" style="background:#E07B3A"></i> same-frequency peer</span>
+      <span><i class="sw" style="background:#B98CE0"></i> deliberate subscriber</span>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="ctl">
+      <label for="conc">Share of this node&apos;s traffic in one space</label>
+      <div class="val"><span id="concv">50</span>%</div>
+      <input id="conc" type="range" min="0" max="100" value="50" step="1">
+    </div>
+    <div class="readout" id="readout"></div>
+    <div class="verdict base" id="verdict"></div>
+  </div>
+</div>
+
+<section class="wrap">
+  <h2>What you&apos;re looking at</h2>
+  <p class="body">
+    The dial is this node&apos;s <strong>concentration</strong> &mdash; how much of what it serves and
+    reads lives in one namespace versus the rest of the network. Each frame, the page hands those
+    weights to <code>swimchain_core::frequency::evaluate_drift</code> and draws the real result.
+  </p>
+  <p class="body" style="margin-top:12px">
+    Below <strong>90%</strong> the node stays on the base network and peers with everyone. Cross
+    <strong>90%</strong> and it drifts onto its space&apos;s frequency &mdash; a real value derived by
+    hashing the namespace &mdash; and its links to base peers go dark; it keeps only peers that share
+    that frequency. Drift it up, then back down: it doesn&apos;t rejoin until <strong>75%</strong>.
+    That gap is <strong>hysteresis</strong>, straight from the real constants, so a node hovering at
+    the boundary can&apos;t flap. A <span style="color:#B98CE0">deliberate subscriber</span> that
+    asked for that one space stays reachable the whole time &mdash; isolation is a hard wall to the
+    crowd, not to intent.
+  </p>
+  <p class="body" style="margin-top:12px">
+    It&apos;s the same chain and the same content throughout; only <em>who this node discovers</em>
+    changes. Read on the <a href="/protocol">protocol page</a>, or see it in the wild on
+    <a href="/example/">The Daily Drift</a>.
+  </p>
+</section>
+
+<footer class="site wrap">
+  <span>swimchain.io — content that earns its place</span>
+  <span>
+    <a href="/protocol">Protocol</a> ·
+    <a href="/sim/behavioral">Behavioral sim</a> ·
+    <a href="/sim/size">Size-fracture sim</a> ·
+    <a href="https://github.com/superness/swimchain">GitHub</a>
+  </span>
+</footer>
+
+<script type="module">
+  import init, { frequency_evaluate, frequency_eligible } from '/sim/pkg/swimchain_wasm.js';
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const conc = document.getElementById('conc');
+  const concv = document.getElementById('concv');
+  const readoutEl = document.getElementById('readout');
+  const verdictEl = document.getElementById('verdict');
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const W = 680, H = 440;
+  canvas.width = W * DPR; canvas.height = H * DPR; ctx.scale(DPR, DPR);
+
+  // The node's namespace id = 1; "the rest" = 2. Fixed peer layout.
+  const FOCUS_NS = 1;
+  let ready = false, currentPrimary = 0;
+
+  // base peers around a ring, plus same-freq peers and a subscriber.
+  const basePeers = [];
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    basePeers.push({ x: 340 + Math.cos(a) * 150, y: 210 + Math.sin(a) * 150 });
+  }
+  const freqPeers = [ {x:560,y:120},{x:600,y:250},{x:560,y:340} ];
+  const subscriber = { x: 120, y: 360 };
+  const node = { x: 340, y: 210 };
+
+  function draw(outcome) {
+    ctx.clearRect(0, 0, W, H);
+    const isolated = outcome.isolated;
+    // edges
+    ctx.lineWidth = 1.2;
+    for (const p of basePeers) {
+      // base peer eligible with node? node primary vs base(0)
+      const ok = frequency_eligible(outcome.primary, 0, 0, 0);
+      ctx.strokeStyle = ok ? 'rgba(110,211,194,.35)' : 'rgba(110,211,194,.06)';
+      line(node, p);
+    }
+    if (isolated) {
+      for (const p of freqPeers) { ctx.strokeStyle = 'rgba(224,123,58,.6)'; line(node, p); }
+    }
+    // subscriber: eligible if it requested the node's namespace (requested = node primary)
+    const subOk = frequency_eligible(outcome.primary, 0, 0, isolated ? outcome.primary : 0);
+    ctx.strokeStyle = subOk && isolated ? 'rgba(185,140,224,.6)' : 'rgba(185,140,224,.12)';
+    line(node, subscriber);
+
+    // nodes
+    for (const p of basePeers) dot(p.x, p.y, 8, '#6ED3C2');
+    for (const p of freqPeers) dot(p.x, p.y, 8, '#E07B3A', isolated ? 1 : .25);
+    dot(subscriber.x, subscriber.y, 9, '#B98CE0');
+    // this node — pulses when isolated
+    dot(node.x, node.y, 13, '#FF9E5E');
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillStyle = '#8FB0AC';
+    ctx.textAlign = 'center';
+    ctx.fillText(isolated ? 'freq #' + outcome.primary : 'base network', node.x, node.y + 30);
+  }
+  function line(a, b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  function dot(x,y,r,col,alpha){ ctx.globalAlpha = alpha==null?1:alpha; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle=col; ctx.fill(); ctx.globalAlpha=1; }
+
+  function update() {
+    const c = +conc.value;
+    concv.textContent = c;
+    if (!ready) return;
+    // weights: focus namespace gets c, the rest gets (100-c). Scale up past the
+    // real minimum-activity floor so the sim is always "active enough".
+    const scale = 500;
+    const weights = [[FOCUS_NS, c * scale], [2, (100 - c) * scale]];
+    const outcome = frequency_evaluate(weights, currentPrimary);
+    currentPrimary = outcome.primary; // carry state so hysteresis is live
+    draw(outcome);
+    renderReadout(outcome, c);
+  }
+
+  function renderReadout(o, c) {
+    const share = (o.dominant_share * 100).toFixed(1);
+    readoutEl.innerHTML = `
+      <div class="row"><span class="k">dominant share</span><span class="v ${o.dominant_share>=0.9?'hot':''}">${share}%</span></div>
+      <div class="row"><span class="k">exclusivity gate</span><span class="v">0.90</span></div>
+      <div class="row"><span class="k">rejoin gate</span><span class="v">0.75</span></div>
+      <div class="row"><span class="k">frequency</span><span class="v ${o.isolated?'hot':'cool'}">${o.isolated? '#'+o.primary : 'base (0)'}</span></div>
+      <div class="row"><span class="k">isolated</span><span class="v ${o.isolated?'hot':'cool'}">${o.isolated}</span></div>`;
+    verdictEl.className = 'verdict ' + (o.isolated ? 'iso' : 'base');
+    verdictEl.innerHTML = o.isolated
+      ? `<b>Drifted.</b> ${escapeHtml(o.reason)}. This node now shares a peer pool only with its own frequency — optimized out of the main crowd.`
+      : `<b>On base.</b> ${escapeHtml(o.reason)}. It peers across the whole network.`;
+  }
+  function escapeHtml(s){return String(s).replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+
+  const qc = new URLSearchParams(location.search).get('c');
+  if (qc !== null && !isNaN(+qc)) conc.value = Math.max(0, Math.min(100, +qc));
+  conc.addEventListener('input', update);
+  init().then(() => { ready = true; update(); }).catch(e => {
+    verdictEl.className = 'verdict iso';
+    verdictEl.textContent = 'Failed to load the WASM module: ' + e;
+  });
+</script>

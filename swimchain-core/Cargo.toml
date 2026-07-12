@@ -1,0 +1,12 @@
+[package]
+name = "swimchain-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Pure protocol decision cores (frequency isolation, behavioral branching, size-based fracture) shared by the Swimchain node and the browser WASM simulations — one source of truth, no storage/network dependencies."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/superness/swimchain"
+
+[dependencies]
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
