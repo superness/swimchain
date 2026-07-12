@@ -67,12 +67,20 @@ P2P lockstep RTS engines (Age of Empires, Factorio) and blockchains already work
 - **Non-custodial play works today.** `submit_post` / `submit_reply` / `submit_engagement` /
   `submit_edit` accept a **pre-signed, pre-PoW'd action**: the client supplies `author_id`, the
   64-byte `signature`, and the full PoW solution; the node builds the `Action` from those and
-  never signs with a local identity (`src/rpc/methods.rs:2240`). Signatures are genuinely
-  verified — `validate_action_signature` Ed25519-checks `content_hash‖timestamp`, and a forged
-  signature is rejected (`src/blocks/validation.rs:359`, test at `:702`). The only author gate is
-  `check_identity_sponsored` (genesis can satisfy this for demo players). **The node is already a
-  non-custodial relay+validator** — a browser client holding its own keys, signing and doing
-  Argon2id PoW in WASM, can play through any node without surrendering a key (the Nostr-relay model).
+  never signs with a local identity (`src/rpc/methods.rs:2240`). A browser client holding its own
+  keys, signing and doing Argon2id PoW in WASM, can play through any node without surrendering a
+  key (the Nostr-relay model). The only author gate is `check_identity_sponsored` (genesis can
+  satisfy this for demo players).
+- **⚠️ Authorship enforcement (corrected 2026-07-12).** An earlier draft of this note claimed
+  signatures were "genuinely verified" — that was WRONG. Per-action signatures were **not** checked
+  on the ingest path: the RPC only length-checked the signature, and block/gossip ingest verified
+  merkle+PoW but never authorship, so `validate_action_signature` was dead code on the live path.
+  A sponsored party could post as any identity with a garbage signature. This is now **fixed**
+  (`validate_content_action_authenticity`, wired into RPC submit + gossip mempool + block ingest;
+  testnet magic bumped TES3→TES4 as a coordinated fork). Post/Reply/Edit use the canonical
+  `content_hash‖ts_LE‖private` preimage; Engage uses the `engage:` string scheme; space/private-space
+  admin actions are an explicit deferral (private-space Phase 2-4). "No server can forge your move"
+  is only true *after* this fix + client convergence land on the network.
 - **Eager namespace replication is a pure client behavior** — retrieval is client-driven by
   design, so the game client just requests every content ref in its namespace. No node change.
 - **Chess needs zero node changes** — a game is a thread; the opening is a `submit_post`, each
