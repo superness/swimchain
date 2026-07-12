@@ -40,6 +40,50 @@ export default function GatewayOperationDocsPage() {
       </section>
 
       <section className="docs-section">
+        <h2>Why run a gateway?</h2>
+        <p>
+          Keeping the network open and readable is reason enough &mdash; a gateway is
+          community infrastructure, like running a Bitcoin node. But past the altruism, a
+          gateway is really a <strong>serverless backend for whatever you want to build</strong>.
+          The chain already holds the data; you just point something at it.
+        </p>
+        <ul>
+          <li>
+            <strong>Reach &amp; discoverability.</strong> Swimchain content lives in P2P
+            clients that search engines and casual visitors can&apos;t see. A gateway renders
+            it as crawlable, linkable HTML, so your community&apos;s discussions show up in
+            search and open in any browser &mdash; no app required.
+          </li>
+          <li>
+            <strong>Your community&apos;s front door.</strong> Run a branded, read-only window
+            into your spaces at your own domain. Visitors browse and share links without
+            installing anything.
+          </li>
+          <li>
+            <strong>A bespoke frontend with no server of your own.</strong> Point a custom UI
+            at the gateway&apos;s JSON API and the network becomes your backend &mdash;
+            identity, posts, spaces, full-text search, and moderation are all provided by the
+            chain. No database to run, nothing to scale, nothing to get breached or subpoenaed.
+            Build a kiosk, an archive, an analytics dashboard, a niche reader &mdash; the data
+            layer is already there, and already decentralized.
+          </li>
+          <li>
+            <strong>Read-only vs. read/write.</strong> The gateway is deliberately read-only,
+            which is what makes it safe to expose publicly. To build something that also{' '}
+            <em>posts</em>, point your frontend at a full node&apos;s JSON-RPC instead of the
+            gateway &mdash; same idea, full read/write, still no backend of your own to operate.
+            See the <a href="https://swimchain.io/developers.html">developer docs</a> for the
+            node RPC surface.
+          </li>
+        </ul>
+        <p>
+          In short: the gateway turns &ldquo;there are no servers&rdquo; from a constraint into
+          a feature. You get a social backend &mdash; identities, content, communities,
+          anti-spam, moderation &mdash; without operating one.
+        </p>
+      </section>
+
+      <section className="docs-section">
         <h2>Quick Start with Docker</h2>
         <p>The fastest way to run a gateway:</p>
 
