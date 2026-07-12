@@ -149,11 +149,22 @@ export function MainLayout({ children }: MainLayoutProps): JSX.Element {
   useEffect(() => {
     if (!isInIframe()) return;
     const onClick = (e: MouseEvent) => {
-      const anchor = (e.target as HTMLElement | null)?.closest?.('a');
-      const href = anchor?.getAttribute('href');
-      if (href && /^https?:\/\//i.test(href)) {
+      const anchor = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      // Use the RESOLVED absolute URL (.href), and treat any http(s) link to a
+      // different origin as external — hand it to the shell to open natively.
+      let resolved: URL;
+      try {
+        resolved = new URL(anchor.href, window.location.href);
+      } catch {
+        return;
+      }
+      const isExternalHttp =
+        (resolved.protocol === 'http:' || resolved.protocol === 'https:') &&
+        resolved.origin !== window.location.origin;
+      if (isExternalHttp) {
         e.preventDefault();
-        window.parent.postMessage({ type: 'SWIMCHAIN_OPEN_EXTERNAL', url: href }, '*');
+        window.parent.postMessage({ type: 'SWIMCHAIN_OPEN_EXTERNAL', url: resolved.href }, '*');
       }
     };
     document.addEventListener('click', onClick, true);

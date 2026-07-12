@@ -26,6 +26,7 @@ import {
   getAvatarColor,
   getAvatarInitials,
   truncateAddress,
+  toExternalUrl,
 } from '../lib/profile';
 import './Profile.css';
 
@@ -506,7 +507,7 @@ export function ProfilePage(): JSX.Element {
                 />
               ) : profile?.info?.website ? (
                 <a
-                  href={profile.info.website}
+                  href={toExternalUrl(profile.info.website)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="profile-website"

@@ -104,6 +104,18 @@ export interface UserProfile {
  * @param userPk - User's public key (hex string)
  * @returns Profile space ID (32 hex chars)
  */
+/**
+ * Normalize a user-entered website into an absolute external URL. People type
+ * "patattack.com" without a scheme, which browsers treat as a RELATIVE link
+ * (and in the embedded app that resolves to the app's own origin, so it never
+ * opens). Prepend https:// when there's no scheme.
+ */
+export function toExternalUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return trimmed;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
+
 export function getProfileSpaceId(userPk: string): string {
   const preimage = `profile:${PROFILE_VERSION}:${userPk.toLowerCase()}`;
   const hash = sha256(new TextEncoder().encode(preimage));

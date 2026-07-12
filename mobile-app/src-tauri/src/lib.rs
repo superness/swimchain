@@ -95,11 +95,14 @@ async fn get_node_address(state: tauri::State<'_, AppState>) -> Result<String, S
 async fn open_external(url: String) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
-        open_url_android(&url)
+        let r = open_url_android(&url);
+        if let Err(e) = &r {
+            log::error!("[OPEN_EXTERNAL] failed for {url}: {e}");
+        }
+        r
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = url;
         Ok(())
     }
 }
