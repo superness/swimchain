@@ -1,0 +1,269 @@
+<title>Getting Started with Swimchain</title>
+<meta name="description" content="Your first ten minutes on Swimchain: install, your identity is created automatically, get sponsored so you can post, and find your first spaces.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #071E26;
+    --surface: #0C2A33;
+    --surface-2: #10333E;
+    --line: #1B4450;
+    --foam: #E8F1EF;
+    --muted: #8FB0AC;
+    --heat: #FF9E5E;
+    --heat-deep: #E07B3A;
+    --shallow: #6ED3C2;
+    --cold: #3E7C8A;
+    --serif: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+  }
+
+  html { background: var(--ink); }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, rgba(110, 211, 194, 0.07), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(255, 158, 94, 0.05), transparent 55%),
+      var(--ink);
+    color: var(--foam);
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.65;
+  }
+
+  a { color: var(--shallow); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--foam); }
+  a:focus-visible { outline: 2px solid var(--heat); outline-offset: 3px; border-radius: 2px; }
+
+  .wrap { max-width: 820px; margin: 0 auto; padding: 0 24px; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--shallow);
+  }
+
+  header.site {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 28px 0 0; max-width: 1060px; margin: 0 auto;
+  }
+  .mark { font-family: var(--mono); font-size: 15px; letter-spacing: 0.06em; color: var(--foam); text-decoration: none; }
+  .mark .tld { color: var(--muted); }
+  nav.site { display: flex; gap: 22px; font-family: var(--mono); font-size: 13px; }
+  nav.site a { color: var(--muted); text-decoration: none; }
+  nav.site a:hover { color: var(--foam); }
+
+  .page-hero { padding: 72px 0 24px; }
+  h1 { margin: 18px 0 18px; font-size: clamp(32px, 4.4vw, 46px); line-height: 1.1; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+  h1 em { font-style: italic; color: var(--heat); }
+  .lede { max-width: 40em; color: var(--muted); font-size: 19px; margin: 0; }
+  .lede strong { color: var(--foam); }
+
+  section { padding: 8px 0 24px; }
+
+  /* step layout: text + phone screenshot side by side */
+  .step {
+    display: grid; grid-template-columns: 1fr 280px; gap: 36px; align-items: start;
+    padding: 40px 0; border-top: 1px solid var(--line);
+  }
+  .step .n {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--heat); margin-bottom: 6px;
+  }
+  .step h2 { font-size: clamp(22px, 3vw, 28px); font-weight: 600; margin: 0 0 12px; letter-spacing: -0.01em; }
+  .step p { color: var(--muted); margin: 0 0 12px; }
+  .step p strong { color: var(--foam); }
+  .step code {
+    font-family: var(--mono); font-size: 0.85em; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; color: var(--foam);
+  }
+  .step ol, .step ul { color: var(--muted); margin: 0 0 12px; padding-left: 22px; }
+  .step li { padding: 3px 0; }
+  .step li strong { color: var(--foam); }
+  .step .shot img {
+    display: block; width: 100%; height: auto;
+    border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 14px 34px rgba(0,0,0,0.4);
+  }
+  .step .shot figcaption { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin-top: 8px; text-align: center; }
+
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; margin: 20px 0 8px; }
+  .btn { display: inline-block; padding: 12px 22px; font-family: var(--mono); font-size: 14px; text-decoration: none; border-radius: 4px; }
+  .btn.primary { background: var(--heat); border: 1px solid var(--heat); color: #241205; font-weight: 600; }
+  .btn.primary:hover { background: var(--heat-deep); border-color: var(--heat-deep); }
+  .btn.ghost { border: 1px solid var(--line); color: var(--foam); }
+  .btn.ghost:hover { border-color: var(--shallow); }
+
+  .callout {
+    background: rgba(110,211,194,0.06); border-left: 2px solid var(--shallow);
+    padding: 12px 16px; border-radius: 0 6px 6px 0; color: var(--foam); margin: 16px 0;
+  }
+  .callout b { color: var(--foam); }
+
+  footer.site {
+    border-top: 1px solid var(--line); padding: 42px 0 56px; margin-top: 24px;
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+    max-width: 1060px; margin-left: auto; margin-right: auto;
+  }
+  footer.site a { color: var(--muted); }
+  footer.site a:hover { color: var(--foam); }
+
+  @media (max-width: 720px) {
+    .step { grid-template-columns: 1fr; gap: 20px; }
+    .step .shot { max-width: 300px; }
+    nav.site { display: none; }
+  }
+</style>
+
+<header class="site">
+  <a class="mark" href="/">swimchain<span class="tld">.io</span></a>
+  <nav class="site">
+    <a href="/protocol">Protocol</a>
+    <a href="/about">About</a>
+    <a href="/getting-started">Get Started</a>
+    <a href="/browse/">Browse</a>
+    <a href="developers.html">Developers</a>
+  </nav>
+</header>
+
+<div class="page-hero wrap">
+  <span class="eyebrow">Getting started</span>
+  <h1>Your first ten minutes on <em>Swimchain</em>.</h1>
+  <p class="lede">
+    There's no sign-up form and no password. You install an app, it creates your identity,
+    you get <strong>sponsored</strong> by an existing member so you can post, and you're in.
+    Here's the whole thing, step by step. Screenshots are from the Android app.
+  </p>
+  <div class="cta-row">
+    <a class="btn primary" href="/download?p=gs">Get Swimchain</a>
+    <a class="btn ghost" href="/browse/">Browse without installing</a>
+  </div>
+</div>
+
+<section class="wrap">
+
+  <div class="step">
+    <div>
+      <div class="n">Step 1</div>
+      <h2>Install &amp; launch</h2>
+      <p>
+        Grab the app for your platform from the <a href="/download?p=gs">download page</a>
+        (desktop, or the Android alpha). On first launch it <strong>starts a full node
+        and creates your identity automatically</strong> — a cryptographic keypair held on
+        your device. No email, no phone number, no account.
+      </p>
+      <div class="callout">
+        <b>Your keys are you.</b> There's no "forgot password." Back up your identity when
+        the app offers to — losing your keys means losing that identity for good.
+      </div>
+    </div>
+    <figure class="shot">
+      <img src="/img/gs-1-launch.png" alt="Swimchain first launch: 'starting node… (first launch creates your identity)'" loading="lazy">
+      <figcaption>First launch spins up your node.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div>
+      <div class="n">Step 2</div>
+      <h2>Meet your identity</h2>
+      <p>
+        Your <b>Profile</b> tab shows who you are on the network: a public key (the
+        <code>a20c32ef…</code> address), not a username you registered. Reputation and
+        history accumulate to this key over time. You can add a display name, bio, and
+        links whenever you like — none of it is required.
+      </p>
+    </div>
+    <figure class="shot">
+      <img src="/img/gs-5-profile.png" alt="Swimchain profile screen showing a keypair identity with Edit Profile and Saved Posts" loading="lazy">
+      <figcaption>You are a keypair — pseudonymous by default.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div>
+      <div class="n">Step 3 · the important one</div>
+      <h2>Get sponsored so you can post</h2>
+      <p>
+        Swimchain has no open sign-ups — that's how it stays Sybil-resistant. A brand-new
+        identity can <strong>read everything</strong>, but to <strong>post, reply, or
+        engage</strong> you need to be sponsored by an existing member. Open the
+        <b>Sponsor</b> tab → <b>Find a Sponsor</b>:
+      </p>
+      <ol>
+        <li><strong>Browse open offers</strong> and claim one that fits.</li>
+        <li>Your claim is <strong>sent to that sponsor</strong> for review.</li>
+        <li>The sponsor <strong>approves or rejects</strong> it.</li>
+        <li>Once approved, your identity is <strong>recorded on-chain</strong> and you can post.</li>
+      </ol>
+      <p>
+        No open offers, or want a specific person to vouch for you? Copy your public key
+        from this screen and share it with a member you know — they can sponsor you
+        directly. A sponsor is accountable for who they bring in, so this is a real
+        introduction, not a captcha.
+      </p>
+    </div>
+    <figure class="shot">
+      <img src="/img/gs-3-sponsor.png" alt="Swimchain 'How Sponsorship Works' screen: browse offers, claim, sponsor approves, recorded on-chain" loading="lazy">
+      <figcaption>The Sponsor tab explains the flow and lists open offers.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div>
+      <div class="n">Step 4</div>
+      <h2>Find spaces &amp; people</h2>
+      <p>
+        The <b>Discover</b> tab is where you find <strong>spaces</strong> (communities) and
+        users to follow — search, or tap <b>+ Create Space</b> to start your own. Following
+        a few spaces fills your feed.
+      </p>
+      <p>
+        Private spaces work by invitation: paste an invite code (it starts with
+        <code>swiminv1:</code>) that someone shared with you to join, or spin up your own
+        private space and invite others.
+      </p>
+    </div>
+    <figure class="shot">
+      <img src="/img/gs-4-discover.png" alt="Swimchain Discover tab: search spaces and users, create space, join a private space with an invite code" loading="lazy">
+      <figcaption>Discover public spaces, or join private ones by invite.</figcaption>
+    </figure>
+  </div>
+
+  <div class="step">
+    <div>
+      <div class="n">Step 5</div>
+      <h2>Post, reply, engage</h2>
+      <p>
+        Once you're sponsored, the <b>+</b> button composes a post, and every post you open
+        lets you <strong>reply</strong> and <strong>engage</strong>. Two things to know
+        that make Swimchain different from other apps:
+      </p>
+      <ul>
+        <li><strong>Everything costs a little proof-of-work.</strong> Posting takes a few
+          seconds of your device computing — that's the anti-spam, and it's deliberate.</li>
+        <li><strong>Content lives on attention.</strong> Posts stay alive while people
+          engage with them and quietly fade when they stop. Engaging is how you keep the
+          things you value afloat.</li>
+      </ul>
+      <p>Your feed starts empty — follow some spaces, and it fills up.</p>
+    </div>
+    <figure class="shot">
+      <img src="/img/gs-2-feed.png" alt="Swimchain home feed with the 'identity not sponsored' banner and Explore Spaces" loading="lazy">
+      <figcaption>Your feed — with the compose button and sponsorship banner.</figcaption>
+    </figure>
+  </div>
+
+  <div class="cta-row" style="border-top:1px solid var(--line); padding-top:32px;">
+    <a class="btn primary" href="/download?p=gs">Get Swimchain</a>
+    <a class="btn ghost" href="/protocol">How the protocol works</a>
+  </div>
+</section>
+
+<footer class="site">
+  <span>swimchain.io — content that earns its place</span>
+  <span>
+    <a href="/about">About</a> ·
+    <a href="/protocol">Protocol</a> ·
+    <a href="https://github.com/superness/swimchain">GitHub</a>
+  </span>
+</footer>
