@@ -403,6 +403,22 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
     try {
       const result = await rpc.listSpaces();
 
+      // A freshly-synced node knows the SPACE BLOCKS but hasn't resolved their names
+      // yet (name arrives via a GET_SPACE_META round-trip), so real public spaces come
+      // back name===null / name_unresolved. Trigger resolution for them and re-fetch —
+      // WITHOUT this they get filtered out below (unnamed) and never resolve, leaving a
+      // fresh install stuck on "No spaces found" while the node holds 15 spaces.
+      const unresolvedIds = result.spaces
+        .filter(s => (s.name_unresolved || s.name == null || s.name.trim() === '') && !spaceNamesAsked.has(s.space_id))
+        .map(s => s.space_id);
+      if (unresolvedIds.length > 0) {
+        unresolvedIds.forEach(id => {
+          spaceNamesAsked.add(id);
+          rpc.resolveSpaceName(id).catch(() => undefined);
+        });
+        setTimeout(() => refetch(true).catch(() => undefined), 1500);
+      }
+
       // Hide derived/unnamed spaces from the browse UI. Profile spaces (where a
       // user's profile-update posts live) and DM spaces come back with no
       // resolved name (name === null) — they're noise in Discover and the other
