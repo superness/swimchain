@@ -132,7 +132,9 @@ Node & clients:
   clients build                 Build all bundled clients (desktop-app build-clients.js)
 
 Browser (auto-starts the daemon; add --headed to watch):
-  open <client> [path]          Open a client: ${Object.keys(CFG.CLIENTS).join(', ')}
+  open <client> [path]          Open a client in NODE mode (framed, adopts node identity):
+                                ${Object.keys(CFG.CLIENTS).join(', ')}
+                                add --standalone for the old direct-load (browser mode)
   goto <path|url>               Navigate within the client, or to an absolute URL
   click <selector>              Click (Playwright selectors: css, text=, role=)
   type <selector> <text...>     Fill an input
@@ -207,7 +209,7 @@ async function main() {
       if (CFG.CLIENTS[client] && !built) {
         throw new Error(`${client} is not built — run: swim-auto clients build`);
       }
-      const result = await call('/open', { client, path: args._[2] });
+      const result = await call('/open', { client, path: args._[2], standalone: !!args.standalone });
       console.log(JSON.stringify(result));
       break;
     }

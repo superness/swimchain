@@ -42,11 +42,19 @@ async function main() {
       browser: session.status(),
     }),
     'POST /open': async b => {
-      const url = b.url || CFG.clientUrl(b.client, b.path);
-      if (!url) {
+      // Absolute URL: drive it as-is (standalone, no client framing).
+      if (b.url) return session.open(b.url, null);
+      if (!CFG.CLIENTS[b.client]) {
         throw new Error(`unknown client '${b.client}' (known: ${Object.keys(CFG.CLIENTS).join(', ')})`);
       }
-      return session.open(url, b.url ? null : b.client);
+      if (b.standalone) {
+        // Legacy direct load: client falls back to its hardcoded RPC, browser mode.
+        return session.open(CFG.clientUrl(b.client, b.path), b.client);
+      }
+      // Default: node mode — load the app-shell-style wrapper so the client is
+      // framed and adopts the node's identity (matches the real launcher).
+      const shellBase = `http://127.0.0.1:${CFG.STATIC_PORT}/shell/${b.client}`;
+      return session.open(CFG.shellUrl(b.client, b.path), b.client, { frame: '#client', shellBase });
     },
     'POST /goto': async b => session.goto(b.target),
     'POST /click': async b => {

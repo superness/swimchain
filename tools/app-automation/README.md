@@ -41,8 +41,18 @@ Run `node tools/app-automation/cli.js help` for the full command list.
 - The control API on :8897 is unauthenticated and includes `/eval` (arbitrary
   JS execution in the page) — it binds 127.0.0.1 only and must never be
   exposed beyond localhost.
-- Clients are served standalone (not in the Tauri iframe) and fall back to
-  `http://127.0.0.1:19736` (local testnet RPC) per `useRpc.tsx`.
+- **Node mode (default):** `open <client>` loads an app-shell-style wrapper
+  (`/shell/<client>`) that frames the client and posts `SWIMCHAIN_RPC_CONFIG`
+  — endpoint + cookie auth + the node's identity address — exactly like the
+  Swimchain launcher. The client therefore runs *framed, adopting the node's
+  identity*, which is the mode real users see. `lib/node-rpc.js` reads the
+  node's `genesis-testnet/.cookie` and calls `get_identity_info` to build that
+  config, served live at `/rpc-config`. All UI actions target the client's
+  iframe frame. Override with `SWIM_AUTO_NODE_RPC` / `SWIM_AUTO_NODE_DATADIR`.
+- **Standalone mode:** `open <client> --standalone` keeps the old behavior —
+  the client is loaded directly, detects no parent frame, and falls back to
+  browser identity mode (`http://127.0.0.1:19736` per `useRpc.tsx`). Use this
+  only to test the browser create-identity flow.
 - Node lifecycle delegates to `scripts/daemon-control.js`.
 
 ## Tests

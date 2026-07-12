@@ -19,6 +19,10 @@ class BrowserSession {
     this.page = null;
     this.client = null; // current client name, e.g. 'forum'
     this.clientBase = null; // e.g. http://127.0.0.1:8899/forum-client/
+    // Shell (node-mode) driving: the client runs inside an iframe, so UI actions
+    // must target that frame rather than the top page.
+    this.frameSelector = null; // e.g. '#client' when framed, null when standalone
+    this.shellBase = null; // e.g. http://127.0.0.1:8899/shell/forum (for goto deep links)
   }
 
   async ensurePage() {
@@ -67,12 +71,14 @@ class BrowserSession {
     });
   }
 
-  async open(url, clientName) {
+  async open(url, clientName, { frame = null, shellBase = null } = {}) {
     const page = await this.ensurePage();
     await page.goto(url, { waitUntil: 'load' });
     this.client = clientName || null;
+    this.frameSelector = frame;
+    this.shellBase = shellBase;
     this.clientBase = clientName ? url.replace(/[?#].*$/, '').replace(/[^/]*$/, '') : null;
-    if (clientName) {
+    if (clientName && !frame) {
       // base is always .../{dir}/ — normalize in case a route was appended
       const m = url.match(/^(https?:\/\/[^/]+\/[a-z0-9-]+-client\/)/);
       if (m) this.clientBase = m[1];
@@ -84,8 +90,16 @@ class BrowserSession {
     const page = await this.ensurePage();
     let url = target;
     if (!/^https?:\/\//.test(target)) {
-      if (!this.clientBase) throw new Error("No client open — use 'open <client>' first or pass an absolute URL");
-      url = this.clientBase + String(target).replace(/^\/+/, '');
+      if (this.shellBase) {
+        // Shell mode: a deep link means reloading the wrapper with a new route so
+        // the client re-mounts framed (and re-receives node-mode config).
+        const route = String(target).replace(/^\/+/, '');
+        url = route ? `${this.shellBase}?route=${encodeURIComponent(route)}` : this.shellBase;
+      } else if (this.clientBase) {
+        url = this.clientBase + String(target).replace(/^\/+/, '');
+      } else {
+        throw new Error("No client open — use 'open <client>' first or pass an absolute URL");
+      }
     }
     await page.goto(url, { waitUntil: 'load' });
     return this.status();
@@ -98,12 +112,30 @@ class BrowserSession {
     return this.page;
   }
 
+  // Locator rooted at the client — the iframe frame in shell mode, else the page.
+  loc(selector) {
+    const page = this.requirePage();
+    return this.frameSelector
+      ? page.frameLocator(this.frameSelector).locator(selector)
+      : page.locator(selector);
+  }
+
+  // Playwright Frame for the client, for evaluate() in shell mode.
+  async clientFrame() {
+    const page = this.requirePage();
+    if (!this.frameSelector) return page;
+    const handle = await page.$(this.frameSelector);
+    const frame = handle && (await handle.contentFrame());
+    if (!frame) throw new Error(`client frame ${this.frameSelector} not found`);
+    return frame;
+  }
+
   async click(selector) {
-    await this.requirePage().locator(selector).first().click();
+    await this.loc(selector).first().click();
   }
 
   async type(selector, text) {
-    await this.requirePage().locator(selector).first().fill(text);
+    await this.loc(selector).first().fill(text);
   }
 
   async press(key) {
@@ -111,15 +143,15 @@ class BrowserSession {
   }
 
   async wait(selector, timeout) {
-    await this.requirePage()
-      .locator(selector)
+    await this.loc(selector)
       .first()
       .waitFor({ state: 'visible', timeout: timeout ?? this.defaultTimeout });
   }
 
   async eval(js) {
     // Evaluate as an expression; JSON round-trip keeps the result serializable.
-    const result = await this.requirePage().evaluate(js);
+    const ctx = await this.clientFrame();
+    const result = await ctx.evaluate(js);
     return JSON.parse(JSON.stringify(result === undefined ? null : result));
   }
 
@@ -129,15 +161,17 @@ class BrowserSession {
     // Let renders settle so the picture reflects the latest action.
     await page.waitForTimeout(300);
     if (selector) {
-      await page.locator(selector).first().screenshot({ path: out });
+      await this.loc(selector).first().screenshot({ path: out });
     } else {
+      // Full-page shot is taken at the top level; the client iframe fills the
+      // viewport, so the client UI is captured regardless of shell mode.
       await page.screenshot({ path: out, fullPage: !!fullPage });
     }
     return out;
   }
 
   async ui(selector) {
-    return this.requirePage().locator(selector || 'body').ariaSnapshot();
+    return this.loc(selector || 'body').ariaSnapshot();
   }
 
   status() {
@@ -146,6 +180,7 @@ class BrowserSession {
       launched,
       url: launched ? this.page.url() : null,
       client: launched ? this.client : null,
+      mode: this.frameSelector ? 'node' : 'standalone',
     };
   }
 
@@ -156,6 +191,8 @@ class BrowserSession {
       this.page = null;
       this.client = null;
       this.clientBase = null;
+      this.frameSelector = null;
+      this.shellBase = null;
     }
   }
 }
