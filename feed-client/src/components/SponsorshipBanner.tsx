@@ -14,8 +14,11 @@ export function SponsorshipBanner(): JSX.Element | null {
   const { hasValidIdentity } = useIdentityContext();
   const navigate = useNavigate();
 
-  // All hooks MUST be called before any conditional returns (React rules of hooks)
-  const shouldShow = hasValidIdentity && !isChecking && isSponsored === false;
+  // All hooks MUST be called before any conditional returns (React rules of hooks).
+  // Gate on the KNOWN sponsorship state only — NOT on isChecking. isChecking flips
+  // true on every background re-poll (~10s); keying visibility off it made the banner
+  // (and its 40px content offset) flicker on each poll, jarring the viewport.
+  const shouldShow = hasValidIdentity && isSponsored === false;
 
   // Set CSS variable so content-area can add padding for the banner
   useEffect(() => {
@@ -36,8 +39,10 @@ export function SponsorshipBanner(): JSX.Element | null {
     willShow: shouldShow,
   });
 
-  // Don't show if no identity or still checking
-  if (!hasValidIdentity || isChecking || isSponsored === null) {
+  // Don't show until we have a determinate answer. Once isSponsored is known,
+  // a background re-check (isChecking) must NOT hide the banner — that caused
+  // the periodic flicker/viewport jump.
+  if (!hasValidIdentity || isSponsored === null) {
     return null;
   }
 
