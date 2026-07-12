@@ -702,6 +702,28 @@ fn default_spaces_limit() -> usize {
     100
 }
 
+/// Lightweight lineage info for a behavioral community, embedded in its
+/// parent's space listing (SPEC_13 Phase 2 — additive, absent for spaces
+/// with no formed communities).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceChildSummary {
+    /// Full community id (64-char hex)
+    pub community_id: String,
+    /// Derived child space id (bech32 sp1..., from community_id[..16]) —
+    /// used as the community's address in lineage RPCs and events
+    pub space_id: String,
+    /// Current display name (auto-name until renamed)
+    pub name: String,
+    /// `<parent display name>/<name>` composed at read time for display
+    pub full_name: String,
+    /// Formation wall-clock timestamp (Unix seconds) for "formed 2d ago" badges
+    pub formed_at: u64,
+    /// Block height at formation (canonical ordering)
+    pub formation_height: u64,
+    /// Number of founding members
+    pub founding_member_count: u32,
+}
+
 /// Space summary info
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpaceSummary {
@@ -728,6 +750,12 @@ pub struct SpaceSummary {
     /// also unknown until the name resolves.
     #[serde(default)]
     pub name_unresolved: bool,
+    /// Behavioral communities formed under this space (SPEC_13 Phase 2).
+    /// Additive: empty (and omitted) for spaces with no formed communities,
+    /// so pre-Phase-2 clients are unaffected. Clients render "this
+    /// conversation grew into X" affordances from this + `get_space_lineage`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<SpaceChildSummary>,
 }
 
 /// list_spaces result
@@ -939,6 +967,43 @@ pub struct CreateSpaceParams {
     pub signature: String,
     /// Timestamp
     pub timestamp: u64,
+}
+
+/// rename_space params (SPEC_13 Phase 2 — PoW-costing, signed rename)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameSpaceParams {
+    /// Target: bech32 (sp1...) / 32-char hex space id, or 64-char hex for a
+    /// behavioral community's full 32-byte id
+    pub space_id: String,
+    /// New display name (1-64 bytes UTF-8)
+    pub new_name: String,
+    /// Renamer public key (32-byte hex). Must be the space creator, or a
+    /// founding member for behavioral communities.
+    pub renamer_id: String,
+    /// PoW nonce
+    pub pow_nonce: u64,
+    /// PoW difficulty (same cost class as space creation)
+    pub pow_difficulty: u8,
+    /// PoW nonce space (8-byte hex)
+    pub pow_nonce_space: String,
+    /// PoW hash (32-byte hex, result of Argon2id)
+    pub pow_hash: String,
+    /// Ed25519 signature (64-byte hex) over the rename signing message:
+    /// b"swimchain:rename_space:v1" || target(32) || sha256(new_name)(32) || timestamp(8 BE)
+    pub signature: String,
+    /// Timestamp (Unix seconds, must match the signed message)
+    pub timestamp: u64,
+}
+
+/// rename_space result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameSpaceResult {
+    /// Target space id (bech32 sp1...)
+    pub space_id: String,
+    /// The applied name
+    pub name: String,
+    /// Whether the rename was accepted locally and announced
+    pub success: bool,
 }
 
 /// create_space result
@@ -2000,6 +2065,165 @@ pub struct BehavioralEventInfo {
     pub detected_height: u64,
     /// Wall-clock timestamp of the triggering action
     pub timestamp: u64,
+}
+
+/// get_space_lineage params
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSpaceLineageParams {
+    /// Space or community id: bech32 (sp1...), 32-char hex (16-byte space
+    /// id), or 64-char hex (full 32-byte id — required to address a
+    /// community precisely, but the 16-byte forms also resolve).
+    pub space_id: String,
+}
+
+/// Full lineage info for one behavioral community (SPEC_13 Phase 2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceChildInfo {
+    /// Full community id (64-char hex)
+    pub community_id: String,
+    /// Derived child space id (bech32 sp1..., from community_id[..16])
+    pub space_id: String,
+    /// Parent space id (bech32 sp1...)
+    pub parent_space_id: String,
+    /// Current display name (auto-name until renamed)
+    pub name: String,
+    /// Deterministic name assigned at formation
+    pub auto_name: String,
+    /// `<parent display name>/<name>` composed at read time for display
+    pub full_name: String,
+    /// True if a space-rename action has been applied
+    pub renamed: bool,
+    /// Formation wall-clock timestamp (Unix seconds)
+    pub formed_at: u64,
+    /// Block height at formation
+    pub formation_height: u64,
+    /// Number of founding members
+    pub founding_member_count: u32,
+    /// Branch realizing the community inside the parent space
+    /// (`"<depth>:<hex path>"`), if the fracture has executed locally
+    pub branch_path: Option<String>,
+    /// Threads currently living in the community's branch subtree — exactly
+    /// the threads that "moved" — as `sha256:<hex>` thread root ids. The
+    /// parent view pins "this conversation grew into X →" banners on these.
+    pub moved_threads: Vec<String>,
+    /// Number of moved threads (== moved_threads.len(), for cheap badges)
+    pub thread_count: u64,
+}
+
+/// Parent pointer in a lineage response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceLineageParent {
+    /// Parent space id (bech32 sp1...)
+    pub space_id: String,
+    /// Parent display name if known locally (registry names are
+    /// non-consensus; may be null until resolved)
+    pub name: Option<String>,
+}
+
+/// get_space_lineage result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSpaceLineageResult {
+    /// The queried id, normalized to bech32 (sp1...)
+    pub space_id: String,
+    /// Display name of the queried space/community if known
+    pub name: Option<String>,
+    /// Present iff the queried id is a behavioral community: its parent
+    pub parent: Option<SpaceLineageParent>,
+    /// Present iff the queried id is a behavioral community: its own lineage
+    pub community: Option<SpaceChildInfo>,
+    /// Communities formed under the queried space (formation order)
+    pub children: Vec<SpaceChildInfo>,
+}
+
+/// get_space_tree params
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GetSpaceTreeParams {
+    /// Optional root space id — restricts the tree to this space's subtree.
+    /// Omit for the full forest of known public spaces.
+    #[serde(default)]
+    pub root: Option<String>,
+}
+
+/// One node in the space lineage tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpaceTreeNode {
+    /// Space id (bech32 sp1...). For communities this is the derived child
+    /// space id; `community_id` carries the full 32-byte id.
+    pub space_id: String,
+    /// Display name if known
+    pub name: Option<String>,
+    /// Set for behavioral communities: full community id (64-char hex)
+    pub community_id: Option<String>,
+    /// Set for behavioral communities: formation timestamp (Unix seconds)
+    pub formed_at: Option<u64>,
+    /// Set for behavioral communities: founding member count
+    pub founding_member_count: Option<u32>,
+    /// Child communities (recursive shape; depth is 2 in Phase 2 since
+    /// communities cannot re-fracture behaviorally yet)
+    pub children: Vec<SpaceTreeNode>,
+}
+
+/// get_space_tree result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSpaceTreeResult {
+    /// Top-level spaces (or the single requested root), each with its
+    /// community children attached
+    pub roots: Vec<SpaceTreeNode>,
+}
+
+/// list_notifications params
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ListNotificationsParams {
+    /// Only return unread notifications
+    #[serde(default)]
+    pub unread_only: bool,
+    /// Maximum notifications to return (default 50)
+    #[serde(default = "default_notifications_limit")]
+    pub limit: usize,
+}
+
+pub(crate) fn default_notifications_limit() -> usize {
+    50
+}
+
+/// One notification for the local user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationInfo {
+    /// Notification id (32-char hex of the 16-byte id)
+    pub id: String,
+    /// Type tag: "streak" | "level_up" | "achievement" | "space_health" |
+    /// "content_risk" | "contribution_thanks" | "community_formed"
+    pub notification_type: String,
+    /// Human-readable message
+    pub message: String,
+    /// Creation time (Unix milliseconds)
+    pub created_at_ms: u64,
+    /// Whether the user has seen it
+    pub read: bool,
+    /// Type-specific context. For "community_formed":
+    /// `{parent_space_id, parent_space_id_hex, community_id,
+    ///   community_space_id, auto_name, founding_member_count}`
+    pub context: Option<serde_json::Value>,
+}
+
+/// list_notifications result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNotificationsResult {
+    /// Notifications, newest first
+    pub notifications: Vec<NotificationInfo>,
+    /// Total unread count (independent of pagination/filter)
+    pub unread_count: usize,
+}
+
+/// mark_notification_read params
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MarkNotificationReadParams {
+    /// Notification id to mark read (32-char hex). Ignored if `all` is set.
+    #[serde(default)]
+    pub notification_id: Option<String>,
+    /// Mark ALL notifications read
+    #[serde(default)]
+    pub all: bool,
 }
 
 /// list_behavioral_events result

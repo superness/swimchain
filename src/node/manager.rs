@@ -107,6 +107,9 @@ pub struct NodeManager {
     /// Achievement service — awards recognition badges (SPEC_09 §5.3).
     /// Recognition only: grants no protocol privileges.
     achievement_service: Option<Arc<AchievementService>>,
+    /// Notification service (SPEC_09 §7): local-user notifications, incl.
+    /// CommunityFormed (SPEC_13 Phase 2).
+    notification_service: Option<Arc<crate::notification::NotificationService>>,
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
     peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
@@ -180,6 +183,7 @@ impl NodeManager {
             offer_store: None,
             engagement_graph: None,
             achievement_service: None,
+            notification_service: None,
             branch_subscription_manager: None,
             peer_branch_tracker: None,
             search_index: None,
@@ -649,6 +653,30 @@ impl NodeManager {
             }
         }
 
+        // 4.5.3b-iii. Initialize notification service (SPEC_09 §7). Local-only
+        // light-touch notifications; Phase 2 adds CommunityFormed (SPEC_13)
+        // delivered to founding members on this node.
+        let notification_path = self.config.data_dir.join("notifications");
+        match crate::storage::open_db(&notification_path) {
+            Ok(notification_db) => {
+                match crate::notification::NotificationService::new(
+                    &notification_db,
+                    crate::notification::TriggerSources::default(),
+                ) {
+                    Ok(service) => {
+                        self.notification_service = Some(Arc::new(service));
+                        info!("[NOTIFICATION] Notification service initialized");
+                    }
+                    Err(e) => {
+                        warn!("[NOTIFICATION] Failed to open notification service: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("[NOTIFICATION] Failed to open notification database: {}", e);
+            }
+        }
+
         // 4.5.3c. Initialize membership store for private spaces (DMs, group chats)
         let membership_path = self.config.data_dir.join("membership");
         match MembershipStore::open(&membership_path) {
@@ -956,11 +984,16 @@ impl NodeManager {
         if let Some(ref achievement_service) = self.achievement_service {
             router_builder = router_builder.achievement_service(achievement_service.clone());
         }
-        // SPEC_13 Phase A / Phase 1 rollout: behavioral branching mode
-        // (Full formation default ON for regtest only; LogOnly observation
-        // default ON for testnet -- docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md)
+        // SPEC_13 Phase 2 rollout: behavioral branching mode (Full formation
+        // default ON for regtest AND testnet; LogOnly available as explicit
+        // config -- docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md)
         router_builder =
             router_builder.behavioral_branching_mode(self.config.behavioral_branching_mode());
+        // Notification service: CommunityFormed delivery to the local user
+        // when they are a founding member (SPEC_13 Phase 2 Lane A #4).
+        if let Some(ref notification_service) = self.notification_service {
+            router_builder = router_builder.notification_service(notification_service.clone());
+        }
         if let Some(ref agg_cache) = self.aggregation_cache {
             router_builder = router_builder.aggregation_cache(agg_cache.clone());
         }
@@ -1759,6 +1792,7 @@ impl NodeManager {
             sponsorship_store: self.sponsorship_store.clone(),
             offer_store: self.offer_store.clone(),
             achievement_service: self.achievement_service.clone(),
+            notification_service: self.notification_service.clone(),
             branch_subscription_manager: self.branch_subscription_manager.clone(),
             keypair: self.keypair.clone(),
             shutdown_tx: rpc_shutdown_tx,

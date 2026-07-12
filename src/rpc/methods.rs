@@ -542,6 +542,10 @@ pub struct NodeRef {
     /// Achievement service for recognition badges (SPEC_09 §5.3).
     /// Recognition ONLY: exposes/awards badges, grants no protocol privileges.
     pub achievement_service: Option<Arc<crate::achievement::AchievementService>>,
+    /// Notification service (SPEC_09 §7) — local-user notifications
+    /// (CommunityFormed, streaks, achievements, ...) surfaced via
+    /// `list_notifications` / `mark_notification_read`.
+    pub notification_service: Option<Arc<crate::notification::NotificationService>>,
     /// Branch subscription manager (selective sync; SPEC_06/BRANCH_SELECTIVE_SYNC).
     /// Uses std::sync::RwLock to match manager.rs construction.
     pub branch_subscription_manager:
@@ -1136,6 +1140,11 @@ impl RpcMethods {
 
             // Behavioral branching methods (SPEC_13 Phase A / Phase 1 log-only rollout)
             "list_behavioral_events" => self.list_behavioral_events(params, id).await,
+            "get_space_lineage" => self.get_space_lineage(params, id).await,
+            "get_space_tree" => self.get_space_tree(params, id).await,
+            "list_notifications" => self.list_notifications(params, id).await,
+            "mark_notification_read" => self.mark_notification_read(params, id).await,
+            "rename_space" => self.rename_space(params, id).await,
 
             // Private space methods (DMs, group chats)
             "create_private_space" => self.create_private_space(params, id).await,
@@ -5251,6 +5260,31 @@ impl RpcMethods {
                     let actual_post_count = chain_store_ref
                         .and_then(|cs| cs.count_posts_for_space(&space_id_16).ok())
                         .unwrap_or(0) as u64;
+
+                    // SPEC_13 Phase 2: attach lineage children (behavioral
+                    // communities formed under this space). Additive — empty
+                    // for spaces with no communities, omitted from JSON.
+                    let mut space_id_32 = [0u8; 32];
+                    space_id_32[..16].copy_from_slice(&space_id_16);
+                    let children: Vec<SpaceChildSummary> = chain_store_ref
+                        .and_then(|cs| cs.get_space_children(&space_id_32).ok())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|lineage| {
+                            let mut child_16 = [0u8; 16];
+                            child_16.copy_from_slice(&lineage.community_id[..16]);
+                            SpaceChildSummary {
+                                community_id: hex::encode(lineage.community_id),
+                                space_id: encode_space_id(&child_16),
+                                full_name: format!("{}/{}", final_name, lineage.display_name),
+                                name: lineage.display_name,
+                                formed_at: lineage.formation_timestamp,
+                                formation_height: lineage.formation_height,
+                                founding_member_count: lineage.founding_member_count,
+                            }
+                        })
+                        .collect();
+
                     Some(SpaceSummary {
                         space_id: space_id_str,
                         post_count: actual_post_count,
@@ -5267,6 +5301,7 @@ impl RpcMethods {
                         },
                         app,
                         name_unresolved,
+                        children,
                     })
                 },
             )
@@ -5630,6 +5665,328 @@ impl RpcMethods {
         let result = CreateSpaceResult {
             space_id,
             name: params.name,
+            success: true,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Rename a space or behavioral community (SPEC_13 Phase 2 Lane A #6).
+    ///
+    /// A PoW-costing, signed action (same cost class as space creation).
+    /// Permitted for the space creator, or any founding member of a
+    /// behavioral community. Applies locally, then flows through the normal
+    /// action mempool/block pipeline (the new name travels via the block's
+    /// `space_metadata`, exactly like CreateSpace) so peers converge.
+    async fn rename_space(&self, params: Value, id: Value) -> RpcResponse {
+        use crate::blocks::content_block::SpaceCreationMetadata;
+
+        let params: RenameSpaceParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // New name validation (mirrors SpaceInfo limits).
+        let new_name = params.new_name.trim().to_string();
+        if new_name.is_empty() || new_name.len() > 64 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "new_name must be 1-64 bytes UTF-8",
+                id,
+            );
+        }
+        // App-namespaced names are name-addressed (id derives from the name);
+        // renaming INTO the marker namespace would desync id and name.
+        if parse_app_space_name(&new_name).is_some() {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "new_name must not use the @app: namespace marker",
+                id,
+            );
+        }
+
+        // Renamer public key.
+        let renamer_bytes: [u8; 32] = match hex::decode(&params.renamer_id) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid renamer_id: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+
+        // Sponsorship gate (same as every other write action).
+        if let Err(response) = self.check_identity_sponsored(&params.renamer_id, &id) {
+            return response;
+        }
+
+        // PoW verification — same cost class as space creation, over the
+        // new-name commitment.
+        let pow_nonce_space: [u8; 8] = match hex::decode(&params.pow_nonce_space) {
+            Ok(bytes) if bytes.len() == 8 => {
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid pow_nonce_space: must be 8-byte hex",
+                    id,
+                );
+            }
+        };
+        let pow_hash: [u8; 32] = match hex::decode(&params.pow_hash) {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid pow_hash: must be 32-byte hex",
+                    id,
+                );
+            }
+        };
+        let name_hash = crate::crypto::sha256(new_name.as_bytes());
+        let challenge = PoWChallenge {
+            action_type: ActionType::SpaceCreation,
+            content_hash: name_hash,
+            author_id: renamer_bytes,
+            timestamp: params.timestamp,
+            difficulty: params.pow_difficulty,
+            nonce_space: pow_nonce_space,
+        };
+        let solution = PoWSolution {
+            challenge,
+            nonce: params.pow_nonce,
+            hash: pow_hash,
+        };
+        let pow_config = match self.node.network.as_str() {
+            "regtest" => ForkPoWConfig::test(),
+            "testnet" => ForkPoWConfig::testnet(),
+            _ => ForkPoWConfig::production(),
+        };
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        if let Err(e) = verify_pow(&solution, &pow_config, current_time) {
+            return RpcResponse::error(
+                RpcErrorCode::PowInvalid,
+                &format!("PoW verification failed: {}", e),
+                id,
+            );
+        }
+
+        // Resolve the target (space or community).
+        let mut target_32 = match Self::decode_space_or_community_id(&params.space_id) {
+            Ok(v) => v,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let Some(chain_store) = &self.node.chain_store else {
+            return RpcResponse::error(
+                RpcErrorCode::SubsystemUnavailable,
+                "Chain store not available",
+                id,
+            );
+        };
+        let mut lineage = chain_store
+            .get_community_lineage(&target_32)
+            .unwrap_or(None);
+        if lineage.is_none() && target_32[16..] == [0u8; 16] {
+            if let Ok(all) = chain_store.get_all_community_lineages() {
+                if let Some(l) = all
+                    .into_iter()
+                    .find(|l| l.community_id[..16] == target_32[..16])
+                {
+                    target_32 = l.community_id;
+                    lineage = Some(l);
+                }
+            }
+        }
+
+        // Signature over the rename message (verified again by every node
+        // that processes the block).
+        let mut signature_bytes = [0u8; 64];
+        match hex::decode(&params.signature) {
+            Ok(sig) if sig.len() == 64 => signature_bytes.copy_from_slice(&sig),
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid signature: must be 64-byte hex",
+                    id,
+                );
+            }
+        }
+        {
+            use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+            let msg = crate::blocks::Action::rename_space_signing_message(
+                &target_32,
+                &name_hash,
+                params.timestamp,
+            );
+            let valid = VerifyingKey::from_bytes(&renamer_bytes)
+                .map(|vk| {
+                    vk.verify(&msg, &Signature::from_bytes(&signature_bytes))
+                        .is_ok()
+                })
+                .unwrap_or(false);
+            if !valid {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Signature does not verify over the rename message",
+                    id,
+                );
+            }
+        }
+
+        // Authorization + local apply.
+        let block_space_id: [u8; 32];
+        if let Some(mut lineage) = lineage {
+            // Behavioral community: founding members may rename.
+            let is_founder = chain_store
+                .get_community_formation(&target_32)
+                .ok()
+                .flatten()
+                .is_some_and(|f| f.founding_members.contains(&renamer_bytes));
+            if !is_founder {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Only founding members can rename a behavioral community",
+                    id,
+                );
+            }
+            block_space_id = lineage.parent_space_id;
+            lineage.display_name = new_name.clone();
+            lineage.renamed_at = Some(params.timestamp);
+            lineage.renamed_by = Some(renamer_bytes);
+            if let Err(e) = chain_store.put_community_lineage(&lineage) {
+                return RpcResponse::error(
+                    RpcErrorCode::StorageError,
+                    &format!("Failed to persist rename: {}", e),
+                    id,
+                );
+            }
+        } else {
+            // Registry space: only the creator may rename.
+            let mut space_16 = [0u8; 16];
+            space_16.copy_from_slice(&target_32[..16]);
+            match chain_store.get_space(&space_16) {
+                Ok(Some(mut info)) => {
+                    if info.creator != renamer_bytes {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Only the space creator can rename a space",
+                            id,
+                        );
+                    }
+                    if info.is_private {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Private spaces cannot be renamed via rename_space (names are encrypted)",
+                            id,
+                        );
+                    }
+                    if resolve_app_space(&space_16, &info.name).is_some() {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "App-namespaced spaces are name-addressed and cannot be renamed",
+                            id,
+                        );
+                    }
+                    info.name = new_name.clone();
+                    if let Err(e) = chain_store.register_space(&info) {
+                        return RpcResponse::error(
+                            RpcErrorCode::StorageError,
+                            &format!("Failed to persist rename: {}", e),
+                            id,
+                        );
+                    }
+                    block_space_id = target_32;
+                }
+                Ok(None) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        "Unknown space/community id",
+                        id,
+                    );
+                }
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::StorageError,
+                        &format!("Space lookup failed: {}", e),
+                        id,
+                    );
+                }
+            }
+        }
+
+        // Flow the action through the normal mempool/block pipeline so all
+        // nodes converge (the name travels via space_metadata).
+        let pow_work = 1u64 << params.pow_difficulty.min(63);
+        let action = crate::blocks::Action::new_rename_space(
+            renamer_bytes,
+            params.timestamp,
+            target_32,
+            name_hash,
+            params.pow_nonce,
+            pow_work,
+            pow_hash,
+            signature_bytes,
+        );
+        if let Some(ref block_builder) = self.node.block_builder {
+            let action_clone = action.clone();
+            let branch_path =
+                self.resolve_branch_path(&block_space_id, &target_32, Some(&renamer_bytes));
+            {
+                let mut builder = block_builder.write().unwrap();
+                builder.add_create_space_action(
+                    target_32,
+                    block_space_id,
+                    action,
+                    branch_path,
+                    SpaceCreationMetadata {
+                        name: new_name.clone(),
+                        description: None,
+                    },
+                );
+            }
+            if self.node.connection_pool.is_some() {
+                use crate::network::messages::ActionAnnouncePayload;
+                use crate::types::network::{MessageEnvelope, MessageType};
+                let action_data = action_clone.serialize();
+                let payload = ActionAnnouncePayload::new(target_32, block_space_id, action_data);
+                let envelope = MessageEnvelope::new_fork_agnostic(
+                    MessageType::ActionAnnounce,
+                    payload.to_bytes().to_vec(),
+                );
+                self.gossip_self_originated_action(envelope).await;
+                self.try_form_block_if_threshold_met().await;
+            }
+        }
+
+        // Invalidate the space-list cache so the new name shows immediately.
+        *self.node.space_list_cache.lock().unwrap() = None;
+
+        let mut display_16 = [0u8; 16];
+        display_16.copy_from_slice(&target_32[..16]);
+        let result = RenameSpaceResult {
+            space_id: encode_space_id(&display_16),
+            name: new_name,
             success: true,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
@@ -14234,6 +14591,494 @@ impl RpcMethods {
             events,
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    // ========================================================================
+    // Space Lineage Methods (SPEC_13 Phase 2 — behavioral branching UX)
+    // ========================================================================
+
+    /// Resolve the display name for a parent space, if known locally.
+    /// Registry names are non-consensus metadata; falls back to
+    /// `space-<8 hex>` so composed names are always renderable.
+    fn parent_display_name(
+        chain_store: &ChainStore,
+        parent_space_id: &[u8; 32],
+    ) -> (Option<String>, String) {
+        let mut parent_16 = [0u8; 16];
+        parent_16.copy_from_slice(&parent_space_id[..16]);
+        let known = chain_store
+            .get_space(&parent_16)
+            .ok()
+            .flatten()
+            .map(|info| info.name)
+            .filter(|n| !n.is_empty());
+        let label = known
+            .clone()
+            .unwrap_or_else(|| format!("space-{}", hex::encode(&parent_16[..4])));
+        (known, label)
+    }
+
+    /// Check if `prefix` is a prefix of (or equal to) `other` in the branch
+    /// tree (bitwise path comparison, mirrors BranchManager::is_prefix_of).
+    fn branch_is_prefix_of(
+        prefix: &crate::blocks::BranchPath,
+        other: &crate::blocks::BranchPath,
+    ) -> bool {
+        if prefix.depth > other.depth {
+            return false;
+        }
+        (0..prefix.depth).all(|d| {
+            let byte_index = (d / 8) as usize;
+            let bit_index = 7 - (d % 8);
+            let p = prefix
+                .path
+                .get(byte_index)
+                .map_or(0, |b| (b >> bit_index) & 1);
+            let o = other
+                .path
+                .get(byte_index)
+                .map_or(0, |b| (b >> bit_index) & 1);
+            p == o
+        })
+    }
+
+    /// Build the full lineage view for one community, including the
+    /// moved-thread exposure (thread roots currently in the community's
+    /// branch subtree) that parent-space views pin continuity banners on.
+    fn build_child_info(
+        chain_store: &ChainStore,
+        lineage: &crate::branch::CommunityLineage,
+        parent_label: &str,
+    ) -> SpaceChildInfo {
+        let mut child_16 = [0u8; 16];
+        child_16.copy_from_slice(&lineage.community_id[..16]);
+        let mut parent_16 = [0u8; 16];
+        parent_16.copy_from_slice(&lineage.parent_space_id[..16]);
+
+        // Locate the community's branch (if the fracture has executed
+        // locally) and collect the threads in its subtree — exactly the
+        // threads that moved. The subtree matters because a community
+        // branch may size-fracture (SPEC_08) after formation.
+        let mut branch_path_str: Option<String> = None;
+        let mut moved_threads: Vec<String> = Vec::new();
+        if let Ok(branches) = chain_store.get_community_branches(&lineage.parent_space_id) {
+            if let Some((base, _)) = branches
+                .iter()
+                .find(|(_, cid)| cid == &lineage.community_id)
+            {
+                branch_path_str = Some(format!("{}:{}", base.depth, hex::encode(&base.path)));
+                if let Ok(Some(state)) =
+                    chain_store.get_space_branch_state(&lineage.parent_space_id)
+                {
+                    let mut thread_ids: Vec<[u8; 32]> = Vec::new();
+                    for active in &state.active_branches {
+                        if Self::branch_is_prefix_of(base, active) {
+                            if let Ok(threads) =
+                                chain_store.get_threads_in_branch(&lineage.parent_space_id, active)
+                            {
+                                thread_ids.extend(threads.into_iter().map(|(t, _)| t));
+                            }
+                        }
+                    }
+                    thread_ids.sort_unstable();
+                    moved_threads = thread_ids
+                        .iter()
+                        .map(|t| format!("sha256:{}", hex::encode(t)))
+                        .collect();
+                }
+            }
+        }
+
+        SpaceChildInfo {
+            community_id: hex::encode(lineage.community_id),
+            space_id: encode_space_id(&child_16),
+            parent_space_id: encode_space_id(&parent_16),
+            full_name: format!("{}/{}", parent_label, lineage.display_name),
+            name: lineage.display_name.clone(),
+            auto_name: lineage.auto_name.clone(),
+            renamed: lineage.renamed_at.is_some(),
+            formed_at: lineage.formation_timestamp,
+            formation_height: lineage.formation_height,
+            founding_member_count: lineage.founding_member_count,
+            branch_path: branch_path_str,
+            thread_count: moved_threads.len() as u64,
+            moved_threads,
+        }
+    }
+
+    /// Decode a space/community id param: 64-char hex resolves the full
+    /// 32-byte id (required to address communities precisely); bech32
+    /// (sp1...) and 16-byte hex forms are zero-padded like content-block
+    /// space ids.
+    fn decode_space_or_community_id(space_id: &str) -> Result<[u8; 32], String> {
+        if space_id.len() == 64 && space_id.chars().all(|c| c.is_ascii_hexdigit()) {
+            let bytes = hex::decode(space_id).map_err(|e| format!("Invalid hex: {}", e))?;
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            return Ok(arr);
+        }
+        let space_16 = decode_space_id(space_id)?;
+        let mut arr = [0u8; 32];
+        arr[..16].copy_from_slice(&space_16);
+        Ok(arr)
+    }
+
+    /// get_space_lineage: parent + children (+ formation metadata) for a
+    /// space or community (SPEC_13 Phase 2 Lane A #2/#3).
+    async fn get_space_lineage(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetSpaceLineageParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+        let chain_store: &ChainStore = match &self.node.chain_store {
+            Some(cs) => cs.as_ref(),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Chain store not available",
+                    id,
+                );
+            }
+        };
+
+        let mut queried_32 = match Self::decode_space_or_community_id(&params.space_id) {
+            Ok(v) => v,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+
+        // If a 16-byte form was given, it may still address a community —
+        // try to complete it from the per-parent community index.
+        let mut own_lineage = chain_store
+            .get_community_lineage(&queried_32)
+            .unwrap_or(None);
+        if own_lineage.is_none() && queried_32[16..] == [0u8; 16] {
+            // Scan communities for a matching 16-byte prefix (bounded by the
+            // number of communities on this node — small).
+            if let Ok(all) = chain_store.get_all_community_lineages() {
+                if let Some(lineage) = all
+                    .into_iter()
+                    .find(|l| l.community_id[..16] == queried_32[..16])
+                {
+                    queried_32 = lineage.community_id;
+                    own_lineage = Some(lineage);
+                }
+            }
+        }
+
+        let mut queried_16 = [0u8; 16];
+        queried_16.copy_from_slice(&queried_32[..16]);
+
+        let (parent, community, name) = if let Some(lineage) = &own_lineage {
+            // Queried id IS a community: expose its parent + own info.
+            let (parent_name, parent_label) =
+                Self::parent_display_name(chain_store, &lineage.parent_space_id);
+            let mut parent_16 = [0u8; 16];
+            parent_16.copy_from_slice(&lineage.parent_space_id[..16]);
+            let info = Self::build_child_info(chain_store, lineage, &parent_label);
+            (
+                Some(SpaceLineageParent {
+                    space_id: encode_space_id(&parent_16),
+                    name: parent_name,
+                }),
+                Some(info),
+                Some(lineage.display_name.clone()),
+            )
+        } else {
+            let (own_name, _) = Self::parent_display_name(chain_store, &queried_32);
+            (None, None, own_name)
+        };
+
+        // Children formed under the queried space (communities have no
+        // children in Phase 2 — they cannot re-fracture behaviorally).
+        let (_, own_label) = Self::parent_display_name(chain_store, &queried_32);
+        let children: Vec<SpaceChildInfo> = chain_store
+            .get_space_children(&queried_32)
+            .unwrap_or_default()
+            .iter()
+            .map(|lineage| Self::build_child_info(chain_store, lineage, &own_label))
+            .collect();
+
+        let result = GetSpaceLineageResult {
+            space_id: encode_space_id(&queried_16),
+            name,
+            parent,
+            community,
+            children,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// get_space_tree: the lineage tree for navigation (SPEC_13 Phase 2
+    /// Lane A #2). Roots are locally registered public spaces; each carries
+    /// its behavioral-community children.
+    async fn get_space_tree(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetSpaceTreeParams = if params.is_null() {
+            GetSpaceTreeParams::default()
+        } else {
+            match serde_json::from_value(params) {
+                Ok(p) => p,
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Invalid params: {}", e),
+                        id,
+                    );
+                }
+            }
+        };
+        let chain_store: &ChainStore = match &self.node.chain_store {
+            Some(cs) => cs.as_ref(),
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Chain store not available",
+                    id,
+                );
+            }
+        };
+
+        let build_node = |space_16: [u8; 16], name: Option<String>| -> SpaceTreeNode {
+            let mut space_32 = [0u8; 32];
+            space_32[..16].copy_from_slice(&space_16);
+            let label = name
+                .clone()
+                .unwrap_or_else(|| format!("space-{}", hex::encode(&space_16[..4])));
+            let children = chain_store
+                .get_space_children(&space_32)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|lineage| {
+                    let mut child_16 = [0u8; 16];
+                    child_16.copy_from_slice(&lineage.community_id[..16]);
+                    SpaceTreeNode {
+                        space_id: encode_space_id(&child_16),
+                        name: Some(format!("{}/{}", label, lineage.display_name)),
+                        community_id: Some(hex::encode(lineage.community_id)),
+                        formed_at: Some(lineage.formation_timestamp),
+                        founding_member_count: Some(lineage.founding_member_count),
+                        children: Vec::new(),
+                    }
+                })
+                .collect();
+            SpaceTreeNode {
+                space_id: encode_space_id(&space_16),
+                name,
+                community_id: None,
+                formed_at: None,
+                founding_member_count: None,
+                children,
+            }
+        };
+
+        let roots: Vec<SpaceTreeNode> = if let Some(root_param) = &params.root {
+            let root_32 = match Self::decode_space_or_community_id(root_param) {
+                Ok(v) => v,
+                Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+            };
+            let mut root_16 = [0u8; 16];
+            root_16.copy_from_slice(&root_32[..16]);
+            let name = chain_store
+                .get_space(&root_16)
+                .ok()
+                .flatten()
+                .map(|i| i.name)
+                .filter(|n| !n.is_empty());
+            vec![build_node(root_16, name)]
+        } else {
+            let mut roots = Vec::new();
+            for result in chain_store.list_spaces() {
+                let Ok(info) = result else { continue };
+                // Skip private spaces (encrypted names) and nameless system
+                // spaces — same visibility rule as list_spaces.
+                if info.is_private || info.name.is_empty() {
+                    continue;
+                }
+                roots.push(build_node(info.space_id, Some(info.name)));
+            }
+            roots.sort_by(|a, b| a.name.cmp(&b.name));
+            roots
+        };
+
+        let result = GetSpaceTreeResult { roots };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    // ========================================================================
+    // Notification Methods (SPEC_09 §7 / SPEC_13 Phase 2 CommunityFormed)
+    // ========================================================================
+
+    /// list_notifications: notifications for the local identity.
+    async fn list_notifications(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ListNotificationsParams = if params.is_null() {
+            ListNotificationsParams {
+                unread_only: false,
+                limit: 50,
+            }
+        } else {
+            match serde_json::from_value(params) {
+                Ok(p) => p,
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Invalid params: {}", e),
+                        id,
+                    );
+                }
+            }
+        };
+        let Some(service) = &self.node.notification_service else {
+            return RpcResponse::error(
+                RpcErrorCode::SubsystemUnavailable,
+                "Notification service not available",
+                id,
+            );
+        };
+        let identity = *self.node.keypair.public_key.as_bytes();
+
+        let list = if params.unread_only {
+            service.get_pending(&identity, params.limit)
+        } else {
+            service.get_all(&identity, params.limit)
+        };
+        let mut list = match list {
+            Ok(l) => l,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to read notifications: {}", e),
+                    id,
+                );
+            }
+        };
+        // Newest first.
+        list.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+
+        let unread_count = service.count_unread(&identity).unwrap_or(0);
+
+        let notifications: Vec<NotificationInfo> = list
+            .iter()
+            .map(|n| {
+                use crate::notification::NotificationContext;
+                let type_tag = match n.notification_type {
+                    crate::notification::NotificationType::Streak => "streak",
+                    crate::notification::NotificationType::LevelUp => "level_up",
+                    crate::notification::NotificationType::Achievement => "achievement",
+                    crate::notification::NotificationType::SpaceHealth => "space_health",
+                    crate::notification::NotificationType::ContentRisk => "content_risk",
+                    crate::notification::NotificationType::ContributionThanks => {
+                        "contribution_thanks"
+                    }
+                    crate::notification::NotificationType::CommunityFormed => "community_formed",
+                };
+                // Client-friendly context: community ids as hex/bech32
+                // strings; other contexts pass through serde.
+                let context = n.context.as_ref().map(|ctx| match ctx {
+                    NotificationContext::CommunityFormed {
+                        parent_space_id,
+                        community_id,
+                        auto_name,
+                        founding_member_count,
+                    } => {
+                        let mut parent_16 = [0u8; 16];
+                        parent_16.copy_from_slice(&parent_space_id[..16]);
+                        let mut child_16 = [0u8; 16];
+                        child_16.copy_from_slice(&community_id[..16]);
+                        serde_json::json!({
+                            "parent_space_id": encode_space_id(&parent_16),
+                            "parent_space_id_hex": hex::encode(parent_space_id),
+                            "community_id": hex::encode(community_id),
+                            "community_space_id": encode_space_id(&child_16),
+                            "auto_name": auto_name,
+                            "founding_member_count": founding_member_count,
+                        })
+                    }
+                    other => serde_json::to_value(other).unwrap_or(Value::Null),
+                });
+                NotificationInfo {
+                    id: hex::encode(n.id),
+                    notification_type: type_tag.to_string(),
+                    message: n.message.clone(),
+                    created_at_ms: n.created_at_ms,
+                    read: n.read,
+                    context,
+                }
+            })
+            .collect();
+
+        let result = ListNotificationsResult {
+            notifications,
+            unread_count,
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// mark_notification_read: mark one (or all) local notifications read.
+    async fn mark_notification_read(&self, params: Value, id: Value) -> RpcResponse {
+        let params: MarkNotificationReadParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+        let Some(service) = &self.node.notification_service else {
+            return RpcResponse::error(
+                RpcErrorCode::SubsystemUnavailable,
+                "Notification service not available",
+                id,
+            );
+        };
+        let identity = *self.node.keypair.public_key.as_bytes();
+
+        if params.all {
+            return match service.mark_all_read(&identity) {
+                Ok(count) => RpcResponse::success(serde_json::json!({ "marked": count }), id),
+                Err(e) => RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to mark notifications read: {}", e),
+                    id,
+                ),
+            };
+        }
+
+        let Some(notification_id_hex) = &params.notification_id else {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "notification_id required (or set all: true)",
+                id,
+            );
+        };
+        let notification_id: [u8; 16] = match hex::decode(notification_id_hex) {
+            Ok(bytes) if bytes.len() == 16 => {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes);
+                arr
+            }
+            _ => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Invalid notification_id: must be 16-byte hex",
+                    id,
+                );
+            }
+        };
+        match service.mark_read(&identity, notification_id) {
+            Ok(marked) => RpcResponse::success(serde_json::json!({ "marked": marked }), id),
+            Err(e) => RpcResponse::error(
+                RpcErrorCode::InternalError,
+                &format!("Failed to mark notification read: {}", e),
+                id,
+            ),
+        }
     }
 
     // ========================================================================
