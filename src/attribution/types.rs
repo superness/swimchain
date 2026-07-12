@@ -1,11 +1,11 @@
 //! Content Attribution data types (SPEC_09 §6.3)
 //!
 //! Types for tracking and displaying who keeps content alive through
-//! engagement pool contributions.
+//! their engagement.
 
 /// Attribution entry for a single contributor.
 ///
-/// Tracks an individual's contribution to keeping content alive via engagement pools.
+/// Tracks an individual's engagement toward keeping content alive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttributionEntry {
     /// Contributor's Ed25519 public key (32 bytes)
@@ -64,7 +64,7 @@ pub struct ContentAttribution {
     /// Total PoW from all contributors (in seconds)
     pub total_pow_contributed: u64,
 
-    /// Pool completion timestamp if any pool completed (UNIX milliseconds)
+    /// Timestamp of the most recent qualifying engagement (UNIX milliseconds)
     pub pool_completion_timestamp: Option<u64>,
 }
 

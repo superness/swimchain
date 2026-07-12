@@ -8,8 +8,8 @@ pub enum AttributionError {
     /// Content not found in storage
     ContentNotFound,
 
-    /// No completed engagement pools found for content
-    NoPools,
+    /// No qualifying engagements found for content
+    NoEngagements,
 
     /// Internal error computing attribution
     ComputeError(String),
@@ -22,7 +22,7 @@ impl std::fmt::Display for AttributionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ContentNotFound => write!(f, "Content not found"),
-            Self::NoPools => write!(f, "No completed engagement pools for content"),
+            Self::NoEngagements => write!(f, "No qualifying engagements for content"),
             Self::ComputeError(msg) => write!(f, "Attribution compute error: {}", msg),
             Self::InvalidWireFormat(msg) => write!(f, "Invalid wire format: {}", msg),
         }
@@ -42,8 +42,8 @@ mod tests {
             "Content not found"
         );
         assert_eq!(
-            AttributionError::NoPools.to_string(),
-            "No completed engagement pools for content"
+            AttributionError::NoEngagements.to_string(),
+            "No qualifying engagements for content"
         );
         assert_eq!(
             AttributionError::ComputeError("test error".to_string()).to_string(),
@@ -61,6 +61,9 @@ mod tests {
             AttributionError::ContentNotFound,
             AttributionError::ContentNotFound
         );
-        assert_ne!(AttributionError::ContentNotFound, AttributionError::NoPools);
+        assert_ne!(
+            AttributionError::ContentNotFound,
+            AttributionError::NoEngagements
+        );
     }
 }

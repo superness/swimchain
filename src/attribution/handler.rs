@@ -2,13 +2,7 @@
 //!
 //! Handles MSG_ATTRIBUTION_QUERY (0x50) and MSG_ATTRIBUTION_RESPONSE (0x51) messages.
 
-use crate::content::pool::EngagementPool;
-use crate::types::constants::HALF_LIFE_SECS;
-use crate::types::content::ContentItem;
-
-use super::compute::{decay_countdown_days, get_display_contributors, MAX_DISPLAY_CONTRIBUTORS};
 use super::error::AttributionError;
-use super::manager::AttributionManager;
 use super::types::{AttributionEntry, DecayStatus};
 
 // ============================================================================
@@ -83,7 +77,7 @@ pub struct AttributionResponsePayload {
     pub total_contributors: u32,
     /// Total PoW from all contributors
     pub total_pow: u64,
-    /// Pool completion timestamp (if any)
+    /// Timestamp of the most recent qualifying engagement (if any)
     pub pool_completion_timestamp: Option<u64>,
     /// Display contributors (max 255)
     pub contributors: Vec<AttributionEntry>,
@@ -288,63 +282,6 @@ impl AttributionResponsePayload {
             total_pow,
             pool_completion_timestamp,
             contributors,
-        })
-    }
-}
-
-// ============================================================================
-// Handler
-// ============================================================================
-
-/// Handler for attribution queries.
-pub struct AttributionHandler;
-
-impl AttributionHandler {
-    /// Handle an attribution query.
-    ///
-    /// # Arguments
-    /// * `payload` - The query payload
-    /// * `attribution_manager` - Manager for attribution data
-    /// * `pools` - Available engagement pools
-    /// * `content` - The content item (for decay calculation)
-    /// * `current_time_ms` - Current timestamp
-    ///
-    /// # Returns
-    /// Response payload or error
-    pub fn handle_query(
-        payload: &AttributionQueryPayload,
-        attribution_manager: &mut AttributionManager,
-        pools: &[EngagementPool],
-        content: Option<&ContentItem>,
-        current_time_ms: u64,
-    ) -> Result<AttributionResponsePayload, AttributionError> {
-        // Get content for decay calculation
-        let content = content.ok_or(AttributionError::ContentNotFound)?;
-
-        // Verify content ID matches
-        if content.content_id.as_bytes() != &payload.content_id {
-            return Err(AttributionError::ContentNotFound);
-        }
-
-        // Get attribution
-        let attribution =
-            attribution_manager.get_attribution(&payload.content_id, pools, current_time_ms);
-
-        // Calculate decay countdown
-        let (days, status) = decay_countdown_days(content, current_time_ms, HALF_LIFE_SECS);
-
-        // Get display contributors
-        let (display_contributors, _) =
-            get_display_contributors(&attribution.contributors, MAX_DISPLAY_CONTRIBUTORS);
-
-        Ok(AttributionResponsePayload {
-            content_id: payload.content_id,
-            decay_status: status,
-            days_remaining: days.unwrap_or(0xFFFF),
-            total_contributors: attribution.total_contributors,
-            total_pow: attribution.total_pow_contributed,
-            pool_completion_timestamp: attribution.pool_completion_timestamp,
-            contributors: display_contributors.to_vec(),
         })
     }
 }

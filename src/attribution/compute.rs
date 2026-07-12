@@ -1,55 +1,14 @@
 //! Attribution computation functions (SPEC_09 §6.3)
 //!
-//! Implements contributor extraction from engagement pools and decay countdown calculation.
+//! Implements decay countdown calculation and contributor display formatting.
 
-use crate::content::pool::PoolContribution;
 use crate::types::constants::{DECAY_FLOOR_SECS, DECAY_THRESHOLD};
 use crate::types::content::ContentItem;
-use std::collections::HashMap;
 
 use super::types::{AttributionEntry, ContentAttribution, ContentAttributionDisplay, DecayStatus};
 
 /// Maximum number of contributors to display
 pub const MAX_DISPLAY_CONTRIBUTORS: usize = 10;
-
-// ============================================================================
-// Contributor Extraction
-// ============================================================================
-
-/// Extract and deduplicate contributors from pool contributions.
-///
-/// Uses HashMap for O(n) deduplication. When the same contributor appears
-/// multiple times, their PoW is summed and the earliest timestamp is kept.
-///
-/// # Arguments
-/// * `contributions` - Slice of pool contributions to process
-///
-/// # Returns
-/// Vec of attribution entries sorted by pow_contributed DESC
-pub fn extract_contributors_from_pool(contributions: &[PoolContribution]) -> Vec<AttributionEntry> {
-    // HashMap: identity -> (total_pow, first_timestamp)
-    let mut aggregated: HashMap<[u8; 32], (u64, u64)> = HashMap::new();
-
-    for c in contributions {
-        aggregated
-            .entry(c.contributor)
-            .and_modify(|(pow, ts)| {
-                *pow += c.pow_work;
-                *ts = (*ts).min(c.timestamp);
-            })
-            .or_insert((c.pow_work, c.timestamp));
-    }
-
-    let mut entries: Vec<AttributionEntry> = aggregated
-        .into_iter()
-        .map(|(identity, (pow, ts))| AttributionEntry::new(identity, pow, ts))
-        .collect();
-
-    // Sort by pow_contributed DESC
-    entries.sort_by(|a, b| b.pow_contributed.cmp(&a.pow_contributed));
-
-    entries
-}
 
 /// Get display contributors (first N) and overflow count.
 ///
@@ -262,85 +221,6 @@ mod tests {
             preservation_pow: None,
             display_name: None,
         }
-    }
-
-    fn make_contribution(contributor: [u8; 32], pow_work: u64, timestamp: u64) -> PoolContribution {
-        PoolContribution {
-            contributor,
-            pow_nonce: 0,
-            pow_work,
-            pow_target: [0u8; 32],
-            timestamp,
-            signature: [0u8; 64],
-            nonce_space: [0u8; 8],
-            emoji: None,
-        }
-    }
-
-    // ========================================================================
-    // Contributor Extraction Tests
-    // ========================================================================
-
-    #[test]
-    fn test_extract_single_contributor() {
-        let alice = [1u8; 32];
-        let contributions = vec![make_contribution(alice, 30, 1000)];
-
-        let result = extract_contributors_from_pool(&contributions);
-
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].identity, alice);
-        assert_eq!(result[0].pow_contributed, 30);
-        assert_eq!(result[0].first_contribution_timestamp, 1000);
-    }
-
-    #[test]
-    fn test_extract_multiple_contributors_sorted() {
-        let alice = [1u8; 32];
-        let bob = [2u8; 32];
-        let carol = [3u8; 32];
-
-        let contributions = vec![
-            make_contribution(alice, 10, 1000),
-            make_contribution(bob, 30, 2000),
-            make_contribution(carol, 20, 3000),
-        ];
-
-        let result = extract_contributors_from_pool(&contributions);
-
-        assert_eq!(result.len(), 3);
-        // Sorted by pow DESC: bob(30) > carol(20) > alice(10)
-        assert_eq!(result[0].identity, bob);
-        assert_eq!(result[0].pow_contributed, 30);
-        assert_eq!(result[1].identity, carol);
-        assert_eq!(result[1].pow_contributed, 20);
-        assert_eq!(result[2].identity, alice);
-        assert_eq!(result[2].pow_contributed, 10);
-    }
-
-    #[test]
-    fn test_contributor_deduplication() {
-        let alice = [1u8; 32];
-
-        // Alice contributes twice
-        let contributions = vec![
-            make_contribution(alice, 20, 2000),
-            make_contribution(alice, 40, 1000), // Earlier timestamp
-        ];
-
-        let result = extract_contributors_from_pool(&contributions);
-
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].identity, alice);
-        assert_eq!(result[0].pow_contributed, 60); // 20 + 40 aggregated
-        assert_eq!(result[0].first_contribution_timestamp, 1000); // Earlier timestamp kept
-    }
-
-    #[test]
-    fn test_extract_empty_contributions() {
-        let contributions: Vec<PoolContribution> = vec![];
-        let result = extract_contributors_from_pool(&contributions);
-        assert!(result.is_empty());
     }
 
     #[test]
