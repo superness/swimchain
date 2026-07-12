@@ -1727,6 +1727,8 @@ impl RpcMethods {
                     // Sponsorship actions
                     ActionType::Sponsor => "Sponsor",
                     ActionType::GenesisRegister => "GenesisRegister",
+                    // Space metadata actions
+                    ActionType::RenameSpace => "RenameSpace",
                 };
 
                 ActionInfo {

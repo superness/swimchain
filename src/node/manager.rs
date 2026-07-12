@@ -1855,6 +1855,8 @@ impl NodeManager {
                         | ActionType::DeclineDM => {}
                         // Sponsorship actions don't affect content aggregation counts
                         ActionType::Sponsor | ActionType::GenesisRegister => {}
+                        // Space metadata actions don't affect content aggregation counts
+                        ActionType::RenameSpace => {}
                     }
                 }
             }

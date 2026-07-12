@@ -296,6 +296,8 @@ impl ContentBlock {
                 | ActionType::DeclineDM => {}
                 // Sponsorship actions don't need thread integrity checks
                 ActionType::Sponsor | ActionType::GenesisRegister => {}
+                // Space metadata actions operate on spaces, not content threads
+                ActionType::RenameSpace => {}
             }
         }
 

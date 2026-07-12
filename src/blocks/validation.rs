@@ -302,6 +302,24 @@ pub fn validate_action(action: &Action, current_time: u64) -> Result<(), Validat
                 ));
             }
         }
+
+        // === Space Metadata Actions (SPEC_13 Phase 2) ===
+        ActionType::RenameSpace => {
+            // RENAME_SPACE must have content_hash (sha256 of the new name)
+            // and parent_id (target space/community id). The rename-specific
+            // signature and authorization are validated at block-processing
+            // time against local chain state (router).
+            if action.content_hash.is_none() {
+                return Err(ValidationError::ActionError(
+                    "RENAME_SPACE must have content_hash (new-name commitment)".to_string(),
+                ));
+            }
+            if action.parent_id.is_none() {
+                return Err(ValidationError::ActionError(
+                    "RENAME_SPACE must have parent_id (target space id)".to_string(),
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -363,6 +381,8 @@ pub fn validate_action_pow(action: &Action) -> Result<(), ValidationError> {
         // Sponsorship actions don't require PoW
         ActionType::Sponsor => 0,
         ActionType::GenesisRegister => 0,
+        // Space renames are PoW-costing (same class as space creation)
+        ActionType::RenameSpace => 1,
     };
 
     if action.pow_work < min_work {

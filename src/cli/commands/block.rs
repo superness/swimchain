@@ -1235,6 +1235,8 @@ fn format_action_type(t: crate::blocks::ActionType) -> String {
         // Sponsorship actions
         crate::blocks::ActionType::Sponsor => "Sponsor".to_string(),
         crate::blocks::ActionType::GenesisRegister => "GenesisRegister".to_string(),
+        // Space metadata actions
+        crate::blocks::ActionType::RenameSpace => "RenameSpace".to_string(),
     }
 }
 

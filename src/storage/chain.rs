@@ -427,6 +427,7 @@ impl ChainStore {
                     crate::blocks::ActionType::DeclineDM => 12u8,
                     crate::blocks::ActionType::Sponsor => 13u8,
                     crate::blocks::ActionType::GenesisRegister => 14u8,
+                    crate::blocks::ActionType::RenameSpace => 15u8,
                 };
 
                 let entry = ContentIndexEntry {
@@ -527,6 +528,11 @@ impl ChainStore {
                     // (applied to SponsorshipStore in router.rs handle_block_data)
                     crate::blocks::ActionType::Sponsor
                     | crate::blocks::ActionType::GenesisRegister => {
+                        // No additional content indexing needed
+                    }
+                    // Space renames are applied during block ingestion
+                    // (router.rs apply_rename_space_actions_from_block)
+                    crate::blocks::ActionType::RenameSpace => {
                         // No additional content indexing needed
                     }
                 }
