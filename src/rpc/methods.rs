@@ -1047,6 +1047,7 @@ impl RpcMethods {
             // Node status
             "get_info" => self.get_info(id).await,
             "get_node_frequency" => self.get_node_frequency(id).await,
+            "list_frequency_drifts" => self.list_frequency_drifts(id).await,
             "get_peers" => self.get_peers(id).await,
             "get_sync_status" => self.get_sync_status(id).await,
             "get_chain_stats" => self.get_chain_stats(id).await,
@@ -1241,6 +1242,30 @@ impl RpcMethods {
             "base": crate::network::frequency::BASE_FREQUENCY,
         });
         RpcResponse::success(result, id)
+    }
+
+    /// List on-chain frequency-drift audit records (latest per node). Lets
+    /// gateways/clients see which nodes have drifted onto which frequency.
+    async fn list_frequency_drifts(&self, id: Value) -> RpcResponse {
+        let drifts = self
+            .node
+            .chain_store
+            .as_ref()
+            .and_then(|cs| cs.get_all_frequency_drifts().ok())
+            .unwrap_or_default();
+        let items: Vec<Value> = drifts
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "actor": hex::encode(r.actor),
+                    "namespace_key": hex::encode(r.namespace_key),
+                    "frequency": r.frequency,
+                    "timestamp": r.timestamp,
+                    "isolated": r.frequency != crate::network::frequency::BASE_FREQUENCY,
+                })
+            })
+            .collect();
+        RpcResponse::success(serde_json::json!({ "drifts": items }), id)
     }
 
     async fn get_peers(&self, id: Value) -> RpcResponse {

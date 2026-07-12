@@ -120,6 +120,10 @@ pub struct ChainStore {
     /// Community lineage records (Phase 2 space-tree navigation):
     /// Key = community_id(32), Value = CommunityLineage (bincode)
     community_lineage: sled::Tree,
+    /// Frequency-drift audit records (network isolation), latest per actor:
+    /// `actor(32) -> FrequencyDriftRecord`. See
+    /// `docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md`.
+    frequency_drifts: sled::Tree,
 }
 
 /// Compact content metadata for indexed lookups
@@ -135,6 +139,22 @@ pub struct ContentIndexEntry {
     pub timestamp: u64,
     /// Space ID (first 16 bytes)
     pub space_id: [u8; 16],
+}
+
+/// An on-chain frequency-drift audit record (network isolation). Self-authored:
+/// `actor` recorded that its node drifted to `frequency` (0 = back to base) on
+/// namespace `namespace_key`. See `docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FrequencyDriftRecord {
+    /// Drifting node's identity public key.
+    pub actor: [u8; 32],
+    /// Namespace the node concentrated on (zero-padded 16-byte space id or app
+    /// hash), or all-zero for a drift back to base.
+    pub namespace_key: [u8; 32],
+    /// Target discovery frequency (0 = base).
+    pub frequency: u32,
+    /// Action timestamp (UNIX seconds).
+    pub timestamp: u64,
 }
 
 /// On-chain space registration info
@@ -223,6 +243,7 @@ impl ChainStore {
         let behavioral_events = db.open_tree("behavioral_events")?;
         let space_behavioral_events = db.open_tree("space_behavioral_events")?;
         let community_lineage = db.open_tree("community_lineage")?;
+        let frequency_drifts = db.open_tree("frequency_drifts")?;
 
         // Calculate initial total bytes
         let mut total = 0u64;
@@ -269,6 +290,7 @@ impl ChainStore {
             behavioral_events,
             space_behavioral_events,
             community_lineage,
+            frequency_drifts,
         })
     }
 
@@ -2816,6 +2838,40 @@ impl ChainStore {
     pub fn get_all_community_lineages(&self) -> Result<Vec<CommunityLineage>, StorageError> {
         let mut result = Vec::new();
         for item in self.community_lineage.iter() {
+            let (_, data) = item?;
+            result.push(bincode::deserialize(&data)?);
+        }
+        Ok(result)
+    }
+
+    /// Record a frequency-drift audit record (network isolation). Latest per
+    /// actor wins (upsert), and only a strictly newer timestamp overwrites so
+    /// out-of-order block application can't regress a node's known frequency.
+    ///
+    /// # Errors
+    /// Returns error if serialization or database access fails.
+    pub fn put_frequency_drift(
+        &self,
+        record: &FrequencyDriftRecord,
+    ) -> Result<(), StorageError> {
+        if let Some(existing) = self.frequency_drifts.get(record.actor)? {
+            let prev: FrequencyDriftRecord = bincode::deserialize(&existing)?;
+            if prev.timestamp >= record.timestamp {
+                return Ok(());
+            }
+        }
+        let data = bincode::serialize(record)?;
+        self.frequency_drifts.insert(record.actor, data)?;
+        Ok(())
+    }
+
+    /// All known frequency-drift records (latest per actor).
+    ///
+    /// # Errors
+    /// Returns error if database read or deserialization fails.
+    pub fn get_all_frequency_drifts(&self) -> Result<Vec<FrequencyDriftRecord>, StorageError> {
+        let mut result = Vec::new();
+        for item in self.frequency_drifts.iter() {
             let (_, data) = item?;
             result.push(bincode::deserialize(&data)?);
         }

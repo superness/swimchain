@@ -1269,10 +1269,14 @@ impl NodeManager {
             self.config.frequency_isolation_mode(),
             crate::node::FrequencyIsolationMode::Off
         ) {
-            use crate::network::frequency::{resolve_state, FrequencyContext};
+            use crate::network::frequency::{resolve_state, FrequencyContext, BASE_FREQUENCY};
             let agg = self.aggregation_cache.clone();
             let pin = self.config.frequency_namespace;
             let requested_pin = self.config.frequency_requested_namespace;
+            let keypair = self.keypair.clone();
+            let block_builder = self.block_builder.clone();
+            let chain_store = self.chain_store.clone();
+            let network = self.config.network_mode.name().to_string();
             let mut shutdown_rx = self.shutdown_tx.subscribe();
 
             let recompute = move || {
@@ -1280,9 +1284,104 @@ impl NodeManager {
                     .as_ref()
                     .and_then(|a| a.all_space_content_counts().ok())
                     .unwrap_or_default();
+                let old_primary = FrequencyContext::primary();
                 let (primary, requested) =
-                    resolve_state(&counts, pin, requested_pin, FrequencyContext::primary());
+                    resolve_state(&counts, pin, requested_pin, old_primary);
                 FrequencyContext::set_state(primary, requested);
+
+                // On a primary change, record the drift on-chain (audit log).
+                // Self-authored, log-only — the network effect above never waits
+                // on it. See docs/handoffs/FREQUENCY_ISOLATION_DESIGN.md.
+                if primary == old_primary {
+                    return;
+                }
+                let namespace_16: [u8; 16] = if primary == BASE_FREQUENCY {
+                    [0u8; 16]
+                } else if let Some(p) = pin {
+                    p
+                } else {
+                    counts
+                        .iter()
+                        .max_by_key(|(_, w)| *w)
+                        .map(|(id, _)| *id)
+                        .unwrap_or([0u8; 16])
+                };
+                let actor = *keypair.public_key.as_bytes();
+
+                // Skip re-emitting if the chain already reflects this frequency
+                // for us (prevents a fresh record on every restart).
+                let already = chain_store
+                    .as_ref()
+                    .and_then(|cs| cs.get_all_frequency_drifts().ok())
+                    .map(|v| v.iter().any(|r| r.actor == actor && r.frequency == primary))
+                    .unwrap_or(false);
+                if already {
+                    return;
+                }
+
+                let now = crate::crypto::current_timestamp();
+                let mut ns32 = [0u8; 32];
+                ns32[..16].copy_from_slice(&namespace_16);
+                let mut freq_commit = [0u8; 32];
+                freq_commit[..4].copy_from_slice(&primary.to_be_bytes());
+
+                // Local self-record so get_node_frequency / list_frequency_drifts
+                // reflect the drift immediately.
+                if let Some(cs) = chain_store.as_ref() {
+                    let _ = cs.put_frequency_drift(&crate::storage::chain::FrequencyDriftRecord {
+                        actor,
+                        namespace_key: ns32,
+                        frequency: primary,
+                        timestamp: now,
+                    });
+                }
+
+                // Sign + PoW + drop into the mempool so it rides the normal
+                // block pipeline to peers.
+                let sig = crate::crypto::signature::sign(
+                    &keypair.private_key,
+                    &crate::blocks::Action::frequency_drift_signing_message(
+                        &ns32,
+                        &freq_commit,
+                        now,
+                    ),
+                );
+                let mut sig_arr = [0u8; 64];
+                sig_arr.copy_from_slice(sig.as_bytes());
+
+                let pow_config = match network.as_str() {
+                    "regtest" => crate::crypto::action_pow::ForkPoWConfig::test(),
+                    "testnet" => crate::crypto::action_pow::ForkPoWConfig::testnet(),
+                    _ => crate::crypto::action_pow::ForkPoWConfig::production(),
+                };
+                let difficulty: u8 = 8; // cheap anti-spam for an audit record
+                let mut content = ns32.to_vec();
+                content.extend_from_slice(&freq_commit);
+                let challenge = crate::crypto::action_pow::PoWChallenge::generate(
+                    crate::crypto::action_pow::ActionType::SpaceCreation,
+                    &content,
+                    &actor,
+                    difficulty,
+                );
+                if let Ok(solution) =
+                    crate::crypto::action_pow::compute_pow(&challenge, &pow_config)
+                {
+                    let action = crate::blocks::Action::new_frequency_drift(
+                        actor,
+                        now,
+                        ns32,
+                        primary,
+                        solution.nonce,
+                        1u64 << difficulty,
+                        solution.hash,
+                        sig_arr,
+                    );
+                    if let Some(bb) = block_builder.as_ref() {
+                        if let Ok(mut b) = bb.write() {
+                            b.add_action(ns32, ns32, action, crate::blocks::BranchPath::root());
+                        }
+                    }
+                }
             };
             // Apply immediately so a pinned operator advertises from t=0.
             recompute();
