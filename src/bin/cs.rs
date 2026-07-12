@@ -349,7 +349,7 @@ async fn main() {
         eprintln!("║                                                                  ║");
         eprintln!("║  • PoW difficulty reduced to 10%                                 ║");
         eprintln!("║  • Level checks still enforced                                   ║");
-        eprintln!("║  • Magic bytes: TES2 (0x54455332)                                ║");
+        eprintln!("║  • Magic bytes: TES3 (0x54455333)                                ║");
         eprintln!("╚══════════════════════════════════════════════════════════════════╝");
         eprintln!();
     }
