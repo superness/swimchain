@@ -105,8 +105,8 @@ pub enum BehavioralBranchingMode {
     /// space/branch is created (Phase 1 observation rollout).
     LogOnly,
     /// Detection runs; qualifying formations execute the fracture and are
-    /// recorded as a real [`crate::branch::CommunityFormation`] (pre-rollout
-    /// behavior, currently regtest-only by default).
+    /// recorded as a real [`crate::branch::CommunityFormation`] (Phase 2
+    /// default for regtest AND testnet).
     Full,
 }
 
@@ -477,18 +477,25 @@ impl NodeConfig {
 
     /// Check if behavioral branching (SPEC_13) is enabled.
     ///
-    /// Explicit setting wins; otherwise defaults ON for Regtest and OFF for
-    /// Mainnet/Testnet (until SPEC_13 §7 network messages are implemented).
+    /// Explicit setting wins; otherwise defaults ON for Regtest AND Testnet
+    /// (Phase 2 rollout, `docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md`:
+    /// full formation with the full UX). Mainnet stays OFF until the
+    /// operator says otherwise.
     pub fn behavioral_branching_enabled(&self) -> bool {
-        self.behavioral_branching
-            .unwrap_or(matches!(self.network_mode, NetworkMode::Regtest))
+        self.behavioral_branching.unwrap_or(matches!(
+            self.network_mode,
+            NetworkMode::Regtest | NetworkMode::Testnet
+        ))
     }
 
     /// Check if log-only behavioral branching (Phase 1 rollout) is enabled.
     ///
     /// Explicit setting wins; otherwise defaults ON for Testnet and OFF for
-    /// Mainnet/Regtest. Only consulted when [`Self::behavioral_branching_enabled`]
-    /// is false -- see [`Self::behavioral_branching_mode`].
+    /// Mainnet/Regtest — but note that since Phase 2, full formation also
+    /// defaults ON for Testnet and takes precedence, so reaching LogOnly on
+    /// testnet now requires explicitly disabling `behavioral_branching`.
+    /// Only consulted when [`Self::behavioral_branching_enabled`] is false
+    /// -- see [`Self::behavioral_branching_mode`].
     pub fn behavioral_branching_log_only_enabled(&self) -> bool {
         self.behavioral_branching_log_only
             .unwrap_or(matches!(self.network_mode, NetworkMode::Testnet))
@@ -927,9 +934,9 @@ mod tests {
 
     #[test]
     fn test_behavioral_branching_mode_network_defaults() {
-        // Phase 1 rollout (docs/handoffs/BEHAVIORAL_BRANCHING_ROLLOUT.md):
-        // regtest keeps full formation, testnet gets log-only observation,
-        // mainnet stays fully disabled -- all by default (None/None).
+        // Phase 2 rollout (docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md):
+        // regtest AND testnet default to full formation; mainnet stays fully
+        // disabled -- all by default (None/None).
         let mainnet = NodeConfig::with_network_defaults(NetworkMode::Mainnet);
         assert_eq!(
             mainnet.behavioral_branching_mode(),
@@ -941,10 +948,9 @@ mod tests {
         let testnet = NodeConfig::for_testnet();
         assert_eq!(
             testnet.behavioral_branching_mode(),
-            BehavioralBranchingMode::LogOnly
+            BehavioralBranchingMode::Full
         );
-        assert!(!testnet.behavioral_branching_enabled());
-        assert!(testnet.behavioral_branching_log_only_enabled());
+        assert!(testnet.behavioral_branching_enabled());
 
         let regtest = NodeConfig::for_regtest(29997);
         assert_eq!(
@@ -953,14 +959,15 @@ mod tests {
         );
         assert!(regtest.behavioral_branching_enabled());
 
-        // Explicit full override wins over log-only, even on testnet.
-        let forced_full = NodeConfig {
-            behavioral_branching: Some(true),
+        // LogOnly remains available as an explicit config option on testnet:
+        // disable full formation and the Phase 1 log-only default applies.
+        let testnet_log_only = NodeConfig {
+            behavioral_branching: Some(false),
             ..NodeConfig::for_testnet()
         };
         assert_eq!(
-            forced_full.behavioral_branching_mode(),
-            BehavioralBranchingMode::Full
+            testnet_log_only.behavioral_branching_mode(),
+            BehavioralBranchingMode::LogOnly
         );
 
         // Explicit log-only override applies on mainnet too.

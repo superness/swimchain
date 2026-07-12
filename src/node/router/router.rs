@@ -227,6 +227,11 @@ pub struct MessageRouter {
     /// (SPEC_09 §5.3). Recognition ONLY: no protocol privileges.
     achievement_service: Option<Arc<crate::achievement::AchievementService>>,
 
+    /// Notification service — local-user notifications (SPEC_09 §7).
+    /// Phase 2: delivers CommunityFormed to the local user when they are a
+    /// founding member of a behavioral community (SPEC_13).
+    notification_service: Option<Arc<crate::notification::NotificationService>>,
+
     /// Sponsorship store for applying on-chain sponsorship actions (SPEC_11 Phase 6)
     sponsorship_store: Option<Arc<SponsorshipStore>>,
 
@@ -286,6 +291,7 @@ impl MessageRouter {
             hole_punch_tx: None,
             engagement_graph: None,
             achievement_service: None,
+            notification_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -333,6 +339,7 @@ impl MessageRouter {
             hole_punch_tx: None,
             engagement_graph: None,
             achievement_service: None,
+            notification_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -2376,6 +2383,9 @@ impl MessageRouter {
                 }
             }
 
+            // SPEC_13 Phase 2: Process space-rename actions
+            self.apply_rename_space_actions_from_block(&content_block);
+
             // SPEC_11 Phase 6: Process on-chain sponsorship actions
             self.apply_sponsorship_actions_from_block(&content_block);
 
@@ -3885,6 +3895,8 @@ impl MessageRouter {
                     self.extract_engagements_from_block(content_block);
                     // SPEC_13 Phase A: behavioral clustering (organic communities)
                     self.process_behavioral_clustering(content_block);
+                    // SPEC_13 Phase 2: Process space-rename actions
+                    self.apply_rename_space_actions_from_block(content_block);
                     // SPEC_11 Phase 6: Process on-chain sponsorship actions from synced blocks
                     self.apply_sponsorship_actions_from_block(content_block);
                 }
@@ -4414,6 +4426,7 @@ impl MessageRouter {
                         formation.founding_members.len(),
                         formation.community_branch,
                     );
+                    self.announce_community_formation(&formation);
                 }
                 Ok(ClusterOutcome::SpamSignal(signal)) => {
                     info!(
@@ -4426,6 +4439,224 @@ impl MessageRouter {
                 Err(e) => {
                     warn!("[SPEC13] Behavioral clustering failed: {}", e);
                 }
+            }
+        }
+    }
+
+    /// SPEC_13 Phase 2: announce a freshly executed community formation to the
+    /// local user (Lane A #4).
+    ///
+    /// - **Notification**: if this node's identity is a founding member,
+    ///   deliver a CommunityFormed notification with graduation framing via
+    ///   the notification service. Local-node delivery only — every node
+    ///   derives the same formation deterministically and notifies its own
+    ///   user; no network messages are involved.
+    /// - **WS event**: publish a `community_formed` event so connected
+    ///   clients can refresh space trees / show the new-community rail.
+    fn announce_community_formation(&self, formation: &crate::branch::CommunityFormation) {
+        let auto_name =
+            crate::branch::CommunityFormation::derive_auto_name(&formation.community_id);
+
+        // Parent space display name, if this node has learned it (registry
+        // names are non-consensus metadata — fall back handled downstream).
+        let parent_space_16: [u8; 16] = formation.parent_space_id[..16]
+            .try_into()
+            .expect("32-byte space id always has 16-byte prefix");
+        let parent_name: Option<String> = self
+            .chain_store
+            .as_ref()
+            .and_then(|cs| cs.get_space(&parent_space_16).ok().flatten())
+            .map(|info| info.name)
+            .filter(|name| !name.is_empty());
+
+        // Local-user notification (founding members only).
+        if let (Some(service), Some(identity)) = (&self.notification_service, self.identity_pubkey)
+        {
+            if formation.founding_members.contains(&identity) {
+                match service.notify_community_formed(
+                    &identity,
+                    &formation.parent_space_id,
+                    &formation.community_id,
+                    &auto_name,
+                    formation.founding_members.len() as u32,
+                    parent_name.as_deref(),
+                    Self::now_secs() * 1000,
+                ) {
+                    Ok(Some(_)) => info!(
+                        "[SPEC13] CommunityFormed notification delivered (community {})",
+                        hex::encode(&formation.community_id[..8])
+                    ),
+                    Ok(None) => {} // already notified for this community
+                    Err(e) => warn!("[SPEC13] Failed to deliver formation notification: {}", e),
+                }
+            }
+        }
+
+        // Real-time event for connected clients.
+        if let Some(ref events) = self.event_manager {
+            let community_space_16: [u8; 16] = formation.community_id[..16]
+                .try_into()
+                .expect("32-byte community id always has 16-byte prefix");
+            events.publish(crate::rpc::events::Event::community_formed(
+                &encode_space_id_bech32(&parent_space_16),
+                &hex::encode(formation.community_id),
+                &encode_space_id_bech32(&community_space_16),
+                &auto_name,
+                formation.founding_members.len(),
+            ));
+        }
+    }
+
+    /// SPEC_13 Phase 2: Apply space-rename actions from a content block.
+    ///
+    /// Called from both block-processing paths so renames converge on all
+    /// nodes. Validation (all against locally derivable state):
+    /// 1. The block's `space_metadata` must be present and its name must
+    ///    match the action's commitment (`content_hash == sha256(name)`).
+    ///    If the metadata is missing (e.g. the block formed on a node that
+    ///    only saw the gossiped action), the rename is skipped — space names
+    ///    are non-consensus display metadata and the existing name-resolution
+    ///    protocol (GET_SPACE_META) repairs the gap from renamed peers.
+    /// 2. Ed25519 signature over the domain-separated rename message.
+    /// 3. Authorization: for a behavioral community target, the actor must be
+    ///    a founding member; for a registry space, the actor must be the
+    ///    space creator.
+    fn apply_rename_space_actions_from_block(&self, content_block: &crate::blocks::ContentBlock) {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+        let chain_store = match &self.chain_store {
+            Some(store) => store,
+            None => return,
+        };
+
+        for action in &content_block.actions {
+            if action.action_type != crate::blocks::ActionType::RenameSpace {
+                continue;
+            }
+            let (Some(target), Some(name_hash)) = (action.parent_id, action.content_hash) else {
+                warn!("[RENAME] RenameSpace action missing target/commitment — skipping");
+                continue;
+            };
+
+            // 1. Name commitment: the plaintext travels via space_metadata.
+            let Some(metadata) = &content_block.space_metadata else {
+                info!(
+                    "[RENAME] RenameSpace for {} has no metadata in this block — skipping \
+                     (name resolves via GET_SPACE_META from peers that applied it)",
+                    hex::encode(&target[..8])
+                );
+                continue;
+            };
+            let new_name = metadata.name.trim();
+            if new_name.is_empty() || new_name.len() > 64 {
+                warn!("[RENAME] Invalid new name length — skipping");
+                continue;
+            }
+            if crate::crypto::sha256(new_name.as_bytes()) != name_hash {
+                warn!(
+                    "[RENAME] Metadata name does not match action commitment for {} — skipping",
+                    hex::encode(&target[..8])
+                );
+                continue;
+            }
+
+            // 2. Signature over the domain-separated rename message.
+            let msg = crate::blocks::Action::rename_space_signing_message(
+                &target,
+                &name_hash,
+                action.timestamp,
+            );
+            let sig_valid = match VerifyingKey::from_bytes(&action.actor) {
+                Ok(vk) => {
+                    let sig = Signature::from_bytes(&action.signature);
+                    vk.verify(&msg, &sig).is_ok()
+                }
+                Err(_) => false,
+            };
+            if !sig_valid {
+                warn!(
+                    "[RENAME] Invalid signature from {} for {} — skipping",
+                    hex::encode(&action.actor[..8]),
+                    hex::encode(&target[..8])
+                );
+                continue;
+            }
+
+            // 3a. Behavioral community target: founding members may rename.
+            match chain_store.get_community_lineage(&target) {
+                Ok(Some(mut lineage)) => {
+                    let is_founder = chain_store
+                        .get_community_formation(&target)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|f| f.founding_members.contains(&action.actor));
+                    if !is_founder {
+                        warn!(
+                            "[RENAME] {} is not a founding member of community {} — skipping",
+                            hex::encode(&action.actor[..8]),
+                            hex::encode(&target[..8])
+                        );
+                        continue;
+                    }
+                    // Last-writer-wins by action timestamp (deterministic
+                    // enough for display metadata; heights break ties in
+                    // block order since later blocks reprocess later).
+                    if lineage.renamed_at.is_some_and(|t| t > action.timestamp) {
+                        continue;
+                    }
+                    lineage.display_name = new_name.to_string();
+                    lineage.renamed_at = Some(action.timestamp);
+                    lineage.renamed_by = Some(action.actor);
+                    if let Err(e) = chain_store.put_community_lineage(&lineage) {
+                        warn!("[RENAME] Failed to persist community rename: {}", e);
+                    } else {
+                        info!(
+                            "[RENAME] Community {} renamed to '{}'",
+                            hex::encode(&target[..8]),
+                            new_name
+                        );
+                    }
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("[RENAME] Lineage lookup failed: {}", e);
+                    continue;
+                }
+            }
+
+            // 3b. Registry space target: only the creator may rename.
+            let mut space_16 = [0u8; 16];
+            space_16.copy_from_slice(&target[..16]);
+            match chain_store.get_space(&space_16) {
+                Ok(Some(mut info)) => {
+                    if info.creator != action.actor {
+                        warn!(
+                            "[RENAME] {} is not the creator of space {} — skipping",
+                            hex::encode(&action.actor[..8]),
+                            hex::encode(&space_16[..8])
+                        );
+                        continue;
+                    }
+                    info.name = new_name.to_string();
+                    if let Err(e) = chain_store.register_space(&info) {
+                        warn!("[RENAME] Failed to persist space rename: {}", e);
+                    } else {
+                        info!(
+                            "[RENAME] Space {} renamed to '{}'",
+                            hex::encode(&space_16[..8]),
+                            new_name
+                        );
+                    }
+                }
+                Ok(None) => {
+                    info!(
+                        "[RENAME] Target {} unknown locally (community not formed / space not \
+                         synced yet) — skipping",
+                        hex::encode(&target[..8])
+                    );
+                }
+                Err(e) => warn!("[RENAME] Space lookup failed: {}", e),
             }
         }
     }
@@ -7832,6 +8063,7 @@ pub struct MessageRouterBuilder {
     hole_punch_tx: Option<tokio::sync::mpsc::UnboundedSender<HolePunchRequest>>,
     engagement_graph: Option<Arc<EngagementGraphStore>>,
     achievement_service: Option<Arc<crate::achievement::AchievementService>>,
+    notification_service: Option<Arc<crate::notification::NotificationService>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     offer_store: Option<Arc<OfferStore>>,
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
@@ -7868,6 +8100,7 @@ impl MessageRouterBuilder {
             hole_punch_tx: None,
             engagement_graph: None,
             achievement_service: None,
+            notification_service: None,
             sponsorship_store: None,
             offer_store: None,
             branch_subscription_manager: None,
@@ -8025,6 +8258,16 @@ impl MessageRouterBuilder {
         self
     }
 
+    /// Set the notification service for local-user notifications (SPEC_09 §7).
+    /// Phase 2: CommunityFormed delivery to founding members (SPEC_13).
+    pub fn notification_service(
+        mut self,
+        service: Arc<crate::notification::NotificationService>,
+    ) -> Self {
+        self.notification_service = Some(service);
+        self
+    }
+
     /// Set the sponsorship store for on-chain sponsorship processing (SPEC_11 Phase 6)
     pub fn sponsorship_store(mut self, store: Arc<SponsorshipStore>) -> Self {
         self.sponsorship_store = Some(store);
@@ -8116,6 +8359,7 @@ impl MessageRouterBuilder {
             hole_punch_tx: self.hole_punch_tx,
             engagement_graph: self.engagement_graph,
             achievement_service: self.achievement_service,
+            notification_service: self.notification_service,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,
             branch_subscription_manager: self.branch_subscription_manager,
@@ -8157,6 +8401,7 @@ impl MessageRouterBuilder {
             hole_punch_tx: self.hole_punch_tx,
             engagement_graph: self.engagement_graph,
             achievement_service: self.achievement_service,
+            notification_service: self.notification_service,
             sponsorship_store: self.sponsorship_store,
             offer_store: self.offer_store,
             branch_subscription_manager: self.branch_subscription_manager,

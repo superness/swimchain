@@ -1,0 +1,108 @@
+.lineage-tree {
+  margin-bottom: var(--spacing-xl);
+}
+
+.lineage-root-list,
+.lineage-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lineage-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-md);
+  transition: background var(--transition-fast);
+}
+
+.lineage-row:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.lineage-toggle,
+.lineage-toggle-spacer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.lineage-toggle {
+  background: none;
+  border: none;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: 0;
+}
+
+.lineage-toggle:hover {
+  color: var(--color-text-primary);
+}
+
+.lineage-link {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex: 1;
+  min-width: 0;
+  padding: var(--spacing-sm) var(--spacing-sm);
+  text-decoration: none;
+  color: var(--color-text-primary);
+}
+
+.lineage-link:hover {
+  text-decoration: none;
+}
+
+.lineage-icon {
+  display: inline-flex;
+  color: var(--color-accent-primary);
+  flex-shrink: 0;
+}
+
+.lineage-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lineage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--color-accent-secondary);
+  background: color-mix(in srgb, var(--color-accent-secondary) 12%, transparent);
+  padding: 2px var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.lineage-badge-members {
+  color: var(--color-text-tertiary);
+}
+
+.lineage-child-count {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.lineage-post-count {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  padding-left: var(--spacing-sm);
+  flex-shrink: 0;
+}
+
+/* Guide line connecting nested children to their parent. */
+.lineage-children {
+  position: relative;
+}

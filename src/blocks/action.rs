@@ -114,6 +114,19 @@ pub enum ActionType {
     /// On-chain genesis identity registration
     /// actor = genesis pubkey, content_hash = genesis pubkey (self-registration)
     GenesisRegister = 0x0E,
+
+    // === Space Metadata Actions (SPEC_13 Phase 2) ===
+    /// Rename a space's display name (PoW-costing, signed).
+    /// actor = renamer pubkey, parent_id = target space id (32 bytes:
+    /// zero-padded 16-byte space id, or a full behavioral community id),
+    /// content_hash = sha256(new_name bytes) — a commitment binding the
+    /// signature/PoW to the name; the name itself travels in the enclosing
+    /// content block's `space_metadata` (same channel CreateSpace uses).
+    /// Signature message: b"swimchain:rename_space:v1" || parent_id(32) ||
+    /// content_hash(32) || timestamp(8 BE).
+    /// Authorization (validated against local chain state at processing):
+    /// the space creator, or a founding member for behavioral communities.
+    RenameSpace = 0x0F,
 }
 
 impl TryFrom<u8> for ActionType {
@@ -136,6 +149,7 @@ impl TryFrom<u8> for ActionType {
             0x0C => Ok(ActionType::DeclineDM),
             0x0D => Ok(ActionType::Sponsor),
             0x0E => Ok(ActionType::GenesisRegister),
+            0x0F => Ok(ActionType::RenameSpace),
             _ => Err(ActionError::InvalidActionType(value)),
         }
     }
@@ -797,6 +811,74 @@ impl Action {
         sha256(&self.serialize())
     }
 
+    /// Create a new RENAME_SPACE action (SPEC_13 Phase 2).
+    ///
+    /// `target_space_id` is the 32-byte target (zero-padded 16-byte space id
+    /// or a full behavioral community id); `new_name_hash` is
+    /// `sha256(new_name bytes)`. The plaintext name travels via the content
+    /// block's `space_metadata`, exactly like CreateSpace.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_rename_space(
+        actor: [u8; 32],
+        timestamp: u64,
+        target_space_id: [u8; 32],
+        new_name_hash: [u8; 32],
+        pow_nonce: u64,
+        pow_work: u64,
+        pow_target: [u8; 32],
+        signature: [u8; 64],
+    ) -> Self {
+        Self {
+            action_type: ActionType::RenameSpace,
+            actor,
+            timestamp,
+            content_hash: Some(new_name_hash),
+            parent_id: Some(target_space_id),
+            pow_nonce,
+            pow_work,
+            pow_target,
+            signature,
+            emoji: None,
+            display_name: None,
+            media_refs: vec![],
+            replaces_pending: None,
+        }
+    }
+
+    /// Build the signing message for a RenameSpace action:
+    /// b"swimchain:rename_space:v1" || target(32) || name_hash(32) || timestamp(8 BE)
+    #[must_use]
+    pub fn rename_space_signing_message(
+        target_space_id: &[u8; 32],
+        new_name_hash: &[u8; 32],
+        timestamp: u64,
+    ) -> Vec<u8> {
+        let tag = b"swimchain:rename_space:v1";
+        let mut msg = Vec::with_capacity(tag.len() + 32 + 32 + 8);
+        msg.extend_from_slice(tag);
+        msg.extend_from_slice(target_space_id);
+        msg.extend_from_slice(new_name_hash);
+        msg.extend_from_slice(&timestamp.to_be_bytes());
+        msg
+    }
+
+    /// Check if this is a rename-space action
+    #[must_use]
+    pub fn is_rename_space(&self) -> bool {
+        self.action_type == ActionType::RenameSpace
+    }
+
+    /// Get the target space id for a RenameSpace action
+    #[must_use]
+    pub fn rename_target_space_id(&self) -> Option<[u8; 32]> {
+        if self.action_type == ActionType::RenameSpace {
+            self.parent_id
+        } else {
+            None
+        }
+    }
+
     /// Check if this is a thread-creating action
     #[must_use]
     pub fn is_thread_root(&self) -> bool {
@@ -880,6 +962,8 @@ mod tests {
         // Sponsorship actions
         assert_eq!(ActionType::Sponsor as u8, 0x0D);
         assert_eq!(ActionType::GenesisRegister as u8, 0x0E);
+        // Space metadata actions
+        assert_eq!(ActionType::RenameSpace as u8, 0x0F);
     }
 
     #[test]
@@ -907,8 +991,56 @@ mod tests {
             ActionType::try_from(0x0E).unwrap(),
             ActionType::GenesisRegister
         );
-        assert!(ActionType::try_from(0x0F).is_err());
+        // Space metadata actions
+        assert_eq!(ActionType::try_from(0x0F).unwrap(), ActionType::RenameSpace);
+        assert!(ActionType::try_from(0x10).is_err());
         assert!(ActionType::try_from(0xFF).is_err());
+    }
+
+    #[test]
+    fn test_new_rename_space() {
+        let target = [0xab; 32];
+        let name_hash = sha256(b"new-name");
+        let action = Action::new_rename_space(
+            [1u8; 32], 1000, target, name_hash, 42, 60, [3u8; 32], [4u8; 64],
+        );
+        assert_eq!(action.action_type, ActionType::RenameSpace);
+        assert!(action.is_rename_space());
+        assert_eq!(action.rename_target_space_id(), Some(target));
+        assert_eq!(action.content_hash, Some(name_hash));
+        assert!(!action.is_thread_root());
+        assert!(!action.is_create_space());
+        assert_eq!(action.space_id(), None);
+
+        // Wire roundtrip within the fixed action size.
+        let serialized = action.serialize();
+        assert_eq!(serialized.len(), ACTION_SERIALIZED_SIZE);
+        let deserialized = Action::deserialize(&serialized).unwrap();
+        assert_eq!(action, deserialized);
+    }
+
+    #[test]
+    fn test_rename_space_signing_message_is_deterministic_and_binding() {
+        let target = [0xab; 32];
+        let hash = sha256(b"new-name");
+        let m1 = Action::rename_space_signing_message(&target, &hash, 1000);
+        let m2 = Action::rename_space_signing_message(&target, &hash, 1000);
+        assert_eq!(m1, m2);
+        // Changing any input changes the message.
+        assert_ne!(
+            m1,
+            Action::rename_space_signing_message(&target, &hash, 1001)
+        );
+        assert_ne!(
+            m1,
+            Action::rename_space_signing_message(&[0xacu8; 32], &hash, 1000)
+        );
+        assert_ne!(
+            m1,
+            Action::rename_space_signing_message(&target, &sha256(b"other"), 1000)
+        );
+        // Domain-separated.
+        assert!(m1.starts_with(b"swimchain:rename_space:v1"));
     }
 
     #[test]

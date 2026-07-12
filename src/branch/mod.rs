@@ -54,7 +54,7 @@ pub mod storage;
 
 pub use behavioral::{
     BehavioralEvent, ClusterMetrics, ClusterOutcome, ClusteringAction, CommunityFormation,
-    IdentitySpaceMetrics, SpamClusterSignal,
+    CommunityLineage, IdentitySpaceMetrics, SpamClusterSignal,
 };
 pub use error::BranchError;
 pub use manager::{BranchManager, ClusteringMode};

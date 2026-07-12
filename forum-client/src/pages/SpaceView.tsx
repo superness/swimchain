@@ -4,10 +4,11 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, Navigate } from 'react-router-dom';
 import { usePreferences } from '../hooks/usePreferences';
 import { useKeyboardNavigation } from '../hooks/useKeyboardNavigation';
 import { useSpaceThreads, useSpaces } from '../hooks/useRpc';
+import { useSpaceLineage, communityPath } from '../hooks/useLineage';
 import { ThreadList } from '../components/ThreadList';
 import { ThreadSortControls } from '../components/ThreadSortControls';
 import { Pagination } from '../components/Pagination';
@@ -19,6 +20,11 @@ export function SpaceView(): JSX.Element {
   const { spaces } = useSpaces();
   const { preferences, updatePreference } = usePreferences();
   const { setItems } = useKeyboardNavigation();
+
+  // Behavioral-branching lineage for this space (SPEC_13, Phase 2). Provides
+  // parent-side continuity pointers (moved threads) and detects deep links to
+  // a community's own space id — which is never a navigable space view.
+  const lineage = useSpaceLineage(spaceId);
 
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState<ThreadSortOption>(preferences.threadOrdering);
@@ -79,6 +85,12 @@ export function SpaceView(): JSX.Element {
     return space?.name ?? `Space ${spaceId.substring(0, 12)}...`;
   }, [spaceId, spaces]);
 
+  // Deep link to a community's own space id: a community is not a bare space
+  // (its threads live in the parent), so route to the community view instead.
+  if (lineage.isCommunity && lineage.parent && lineage.community) {
+    return <Navigate to={communityPath(lineage.parent.id, lineage.community.community_id)} replace />;
+  }
+
   if (loading) {
     return (
       <div className="space-view">
@@ -132,7 +144,7 @@ export function SpaceView(): JSX.Element {
 
       {threads.length > 0 ? (
         <>
-          <ThreadList threads={threads} spaceId={spaceId || ''} />
+          <ThreadList threads={threads} spaceId={spaceId || ''} movedThreads={lineage.movedThreads} />
           {totalPages > 1 && (
             <Pagination
               page={page}

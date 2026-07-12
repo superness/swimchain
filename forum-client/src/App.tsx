@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from
 import { MainLayout } from './layouts/MainLayout';
 import { SpaceList } from './pages/SpaceList';
 import { SpaceView } from './pages/SpaceView';
+import { CommunityView } from './pages/CommunityView';
 import { NewThread } from './pages/NewThread';
 import { ThreadView } from './pages/ThreadView';
 import { SearchResults } from './pages/SearchResults';
@@ -142,6 +143,16 @@ export function App(): JSX.Element {
                   element={
                     <RequireIdentity>
                       <NewThread />
+                    </RequireIdentity>
+                  }
+                />
+                {/* Behavioral community view (SPEC_13): the parent space's
+                    thread list filtered to the community's moved threads. */}
+                <Route
+                  path="/spaces/:spaceId/community/:communityId"
+                  element={
+                    <RequireIdentity>
+                      <CommunityView />
                     </RequireIdentity>
                   }
                 />

@@ -510,6 +510,18 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
         createdAt: s.last_activity ?? 0, // Use last activity as proxy
         activePostCount: s.post_count, // No separate active count from RPC
         postCount: s.post_count,
+        // Behavioral communities that grew out of this space (SPEC_13, Phase 2).
+        // Additive: `children` is omitted when empty / on pre-Phase-2 nodes.
+        communities: s.children?.map(c => ({
+          communityId: c.community_id,
+          spaceId: c.space_id,
+          parentSpaceId: s.space_id,
+          name: c.name,
+          fullName: c.full_name,
+          formedAt: c.formed_at,
+          formationHeight: c.formation_height,
+          foundingMemberCount: c.founding_member_count,
+        })),
       }));
 
       // Cache the result
@@ -1017,6 +1029,60 @@ export function useThread(contentId: string): {
   }, [rpc, connected, authReady, contentId]);
 
   return { thread, loading, error, fetching, refetch };
+}
+
+/**
+ * Hook to fetch a set of threads by their content ids (SPEC_13 community view).
+ *
+ * A behavioral community's threads physically live in its PARENT space; the
+ * community view renders exactly the moved_threads set from get_space_lineage.
+ * Threads that fail to load (e.g. decayed or not yet synced) are skipped —
+ * the community view shows what's available rather than erroring.
+ */
+export function useThreadsByIds(contentIds: string[]): {
+  threads: Thread[];
+  loading: boolean;
+} {
+  const { rpc, connected, authReady } = useRpc();
+  const [threads, setThreads] = useState<Thread[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Stable key so re-renders with an equal id list don't refetch.
+  const idsKey = contentIds.join(',');
+
+  useEffect(() => {
+    if (!rpc || !connected || !authReady) return;
+    const ids = idsKey ? idsKey.split(',') : [];
+    if (ids.length === 0) {
+      setThreads([]);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+
+    (async () => {
+      const results = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const content = await rpc.getContent(id);
+            return contentToThread(content);
+          } catch (err) {
+            console.warn('[useThreadsByIds] Failed to load', id, err);
+            return null;
+          }
+        })
+      );
+      if (cancelled) return;
+      setThreads(results.filter((t): t is Thread => t !== null));
+      setLoading(false);
+    })();
+
+    return () => { cancelled = true; };
+  }, [rpc, connected, authReady, idsKey]);
+
+  return { threads, loading };
 }
 
 // =========================================================================

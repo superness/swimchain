@@ -437,6 +437,67 @@ impl NotificationService {
         Ok(None)
     }
 
+    /// Notify a founding member that their group earned its own community
+    /// space (SPEC_13 behavioral branching, Phase 2).
+    ///
+    /// Graduation framing per the Phase 2 UX contract: the copy is
+    /// recognition ("your group's conversations earned their own lane"),
+    /// never eviction — nobody is removed from the parent space.
+    ///
+    /// Always-on (no preference gate): formations are rare (per-space
+    /// cooldown ~14 days) and once-per-community. Deduped by community id
+    /// via the throttle store's generic `last_sent` map so block replay /
+    /// branch-state rebuilds never re-notify.
+    pub fn notify_community_formed(
+        &self,
+        identity: &[u8; 32],
+        parent_space_id: &[u8; 32],
+        community_id: &[u8; 32],
+        auto_name: &str,
+        founding_member_count: u32,
+        parent_space_name: Option<&str>,
+        now_ms: u64,
+    ) -> Result<Option<Notification>, NotificationError> {
+        // Dedupe: one notification per community, ever.
+        let mut throttle = self.throttle_store.load(identity)?;
+        let dedupe_key = format!("community_formed:{}", hex::encode(community_id));
+        if throttle.last_sent.contains_key(&dedupe_key) {
+            return Ok(None);
+        }
+
+        let parent_label = parent_space_name
+            .map(String::from)
+            .unwrap_or_else(|| format!("space {}", hex::encode(&parent_space_id[..4])));
+        let message = format!(
+            "🌱 Your group's conversations earned their own lane: {} (grew out of {}). \
+             Everything continues — nothing was removed. Founding members can rename it.",
+            auto_name, parent_label
+        );
+
+        let notification = Notification::with_context(
+            NotificationType::CommunityFormed,
+            message,
+            now_ms,
+            super::types::NotificationContext::CommunityFormed {
+                parent_space_id: *parent_space_id,
+                community_id: *community_id,
+                auto_name: auto_name.to_string(),
+                founding_member_count,
+            },
+        );
+        self.notification_store.store(identity, &notification)?;
+
+        throttle.last_sent.insert(dedupe_key, now_ms);
+        self.throttle_store.save(identity, &throttle)?;
+
+        let _ = self.event_tx.send(NotificationEvent::Emitted {
+            identity: *identity,
+            notification: notification.clone(),
+        });
+
+        Ok(Some(notification))
+    }
+
     /// Get unread notifications for an identity.
     pub fn get_pending(
         &self,
@@ -567,6 +628,75 @@ mod tests {
     fn test_service_creation() {
         let (_temp, service) = create_test_service();
         assert_eq!(service.notification_store.total_count(), 0);
+    }
+
+    #[test]
+    fn test_community_formed_notification_and_dedupe() {
+        let (_temp, service) = create_test_service();
+        let identity = [1u8; 32];
+        let parent = [7u8; 32];
+        let community = [8u8; 32];
+
+        let n = service
+            .notify_community_formed(
+                &identity,
+                &parent,
+                &community,
+                "community-ab12cd34",
+                5,
+                Some("/gardening"),
+                BASE_MS,
+            )
+            .unwrap()
+            .expect("first formation notifies");
+        assert_eq!(n.notification_type, NotificationType::CommunityFormed);
+        // Graduation framing: recognition, never eviction.
+        assert!(n.message.contains("earned their own lane"));
+        assert!(n.message.contains("community-ab12cd34"));
+        assert!(n.message.contains("/gardening"));
+        assert!(!n.message.to_lowercase().contains("removed from"));
+        match n.context {
+            Some(super::super::types::NotificationContext::CommunityFormed {
+                parent_space_id,
+                community_id,
+                ref auto_name,
+                founding_member_count,
+            }) => {
+                assert_eq!(parent_space_id, parent);
+                assert_eq!(community_id, community);
+                assert_eq!(auto_name, "community-ab12cd34");
+                assert_eq!(founding_member_count, 5);
+            }
+            ref other => panic!("expected CommunityFormed context, got {:?}", other),
+        }
+
+        // Same community again (e.g. branch-state rebuild replay): deduped.
+        let again = service
+            .notify_community_formed(
+                &identity,
+                &parent,
+                &community,
+                "community-ab12cd34",
+                5,
+                Some("/gardening"),
+                BASE_MS + 1000,
+            )
+            .unwrap();
+        assert!(again.is_none(), "one notification per community, ever");
+
+        // A different community still notifies.
+        let other = service
+            .notify_community_formed(
+                &identity,
+                &parent,
+                &[9u8; 32],
+                "community-99aabbcc",
+                4,
+                None,
+                BASE_MS + 2000,
+            )
+            .unwrap();
+        assert!(other.is_some());
     }
 
     #[test]

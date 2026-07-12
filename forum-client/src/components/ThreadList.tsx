@@ -12,34 +12,55 @@ import { usePassphraseStore } from '../hooks/usePassphraseStore';
 import { BlockButton } from './BlockButton';
 import { EncryptedBadge, DecryptedBadge } from './EncryptedContent';
 import { ImageGallery } from './ImageGallery';
+import { MovedThreadBanner } from './ContinuityBanner';
 import { decryptPost } from '../lib/encryption';
 import { truncateAddress } from './AddressDisplay';
 import { formatRelativeTime } from '../utils/time';
 import type { Thread } from '../types';
+import type { MovedThreadPointer } from '../hooks/useLineage';
 import './ThreadList.css';
 
 interface ThreadListProps {
   threads: Thread[];
   spaceId: string;
+  /**
+   * Threads whose discussion grew into a formed child space (SPEC_13, Phase 2).
+   * Keyed by thread root id. Empty/undefined until the lineage RPC ships, so no
+   * banners render on nodes without behavioral branching.
+   */
+  movedThreads?: Map<string, MovedThreadPointer>;
 }
 
 // Row height in pixels (includes padding and border)
 const ROW_HEIGHT = 80;
+// Extra height a row needs when it carries a "grew into its own space" banner.
+const MOVED_BANNER_HEIGHT = 48;
 // Virtualization threshold - use native rendering below this count
 const VIRTUALIZATION_THRESHOLD = 50;
+
+/** Resolve the continuity pointer for a thread, if it moved into a child space. */
+function movedPointerFor(
+  thread: Thread,
+  movedThreads?: Map<string, MovedThreadPointer>,
+): MovedThreadPointer | undefined {
+  if (!movedThreads || movedThreads.size === 0) return undefined;
+  const bare = thread.id.startsWith('sha256:') ? thread.id.slice(7) : thread.id;
+  return movedThreads.get(thread.id) ?? movedThreads.get(bare);
+}
 
 // Props passed to the row component by List + our custom rowProps
 interface ThreadRowRendererProps {
   threads: Thread[];
   spaceId: string;
   selectedIndex: number;
+  movedThreads?: Map<string, MovedThreadPointer>;
 }
 
 // Row component for react-window v2
 function ThreadRowRenderer(
   props: RowComponentProps<ThreadRowRendererProps>
 ): ReactElement | null {
-  const { index, style, threads, spaceId, selectedIndex } = props;
+  const { index, style, threads, spaceId, selectedIndex, movedThreads } = props;
   const thread = threads[index];
   if (!thread) return null;
   const isSelected = index === selectedIndex;
@@ -50,12 +71,13 @@ function ThreadRowRenderer(
         thread={thread}
         spaceId={spaceId}
         isSelected={isSelected}
+        movedTo={movedPointerFor(thread, movedThreads)}
       />
     </div>
   );
 }
 
-export function ThreadList({ threads, spaceId }: ThreadListProps): JSX.Element {
+export function ThreadList({ threads, spaceId, movedThreads }: ThreadListProps): JSX.Element {
   const { selectedIndex } = useKeyboardNavigation();
   const { isPostBlocked, isUserBlocked } = useBlocklist();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -90,13 +112,26 @@ export function ThreadList({ threads, spaceId }: ThreadListProps): JSX.Element {
     threads: visibleThreads,
     spaceId,
     selectedIndex,
-  }), [visibleThreads, spaceId, selectedIndex]);
+    movedThreads,
+  }), [visibleThreads, spaceId, selectedIndex, movedThreads]);
+
+  // Per-row height: moved threads are taller to fit their continuity banner.
+  const getRowHeight = useMemo(() => {
+    return (index: number): number => {
+      const thread = visibleThreads[index];
+      const moved = thread ? movedPointerFor(thread, movedThreads) : undefined;
+      return ROW_HEIGHT + (moved ? MOVED_BANNER_HEIGHT : 0);
+    };
+  }, [visibleThreads, movedThreads]);
 
   // Calculate list height - use available space or limit by item count
   const listHeight = useMemo(() => {
-    const totalHeight = visibleThreads.length * ROW_HEIGHT;
+    const totalHeight = visibleThreads.reduce(
+      (sum, thread) => sum + ROW_HEIGHT + (movedPointerFor(thread, movedThreads) ? MOVED_BANNER_HEIGHT : 0),
+      0,
+    );
     return Math.min(containerHeight, totalHeight);
-  }, [visibleThreads.length, containerHeight]);
+  }, [visibleThreads, containerHeight, movedThreads]);
 
   if (visibleThreads.length === 0 && threads.length > 0) {
     return (
@@ -126,7 +161,7 @@ export function ThreadList({ threads, spaceId }: ThreadListProps): JSX.Element {
           <List
             style={{ height: listHeight }}
             rowCount={visibleThreads.length}
-            rowHeight={ROW_HEIGHT}
+            rowHeight={getRowHeight}
             rowComponent={ThreadRowRenderer}
             rowProps={rowProps}
             overscanCount={5}
@@ -138,6 +173,7 @@ export function ThreadList({ threads, spaceId }: ThreadListProps): JSX.Element {
               thread={thread}
               spaceId={spaceId}
               isSelected={index === selectedIndex}
+              movedTo={movedPointerFor(thread, movedThreads)}
             />
           ))
         )}
@@ -150,9 +186,11 @@ interface ThreadRowProps {
   thread: Thread;
   spaceId: string;
   isSelected: boolean;
+  /** Set when this thread's discussion grew into a formed child space. */
+  movedTo?: MovedThreadPointer;
 }
 
-function ThreadRow({ thread, spaceId, isSelected }: ThreadRowProps): JSX.Element {
+function ThreadRow({ thread, spaceId, isSelected, movedTo }: ThreadRowProps): JSX.Element {
   const { getPassphrasesToTry } = usePassphraseStore();
   const [decryptedTitle, setDecryptedTitle] = useState<string | null>(null);
   const [activePassphrase, setActivePassphrase] = useState<string | null>(null);
@@ -200,7 +238,7 @@ function ThreadRow({ thread, spaceId, isSelected }: ThreadRowProps): JSX.Element
   const showEncryptedBadge = isEncryptedPost && !decryptedTitle;
   const showDecryptedBadge = isEncryptedPost && !!decryptedTitle;
 
-  return (
+  const rowInner = (
     <div
       className={`thread-row ${isSelected ? 'selected' : ''}`}
       data-selected={isSelected}
@@ -241,6 +279,21 @@ function ThreadRow({ thread, spaceId, isSelected }: ThreadRowProps): JSX.Element
       <div className="col-actions" role="gridcell">
         <BlockButton id={thread.id} type="post" authorId={thread.author} />
       </div>
+    </div>
+  );
+
+  if (!movedTo) return rowInner;
+
+  // This thread's conversation grew into its own community — surface the
+  // continuity pointer above the row so the thread is never silently "gone".
+  return (
+    <div className="thread-row-with-continuity">
+      <MovedThreadBanner
+        parentSpaceId={movedTo.parentSpaceId}
+        communityId={movedTo.communityId}
+        communityName={movedTo.communityName}
+      />
+      {rowInner}
     </div>
   );
 }

@@ -60,7 +60,10 @@ fn post_action(author: [u8; 32], content_hash: [u8; 32], timestamp: u64) -> Acti
 }
 
 /// Seed a thread through the branch-aware store so both the branch index and
-/// the content metadata index (thread author lookup) are populated.
+/// the content metadata index (thread author lookup) are populated. Also
+/// feeds the Post through clustering-metric tracking, mirroring production
+/// (the router processes every block action for clustering), so the author
+/// counts as a space participant for the §2.2 minority gate.
 fn seed_thread(store: &ChainStore, thread_root_id: [u8; 32], author: [u8; 32], timestamp: u64) {
     let block = ContentBlock {
         thread_root_id,
@@ -76,6 +79,15 @@ fn seed_thread(store: &ChainStore, thread_root_id: [u8; 32], author: [u8; 32], t
     BranchAwareStore::new(store)
         .put_content_block(block)
         .unwrap();
+    let outcome = BranchManager::new(store)
+        .process_action_for_clustering(
+            &SPACE,
+            &ClusteringAction::Post { author },
+            SEED_HEIGHT,
+            timestamp,
+        )
+        .unwrap();
+    assert_eq!(outcome, ClusterOutcome::None, "seeding a post never forms");
 }
 
 fn reply(
@@ -517,8 +529,234 @@ fn age_gate_blocks_young_cluster() {
 }
 
 // ============================================================================
+// 4b. Minority gate (§2.2): a cluster that is most of the space's active
+//     participants is the space being itself -- it must not split.
+// ============================================================================
+
+#[test]
+fn majority_cluster_of_small_space_does_not_form_until_space_grows() {
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path()).unwrap();
+    let manager = BranchManager::new(&store);
+
+    // 5 tight members + ONE outsider: 6 active participants total.
+    let members: Vec<[u8; 32]> = (1..=5).map(id).collect();
+    let outsider = id(101);
+    for (i, m) in members.iter().enumerate() {
+        seed_thread(
+            &store,
+            thread_id(1, i as u8, i % 2 == 0),
+            *m,
+            1000 + i as u64,
+        );
+    }
+    seed_thread(&store, thread_id(2, 0, true), outsider, 2000);
+
+    // Same insular interaction pattern as the loud-cluster fixture: 120
+    // internal replies, light external touches (all other gates pass).
+    for a in &members {
+        for b in &members {
+            if a == b {
+                continue;
+            }
+            for _ in 0..6 {
+                assert_eq!(reply(&manager, *a, *b, SEED_HEIGHT), ClusterOutcome::None);
+            }
+        }
+    }
+    for m in &members {
+        reply(&manager, *m, outsider, SEED_HEIGHT);
+    }
+    reply(&manager, outsider, members[0], SEED_HEIGHT);
+
+    // Aged trigger: every insularity/activity gate passes, but the cluster is
+    // 5 of 6 participants -- these regulars ARE the space. No formation, in
+    // full mode AND log-only mode.
+    let outcome = reply(&manager, members[0], members[1], AGED_HEIGHT);
+    assert_eq!(
+        outcome,
+        ClusterOutcome::None,
+        "a majority cluster must not be split from its own space"
+    );
+    let outcome = reply_with_mode(
+        &manager,
+        members[1],
+        members[2],
+        AGED_HEIGHT,
+        ClusteringMode::LogOnly,
+    );
+    assert_eq!(outcome, ClusterOutcome::None);
+    assert!(store.get_space_communities(&SPACE).unwrap().is_empty());
+    assert!(store
+        .get_space_behavioral_events(&SPACE)
+        .unwrap()
+        .is_empty());
+    let state = store.get_space_branch_state(&SPACE).unwrap().unwrap();
+    assert_eq!(state.max_depth, 0, "space must not have fractured");
+
+    // The space grows: 14 more participants post (20 active total). The SAME
+    // cluster is now a clear minority (5/20 = 0.25) -- it forms.
+    for i in 0..14u8 {
+        seed_thread(
+            &store,
+            thread_id(3, i, i % 2 == 0),
+            id(130 + i),
+            3000 + u64::from(i),
+        );
+    }
+    let outcome = reply(&manager, members[0], members[1], AGED_HEIGHT + 100);
+    let formation = match outcome {
+        ClusterOutcome::Community(f) => f,
+        other => panic!(
+            "expected community formation after space grew, got {:?}",
+            other
+        ),
+    };
+    assert_eq!(formation.founding_members.len(), 5);
+}
+
+// ============================================================================
 // 5. Determinism: same chain data -> identical formation decision
 // ============================================================================
+
+/// Phase 2 Lane A #7 — two-node determinism: two independent regtest nodes
+/// (modeled as two independent ChainStores, exactly what a node derives its
+/// behavioral state from) process the same canonical action stream in chain
+/// order and must converge on the identical community: same community_id,
+/// same auto-name, same lineage record, same branch, same thread partition.
+#[test]
+fn two_nodes_processing_identical_chain_converge_on_identical_lineage() {
+    use swimchain::branch::CommunityFormation;
+
+    struct NodeOutcome {
+        formation: swimchain::branch::CommunityFormation,
+        lineage: swimchain::branch::CommunityLineage,
+        community_threads: BTreeSet<[u8; 32]>,
+        remainder_threads: BTreeSet<[u8; 32]>,
+        participants: usize,
+    }
+
+    // The same deterministic action stream, processed independently.
+    let run_node = || -> NodeOutcome {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path()).unwrap();
+        let (members, _, _) = seed_loud_cluster(&store);
+        let manager = BranchManager::new(&store);
+
+        let formation = match reply(&manager, members[0], members[1], AGED_HEIGHT) {
+            ClusterOutcome::Community(f) => f,
+            other => panic!("expected community, got {:?}", other),
+        };
+
+        let lineage = store
+            .get_community_lineage(&formation.community_id)
+            .unwrap()
+            .expect("lineage persisted at formation");
+
+        let community_branch = formation.community_branch.clone().unwrap();
+        let remainder_branch = BranchPath::root().branch(BranchDirection::Left);
+        let community_threads = store
+            .get_threads_in_branch(&SPACE, &community_branch)
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let remainder_threads = store
+            .get_threads_in_branch(&SPACE, &remainder_branch)
+            .unwrap()
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let participants = store.count_space_participants(&SPACE).unwrap();
+
+        NodeOutcome {
+            formation,
+            lineage,
+            community_threads,
+            remainder_threads,
+            participants,
+        }
+    };
+
+    let node_a = run_node();
+    let node_b = run_node();
+
+    // Identical community identity and membership.
+    assert_eq!(node_a.formation.community_id, node_b.formation.community_id);
+    assert_eq!(
+        node_a.formation.founding_members,
+        node_b.formation.founding_members
+    );
+    assert_eq!(
+        node_a.formation.community_branch,
+        node_b.formation.community_branch
+    );
+
+    // Identical lineage record — including the deterministic auto-name.
+    assert_eq!(node_a.lineage, node_b.lineage);
+    assert_eq!(
+        node_a.lineage.auto_name,
+        CommunityFormation::derive_auto_name(&node_a.formation.community_id)
+    );
+    assert!(node_a.lineage.auto_name.starts_with("community-"));
+    assert_eq!(node_a.lineage.auto_name.len(), "community-".len() + 8);
+    assert_eq!(node_a.lineage.display_name, node_a.lineage.auto_name);
+    assert_eq!(node_a.lineage.parent_space_id, SPACE);
+    assert_eq!(node_a.lineage.formation_height, AGED_HEIGHT);
+    assert_eq!(node_a.lineage.founding_member_count, 5);
+    assert!(node_a.lineage.renamed_at.is_none());
+
+    // Identical thread partition (moved-thread exposure) and participant
+    // counts (minority-gate input).
+    assert_eq!(node_a.community_threads, node_b.community_threads);
+    assert_eq!(node_a.remainder_threads, node_b.remainder_threads);
+    assert_eq!(node_a.participants, node_b.participants);
+
+    // Lineage is discoverable from the parent side (children listing).
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path()).unwrap();
+    let (members, _, _) = seed_loud_cluster(&store);
+    let manager = BranchManager::new(&store);
+    let _ = reply(&manager, members[0], members[1], AGED_HEIGHT);
+    let children = store.get_space_children(&SPACE).unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].community_id, node_a.formation.community_id);
+}
+
+/// Rename persistence: a community's display name diverges from its
+/// auto-name after a rename, and the change is visible from the parent's
+/// children listing (what the rename action's block processing applies).
+#[test]
+fn community_lineage_rename_roundtrip() {
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path()).unwrap();
+    let (members, _, _) = seed_loud_cluster(&store);
+    let manager = BranchManager::new(&store);
+
+    let formation = match reply(&manager, members[0], members[1], AGED_HEIGHT) {
+        ClusterOutcome::Community(f) => f,
+        other => panic!("expected community, got {:?}", other),
+    };
+
+    let mut lineage = store
+        .get_community_lineage(&formation.community_id)
+        .unwrap()
+        .unwrap();
+    let auto_name = lineage.auto_name.clone();
+
+    // Apply a rename (the same mutation apply_rename_space_actions_from_block
+    // performs after commitment/signature/authorization checks).
+    lineage.display_name = "the-deep-end".to_string();
+    lineage.renamed_at = Some(9_000_000);
+    lineage.renamed_by = Some(members[0]);
+    store.put_community_lineage(&lineage).unwrap();
+
+    let children = store.get_space_children(&SPACE).unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].display_name, "the-deep-end");
+    assert_eq!(children[0].auto_name, auto_name, "auto-name is immutable");
+    assert_eq!(children[0].renamed_by, Some(members[0]));
+}
 
 #[test]
 fn same_data_produces_identical_formation() {

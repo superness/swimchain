@@ -63,11 +63,141 @@ interface SpaceSummary {
   name: string | null;
   /** App-namespace tag (e.g. "wiki"). Set = a specialized space; general clients hide it. */
   app?: string | null;
+  /** True if this is a real public space whose name hasn't been resolved yet. */
+  name_unresolved?: boolean;
+  /**
+   * Behavioral communities that grew out of this space (SPEC_13, Phase 2).
+   * ADDITIVE: omitted when empty and absent entirely on pre-Phase-2 nodes.
+   * Communities are deliberately NOT top-level list_spaces entries — their
+   * threads live in the parent space; render them via the community view
+   * (parent thread list filtered to the community's moved_threads).
+   */
+  children?: SpaceChildInfo[];
 }
 
 interface ListSpacesResult {
   spaces: SpaceSummary[];
   total: number;
+}
+
+// === Behavioral-branching lineage RPC shapes (SPEC_13, Phase 2 — FINAL) ===
+// Exact server shapes per Lane A. Consumers still feature-detect (see
+// isMethodNotFoundError) so absence of the optional RPCs degrades gracefully.
+
+/**
+ * A behaviorally-formed community, as embedded in list_spaces `children` and
+ * returned by get_space_lineage. list_spaces embeds the subset {community_id,
+ * space_id, name, full_name, formed_at, formation_height,
+ * founding_member_count}; get_space_lineage returns every field, so the extras
+ * are optional here.
+ */
+export interface SpaceChildInfo {
+  /** Deterministic community id (64-hex). */
+  community_id: string;
+  /** The community's own space id (bech32 sp1). NOT a navigable space view. */
+  space_id: string;
+  /** Parent space id (get_space_lineage only). */
+  parent_space_id?: string;
+  /** Display name. */
+  name: string;
+  /** Deterministic auto-generated name at formation (get_space_lineage only). */
+  auto_name?: string;
+  /** Fully-qualified display name (e.g. "<parent>/community-xxxx"). */
+  full_name: string;
+  /** True if founding members renamed the community (get_space_lineage only). */
+  renamed?: boolean;
+  /** UNIX seconds when the community formed. */
+  formed_at: number;
+  /** Block height formation was detected at. */
+  formation_height: number;
+  /** Members present at formation. */
+  founding_member_count: number;
+  /** Fractured branch path ("depth:hexpath") or null (get_space_lineage only). */
+  branch_path?: string | null;
+  /** Thread-root content ids ("sha256:<hex>") that moved into this community. */
+  moved_threads?: string[];
+  /** Number of threads in the community (get_space_lineage only). */
+  thread_count?: number;
+}
+
+/** A node in the lineage tree returned by get_space_tree (recursive). */
+export interface SpaceTreeNode {
+  space_id: string;
+  name: string;
+  /** Set (64-hex) when this node is a community; null for plain spaces. */
+  community_id: string | null;
+  formed_at: number | null;
+  founding_member_count: number | null;
+  children: SpaceTreeNode[];
+}
+
+/** get_space_tree result. */
+export interface SpaceTreeResult {
+  roots: SpaceTreeNode[];
+}
+
+/**
+ * get_space_lineage result. `parent` and `community` are set iff the queried
+ * id IS a community; `children` lists communities formed out of the queried id.
+ */
+export interface SpaceLineageResult {
+  space_id: string;
+  name: string;
+  parent: { space_id: string; name: string } | null;
+  community: SpaceChildInfo | null;
+  children: SpaceChildInfo[];
+}
+
+/** Context payload of a community_formed notification. */
+export interface CommunityFormedContext {
+  /** Parent space id (bech32 sp1). */
+  parent_space_id: string;
+  /** Parent space id (hex). */
+  parent_space_id_hex?: string;
+  /** Community id (64-hex). */
+  community_id: string;
+  /** The community's own space id (bech32 sp1). */
+  community_space_id?: string;
+  /** Deterministic auto-generated community name. */
+  auto_name?: string;
+  founding_member_count?: number;
+}
+
+/** A notification from list_notifications (SPEC_09). */
+export interface NotificationInfo {
+  /** Notification id (32-hex). */
+  id: string;
+  /** e.g. "community_formed". */
+  notification_type: string;
+  message?: string;
+  created_at_ms?: number;
+  read?: boolean;
+  context?: Record<string, unknown>;
+}
+
+export interface ListNotificationsResult {
+  notifications: NotificationInfo[];
+  unread_count?: number;
+}
+
+/** A recorded would-be/actual community formation from list_behavioral_events. */
+export interface BehavioralEventInfo {
+  event_id: string;
+  /** Parent space the cluster was detected in (hex). */
+  space_id: string;
+  cluster_members: string[];
+  member_count: number;
+  engagement_diversity: number;
+  external_interaction: number;
+  internal_cohesion: number;
+  age_blocks: number;
+  detected_height: number;
+  timestamp: number;
+}
+
+export interface ListBehavioralEventsResult {
+  events: BehavioralEventInfo[];
+  count: number;
 }
 
 interface IdentityLevel {
@@ -565,6 +695,64 @@ export class SwimchainRpc {
 
   async requestContent(contentId: string): Promise<{ status: string; message: string }> {
     return this.call('request_content', { content_id: contentId });
+  }
+
+  // =========================================================================
+  // Behavioral-branching lineage (SPEC_13, Phase 2)
+  //
+  // These methods are OPTIONAL server surfaces (Lane A). Callers must
+  // feature-detect: catch the error and check isMethodNotFoundError(err); when
+  // true, hide the lineage UI and fall back to the flat space list.
+  // =========================================================================
+
+  /**
+   * Fetch the lineage tree for navigation. Optionally rooted at a space.
+   * Throws (method-not-found) on nodes that predate behavioral branching.
+   */
+  async getSpaceTree(root?: string): Promise<SpaceTreeResult> {
+    return this.call('get_space_tree', root ? { root } : {});
+  }
+
+  /**
+   * Fetch a single space's lineage: parent + community (set iff the queried id
+   * IS a community) and children (communities formed out of the queried id,
+   * each carrying its moved_threads).
+   * Throws (method-not-found) on nodes that predate behavioral branching.
+   */
+  async getSpaceLineage(spaceId: string): Promise<SpaceLineageResult> {
+    return this.call('get_space_lineage', { space_id: spaceId });
+  }
+
+  /**
+   * List notifications for the local user (SPEC_09). Used to surface
+   * community_formed graduation notices. Throws (method-not-found) if the node
+   * has no notification RPC yet.
+   */
+  async listNotifications(options?: { limit?: number; unreadOnly?: boolean }): Promise<ListNotificationsResult> {
+    return this.call('list_notifications', {
+      limit: options?.limit ?? 50,
+      unread_only: options?.unreadOnly ?? false,
+    });
+  }
+
+  /**
+   * Mark one notification (by id) — or all of them — as read.
+   * Throws (method-not-found) if the node has no notification RPC yet.
+   */
+  async markNotificationRead(params: { notificationId: string } | { all: true }): Promise<unknown> {
+    return this.call(
+      'mark_notification_read',
+      'all' in params ? { all: true } : { notification_id: params.notificationId },
+    );
+  }
+
+  /**
+   * List recorded behavioral-clustering events (would-be / actual community
+   * formations). This RPC is shipped (Phase 1); it powers the "recently formed"
+   * signal even before the richer lineage RPCs land.
+   */
+  async listBehavioralEvents(spaceId?: string): Promise<ListBehavioralEventsResult> {
+    return this.call('list_behavioral_events', spaceId ? { space_id: spaceId } : {});
   }
 
   /**
@@ -1149,6 +1337,24 @@ export class SwimchainRpc {
       content_id: contentId,
     });
   }
+}
+
+// =========================================================================
+// Feature detection for optional RPC surfaces
+// =========================================================================
+
+/**
+ * True if an error thrown by an RPC call means the method does not exist on the
+ * node (JSON-RPC -32601). Callers use this to feature-detect optional surfaces
+ * like the behavioral-branching lineage RPCs and hide the UI gracefully rather
+ * than showing an error.
+ *
+ * SwimchainRpc.call() throws `Error("RPC Error -32601: Method not found: ...")`.
+ */
+export function isMethodNotFoundError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return msg.includes('-32601') || msg.includes('method not found');
 }
 
 // =========================================================================

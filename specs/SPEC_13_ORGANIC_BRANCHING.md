@@ -130,6 +130,18 @@ pub const MIN_PATTERN_AGE_BLOCKS: u64 = 20160; // 7 days at 30s blocks
 
 /// Single-participant clusters are flagged differently
 pub const SPAM_CLUSTER_SIZE: usize = 1;
+
+/// Maximum fraction of a space's active participants a cluster may hold
+/// and still qualify for community formation (minority gate).
+///
+/// A small space's regulars ARE the space — low diversity + high cohesion
+/// there is the community being itself, not a sub-cluster; splitting would
+/// try to evict a space from itself. This protects heavy legitimate users
+/// from false-positive splits. Participants are counted from the same
+/// on-chain metric window as the other 2.1 metrics (any identity with
+/// recorded per-space interaction metrics), so the gate is deterministic
+/// from chain data alone.
+pub const MAX_CLUSTER_SPACE_FRACTION: f64 = 0.5;
 ```
 
 ---
@@ -219,6 +231,13 @@ pub fn check_threshold_crossing(
         && metrics.external_interaction < MAX_EXTERNAL_INTERACTION
         && metrics.internal_cohesion > MIN_INTERNAL_COHESION
         && metrics.age_blocks >= MIN_PATTERN_AGE_BLOCKS
+        // Minority gate: the cluster must be a minority of the space's
+        // active participants, or the "cluster" is simply the space's own
+        // community being itself (see MAX_CLUSTER_SPACE_FRACTION). Applies
+        // to community-sized clusters in both full formation and log-only
+        // detection; the 6.1 single-participant spam signal is NOT gated.
+        && (cluster.len() as f64)
+            <= MAX_CLUSTER_SPACE_FRACTION * (count_space_participants(chain, space_id) as f64)
     {
         Some(CommunityFormation::new(space_id, cluster, metrics))
     } else {

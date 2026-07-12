@@ -61,6 +61,8 @@ pub enum EventType {
     SpaceUpdated,
     /// Mempool changed (action added/removed)
     MempoolChanged,
+    /// A behavioral community formed (SPEC_13 Phase 2)
+    CommunityFormed,
 }
 
 impl EventType {
@@ -75,6 +77,7 @@ impl EventType {
             "block_created" => Some(Self::BlockCreated),
             "space_updated" => Some(Self::SpaceUpdated),
             "mempool_changed" => Some(Self::MempoolChanged),
+            "community_formed" => Some(Self::CommunityFormed),
             _ => None,
         }
     }
@@ -90,6 +93,7 @@ impl EventType {
             Self::BlockCreated => "block_created",
             Self::SpaceUpdated => "space_updated",
             Self::MempoolChanged => "mempool_changed",
+            Self::CommunityFormed => "community_formed",
         }
     }
 }
@@ -232,6 +236,30 @@ impl Event {
                 "action": action,
                 "content_id": content_id,
                 "pending_count": pending_count,
+            }),
+        )
+    }
+
+    /// Create a community_formed event (SPEC_13 Phase 2).
+    ///
+    /// `space_id` is the parent space (bech32 sp1...) so space-filtered
+    /// subscriptions match; `community_space_id` is the child community's
+    /// derived space id (bech32 of community_id[..16]).
+    pub fn community_formed(
+        space_id: &str,
+        community_id: &str,
+        community_space_id: &str,
+        name: &str,
+        founding_member_count: usize,
+    ) -> Self {
+        Self::new(
+            EventType::CommunityFormed,
+            json!({
+                "space_id": space_id,
+                "community_id": community_id,
+                "community_space_id": community_space_id,
+                "name": name,
+                "founding_member_count": founding_member_count,
             }),
         )
     }

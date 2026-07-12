@@ -19,7 +19,7 @@ use crate::blocks::{BranchDirection, BranchPath};
 use crate::storage::ChainStore;
 
 use super::behavioral::{
-    self, BehavioralEvent, ClusterOutcome, ClusteringAction, CommunityFormation,
+    self, BehavioralEvent, ClusterOutcome, ClusteringAction, CommunityFormation, CommunityLineage,
 };
 use super::error::BranchError;
 use super::metadata::{BranchMetadata, SpaceBranchState};
@@ -32,13 +32,13 @@ use super::BRANCH_FRACTURE_THRESHOLD;
 pub enum ClusteringMode {
     /// Detection runs; a qualifying cluster executes the behavioral fracture
     /// and is recorded as a [`CommunityFormation`] (existing Phase A
-    /// behavior). Gated to regtest by default via
+    /// behavior). Default for regtest and testnet (Phase 2) via
     /// `NodeConfig::behavioral_branching_enabled()`.
     Full,
     /// Detection runs; a qualifying cluster is persisted as a
     /// [`BehavioralEvent`] ("would-be formation") but no fracture executes
-    /// and no space/branch is created. Rollout Phase 1 default for testnet
-    /// via `NodeConfig::behavioral_branching_log_only_enabled()`.
+    /// and no space/branch is created. Since Phase 2 an explicit opt-in via
+    /// `NodeConfig::behavioral_branching_log_only_enabled()`.
     LogOnly,
 }
 
@@ -469,6 +469,11 @@ impl<'a> BranchManager<'a> {
                     self.execute_behavioral_fracture(space_id, &formation, timestamp)?;
                 formation.community_branch = Some(community_branch);
                 self.store.record_community_formation(&formation)?;
+                // Phase 2: persist the lineage/navigation record (parent
+                // pointer, formation metadata, deterministic auto-name) that
+                // the space-tree RPCs and clients consume.
+                let lineage = CommunityLineage::from_formation(&formation, timestamp);
+                self.store.put_community_lineage(&lineage)?;
                 self.store
                     .put_last_formation_height(space_id, current_height)?;
                 Ok(ClusterOutcome::Community(formation))
