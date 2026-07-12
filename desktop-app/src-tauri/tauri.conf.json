@@ -40,7 +40,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "apps/**/*"
+      "apps/"
     ],
     "windows": {
       "certificateThumbprint": null,
