@@ -716,28 +716,26 @@ Attempting to force someone else into a community:
 
 ---
 
-## 11. Implementation Phases
+## 11. Deployment Status
 
-### Phase 1: Detection Only
-- Implement interaction graph
-- Implement cluster detection
-- Log detected communities (no formation)
-- Validate metrics are stable and accurate
+Detection and automatic formation are implemented and enabled: full formation
+runs on regtest and testnet (mainnet disabled by config). Log-only observation
+mode remains available as a config option, and every detection is persisted as
+a `BehavioralEvent` (queryable via `list_behavioral_events`) so thresholds can
+be tuned from real traffic.
 
-### Phase 2: Manual Formation
-- Add RPC for manual community formation
-- Test formation and space-linking (pointer/lineage) mechanics
-- Validate consensus across nodes
+Formation ships with the complete lineage surface: persisted
+`CommunityLineage`, `get_space_lineage`/`get_space_tree` RPCs, moved-thread
+exposure for continuity pointers, `CommunityFormed` notifications to founding
+members, deterministic auto-naming, and member renaming via the `RenameSpace`
+action.
 
-### Phase 3: Automatic Formation
-- Enable automatic detection and formation
-- Monitor for edge cases
-- Tune thresholds based on real data
-
-### Phase 4: Full Lifecycle
-- Implement dissolution/merging
-- Implement cross-community features
-- Production deployment
+Remaining lifecycle work (not yet implemented):
+- Community dissolution and merging
+- Cross-community features
+- Cross-node formation announcement messages (§7) — currently formation is
+  derived independently and deterministically by each node from chain data,
+  which may make §7 redundant; testnet data will decide.
 
 ---
 

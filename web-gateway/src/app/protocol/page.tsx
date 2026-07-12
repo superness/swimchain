@@ -116,12 +116,15 @@ export default function ProtocolPage() {
           When a group of users interact mostly with each other, the network
           detects the cluster from chain data and gives it its own space
           &mdash; automatically, deterministically, with no admin deciding
-          anything. Tight-knit groups get their own discoverable home instead
-          of crowding the parent space. (Rolling out now: detection runs in
-          observation mode on testnet before formation switches on.)
+          anything. It&apos;s a graduation, not an eviction: threads continue
+          with a visible pointer, members keep full access to the parent
+          space, and the new lane is theirs to rename.
         </p>
         <p>
-          The same mechanism handles spam without moderators: a spammer
+          One structural guard: a cluster only graduates if it&apos;s a
+          <em> minority</em> of the space&apos;s active participants &mdash; a
+          space&apos;s regulars can never be split off from their own space.
+          And the same mechanism handles spam without moderators: a spammer
           engaging only with themselves is a &ldquo;community&rdquo; of one,
           and ends up alone in a space nobody visits. They aren&apos;t
           punished &mdash; they get exactly what they built.
