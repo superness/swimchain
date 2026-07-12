@@ -7,7 +7,7 @@
  */
 
 import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex } from './x25519';
+import { SpaceClass, applyClass } from './spaceClass';
 
 /**
  * Generate a deterministic DM space ID from two public keys.
@@ -20,7 +20,7 @@ export function getDMSpaceId(myPk: string, theirPk: string): string {
   const sorted = [myPk.toLowerCase(), theirPk.toLowerCase()].sort();
   const preimage = `dm:v1:${sorted[0]}:${sorted[1]}`;
   const hash = sha256(new TextEncoder().encode(preimage));
-  return bytesToHex(hash.slice(0, 16));
+  return applyClass(SpaceClass.Dm, hash);
 }
 
 /** Truncate a key/address for display */

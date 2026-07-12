@@ -24,10 +24,6 @@ const REMOTE_SEED_CONFIG = TESTNET_SEED_SF;
 // Storage key for identity (must match useStoredIdentity)
 const IDENTITY_STORAGE_KEY = 'swimchain-identity';
 
-// Tracks space IDs we've already queried via resolve_space_name this session.
-// Prevents re-querying every refetch while a peer is still mid-response.
-// (Same lazy display-driven pattern as forum-client's Bug #4 fix.)
-const spaceNamesAsked = new Set<string>();
 // Bounded retry when list_spaces comes back empty on a freshly-synced node.
 let emptySpacesRetries = 0;
 
@@ -403,38 +399,11 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
     try {
       const result = await rpc.listSpaces();
 
-      // A freshly-synced node knows the SPACE BLOCKS but hasn't resolved their names
-      // yet (name arrives via a GET_SPACE_META round-trip), so real public spaces come
-      // back name===null / name_unresolved. Trigger resolution for them and re-fetch —
-      // WITHOUT this they get filtered out below (unnamed) and never resolve, leaving a
-      // fresh install stuck on "No spaces found" while the node holds 15 spaces.
-      const unresolvedIds = result.spaces
-        .filter(s => (s.name_unresolved || s.name == null || s.name.trim() === '') && !spaceNamesAsked.has(s.space_id))
-        .map(s => s.space_id);
-      if (unresolvedIds.length > 0) {
-        unresolvedIds.forEach(id => {
-          spaceNamesAsked.add(id);
-          rpc.resolveSpaceName(id).catch(() => undefined);
-        });
-        setTimeout(() => refetch(true).catch(() => undefined), 1500);
-      }
-
-      // Hide derived/unnamed spaces from the browse UI. Profile spaces (where a
-      // user's profile-update posts live) and DM spaces come back with no
-      // resolved name (name === null) — they're noise in Discover and the other
-      // clients don't surface them either.
-      //
-      // BUT keep name_unresolved spaces: the node sets that flag ONLY for spaces
-      // with an on-chain space block (real public spaces) whose name we synced but
-      // haven't fetched yet — it already drops nameless profile/DM/derived spaces
-      // itself (methods.rs list_spaces returns None for those). If we required a
-      // resolved name here, a freshly-synced node would show "No spaces found"
-      // whenever resolution (a peer round-trip that may never complete) hasn't
-      // landed, even though it holds real spaces with posts. Show them now with a
-      // space-id placeholder; the name fills in on the next refetch once resolved.
-      const namedSpaces = result.spaces.filter(
-        s => (s.name != null && s.name.trim() !== '') || s.name_unresolved
-      );
+      // Social clients browse only social-class spaces. The class comes from the
+      // space id's first byte (known the instant the block syncs — no name needed),
+      // so utility spaces (profile/dm/private/app) never leak in and there is no
+      // "No spaces found" gap waiting on name resolution.
+      const namedSpaces = result.spaces.filter(s => s.class === 'social');
 
       // Transform RPC result to Space format
       const transformedSpaces: Space[] = namedSpaces.map(s => ({
@@ -462,30 +431,6 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
 
       setSpaces(transformedSpaces);
       setError(null);
-
-      // Resolve placeholder names lazily (Bug #4, same pattern as forum-client).
-      // Server returns names like "Space 000be491" when the content block carrying
-      // the real name hasn't reached us yet. Fire targeted GET_SPACE_META queries
-      // to peers and re-fetch once if any peer responds.
-      const PLACEHOLDER = /^Space [0-9a-f]{8}$/;
-      const placeholderIds = transformedSpaces
-        .filter(s => PLACEHOLDER.test(s.name))
-        .map(s => s.id)
-        .filter(id => !spaceNamesAsked.has(id));
-
-      if (placeholderIds.length > 0) {
-        placeholderIds.forEach(id => {
-          spaceNamesAsked.add(id);
-          rpc.resolveSpaceName(id).catch(err =>
-            console.warn('[Spaces] resolveSpaceName failed for', id, err)
-          );
-        });
-        // Re-fetch once after peers have had a chance to respond.
-        setTimeout(() => {
-          // skipCache=true so we hit the server, not the just-cached placeholders.
-          refetch(true).catch(() => undefined);
-        }, 1500);
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch spaces');
       // Keep existing spaces on error

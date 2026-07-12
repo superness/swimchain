@@ -10,6 +10,7 @@
  */
 
 import { sha256 } from '@noble/hashes/sha256';
+import { SpaceClass, applyClass } from './spaceClass';
 
 /** Profile space version for future compatibility */
 const PROFILE_VERSION = 'v1';
@@ -95,15 +96,6 @@ export interface UserProfile {
 }
 
 /**
- * Convert bytes to hex string
- */
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-/**
  * Generate a deterministic profile space ID from a user's public key.
  *
  * This ensures each user has exactly one profile space that can be
@@ -115,8 +107,7 @@ function bytesToHex(bytes: Uint8Array): string {
 export function getProfileSpaceId(userPk: string): string {
   const preimage = `profile:${PROFILE_VERSION}:${userPk.toLowerCase()}`;
   const hash = sha256(new TextEncoder().encode(preimage));
-  // Use first 16 bytes (32 hex chars) for space ID
-  return bytesToHex(hash.slice(0, 16));
+  return applyClass(SpaceClass.Profile, hash);
 }
 
 /**

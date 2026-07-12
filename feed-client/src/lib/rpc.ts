@@ -67,6 +67,8 @@ interface SpaceSummary {
   /** True when the node has a space block but hasn't resolved its name yet (needs
    *  a GET_SPACE_META round-trip). Common on a freshly-synced node. */
   name_unresolved?: boolean;
+  /** Space class: 'social' | 'profile' | 'dm' | 'private' | 'app' | 'unknown' */
+  class?: string;
 }
 
 interface ListSpacesResult {

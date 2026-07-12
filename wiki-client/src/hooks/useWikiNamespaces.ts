@@ -22,6 +22,8 @@ interface RpcSpaceSummary {
   last_activity: number | null;
   /** App-namespace tag; wiki namespaces come back as "wiki" with a clean display name. */
   app?: string | null;
+  /** Space class: 'social' | 'profile' | 'dm' | 'private' | 'app' | 'unknown' */
+  class?: string;
 }
 
 interface RpcListSpacesResult {
@@ -63,9 +65,11 @@ export function useWikiNamespaces(): UseWikiNamespacesResult {
     rpc.call<RpcListSpacesResult>('list_spaces', { limit: 200, offset: 0 })
       .then(result => {
         if (!cancelled) {
-          // Wiki content is segregated to the wiki client: only surface spaces in the
-          // "wiki" app namespace. General clients hide these same spaces.
-          const wikiOnly = result.spaces.filter(s => s.app === WIKI_APP);
+          // Wiki content is segregated to the wiki client: only surface app-class spaces
+          // (class comes from the space id's first byte — no name lookup needed) that
+          // are tagged for the "wiki" app namespace specifically (cross-app disambiguation,
+          // since other app clients also produce app-class spaces).
+          const wikiOnly = result.spaces.filter(s => s.class === 'app' && s.app === WIKI_APP);
           setData(wikiOnly.map(mapToNamespace));
         }
       })

@@ -6,7 +6,8 @@
  * node like any other space content.
  */
 
-import { hexToBytes, bytesToHex } from '@swimchain/frontend';
+import { sha256 } from '@noble/hashes/sha256';
+import { SpaceClass, applyClass } from './spaceClass';
 
 const DM_LIST_KEY = 'swimchain-chat-dms';
 
@@ -26,16 +27,16 @@ export interface DmEntry {
 /**
  * Derive a deterministic, order-independent DM space id (16 bytes, hex)
  * from the two participants' public keys.
+ *
+ * Matches the node (and other clients): sort the two hex pubkeys
+ * lexicographically, hash `dm:v1:<sorted[0]>:<sorted[1]>` with SHA-256, and
+ * stamp the DM class byte over the first 15 hash bytes.
  */
 export function getDMSpaceId(pkA: string, pkB: string): string {
-  const a = hexToBytes(pkA);
-  const b = hexToBytes(pkB);
-  const len = Math.min(a.length, b.length, 16);
-  const out = new Uint8Array(16);
-  for (let i = 0; i < len; i++) {
-    out[i] = (a[i] ?? 0) ^ (b[i] ?? 0);
-  }
-  return bytesToHex(out);
+  const sorted = [pkA.toLowerCase(), pkB.toLowerCase()].sort();
+  const preimage = `dm:v1:${sorted[0]}:${sorted[1]}`;
+  const hash = sha256(new TextEncoder().encode(preimage));
+  return applyClass(SpaceClass.Dm, hash);
 }
 
 /** Truncate an address/public key for display */

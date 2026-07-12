@@ -14,7 +14,7 @@ use crate::blocklist::gossip::{
     entry_from_update, parse_blocklist_message, BlocklistGossip, BlocklistMessage,
     MSG_BLOCKLIST_BUNDLE, MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
 };
-use crate::blocks::validation::validate_reply_parents;
+use crate::blocks::validation::{space_id_class_is_valid, validate_reply_parents};
 use crate::cli::search_index::{IndexableContent, SearchIndex};
 use crate::content::decay_integration::DecayIntegration;
 use crate::content::retrieval::ContentRetrievalManager;
@@ -120,6 +120,7 @@ use crate::types::constants::{
 use crate::types::content::{ContentId, Reaction, ReactionType};
 use crate::types::identity::{IdentityId, PublicKey, Signature};
 use crate::types::serialize::{Deserialize, Serialize};
+use crate::types::space_class::{apply_class, SpaceClass};
 
 /// Orphan block entry: block data waiting for its parent to arrive
 #[derive(Clone)]
@@ -3786,6 +3787,23 @@ impl MessageRouter {
                                 is_valid = false;
                                 break;
                             }
+
+                            // Class-byte check: the space id's class byte (space_id_16[0])
+                            // must be a known SpaceClass, or the CreateSpace action is
+                            // malformed and must be rejected before it ever reaches storage.
+                            if let Some(space_id_32) = action.content_hash {
+                                let mut space_id_16 = [0u8; 16];
+                                space_id_16.copy_from_slice(&space_id_32[..16]);
+                                if !space_id_class_is_valid(&space_id_16) {
+                                    warn!(
+                                        "[BLOCK] VALIDATION FAILED: Block {} contains CreateSpace with unknown class byte 0x{:02x}",
+                                        hex::encode(&computed_hash[..8]),
+                                        space_id_16[0]
+                                    );
+                                    is_valid = false;
+                                    break;
+                                }
+                            }
                         }
                     }
                     if !is_valid {
@@ -5489,38 +5507,52 @@ impl MessageRouter {
                 let mut space_id_16 = [0u8; 16];
                 space_id_16.copy_from_slice(&announce.thread_id[..16]);
 
-                // Check if space already exists
-                match chain_store.space_exists(&space_id_16) {
-                    Ok(false) => {
-                        // Register the space with minimal info (will be updated when block forms)
-                        let space_info = crate::storage::SpaceInfo {
-                            space_id: space_id_16,
-                            name: format!("Space {}", hex::encode(&space_id_16[..4])), // Placeholder name
-                            description: Some(String::new()),
-                            creator: action.actor,
-                            created_at: action.timestamp,
-                            pow_work: action.pow_work,
-                            // Private space fields (defaults for public spaces)
-                            is_private: false,
-                            encrypted_name: None,
-                            creator_encrypted_key: None,
-                            key_version: 0,
-                        };
-                        if let Err(e) = chain_store.register_space(&space_info) {
-                            warn!("[MEMPOOL] Failed to register space from gossip: {}", e);
-                        } else {
-                            info!(
-                                "[MEMPOOL] Registered space {} from peer {} (via gossip)",
-                                hex::encode(&space_id_16[..4]),
-                                hex::encode(&peer_id[..8])
-                            );
+                // Class-byte check: the space id's class byte (space_id_16[0]) must be
+                // a known SpaceClass, mirroring the guard in handle_blocks PHASE 2 and
+                // the RPC create_space path. A peer gossiping a CreateSpace with a
+                // malformed/unknown class byte must not get it durably registered here
+                // (this is the pre-finalization "visible immediately" path, so it is a
+                // separate registration site from block storage).
+                if !space_id_class_is_valid(&space_id_16) {
+                    warn!(
+                        "[MEMPOOL] Rejecting CreateSpace from peer {} with unknown class byte 0x{:02x}",
+                        hex::encode(&peer_id[..8]),
+                        space_id_16[0]
+                    );
+                } else {
+                    // Check if space already exists
+                    match chain_store.space_exists(&space_id_16) {
+                        Ok(false) => {
+                            // Register the space with minimal info (will be updated when block forms)
+                            let space_info = crate::storage::SpaceInfo {
+                                space_id: space_id_16,
+                                name: format!("Space {}", hex::encode(&space_id_16[..4])), // Placeholder name
+                                description: Some(String::new()),
+                                creator: action.actor,
+                                created_at: action.timestamp,
+                                pow_work: action.pow_work,
+                                // Private space fields (defaults for public spaces)
+                                is_private: false,
+                                encrypted_name: None,
+                                creator_encrypted_key: None,
+                                key_version: 0,
+                            };
+                            if let Err(e) = chain_store.register_space(&space_info) {
+                                warn!("[MEMPOOL] Failed to register space from gossip: {}", e);
+                            } else {
+                                info!(
+                                    "[MEMPOOL] Registered space {} from peer {} (via gossip)",
+                                    hex::encode(&space_id_16[..4]),
+                                    hex::encode(&peer_id[..8])
+                                );
+                            }
                         }
-                    }
-                    Ok(true) => {
-                        debug!("[MEMPOOL] Space already registered, skipping");
-                    }
-                    Err(e) => {
-                        warn!("[MEMPOOL] Failed to check space existence: {}", e);
+                        Ok(true) => {
+                            debug!("[MEMPOOL] Space already registered, skipping");
+                        }
+                        Err(e) => {
+                            warn!("[MEMPOOL] Failed to check space existence: {}", e);
+                        }
                     }
                 }
             }
@@ -5707,8 +5739,7 @@ impl MessageRouter {
                     hex::encode(sorted[1])
                 );
                 let sh = crate::crypto::sha256(preimage.as_bytes());
-                let mut space_id = [0u8; 16];
-                space_id.copy_from_slice(&sh[..16]);
+                let space_id = apply_class(SpaceClass::Dm, &sh);
 
                 match membership_store.update_dm_request_status(
                     &announce.requester,

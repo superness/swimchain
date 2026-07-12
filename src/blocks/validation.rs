@@ -116,6 +116,17 @@ impl From<RootBlockError> for ValidationError {
     }
 }
 
+/// A space id is well-classed iff its first byte is a known `SpaceClass`.
+///
+/// After the class-byte rollout (SWIM space-class taxonomy), every
+/// legitimately-derived space id carries a recognized class byte at
+/// `space_id_16[0]` (see `crate::types::space_class`). CreateSpace actions
+/// whose id fails this check are malformed and must be rejected so they
+/// never enter the mempool/chain.
+pub fn space_id_class_is_valid(space_id_16: &[u8; 16]) -> bool {
+    crate::types::space_class::class_of(space_id_16).is_some()
+}
+
 /// Validate action timestamp
 fn validate_action_timestamp(timestamp: u64, current_time: u64) -> Result<(), ValidationError> {
     // Check if timestamp is too old
@@ -175,7 +186,23 @@ pub fn validate_action(action: &Action, current_time: u64) -> Result<(), Validat
         }
         ActionType::CreateSpace => {
             // CreateSpace actions are handled separately - they have space_id in content_hash position
-            // and signature validation is done at RPC layer
+            // and signature validation is done at RPC layer.
+            //
+            // Space ids are trusted as carried in the action (no rederivation check exists on
+            // the sync/gossip path - PoW is summed upward through the block hierarchy, not tied
+            // to id derivation). The one shape constraint we DO enforce here: the class byte at
+            // space_id_16[0] must be a known SpaceClass, so malformed/unclassified space ids
+            // never enter the mempool or chain.
+            if let Some(content_hash) = action.content_hash {
+                let mut space_id_16 = [0u8; 16];
+                space_id_16.copy_from_slice(&content_hash[..16]);
+                if !space_id_class_is_valid(&space_id_16) {
+                    return Err(ValidationError::ActionError(format!(
+                        "CreateSpace space_id has unknown class byte: 0x{:02x}",
+                        space_id_16[0]
+                    )));
+                }
+            }
         }
         ActionType::Engage => {
             // ENGAGE must have content_hash (target content)

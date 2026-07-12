@@ -52,7 +52,7 @@ export interface RpcProviderProps {
  * </RpcProvider>
  * ```
  */
-export declare function RpcProvider({ children, config, useRemoteSeed, signatureAuth, autoConnect, retryInterval, }: RpcProviderProps): import("react").JSX.Element;
+export declare function RpcProvider({ children, config, useRemoteSeed, signatureAuth, autoConnect, retryInterval, }: RpcProviderProps): import("react/jsx-runtime").JSX.Element;
 /**
  * Hook to access RPC context
  *

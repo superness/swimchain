@@ -65,6 +65,8 @@ interface SpaceSummary {
   app?: string | null;
   /** True if this is a real public space whose name hasn't been resolved yet. */
   name_unresolved?: boolean;
+  /** Space class: 'social' | 'profile' | 'dm' | 'private' | 'app' | 'unknown' */
+  class?: string;
   /**
    * Behavioral communities that grew out of this space (SPEC_13, Phase 2).
    * ADDITIVE: omitted when empty and absent entirely on pre-Phase-2 nodes.
@@ -84,23 +86,12 @@ interface ListSpacesResult {
  * Allowlist filter for a general "main-view" client (forum/chat/feed/search):
  * show ONLY a space we can positively confirm is a plain, public, main-view space.
  *
- * This is deliberately an allowlist, not a denylist of known specialized types
- * (wiki/dm/profile/…). Any space that is app-namespaced, carries an `@app:` name, or
- * whose name (and therefore `app`) the node hasn't resolved yet — meaning it could be a
- * specialized/utility space in disguise — is hidden. New kinds of utility spaces only
- * have to follow the `@<app>:` prefix convention to be hidden here automatically; this
- * filter never needs updating per type.
+ * The class comes from the space id's first byte (known the instant the space
+ * block syncs — no name lookup needed), so utility spaces (profile/dm/private/app)
+ * never leak in and there is no gap waiting on name resolution.
  */
 export function isMainViewSpace(s: SpaceSummary): boolean {
-  // App-namespaced (dm, profile, wiki, chess, …) → belongs to its own client.
-  if (typeof s.app === 'string' && s.app.length > 0) return false;
-  // Belt-and-braces: the raw `@app:` name convention, in case `app` wasn't parsed.
-  const name = typeof s.name === 'string' ? s.name.toLowerCase() : '';
-  if (/^@[a-z0-9-]+:/.test(name)) return false;
-  // Name (and thus `app`) not yet known — could be a utility space; don't surface it
-  // until it resolves to a confirmed public space.
-  if (s.name_unresolved) return false;
-  return true;
+  return s.class === 'social';
 }
 
 // === Behavioral-branching lineage RPC shapes (SPEC_13, Phase 2 — FINAL) ===

@@ -756,6 +756,11 @@ pub struct SpaceSummary {
     /// also unknown until the name resolves.
     #[serde(default)]
     pub name_unresolved: bool,
+    /// Space class from `space_id[0]`: "social" | "profile" | "dm" | "private"
+    /// | "app" | "unknown". Clients filter their browse on this — it is known
+    /// the instant the space block syncs, before any name resolves.
+    #[serde(default)]
+    pub class: String,
     /// Behavioral communities formed under this space (SPEC_13 Phase 2).
     /// Additive: empty (and omitted) for spaces with no formed communities,
     /// so pre-Phase-2 clients are unaffected. Clients render "this

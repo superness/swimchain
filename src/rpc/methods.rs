@@ -29,6 +29,7 @@ use crate::storage::AggregationCache;
 use crate::sync::SyncState;
 use crate::types::content::{ContentId, Reaction, ReactionType};
 use crate::types::identity::IdentityId;
+use crate::types::space_class::{apply_class, SpaceClass};
 
 /// Map an on-wire emoji code (1..=8) to a `ReactionType`. Returns `None` for
 /// unknown codes. Centralizes the mapping duplicated across engage handlers.
@@ -93,9 +94,7 @@ fn parse_app_space_name(name: &str) -> Option<(String, String)> {
 /// Name-addressed like profile spaces, so a given `@<app>:<display>` is one shared space.
 fn app_space_id_16(app: &str, display: &str) -> [u8; 16] {
     let h = crate::crypto::sha256(format!("app:{}:v1:{}", app, display).as_bytes());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&h[..16]);
-    out
+    apply_class(SpaceClass::App, &h)
 }
 
 /// Authoritative "is this an app space" check for a `(space_id, name)` pair: the name must
@@ -2147,7 +2146,7 @@ impl RpcMethods {
         let is_own_profile_space = {
             let preimage = format!("profile:v1:{}", params.author_id.to_lowercase());
             let hash = crate::crypto::sha256(preimage.as_bytes());
-            hash[..16] == space_id_16
+            apply_class(SpaceClass::Profile, &hash) == space_id_16
         };
         if !is_own_profile_space {
             if let Some(ref chain_store) = self.node.chain_store {
@@ -2676,7 +2675,11 @@ impl RpcMethods {
             "[MEDIA] Uploaded {} bytes ({}{}) hash={}",
             stored_bytes.len(),
             params.media_type,
-            if params.space_id.is_some() { ", private?" } else { "" },
+            if params.space_id.is_some() {
+                ", private?"
+            } else {
+                ""
+            },
             &media_hash_hex[..16]
         );
 
@@ -2804,11 +2807,7 @@ impl RpcMethods {
             match plaintext {
                 Some(plain) => plain,
                 None => {
-                    return RpcResponse::error(
-                        RpcErrorCode::ContentNotFound,
-                        "Media not found",
-                        id,
-                    )
+                    return RpcResponse::error(RpcErrorCode::ContentNotFound, "Media not found", id)
                 }
             }
         } else {
@@ -3047,12 +3046,15 @@ impl RpcMethods {
             .iter()
             .filter_map(|mr| hex::decode(&mr.media_hash).ok()?.try_into().ok())
             .collect();
-        let is_private =
-            match self.check_private_write(&reply_space_id_16, None, &params.body, &reply_media_hashes)
-            {
-                Ok(p) => p,
-                Err(reason) => return RpcResponse::error(RpcErrorCode::InvalidParams, &reason, id),
-            };
+        let is_private = match self.check_private_write(
+            &reply_space_id_16,
+            None,
+            &params.body,
+            &reply_media_hashes,
+        ) {
+            Ok(p) => p,
+            Err(reason) => return RpcResponse::error(RpcErrorCode::InvalidParams, &reason, id),
+        };
 
         // Add action to BlockBuilder for block-based propagation (SPEC_08)
         if let Some(ref block_builder) = self.node.block_builder {
@@ -5365,6 +5367,16 @@ impl RpcMethods {
             .filter_map(
                 |(space_id_16, (name, _description, _created_at, _post_count, last_activity))| {
                     let space_id_str = encode_space_id(&space_id_16);
+                    use crate::types::space_class::{class_of, SpaceClass};
+                    let class = match class_of(&space_id_16) {
+                        Some(SpaceClass::Social) => "social",
+                        Some(SpaceClass::Profile) => "profile",
+                        Some(SpaceClass::Dm) => "dm",
+                        Some(SpaceClass::Private) => "private",
+                        Some(SpaceClass::App) => "app",
+                        None => "unknown",
+                    }
+                    .to_string();
                     // Identify app-namespaced spaces from the ON-CHAIN name (not any config
                     // override, which is display-only). For an app space, surface the clean
                     // display name (marker stripped) and the app tag so clients can segregate.
@@ -5384,24 +5396,20 @@ impl RpcMethods {
                             .unwrap_or(resolved_name)
                     };
 
-                    // Private channels and DM spaces register with an EMPTY name (their real
-                    // name is encrypted) — always hide those. A "Space <8 hex>" placeholder
-                    // means we know the space id but not its name. If it's a real public space
-                    // (has an on-chain space block), we synced it from a peer but only the
-                    // creator had the name — expose it flagged `name_unresolved` so the CLIENT
-                    // can resolve it on demand (the node never auto-fetches). Otherwise
-                    // (profile/derived, no space block) hide it.
+                    // Hide non-browsable classes from list_spaces' generic listing.
+                    // Profile/DM/private spaces are reached by their own flows, not
+                    // browse. Social + app spaces are listed (clients filter by class).
+                    match class_of(&space_id_16) {
+                        Some(SpaceClass::Profile)
+                        | Some(SpaceClass::Dm)
+                        | Some(SpaceClass::Private) => return None,
+                        _ => {}
+                    }
                     let trimmed = final_name.trim();
                     let is_placeholder = trimmed.len() == 14
                         && trimmed.starts_with("Space ")
                         && trimmed[6..].chars().all(|c| c.is_ascii_hexdigit());
-                    if trimmed.is_empty() {
-                        return None;
-                    }
                     let name_unresolved = is_placeholder;
-                    if is_placeholder && !has_space_block.contains(&space_id_16) {
-                        return None;
-                    }
 
                     // Get accurate post count from indexed storage
                     let actual_post_count = chain_store_ref
@@ -5448,6 +5456,7 @@ impl RpcMethods {
                         },
                         app,
                         name_unresolved,
+                        class,
                         children,
                     })
                 },
@@ -5600,13 +5609,28 @@ impl RpcMethods {
         // be squatted). PoW is verified either way (anti-abuse) — for app spaces it just no
         // longer determines the id.
         let app_marker = parse_app_space_name(&params.name);
-        let mut space_id_bytes: [u8; 16] = [0u8; 16];
-        if let Some((ref app, ref display)) = app_marker {
-            space_id_bytes = app_space_id_16(app, display);
+        let space_id_bytes: [u8; 16] = if let Some((ref app, ref display)) = app_marker {
+            app_space_id_16(app, display)
         } else {
-            space_id_bytes.copy_from_slice(&pow_hash[..16]);
-        }
+            apply_class(SpaceClass::Social, &pow_hash)
+        };
         let space_id = encode_space_id(&space_id_bytes);
+
+        // Server-side guard: the derived space id's class byte must be a known
+        // SpaceClass. A well-behaved node derives ids honestly (app-namespaced
+        // or `apply_class(SpaceClass::Social, ...)` above) so this should never
+        // trip today — it exists to catch future derivation regressions before
+        // a malformed id is ever accepted into the mempool/chain.
+        if !crate::blocks::validation::space_id_class_is_valid(&space_id_bytes) {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!(
+                    "Derived space_id has unknown class byte: 0x{:02x}",
+                    space_id_bytes[0]
+                ),
+                id,
+            );
+        }
 
         // Check if space already exists on-chain
         if let Some(ref chain_store) = self.node.chain_store {
@@ -6538,8 +6562,7 @@ impl RpcMethods {
                                 vec![]
                             };
 
-                        let created_at_ms =
-                            item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
+                        let created_at_ms = item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
 
                         items.push(ContentSummary {
                             content_id,
@@ -7210,8 +7233,7 @@ impl RpcMethods {
                                 vec![]
                             };
 
-                        let created_at_ms =
-                            item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
+                        let created_at_ms = item_created_at_ms.unwrap_or(metadata.timestamp * 1000);
 
                         items.push(ContentSummary {
                             content_id,
@@ -7447,9 +7469,7 @@ impl RpcMethods {
         let author_profile_space_16: [u8; 16] = {
             let preimage = format!("profile:v1:{}", hex::encode(author_bytes));
             let h = crate::crypto::sha256(preimage.as_bytes());
-            let mut a = [0u8; 16];
-            a.copy_from_slice(&h[..16]);
-            a
+            apply_class(SpaceClass::Profile, &h)
         };
         let dm_space_ids: std::collections::HashSet<[u8; 16]> = self
             .node
@@ -7696,8 +7716,7 @@ impl RpcMethods {
                             author_id,
                             space_id: space_id_bech32,
                             parent_id,
-                            created_at: item_created_at_ms
-                                .unwrap_or(metadata.timestamp * 1000),
+                            created_at: item_created_at_ms.unwrap_or(metadata.timestamp * 1000),
                             last_engagement: last_engagement_ms,
                             title,
                             body,
@@ -8376,14 +8395,10 @@ impl RpcMethods {
             );
         };
 
-        // Calculate profile space ID (first 16 bytes of SHA256("profile:v1:<user_id_lowercase>"))
+        // Calculate profile space ID: class byte (Profile) ‖ SHA256("profile:v1:<user_id_lowercase>")[..15]
         let preimage = format!("profile:v1:{}", user_id_norm);
         let profile_space_hash = crate::crypto::sha256(preimage.as_bytes());
-        let profile_space_id: [u8; 16] = {
-            let mut arr = [0u8; 16];
-            arr.copy_from_slice(&profile_space_hash[..16]);
-            arr
-        };
+        let profile_space_id: [u8; 16] = apply_class(SpaceClass::Profile, &profile_space_hash);
 
         // Look up content in the profile space
         let content_store = match &self.node.content_store {
@@ -11041,9 +11056,7 @@ impl RpcMethods {
         let profile_space_id: [u8; 16] = {
             let preimage = format!("profile:v1:{}", params.user.to_lowercase());
             let h = crate::crypto::sha256(preimage.as_bytes());
-            let mut a = [0u8; 16];
-            a.copy_from_slice(&h[..16]);
-            a
+            apply_class(SpaceClass::Profile, &h)
         };
         let dm_space_ids = membership_store
             .get_dm_space_ids(&user_pk)
@@ -11491,8 +11504,7 @@ impl RpcMethods {
             hex::encode(sorted[1])
         );
         let sh = sha256(preimage.as_bytes());
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&sh[..16]);
+        let space_id = apply_class(SpaceClass::Dm, &sh);
 
         // DM space key, wrapped for self (so we can read) and for the recipient (the
         // key_share the request carries — only they can unwrap it).
@@ -11721,8 +11733,7 @@ impl RpcMethods {
             hex::encode(&sorted_keys[1])
         );
         let space_hash = crate::crypto::sha256(preimage.as_bytes());
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&space_hash[..16]);
+        let space_id = apply_class(SpaceClass::Dm, &space_hash);
 
         // Update request status to accepted
         if let Err(e) = membership_store.update_dm_request_status(
@@ -11868,8 +11879,7 @@ impl RpcMethods {
             hex::encode(sorted[1])
         );
         let sh = crate::crypto::sha256(preimage.as_bytes());
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&sh[..16]);
+        let space_id = apply_class(SpaceClass::Dm, &sh);
 
         // Re-wrap the key for our own membership so we can read/post going forward.
         let self_wrap = match wrap_space_key_for(&space_key, &me, &seed) {
@@ -12201,8 +12211,7 @@ impl RpcMethods {
         space_id_input.extend_from_slice(params.name.as_bytes());
         space_id_input.extend_from_slice(&params.timestamp.to_le_bytes());
         let space_hash = crate::crypto::sha256(&space_id_input);
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&space_hash[..16]);
+        let space_id = apply_class(SpaceClass::Private, &space_hash);
 
         // Create SpaceInfo (stored encrypted on chain)
         // For private spaces, name is empty string - actual name is in encrypted_name
@@ -12424,8 +12433,7 @@ impl RpcMethods {
         space_id_input.extend_from_slice(&encrypted_name);
         space_id_input.extend_from_slice(&timestamp.to_le_bytes());
         let space_hash = crate::crypto::sha256(&space_id_input);
-        let mut space_id = [0u8; 16];
-        space_id.copy_from_slice(&space_hash[..16]);
+        let space_id = apply_class(SpaceClass::Private, &space_hash);
 
         // Register the space locally (raw encrypted-name blob so the node can decrypt it).
         let space_info = crate::storage::chain::SpaceInfo {
