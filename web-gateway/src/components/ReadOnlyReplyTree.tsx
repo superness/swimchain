@@ -3,6 +3,7 @@
 import type { ContentResponse } from '@/types/gateway';
 import { HeatIndicator } from './HeatIndicator';
 import { AddressDisplay } from './AddressDisplay';
+import { PostBody } from './PostBody';
 
 interface ReadOnlyReplyTreeProps {
   replies: ContentResponse[];
@@ -103,9 +104,7 @@ function ReplyNode({ reply, depth, maxDepth }: ReplyNodeProps) {
         />
       </div>
 
-      <div className="reply-body">
-        {reply.item.body_inline || '[Content unavailable]'}
-      </div>
+      <PostBody body={reply.item.body_inline} className="reply-body" />
 
       {/* NO ACTION BUTTONS - READ ONLY */}
 

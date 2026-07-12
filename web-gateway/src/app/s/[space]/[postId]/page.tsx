@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation';
 import { cache } from 'react';
 import type { ContentResponse } from '@/types/gateway';
 import { HeatIndicator } from '@/components/HeatIndicator';
+import { PostBody } from '@/components/PostBody';
 import { AddressDisplay } from '@/components/AddressDisplay';
 import { ReadOnlyReplyTree } from '@/components/ReadOnlyReplyTree';
 import { StructuredData } from '@/components/StructuredData';
@@ -175,9 +176,7 @@ export default async function PostPage({ params }: PageProps) {
           </div>
         </header>
 
-        <div className="post-body">
-          {post.item.body_inline || '[Content unavailable]'}
-        </div>
+        <PostBody body={post.item.body_inline} className="post-body" />
 
         {/* NO ACTION BUTTONS - READ ONLY GATEWAY */}
       </article>

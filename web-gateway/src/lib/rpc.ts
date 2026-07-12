@@ -73,6 +73,10 @@ export interface NodeSpaceSummary {
   post_count: number;
   last_activity: number | null;
   name: string | null;
+  /** App namespace, e.g. 'wiki'; null for ordinary public spaces. */
+  app?: string | null;
+  /** Raw name before resolution (may carry an @app:/@dm: convention prefix). */
+  name_unresolved?: string | null;
 }
 
 export interface ListSpacesResult {
@@ -287,6 +291,13 @@ export class SwimchainRpc {
 
   async getContent(contentId: string): Promise<NodeContent> {
     return this.call<NodeContent>('get_content', { content_id: contentId });
+  }
+
+  /** Fetch a content-addressed media blob by 32-byte hex hash (base64 payload). */
+  async getMedia(
+    mediaHash: string
+  ): Promise<{ media_hash: string; media_type: string; data: string; size_bytes: number }> {
+    return this.call('get_media', { media_hash: mediaHash });
   }
 
   /**

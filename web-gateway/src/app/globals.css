@@ -1030,3 +1030,12 @@ button.primary:hover {
   display: inline-block;
   font-size: 0.95rem;
 }
+
+/* Content-addressed images resolved via the media proxy */
+.post-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.75rem 0;
+  display: block;
+}

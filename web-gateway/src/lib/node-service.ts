@@ -48,6 +48,24 @@ export interface IdentitySummary {
 // Mapping helpers (node RPC shapes -> gateway types)
 // ============================================================================
 
+/**
+ * Public browse gateway should not surface private, direct-message, or personal
+ * profile spaces. Those are app-namespaced or use an @app:/@dm:/@profile:
+ * naming convention. Wiki and ordinary public spaces stay visible.
+ */
+const HIDDEN_APPS = new Set(['dm', 'profile', 'private', 'inbox']);
+function isPublicSpace(space: NodeSpaceSummary): boolean {
+  if (space.app && HIDDEN_APPS.has(space.app.toLowerCase())) return false;
+  const raw = (space.name_unresolved || space.name || '').toLowerCase();
+  if (/^@?(dm|profile|private|inbox)[:._-]/.test(raw)) return false;
+  return true;
+}
+
+/** Drop private/DM/profile spaces from a public listing. */
+function publicSpaces(spaces: NodeSpaceSummary[]): NodeSpaceSummary[] {
+  return spaces.filter(isPublicSpace);
+}
+
 function isDecayed(summary: { decay_state: string }): boolean {
   return summary.decay_state === 'decayed';
 }
@@ -217,7 +235,7 @@ export async function fetchAllSpaces(): Promise<SpaceActivitySummary[] | null> {
   const rpc = getRpc();
   let spaces: NodeSpaceSummary[];
   try {
-    spaces = (await rpc.listSpaces(100)).spaces;
+    spaces = publicSpaces((await rpc.listSpaces(100)).spaces);
   } catch {
     return null;
   }
@@ -248,7 +266,8 @@ export async function fetchSpaceWithPosts(spaceId: string): Promise<
       rpc.listSpaceContent(spaceId, 100),
     ]);
     const spaceInfo = spacesResult.spaces.find(s => s.space_id === spaceId);
-    if (!spaceInfo) {
+    if (!spaceInfo || !isPublicSpace(spaceInfo)) {
+      // Not found, or a private/DM/profile space that the public gateway hides.
       return { status: 'not-found' };
     }
     const spaceName = spaceInfo.name || spaceInfo.space_id;
@@ -543,7 +562,7 @@ export async function feedSearchIndexer(): Promise<number | null> {
   const rpc = getRpc();
   let spaces: NodeSpaceSummary[];
   try {
-    spaces = (await rpc.listSpaces(100)).spaces;
+    spaces = publicSpaces((await rpc.listSpaces(100)).spaces);
   } catch {
     return null;
   }
@@ -616,7 +635,7 @@ export async function fetchSitemapEntries(baseUrl: string): Promise<SitemapEntry
   const rpc = getRpc();
   let spaces: NodeSpaceSummary[];
   try {
-    spaces = (await rpc.listSpaces(100)).spaces;
+    spaces = publicSpaces((await rpc.listSpaces(100)).spaces);
   } catch {
     // Node down: static routes only
     return entries;
