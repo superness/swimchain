@@ -1355,8 +1355,18 @@ fn engage(
     let signing_key = decrypt_private_key(&portable.encrypted_private_key, &password)
         .map_err(|_| CliError::Other("Invalid passphrase".to_string()))?;
 
-    // Create signature over content_id + timestamp (matching sign_content format)
-    let signature = sign_content(&signing_key, &content_bytes, timestamp);
+    // Sign the exact engagement message the node verifies (C-ENGAGE-1):
+    // "engage:{content_id}:{pow_nonce}:{timestamp}[:emoji]". This must match
+    // submit_engagement in src/rpc/methods.rs and the JS clients; the old
+    // sign_content(content_hash || timestamp) preimage no longer verifies.
+    let signing_message = match emoji_value {
+        Some(e) => format!(
+            "engage:{}:{}:{}:{}",
+            content_id, solution.nonce, timestamp, e
+        ),
+        None => format!("engage:{}:{}:{}", content_id, solution.nonce, timestamp),
+    };
+    let signature = crate::crypto::signature::sign(&signing_key, signing_message.as_bytes());
 
     // Create RPC client and submit engagement
     let mut rpc_client = create_rpc_client(config)?;
