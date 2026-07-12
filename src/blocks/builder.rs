@@ -37,6 +37,26 @@ pub type ThreadId = [u8; 32];
 /// Space identifier
 pub type SpaceId = [u8; 32];
 
+/// Magic prefix for the framed, versioned mempool.bin format.
+const MEMPOOL_MAGIC: &[u8; 4] = b"SWMP";
+/// Current mempool.bin format version. v1 was raw `bincode(HashMap)` with no header
+/// — a single struct change (e.g. adding a field to `Action`) made the whole file
+/// undecodable and silently dropped every pending action. The framed format length-
+/// prefixes each thread so a decode failure skips only that thread, and a version
+/// mismatch is surfaced loudly (and the raw file backed up) instead of wiping data.
+const MEMPOOL_FORMAT_VERSION: u32 = 2;
+
+/// Read a little-endian u32 at `*off`, advancing it. `None` if out of bounds.
+fn read_u32_le(data: &[u8], off: &mut usize) -> Option<u32> {
+    let end = off.checked_add(4)?;
+    if end > data.len() {
+        return None;
+    }
+    let v = u32::from_le_bytes([data[*off], data[*off + 1], data[*off + 2], data[*off + 3]]);
+    *off = end;
+    Some(v)
+}
+
 /// Timestamp quantization window in seconds.
 /// Blocks within the same window will have the same timestamp,
 /// ensuring deterministic block hashes across nodes.
@@ -201,13 +221,89 @@ impl BlockBuilder {
             Ok(d) => d,
             Err(_) => return, // no file yet
         };
-        let threads: HashMap<ThreadId, PendingThread> = match bincode::deserialize(&data) {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("[MEMPOOL] Failed to parse persisted mempool: {}", e);
-                return;
+        if data.is_empty() {
+            return;
+        }
+
+        let mut threads: HashMap<ThreadId, PendingThread> = HashMap::new();
+        let mut skipped = 0usize;
+
+        // `decoded` = we could read this file's format at all. When false we do NOT
+        // touch `self.threads` and we back the raw file up (below) so the next
+        // persist() can't silently overwrite recoverable data.
+        let decoded = if data.len() >= 4 && &data[..4] == MEMPOOL_MAGIC {
+            // Framed v2+: MAGIC | version(4) | count(4) | [len(4) | bincode(PendingThread)]*
+            let mut off = 4;
+            let version = read_u32_le(&data, &mut off);
+            let count = read_u32_le(&data, &mut off);
+            match (version, count) {
+                (Some(v), Some(count)) if v == MEMPOOL_FORMAT_VERSION => {
+                    for i in 0..count {
+                        let Some(len) = read_u32_le(&data, &mut off) else {
+                            log::warn!("[MEMPOOL] truncated header at thread {}/{}", i, count);
+                            break;
+                        };
+                        let end = match off.checked_add(len as usize) {
+                            Some(e) if e <= data.len() => e,
+                            _ => {
+                                log::warn!("[MEMPOOL] truncated body at thread {}/{}", i, count);
+                                break;
+                            }
+                        };
+                        match bincode::deserialize::<PendingThread>(&data[off..end]) {
+                            Ok(t) => {
+                                threads.insert(t.thread_id, t);
+                            }
+                            Err(e) => {
+                                skipped += 1;
+                                log::warn!("[MEMPOOL] skipping undecodable pending thread: {}", e);
+                            }
+                        }
+                        off = end;
+                    }
+                    true // keep whatever decoded, even if some threads were skipped
+                }
+                (Some(v), _) => {
+                    log::warn!(
+                        "[MEMPOOL] mempool.bin format v{} != v{}: cannot decode, backing up",
+                        v,
+                        MEMPOOL_FORMAT_VERSION
+                    );
+                    false
+                }
+                _ => {
+                    log::warn!("[MEMPOOL] mempool.bin header truncated, backing up");
+                    false
+                }
+            }
+        } else {
+            // Legacy v1: raw bincode of the whole map. Migrate it if it still decodes.
+            match bincode::deserialize::<HashMap<ThreadId, PendingThread>>(&data) {
+                Ok(t) => {
+                    threads = t;
+                    true
+                }
+                Err(e) => {
+                    log::warn!("[MEMPOOL] legacy mempool.bin no longer decodable: {}", e);
+                    false
+                }
             }
         };
+
+        if !decoded {
+            // Preserve the raw bytes so a struct/format change doesn't permanently
+            // destroy unmined posts — the next persist() would otherwise overwrite them.
+            let bak = path.with_extension("bak");
+            match std::fs::write(&bak, &data) {
+                Ok(_) => log::warn!(
+                    "[MEMPOOL] backed up unreadable mempool ({} bytes) to {:?}",
+                    data.len(),
+                    bak
+                ),
+                Err(e) => log::warn!("[MEMPOOL] failed to back up unreadable mempool: {}", e),
+            }
+            return;
+        }
 
         self.threads = threads;
         self.action_locations.clear();
@@ -223,9 +319,10 @@ impl BlockBuilder {
             }
         }
         log::info!(
-            "[MEMPOOL] Restored {} pending actions across {} threads from disk",
+            "[MEMPOOL] Restored {} pending actions across {} threads from disk ({} thread(s) skipped)",
             self.total_action_count,
-            self.threads.len()
+            self.threads.len(),
+            skipped
         );
     }
 
@@ -235,13 +332,25 @@ impl BlockBuilder {
         let Some(ref path) = self.persist_path else {
             return;
         };
-        let data = match bincode::serialize(&self.threads) {
-            Ok(d) => d,
-            Err(e) => {
-                log::warn!("[MEMPOOL] Failed to serialize mempool: {}", e);
-                return;
+        // Framed format: MAGIC | version | count | [len(4) | bincode(PendingThread)]*.
+        // Serialize each thread independently so one bad thread can't corrupt the file,
+        // and so a later struct change fails per-thread on load instead of wholesale.
+        let mut entries: Vec<Vec<u8>> = Vec::with_capacity(self.threads.len());
+        for thread in self.threads.values() {
+            match bincode::serialize(thread) {
+                Ok(b) => entries.push(b),
+                Err(e) => log::warn!("[MEMPOOL] Failed to serialize pending thread: {}", e),
             }
-        };
+        }
+        let mut data =
+            Vec::with_capacity(12 + entries.iter().map(|e| e.len() + 4).sum::<usize>());
+        data.extend_from_slice(MEMPOOL_MAGIC);
+        data.extend_from_slice(&MEMPOOL_FORMAT_VERSION.to_le_bytes());
+        data.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        for b in &entries {
+            data.extend_from_slice(&(b.len() as u32).to_le_bytes());
+            data.extend_from_slice(b);
+        }
         let tmp = path.with_extension("tmp");
         if let Err(e) = std::fs::write(&tmp, &data) {
             log::warn!("[MEMPOOL] Failed to write mempool tmp: {}", e);
