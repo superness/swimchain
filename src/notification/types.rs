@@ -37,6 +37,11 @@ pub enum NotificationType {
 
     /// Thanks for significant contribution
     ContributionThanks = 5,
+
+    /// Your group's conversations earned their own community space
+    /// (SPEC_13 behavioral branching, Phase 2). Graduation framing:
+    /// recognition, never eviction — nobody is removed from the parent.
+    CommunityFormed = 6,
 }
 
 impl NotificationType {
@@ -51,6 +56,7 @@ impl NotificationType {
             3 => Some(Self::SpaceHealth),
             4 => Some(Self::ContentRisk),
             5 => Some(Self::ContributionThanks),
+            6 => Some(Self::CommunityFormed),
             _ => None,
         }
     }
@@ -69,6 +75,7 @@ impl NotificationType {
             Self::SpaceHealth => "Space Health",
             Self::ContentRisk => "Content Risk",
             Self::ContributionThanks => "Contribution Thanks",
+            Self::CommunityFormed => "Community Formed",
         }
     }
 
@@ -81,11 +88,12 @@ impl NotificationType {
             Self::SpaceHealth => "🏊",
             Self::ContentRisk => "⚠️",
             Self::ContributionThanks => "🙏",
+            Self::CommunityFormed => "🌱",
         }
     }
 
     /// Get all notification type variants.
-    pub fn all() -> [NotificationType; 6] {
+    pub fn all() -> [NotificationType; 7] {
         [
             Self::Streak,
             Self::LevelUp,
@@ -93,6 +101,7 @@ impl NotificationType {
             Self::SpaceHealth,
             Self::ContentRisk,
             Self::ContributionThanks,
+            Self::CommunityFormed,
         ]
     }
 }
@@ -255,6 +264,18 @@ pub enum NotificationContext {
         /// Period number (weeks since genesis)
         period: u32,
     },
+
+    /// Community formed context (SPEC_13 Phase 2)
+    CommunityFormed {
+        /// Parent space the community grew out of (full 32-byte id, hex on the wire)
+        parent_space_id: [u8; 32],
+        /// The new community's id
+        community_id: [u8; 32],
+        /// Deterministic auto-name assigned at formation
+        auto_name: String,
+        /// Number of founding members
+        founding_member_count: u32,
+    },
 }
 
 #[cfg(test)]
@@ -263,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_notification_type_count() {
-        assert_eq!(NotificationType::all().len(), 6);
+        assert_eq!(NotificationType::all().len(), 7);
     }
 
     #[test]
@@ -274,14 +295,15 @@ mod tests {
         assert_eq!(NotificationType::SpaceHealth.as_u8(), 3);
         assert_eq!(NotificationType::ContentRisk.as_u8(), 4);
         assert_eq!(NotificationType::ContributionThanks.as_u8(), 5);
+        assert_eq!(NotificationType::CommunityFormed.as_u8(), 6);
     }
 
     #[test]
     fn test_from_u8() {
-        for i in 0..6u8 {
+        for i in 0..7u8 {
             assert!(NotificationType::from_u8(i).is_some());
         }
-        assert!(NotificationType::from_u8(6).is_none());
+        assert!(NotificationType::from_u8(7).is_none());
         assert!(NotificationType::from_u8(255).is_none());
     }
 
@@ -436,6 +458,12 @@ mod tests {
             NotificationContext::ContributionThanks {
                 posts_supported: 50,
                 period: 10,
+            },
+            NotificationContext::CommunityFormed {
+                parent_space_id: [7u8; 32],
+                community_id: [8u8; 32],
+                auto_name: "community-ab12cd34".into(),
+                founding_member_count: 5,
             },
         ];
 

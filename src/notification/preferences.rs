@@ -76,6 +76,10 @@ impl NotificationPreferences {
             NotificationType::SpaceHealth => self.space_health_nudges,
             NotificationType::ContentRisk => self.decay_warnings,
             NotificationType::ContributionThanks => true, // Always enabled (not spam-like)
+            // Always enabled: formations are rare (per-space ~14-day
+            // cooldown), once-per-community, and graduation recognition —
+            // not spam-like (SPEC_13 Phase 2).
+            NotificationType::CommunityFormed => true,
         }
     }
 
