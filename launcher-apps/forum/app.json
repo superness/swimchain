@@ -1,0 +1,9 @@
+{
+  "id": "forum",
+  "name": "Swimchain Forum",
+  "icon": "icon.png",
+  "exec": "forum-app.exe",
+  "version": "0.1.0",
+  "deeplink": "swim+forum",
+  "singleInstance": true
+}

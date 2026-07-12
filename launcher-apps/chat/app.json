@@ -1,0 +1,9 @@
+{
+  "id": "chat",
+  "name": "Swimchain Chat",
+  "icon": "icon.png",
+  "exec": "chat-app.exe",
+  "version": "0.1.0",
+  "deeplink": "swim+chat",
+  "singleInstance": true
+}

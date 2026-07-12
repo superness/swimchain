@@ -1,0 +1,9 @@
+{
+  "id": "search",
+  "name": "Swimchain Search",
+  "icon": "icon.png",
+  "exec": "search-app.exe",
+  "version": "0.1.0",
+  "deeplink": "swim+search",
+  "singleInstance": true
+}

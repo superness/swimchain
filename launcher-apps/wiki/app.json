@@ -1,0 +1,9 @@
+{
+  "id": "wiki",
+  "name": "Swimchain Wiki",
+  "icon": "icon.png",
+  "exec": "wiki-app.exe",
+  "version": "0.1.0",
+  "deeplink": "swim+wiki",
+  "singleInstance": true
+}

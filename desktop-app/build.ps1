@@ -272,26 +272,34 @@ function Build-All {
         return
     }
 
-    # Step 7: Build feed-app (launcher app-shell + feed-client)
-    Write-Step "Step 7: Building feed-app (app-shell + feed-client)..."
-    # 1. feed-client web bundle
-    Push-Location "$ProjectRoot/feed-client"; npm run build; Pop-Location
-    # 2. stage the client into the shell's web/client
+    # Step 7: Build each launcher app (app-shell + its client) -> launcher-apps/<id>/<id>-app.exe
+    Write-Step "Step 7: Building launcher apps (app-shell + clients)..."
     $shellWeb = "$ProjectRoot/launcher-apps/app-shell/web/client"
-    Remove-Item -Recurse -Force $shellWeb -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force $shellWeb | Out-Null
-    Copy-Item -Recurse "$ProjectRoot/feed-client/dist/*" $shellWeb
-    # 3. build the shell exe (release)
-    Push-Location "$ProjectRoot/launcher-apps/app-shell/src-tauri"
-    cargo build --release
-    Pop-Location
-    # 4. place the exe next to the manifest as feed-app.exe
     $ShellExe = "$ProjectRoot/launcher-apps/app-shell/src-tauri/target/release/app-shell.exe"
-    if (Test-Path $ShellExe) {
-        Copy-Item $ShellExe "$ProjectRoot/launcher-apps/feed/feed-app.exe" -Force
-        Write-Success "feed-app.exe built"
-    } else {
-        Write-Warning "app-shell.exe not found; feed-app.exe was not produced"
+    $ShellBuildRs = "$ProjectRoot/launcher-apps/app-shell/src-tauri/build.rs"
+    foreach ($appId in @("feed", "chat", "forum", "search", "wiki")) {
+        $clientDir = "$ProjectRoot/$appId-client"
+        if (-not (Test-Path $clientDir)) { Write-Warning "$appId-client not found, skipping"; continue }
+        Write-Info "  building $appId-app..."
+        # 1. client web bundle
+        Push-Location $clientDir; npm run build; Pop-Location
+        # 2. stage THIS client into the shell's embedded web/client
+        Remove-Item -Recurse -Force $shellWeb -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force $shellWeb | Out-Null
+        Copy-Item -Recurse "$clientDir/dist/*" $shellWeb
+        # 3. force a recompile (Tauri embeds frontendDist at compile time and won't
+        #    rebuild on a web/-only change) so THIS exe carries THIS client, then build.
+        Push-Location "$ProjectRoot/launcher-apps/app-shell/src-tauri"
+        (Get-Item $ShellBuildRs).LastWriteTime = Get-Date
+        cargo build --release
+        Pop-Location
+        # 4. place the exe next to its manifest as <id>-app.exe
+        if (Test-Path $ShellExe) {
+            Copy-Item $ShellExe "$ProjectRoot/launcher-apps/$appId/$appId-app.exe" -Force
+            Write-Success "$appId-app.exe built"
+        } else {
+            Write-Warning "app-shell.exe not found; $appId-app.exe was not produced"
+        }
     }
     # 5. stage the RUNTIME app files (manifest + exe + icon only, NOT the app-shell
     #    source) into an in-project `apps/` dir so tauri bundles them to
