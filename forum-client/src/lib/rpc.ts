@@ -80,6 +80,29 @@ interface ListSpacesResult {
   total: number;
 }
 
+/**
+ * Allowlist filter for a general "main-view" client (forum/chat/feed/search):
+ * show ONLY a space we can positively confirm is a plain, public, main-view space.
+ *
+ * This is deliberately an allowlist, not a denylist of known specialized types
+ * (wiki/dm/profile/…). Any space that is app-namespaced, carries an `@app:` name, or
+ * whose name (and therefore `app`) the node hasn't resolved yet — meaning it could be a
+ * specialized/utility space in disguise — is hidden. New kinds of utility spaces only
+ * have to follow the `@<app>:` prefix convention to be hidden here automatically; this
+ * filter never needs updating per type.
+ */
+export function isMainViewSpace(s: SpaceSummary): boolean {
+  // App-namespaced (dm, profile, wiki, chess, …) → belongs to its own client.
+  if (typeof s.app === 'string' && s.app.length > 0) return false;
+  // Belt-and-braces: the raw `@app:` name convention, in case `app` wasn't parsed.
+  const name = typeof s.name === 'string' ? s.name.toLowerCase() : '';
+  if (/^@[a-z0-9-]+:/.test(name)) return false;
+  // Name (and thus `app`) not yet known — could be a utility space; don't surface it
+  // until it resolves to a confirmed public space.
+  if (s.name_unresolved) return false;
+  return true;
+}
+
 // === Behavioral-branching lineage RPC shapes (SPEC_13, Phase 2 — FINAL) ===
 // Exact server shapes per Lane A. Consumers still feature-detect (see
 // isMethodNotFoundError) so absence of the optional RPCs degrades gracefully.
@@ -658,9 +681,10 @@ export class SwimchainRpc {
       limit: options?.limit ?? 100,
       offset: options?.offset ?? 0,
     });
-    // Specialized app spaces (wiki, etc.) live in their own clients — never surface them
-    // in the general forum experience.
-    const spaces = result.spaces.filter((s) => !s.app);
+    // Show only confirmed plain public spaces; hide app-namespaced, @app:-named, and
+    // not-yet-resolved spaces (which could be utility spaces in disguise). See
+    // isMainViewSpace — an allowlist, so new utility space types hide automatically.
+    const spaces = result.spaces.filter(isMainViewSpace);
     return { ...result, spaces, total: spaces.length };
   }
 

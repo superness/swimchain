@@ -65,6 +65,23 @@ interface SpaceSummary {
   name: string | null;
   /** App-namespace tag (e.g. "wiki"). Set = a specialized space; general clients hide it. */
   app?: string | null;
+  /** True if this is a real public space whose name (and therefore `app`) isn't resolved yet. */
+  name_unresolved?: boolean;
+}
+
+/**
+ * Allowlist filter for a general "main-view" client: show ONLY a space we can positively
+ * confirm is a plain, public, main-view space. Any app-namespaced space (dm/profile/wiki/…),
+ * `@app:`-named space, or space whose name/`app` the node hasn't resolved yet (could be a
+ * utility space in disguise) is hidden. New utility space types only need the `@<app>:`
+ * prefix convention to hide here automatically — this filter never needs per-type updates.
+ */
+export function isMainViewSpace(s: SpaceSummary): boolean {
+  if (typeof s.app === 'string' && s.app.length > 0) return false;
+  const name = typeof s.name === 'string' ? s.name.toLowerCase() : '';
+  if (/^@[a-z0-9-]+:/.test(name)) return false;
+  if (s.name_unresolved) return false;
+  return true;
 }
 
 interface ListSpacesResult {
@@ -373,8 +390,10 @@ export class SwimchainRpc {
       limit: options?.limit ?? 100,
       offset: options?.offset ?? 0,
     });
-    // Specialized app spaces (wiki, etc.) live in their own clients — never surface them here.
-    const spaces = result.spaces.filter((s) => !s.app);
+    // Show only confirmed plain public spaces; hide app-namespaced, @app:-named, and
+    // not-yet-resolved spaces. See isMainViewSpace — an allowlist, so new utility space
+    // types hide automatically.
+    const spaces = result.spaces.filter(isMainViewSpace);
     return { ...result, spaces, total: spaces.length };
   }
 
