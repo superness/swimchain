@@ -1046,3 +1046,18 @@ button.primary:hover {
   font-size: 0.8rem;
   color: var(--color-text-muted, #8a8a8a);
 }
+
+/* Alpha/pre-release tag on a download card heading */
+.tag-alpha {
+  display: inline-block;
+  font-size: 0.6em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  margin-left: 0.5em;
+  padding: 0.15em 0.55em;
+  border-radius: 99px;
+  color: var(--color-heat, #ff9e5e);
+  border: 1px solid var(--color-heat, #ff9e5e);
+}

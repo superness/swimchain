@@ -190,7 +190,7 @@ export default function AboutPage() {
           </div>
 
           <div className="download-option">
-            <h3>Android app</h3>
+            <h3>Android app <span className="tag-alpha">Alpha</span></h3>
             <p>Run a full Swimchain node in your pocket &mdash; no server, no account.</p>
             <ul>
               <li>Full node, in-process (not a light client)</li>
@@ -201,7 +201,7 @@ export default function AboutPage() {
               Download for Android
             </a>
             <p className="download-note">
-              Android 8.0+ &middot; sideloaded APK &middot;{' '}
+              Android 8.0+ &middot; arm64 &middot; sideloaded APK &middot;{' '}
               <a href="https://swimchain.io/download/android">install guide</a>
             </p>
           </div>
