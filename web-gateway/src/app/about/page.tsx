@@ -184,7 +184,7 @@ export default function AboutPage() {
               <li>Full chain sync</li>
               <li>Forum, chat, feed, search, and wiki built in</li>
             </ul>
-            <a href="https://swimchain.io/download" className="download-button">
+            <a href="https://swimchain.io/download/windows" className="download-button">
               Download for Windows
             </a>
           </div>

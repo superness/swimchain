@@ -1,0 +1,184 @@
+<title>Get Swimchain — desktop, Android, and CLI</title>
+<meta name="description" content="Download Swimchain: full-node desktop app for Windows, the Android alpha, or build the CLI from source. No servers, no account.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --ink: #071E26;
+    --surface: #0C2A33;
+    --surface-2: #10333E;
+    --line: #1B4450;
+    --foam: #E8F1EF;
+    --muted: #8FB0AC;
+    --heat: #FF9E5E;
+    --heat-deep: #E07B3A;
+    --shallow: #6ED3C2;
+    --cold: #3E7C8A;
+    --serif: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+  }
+
+  html { background: var(--ink); }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, rgba(110, 211, 194, 0.07), transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, rgba(255, 158, 94, 0.05), transparent 55%),
+      var(--ink);
+    color: var(--foam);
+    font-family: var(--serif);
+    font-size: 18px;
+    line-height: 1.65;
+  }
+
+  a { color: var(--shallow); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { color: var(--foam); }
+  a:focus-visible { outline: 2px solid var(--heat); outline-offset: 3px; border-radius: 2px; }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--shallow);
+  }
+
+  header.site {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 28px 0 0;
+  }
+  .mark {
+    font-family: var(--mono); font-size: 15px; letter-spacing: 0.06em; color: var(--foam);
+    text-decoration: none;
+  }
+  .mark .tld { color: var(--muted); }
+  nav.site { display: flex; gap: 22px; font-family: var(--mono); font-size: 13px; }
+  nav.site a { color: var(--muted); text-decoration: none; }
+  nav.site a:hover { color: var(--foam); }
+
+  .page-hero { padding: 76px 0 40px; }
+  h1 {
+    margin: 18px 0 18px; font-size: clamp(34px, 4.6vw, 50px); line-height: 1.08;
+    font-weight: 600; letter-spacing: -0.01em; text-wrap: balance;
+  }
+  h1 em { font-style: italic; color: var(--heat); }
+  .lede { max-width: 38em; color: var(--muted); font-size: 19px; margin: 0; }
+  .lede strong { color: var(--foam); }
+
+  section { padding: 8px 0 56px; }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 26px 24px; display: flex; flex-direction: column;
+  }
+  .card .stat {
+    font-family: var(--mono); font-size: 12px; color: var(--heat);
+    letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 12px;
+  }
+  .card h2 { font-size: 21px; font-weight: 600; margin: 0 0 8px; }
+  .card h2 .tag {
+    font-family: var(--mono); font-size: 0.55em; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; vertical-align: middle; margin-left: 0.5em;
+    padding: 0.2em 0.6em; border-radius: 99px; color: var(--heat); border: 1px solid var(--heat);
+  }
+  .card > p { color: var(--muted); font-size: 15.5px; margin: 0 0 14px; }
+  .card ul { list-style: none; padding: 0; margin: 0 0 20px; }
+  .card li {
+    font-size: 15px; color: var(--muted); padding: 5px 0 5px 20px; position: relative;
+  }
+  .card li::before { content: "·"; position: absolute; left: 4px; color: var(--shallow); }
+  .card .spacer { flex: 1; }
+  .btn {
+    display: inline-block; padding: 12px 22px; font-family: var(--mono); font-size: 14px;
+    text-decoration: none; border-radius: 4px; text-align: center;
+  }
+  .btn.primary { background: var(--heat); border: 1px solid var(--heat); color: #241205; font-weight: 600; }
+  .btn.primary:hover { background: var(--heat-deep); border-color: var(--heat-deep); }
+  .btn.ghost { border: 1px solid var(--line); color: var(--foam); }
+  .btn.ghost:hover { border-color: var(--shallow); }
+  .card .note { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 10px; }
+
+  footer.site {
+    border-top: 1px solid var(--line); padding: 42px 0 56px;
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+  }
+  footer.site a { color: var(--muted); }
+  footer.site a:hover { color: var(--foam); }
+
+  @media (max-width: 860px) { .cards { grid-template-columns: 1fr; } }
+  @media (max-width: 640px) { nav.site { display: none; } }
+</style>
+
+<header class="site wrap">
+  <a class="mark" href="/">swimchain<span class="tld">.io</span></a>
+  <nav class="site">
+    <a href="/protocol">Protocol</a>
+    <a href="/about">About</a>
+    <a href="/browse/">Browse</a>
+    <a href="developers.html">Developers</a>
+  </nav>
+</header>
+
+<div class="page-hero wrap">
+  <span class="eyebrow">Get Swimchain</span>
+  <h1>Run a node. <em>Be</em> the network.</h1>
+  <p class="lede">
+    Every Swimchain client is a full node — <strong>no servers, no account</strong>.
+    Pick your platform. The desktop app is the fullest experience today; Android is in
+    alpha; power users can build the CLI from source.
+  </p>
+</div>
+
+<section class="wrap">
+  <div class="cards">
+
+    <div class="card">
+      <span class="stat">Windows &middot; full node</span>
+      <h2>Desktop</h2>
+      <p>Run a full node on your computer. Forum, chat, feed, search, and wiki built in — the best experience today.</p>
+      <ul>
+        <li>Windows today &mdash; macOS &amp; Linux next</li>
+        <li>Full chain sync</li>
+        <li>All clients in one app</li>
+      </ul>
+      <div class="spacer"></div>
+      <a class="btn primary" href="/download/windows">Download for Windows</a>
+    </div>
+
+    <div class="card">
+      <span class="stat">Android 8.0+ &middot; full node</span>
+      <h2>Android <span class="tag">Alpha</span></h2>
+      <p>Run a full Swimchain node in your pocket &mdash; not a light client.</p>
+      <ul>
+        <li>Full node, in-process</li>
+        <li>Private spaces &amp; E2E encryption</li>
+        <li>Touch-optimized</li>
+      </ul>
+      <div class="spacer"></div>
+      <a class="btn primary" href="/download/android">Install on Android</a>
+      <p class="note">Sideloaded APK &middot; guided setup</p>
+    </div>
+
+    <div class="card">
+      <span class="stat">All platforms &middot; scriptable</span>
+      <h2>CLI / from source</h2>
+      <p>For power users and automation. Build the node and CLI from the Rust source.</p>
+      <ul>
+        <li>Windows, macOS, Linux</li>
+        <li>Scriptable, full feature access</li>
+        <li>Run your own seed or gateway</li>
+      </ul>
+      <div class="spacer"></div>
+      <a class="btn ghost" href="developers.html">Build instructions</a>
+    </div>
+
+  </div>
+</section>
+
+<footer class="site wrap">
+  <span>swimchain.io — content that earns its place</span>
+  <span>
+    <a href="/about">About</a> ·
+    <a href="/protocol">Protocol</a> ·
+    <a href="https://github.com/superness/swimchain">GitHub</a>
+  </span>
+</footer>
