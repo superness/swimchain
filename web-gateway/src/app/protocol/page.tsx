@@ -4,7 +4,7 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'The Swimchain Protocol',
   description:
-    'What makes the Swimchain protocol different: proof-of-work as participation, pooled engagement, adaptive decay, fork-friendly chains, organic communities, and view-to-host distribution.',
+    'What makes the Swimchain protocol different: proof-of-work as participation, per-engagement work, adaptive decay, fork-friendly chains, organic communities, and view-to-host distribution.',
   openGraph: {
     title: 'The Swimchain Protocol',
     description: 'The mechanics behind decentralized, unownable social media',
@@ -58,22 +58,21 @@ export default function ProtocolPage() {
         </p>
       </section>
 
-      <section className="section" id="pooled-engagement">
-        <h2>Pooled Engagement Defeats Sybils</h2>
+      <section className="section" id="engagement">
+        <h2>Engagement Costs Work. Sybils Multiply Cost, Not Effect.</h2>
         <p>
-          Keeping content alive requires a fixed pool of total engagement
-          work. Anyone can contribute to the pool &mdash; but the total is
-          what matters, not the number of contributors:
+          Every engagement is its own proof-of-work action, and a valid
+          engagement resets the content&apos;s decay timer:
         </p>
         <ul>
-          <li>One person contributing 60 seconds of work: pool complete</li>
-          <li>100 fake accounts contributing 0.6 seconds each: same total, same result</li>
-          <li>Incomplete pools expire and the work is lost</li>
+          <li>The reset costs the same work no matter who mines it</li>
+          <li>A hundred fake accounts don&apos;t extend a lifetime &mdash; they multiply the bill</li>
+          <li>Persistence is rented forever, never owned</li>
         </ul>
         <p>
           Sock puppets provide exactly zero advantage. Self-promotion
-          isn&apos;t banned &mdash; it&apos;s just paying full price to keep
-          content alive that nobody else cares about.
+          isn&apos;t banned &mdash; it&apos;s just paying, every decay cycle,
+          to float content nobody else cares about.
         </p>
       </section>
 
@@ -99,8 +98,9 @@ export default function ProtocolPage() {
         <p>
           On most blockchains, a 51% attack is existential. On Swimchain,
           it&apos;s self-defeating. If an attacker captures a chain, the
-          community forks away &mdash; with their identities and content
-          &mdash; and the new fork can exclude the attacker entirely.
+          community forks away &mdash; identities travel automatically, and
+          content that matters gets re-earned &mdash; and the new fork can
+          exclude the attacker entirely.
         </p>
         <p>
           The attacker &ldquo;wins&rdquo; an empty chain. Capture is
@@ -115,9 +115,10 @@ export default function ProtocolPage() {
         <p>
           When a group of users interact mostly with each other, the network
           detects the cluster from chain data and gives it its own space
-          &mdash; automatically, by consensus, with no admin deciding
+          &mdash; automatically, deterministically, with no admin deciding
           anything. Tight-knit groups get their own discoverable home instead
-          of crowding the parent space.
+          of crowding the parent space. (Rolling out now: detection runs in
+          observation mode on testnet before formation switches on.)
         </p>
         <p>
           The same mechanism handles spam without moderators: a spammer
