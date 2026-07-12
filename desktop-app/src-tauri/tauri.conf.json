@@ -35,7 +35,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [],
+    "resources": {
+      "../../launcher-apps": "apps"
+    },
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",

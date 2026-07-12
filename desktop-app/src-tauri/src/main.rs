@@ -419,13 +419,10 @@ async fn take_screenshot(
     Ok(path.to_string_lossy().to_string())
 }
 
-/// Resolve the directory containing an app's `app.json` + executable.
-///
-/// Dev builds (`cfg!(debug_assertions)`) read straight from the repo's
-/// `launcher-apps/<id>` so app changes are picked up without a bundle step.
-/// Release builds read from the bundled `apps/<id>` dir under the Tauri
-/// resource directory.
-fn resolve_app_dir(app: &tauri::AppHandle, app_id: &str) -> Result<PathBuf, String> {
+/// Root dir that holds per-app folders: dev = repo `launcher-apps`, prod =
+/// `<resource_dir>/apps`. Shared by `resolve_app_dir` and `list_apps` so the
+/// two stay in agreement.
+fn apps_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         // CARGO_MANIFEST_DIR is desktop-app/src-tauri at compile time;
         // launcher-apps lives two levels up, alongside desktop-app/.
@@ -434,13 +431,37 @@ fn resolve_app_dir(app: &tauri::AppHandle, app_id: &str) -> Result<PathBuf, Stri
             .parent() // desktop-app
             .and_then(|p| p.parent()) // repo root
             .ok_or_else(|| "Failed to resolve repo root from CARGO_MANIFEST_DIR".to_string())?;
-        Ok(repo_root.join("launcher-apps").join(app_id))
+        Ok(repo_root.join("launcher-apps"))
     } else {
-        let resource_dir = app
-            .path()
+        app.path()
             .resource_dir()
-            .map_err(|e| format!("Failed to get resource directory: {}", e))?;
-        Ok(resource_dir.join("apps").join(app_id))
+            .map_err(|e| format!("Failed to get resource directory: {}", e))
+            .map(|r| r.join("apps"))
+    }
+}
+
+/// Resolve the directory containing an app's `app.json` + executable.
+///
+/// Dev builds (`cfg!(debug_assertions)`) read straight from the repo's
+/// `launcher-apps/<id>` so app changes are picked up without a bundle step.
+/// Release builds read from the bundled `apps/<id>` dir under the Tauri
+/// resource directory.
+fn resolve_app_dir(app: &tauri::AppHandle, app_id: &str) -> Result<PathBuf, String> {
+    Ok(apps_root(app)?.join(app_id))
+}
+
+/// List all launcher apps available under the apps root (dev: repo
+/// `launcher-apps`, prod: bundled `apps/` resource dir). Returns an empty
+/// list (logged) if the apps root can't be resolved, rather than failing the
+/// whole launcher UI.
+#[tauri::command]
+fn list_apps(app: tauri::AppHandle) -> Vec<registry::AppEntry> {
+    match apps_root(&app) {
+        Ok(root) => registry::scan_apps(&root),
+        Err(e) => {
+            log::warn!("[registry] apps_root: {e}");
+            Vec::new()
+        }
     }
 }
 
@@ -615,6 +636,7 @@ fn main() {
             take_screenshot,
             take_pending_deeplink,
             launch_app,
+            list_apps,
         ])
         .on_window_event(|window, event| {
             // Stop node when app closes
