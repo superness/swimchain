@@ -1039,3 +1039,10 @@ button.primary:hover {
   margin: 0.75rem 0;
   display: block;
 }
+
+/* Small note under a download button (e.g. Android requirements + install guide) */
+.download-note {
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted, #8a8a8a);
+}

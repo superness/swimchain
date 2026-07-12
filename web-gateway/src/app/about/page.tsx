@@ -190,14 +190,20 @@ export default function AboutPage() {
           </div>
 
           <div className="download-option">
-            <h3>Mobile</h3>
-            <p>Light client for on-the-go access.</p>
+            <h3>Android app</h3>
+            <p>Run a full Swimchain node in your pocket &mdash; no server, no account.</p>
             <ul>
-              <li>iOS and Android</li>
-              <li>Light sync mode</li>
+              <li>Full node, in-process (not a light client)</li>
+              <li>Private spaces &amp; end-to-end encryption</li>
               <li>Touch-optimized</li>
             </ul>
-            <span className="coming-soon">Coming Soon</span>
+            <a href="https://swimchain.io/download/android" className="download-button">
+              Download for Android
+            </a>
+            <p className="download-note">
+              Android 8.0+ &middot; sideloaded APK &middot;{' '}
+              <a href="https://swimchain.io/download/android">install guide</a>
+            </p>
           </div>
 
           <div className="download-option">
