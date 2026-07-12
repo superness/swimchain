@@ -22,7 +22,8 @@
  * @packageDocumentation
  */
 import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex, hexToBytes } from './x25519';
+import { hexToBytes } from './x25519';
+import { SpaceClass, applyClass } from './spaceClass';
 /** Profile space version for future compatibility */
 const PROFILE_VERSION = 'v1';
 /** Content type markers for profile posts */
@@ -42,8 +43,7 @@ export const PROFILE_INFO_PRIVATE_TYPE = 'PROFILE_INFO_PRIVATE';
 export function getProfileSpaceId(userPk) {
     const preimage = `profile:${PROFILE_VERSION}:${userPk.toLowerCase()}`;
     const hash = sha256(new TextEncoder().encode(preimage));
-    // Use first 16 bytes (32 hex chars) for space ID
-    return bytesToHex(hash.slice(0, 16));
+    return applyClass(SpaceClass.Profile, hash);
 }
 /**
  * Check if a space ID is a profile space for a given user

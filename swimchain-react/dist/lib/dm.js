@@ -7,7 +7,7 @@
  * @packageDocumentation
  */
 import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex } from './x25519';
+import { SpaceClass, applyClass } from './spaceClass';
 /**
  * Generate a deterministic DM space ID from two public keys.
  *
@@ -25,8 +25,7 @@ export function getDMSpaceId(myPk, theirPk) {
     const preimage = `dm:v1:${sorted[0]}:${sorted[1]}`;
     // Hash with SHA256
     const hash = sha256(new TextEncoder().encode(preimage));
-    // Take first 16 bytes (128 bits) for space ID
-    return bytesToHex(hash.slice(0, 16));
+    return applyClass(SpaceClass.Dm, hash);
 }
 /**
  * Check if a space ID is a DM space between two users.
