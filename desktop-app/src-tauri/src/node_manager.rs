@@ -27,6 +27,28 @@ pub fn default_rpc_port(network: &str) -> u16 {
     }
 }
 
+/// Find a free port pair `(p2p, p2p+1)` for the node, preferring `preferred_p2p` (the
+/// network default). The node derives its RPC port as P2P+1 and binds RPC on 127.0.0.1,
+/// so if the default RPC port is already taken (e.g. an `adb forward` for mobile dev, or a
+/// second node), starting on the default would fail with "address in use" and the app
+/// would appear to crash. We scan upward for a pair where BOTH ports are bindable and run
+/// the node there instead. Returns the chosen P2P port (RPC is that + 1).
+fn find_free_port_pair(preferred_p2p: u16) -> u16 {
+    use std::net::TcpListener;
+    let mut p = preferred_p2p;
+    for _ in 0..64 {
+        // Hold both listeners simultaneously so the pair is verified free at the same
+        // instant, then drop them (freeing the ports) just before the node binds.
+        let p2p_ok = TcpListener::bind(("127.0.0.1", p)).is_ok();
+        let rpc_ok = TcpListener::bind(("127.0.0.1", p.wrapping_add(1))).is_ok();
+        if p2p_ok && rpc_ok {
+            return p;
+        }
+        p = p.wrapping_add(2);
+    }
+    preferred_p2p // give up scanning; let the node surface the bind error
+}
+
 /// Compute the actual data dir with network suffix (what the CLI creates),
 /// e.g. `swimchain` -> `swimchain-testnet`. Mainnet has no suffix.
 fn data_dir_with_suffix_for(data_dir: &PathBuf, network: &str) -> PathBuf {
@@ -118,11 +140,21 @@ impl NodeManager {
         // Note: --log-file option removed as bundled binary may not have it
         // The node logs to stderr which we capture
 
+        // Pick a free (P2P, RPC=P2P+1) port pair, preferring the network default. This
+        // avoids a hard crash when the default RPC port is occupied (e.g. an adb forward
+        // from mobile-app dev, or a second node). The chosen RPC port is what the client
+        // will connect to, so update self.rpc_port to match before spawning.
+        let default_p2p = default_rpc_port(&self.network).saturating_sub(1);
+        let p2p_port = find_free_port_pair(default_p2p);
+        self.rpc_port = p2p_port.wrapping_add(1);
+
         args.extend([
             "node".to_string(),
             "start".to_string(),
             "--data-dir".to_string(),
             self.data_dir.to_string_lossy().to_string(),
+            "--listen".to_string(),
+            format!("0.0.0.0:{}", p2p_port),
         ]);
 
         // Spawn the node process with SWIMCHAIN_PASSWORD env var
