@@ -24,6 +24,30 @@ pub fn blake3_hash(data: &[u8]) -> [u8; 32] {
     *blake3::hash(data).as_bytes()
 }
 
+/// Compute SHA-1 (20-byte) digest of data.
+///
+/// SHA-1 is cryptographically broken and MUST NOT be used for security
+/// decisions. It exists solely to match external CSAM/illegal-content hash
+/// lists (SPEC_12), which historically distribute SHA-1 file digests.
+#[must_use]
+pub fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(data);
+    hasher.finalize().into()
+}
+
+/// Compute MD5 (16-byte) digest of data.
+///
+/// MD5 is cryptographically broken and MUST NOT be used for security
+/// decisions. It exists solely to match external CSAM/illegal-content hash
+/// lists (SPEC_12), which historically distribute MD5 file digests.
+#[must_use]
+pub fn md5(data: &[u8]) -> [u8; 16] {
+    let mut hasher = md5::Md5::new();
+    hasher.update(data);
+    hasher.finalize().into()
+}
+
 /// Compute content hash (SHA-256) for content storage
 #[must_use]
 pub fn content_hash(content: &[u8]) -> ContentHash {

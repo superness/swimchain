@@ -41,7 +41,10 @@ pub struct SeedEntry {
 impl SeedEntry {
     /// Create a new seed entry with just an address
     pub fn new(addr: SocketAddr) -> Self {
-        Self { addr, node_id: None }
+        Self {
+            addr,
+            node_id: None,
+        }
     }
 
     /// Create a new seed entry with address and node ID
@@ -288,6 +291,17 @@ pub struct NodeConfig {
     /// single random peer before the network-wide diffusion (default: true).
     /// When false, falls back to delay-only diffusion (delay then broadcast).
     pub origin_privacy_stem: bool,
+
+    // ========== Blocklist Trust Anchors (SPEC_12 CSAM seeding) ==========
+    /// Ed25519 public keys of trusted blocklist list-maintainers.
+    ///
+    /// Blocklist updates and signed bundles authored by one of these keys are
+    /// accepted network-wide *without* community spam-attestations (trust is
+    /// anchored in this configured set). Updates from any other key still
+    /// require the full attestation threshold. Empty by default; operators
+    /// populate it from `<data_dir>/blocklist_trusted_keys.txt` via
+    /// [`NodeConfig::load_trusted_blocklist_keys`] or by setting it directly.
+    pub trusted_blocklist_keys: Vec<[u8; 32]>,
 }
 
 impl Default for NodeConfig {
@@ -363,6 +377,9 @@ impl Default for NodeConfig {
             origin_privacy_min_delay: Duration::from_secs(2),
             origin_privacy_max_delay: Duration::from_secs(12),
             origin_privacy_stem: true,
+
+            // No trusted blocklist maintainers by default; operator-configured.
+            trusted_blocklist_keys: Vec::new(),
         }
     }
 }
@@ -370,7 +387,8 @@ impl Default for NodeConfig {
 impl NodeConfig {
     /// Get the RPC port (uses network mode default if not explicitly set)
     pub fn rpc_port(&self) -> u16 {
-        self.rpc_port.unwrap_or_else(|| self.network_mode.default_rpc_port())
+        self.rpc_port
+            .unwrap_or_else(|| self.network_mode.default_rpc_port())
     }
 
     /// Get the full RPC address
@@ -565,6 +583,47 @@ impl NodeConfig {
         Ok(())
     }
 
+    /// Path to the operator's trusted blocklist-maintainer key file.
+    pub fn trusted_blocklist_keys_path(&self) -> PathBuf {
+        self.data_dir.join("blocklist_trusted_keys.txt")
+    }
+
+    /// Load trusted blocklist-maintainer keys from
+    /// `<data_dir>/blocklist_trusted_keys.txt` into `trusted_blocklist_keys`.
+    ///
+    /// The file lists one Ed25519 public key per line, either as 64-char hex or
+    /// a `swim1...` bech32m address. Blank lines and `#` comments are ignored.
+    /// Missing file is not an error (no trusted keys configured). Keys loaded
+    /// here are merged with any already present (deduplicated).
+    pub fn load_trusted_blocklist_keys(&mut self) -> Result<usize, NodeError> {
+        let path = self.trusted_blocklist_keys_path();
+        if !path.exists() {
+            return Ok(0);
+        }
+        let contents = std::fs::read_to_string(&path)
+            .map_err(|e| NodeError::InvalidConfig(format!("reading {:?}: {}", path, e)))?;
+
+        let mut loaded = 0;
+        for (idx, raw) in contents.lines().enumerate() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let key = parse_pubkey(line).ok_or_else(|| {
+                NodeError::InvalidConfig(format!(
+                    "blocklist_trusted_keys.txt line {}: invalid pubkey '{}'",
+                    idx + 1,
+                    line
+                ))
+            })?;
+            if !self.trusted_blocklist_keys.contains(&key) {
+                self.trusted_blocklist_keys.push(key);
+                loaded += 1;
+            }
+        }
+        Ok(loaded)
+    }
+
     /// Get the path for chain storage
     pub fn chain_store_path(&self) -> PathBuf {
         self.data_dir.join("chain")
@@ -630,6 +689,22 @@ impl NodeConfig {
         config.seeds = config.default_seeds_for_network();
         config
     }
+}
+
+/// Parse an Ed25519 public key from either 64-char hex or a bech32m address.
+fn parse_pubkey(s: &str) -> Option<[u8; 32]> {
+    // Try raw hex first.
+    if let Ok(bytes) = hex::decode(s) {
+        if bytes.len() == 32 {
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&bytes);
+            return Some(out);
+        }
+    }
+    // Fall back to a bech32m swimchain address.
+    crate::crypto::address::decode_address_to_pubkey(s)
+        .ok()
+        .map(|pk| pk.0)
 }
 
 /// Get the default data directory
@@ -714,7 +789,10 @@ mod tests {
         };
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("storage_target_mb"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("storage_target_mb"));
     }
 
     #[test]
@@ -925,9 +1003,18 @@ mod tests {
             data_dir: PathBuf::from("/data/swimchain"),
             ..NodeConfig::default()
         };
-        assert_eq!(config.chain_store_path(), PathBuf::from("/data/swimchain/chain"));
-        assert_eq!(config.blob_store_path(), PathBuf::from("/data/swimchain/blobs"));
-        assert_eq!(config.peer_store_path(), PathBuf::from("/data/swimchain/peers"));
+        assert_eq!(
+            config.chain_store_path(),
+            PathBuf::from("/data/swimchain/chain")
+        );
+        assert_eq!(
+            config.blob_store_path(),
+            PathBuf::from("/data/swimchain/blobs")
+        );
+        assert_eq!(
+            config.peer_store_path(),
+            PathBuf::from("/data/swimchain/peers")
+        );
         assert_eq!(
             config.contribution_store_path(),
             PathBuf::from("/data/swimchain/contribution")

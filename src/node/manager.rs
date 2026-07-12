@@ -531,6 +531,19 @@ impl NodeManager {
             }
         }
 
+        // 4.5.2b. Load operator-configured trusted blocklist maintainer keys
+        // (SPEC_12 CSAM seeding): updates/bundles signed by these keys are
+        // accepted without community attestations.
+        match self.config.load_trusted_blocklist_keys() {
+            Ok(n) if n > 0 => info!(
+                "[BLOCKLIST] Loaded {} trusted list-maintainer key(s) ({} total)",
+                n,
+                self.config.trusted_blocklist_keys.len()
+            ),
+            Ok(_) => {}
+            Err(e) => warn!("[BLOCKLIST] Failed to load trusted keys: {}", e),
+        }
+
         // 4.5.3. Initialize spam attestation store for community flagging (SPEC_12 §3)
         let spam_path = self.config.data_dir.join("spam_attestations");
         std::fs::create_dir_all(&spam_path).ok();
@@ -888,6 +901,13 @@ impl NodeManager {
         // C-BLOCKLIST-2: Pass blocklist store to router for network gossip updates
         if let Some(ref blocklist) = self.blocklist {
             router_builder = router_builder.blocklist(blocklist.clone());
+        }
+        // SPEC_12 CSAM seeding: pass trusted list-maintainer keys so signed
+        // updates/bundles from them bypass the community-attestation requirement.
+        if !self.config.trusted_blocklist_keys.is_empty() {
+            let trusted: std::collections::HashSet<[u8; 32]> =
+                self.config.trusted_blocklist_keys.iter().copied().collect();
+            router_builder = router_builder.trusted_blocklist_keys(trusted);
         }
         // SPEC_11 Phase 6: Pass sponsorship store to router for on-chain sponsorship processing
         if let Some(ref sponsorship_store) = self.sponsorship_store {

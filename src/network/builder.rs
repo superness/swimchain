@@ -315,7 +315,8 @@ impl Message {
             // Blocklist gossip messages (SPEC_12 §4.6) are handled at the router level
             MessageType::BlocklistUpdate
             | MessageType::BlocklistSync
-            | MessageType::BlocklistRequest => {
+            | MessageType::BlocklistRequest
+            | MessageType::BlocklistBundle => {
                 // Return the raw payload for router-level handling
                 Err(WireError::payload(format!(
                     "Blocklist message type {:?} should be handled at router level",

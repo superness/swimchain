@@ -12,7 +12,7 @@ use super::RouteError;
 use crate::attribution::{AttributionQueryPayload, AttributionResponsePayload};
 use crate::blocklist::gossip::{
     entry_from_update, parse_blocklist_message, BlocklistGossip, BlocklistMessage,
-    MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
+    MSG_BLOCKLIST_BUNDLE, MSG_BLOCKLIST_REQUEST, MSG_BLOCKLIST_SYNC, MSG_BLOCKLIST_UPDATE,
 };
 use crate::blocks::validation::validate_reply_parents;
 use crate::cli::search_index::{IndexableContent, SearchIndex};
@@ -191,6 +191,11 @@ pub struct MessageRouter {
     /// Blocklist gossip manager for peer tracking (H-BLOCKLIST-2)
     blocklist_gossip: Option<Arc<RwLock<BlocklistGossip>>>,
 
+    /// Trusted blocklist list-maintainer public keys (SPEC_12 CSAM seeding).
+    /// Updates/bundles signed by these keys bypass the community-attestation
+    /// requirement; all other keys still require the attestation threshold.
+    trusted_blocklist_keys: std::collections::HashSet<[u8; 32]>,
+
     /// Pool manager for engagement pools (SPEC_03 §7, SPEC_08 §3.3)
     pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
 
@@ -270,6 +275,7 @@ impl MessageRouter {
             chain_store: None,
             blocklist: None,
             blocklist_gossip: None,
+            trusted_blocklist_keys: std::collections::HashSet::new(),
             pool_manager: None,
             connection_pool: None,
             dht: None,
@@ -315,6 +321,7 @@ impl MessageRouter {
             chain_store,
             blocklist: None,
             blocklist_gossip: None,
+            trusted_blocklist_keys: std::collections::HashSet::new(),
             pool_manager: None,
             connection_pool: None,
             dht: None,
@@ -472,6 +479,7 @@ impl MessageRouter {
             MSG_BLOCKLIST_UPDATE => self.handle_blocklist_update(peer_id, payload).await,
             MSG_BLOCKLIST_SYNC => self.handle_blocklist_sync(peer_id, payload).await,
             MSG_BLOCKLIST_REQUEST => self.handle_blocklist_request(peer_id, payload).await,
+            MSG_BLOCKLIST_BUNDLE => self.handle_blocklist_bundle(peer_id, payload).await,
 
             // === Headers-First Sync ===
             MSG_GETHEADERS_LOCATOR => self.handle_getheaders_locator(peer_id, payload).await,
@@ -1182,13 +1190,26 @@ impl MessageRouter {
 
         // BLOCKLIST CHECK: Reject content that matches blocklist entries
         // This prevents storing CSAM/illegal content even if received from network
+        // Primary match is on the SHA-256 content id. For seeded external lists
+        // (SPEC_12) we also recompute SHA-1/MD5 over the received bytes and match
+        // the auxiliary indexes, since industry CSAM lists distribute those
+        // legacy digests rather than SHA-256.
         if let Some(ref blocklist) = self.blocklist {
             let store = blocklist.read().unwrap();
+            let mut matched: Option<&str> = None;
             if store.is_blocked(&hash_bytes) {
+                matched = Some("sha256");
+            } else if store.is_blocked_sha1(&crate::crypto::sha1(data)) {
+                matched = Some("sha1");
+            } else if store.is_blocked_md5(&crate::crypto::md5(data)) {
+                matched = Some("md5");
+            }
+            if let Some(kind) = matched {
                 warn!(
-                    "[BLOCKLIST] Rejected DATA_CONTENT from {} - content {} matches blocklist",
+                    "[BLOCKLIST] Rejected DATA_CONTENT from {} - content {} matches blocklist ({})",
                     hex::encode(&peer_id[..8]),
-                    hex::encode(&hash_bytes[..8])
+                    hex::encode(&hash_bytes[..8]),
+                    kind
                 );
                 return Err(RouteError::InvalidData("content blocked".to_string()));
             }
@@ -6186,10 +6207,16 @@ impl MessageRouter {
 
         if let Some(ref blocklist_gossip) = self.blocklist_gossip {
             let gossip = blocklist_gossip.read().unwrap();
+            // Trust-anchored fast path: updates signed by a configured
+            // list-maintainer key are accepted without community attestations;
+            // all other keys still require the attestation threshold.
             gossip
-                .validate_update(&update, current_time, |pubkey, msg, sig| {
-                    ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
-                })
+                .validate_update_with_trust(
+                    &update,
+                    current_time,
+                    &self.trusted_blocklist_keys,
+                    |pubkey, msg, sig| ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig)),
+                )
                 .map_err(|e| {
                     warn!(
                         "[BLOCKLIST] Invalid update from peer {}: {}",
@@ -6395,6 +6422,133 @@ impl MessageRouter {
         Ok(None)
     }
 
+    /// Handle BLOCKLIST_BUNDLE - receive a signed, versioned blocklist bundle.
+    ///
+    /// Bundles are the trust-anchored bulk-distribution path (SPEC_12 CSAM
+    /// seeding A.3): validate the maintainer signature against the configured
+    /// trusted-key set, apply entries if the version is newer than what we
+    /// hold, and forward to peers that haven't seen it. Unlike updates, bundles
+    /// carry no attestations — an untrusted or unsigned bundle is dropped.
+    ///
+    /// Payload format: BlocklistBundle
+    async fn handle_blocklist_bundle(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        let message = parse_blocklist_message(MSG_BLOCKLIST_BUNDLE, payload)
+            .map_err(|e| RouteError::DeserializationError(format!("{}", e)))?;
+
+        let bundle = match message {
+            BlocklistMessage::Bundle(b) => b,
+            _ => {
+                return Err(RouteError::DeserializationError(
+                    "Expected Bundle".to_string(),
+                ))
+            }
+        };
+
+        info!(
+            "[BLOCKLIST] Received BLOCKLIST_BUNDLE from peer {}: version={} entries={} maintainer={}",
+            hex::encode(&peer_id[..8]),
+            bundle.bundle_version,
+            bundle.entries.len(),
+            hex::encode(&bundle.maintainer[..8])
+        );
+
+        let blocklist = match &self.blocklist {
+            Some(bl) => bl,
+            None => {
+                debug!("[BLOCKLIST] No blocklist store configured");
+                return Err(RouteError::SubsystemUnavailable("blocklist"));
+            }
+        };
+
+        // Trust-anchor validation: maintainer must be configured-trusted and the
+        // Ed25519 signature must verify over the canonical bundle bytes.
+        bundle
+            .validate(&self.trusted_blocklist_keys, |pubkey, msg, sig| {
+                ed25519_verify(&PublicKey(*pubkey), msg, &Signature(*sig))
+            })
+            .map_err(|e| {
+                warn!(
+                    "[BLOCKLIST] Rejected bundle from peer {}: {}",
+                    hex::encode(&peer_id[..8]),
+                    e
+                );
+                RouteError::HandlerError(format!("blocklist bundle validation error: {}", e))
+            })?;
+
+        // Apply if newer than our current version.
+        let applied = {
+            let mut store = blocklist.write().unwrap();
+            store.apply_bundle(&bundle).map_err(|e| {
+                RouteError::HandlerError(format!("blocklist bundle apply error: {}", e))
+            })?
+        };
+
+        match applied {
+            Some(stats) => {
+                info!(
+                    "[BLOCKLIST] Applied bundle v{}: +{} entries (+{} sha1, +{} md5, {} skipped)",
+                    bundle.bundle_version,
+                    stats.sha256_added,
+                    stats.sha1_indexed,
+                    stats.md5_indexed,
+                    stats.sha256_skipped
+                );
+            }
+            None => {
+                debug!(
+                    "[BLOCKLIST] Bundle v{} not newer than stored; ignoring",
+                    bundle.bundle_version
+                );
+                // Stale bundle: do not re-forward.
+                return Ok(None);
+            }
+        }
+
+        // Forward the (freshly applied) bundle to peers that haven't seen it.
+        // Reuse the gossip seen-tracking keyed by the maintainer + version so we
+        // don't loop bundles endlessly.
+        if let (Some(ref connection_pool), Some(ref blocklist_gossip)) =
+            (&self.connection_pool, &self.blocklist_gossip)
+        {
+            // Derive a stable dedup key for this bundle version.
+            let mut dedup_key = [0u8; 32];
+            dedup_key[..8].copy_from_slice(&bundle.bundle_version.to_le_bytes());
+            dedup_key[8..16].copy_from_slice(&bundle.maintainer[..8]);
+
+            let all_peers = connection_pool.peer_ids().await;
+            let all_peers_arr: Vec<[u8; 32]> = all_peers.iter().copied().collect();
+
+            let peers_to_forward = {
+                let mut gossip = blocklist_gossip.write().unwrap();
+                gossip.peers_to_forward(&dedup_key, &all_peers_arr, Some(*peer_id))
+            };
+
+            if !peers_to_forward.is_empty() {
+                let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                    crate::types::network::MessageType::BlocklistBundle,
+                    payload.to_vec(),
+                );
+                for target_peer_id in peers_to_forward {
+                    if connection_pool
+                        .send_to(&target_peer_id, &envelope)
+                        .await
+                        .is_ok()
+                    {
+                        let mut gossip = blocklist_gossip.write().unwrap();
+                        gossip.mark_peer_seen(&dedup_key, target_peer_id);
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    // ========== DHT (Kademlia) Handlers (SPEC_06 §3.8) ==========
 
     /// Handle incoming DHT_PING
     async fn handle_dht_ping(
@@ -7787,6 +7941,7 @@ pub struct MessageRouterBuilder {
     chain_store: Option<Arc<ChainStore>>,
     blocklist: Option<Arc<RwLock<crate::blocklist::BlocklistStore>>>,
     blocklist_gossip: Option<Arc<RwLock<BlocklistGossip>>>,
+    trusted_blocklist_keys: std::collections::HashSet<[u8; 32]>,
     pool_manager: Option<Arc<RwLock<crate::content::pool::PoolManager>>>,
     connection_pool: Option<Arc<PeerConnectionPool>>,
     dht: Option<Arc<DhtManager>>,
@@ -7823,6 +7978,7 @@ impl MessageRouterBuilder {
             chain_store: None,
             blocklist: None,
             blocklist_gossip: None,
+            trusted_blocklist_keys: std::collections::HashSet::new(),
             pool_manager: None,
             connection_pool: None,
             dht: None,
@@ -7902,6 +8058,12 @@ impl MessageRouterBuilder {
     /// Set the blocklist gossip manager for peer tracking (H-BLOCKLIST-2)
     pub fn blocklist_gossip(mut self, gossip: Arc<RwLock<BlocklistGossip>>) -> Self {
         self.blocklist_gossip = Some(gossip);
+        self
+    }
+
+    /// Set the trusted blocklist list-maintainer keys (SPEC_12 CSAM seeding).
+    pub fn trusted_blocklist_keys(mut self, keys: std::collections::HashSet<[u8; 32]>) -> Self {
+        self.trusted_blocklist_keys = keys;
         self
     }
 
@@ -8053,6 +8215,7 @@ impl MessageRouterBuilder {
             chain_store: self.chain_store,
             blocklist: self.blocklist,
             blocklist_gossip: self.blocklist_gossip,
+            trusted_blocklist_keys: self.trusted_blocklist_keys,
             pool_manager: self.pool_manager,
             connection_pool: self.connection_pool,
             dht: self.dht,
@@ -8092,6 +8255,7 @@ impl MessageRouterBuilder {
             chain_store: self.chain_store,
             blocklist: self.blocklist,
             blocklist_gossip: self.blocklist_gossip,
+            trusted_blocklist_keys: self.trusted_blocklist_keys,
             pool_manager: self.pool_manager,
             connection_pool: self.connection_pool,
             dht: self.dht,

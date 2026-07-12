@@ -32,8 +32,8 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
 use swimchain::cli::commands::{
-    block, branch, completions, config, fork, identity, node, post, search, space, sponsor, sync,
-    test,
+    block, blocklist, branch, completions, config, fork, identity, node, post, search, space,
+    sponsor, sync, test,
 };
 use swimchain::cli::CliConfig;
 use swimchain::network::{NetworkContext, NetworkMode};
@@ -242,6 +242,18 @@ enum Commands {
         #[command(subcommand)]
         cmd: test::TestCmd,
     },
+
+    /// Blocklist administration (CSAM/illegal-content hash seeding)
+    #[command(
+        about = "Administer the illegal-content blocklist",
+        long_about = "Seed and inspect the local CSAM/illegal-content blocklist (SPEC_12). \
+                      Import external hash lists with ExternalList provenance and list current \
+                      entries. Operator-only: routes through the node's cookie-authenticated RPC."
+    )]
+    Blocklist {
+        #[command(subcommand)]
+        cmd: blocklist::BlocklistCmd,
+    },
 }
 
 /// Setup logging with optional file output
@@ -360,6 +372,7 @@ async fn main() {
         Commands::Sponsor { cmd } => sponsor::execute(cmd, &config),
         Commands::Fork { cmd } => fork::execute(cmd, &mut config),
         Commands::Test { cmd } => test::execute(cmd, &config),
+        Commands::Blocklist { cmd } => blocklist::execute(cmd, &config),
     };
 
     // Handle errors

@@ -37,6 +37,11 @@ ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 # Hashing - Blake3 for PoW (SPEC_03), SHA-256 for content hashing (SPEC_01)
 blake3 = "1.5"
 sha2 = "0.10"
+# Legacy digests for external CSAM/illegal-content list matching (SPEC_12):
+# industry hash lists (NCMEC, IWF, Project Arachnid) distribute SHA-1/MD5 of
+# known files, so we compute these alongside SHA-256 at content ingest.
+sha1 = "0.10"
+md-5 = "0.10"
 
 # Address encoding - Bech32m per SPEC_01 Section 3.3
 bech32 = "0.11"

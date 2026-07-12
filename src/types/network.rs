@@ -330,6 +330,8 @@ pub enum MessageType {
     BlocklistSync = 0xB1,
     /// Request specific blocklist entries
     BlocklistRequest = 0xB2,
+    /// Signed, versioned blocklist bundle (trust-anchored bulk distribution)
+    BlocklistBundle = 0xB3,
 
     // Social Layer / Peer Attestation (SPEC_09 §8.2)
     /// Contribution claim (announce contribution for attestation)
@@ -425,6 +427,7 @@ impl TryFrom<u8> for MessageType {
             0xB0 => Ok(MessageType::BlocklistUpdate),
             0xB1 => Ok(MessageType::BlocklistSync),
             0xB2 => Ok(MessageType::BlocklistRequest),
+            0xB3 => Ok(MessageType::BlocklistBundle),
             // Social layer / Peer attestation (SPEC_09 §8.2)
             0x30 => Ok(MessageType::ContributionClaim),
             0x31 => Ok(MessageType::ContributionAttest),

@@ -1451,6 +1451,35 @@ pub struct ManageBlocklistResult {
     pub count: u32,
 }
 
+/// import_blocklist params (operator-only, cookie-authed).
+///
+/// Provide the list body inline via `list`, or a server-side file `path`. The
+/// format is documented in `docs/operators/blocklist-seeding.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportBlocklistParams {
+    /// Inline list body (one record per line). Takes precedence over `path`.
+    #[serde(default)]
+    pub list: Option<String>,
+    /// Path to a list file on the node host to read and import.
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+/// import_blocklist result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportBlocklistResult {
+    /// New SHA-256 primary entries added.
+    pub sha256_added: u64,
+    /// SHA-256 records skipped because already present.
+    pub sha256_skipped: u64,
+    /// SHA-1 auxiliary digests indexed.
+    pub sha1_indexed: u64,
+    /// MD5 auxiliary digests indexed.
+    pub md5_indexed: u64,
+    /// Total blocklist SHA-256 entry count after the import.
+    pub count: u32,
+}
+
 /// get_my_invites params
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetMyInvitesParams {

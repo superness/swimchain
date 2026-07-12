@@ -1066,6 +1066,7 @@ impl RpcMethods {
             // Blocklist management methods (SPEC_12 §3.6)
             "list_blocklist" => self.list_blocklist(params, id).await,
             "manage_blocklist" => self.manage_blocklist(params, id).await,
+            "import_blocklist" => self.import_blocklist(params, id).await,
 
             // Behavioral branching methods (SPEC_13 Phase A / Phase 1 log-only rollout)
             "list_behavioral_events" => self.list_behavioral_events(params, id).await,
@@ -11991,6 +11992,7 @@ impl RpcMethods {
         // on testnet/mainnet where SpaceCreation PoW takes tens of seconds.
         let block_builder = self.node.block_builder.clone();
         let connection_pool = self.node.connection_pool.clone();
+        let chain_store = self.node.chain_store.clone();
         tokio::spawn(async move {
             let solution =
                 match tokio::task::spawn_blocking(move || compute_pow(&challenge, &config)).await {
@@ -14055,6 +14057,118 @@ impl RpcMethods {
             success: true,
             action: params.action,
             content_hash: params.content_hash,
+            count: store.count(),
+        };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// Bulk-import external hash-list entries into the blocklist (operator-only).
+    ///
+    /// Seeds `ExternalList`-family entries (SPEC_12 CSAM hash seeding). The
+    /// caller supplies the list body inline (`list`) or a server-side file
+    /// (`path`); the format is documented in the operator guide. Imported
+    /// SHA-256 entries participate in gossip/bundles; SHA-1/MD5 digests are
+    /// indexed for recompute-and-match at content ingest.
+    ///
+    /// This method is guarded by the RPC server's cookie authentication.
+    async fn import_blocklist(&self, params: Value, id: Value) -> RpcResponse {
+        let params: ImportBlocklistParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        // Resolve the list body: inline `list` wins, else read `path`.
+        let body = match (params.list, params.path) {
+            (Some(list), _) => list,
+            (None, Some(path)) => match std::fs::read_to_string(&path) {
+                Ok(contents) => contents,
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Failed to read list file '{}': {}", path, e),
+                        id,
+                    );
+                }
+            },
+            (None, None) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Provide either 'list' (inline) or 'path' (server-side file)",
+                    id,
+                );
+            }
+        };
+
+        let records = match crate::blocklist::parse_import(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Failed to parse import list: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let blocklist = match &self.node.blocklist {
+            Some(bl) => bl,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::SubsystemUnavailable,
+                    "Blocklist store not available",
+                    id,
+                );
+            }
+        };
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut store = match blocklist.write() {
+            Ok(store) => store,
+            Err(_) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Blocklist store lock poisoned",
+                    id,
+                );
+            }
+        };
+
+        let source_node = *self.node.keypair.public_key.as_bytes();
+        let stats = match store.import_records(&records, source_node, timestamp) {
+            Ok(s) => s,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Import failed: {}", e),
+                    id,
+                );
+            }
+        };
+
+        info!(
+            "[BLOCKLIST] Imported {} records via RPC: +{} sha256, +{} sha1, +{} md5, {} skipped",
+            records.len(),
+            stats.sha256_added,
+            stats.sha1_indexed,
+            stats.md5_indexed,
+            stats.sha256_skipped
+        );
+
+        let result = ImportBlocklistResult {
+            sha256_added: stats.sha256_added,
+            sha256_skipped: stats.sha256_skipped,
+            sha1_indexed: stats.sha1_indexed,
+            md5_indexed: stats.md5_indexed,
             count: store.count(),
         };
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)
