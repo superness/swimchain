@@ -231,19 +231,34 @@ function spaceToActivitySummary(
 const SPACE_ENRICH_LIMIT = 20;
 
 /**
+ * Short-TTL cache for the space directory. Each render of /spaces (and the
+ * search-index feed) otherwise fires an N+1 burst (list_spaces + one
+ * list_space_content per space) at the node. On a 1-vCPU seed that burst,
+ * repeated per request, is what hammers the node's RPC limiter. Serving a
+ * cached directory for a few seconds collapses that to one burst per window.
+ */
+let spaceDirCache: { at: number; data: SpaceActivitySummary[] } | null = null;
+const SPACE_DIR_TTL_MS = 15_000;
+
+/**
  * Fetch all spaces with activity stats.
  * Returns null when the node is unreachable.
  */
 export async function fetchAllSpaces(): Promise<SpaceActivitySummary[] | null> {
+  if (spaceDirCache && Date.now() - spaceDirCache.at < SPACE_DIR_TTL_MS) {
+    return spaceDirCache.data;
+  }
   const rpc = getRpc();
   let spaces: NodeSpaceSummary[];
   try {
     spaces = publicSpaces((await rpc.listSpaces(100)).spaces);
   } catch {
+    // On a transient failure, serve stale rather than flashing "offline".
+    if (spaceDirCache) return spaceDirCache.data;
     return null;
   }
 
-  return Promise.all(
+  const result = await Promise.all(
     spaces.map(async (space, i) => {
       let content: NodeContentSummary[] | null = null;
       if (i < SPACE_ENRICH_LIMIT) {
@@ -256,6 +271,9 @@ export async function fetchAllSpaces(): Promise<SpaceActivitySummary[] | null> {
       return spaceToActivitySummary(space, content);
     })
   );
+
+  spaceDirCache = { at: Date.now(), data: result };
+  return result;
 }
 
 /** Fetch one space plus its posts. */

@@ -192,6 +192,13 @@ export interface RpcConfig {
   endpoint: string;
   auth?: { username: string; password: string };
   timeout?: number;
+  /**
+   * Path to the node's cookie file. When set, auth is read from this file
+   * fresh and re-read on an auth failure — so a node restart that rotates the
+   * cookie self-heals instead of spamming stale credentials (which trips the
+   * node's per-IP auth-failure lockout).
+   */
+  cookieFile?: string;
 }
 
 // ============================================================================
@@ -203,16 +210,38 @@ export class SwimchainRpc {
   private auth?: { username: string; password: string };
   private timeout: number;
   private requestId = 1;
+  private cookieFile?: string;
 
   constructor(config: RpcConfig) {
     this.endpoint = config.endpoint;
     this.auth = config.auth;
     this.timeout = config.timeout ?? 10000;
+    this.cookieFile = config.cookieFile;
+    if (this.cookieFile) this.reloadCookie();
+  }
+
+  /** Re-read the cookie file into current auth. Silent on failure (keeps prior). */
+  private reloadCookie(): void {
+    if (!this.cookieFile) return;
+    try {
+      // Lazy require: this module is also bundled for client-side type imports.
+      const fs = require('fs') as typeof import('fs');
+      const raw = fs.readFileSync(this.cookieFile, 'utf8').trim();
+      if (!raw) return;
+      const idx = raw.indexOf(':');
+      this.auth =
+        idx > 0
+          ? { username: raw.slice(0, idx), password: raw.slice(idx + 1) }
+          : { username: '__cookie__', password: raw };
+    } catch {
+      // Cookie file unreadable — keep whatever auth we had.
+    }
   }
 
   private async call<T = unknown>(
     method: string,
-    params: Record<string, unknown> = {}
+    params: Record<string, unknown> = {},
+    authRetry = false
   ): Promise<T> {
     const request: RpcRequest = {
       jsonrpc: '2.0',
@@ -249,6 +278,18 @@ export class SwimchainRpc {
     }
 
     if (!response.ok) {
+      // Auth failure after a node cookie rotation: re-read the cookie file and
+      // retry ONCE. Never loop — repeated stale-cookie hits trip the node's
+      // per-IP auth-failure lockout (429 for everyone). 429 itself we surface;
+      // if we're already locked out, retrying only deepens it.
+      if (
+        (response.status === 401 || response.status === 403) &&
+        this.cookieFile &&
+        !authRetry
+      ) {
+        this.reloadCookie();
+        return this.call<T>(method, params, true);
+      }
       throw new NodeUnreachableError(`HTTP ${response.status}`);
     }
 
@@ -413,6 +454,9 @@ export function getRpc(): SwimchainRpc {
       endpoint: process.env.NODE_RPC_URL || DEFAULT_ENDPOINT,
       auth: getRpcAuth(),
       timeout: parseInt(process.env.NODE_RPC_TIMEOUT || '10000', 10),
+      // When set, the client reads auth from this file fresh and re-reads it on
+      // an auth failure, so node cookie rotation self-heals.
+      cookieFile: process.env.NODE_RPC_COOKIE_FILE || undefined,
     });
   }
   return globalRpc;
