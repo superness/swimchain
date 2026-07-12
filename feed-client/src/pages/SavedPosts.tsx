@@ -8,7 +8,15 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useFeedPreferences } from '../hooks/useFeedPreferences';
-import { useRpc } from '../hooks/useRpc';
+import { useRpc, usePrivateContent, isPrivateCiphertext, stripTitleSeparator } from '../hooks/useRpc';
+
+/** Split a decrypted `title\n\nbody` payload back into title + body. */
+function splitPrivate(decrypted: string): { title: string; body: string } {
+  const i = decrypted.indexOf('\n\n');
+  return i === -1
+    ? { title: '', body: decrypted }
+    : { title: decrypted.slice(0, i), body: decrypted.slice(i + 2) };
+}
 function formatRelativeTime(timestamp: number): string {
   const now = Math.floor(Date.now() / 1000);
   const ts = timestamp < 1e12 ? timestamp : Math.floor(timestamp / 1000);
@@ -30,6 +38,7 @@ interface SavedPost {
 
 export function SavedPosts(): JSX.Element {
   const { rpc, connected } = useRpc();
+  const { decryptForSpace } = usePrivateContent();
   const { preferences, unsavePost } = useFeedPreferences();
   const [posts, setPosts] = useState<SavedPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,10 +61,26 @@ export function SavedPosts(): JSX.Element {
         try {
           const content = await rpc.getContent(postId);
           if (content && !cancelled) {
+            let title = content.title ?? undefined;
+            let body = content.body ?? undefined;
+            // Saved post from a private space: the body is [PRIVATE:v1:...] ciphertext.
+            // Decrypt via the node (member-only); if we aren't a member it returns null
+            // and we keep the ciphertext.
+            if (isPrivateCiphertext(content.body)) {
+              const plain = await decryptForSpace(
+                content.space_id,
+                stripTitleSeparator(content.body ?? ''),
+              );
+              if (plain != null) {
+                const split = splitPrivate(plain);
+                title = split.title || title;
+                body = split.body;
+              }
+            }
             fetched.push({
               id: postId,
-              title: content.title ?? undefined,
-              body: content.body ?? undefined,
+              title,
+              body,
               author: content.author_id,
               spaceId: content.space_id,
               createdAt: content.created_at,
@@ -75,7 +100,7 @@ export function SavedPosts(): JSX.Element {
     })();
 
     return () => { cancelled = true; };
-  }, [rpc, connected, preferences.savedPosts]);
+  }, [rpc, connected, preferences.savedPosts, decryptForSpace]);
 
   const handleUnsave = (postId: string) => {
     unsavePost(postId);
