@@ -396,16 +396,55 @@ export async function fetchPost(
         replyToContentResponse(reply, content.space_id)
       );
     }
+    // Attach each reply under its parent, but never form a cycle. Cyclic
+    // parent data (e.g. a reply whose parent chain leads back to itself, seen
+    // with wiki-revision content) would otherwise make a node its own
+    // descendant and send the recursive walkers into a stack overflow.
+    const replyById = new Map(
+      repliesResult.replies.map((r) => [r.content_id, r])
+    );
+    const isAncestor = (
+      candidateAncestorId: string,
+      nodeId: string
+    ): boolean => {
+      // Walk up from nodeId via parent_id; true if we reach candidateAncestorId.
+      let cur: string | undefined = nodeId;
+      const guard = new Set<string>();
+      while (cur && !guard.has(cur)) {
+        if (cur === candidateAncestorId) return true;
+        guard.add(cur);
+        const r = replyById.get(cur);
+        cur = r?.parent_id;
+      }
+      return false;
+    };
     for (const reply of repliesResult.replies) {
       const node = nodes.get(reply.content_id)!;
-      const parent =
+      if (reply.parent_id === reply.content_id) {
+        // Self-parent: attach at root, never under itself.
+        root.children!.push(node);
+        continue;
+      }
+      const parentNode =
         reply.parent_id === content.content_id
           ? root
           : nodes.get(reply.parent_id);
-      (parent ?? root).children!.push(node);
+      // Guard: don't attach node under one of its own descendants.
+      if (
+        parentNode &&
+        parentNode !== root &&
+        isAncestor(reply.content_id, reply.parent_id)
+      ) {
+        root.children!.push(node);
+        continue;
+      }
+      (parentNode ?? root).children!.push(node);
     }
-    // Oldest first at each level
+    // Oldest first at each level (cycle-safe: never revisit a node).
+    const sorted = new Set<ContentResponse>();
     const sortTree = (n: ContentResponse): void => {
+      if (sorted.has(n)) return;
+      sorted.add(n);
       n.children?.sort((a, b) => a.item.created_at - b.item.created_at);
       n.children?.forEach(sortTree);
     };

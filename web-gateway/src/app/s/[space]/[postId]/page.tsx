@@ -239,10 +239,12 @@ function formatTimeAgo(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
-function countReplies(post: ContentResponse): number {
+function countReplies(post: ContentResponse, seen = new Set<ContentResponse>()): number {
+  if (seen.has(post)) return 0; // cycle guard
+  seen.add(post);
   let count = post.children?.length ?? 0;
   for (const child of post.children ?? []) {
-    count += countReplies(child);
+    count += countReplies(child, seen);
   }
   return count;
 }
