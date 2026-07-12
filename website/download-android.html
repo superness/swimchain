@@ -112,6 +112,8 @@
     border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; color: var(--foam);
   }
   .shot { margin: 16px 0 0; }
+  .shots { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 16px; }
+  .shots .shot { margin: 0; flex: 0 1 280px; }
   .shot img {
     display: block; max-width: 300px; width: 100%; height: auto;
     border: 1px solid var(--line); border-radius: 10px;
@@ -203,24 +205,35 @@
       <h3>Get past the Play Protect check</h3>
       <p>
         Google Play Protect will say <em>"App scan recommended — Play Protect hasn't
-        seen this app before."</em> You can tap <b>Scan app</b> to send it to Google
-        first (it installs once the scan comes back clean), or tap
-        <code>More details</code> → <b>Install without scanning</b>. This appears for
-        any app not distributed through the Play Store.
+        seen this app before."</em> Tap <b>Scan app</b> — Google checks it and comes
+        back with <em>"This app looks safe,"</em> then you tap <b>Install</b>.
+        (You can also skip the scan via <code>More details</code> →
+        <b>Install without scanning</b>.) This appears for any app not distributed
+        through the Play Store.
       </p>
-      <figure class="shot">
-        <img src="/img/android-play-protect.png" alt="Google Play Protect 'App scan recommended' dialog for Swimchain" loading="lazy">
-        <figcaption>Tap "Scan app," or "More details → Install without scanning."</figcaption>
-      </figure>
+      <div class="shots">
+        <figure class="shot">
+          <img src="/img/android-play-protect.png" alt="Google Play Protect 'App scan recommended' dialog for Swimchain" loading="lazy">
+          <figcaption>Tap "Scan app"…</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="/img/android-scan-safe.png" alt="Google Play Protect result: 'This app looks safe' for Swimchain, with an Install button" loading="lazy">
+          <figcaption>…Google confirms it's safe, then tap "Install."</figcaption>
+        </figure>
+      </div>
     </li>
 
     <li>
       <h3>Open the app &amp; allow notifications</h3>
       <p>
-        Launch Swimchain and <b>allow the notification permission</b>. The node runs as a
-        background service with a persistent notification while it syncs the chain — that's
-        how a full node stays alive on mobile.
+        Launch Swimchain and tap <b>Allow</b> on the notification prompt. The node runs
+        as a background service with a persistent notification while it syncs the chain —
+        that's how a full node stays alive on mobile.
       </p>
+      <figure class="shot">
+        <img src="/img/android-notifications.png" alt="Swimchain running (node synced, 1 peer) with the 'Allow Swimchain to send you notifications?' prompt" loading="lazy">
+        <figcaption>The app is already running a node behind the prompt — tap "Allow."</figcaption>
+      </figure>
     </li>
   </ol>
 
