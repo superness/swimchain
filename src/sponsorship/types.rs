@@ -1388,6 +1388,13 @@ impl Default for SponsorshipOfferType {
     }
 }
 
+/// Minimum PoW difficulty (leading zero BITS) an onboarding offer must require.
+/// 8 bits = 1 full leading zero byte. The Sponsor action's pow_work is counted in
+/// BYTES, so anything below a full byte rounds to pow_work=0 — which can't cross
+/// the block-formation threshold or advance cumulative_pow, stranding onboarding.
+/// Flooring offers here guarantees every claim carries pow_work >= 1 (also anti-spam).
+pub const MIN_OFFER_POW_DIFFICULTY_BITS: u8 = 8;
+
 /// Requirements a claimant must meet
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SponsorshipRequirements {

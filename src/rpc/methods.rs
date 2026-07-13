@@ -16345,6 +16345,20 @@ impl RpcMethods {
             );
         }
 
+        // Floor the PoW requirement so claimants can't onboard with a sub-byte
+        // (pow_work=0) proof. Below one full leading zero byte the Sponsor action
+        // carries no usable work and strands on a quiet chain; also anti-spam.
+        if params.min_pow_difficulty < crate::sponsorship::types::MIN_OFFER_POW_DIFFICULTY_BITS {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!(
+                    "min_pow_difficulty must be >= {} bits (onboarding requires real proof-of-work)",
+                    crate::sponsorship::types::MIN_OFFER_POW_DIFFICULTY_BITS
+                ),
+                id,
+            );
+        }
+
         // Parse offer type
         let offer_type = match params.offer_type.as_str() {
             "open" => SponsorshipOfferType::Open,

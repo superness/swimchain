@@ -437,6 +437,10 @@ fn offer_create(
 
     let now = current_time();
 
+    // Onboarding must carry real PoW: raise a sub-byte requirement up to the
+    // floor (the node rejects less), so claims yield pow_work >= 1.
+    let min_pow = min_pow.max(8);
+
     // Build signature message matching server's verification
     let sig_msg = PublicSponsorshipOffer::signature_message_for_creation(
         pubkey.as_bytes(),
@@ -498,13 +502,16 @@ fn invite(config: &CliConfig, slots: u8, expires_hours: u32) -> Result<()> {
     let now = current_time();
 
     // Build signature message matching server's verification
+    // Onboarding must carry real PoW (>= 1 leading zero byte). See
+    // MIN_OFFER_POW_DIFFICULTY_BITS — a sub-byte requirement yields pow_work=0.
+    let min_pow: u8 = 8;
     let sig_msg = PublicSponsorshipOffer::signature_message_for_creation(
         pubkey.as_bytes(),
         slots,
         &offer_type_enum,
         expires_days,
-        0,     // min_pow_difficulty
-        false, // application_required
+        min_pow, // min_pow_difficulty
+        false,   // application_required
         now,
     );
     let signature = sign(&keypair.private_key, &sig_msg);
@@ -520,7 +527,7 @@ fn invite(config: &CliConfig, slots: u8, expires_hours: u32) -> Result<()> {
             "slots": slots,
             "offer_type": "open",
             "expires_days": expires_days,
-            "min_pow_difficulty": 0,
+            "min_pow_difficulty": min_pow,
             "application_required": false,
             "auto_approve": true,
             "signature": sig_hex,
