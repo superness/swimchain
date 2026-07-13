@@ -349,7 +349,16 @@ async fn main() {
         eprintln!("║                                                                  ║");
         eprintln!("║  • PoW difficulty reduced to 10%                                 ║");
         eprintln!("║  • Level checks still enforced                                   ║");
-        eprintln!("║  • Magic bytes: TES3 (0x54455333)                                ║");
+        // Derive from the actual magic bytes so this never goes stale on a re-bump.
+        let m = NetworkMode::Testnet.magic_bytes();
+        eprintln!(
+            "║  • Magic bytes: {} (0x{:02x}{:02x}{:02x}{:02x})                                ║",
+            String::from_utf8_lossy(&m),
+            m[0],
+            m[1],
+            m[2],
+            m[3]
+        );
         eprintln!("╚══════════════════════════════════════════════════════════════════╝");
         eprintln!();
     }
