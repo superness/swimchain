@@ -215,6 +215,37 @@ Post action became available. The two propagation fixes (offer `created_at`, cla
   so an author's own just-posted content doesn't appear in their post count/list
   until confirmed — confusing given the post is visible in the feed/detail view.
 
+## F8 — FIXED (consensus): chain-relative leader eligibility made forks permanent · blocker
+- **Surface:** node consensus (`router.rs` block-leader validation); observed on S4.
+- **Symptom:** the phone was stuck at **height 30 while the network was at 40**,
+  status "100%", **rejecting every canonical block** as
+  `[BLOCK] REJECTED: … created by ineligible leader 16db7824` (the bot). LOCATOR
+  exchanges showed the phone shared a common ancestor with the canonical cluster
+  only at height **23–24** — it was on a minority fork and could not reorg.
+- **Root cause:** leader-eligibility validation adjusts difficulty from
+  `recent_timestamps`, but gathered them from **our own canonical chain**
+  (`get_root_hash_at_height`) instead of the **ancestors of the block being
+  validated**. A block extending a competing fork was judged with the wrong
+  chain's difficulty, so a valid leader on a heavier chain was rejected — and
+  since two nodes on different chains never agree on each other's block
+  eligibility, forks became **permanent** (deep-fork reorg trap). This is the
+  mechanism behind the long-standing "stuck on a minority fork" bug.
+- **Fix (`b50327af`):** walk back from the block's actual parent
+  (`prev_root_hash`) to collect the difficulty timestamps, matching what the
+  block's creator used. Compile-clean; only production `validate_block_leader`
+  call site. Verified empirically by the stuck mobile node reorging to canonical
+  after the fix (below).
+- **Related to F6:** the "ineligible leader" rejections and the fork churn there
+  are the same eligibility machinery; this fix addresses the reorg side.
+
+## F2 (recurring) — space names frequently unresolved across views · major
+- Confirmed on **Discover** (suggested spaces render `sp1qqqsqrttr…`,
+  `sp1qqqsqq6aa…`), the **post-detail** view (post shows space `010000c2…000000`),
+  and `list_spaces` on fresh nodes — while other spaces (e.g. `Driftwood-66284`)
+  do resolve. Name resolution is inconsistent, so users repeatedly see cryptic
+  raw `sp1…` ids instead of space names. Not just cosmetic — it makes spaces
+  unidentifiable in the primary discovery surface.
+
 ## F4 — Magic-mismatch error message hardcodes "expected SWIM" on all networks · minor
 - **Surface:** node log (`src/network/error.rs:11`).
 - **Observed:** `#[error("invalid magic bytes: expected SWIM, got {0:02x?}")]` always
