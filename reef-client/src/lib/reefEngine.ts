@@ -14,10 +14,13 @@
  * ── What makes it a game (not just painting) ───────────────────────────────────────
  * Two deterministic systems give the paint layer stakes, both folded from the log:
  *
- *   1. RESOURCE ECONOMY. Each player has a growth budget. Growing/contesting/tending
- *      cost budget; budget regenerates each epoch in proportion to your *living*
- *      territory. You cannot spam-paint — every placement is a real tradeoff (expand
- *      vs. tend vs. bank). Scarcity beyond raw PoW time.
+ *   1. RESOURCE ECONOMY. Each player has a growth budget. Growing and contesting cost
+ *      budget; budget regenerates each epoch in proportion to your *living* territory.
+ *      You cannot spam-paint — every placement is a real tradeoff. Tending is free but
+ *      RATIONED: you may refresh only TEND_CAP cells per tide, so a reef bigger than
+ *      your tending capacity cannot all be kept fresh — you must choose which coral to
+ *      save each epoch, and the rest fades. (Free-but-capped, rather than priced, so a
+ *      broke player can always still act and the epoch clock can never deadlock.)
  *
  *   2. SEASONS + SCORING. Time is divided into seasons (SEASON_EPOCHS epochs each).
  *      Every epoch, each player banks points equal to the vitality they kept alive.
@@ -76,13 +79,14 @@ export const CONTEST_DAMAGE = 2;
 export const CAPTURE_VITALITY = 1;
 
 // Resource economy
-export const START_BUDGET = 6;
+export const START_BUDGET = 8;
 export const MAX_BUDGET = 14;
 export const COST_GROW = 2; // seed or spread onto open water
-export const COST_TEND = 0; // refresh your own coral — always free, so the clock never deadlocks
 export const COST_CONTEST = 3; // grow onto an enemy border cell
 /** Per epoch, every tracked player regenerates this + floor(livingCells / 2). */
 export const REGEN_BASE = 2;
+/** Tending is free but rationed: at most this many refreshes per player per tide. */
+export const TEND_CAP = 4;
 
 // Seasons
 export const SEASON_EPOCHS = 5;
@@ -151,18 +155,20 @@ export interface ReefState {
   season: number; // current season index
   epochsLeftInSeason: number;
   budgets: Map<string, number>;
+  tendsUsed: Map<string, number>; // tends spent this epoch (resets each tide)
   seasonPoints: Map<string, number>; // current-season accumulator
   seasons: SeasonResult[]; // closed seasons, in order
   standings: Standing[]; // sorted leaderboard (season points desc, then live vitality)
   owners: string[]; // distinct current cell owners (for the grid legend)
 }
 
-/** What clicking a cell would do for a given player, its cost, and whether affordable. */
+/** What clicking a cell would do for a given player, and whether it's currently possible. */
 export interface Intent {
   op: Op;
   kind: MoveKind;
-  cost: number;
-  affordable: boolean;
+  cost: number; // budget cost (0 for tend — tend is capped, not priced)
+  affordable: boolean; // enough budget (grow/contest) or tending capacity left (tend)
+  limit: 'budget' | 'capacity'; // which resource gates this move
 }
 
 // ── Geometry helpers ───────────────────────────────────────────────────────────────
@@ -203,7 +209,7 @@ function costOf(kind: MoveKind): number {
     case 'spread':
       return COST_GROW;
     case 'tend':
-      return COST_TEND;
+      return 0; // tend is capped, not priced
     case 'contest':
       return COST_CONTEST;
   }
@@ -226,7 +232,7 @@ function classify(
   const cell = cells.get(cellKey(x, y));
 
   if (op === 'tend') {
-    if (cell && isOwner(cell.owner)) return { kind: 'tend', cost: COST_TEND };
+    if (cell && isOwner(cell.owner)) return { kind: 'tend', cost: 0 };
     return null;
   }
   // op === 'grow'
@@ -235,7 +241,7 @@ function classify(
     if (hasAdjacentOwnedBy(cells, isOwner, x, y)) return { kind: 'spread', cost: costOf('spread') };
     return null;
   }
-  if (isOwner(cell.owner)) return { kind: 'tend', cost: COST_TEND }; // grow on your own = tend
+  if (isOwner(cell.owner)) return { kind: 'tend', cost: 0 }; // grow on your own = tend
   if (hasAdjacentOwnedBy(cells, isOwner, x, y)) return { kind: 'contest', cost: COST_CONTEST };
   return null;
 }
@@ -307,6 +313,7 @@ interface ReplyLike {
 export function foldReef(header: ReefHeader, replies: ReplyLike[]): ReefState {
   const cells = new Map<string, Cell>();
   const budgets = new Map<string, number>();
+  let tendsUsed = new Map<string, number>(); // resets every tide
   let seasonPoints = new Map<string, number>();
   const seasons: SeasonResult[] = [];
   const moves: AppliedMove[] = [];
@@ -327,17 +334,28 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[]): ReefState {
     const cls = classify(cells, header, isAuthor, parsed.op, parsed.x, parsed.y);
     let ok = false;
     if (cls) {
-      const have = budgets.get(author)!;
-      if (have >= cls.cost) {
-        mutate(cells, author, cls.kind, parsed.x, parsed.y);
-        budgets.set(author, have - cls.cost);
-        ok = true;
+      if (cls.kind === 'tend') {
+        // Free but rationed: only TEND_CAP refreshes per player per tide.
+        const used = tendsUsed.get(author) ?? 0;
+        if (used < TEND_CAP) {
+          mutate(cells, author, 'tend', parsed.x, parsed.y);
+          tendsUsed.set(author, used + 1);
+          ok = true;
+        }
+      } else {
+        const have = budgets.get(author)!;
+        if (have >= cls.cost) {
+          mutate(cells, author, cls.kind, parsed.x, parsed.y);
+          budgets.set(author, have - cls.cost);
+          ok = true;
+        }
       }
     }
     moves.push({ ...parsed, author, contentId: r.content_id, ok });
 
     attempts += 1;
     if (attempts % EPOCH_MOVES === 0) {
+      tendsUsed = new Map(); // the tide turns — tending capacity refreshes
       // 1) decay
       epochTick(cells);
       // 2) regen + 3) score, both off the post-decay living map
@@ -389,6 +407,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[]): ReefState {
     season: Math.floor(epoch / SEASON_EPOCHS),
     epochsLeftInSeason: SEASON_EPOCHS - (epoch % SEASON_EPOCHS),
     budgets,
+    tendsUsed,
     seasonPoints,
     seasons,
     standings,
@@ -411,9 +430,15 @@ export function myBudget(state: ReefState, myPubkeyHex: string, myAddress: strin
   return state.budgets.get(myPubkeyHex) ?? state.budgets.get(myAddress) ?? START_BUDGET;
 }
 
+/** How many tends I have left this tide (matching either author_id form). */
+export function myTendsLeft(state: ReefState, myPubkeyHex: string, myAddress: string): number {
+  const used = state.tendsUsed.get(myPubkeyHex) ?? state.tendsUsed.get(myAddress) ?? 0;
+  return Math.max(0, TEND_CAP - used);
+}
+
 /**
  * The intent for a click, resolving the op the player most likely wants (grow unless
- * the cell is already theirs, in which case tend), with cost + affordability.
+ * the cell is already theirs, in which case tend), with the resource that gates it.
  */
 export function intentAt(
   state: ReefState,
@@ -427,8 +452,11 @@ export function intentAt(
   const op: Op = cell && isMe(cell.owner) ? 'tend' : 'grow';
   const cls = classify(state.cells, state.header, isMe, op, x, y);
   if (!cls) return null;
+  if (cls.kind === 'tend') {
+    return { op, kind: 'tend', cost: 0, affordable: myTendsLeft(state, myPubkeyHex, myAddress) > 0, limit: 'capacity' };
+  }
   const budget = myBudget(state, myPubkeyHex, myAddress);
-  return { op, kind: cls.kind, cost: cls.cost, affordable: budget >= cls.cost };
+  return { op, kind: cls.kind, cost: cls.cost, affordable: budget >= cls.cost, limit: 'budget' };
 }
 
 // ── RPC: PoW-mine + canonically sign, then submit (mirrors chess-client) ─────────────
@@ -588,15 +616,25 @@ export function applyMoveOptimistic(
   const cells = new Map<string, Cell>();
   for (const [k, c] of state.cells) cells.set(k, { ...c });
   const budgets = new Map(state.budgets);
+  const tendsUsed = new Map(state.tendsUsed);
   const isAuthor = (owner: string) => owner === authorPubkeyHex;
   const cls = classify(cells, state.header, isAuthor, op, x, y);
   let ok = false;
   if (cls) {
-    const have = budgets.get(authorPubkeyHex) ?? START_BUDGET;
-    if (have >= cls.cost) {
-      mutate(cells, authorPubkeyHex, cls.kind, x, y);
-      budgets.set(authorPubkeyHex, have - cls.cost);
-      ok = true;
+    if (cls.kind === 'tend') {
+      const used = tendsUsed.get(authorPubkeyHex) ?? 0;
+      if (used < TEND_CAP) {
+        mutate(cells, authorPubkeyHex, 'tend', x, y);
+        tendsUsed.set(authorPubkeyHex, used + 1);
+        ok = true;
+      }
+    } else {
+      const have = budgets.get(authorPubkeyHex) ?? START_BUDGET;
+      if (have >= cls.cost) {
+        mutate(cells, authorPubkeyHex, cls.kind, x, y);
+        budgets.set(authorPubkeyHex, have - cls.cost);
+        ok = true;
+      }
     }
   }
   const living = livingByOwner(cells);
@@ -604,6 +642,7 @@ export function applyMoveOptimistic(
     ...state,
     cells,
     budgets,
+    tendsUsed,
     owners: [...living.keys()],
     moves: [
       ...state.moves,

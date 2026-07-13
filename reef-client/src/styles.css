@@ -118,6 +118,10 @@ h2 { font-size: 18px; margin: 0; }
 .budget .pips { display: inline-flex; gap: 3px; }
 .budget .bpip { width: 10px; height: 14px; border-radius: 2px; background: var(--water-2); border: 1px solid var(--line); }
 .budget .bpip.on { background: var(--shallow); border-color: var(--shallow); }
+.budget .tends { display: inline-flex; align-items: center; gap: 6px; }
+.budget .tends .pips { display: inline-flex; gap: 3px; }
+.budget .tpip { width: 10px; height: 14px; border-radius: 2px; background: var(--water-2); border: 1px solid var(--line); }
+.budget .tpip.on { background: var(--foam); border-color: var(--foam); }
 .budget .costs { width: 100%; text-align: center; }
 
 .board-scores { max-width: 380px; margin: 0 auto; }

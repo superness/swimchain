@@ -16,10 +16,11 @@ import {
   applyMoveOptimistic,
   ownerHue,
   myBudget,
+  myTendsLeft,
   MAX_BUDGET,
   COST_GROW,
-  COST_TEND,
   COST_CONTEST,
+  TEND_CAP,
   type Intent,
   type ReefState,
   type RegionSummary,
@@ -167,6 +168,7 @@ export function App() {
   }
 
   const budget = state ? myBudget(state, publicKeyHex!, address!) : 0;
+  const tendsLeft = state ? myTendsLeft(state, publicKeyHex!, address!) : TEND_CAP;
   const isMine = (o: string) => o === publicKeyHex || o === address;
 
   return (
@@ -232,7 +234,16 @@ export function App() {
                   ))}
                 </span>
                 <span className="fine"><strong>{budget}</strong>/{MAX_BUDGET}</span>
-                <span className="fine costs">grow −{COST_GROW} · tend {COST_TEND === 0 ? 'free' : `−${COST_TEND}`} · contest −{COST_CONTEST} · regen each epoch</span>
+                <span className="tends fine">
+                  tends this tide{' '}
+                  <span className="pips">
+                    {Array.from({ length: TEND_CAP }, (_, i) => (
+                      <span key={i} className={`tpip${i < tendsLeft ? ' on' : ''}`} />
+                    ))}
+                  </span>
+                  <strong> {tendsLeft}</strong>/{TEND_CAP}
+                </span>
+                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free but only {TEND_CAP}/tide · budget regens each epoch</span>
               </div>
 
               <div className="board-scores">

@@ -66,10 +66,17 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, onAct }: Props) {
         const base = cell
           ? `(${x},${y}) ${isMe(cell.owner) ? 'yours' : 'coral'} · vitality ${cell.vitality}/${MAX_VITALITY}${cell.vitality <= 1 ? ' — recedes next tide!' : ''}`
           : `(${x},${y}) open water`;
-        const price = intent ? (intent.cost === 0 ? 'free' : `−${intent.cost}`) : '';
-        const title = intent
-          ? `${base} — ${intent.kind} (${price}${intent.affordable ? '' : ', not enough budget'})`
-          : base;
+        let note = '';
+        if (intent) {
+          const price = intent.cost === 0 ? 'free' : `−${intent.cost}`;
+          const blocked = intent.affordable
+            ? ''
+            : intent.limit === 'capacity'
+              ? ', no tending left this tide'
+              : ', not enough budget';
+          note = ` — ${intent.kind} (${price}${blocked})`;
+        }
+        const title = `${base}${note}`;
 
         return (
           <button
