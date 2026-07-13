@@ -4,6 +4,28 @@ Running log. Companion to `2026-07-12-swimchain-qa-test-plan.md`. Severity:
 blocker / major / minor / polish. Surfaces: S1 local RPC, S2 seed CLI, S3 PC feed
 UI (swim-auto), S4 mobile UI.
 
+## Executive summary
+
+Cross-surface QA on TES4 surfaced 3 fixed bugs that were breaking core flows,
+plus open UX/robustness items. Fixes are committed to `main` with tests.
+
+| ID | Severity | Area | Status |
+|----|----------|------|--------|
+| **F8** | blocker | Consensus: chain-relative leader eligibility made minority forks permanent (nodes stuck, "100% synced") | **FIXED** (chain-anchored difficulty) · verified (phone reorged 30→42) · deployed phone+seed+bot (local pending) |
+| **F5** | major | Sponsorship offer + claim never propagated (two `created_at`/`claimed_at` = server-time-vs-signed-timestamp bugs) → faucet onboarding impossible | **FIXED** both paths + regression tests · verified end-to-end (qa-user + phone sponsored on-chain) |
+| **F7** | major | Claims broadcast-once, no relay/sync → claim silently never reaches sponsor | **FIXED** (claimant re-broadcast until sponsored) · verified on device |
+| **F6** | major | Block-formation stall (eligible leader idle at met threshold until restart) + ineligible-leader fork churn | Reorg side fixed by F8; **formation stall still OPEN** |
+| **F2/V3** | major | Space names frequently unresolved — raw `sp1…` ids in Discover, space header, post detail, `list_spaces` | **OPEN** |
+| **F0** | major | Phone ran a stale TES3 binary (magic-isolated) — "phone stuck" red herring | **FIXED** (TES4 rebuild) |
+| **F4** | minor | Magic-mismatch error always says "expected SWIM" | **OPEN** |
+| **F3** | minor | swim-auto mangles Windows `\` data-dir (harness) | **OPEN** |
+| **V1** | polish | Mobile profile header = harsh full-width lime band | **OPEN** |
+| **V2** | minor | PC space view uses light cards on the dark theme | **OPEN** |
+
+Also captured: sponsorship UI flow (B1–B3) PASS; a propagation/timing profile
+(offers propagate in seconds; mempool content is author-visible only until
+block-confirmed; confirmation latency dominated by the F6 stall).
+
 ## Environment as tested
 - Magic **TES4**. Canonical cluster (agree height 6, tip `b42649f5`, cum_pow 4105):
   - Seed `167.71.241.252` (`f95733c9`), Bot `165.22.47.107` (`16db7824`),
