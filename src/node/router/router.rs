@@ -2453,25 +2453,38 @@ impl MessageRouter {
                 // Just log the warning and continue to store the content block
             }
 
-            // CRITICAL: Check for duplicate actions before storing
-            // Reject blocks containing actions that were already finalized in prior blocks
+            // CRITICAL: Check for duplicate actions before storing. Reject only a
+            // genuine cross-block re-inclusion (an action finalized at a DIFFERENT
+            // height). Actions finalized at THIS block's own height are a
+            // header-first backfill of this block's content — the header was
+            // adopted (marking its actions finalized) before the content arrived;
+            // rejecting it would drop the block's content and its side effects
+            // (sponsorship, reactions) forever.
             match chain_store.check_content_block_for_duplicates(&content_block) {
-                Ok(duplicates) if !duplicates.is_empty() => {
+                Ok(duplicates)
+                    if duplicates.iter().any(|(_, h)| *h != block_height) =>
+                {
+                    let elsewhere: Vec<_> = duplicates
+                        .iter()
+                        .filter(|(_, h)| *h != block_height)
+                        .map(|(idx, h)| format!("action[{}] in block {}", idx, h))
+                        .collect();
                     warn!(
-                        "[BLOCK] REJECTED: Content block contains {} already-finalized action(s): {:?}",
-                        duplicates.len(),
-                        duplicates.iter().map(|(idx, h)| format!("action[{}] in block {}", idx, h)).collect::<Vec<_>>()
+                        "[BLOCK] REJECTED: Content block re-includes {} action(s) finalized elsewhere: {:?}",
+                        elsewhere.len(),
+                        elsewhere
                     );
                     return Err(RouteError::InvalidData(format!(
-                        "block contains {} already-finalized actions",
-                        duplicates.len()
+                        "block re-includes {} already-finalized actions",
+                        elsewhere.len()
                     )));
                 }
                 Err(e) => {
                     warn!("[BLOCK] Failed to check for duplicate actions: {}", e);
                     // Continue anyway - don't block on storage errors
                 }
-                Ok(_) => {} // No duplicates, proceed
+                // No duplicates, or all at this block's own height (backfill) — proceed.
+                Ok(_) => {}
             }
 
             // Branch-aware write: registers the block with the branch indexes
@@ -3901,12 +3914,24 @@ impl MessageRouter {
                     }
                 }
 
-                // Check for duplicate actions before storing
+                // Check for duplicate actions before storing. Only a genuine
+                // cross-block re-inclusion (an action finalized at a DIFFERENT
+                // height) is a duplicate to skip. When the actions are finalized at
+                // THIS block's height it's a header-first backfill of the block's
+                // OWN content — the header was adopted (marking its actions
+                // finalized) before the content arrived. Skipping it here left the
+                // content unstored and its side effects (sponsorship application,
+                // reactions) never ran, so a synced sponsor block never sponsored
+                // the identity on receivers. Process it instead; the side effects
+                // are idempotent (apply_sponsorship checks existence first).
                 match chain_store.check_content_block_for_duplicates(content_block) {
-                    Ok(duplicates) if !duplicates.is_empty() => {
+                    Ok(duplicates)
+                        if duplicates.iter().any(|(_, h)| *h != block_height) =>
+                    {
+                        let other = duplicates.iter().filter(|(_, h)| *h != block_height).count();
                         warn!(
-                            "[BLOCK] Skipping content block with {} already-finalized action(s)",
-                            duplicates.len()
+                            "[BLOCK] Skipping content block: {} action(s) already finalized in another block",
+                            other
                         );
                         continue;
                     }
@@ -3914,7 +3939,9 @@ impl MessageRouter {
                         warn!("[BLOCK] Failed to check for duplicate actions: {}", e);
                         // Continue anyway
                     }
-                    Ok(_) => {} // No duplicates
+                    // No duplicates, or all finalized at this block's own height
+                    // (backfill) — fall through and store so side effects apply.
+                    Ok(_) => {}
                 }
 
                 // Branch-aware write: size tracking + 50MB fracture (SPEC_08 §5)
