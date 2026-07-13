@@ -1811,7 +1811,23 @@ impl ChainStore {
     /// Returns error if database read fails.
     pub fn is_heavier_than_best_tip(&self, block: &RootBlock) -> Result<bool, StorageError> {
         match self.get_best_tip_block()? {
-            Some(tip) => Ok(block.cumulative_pow > tip.cumulative_pow),
+            Some(tip) => {
+                // A block that DIRECTLY EXTENDS the current tip advances the
+                // canonical chain even at equal cumulative_pow. Without this a
+                // valid zero-PoW block — a timeout-flush block carrying only
+                // low-PoW onboarding actions (a pow=0 Sponsor/claim) — is stored
+                // but never adopted, because `cumulative_pow += 0` leaves it not
+                // strictly heavier than its own parent, so its actions never
+                // finalize. Competing forks (same height, or a different branch)
+                // still require strictly-heavier work; same-height ties are broken
+                // by the router's lower-hash rule.
+                if block.height == tip.height.saturating_add(1)
+                    && block.prev_root_hash == tip.hash()
+                {
+                    return Ok(true);
+                }
+                Ok(block.cumulative_pow > tip.cumulative_pow)
+            }
             None => Ok(true), // No tip yet, any block is heavier
         }
     }
@@ -3827,6 +3843,55 @@ mod tests {
     // the stuck-at-height-12 bug: previously update_best_tip_if_heavier only
     // reindexed the incoming block's own height, leaving the ancestry pointing
     // at the losing fork so the reorg never took.
+    #[test]
+    fn zero_pow_block_extending_tip_is_adopted() {
+        // A timeout-flush block carries only low-PoW onboarding actions, so it can
+        // add 0 to cumulative_pow. It must still advance the canonical chain when it
+        // directly extends the tip, or the onboarding action it carries never
+        // finalizes (the block is stored but ignored under strict most-work).
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let mut chain = build_chain([0u8; 32], 0, 3, 10, 0x11); // heights 0..=2, pow>0
+        for b in &chain {
+            store.put_root_block_with_fork_resolution(b).unwrap();
+        }
+        assert_eq!(store.get_latest_height().unwrap(), Some(2));
+        let tip = chain.last().unwrap();
+
+        // A zero-cumulative-gain block extending the tip: same cumulative_pow as its
+        // parent (pow contribution 0), height + 1.
+        let mut flush = create_test_root_block(3, tip.hash());
+        flush.cumulative_pow = tip.cumulative_pow; // +0
+        flush.total_pow = 0;
+
+        assert!(
+            store.is_heavier_than_best_tip(&flush).unwrap(),
+            "a zero-pow block extending the tip must be adopted"
+        );
+        let (_, is_new_tip) = store.put_root_block_with_fork_resolution(&flush).unwrap();
+        assert!(is_new_tip, "zero-pow tip extension becomes canonical");
+        assert_eq!(store.get_latest_height().unwrap(), Some(3));
+        assert_eq!(
+            store.get_root_hash_at_height(3).unwrap(),
+            Some(flush.hash())
+        );
+
+        // But a zero-pow block that does NOT extend the tip (a competing fork at an
+        // already-filled height, equal work) must NOT win by this rule.
+        let mut competitor = create_test_root_block(3, tip.hash());
+        competitor.cumulative_pow = tip.cumulative_pow;
+        competitor.total_pow = 0;
+        competitor.block_creator = [0x99; 32]; // different hash, not the current tip's child-of-record
+        // current tip is now `flush` at height 3; competitor.height (3) != tip.height+1 (4)
+        assert!(
+            !store.is_heavier_than_best_tip(&competitor).unwrap(),
+            "equal-work non-extending block must not be adopted by the extension rule"
+        );
+
+        let _ = chain.pop();
+    }
+
     #[test]
     fn test_deep_reorg_below_tip_adopts_heavier_chain() {
         let dir = tempdir().unwrap();
