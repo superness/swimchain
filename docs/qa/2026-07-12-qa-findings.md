@@ -146,6 +146,34 @@ Post action became available. The two propagation fixes (offer `created_at`, cla
 - **Impact:** even after the faucet approves, a new user's on-chain sponsorship
   can be delayed indefinitely if no eligible leader forms the block.
 
+## F7 — Sponsorship claims propagate by a single broadcast with no relay or sync · major
+- **Surface:** node (`router.rs:7354` `handle_sponsorship_claim` — "Stores claims
+  for local offers. Does NOT relay claims").
+- **Observed:** on the fixed phone binary, the phone claimed the faucet offer and
+  logged "Broadcast claim … to **3** peers" — but the phone has **4** peers, and
+  the bot (the sponsor) never registered the claim (`pending_claims=0` for 96s+,
+  faucet `approved=0`). qa-user's earlier claim succeeded only because its
+  broadcast happened to reach the bot directly.
+- **Root cause:** claims are delivered by a one-shot broadcast to current direct
+  peers. Receiving nodes store a claim **only if they are the sponsor**, and do
+  **not relay** it; there is also no claim pull-sync (unlike offers, which have
+  `SPONSORSHIP-SYNC` + TTL relay). So if the sponsor is not among the peers the
+  single broadcast reaches, the claim is silently lost and onboarding stalls with
+  no error to the user.
+- **Impact:** onboarding is non-deterministic — a new user's claim reaches the
+  faucet only by luck of broadcast fan-out. Behind NAT / with few peers this fails
+  often. The offer `created_at` and claim `claimed_at` fixes are necessary but not
+  sufficient for reliable onboarding without claim relay/sync.
+- **Suggested fix:** relay claims with a TTL (mirroring offers), or have the
+  claimant periodically re-broadcast a still-pending claim until approved, or add a
+  claim pull step to `SPONSORSHIP-SYNC`. (Privacy note: claims carry the claimant
+  pubkey; wide relay is acceptable since the claim is already public intent, but
+  worth a design decision.)
+- **Verification status:** faucet fix proven end-to-end via qa-user (well-connected
+  node whose broadcast reached the bot). Mobile offer propagation confirmed (phone
+  sees + can claim the faucet offer on the fixed binary); mobile claim delivery is
+  blocked by F7, not by the timestamp bugs.
+
 ## F4 — Magic-mismatch error message hardcodes "expected SWIM" on all networks · minor
 - **Surface:** node log (`src/network/error.rs:11`).
 - **Observed:** `#[error("invalid magic bytes: expected SWIM, got {0:02x?}")]` always
