@@ -15,7 +15,11 @@ import {
   submitReefMove,
   applyMoveOptimistic,
   ownerHue,
-  EPOCH_MOVES,
+  myBudget,
+  MAX_BUDGET,
+  COST_GROW,
+  COST_TEND,
+  COST_CONTEST,
   type Intent,
   type ReefState,
   type RegionSummary,
@@ -162,10 +166,8 @@ export function App() {
     );
   }
 
-  const myCells = state
-    ? [...state.cells.values()].filter((c) => c.owner === publicKeyHex || c.owner === address).length
-    : 0;
-  const movesToEpoch = state ? EPOCH_MOVES - (state.moves.filter((m) => m.ok).length % EPOCH_MOVES) : EPOCH_MOVES;
+  const budget = state ? myBudget(state, publicKeyHex!, address!) : 0;
+  const isMine = (o: string) => o === publicKeyHex || o === address;
 
   return (
     <div className="app">
@@ -217,24 +219,49 @@ export function App() {
               onAct={onAct}
             />
             <div className="status">
-              <div className="legend">
-                {state.owners.length === 0 && <span className="fine">Open water. Seed your first coral anywhere.</span>}
-                {state.owners.map((o) => {
-                  const mine = o === publicKeyHex || o === address;
-                  return (
-                    <span key={o} className="legend-item">
-                      <span className="swatch" style={{ background: `hsl(${ownerHue(o)} 68% 52%)` }} />
-                      <code>{o.slice(0, 8)}…</code>{mine ? ' (you)' : ''}
+              <div className="season">
+                <strong>Season {state.season}</strong> · {state.epochsLeftInSeason} epoch{state.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
+                <span className="fine"> · epoch {state.epoch}</span>
+              </div>
+
+              <div className="budget">
+                <span className="fine">budget</span>
+                <span className="pips">
+                  {Array.from({ length: MAX_BUDGET }, (_, i) => (
+                    <span key={i} className={`bpip${i < budget ? ' on' : ''}`} />
+                  ))}
+                </span>
+                <span className="fine"><strong>{budget}</strong>/{MAX_BUDGET}</span>
+                <span className="fine costs">grow −{COST_GROW} · tend −{COST_TEND} · contest −{COST_CONTEST} · regen each epoch</span>
+              </div>
+
+              <div className="board-scores">
+                {state.standings.length === 0 && <span className="fine">Open water. Seed your first coral anywhere — it's free-form until budgets bite.</span>}
+                {state.standings.map((s, i) => (
+                  <div key={s.owner} className={`row${isMine(s.owner) ? ' me' : ''}`}>
+                    <span className="rank">{i + 1}</span>
+                    <span className="swatch" style={{ background: `hsl(${ownerHue(s.owner)} 68% 52%)` }} />
+                    <code>{s.owner.slice(0, 8)}…</code>
+                    {isMine(s.owner) && <span className="you">you</span>}
+                    <span className="pts"><strong>{s.seasonPoints}</strong> pts</span>
+                    <span className="terr fine">{s.territory} cells</span>
+                  </div>
+                ))}
+              </div>
+
+              {state.seasons.length > 0 && (
+                <div className="past fine">
+                  {state.seasons.slice(-3).map((sr) => (
+                    <span key={sr.index} className="past-item">
+                      Season {sr.index}: {sr.winner ? <code>{sr.winner.slice(0, 8)}…</code> : 'nobody'} won ({sr.points})
                     </span>
-                  );
-                })}
-              </div>
-              <div className="fine">
-                Epoch {state.epoch} · your coral: {myCells} · {movesToEpoch} move{movesToEpoch === 1 ? '' : 's'} until the tide (decay tick)
-              </div>
-              <div className="fine">
-                Click open water next to your coral to <strong>grow</strong>, your own coral to <strong>tend</strong> it,
-                or an enemy border cell to <strong>contest</strong>. Every move is signed by your key and mined before it hits the chain.
+                  ))}
+                </div>
+              )}
+
+              <div className="fine hint">
+                Click open water by your coral to <strong>grow</strong>, your own to <strong>tend</strong>, an enemy border to <strong>contest</strong>.
+                Score is the vitality you keep alive each epoch — sprawl you can't tend just feeds the tide. Every move is signed and mined onto the chain.
               </div>
             </div>
           </section>

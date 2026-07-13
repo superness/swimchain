@@ -11,21 +11,35 @@
  * Because the node enforces per-action signatures, each move is provably its author's,
  * so the coral you grew is provably yours; a relay cannot forge growth for you.
  *
- * ── Phase 1 (this file) ──────────────────────────────────────────────────────────
- *  - A single region = one grid.
- *  - A move = a tiny reply body: "<op> <x> <y> …" where op ∈ { grow, tend }.
- *  - Epochs are keyed to the **move sequence**: every EPOCH_MOVES applied moves ticks
- *    one epoch of decay. This is fully deterministic with ZERO node changes — no need
- *    to read per-action block heights. Abandoned coral loses vitality and recedes to
- *    open water: decay as the storage governor, made diegetic.
+ * ── What makes it a game (not just painting) ───────────────────────────────────────
+ * Two deterministic systems give the paint layer stakes, both folded from the log:
+ *
+ *   1. RESOURCE ECONOMY. Each player has a growth budget. Growing/contesting/tending
+ *      cost budget; budget regenerates each epoch in proportion to your *living*
+ *      territory. You cannot spam-paint — every placement is a real tradeoff (expand
+ *      vs. tend vs. bank). Scarcity beyond raw PoW time.
+ *
+ *   2. SEASONS + SCORING. Time is divided into seasons (SEASON_EPOCHS epochs each).
+ *      Every epoch, each player banks points equal to the vitality they kept alive.
+ *      Sustained territory wins, not a single land-grab moment. At season's end the
+ *      highest tally is recorded as that season's winner and the tally resets.
+ *
+ * Both are computed inside the fold, so the score/leaderboard/season winner every
+ * client shows is derived identically — the chain is the scorekeeper.
+ *
+ * ── Epoch pacing ───────────────────────────────────────────────────────────────────
+ * Phase 1 keys epochs to the *move sequence*: every EPOCH_MOVES **well-formed** moves
+ * (any parseable grow/tend, whether or not it was affordable/legal) ticks one epoch —
+ * decay, then budget regen, then scoring. Pacing is decoupled from budget on purpose,
+ * so budgets can never deadlock (as long as anyone keeps playing, epochs advance and
+ * everyone regenerates). Fully deterministic with ZERO node changes.
  *
  * ── Phase 2 (later; see docs/GAMES_ON_SWIMCHAIN.md) ─────────────────────────────────
- *  - Rekey epochs to block height; add the confirmed/tentative reorg frontier.
- *  - Spaces-as-shards: many regions, cross-border contest, seasonal scoring.
+ * Rekey epochs to block height; add the confirmed/tentative reorg frontier; spaces-as-
+ * shards across many regions.
  *
- * Determinism rules honored here: integer-only state, no floats, no wall-clock, no
- * iteration-order surprises (moves are sorted by (created_at, content_id), and cell
- * scans use a fixed key order only where order is observable).
+ * Determinism rules honored here: integer-only state, no floats, no wall-clock, moves
+ * sorted by (created_at, content_id), deterministic tie-breaks by id string.
  */
 
 import {
@@ -54,12 +68,24 @@ export const GRID_W = 12;
 export const GRID_H = 12;
 /** A freshly grown or tended cell starts here and loses 1 per epoch. */
 export const MAX_VITALITY = 6;
-/** Every this-many *applied* moves, the world ticks one epoch of decay. */
+/** Every this-many *well-formed* moves, the world ticks one epoch. */
 export const EPOCH_MOVES = 8;
 /** Damage a contesting `grow` deals to an enemy cell. */
 export const CONTEST_DAMAGE = 2;
 /** Vitality a just-captured cell has (a taken border cell is weak). */
 export const CAPTURE_VITALITY = 1;
+
+// Resource economy
+export const START_BUDGET = 6;
+export const MAX_BUDGET = 14;
+export const COST_GROW = 2; // seed or spread onto open water
+export const COST_TEND = 1; // refresh your own coral
+export const COST_CONTEST = 3; // grow onto an enemy border cell
+/** Per epoch, every tracked player regenerates this + floor(livingCells / 2). */
+export const REGEN_BASE = 2;
+
+// Seasons
+export const SEASON_EPOCHS = 5;
 
 export type SignFn = (
   message: Uint8Array
@@ -88,6 +114,7 @@ export interface RegionSummary {
 }
 
 export type Op = 'grow' | 'tend';
+export type MoveKind = 'seed' | 'spread' | 'tend' | 'contest';
 
 export interface Cell {
   owner: string; // author_id (pubkey hex) of whoever holds the cell
@@ -100,7 +127,20 @@ export interface AppliedMove {
   y: number;
   author: string;
   contentId: string;
-  ok: boolean; // did it change the world? (illegal moves are recorded but inert)
+  ok: boolean; // did it change the world? (illegal / unaffordable moves are inert)
+}
+
+export interface SeasonResult {
+  index: number;
+  winner: string | null;
+  points: number;
+}
+
+export interface Standing {
+  owner: string;
+  seasonPoints: number; // banked this season
+  territory: number; // living cells right now
+  vitality: number; // Σ vitality of living cells right now (live score)
 }
 
 export interface ReefState {
@@ -108,14 +148,22 @@ export interface ReefState {
   cells: Map<string, Cell>;
   moves: AppliedMove[];
   epoch: number;
-  owners: string[]; // distinct current cell owners (for the legend)
+  season: number; // current season index
+  epochsLeftInSeason: number;
+  budgets: Map<string, number>;
+  seasonPoints: Map<string, number>; // current-season accumulator
+  seasons: SeasonResult[]; // closed seasons, in order
+  standings: Standing[]; // sorted leaderboard (season points desc, then live vitality)
+  owners: string[]; // distinct current cell owners (for the grid legend)
 }
 
-/** What clicking a cell would do for a given player, and whether it's allowed. */
-export type Intent =
-  | { op: 'grow'; kind: 'seed' | 'spread' | 'contest' }
-  | { op: 'tend'; kind: 'tend' }
-  | null;
+/** What clicking a cell would do for a given player, its cost, and whether affordable. */
+export interface Intent {
+  op: Op;
+  kind: MoveKind;
+  cost: number;
+  affordable: boolean;
+}
 
 // ── Geometry helpers ───────────────────────────────────────────────────────────────
 export const cellKey = (x: number, y: number) => `${x},${y}`;
@@ -131,7 +179,6 @@ const ORTHO: ReadonlyArray<readonly [number, number]> = [
   [1, 0],
 ];
 
-/** Does `author` own a cell orthogonally adjacent to (x,y)? */
 function hasAdjacentOwnedBy(
   cells: Map<string, Cell>,
   isOwner: (owner: string) => boolean,
@@ -150,59 +197,69 @@ function ownsAnyCell(cells: Map<string, Cell>, isOwner: (owner: string) => boole
   return false;
 }
 
-// ── The pure engine: apply one move; tick an epoch; fold the whole chain ────────────
+function costOf(kind: MoveKind): number {
+  switch (kind) {
+    case 'seed':
+    case 'spread':
+      return COST_GROW;
+    case 'tend':
+      return COST_TEND;
+    case 'contest':
+      return COST_CONTEST;
+  }
+}
 
 /**
- * Apply a single parsed move authored by `author`. Mutates `cells`. Returns whether
- * the move was legal (changed the world). Legality is identical across all clients, so
- * every replica derives the same grid — no referee.
+ * Classify a move by board position alone (ignoring budget): what kind it is and what
+ * it costs, or null if it's illegal where it's aimed. Shared by the fold and the UI so
+ * legality is identical everywhere. `isOwner` compares a cell owner to "the actor".
  */
-function applyMove(
+function classify(
   cells: Map<string, Cell>,
   header: ReefHeader,
-  author: string,
+  isOwner: (owner: string) => boolean,
   op: Op,
   x: number,
   y: number
-): boolean {
-  if (!inBounds(x, y, header.w, header.h)) return false;
-  const k = cellKey(x, y);
-  const cell = cells.get(k);
-  const isAuthor = (owner: string) => owner === author;
+): { kind: MoveKind; cost: number } | null {
+  if (!inBounds(x, y, header.w, header.h)) return null;
+  const cell = cells.get(cellKey(x, y));
 
   if (op === 'tend') {
-    // You can always refresh a cell you already hold.
-    if (cell && cell.owner === author) {
-      cell.vitality = MAX_VITALITY;
-      return true;
-    }
-    return false;
+    if (cell && isOwner(cell.owner)) return { kind: 'tend', cost: COST_TEND };
+    return null;
   }
-
   // op === 'grow'
   if (!cell) {
-    // Plant on open water: your first cell may seed anywhere; after that you must
-    // grow outward from your own coral (adjacency) — territory spreads, not teleports.
-    if (!ownsAnyCell(cells, isAuthor) || hasAdjacentOwnedBy(cells, isAuthor, x, y)) {
-      cells.set(k, { owner: author, vitality: MAX_VITALITY });
-      return true;
-    }
-    return false;
+    if (!ownsAnyCell(cells, isOwner)) return { kind: 'seed', cost: costOf('seed') };
+    if (hasAdjacentOwnedBy(cells, isOwner, x, y)) return { kind: 'spread', cost: costOf('spread') };
+    return null;
   }
-  if (cell.owner === author) {
-    cell.vitality = MAX_VITALITY;
-    return true;
+  if (isOwner(cell.owner)) return { kind: 'tend', cost: COST_TEND }; // grow on your own = tend
+  if (hasAdjacentOwnedBy(cells, isOwner, x, y)) return { kind: 'contest', cost: COST_CONTEST };
+  return null;
+}
+
+/** Apply a classified move's effect to the grid. Mutates `cells`. */
+function mutate(cells: Map<string, Cell>, author: string, kind: MoveKind, x: number, y: number): void {
+  const k = cellKey(x, y);
+  if (kind === 'seed' || kind === 'spread') {
+    cells.set(k, { owner: author, vitality: MAX_VITALITY });
+    return;
   }
-  // Enemy cell: contest, but only along a shared border (one of your cells adjacent).
-  if (hasAdjacentOwnedBy(cells, isAuthor, x, y)) {
-    cell.vitality -= CONTEST_DAMAGE;
-    if (cell.vitality <= 0) {
-      cell.owner = author;
-      cell.vitality = CAPTURE_VITALITY;
-    }
-    return true;
+  if (kind === 'tend') {
+    const c = cells.get(k);
+    if (c) c.vitality = MAX_VITALITY;
+    return;
   }
-  return false;
+  // contest
+  const c = cells.get(k);
+  if (!c) return;
+  c.vitality -= CONTEST_DAMAGE;
+  if (c.vitality <= 0) {
+    c.owner = author;
+    c.vitality = CAPTURE_VITALITY;
+  }
 }
 
 /** One epoch of decay: every cell loses a vitality; those at 0 recede to open water. */
@@ -211,6 +268,18 @@ function epochTick(cells: Map<string, Cell>): void {
     c.vitality -= 1;
     if (c.vitality <= 0) cells.delete(k);
   }
+}
+
+/** Sum living vitality per owner (post-decay), used for regen and scoring. */
+function livingByOwner(cells: Map<string, Cell>): Map<string, { cells: number; vitality: number }> {
+  const m = new Map<string, { cells: number; vitality: number }>();
+  for (const c of cells.values()) {
+    const e = m.get(c.owner) ?? { cells: 0, vitality: 0 };
+    e.cells += 1;
+    e.vitality += c.vitality;
+    m.set(c.owner, e);
+  }
+  return m;
 }
 
 function parseMove(body: string | null | undefined): { op: Op; x: number; y: number } | null {
@@ -224,41 +293,6 @@ function parseMove(body: string | null | undefined): { op: Op; x: number; y: num
   return { op, x, y };
 }
 
-/**
- * Fold a region's reply chain into world-state.
- *
- * Replies are ordered by (created_at, content_id) — the same canonical order every
- * client uses — then applied in sequence. Every EPOCH_MOVES *applied* moves, one epoch
- * of decay ticks. The result is byte-identical across replicas.
- */
-export function foldReef(header: ReefHeader, replies: ReplyLike[]): ReefState {
-  const cells = new Map<string, Cell>();
-  const moves: AppliedMove[] = [];
-  let applied = 0;
-  let epoch = 0;
-
-  const sorted = replies
-    .slice()
-    .sort((a, b) => a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
-
-  for (const r of sorted) {
-    const parsed = parseMove(r.body);
-    if (!parsed) continue;
-    const ok = applyMove(cells, header, r.author_id, parsed.op, parsed.x, parsed.y);
-    moves.push({ ...parsed, author: r.author_id, contentId: r.content_id, ok });
-    if (ok) {
-      applied += 1;
-      if (applied % EPOCH_MOVES === 0) {
-        epochTick(cells);
-        epoch += 1;
-      }
-    }
-  }
-
-  const owners = [...new Set([...cells.values()].map((c) => c.owner))];
-  return { header, cells, moves, epoch, owners };
-}
-
 interface ReplyLike {
   body?: string | null;
   created_at: number;
@@ -267,30 +301,99 @@ interface ReplyLike {
 }
 
 /**
- * What a click on (x,y) would do for the local player, and whether it's allowed.
- * Mirrors applyMove's legality read-only, matching either author_id form (the node
- * returns bech32 address in some RPCs and pubkey hex in others).
+ * Fold a region's reply chain into world-state — including budgets, season points, and
+ * the leaderboard. Deterministic and byte-identical across replicas.
  */
-export function moveIntent(
-  state: ReefState,
-  myPubkeyHex: string,
-  myAddress: string,
-  x: number,
-  y: number
-): Intent {
-  if (!inBounds(x, y, state.header.w, state.header.h)) return null;
-  const isMe = (owner: string) => owner === myPubkeyHex || owner === myAddress;
-  const cell = state.cells.get(cellKey(x, y));
+export function foldReef(header: ReefHeader, replies: ReplyLike[]): ReefState {
+  const cells = new Map<string, Cell>();
+  const budgets = new Map<string, number>();
+  let seasonPoints = new Map<string, number>();
+  const seasons: SeasonResult[] = [];
+  const moves: AppliedMove[] = [];
+  let attempts = 0;
+  let epoch = 0;
 
-  if (cell && isMe(cell.owner)) return { op: 'tend', kind: 'tend' };
-  if (!cell) {
-    if (!ownsAnyCell(state.cells, isMe)) return { op: 'grow', kind: 'seed' };
-    if (hasAdjacentOwnedBy(state.cells, isMe, x, y)) return { op: 'grow', kind: 'spread' };
-    return null;
+  const sorted = replies
+    .slice()
+    .sort((a, b) => a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
+
+  for (const r of sorted) {
+    const parsed = parseMove(r.body);
+    if (!parsed) continue; // garbage doesn't even pace the clock
+    const author = r.author_id;
+    if (!budgets.has(author)) budgets.set(author, START_BUDGET);
+
+    const isAuthor = (owner: string) => owner === author;
+    const cls = classify(cells, header, isAuthor, parsed.op, parsed.x, parsed.y);
+    let ok = false;
+    if (cls) {
+      const have = budgets.get(author)!;
+      if (have >= cls.cost) {
+        mutate(cells, author, cls.kind, parsed.x, parsed.y);
+        budgets.set(author, have - cls.cost);
+        ok = true;
+      }
+    }
+    moves.push({ ...parsed, author, contentId: r.content_id, ok });
+
+    attempts += 1;
+    if (attempts % EPOCH_MOVES === 0) {
+      // 1) decay
+      epochTick(cells);
+      // 2) regen + 3) score, both off the post-decay living map
+      const living = livingByOwner(cells);
+      for (const [owner, cur] of budgets) {
+        const live = living.get(owner);
+        const regen = REGEN_BASE + Math.floor((live?.cells ?? 0) / 2);
+        budgets.set(owner, Math.min(MAX_BUDGET, cur + regen));
+      }
+      for (const [owner, live] of living) {
+        seasonPoints.set(owner, (seasonPoints.get(owner) ?? 0) + live.vitality);
+      }
+      epoch += 1;
+      // 4) close the season on its boundary
+      if (epoch % SEASON_EPOCHS === 0) {
+        let winner: string | null = null;
+        let best = -1;
+        for (const [owner, pts] of [...seasonPoints].sort((a, b) => a[0].localeCompare(b[0]))) {
+          if (pts > best) {
+            best = pts;
+            winner = owner;
+          }
+        }
+        seasons.push({ index: epoch / SEASON_EPOCHS - 1, winner, points: Math.max(0, best) });
+        seasonPoints = new Map();
+      }
+    }
   }
-  // enemy cell
-  if (hasAdjacentOwnedBy(state.cells, isMe, x, y)) return { op: 'grow', kind: 'contest' };
-  return null;
+
+  const living = livingByOwner(cells);
+  const owners = [...living.keys()];
+  const standingOwners = new Set<string>([...owners, ...seasonPoints.keys()]);
+  const standings: Standing[] = [...standingOwners]
+    .map((owner) => ({
+      owner,
+      seasonPoints: seasonPoints.get(owner) ?? 0,
+      territory: living.get(owner)?.cells ?? 0,
+      vitality: living.get(owner)?.vitality ?? 0,
+    }))
+    .sort(
+      (a, b) => b.seasonPoints - a.seasonPoints || b.vitality - a.vitality || a.owner.localeCompare(b.owner)
+    );
+
+  return {
+    header,
+    cells,
+    moves,
+    epoch,
+    season: Math.floor(epoch / SEASON_EPOCHS),
+    epochsLeftInSeason: SEASON_EPOCHS - (epoch % SEASON_EPOCHS),
+    budgets,
+    seasonPoints,
+    seasons,
+    standings,
+    owners,
+  };
 }
 
 /** Stable hue (0–359) for a player, derived from their id — same everywhere, no registry. */
@@ -301,6 +404,31 @@ export function ownerHue(id: string): number {
     h = Math.imul(h, 16777619) >>> 0;
   }
   return h % 360;
+}
+
+/** My current growth budget (matching either author_id form). */
+export function myBudget(state: ReefState, myPubkeyHex: string, myAddress: string): number {
+  return state.budgets.get(myPubkeyHex) ?? state.budgets.get(myAddress) ?? START_BUDGET;
+}
+
+/**
+ * The intent for a click, resolving the op the player most likely wants (grow unless
+ * the cell is already theirs, in which case tend), with cost + affordability.
+ */
+export function intentAt(
+  state: ReefState,
+  myPubkeyHex: string,
+  myAddress: string,
+  x: number,
+  y: number
+): Intent | null {
+  const isMe = (owner: string) => owner === myPubkeyHex || owner === myAddress;
+  const cell = state.cells.get(cellKey(x, y));
+  const op: Op = cell && isMe(cell.owner) ? 'tend' : 'grow';
+  const cls = classify(state.cells, state.header, isMe, op, x, y);
+  if (!cls) return null;
+  const budget = myBudget(state, myPubkeyHex, myAddress);
+  return { op, kind: cls.kind, cost: cls.cost, affordable: budget >= cls.cost };
 }
 
 // ── RPC: PoW-mine + canonically sign, then submit (mirrors chess-client) ─────────────
@@ -372,7 +500,6 @@ async function submitMinedReply(
 
 // ── Regions ──────────────────────────────────────────────────────────────────────
 
-/** Create a new reef region (a Post in the reef space). */
 export async function createRegion(
   rpc: SwimchainRpc,
   id: Identity,
@@ -391,7 +518,6 @@ export async function createRegion(
   return submitMinedPost(rpc, id, spaceId, title, JSON.stringify(header), onProgress);
 }
 
-/** Extract the reef header JSON from a post's stored `title\n\nbody` content. */
 function parseRegionHeader(body: string | null | undefined): ReefHeader | null {
   if (!body) return null;
   const nl = body.indexOf('\n\n');
@@ -399,7 +525,6 @@ function parseRegionHeader(body: string | null | undefined): ReefHeader | null {
   try {
     const h = JSON.parse(jsonStr) as ReefHeader;
     if (h?.kind !== 'reef') return null;
-    // Defensive: clamp dimensions so a malformed header can't blow up the grid render.
     if (!Number.isInteger(h.w) || !Number.isInteger(h.h)) return null;
     return h;
   } catch {
@@ -407,7 +532,6 @@ function parseRegionHeader(body: string | null | undefined): ReefHeader | null {
   }
 }
 
-/** List reef regions in the space. */
 export async function listRegions(rpc: SwimchainRpc, spaceId: string): Promise<RegionSummary[]> {
   const res = await rpc.listSpacePosts(spaceId, { limit: 100 });
   const regions: RegionSummary[] = [];
@@ -418,7 +542,6 @@ export async function listRegions(rpc: SwimchainRpc, spaceId: string): Promise<R
   return regions;
 }
 
-/** Load a region by folding its reply chain into world-state. */
 export async function loadRegion(rpc: SwimchainRpc, regionId: string): Promise<ReefState> {
   const post = await rpc.getContent(regionId);
   const header =
@@ -452,8 +575,8 @@ export async function submitReefMove(
 
 /**
  * Apply the local player's move optimistically (before it seals on-chain) so the UI
- * updates without waiting a block. Does NOT tick an epoch — the poll reconciles the
- * exact state (and won't go backwards; see the monotonic guard in App).
+ * updates without waiting a block. Spends budget locally but does NOT tick an epoch —
+ * the poll reconciles exact state (and won't go backwards; see App's monotonic guard).
  */
 export function applyMoveOptimistic(
   state: ReefState,
@@ -464,12 +587,24 @@ export function applyMoveOptimistic(
 ): ReefState {
   const cells = new Map<string, Cell>();
   for (const [k, c] of state.cells) cells.set(k, { ...c });
-  const ok = applyMove(cells, state.header, authorPubkeyHex, op, x, y);
-  const owners = [...new Set([...cells.values()].map((c) => c.owner))];
+  const budgets = new Map(state.budgets);
+  const isAuthor = (owner: string) => owner === authorPubkeyHex;
+  const cls = classify(cells, state.header, isAuthor, op, x, y);
+  let ok = false;
+  if (cls) {
+    const have = budgets.get(authorPubkeyHex) ?? START_BUDGET;
+    if (have >= cls.cost) {
+      mutate(cells, authorPubkeyHex, cls.kind, x, y);
+      budgets.set(authorPubkeyHex, have - cls.cost);
+      ok = true;
+    }
+  }
+  const living = livingByOwner(cells);
   return {
     ...state,
     cells,
-    owners,
+    budgets,
+    owners: [...living.keys()],
     moves: [
       ...state.moves,
       { op, x, y, author: authorPubkeyHex, contentId: `pending-${state.moves.length}`, ok },

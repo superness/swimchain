@@ -94,11 +94,29 @@ h2 { font-size: 18px; margin: 0; }
   background: rgba(255, 255, 255, 0.85);
 }
 
-.status { text-align: center; margin-top: 6px; }
-.status .fine { margin: 6px 0; line-height: 1.5; }
-.legend { display: flex; flex-wrap: wrap; gap: 10px 16px; justify-content: center; margin-bottom: 8px; }
-.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
-.legend .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.status { margin-top: 6px; }
+.status .fine { line-height: 1.5; }
+.status .hint { text-align: center; margin-top: 12px; }
+
+.season { text-align: center; font-size: 16px; margin-bottom: 12px; }
+.season strong { color: var(--heat); }
+
+.budget { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; margin-bottom: 14px; }
+.budget .pips { display: inline-flex; gap: 3px; }
+.budget .bpip { width: 10px; height: 14px; border-radius: 2px; background: var(--water-2); border: 1px solid var(--line); }
+.budget .bpip.on { background: var(--shallow); border-color: var(--shallow); }
+.budget .costs { width: 100%; text-align: center; }
+
+.board-scores { max-width: 380px; margin: 0 auto; }
+.board-scores .row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 5px; font-size: 14px; }
+.board-scores .row.me { background: rgba(110, 211, 194, 0.10); }
+.board-scores .rank { width: 16px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.board-scores .swatch { width: 13px; height: 13px; border-radius: 3px; }
+.board-scores .you { color: var(--shallow); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+.board-scores .pts { margin-left: auto; font-family: var(--mono); font-size: 13px; }
+.board-scores .terr { min-width: 56px; text-align: right; }
+
+.past { text-align: center; margin-top: 10px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 
 .overlay { position: fixed; inset: 0; background: rgba(4, 23, 30, 0.72); display: flex; align-items: center; justify-content: center; }
 .mining { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 24px 32px; text-align: center; }
