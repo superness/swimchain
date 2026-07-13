@@ -237,6 +237,14 @@ Post action became available. The two propagation fixes (offer `created_at`, cla
   after the fix (below).
 - **Related to F6:** the "ineligible leader" rejections and the fork churn there
   are the same eligibility machinery; this fix addresses the reorg side.
+- **VERIFIED:** rebuilt phone `.so` with the fix + reinstalled (kept data). On
+  launch the phone **reorged from its stuck height 30 → height 42** ("New best tip:
+  height=42 reorged"), synced to canonical, and the F7 re-broadcast correctly
+  stopped once it synced its own approval (locally sponsored). The long-standing
+  "stuck on a minority fork, 100% synced" symptom is resolved.
+- **Rollout:** fix must run on all nodes to keep the network fork-robust (a
+  canonical node could otherwise be stranded by a future fork). Deploying to local
+  + seed + bot after phone verification.
 
 ## F2 (recurring) — space names frequently unresolved across views · major
 - Confirmed on **Discover** (suggested spaces render `sp1qqqsqrttr…`,
