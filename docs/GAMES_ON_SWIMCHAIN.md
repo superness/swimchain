@@ -145,7 +145,17 @@ replicate their regions); decay and PoW become game feel instead of plumbing; on
 
 ## Build path
 
-- **Phase 0 — Chess.** Client + WASM PoW, on existing RPC. Proves the primitives end-to-end.
-- **Phase 1 — Single-region Reef.** One grid, one space, epoch tick from block height, deterministic
-  CA resolution, decay of untended cells, local rendering.
-- **Phase 2 — Multi-region Reef.** Spaces-as-shards, cross-border contest, alliances, seasonal scoring.
+- **Phase 0 — Chess.** ✅ Built + live at `/chess/`. Client + WASM PoW, on existing RPC. Proved the
+  primitives end-to-end (a full game was refereed purely by the fold).
+- **Phase 1 — Single-region Reef.** ✅ Built + live at `/reef/` (`reef-client/`). One grid, one space,
+  `grow`/`tend`/`contest` as tiny reply bodies, deterministic integer fold, decay of untended cells,
+  local rendering. Epochs are keyed to the **move sequence** (every 8 well-formed moves), not block
+  height — fully deterministic with zero node changes; block-height epochs are a Phase 2 upgrade.
+  - **Made it a game (not painting):** solo it read as r/place-with-decay, so two deterministic
+    systems were added, both folded from the log — a **resource economy** (a per-player growth budget
+    that regenerates with living territory, so you can't spam-paint) and **seasons + scoring** (time in
+    seasons of 5 epochs; each epoch you bank the vitality you kept alive; top tally wins the season).
+    The chain is the scorekeeper — no server tallies anything.
+- **Phase 2 — Multi-region Reef.** Spaces-as-shards, cross-border contest, alliances. Rekey epochs to
+  **block height** + add the confirmed/tentative **reorg frontier**. (Seasonal scoring already landed
+  early, in Phase 1, to give the prototype stakes.)
