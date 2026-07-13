@@ -2198,11 +2198,24 @@ impl BackgroundTaskRunner {
                             continue;
                         }
 
-                        // Leader election check with dynamic scheduling
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
+                        // Leader election check with dynamic scheduling.
+                        // Quantize to the SAME 10s window the formed block will carry
+                        // (build_root_block quantizes its timestamp). Eligibility MUST be
+                        // judged at the block's stored timestamp: the threshold expands with
+                        // elapsed-since-parent, so checking at raw `now` while the block
+                        // stores the earlier quantized time lets a node form a block it deems
+                        // eligible that peers re-validate at the (earlier, stricter) quantized
+                        // timestamp and reject as "ineligible leader". That mismatch only bites
+                        // nodes that full-validate a synced block (fresh/batch peers); real-time
+                        // peers skip re-validation via known_header_backfill and hide it.
+                        let now = {
+                            let raw = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            (raw / crate::blocks::builder::TIMESTAMP_QUANTUM_SECS)
+                                * crate::blocks::builder::TIMESTAMP_QUANTUM_SECS
+                        };
 
                         let (is_eligible, eta_secs) = if let Ok(Some(prev_block)) = chain_store.get_best_tip_block() {
                             // Get recent timestamps for difficulty calculation
@@ -2269,11 +2282,9 @@ impl BackgroundTaskRunner {
                                 }
                             };
 
-                            let now = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-
+                            // Reuse the quantized `now` from the eligibility check above so
+                            // the block's stored timestamp is the exact instant we judged
+                            // eligibility at — keeping formation and peer validation in lockstep.
                             builder.build_root_block(now, node_identity, sponsorship_store.as_ref().map(|s| s.as_ref()))
                         };
 

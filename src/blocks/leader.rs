@@ -395,6 +395,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn eligibility_is_monotonic_and_can_flip_within_a_quantum() {
+        // Root cause of the "ineligible leader" fork on freshly-syncing peers:
+        // the eligibility threshold expands with elapsed-since-parent, so
+        // is_eligible can flip false->true within a single 10s timestamp quantum.
+        // Block formation must therefore judge eligibility at the SAME quantized
+        // timestamp the block stores (build_root_block quantizes), or a peer that
+        // re-validates the synced block at the earlier quantized time computes a
+        // stricter threshold and rejects a block the former deemed eligible.
+        let prev_ts = 1_000u64;
+        let mut seed = [0u8; 32];
+        seed[0] = 0x80; // mid-range XOR distance from the all-zero identity
+        let identity = [0u8; 32];
+        let elig = BlockEligibility::with_params(seed, prev_ts, 1.0, 3600);
+
+        // Monotonic: once eligible at some elapsed, eligible for all later times.
+        let mut first_eligible = None;
+        for dt in 0..=3600u64 {
+            let e = elig.is_eligible(&identity, prev_ts + dt);
+            if e && first_eligible.is_none() {
+                first_eligible = Some(dt);
+            }
+            if let Some(f) = first_eligible {
+                assert!(e, "eligibility regressed at elapsed {dt} (first eligible {f})");
+            }
+        }
+        let f = first_eligible.expect("identity should become eligible before max_time");
+
+        // When the flip point isn't on a 10s boundary, raw vs quantized straddle it —
+        // exactly the formation/validation mismatch the fix closes.
+        if f % crate::blocks::builder::TIMESTAMP_QUANTUM_SECS != 0 {
+            let raw = prev_ts + f;
+            let quantized = (raw / crate::blocks::builder::TIMESTAMP_QUANTUM_SECS) * crate::blocks::builder::TIMESTAMP_QUANTUM_SECS;
+            assert!(elig.is_eligible(&identity, raw), "eligible at raw now");
+            assert!(
+                !elig.is_eligible(&identity, quantized),
+                "raw eligible but quantized NOT — the mismatch that rejected valid blocks on fresh peers"
+            );
+        }
+    }
+
+    #[test]
     fn test_xor_distance() {
         let a = [0u8; 32];
         let b = [0u8; 32];
