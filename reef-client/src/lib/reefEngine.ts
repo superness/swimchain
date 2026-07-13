@@ -79,7 +79,7 @@ export const CAPTURE_VITALITY = 1;
 export const START_BUDGET = 6;
 export const MAX_BUDGET = 14;
 export const COST_GROW = 2; // seed or spread onto open water
-export const COST_TEND = 1; // refresh your own coral
+export const COST_TEND = 0; // refresh your own coral — always free, so the clock never deadlocks
 export const COST_CONTEST = 3; // grow onto an enemy border cell
 /** Per epoch, every tracked player regenerates this + floor(livingCells / 2). */
 export const REGEN_BASE = 2;

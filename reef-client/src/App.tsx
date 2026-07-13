@@ -232,7 +232,7 @@ export function App() {
                   ))}
                 </span>
                 <span className="fine"><strong>{budget}</strong>/{MAX_BUDGET}</span>
-                <span className="fine costs">grow −{COST_GROW} · tend −{COST_TEND} · contest −{COST_CONTEST} · regen each epoch</span>
+                <span className="fine costs">grow −{COST_GROW} · tend {COST_TEND === 0 ? 'free' : `−${COST_TEND}`} · contest −{COST_CONTEST} · regen each epoch</span>
               </div>
 
               <div className="board-scores">
