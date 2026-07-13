@@ -50,6 +50,18 @@ async function signWithNode(message) {
   return r.signature;
 }
 
+// Canonical action-signature preimage for Post/Reply/Edit (the node now enforces this):
+//   content_hash(32) || timestamp.to_le_bytes()(8) || private(1)   -- see validate_action_signature.
+// content_hash = sha256(`${title}\n\n${body}`) for POST, sha256(body) for REPLY.
+// The timestamp MUST equal the one submitted to the RPC (pow.timestamp).
+function actionSigPreimage(contentHash32, timestamp, isPrivate = false) {
+  const b = Buffer.alloc(41);
+  Buffer.from(contentHash32).copy(b, 0);
+  b.writeBigUInt64LE(BigInt(timestamp), 32);
+  b[40] = isPrivate ? 1 : 0;
+  return b;
+}
+
 /** PoW over a RAW 32-byte content hash (Post/Reply/Space use sha256(string); Engage uses the content hash). */
 async function minePow(actionType, contentHash32) {
   const config = POW_CONFIG[NET];
@@ -139,7 +151,7 @@ async function doReply() {
   const target = pick(ids);
   const body = pick(REPLIES);
   const pow = await minePow(ActionType.Reply, sha256(Buffer.from(body, 'utf-8')));
-  const sig = await signWithNode(`reply:${target.content_id}:${body}:${pow.timestamp}`);
+  const sig = await signBytesWithNode(actionSigPreimage(sha256(Buffer.from(body, 'utf-8')), pow.timestamp));
   const r = await rpc('submit_reply', { parent_id: target.content_id, body, author_id: AUTHOR, ...pow, signature: sig });
   return `reply: "${body}" -> ${r?.content_id?.slice(0, 20)}`;
 }
@@ -150,7 +162,7 @@ async function doPost() {
   const title = pick(TITLES);
   const body = pick(BODIES);
   const pow = await minePow(ActionType.Post, sha256(Buffer.from(`${title}\n\n${body}`, 'utf-8')));
-  const sig = await signWithNode(`post:${space.space_id}:${title}:${body}:${pow.timestamp}`);
+  const sig = await signBytesWithNode(actionSigPreimage(sha256(Buffer.from(`${title}\n\n${body}`, 'utf-8')), pow.timestamp));
   const r = await rpc('submit_post', { space_id: space.space_id, title, body, author_id: AUTHOR, ...pow, signature: sig });
   return `post: "${title}" in ${space.name} -> ${r?.content_id?.slice(0, 20)}`;
 }
@@ -179,7 +191,7 @@ async function postProfileSegment(body) {
   const spaceId = profileSpaceId();
   const title = '';
   const pow = await minePow(ActionType.Post, sha256(Buffer.from(`${title}\n\n${body}`, 'utf-8')));
-  const sig = await signWithNode(`post:${spaceId}:${title}:${body}:${pow.timestamp}`);
+  const sig = await signBytesWithNode(actionSigPreimage(sha256(Buffer.from(`${title}\n\n${body}`, 'utf-8')), pow.timestamp));
   return rpc('submit_post', { space_id: spaceId, title, body, author_id: AUTHOR, ...pow, signature: sig });
 }
 

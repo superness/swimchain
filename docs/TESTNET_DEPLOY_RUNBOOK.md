@@ -106,7 +106,13 @@ Ad-hoc but reliable order: **stop nodes → wipe data → deploy binaries → st
 
 ---
 
-## 7. Verification checklist
+## 7. Where the ops code lives (source of truth)
+
+- **Node / CLI / clients** — the repo (`main`). Signing lives in `src/cli/commands/post.rs` (CLI), `swimchain-react/src/lib/signAction.ts` (web clients), and the bot (below).
+- **Activity bot + faucet** — `tools/swim-bot/activity-bot.mjs` in the repo **is the source of truth**; deploy it to `165:/opt/swim-bot/`. Keep the two in sync — a fix applied only on the droplet is lost on the next deploy. (Its canonical signing is the `actionSigPreimage()` helper.)
+- **⚠️ Daily Drift scripts are droplet-only.** `publish.sh` and `generate.js` live only at `167:/opt/daily-drift/` — they are **not** version-controlled. Their config (the space id, and `AUTHOR` = dispatch-bot **address**) must be re-set by hand on every fresh chain. *Follow-up: vendor these into the repo (e.g. `tools/daily-drift/`) so a bringup doesn't depend on droplet state.*
+
+## 8. Verification checklist
 
 - Node up + peered: `sw --testnet --data-dir <dir> sync status` → peers ≥ 1, state `synced`.
 - Identity sponsored: `… sponsor status` → `ACTIVE`.
