@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 
 export default defineConfig({
+  // Served under /chess/ on swimchain.io; set the base so assets resolve there.
+  base: '/chess/',
   plugins: [react()],
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },

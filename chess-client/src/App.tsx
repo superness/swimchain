@@ -13,6 +13,7 @@ import {
   listGames,
   loadGame,
   submitMove,
+  applyMoveOptimistic,
   playableSide,
   type GameState,
   type GameSummary,
@@ -55,24 +56,30 @@ export function App() {
     [publicKeyHex, address, sign]
   );
 
+  // Reads require signature auth too, so wait until the keypair (publicKeyHex) is
+  // ready — otherwise the first fetch races ahead of auth and returns "Authentication
+  // required", and never retries.
   const refreshGames = useCallback(async () => {
-    if (!rpc || !connected || !CHESS_SPACE) return;
+    if (!rpc || !connected || !publicKeyHex || !CHESS_SPACE) return;
     try {
       setGames(await listGames(rpc, CHESS_SPACE));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to list games');
     }
-  }, [rpc, connected]);
+  }, [rpc, connected, publicKeyHex]);
 
   const refreshOpen = useCallback(async () => {
-    if (!rpc || !connected || !openId) return;
+    if (!rpc || !connected || !publicKeyHex || !openId) return;
     try {
-      setState(await loadGame(rpc, openId));
+      const loaded = await loadGame(rpc, openId);
+      // Monotonic: never drop below what we're showing, so an optimistic (not-yet-
+      // finalized) move isn't clobbered by a poll that reads only finalized replies.
+      setState((prev) => (!prev || loaded.moves.length >= prev.moves.length ? loaded : prev));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to load game');
     }
-  }, [rpc, connected, openId]);
+  }, [rpc, connected, publicKeyHex, openId]);
 
   useEffect(() => {
     if (!openId) refreshGames();
@@ -82,7 +89,7 @@ export function App() {
   useEffect(() => {
     if (!openId) return;
     refreshOpen();
-    const t = setInterval(refreshOpen, 4000);
+    const t = setInterval(refreshOpen, 1500);
     return () => clearInterval(t);
   }, [openId, refreshOpen]);
 
@@ -116,11 +123,12 @@ export function App() {
     if (!rpc || !me || !openId) return;
     setMining({ active: true, label: `Playing ${san}`, attempts: 0 });
     try {
-      await submitMove(rpc, me, openId, san, (attempts) =>
+      await submitMove(rpc, me, openId, san, state?.moves.length ?? 0, (attempts) =>
         setMining({ active: true, label: `Playing ${san} (proof-of-work)`, attempts })
       );
       setMining(null);
-      await refreshOpen();
+      // Show my move immediately; the poll reconciles once it finalizes on-chain.
+      setState((prev) => (prev ? applyMoveOptimistic(prev, san, address!) : prev));
     } catch (e) {
       setMining(null);
       setError(e instanceof Error ? e.message : 'failed to submit move');
@@ -142,7 +150,8 @@ export function App() {
     );
   }
 
-  const mySide = state ? playableSide(state, address!) : null;
+  const mySide = state ? playableSide(state, publicKeyHex!, address!) : null;
+  const iAmWhite = !!state && (state.white === publicKeyHex || state.white === address);
 
   return (
     <div className="app">
@@ -151,7 +160,8 @@ export function App() {
         <div className="who">
           <span className={`dot ${connected ? 'ok' : 'bad'}`} />
           {connecting ? 'connecting…' : connected ? 'node connected' : 'no node'} ·{' '}
-          <code title={address!}>{address!.slice(0, 12)}…</code>
+          <code title={address!}>{address!.slice(0, 12)}…</code>{' '}
+          <button className="link" onClick={() => navigator.clipboard?.writeText(address!)}>copy address</button>
         </div>
       </header>
 
@@ -176,7 +186,7 @@ export function App() {
             {games.map((g) => (
               <li key={g.id} onClick={() => setOpenId(g.id)}>
                 <span className="title">{g.title}</span>
-                <span className="fine">{g.header.white === address ? 'you are White' : 'join as Black'}</span>
+                <span className="fine">{g.header.white === publicKeyHex ? 'you are White' : 'join as Black'}</span>
               </li>
             ))}
           </ul>
@@ -187,7 +197,7 @@ export function App() {
             <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← games</button>
             <Board
               chess={state.chess}
-              orientation={state.white === address ? 'w' : 'b'}
+              orientation={iAmWhite ? 'w' : 'b'}
               canMove={!!mySide && mySide === state.turn && !mining}
               onMove={onMove}
             />

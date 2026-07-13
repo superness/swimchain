@@ -153,10 +153,14 @@ export async function createGame(
   spaceId: string,
   onProgress?: ProgressCallback
 ): Promise<string> {
+  // White is stored as the pubkey hex, because move replies come back from
+  // get_replies with author_id in pubkey-hex form (list_space_posts uses bech32 —
+  // an RPC inconsistency). The fold compares against reply author_id, so the header
+  // must use the same form.
   const header: GameHeader = {
     v: 1,
     kind: 'chess',
-    white: id.address,
+    white: id.publicKeyHex,
     variant: 'standard',
     created: Date.now(),
   };
@@ -164,18 +168,32 @@ export async function createGame(
   return submitMinedPost(rpc, id, spaceId, title, JSON.stringify(header), onProgress);
 }
 
+/**
+ * Extract the game-header JSON from a post's stored content.
+ *
+ * The node stores a POST as `title\n\nbody`, so the retrieved `body` is
+ * `"<title>\n\n<json>"`. The header is the JSON after the first blank line.
+ */
+function parseGameHeader(body: string | null | undefined): GameHeader | null {
+  if (!body) return null;
+  const nl = body.indexOf('\n\n');
+  const jsonStr = nl >= 0 ? body.slice(nl + 2) : body;
+  try {
+    const h = JSON.parse(jsonStr) as GameHeader;
+    return h?.kind === 'chess' ? h : null;
+  } catch {
+    return null;
+  }
+}
+
 /** List chess games in the space. */
 export async function listGames(rpc: SwimchainRpc, spaceId: string): Promise<GameSummary[]> {
   const res = await rpc.listSpacePosts(spaceId, { limit: 100 });
   const games: GameSummary[] = [];
   for (const it of res.items) {
-    try {
-      const header = JSON.parse(it.body ?? '') as GameHeader;
-      if (header?.kind === 'chess') {
-        games.push({ id: it.content_id, title: it.title ?? '', header });
-      }
-    } catch {
-      /* not a chess game post */
+    const header = parseGameHeader(it.body);
+    if (header) {
+      games.push({ id: it.content_id, title: it.title ?? '', header });
     }
   }
   return games;
@@ -192,7 +210,7 @@ export async function listGames(rpc: SwimchainRpc, spaceId: string): Promise<Gam
  */
 export async function loadGame(rpc: SwimchainRpc, gameId: string): Promise<GameState> {
   const post = await rpc.getContent(gameId);
-  const header = JSON.parse(post.body ?? '{}') as GameHeader;
+  const header = parseGameHeader(post.body) ?? { v: 1, kind: 'chess', white: '', variant: 'standard', created: 0 };
   const { replies } = await rpc.getReplies(gameId);
   const sorted = replies
     .slice()
@@ -200,15 +218,16 @@ export async function loadGame(rpc: SwimchainRpc, gameId: string): Promise<GameS
 
   const chess = new Chess();
   const moves: AppliedMove[] = [];
-  let black: string | null = null;
 
+  // Fold moves by legality + turn order. The node cryptographically enforces that
+  // each move is signed by its author (that's what makes a move "provably yours"),
+  // so the client trusts authorship and just applies legal moves in order. We do NOT
+  // strict-match author to a stored White/Black id here because the node returns
+  // author_id inconsistently (bech32 address vs pubkey hex across RPCs/games).
   for (const r of sorted) {
-    const san = (r.body ?? '').trim();
+    // Move body is "<san> <gameId>#<ply>"; the SAN is the first token.
+    const san = (r.body ?? '').trim().split(/\s+/)[0] ?? '';
     if (!san) continue;
-    const turn = chess.turn();
-    if (turn === 'b' && !black && r.author_id !== header.white) black = r.author_id;
-    const expected = turn === 'w' ? header.white : black;
-    if (r.author_id !== expected) continue;
     try {
       const mv = chess.move(san);
       if (mv) {
@@ -219,18 +238,53 @@ export async function loadGame(rpc: SwimchainRpc, gameId: string): Promise<GameS
     }
   }
 
+  // Black = the author of the first Black move (ply 1), for display / seat detection.
+  const black = moves.length >= 2 ? moves[1].author : null;
   return { chess, white: header.white, black, moves, turn: chess.turn(), result: gameResult(chess) };
 }
 
-/** Submit a move (SAN) as a reply to the game thread. */
+/**
+ * Submit a move as a reply to the game thread.
+ *
+ * Replies are content-addressed by sha256(body), so an identical body (e.g. "e4")
+ * in two different games — or a repeated SAN within one game — would collide and
+ * dedup. The move body is therefore `"<san> <gameId>#<ply>"`, which is unique per
+ * game and ply. The fold reads the SAN as the first whitespace-delimited token.
+ */
 export async function submitMove(
   rpc: SwimchainRpc,
   id: Identity,
   gameId: string,
   san: string,
+  ply: number,
   onProgress?: ProgressCallback
 ): Promise<string> {
-  return submitMinedReply(rpc, id, gameId, san, onProgress);
+  const body = `${san} ${gameId}#${ply}`;
+  return submitMinedReply(rpc, id, gameId, body, onProgress);
+}
+
+/**
+ * Apply the local player's move to the board immediately (optimistic), before it
+ * finalizes on-chain — so the UI updates without waiting a block. The poll then
+ * reconciles once the move seals (and won't go backwards; see the monotonic guard).
+ */
+export function applyMoveOptimistic(state: GameState, san: string, author: string): GameState {
+  const c = new Chess(state.chess.fen());
+  try {
+    c.move(san);
+  } catch {
+    return state;
+  }
+  return {
+    ...state,
+    chess: c,
+    turn: c.turn(),
+    moves: [
+      ...state.moves,
+      { san, from: '', to: '', author, contentId: `pending-${state.moves.length}` },
+    ],
+    result: gameResult(c),
+  };
 }
 
 function gameResult(chess: Chess): string | null {
@@ -248,10 +302,17 @@ function gameResult(chess: Chess): string | null {
  * Returns 'w' | 'b' if it's their turn, or null (spectator / not their turn).
  * An unclaimed Black seat lets a non-White player move as Black.
  */
-export function playableSide(state: GameState, myAddress: string): 'w' | 'b' | null {
+export function playableSide(
+  state: GameState,
+  myPubkeyHex: string,
+  myAddress: string
+): 'w' | 'b' | null {
   if (state.result) return null;
-  if (state.turn === 'w') return state.white === myAddress ? 'w' : null;
+  // author_id comes back as address OR pubkey hex depending on the RPC, so match either.
+  const isMe = (id: string | null) => !!id && (id === myPubkeyHex || id === myAddress);
+  const iAmWhite = isMe(state.white);
+  if (state.turn === 'w') return iAmWhite ? 'w' : null;
   // Black to move: the claimed Black player, or anyone-but-White if the seat is open.
-  if (state.black) return state.black === myAddress ? 'b' : null;
-  return myAddress !== state.white ? 'b' : null;
+  if (state.black) return isMe(state.black) ? 'b' : null;
+  return !iAmWhite ? 'b' : null;
 }

@@ -9218,19 +9218,29 @@ impl RpcMethods {
                         }
 
                         let reply_id = format!("sha256:{}", hex::encode(reply_hash));
-                        let actor_id = crate::types::identity::IdentityId(action.actor);
-                        let author_id = crate::crypto::address::encode_address(&actor_id);
+                        // Use pubkey hex to match the finalized path (~line 9059), so a reply's
+                        // author_id is stable whether it is pending or finalized (previously
+                        // pending used bech32 and finalized used hex — an inconsistency).
+                        let author_id = hex::encode(action.actor);
 
-                        // Get body from ContentStore
-                        let body = if let Some(ref store) = content_store {
-                            store
-                                .get_body_by_hash(reply_hash)
-                                .ok()
-                                .flatten()
-                                .unwrap_or_default()
-                        } else {
-                            String::new()
-                        };
+                        // Body: content store first, then the sync blob store. A still-pending
+                        // (mempool) reply's body was written to the sync blob store by
+                        // submit_reply, not the content store — without this fallback the
+                        // mempool reply comes back with an empty body and the move stays
+                        // invisible until it finalizes (the block-latency the user felt).
+                        let body = content_store
+                            .as_ref()
+                            .and_then(|s| s.get_body_by_hash(reply_hash).ok().flatten())
+                            .filter(|b| !b.is_empty())
+                            .or_else(|| {
+                                let hash =
+                                    crate::storage::blob::ContentBlobHash::from_bytes(*reply_hash);
+                                BlobStore::new(&self.node.sync_blob_path)
+                                    .ok()
+                                    .and_then(|bs| bs.get(&hash).ok())
+                                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                            })
+                            .unwrap_or_default();
 
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
