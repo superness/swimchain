@@ -18,8 +18,21 @@ pub const TARGET_BLOCK_INTERVAL: u64 = 600; // 10 minutes
 /// Number of recent blocks to consider for difficulty adjustment
 pub const DIFFICULTY_ADJUSTMENT_WINDOW: usize = 10;
 
-/// Time until anyone becomes eligible (seconds)
+/// Time until anyone becomes eligible (seconds) — mainnet default.
 pub const MAX_ELIGIBILITY_TIME: u64 = 480; // 8 minutes
+
+/// Time until anyone becomes eligible, gated by network mode.
+///
+/// On mainnet this is the full 8-minute expansion (fast eligibility means more
+/// nodes eligible at once, i.e. more competing blocks / forks — undesirable at
+/// scale). On test networks it is short so a quiet chain still seals blocks
+/// promptly for demos/development rather than grinding at ~10 min/block.
+pub fn max_eligibility_time() -> u64 {
+    match crate::network::NetworkContext::mode() {
+        crate::network::NetworkMode::Mainnet => MAX_ELIGIBILITY_TIME,
+        _ => 45, // testnet / regtest: lively blocks
+    }
+}
 
 /// Base starting percentage (before difficulty adjustment)
 /// 0.001% = 1 in 100,000
@@ -248,7 +261,7 @@ impl BlockEligibility {
                 recent_block_timestamps,
                 TARGET_BLOCK_INTERVAL,
             ),
-            max_time: MAX_ELIGIBILITY_TIME,
+            max_time: max_eligibility_time(),
         }
     }
 

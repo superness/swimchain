@@ -74,6 +74,16 @@ pub const AVAILABILITY_ANNOUNCE_INTERVAL_SECS: u64 = 300;
 /// Users see instant updates via mempool gossip; blocks provide finality.
 pub const BLOCK_FORMATION_CHECK_INTERVAL_SECS: u64 = 300;
 
+/// Backup block-formation check interval, gated by network mode. Short on test
+/// networks so a quiet chain seals blocks promptly for demos/dev (pairs with the
+/// short `max_eligibility_time()` on those networks); the full 5 minutes on mainnet.
+pub fn block_formation_check_interval_secs() -> u64 {
+    match crate::network::NetworkContext::mode() {
+        crate::network::NetworkMode::Mainnet => BLOCK_FORMATION_CHECK_INTERVAL_SECS,
+        _ => 30,
+    }
+}
+
 /// DHT peer discovery interval - discover new peers via Kademlia (60 seconds)
 /// Per SPEC_06 §4.1: DHT (Kademlia) is a discovery layer for finding peers
 pub const DHT_DISCOVERY_INTERVAL_SECS: u64 = 60;
@@ -2103,7 +2113,7 @@ impl BackgroundTaskRunner {
                             } else {
                                 eligibility.when_eligible(&node_identity, now)
                                     .map(|t| t.saturating_sub(now))
-                                    .unwrap_or(BLOCK_FORMATION_CHECK_INTERVAL_SECS)
+                                    .unwrap_or(block_formation_check_interval_secs())
                             };
                             (eligible, eta)
                         } else {
@@ -2125,7 +2135,7 @@ impl BackgroundTaskRunner {
                         }
 
                         // Reset to normal interval after forming block
-                        ticker = interval(Duration::from_secs(BLOCK_FORMATION_CHECK_INTERVAL_SECS));
+                        ticker = interval(Duration::from_secs(block_formation_check_interval_secs()));
 
                         info!("[BLOCKS] Leader election passed - forming block");
 
