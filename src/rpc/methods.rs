@@ -15679,6 +15679,42 @@ impl RpcMethods {
             return RpcResponse::error(RpcErrorCode::InvalidParams, "Timestamp is too old", id);
         }
 
+        // Verify onboarding PoW: derive pow_work from the caller's nonce rather than
+        // trusting a supplied number, and require at least 1 leading zero byte. A
+        // pow=0 Sponsor action can't cross the block-formation threshold or advance
+        // cumulative_pow, so it strands on a quiet chain and never finalizes — reject
+        // it at the source so onboarding always carries real work (also anti-spam).
+        let pow_nonce_space: [u8; 32] = match params
+            .pow_nonce_space
+            .as_ref()
+            .and_then(|s| hex::decode(s).ok())
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        {
+            Some(s) => s,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    "Missing/invalid pow_nonce_space: onboarding requires proof-of-work",
+                    id,
+                );
+            }
+        };
+        let pow_work = {
+            use sha2::{Digest, Sha256};
+            let mut input = Vec::with_capacity(40);
+            input.extend_from_slice(&pow_nonce_space);
+            input.extend_from_slice(&params.pow_nonce.to_le_bytes());
+            let hash = Sha256::digest(&input);
+            hash.iter().take_while(|&&b| b == 0).count() as u64
+        };
+        if pow_work < 1 {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "Insufficient proof-of-work for sponsorship (need >= 1 leading zero byte)",
+                id,
+            );
+        }
+
         // Get sponsorship store
         let sponsorship_store = match &self.node.sponsorship_store {
             Some(store) => store,
@@ -15815,30 +15851,17 @@ impl RpcMethods {
         {
             use crate::blocks::action::Action;
 
-            // Parse PoW fields from params if provided
-            let pow_target_bytes: [u8; 32] = params
-                .pow_target
-                .as_ref()
-                .and_then(|t| hex::decode(t).ok())
-                .and_then(|b| {
-                    if b.len() == 32 {
-                        let mut a = [0u8; 32];
-                        a.copy_from_slice(&b);
-                        Some(a)
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or([0u8; 32]);
-
+            // Carry the verified PoW: pow_target is the challenge space (matches the
+            // claim path), pow_work is the value the node derived above — not a
+            // client-supplied number.
             let action = Action::new_sponsor_with_pow(
                 sponsor_bytes,
                 new_identity_bytes,
                 current_time,
                 signature_bytes,
                 params.pow_nonce,
-                params.pow_work,
-                pow_target_bytes,
+                pow_work,
+                pow_nonce_space,
             );
 
             // System space ID (all zeros) for sponsorship actions

@@ -950,6 +950,29 @@ fn direct_sponsor(config: &CliConfig, address: &str, probationary: bool) -> Resu
 
     let now = current_time();
 
+    // Mine PoW so the Sponsor action carries real work (>= 1 leading zero byte).
+    // A pow=0 onboarding action can't cross the block-formation PoW threshold and
+    // doesn't advance cumulative_pow, so it strands/never sticks on a quiet chain.
+    // Same grind the claim path uses; the node re-derives and verifies pow_work.
+    use rand::RngCore;
+    use sha2::{Digest, Sha256};
+    println!("Mining proof-of-work for sponsorship...");
+    let mut pow_nonce_space = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut pow_nonce_space);
+    let min_difficulty = 1usize; // at least 1 leading zero byte
+    let mut pow_nonce: u64 = 0;
+    loop {
+        let mut pow_input = Vec::with_capacity(40);
+        pow_input.extend_from_slice(&pow_nonce_space);
+        pow_input.extend_from_slice(&pow_nonce.to_le_bytes());
+        let hash = Sha256::digest(&pow_input);
+        if hash.iter().take_while(|&&b| b == 0).count() >= min_difficulty {
+            break;
+        }
+        pow_nonce = pow_nonce.wrapping_add(1);
+    }
+    println!(" done! (nonce: {})", pow_nonce);
+
     // Build signature: new_identity(32) || timestamp(8 BE)
     let mut sig_msg = Vec::with_capacity(40);
     sig_msg.extend_from_slice(sponsored_pubkey.as_bytes());
@@ -968,7 +991,8 @@ fn direct_sponsor(config: &CliConfig, address: &str, probationary: bool) -> Resu
             "sponsor_signature": sig_hex,
             "timestamp": now,
             "probationary": probationary,
-            "pow_nonce": 0u64
+            "pow_nonce": pow_nonce,
+            "pow_nonce_space": hex::encode(pow_nonce_space)
         }),
     )?;
 

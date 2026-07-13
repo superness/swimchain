@@ -1701,6 +1701,11 @@ pub struct RegisterSponsoredIdentityParams {
     /// Claimant's PoW target hash (hex, 32 bytes)
     #[serde(default)]
     pub pow_target: Option<String>,
+    /// Random PoW challenge space (hex, 32 bytes). The node verifies
+    /// sha256(pow_nonce_space || pow_nonce) and derives pow_work from it, so a
+    /// caller can't claim work it didn't do. Onboarding must carry real PoW.
+    #[serde(default)]
+    pub pow_nonce_space: Option<String>,
 }
 
 /// get_sponsorship_info params
