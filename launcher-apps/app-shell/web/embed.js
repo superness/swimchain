@@ -59,3 +59,49 @@ async function pushConfig() {
 // so a node identity that becomes ready slightly later still flips the client to node mode.
 iframe.addEventListener('load', pushConfig);
 let n = 0; const t = setInterval(() => { pushConfig(); if (++n >= 10) clearInterval(t); }, 1000);
+
+// --- Cross-app navigation ---------------------------------------------------
+// The embedded client can't switch apps itself (each app is its own window), so
+// when it asks to open content in ANOTHER app we forward the request to the
+// launcher, which opens/routes the target app.
+window.addEventListener('message', (event) => {
+  const d = event.data;
+  if (d && d.type === 'SWIMCHAIN_NAVIGATE' && d.client && d.path) {
+    invoke('request_navigate', { app: String(d.client), path: String(d.path) }).catch((e) =>
+      console.warn('[app-shell] request_navigate failed:', e),
+    );
+  }
+});
+
+// The launcher may drop a pending route for THIS app (someone navigated to us).
+// Poll for it and hand it to the client as SWIMCHAIN_NAVIGATE with only a `path`
+// (no `client` field, so the forwarding listener above ignores it) — this matches
+// the clients' existing in-app NavListener contract.
+let delivering = false;
+async function pollRoute() {
+  if (delivering) return; // finish delivering the current route first
+  try {
+    const path = await invoke('poll_route');
+    if (path) {
+      // Re-post a few times: on a cold start the client's NavListener may not be
+      // mounted yet when the route arrives (and poll_route consumed the file).
+      delivering = true;
+      let tries = 0;
+      const deliver = () => {
+        iframe.contentWindow?.postMessage(
+          { type: 'SWIMCHAIN_NAVIGATE', path },
+          window.location.origin,
+        );
+        if (++tries >= 6) {
+          clearInterval(timer);
+          delivering = false;
+        }
+      };
+      deliver();
+      const timer = setInterval(deliver, 500);
+    }
+  } catch (_) {
+    /* launcher/app not ready yet */
+  }
+}
+setInterval(pollRoute, 600);

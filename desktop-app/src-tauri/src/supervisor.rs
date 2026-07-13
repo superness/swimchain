@@ -88,7 +88,14 @@ impl Supervisor {
         single_instance: bool,
     ) -> Result<(), String> {
         let program = exec.to_string_lossy().to_string();
-        self.spawn_raw_single(app_id, &program, &[], data_dir, single_instance)
+        // Pass the app its own id so it knows which cross-app route file to poll.
+        self.spawn_raw_single(
+            app_id,
+            &program,
+            &["--app-id", app_id],
+            data_dir,
+            single_instance,
+        )
     }
 
     pub fn kill_all(&self) {

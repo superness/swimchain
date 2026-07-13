@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_manifest;
+mod nav;
 mod node_manager;
 mod registry;
 mod supervisor;
@@ -468,16 +469,22 @@ fn list_apps(app: tauri::AppHandle) -> Vec<registry::AppEntry> {
 /// Spawn a launcher app (feed, forum, chat, ...) as a child process, passing
 /// it the node's current data dir so it can talk to the same node.
 #[tauri::command]
-async fn launch_app(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    app_id: String,
+async fn launch_app(app: tauri::AppHandle, app_id: String) -> Result<(), String> {
+    launch_app_internal(&app, &app_id).await
+}
+
+/// Core of `launch_app`, callable outside the command layer (e.g. the cross-app
+/// navigation poller). Resolves the app's manifest + exec and spawns it.
+pub(crate) async fn launch_app_internal(
+    app: &tauri::AppHandle,
+    app_id: &str,
 ) -> Result<(), String> {
-    let app_dir = resolve_app_dir(&app, &app_id)?;
+    let app_dir = resolve_app_dir(app, app_id)?;
     let manifest_json = std::fs::read_to_string(app_dir.join("app.json"))
         .map_err(|e| format!("Failed to read app.json for '{}': {}", app_id, e))?;
     let m = app_manifest::parse_manifest(&manifest_json)?;
     let exec = app_dir.join(&m.exec);
+    let state = app.state::<AppState>();
     let data_dir = state.current_data_dir().await;
     state
         .supervisor
@@ -613,6 +620,15 @@ fn main() {
             };
 
             app.manage(state);
+
+            // Cross-app navigation: poll <data_dir>/.nav_request and route it to the
+            // target app (see nav.rs). Lets e.g. a search result open the forum app.
+            {
+                let handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    nav::run_nav_poller(handle).await;
+                });
+            }
 
             // Node will be started by frontend after identity check
             // See App.tsx: check_identity -> onboarding if needed -> start_node
