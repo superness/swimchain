@@ -96,6 +96,13 @@ pub const BRANCH_SYNC_INTERVAL_SECS: u64 = 45;
 /// Per SPEC_11 §5.1: Query peers for available sponsorship offers during initial sync
 pub const SPONSORSHIP_OFFER_SYNC_INTERVAL_SECS: u64 = 120;
 
+/// Sponsorship claim re-broadcast interval. The claimant re-sends its still-
+/// pending claims until it is sponsored, because claims are neither relayed nor
+/// pull-synced by peers (SPEC_11 — see router `handle_sponsorship_claim`). This
+/// makes onboarding reliable when the one-shot broadcast at submit time misses
+/// the sponsor (e.g. a mobile node whose broadcast fan-out excluded it).
+pub const SPONSORSHIP_CLAIM_REBROADCAST_INTERVAL_SECS: u64 = 30;
+
 /// Hole-punch coordination interval (Layer 2 NAT traversal). Every 30s a well-connected
 /// node re-introduces its NAT'd peers to each other. Frequent enough that peers reconnect
 /// quickly after a NAT mapping expires, cheap enough to not spam (see MAX_PEERS cap).
@@ -832,6 +839,90 @@ impl BackgroundTaskRunner {
                                 sent,
                                 current_offer_count
                             );
+                        }
+                    }
+                }
+            }
+        });
+
+        self.handles.push(handle);
+    }
+
+    /// Spawn the claimant-side sponsorship-claim re-broadcast task.
+    ///
+    /// Claims are delivered by a single broadcast at submit time and are neither
+    /// relayed nor pull-synced by peers (see router `handle_sponsorship_claim`,
+    /// "Does NOT relay claims"), so a claim can silently fail to reach its
+    /// sponsor. Until this node is sponsored, periodically re-broadcast its own
+    /// still-pending claims so the sponsor eventually receives one and approves.
+    pub fn spawn_sponsorship_claim_rebroadcast(
+        &mut self,
+        connection_pool: Arc<PeerConnectionPool>,
+        offer_store: Arc<OfferStore>,
+        sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
+        me: crate::types::identity::PublicKey,
+    ) {
+        let mut shutdown = self.shutdown_rx.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut ticker =
+                interval(Duration::from_secs(SPONSORSHIP_CLAIM_REBROADCAST_INTERVAL_SECS));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            info!(
+                "[CLAIM-REBROADCAST] Started ({}s interval)",
+                SPONSORSHIP_CLAIM_REBROADCAST_INTERVAL_SECS
+            );
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    _ = shutdown.changed() => {
+                        info!("[CLAIM-REBROADCAST] Received shutdown signal");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        // Once sponsored there is nothing to chase.
+                        if let Some(ref ss) = sponsorship_store {
+                            if ss.exists(&me).unwrap_or(false) {
+                                continue;
+                            }
+                        }
+
+                        let peers = connection_pool.peer_ids().await;
+                        if peers.is_empty() {
+                            continue;
+                        }
+
+                        let claims = match offer_store.get_own_pending_claims(&me) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                debug!("[CLAIM-REBROADCAST] failed to read own claims: {e}");
+                                continue;
+                            }
+                        };
+
+                        for claim in &claims {
+                            match crate::sponsorship::wire::serialize_claim(claim) {
+                                Ok(bytes) => {
+                                    let envelope = MessageEnvelope::new_fork_agnostic(
+                                        MessageType::SponsorshipOfferClaim,
+                                        bytes,
+                                    );
+                                    let sent = connection_pool.broadcast(&envelope).await;
+                                    if sent > 0 {
+                                        info!(
+                                            "[CLAIM-REBROADCAST] Re-broadcast pending claim for offer {} to {} peers",
+                                            hex::encode(&claim.offer_id[..8]),
+                                            sent
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!("[CLAIM-REBROADCAST] serialize failed: {e}")
+                                }
+                            }
                         }
                     }
                 }
@@ -2579,7 +2670,15 @@ impl BackgroundTaskRunner {
         // Sponsorship offer sync - queries peers for offers during initial sync (SPEC_11 §5.1)
         // This ensures new nodes receive existing offers that were created before they joined
         if let Some(os) = offer_store {
-            self.spawn_sponsorship_offer_sync(connection_pool, os);
+            self.spawn_sponsorship_offer_sync(connection_pool.clone(), os.clone());
+            // Claimant-side: keep re-broadcasting our own pending claims until we
+            // are sponsored, since claims are not relayed/pull-synced (F7).
+            self.spawn_sponsorship_claim_rebroadcast(
+                connection_pool,
+                os,
+                sponsorship_store.clone(),
+                crate::types::identity::PublicKey::from_bytes(node_identity),
+            );
         }
 
         // These have no dependencies for now - always start as placeholders

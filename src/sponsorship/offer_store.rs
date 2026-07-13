@@ -339,6 +339,25 @@ impl OfferStore {
         Ok(claims)
     }
 
+    /// Get this node's own still-pending claims (claimant == `me`, no sponsor
+    /// approval yet). Used by the claimant-side re-broadcast task so a claim
+    /// reaches the sponsor even if the one-shot broadcast at submit time missed
+    /// them — claims are not relayed or pull-synced by other nodes (SPEC_11).
+    pub fn get_own_pending_claims(
+        &self,
+        me: &PublicKey,
+    ) -> Result<Vec<SponsorshipClaim>, SponsorshipError> {
+        let mut claims = Vec::new();
+        for item in self.claims.iter() {
+            let (_, value) = item?;
+            let claim: SponsorshipClaim = bincode::deserialize(&value)?;
+            if claim.is_pending() && claim.claimant == *me {
+                claims.push(claim);
+            }
+        }
+        Ok(claims)
+    }
+
     /// Check if a claimant has already claimed an offer
     pub fn has_claimed(
         &self,
@@ -696,6 +715,34 @@ mod tests {
 
         let all = store.get_all_claims(&offer.offer_id).unwrap();
         assert_eq!(all.len(), 4);
+    }
+
+    #[test]
+    fn test_get_own_pending_claims() {
+        use crate::types::identity::PublicKey;
+        let (store, _dir) = create_test_store();
+        for id in [[2u8; 16], [7u8; 16], [8u8; 16]] {
+            store.create_offer(&make_test_offer([1u8; 32], id)).unwrap();
+        }
+        let me = [42u8; 32];
+        let other = [43u8; 32];
+
+        store.submit_claim(&make_test_claim([2u8; 16], me)).unwrap(); // mine, pending
+        store.submit_claim(&make_test_claim([7u8; 16], me)).unwrap(); // mine, pending
+        store
+            .submit_claim(&make_test_claim([2u8; 16], other))
+            .unwrap(); // other's, pending
+        let mut approved = make_test_claim([8u8; 16], me);
+        approved.sponsor_approval = Some(Signature::from_bytes([1u8; 64]));
+        store.submit_claim(&approved).unwrap(); // mine, already approved
+
+        let mine = store
+            .get_own_pending_claims(&PublicKey::from_bytes(me))
+            .unwrap();
+        assert_eq!(mine.len(), 2, "only my two still-pending claims");
+        assert!(mine
+            .iter()
+            .all(|c| c.claimant == PublicKey::from_bytes(me) && c.is_pending()));
     }
 
     #[test]
