@@ -955,6 +955,16 @@ impl BlockBuilder {
         let mut all_content_blocks = Vec::new();
         let mut content_blocks_by_space: Vec<(SpaceId, Vec<ContentBlock>)> = Vec::new();
 
+        // Block-level dedup: an action must never appear in more than one content
+        // block of the same root block. The same action can reach the mempool under
+        // two thread_ids (gossip races, reorg re-adds), and without this a peer marks
+        // the action finalized while storing the first content block, then skips the
+        // second as "already-finalized" — diverging from the forming node and stalling
+        // the chain. Dedup deterministically (spaces and threads are already sorted)
+        // so every node forms the identical block.
+        let mut seen_action_hashes: std::collections::HashSet<[u8; 32]> =
+            std::collections::HashSet::new();
+
         for (space_id, mut threads) in sorted_spaces {
             // DETERMINISTIC: Sort threads by ID within each space
             threads.sort_by(|a, b| a.thread_id.cmp(&b.thread_id));
@@ -971,6 +981,15 @@ impl BlockBuilder {
                     let hash_b = Self::action_hash(b);
                     hash_a.cmp(&hash_b)
                 });
+
+                // Drop any action already placed in an earlier content block of this
+                // same root block (block-level dedup, see seen_action_hashes above).
+                thread
+                    .actions
+                    .retain(|a| seen_action_hashes.insert(Self::action_hash(a)));
+                if thread.actions.is_empty() {
+                    continue;
+                }
 
                 // Use new_with_space_metadata if space metadata is present (CreateSpace actions)
                 let content_block_result = if let Some(metadata) = thread.space_metadata {
