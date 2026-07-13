@@ -86,6 +86,65 @@ application + "public key is shared" note). Submit → ~8s to broadcast → clea
   `created_at`, so after deploying the fix the bot's offer store must be cleared
   (or the offer left to expire) so the faucet republishes a correctly-signed,
   propagating offer.
+- **SECOND bug, same class (claim path):** `claim_sponsorship_offer` verified the
+  claimant signature over `params.timestamp` but stored the claim with
+  `claimed_at = current_time`. `SponsorshipClaim::signature_message()` derives the
+  signed timestamp from `claimed_at`, so propagated claims failed signature
+  re-verification on every peer — the sponsor saw **0 pending claims** and
+  auto-approve onboarding stalled even once offers propagated. Fixed: anchor
+  `claimed_at` to `params.timestamp`. Regression test
+  `claim_signature_reverifies_only_when_claimed_at_is_the_signed_timestamp`.
+- **VERIFIED end-to-end (with fixed binary on bot + local claimant):**
+  1. Faucet publishes Open offer `67097611` → propagates bot→seed→local→phone
+     (all nodes list it; before the fix only the creating node had it).
+  2. qa-user claims it → claim reaches the **bot** (`pending_claims=1`, was 0).
+  3. Faucet run → **`approved=1`** (bot auto-approves).
+  4. On-chain Sponsor action mines + propagates → claimant becomes sponsored.
+- **Both fixes committed** (`a2b7785d` offer, `2147d8c3` claim) with unit tests.
+- **Remaining rollout for real users:** clients that create offers/claims need the
+  fixed binary (the fix is on the *creating* node). Seed already on a post-fix
+  build; local rebuilt; **phone `.so` still needs a rebuild+reinstall** with these
+  two fixes for mobile onboarding to complete on-device (the mobile claim UI works,
+  but a pre-fix phone's claim won't propagate).
+
+## Visual / UX audit (Group E) — running notes
+
+**Mobile (S4):**
+- **V1 · polish** — Profile header uses a large, full-width **bright-lime band**
+  (the identity's avatar color painted as the whole header background) that clashes
+  hard with the otherwise dark theme. The saturated block is jarring; dim/desaturate
+  it or restrict the color to the avatar circle.
+- Positives: unsponsored banner, "How Sponsorship Works" explainer, pending-claim
+  banner, claim modal, and success states are all clear, well-contrasted, and
+  readable. Status strip ("Running · N peers · height H · 100%") is a nice touch.
+
+**PC feed (S3):** audit pending (node-identity mode confirmed working; feed empty
+for the fresh identity — Discover is the content surface).
+
+### F5 CONFIRMED FIXED — full onboarding verified on-chain
+qa-user claimed the faucet offer, the bot approved (`approved=1`), the Sponsor
+action mined into block 21, and **local + on-chain both report
+`has_sponsorship=true`**; the PC feed UI's "not sponsored" banner cleared and the
+Post action became available. The two propagation fixes (offer `created_at`, claim
+`claimed_at`) are what unblocked it.
+
+## F6 — Block-formation stalls at threshold; unsponsored node forms rejected blocks · major
+- **Surface:** bot + local nodes.
+- **Observed:** with the approval action in mempool and `mempool_actions=3 ==
+  threshold=3`, the canonical cluster sat at height 20 for 2+ minutes without
+  forming a block, even though the bot reported `leader_eligible=true, eta=0s`.
+  Meanwhile the **unsponsored local node (`d8abca`) formed block 21 as an
+  "ineligible leader"**, which the bot/seed rejected
+  (`[BLOCK] REJECTED: … created by ineligible leader d8abca…`), leaving local on a
+  1-block fork. Restarting the bot's node unstuck formation (20→21, mempool
+  cleared, approval mined) within ~40s.
+- **Two issues:** (1) an eligible leader can sit at a met threshold without
+  forming a block until nudged (restart) — a formation stall; (2) an
+  unsponsored/ineligible node still runs block formation and emits blocks the
+  network rejects, creating fork churn. Both delay/disrupt confirmation of
+  otherwise-valid actions (here, a sponsorship approval).
+- **Impact:** even after the faucet approves, a new user's on-chain sponsorship
+  can be delayed indefinitely if no eligible leader forms the block.
 
 ## F4 — Magic-mismatch error message hardcodes "expected SWIM" on all networks · minor
 - **Surface:** node log (`src/network/error.rs:11`).
