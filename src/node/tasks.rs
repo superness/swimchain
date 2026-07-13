@@ -103,6 +103,17 @@ pub const SPONSORSHIP_OFFER_SYNC_INTERVAL_SECS: u64 = 120;
 /// the sponsor (e.g. a mobile node whose broadcast fan-out excluded it).
 pub const SPONSORSHIP_CLAIM_REBROADCAST_INTERVAL_SECS: u64 = 30;
 
+/// Mempool re-broadcast interval. A self-originated action is announced once at
+/// submit time; if that broadcast misses (a peer mid-reconnect, a flaky/NAT link,
+/// a seed-node dropping the connection after its idle timeout) the action strands
+/// with no retry — it never reaches a block producer's mempool and is never mined.
+/// Periodically re-announce the live mempool so a missed broadcast self-heals.
+/// Generalizes the claim-only re-broadcast above to every pending action.
+pub const MEMPOOL_REBROADCAST_INTERVAL_SECS: u64 = 20;
+
+/// Cap on actions re-announced per tick, so a large mempool can't flood peers.
+pub const MEMPOOL_REBROADCAST_MAX_PER_TICK: usize = 128;
+
 /// Hole-punch coordination interval (Layer 2 NAT traversal). Every 30s a well-connected
 /// node re-introduces its NAT'd peers to each other. Frequent enough that peers reconnect
 /// quickly after a NAT mapping expires, cheap enough to not spam (see MAX_PEERS cap).
@@ -923,6 +934,85 @@ impl BackgroundTaskRunner {
                                     debug!("[CLAIM-REBROADCAST] serialize failed: {e}")
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        });
+
+        self.handles.push(handle);
+    }
+
+    /// Spawn the mempool re-broadcast task.
+    ///
+    /// A self-originated action is announced once at submit time. If that single
+    /// broadcast misses — a peer mid-reconnect, a flaky/NAT link, or a `--seed-node`
+    /// dropping the connection after its idle timeout — the action strands: it never
+    /// reaches a block producer's mempool and is never mined, with no retry. This
+    /// periodically re-announces the live mempool so a missed broadcast self-heals.
+    /// Actions drop out of the snapshot once finalized (the builder clears them), so
+    /// this stops chasing them automatically. Generalizes `spawn_sponsorship_claim_rebroadcast`.
+    pub fn spawn_mempool_rebroadcast(
+        &mut self,
+        connection_pool: Arc<PeerConnectionPool>,
+        block_builder: Arc<RwLock<BlockBuilder>>,
+    ) {
+        let mut shutdown = self.shutdown_rx.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(MEMPOOL_REBROADCAST_INTERVAL_SECS));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            info!(
+                "[MEMPOOL-REBROADCAST] Started ({}s interval)",
+                MEMPOOL_REBROADCAST_INTERVAL_SECS
+            );
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    _ = shutdown.changed() => {
+                        info!("[MEMPOOL-REBROADCAST] Received shutdown signal");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        let peers = connection_pool.peer_ids().await;
+                        if peers.is_empty() {
+                            continue;
+                        }
+
+                        let pending = match block_builder.read() {
+                            Ok(b) => b.pending_action_announcements(),
+                            Err(_) => continue,
+                        };
+                        if pending.is_empty() {
+                            continue;
+                        }
+
+                        use crate::network::messages::ActionAnnouncePayload;
+                        let mut announced = 0usize;
+                        for (thread_id, space_id, action) in
+                            pending.into_iter().take(MEMPOOL_REBROADCAST_MAX_PER_TICK)
+                        {
+                            let payload = ActionAnnouncePayload::new(
+                                thread_id,
+                                space_id,
+                                action.serialize(),
+                            );
+                            let envelope = MessageEnvelope::new_fork_agnostic(
+                                MessageType::ActionAnnounce,
+                                payload.to_bytes().to_vec(),
+                            );
+                            if connection_pool.broadcast(&envelope).await > 0 {
+                                announced += 1;
+                            }
+                        }
+                        if announced > 0 {
+                            debug!(
+                                "[MEMPOOL-REBROADCAST] re-announced {} pending action(s) to peers",
+                                announced
+                            );
                         }
                     }
                 }
@@ -2701,6 +2791,10 @@ impl BackgroundTaskRunner {
         // Spawn block formation task for block-based propagation (SPEC_08)
         // Forms blocks when cumulative PoW threshold is met AND leader election passes
         if let Some(bb) = block_builder {
+            // Mempool re-broadcast: re-announce still-pending actions so a missed
+            // one-shot broadcast (flaky/NAT link, seed-node idle drop) self-heals
+            // and the action eventually reaches a producer's mempool to be mined.
+            self.spawn_mempool_rebroadcast(connection_pool.clone(), bb.clone());
             self.spawn_block_formation(
                 bb,
                 connection_pool.clone(),

@@ -822,6 +822,23 @@ impl BlockBuilder {
         self.threads.values().map(|t| t.actions.len()).sum()
     }
 
+    /// Snapshot of all pending mempool actions as `(thread_id, space_id, action)`,
+    /// for periodic re-announcement until they are finalized. A self-originated
+    /// action is broadcast once at submit time; if that broadcast misses (a peer
+    /// mid-reconnect, a flaky/NAT link, a seed-node dropping the connection) the
+    /// action can strand with no retry. Re-announcing the live mempool closes that
+    /// gap — the generalization of the claim-only re-broadcast task.
+    #[must_use]
+    pub fn pending_action_announcements(&self) -> Vec<(ThreadId, SpaceId, Action)> {
+        let mut out = Vec::new();
+        for thread in self.threads.values() {
+            for action in &thread.actions {
+                out.push((thread.thread_id, thread.space_id, action.clone()));
+            }
+        }
+        out
+    }
+
     /// Get pending thread count
     #[must_use]
     pub fn pending_thread_count(&self) -> usize {
@@ -1490,6 +1507,25 @@ mod tests {
             regtest.is_threshold_met(),
             "regtest should seal on a single pow=1 action"
         );
+    }
+
+    #[test]
+    fn pending_action_announcements_snapshots_all_mempool_actions() {
+        // Backs the mempool re-broadcast task: every still-pending action must be
+        // re-announceable (with its thread/space) so a missed one-shot broadcast
+        // can self-heal instead of stranding the action.
+        let mut builder = BlockBuilder::new(30);
+        assert!(builder.pending_action_announcements().is_empty());
+
+        builder.add_action([10u8; 32], [11u8; 32], make_test_action(5), BranchPath::root());
+        builder.add_action([10u8; 32], [11u8; 32], make_test_action(5), BranchPath::root());
+        builder.add_action([12u8; 32], [13u8; 32], make_test_action(5), BranchPath::root());
+
+        let snap = builder.pending_action_announcements();
+        assert_eq!(snap.len(), 3, "all pending actions across threads are included");
+        // Thread/space are carried so peers can place the re-announced action.
+        assert!(snap.iter().any(|(t, s, _)| *t == [10u8; 32] && *s == [11u8; 32]));
+        assert!(snap.iter().any(|(t, s, _)| *t == [12u8; 32] && *s == [13u8; 32]));
     }
 
     #[test]
