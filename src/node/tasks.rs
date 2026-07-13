@@ -2594,6 +2594,7 @@ impl BackgroundTaskRunner {
         branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
         peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
         node_identity: [u8; 32],
+        identity_pubkey: [u8; 32],
         sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
         offer_store: Option<Arc<OfferStore>>,
     ) {
@@ -2677,7 +2678,7 @@ impl BackgroundTaskRunner {
                 connection_pool,
                 os,
                 sponsorship_store.clone(),
-                crate::types::identity::PublicKey::from_bytes(node_identity),
+                crate::types::identity::PublicKey::from_bytes(identity_pubkey),
             );
         }
 

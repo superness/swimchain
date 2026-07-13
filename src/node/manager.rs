@@ -1269,6 +1269,7 @@ impl NodeManager {
                 self.branch_subscription_manager.clone(),
                 self.peer_branch_tracker.clone(),
                 self.node_id(),
+                *self.keypair.public_key.as_bytes(),
                 self.sponsorship_store.clone(),
                 self.offer_store.clone(),
             );
