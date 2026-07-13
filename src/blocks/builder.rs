@@ -1137,6 +1137,34 @@ impl BlockBuilder {
         }
     }
 
+    /// Force the builder's tip state to the canonical chain tip, regressing if
+    /// the builder ran ahead. `build_root_block` advances `current_height` /
+    /// `prev_root_hash` as soon as it forms a block, BEFORE the caller decides
+    /// whether to store it. If the caller then rejects the block (a validation
+    /// backstop, an invalid CreateSpace), the store stays put but the builder is
+    /// left one height ahead on a phantom parent — and `sync_chain_state` only
+    /// advances, so it can never pull the builder back. The next tick then forms
+    /// on the phantom parent, producing blocks every peer rejects as "too far
+    /// ahead / invalid parent" and wedging the chain. Call this against the chain
+    /// store's real tip at the top of the formation loop so a rejected form self
+    /// corrects instead of cascading.
+    pub fn reset_to_chain_tip(
+        &mut self,
+        height: u64,
+        prev_root_hash: [u8; 32],
+        cumulative_pow: u64,
+    ) {
+        if self.current_height != height
+            || self.prev_root_hash != prev_root_hash
+            || self.prev_cumulative_pow != cumulative_pow
+        {
+            self.current_height = height;
+            self.prev_root_hash = prev_root_hash;
+            self.prev_cumulative_pow = cumulative_pow;
+            self.waiting_since = None;
+        }
+    }
+
     /// Set previous content block hash for a thread
     pub fn set_prev_content_hash(&mut self, thread_id: ThreadId, hash: [u8; 32]) {
         if let Some(thread) = self.threads.get_mut(&thread_id) {
@@ -1353,6 +1381,30 @@ mod tests {
         assert_eq!(builder.difficulty_target(), 30);
         assert_eq!(builder.pending_action_count(), 0);
         assert_eq!(builder.pending_thread_count(), 0);
+    }
+
+    #[test]
+    fn reset_to_chain_tip_regresses_when_builder_ran_ahead() {
+        // Regression: a formation rejected after build_root_block bumped the
+        // builder leaves current_height ahead of the stored tip. sync_chain_state
+        // only advances, so it can't recover; reset_to_chain_tip must.
+        let mut builder = BlockBuilder::new(30);
+        builder.sync_chain_state(5, [0xAA; 32], 500);
+        assert_eq!(builder.current_height(), 5);
+
+        // Simulate the builder having run one height ahead on a phantom parent.
+        builder.reset_to_chain_tip(6, [0xBB; 32], 600);
+        assert_eq!(builder.current_height(), 6);
+
+        // advance-only sync CANNOT pull it back to the real tip (5)...
+        builder.sync_chain_state(5, [0xAA; 32], 500);
+        assert_eq!(builder.current_height(), 6, "sync_chain_state must not regress");
+
+        // ...but reset_to_chain_tip forces it back to the canonical tip.
+        builder.reset_to_chain_tip(5, [0xAA; 32], 500);
+        assert_eq!(builder.current_height(), 5, "reset_to_chain_tip must regress to the real tip");
+        // And next_height now points at the correct height to form (tip + 1).
+        assert_eq!(builder.next_height(), 6);
     }
 
     #[test]

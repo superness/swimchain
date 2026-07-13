@@ -2161,7 +2161,12 @@ impl BackgroundTaskRunner {
                                     .map(|b| b.cumulative_pow)
                                     .unwrap_or(0);
                                 if let Ok(mut builder) = block_builder.write() {
-                                    builder.sync_chain_state(tip_height, tip_hash, cumulative_pow);
+                                    // Force (not just advance) to the canonical tip: a
+                                    // formation rejected by the backstop/validation below
+                                    // leaves the builder one height ahead on a phantom
+                                    // parent, and advance-only sync can't undo that. See
+                                    // BlockBuilder::reset_to_chain_tip.
+                                    builder.reset_to_chain_tip(tip_height, tip_hash, cumulative_pow);
                                 }
                             }
                         }
