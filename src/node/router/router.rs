@@ -3643,17 +3643,31 @@ impl MessageRouter {
                         }
                     }
 
-                    // Get recent block timestamps for difficulty calculation
-                    // Use last 10 blocks or as many as available
+                    // Recent block timestamps for difficulty adjustment MUST come
+                    // from the chain THIS block extends (its own ancestors), not
+                    // from our current canonical chain. Walking our canonical chain
+                    // via get_root_hash_at_height judges a block that extends a
+                    // competing fork with the wrong difficulty, so a valid leader on
+                    // a heavier chain is falsely rejected as "ineligible" — which
+                    // permanently blocks reorg onto a chain that diverged below our
+                    // tip (two nodes on different chains never agree on eligibility).
+                    // Walk back from the block's actual parent instead, matching the
+                    // timestamps its creator used.
                     let mut recent_timestamps = Vec::with_capacity(10);
-                    let mut height = block_height.saturating_sub(1);
-                    while recent_timestamps.len() < 10 && height > 0 {
-                        if let Ok(Some(hash)) = chain_store.get_root_hash_at_height(height) {
-                            if let Ok(Some(block)) = chain_store.get_root_block(&hash) {
-                                recent_timestamps.push(block.timestamp);
+                    {
+                        let mut cursor = prev_hash;
+                        for _ in 0..10 {
+                            match chain_store.get_root_block(&cursor) {
+                                Ok(Some(ancestor)) => {
+                                    recent_timestamps.push(ancestor.timestamp);
+                                    if ancestor.prev_root_hash == [0u8; 32] {
+                                        break; // reached genesis
+                                    }
+                                    cursor = ancestor.prev_root_hash;
+                                }
+                                _ => break, // missing ancestor: use what we have
                             }
                         }
-                        height = height.saturating_sub(1);
                     }
 
                     // Validate the block leader
