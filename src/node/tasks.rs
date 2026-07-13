@@ -2142,6 +2142,30 @@ impl BackgroundTaskRunner {
                             None => continue,
                         };
 
+                        // Keep the builder's tip in step with the canonical chain before
+                        // deciding anything. Blocks received from peers advance the chain
+                        // store but do NOT call `sync_chain_state` (only startup does), so
+                        // without this the builder's `current_height` goes stale the moment a
+                        // peer's block arrives — and `next_height` then points at a height that
+                        // already exists, making the loop below perpetually skip
+                        // ("block already exists") and never form again until a restart. That
+                        // is the network-block formation stall that wedges quiet chains.
+                        // `sync_chain_state` only advances (height > current), so this is a
+                        // cheap idempotent no-op once we're already at the tip.
+                        if let Ok(Some(tip_height)) = chain_store.get_latest_height() {
+                            if let Ok(Some(tip_hash)) = chain_store.get_root_hash_at_height(tip_height) {
+                                let cumulative_pow = chain_store
+                                    .get_root_block(&tip_hash)
+                                    .ok()
+                                    .flatten()
+                                    .map(|b| b.cumulative_pow)
+                                    .unwrap_or(0);
+                                if let Ok(mut builder) = block_builder.write() {
+                                    builder.sync_chain_state(tip_height, tip_hash, cumulative_pow);
+                                }
+                            }
+                        }
+
                         // Check PoW threshold first (cheap check)
                         let should_form = {
                             match block_builder.read() {
