@@ -1989,8 +1989,26 @@ impl MessageRouter {
                                     for (thread_id, space_id, action, branch_path) in
                                         orphaned_actions
                                     {
-                                        // Skip actions that are in the new winning block
-                                        // (they'll be marked as finalized when we store the new block)
+                                        // Skip actions still finalized in a surviving block.
+                                        // rollback_block_at_height() already unmarked every
+                                        // action in the blocks we just rolled back, so
+                                        // is_action_finalized() now returns Some ONLY when this
+                                        // action ALSO lives in a block that survived the reorg
+                                        // (e.g. a shared ancestor below the fork point).
+                                        // Re-adding such an action lets the builder re-mine it
+                                        // into a future block, which every synced peer then
+                                        // rejects as an "already-finalized action" — permanently
+                                        // forking this node off the network.
+                                        let action_hash =
+                                            crate::blocks::builder::BlockBuilder::action_hash(
+                                                &action,
+                                            );
+                                        if matches!(
+                                            chain_store.is_action_finalized(&action_hash),
+                                            Ok(Some(_))
+                                        ) {
+                                            continue;
+                                        }
                                         builder.add_action(
                                             thread_id,
                                             space_id,
@@ -3252,6 +3270,21 @@ impl MessageRouter {
                                         for (thread_id, space_id, action, branch_path) in
                                             orphaned_actions
                                         {
+                                            // Skip actions still finalized in a surviving block
+                                            // (shared ancestor below the fork point). Re-adding a
+                                            // finalized action lets it be re-mined and rejected as
+                                            // an "already-finalized action", forking this node off
+                                            // the network. Mirrors the guard on the reorg path above.
+                                            let action_hash =
+                                                crate::blocks::builder::BlockBuilder::action_hash(
+                                                    &action,
+                                                );
+                                            if matches!(
+                                                chain_store.is_action_finalized(&action_hash),
+                                                Ok(Some(_))
+                                            ) {
+                                                continue;
+                                            }
                                             builder.add_action(
                                                 thread_id,
                                                 space_id,

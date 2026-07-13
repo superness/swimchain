@@ -3727,6 +3727,70 @@ mod tests {
         assert_eq!(indexed_hash, Some(hash));
     }
 
+    /// Regression for the chain-forking bug where a locally-formed block
+    /// re-included an action already finalized in a prior block. Locally-formed
+    /// blocks bypass the router's incoming duplicate check, so the mempool could
+    /// re-mine a finalized action into a new block; every synced peer then
+    /// rejected it as an "already-finalized action", permanently forking the
+    /// forming node off the network. Both the block-formation backstop
+    /// (node/tasks.rs) and the reorg re-add guards (node/router) rely on this
+    /// detection: an action finalized in a surviving block must be reported as a
+    /// duplicate if re-included.
+    #[test]
+    fn reincluded_finalized_action_is_detected_as_duplicate() {
+        use crate::blocks::builder::BlockBuilder;
+        use crate::blocks::{Action, ActionType, BranchPath, ContentBlock};
+
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let action = Action {
+            action_type: ActionType::Post,
+            actor: [0xC1; 32],
+            timestamp: 1_700_000_000,
+            content_hash: Some([0xEE; 32]),
+            parent_id: None,
+            pow_nonce: 7,
+            pow_work: 100,
+            pow_target: [0u8; 32],
+            signature: [0u8; 64],
+            emoji: None,
+            media_refs: vec![],
+            display_name: None,
+            replaces_pending: None,
+            private: false,
+        };
+        let cb = ContentBlock::new(
+            [0x44; 32],
+            [0x55; 32],
+            vec![action.clone()],
+            None,
+            1_700_000_047,
+            BranchPath::root(),
+        )
+        .unwrap();
+        let action_hash = BlockBuilder::action_hash(&action);
+
+        // Before finalization the action is not a duplicate.
+        assert!(store
+            .check_content_block_for_duplicates(&cb)
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.is_action_finalized(&action_hash).unwrap(), None);
+
+        // Finalize it at height 47 (as storing block 47 would).
+        store.mark_content_block_actions_finalized(&cb, 47).unwrap();
+        assert_eq!(store.is_action_finalized(&action_hash).unwrap(), Some(47));
+
+        // Re-including the same action in a later block MUST be flagged so the
+        // formation backstop / router reject it instead of forking the chain.
+        assert_eq!(
+            store.check_content_block_for_duplicates(&cb).unwrap(),
+            vec![(0usize, 47u64)],
+            "a re-included finalized action must be detected as a duplicate"
+        );
+    }
+
     /// Build a root block linked to `prev`, tagged so that two forks produce
     /// distinct hashes at the same height.
     fn linked_block(height: u64, prev: BlockHash, cumulative_pow: u64, fork_tag: u8) -> RootBlock {

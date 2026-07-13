@@ -2329,6 +2329,33 @@ impl BackgroundTaskRunner {
                             }
                         }
 
+                        // BACKSTOP: never store or broadcast a locally-formed block that
+                        // re-includes an action already finalized in a prior block.
+                        // build_root_block() drains the mempool blindly; if any path (a reorg
+                        // re-add, a stale persisted mempool) left a finalized action pending,
+                        // emitting it here yields a block every synced peer rejects as containing
+                        // an "already-finalized action" — permanently forking us off the network.
+                        // This is the last line of defense behind the reorg re-add guards.
+                        if block_is_valid {
+                            'finalized_check: for content_block in &content_blocks {
+                                for action in &content_block.actions {
+                                    let action_hash =
+                                        crate::blocks::builder::BlockBuilder::action_hash(action);
+                                    if let Ok(Some(h)) =
+                                        chain_store.is_action_finalized(&action_hash)
+                                    {
+                                        warn!(
+                                            "[BLOCKS] VALIDATION FAILED: formed block re-includes action {} already finalized at height {}. Block rejected.",
+                                            hex::encode(&action_hash[..8]),
+                                            h
+                                        );
+                                        block_is_valid = false;
+                                        break 'finalized_check;
+                                    }
+                                }
+                            }
+                        }
+
                         // Skip storing if validation failed
                         if !block_is_valid {
                             warn!("[BLOCKS] Skipping invalid block storage, continuing to next tick");
