@@ -1,0 +1,106 @@
+:root {
+  --ink: #04171e;
+  --surface: #0a2730;
+  --line: #17414d;
+  --foam: #e8f1ef;
+  --muted: #7fa8a4;
+  --heat: #ff9e5e;
+  --shallow: #6ed3c2;
+  --water: #072a34;
+  --water-2: #0a323d;
+  --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --serif: 'Palatino Linotype', Georgia, serif;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(1100px 560px at 70% -10%, rgba(110, 211, 194, 0.08), transparent 60%),
+    var(--ink);
+  color: var(--foam);
+  font-family: var(--serif);
+}
+code { font-family: var(--mono); font-size: 0.9em; color: var(--shallow); }
+.muted { color: var(--muted); }
+.fine { color: var(--muted); font-size: 13px; }
+.fine strong { color: var(--foam); }
+
+.center { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+.col { flex-direction: column; gap: 12px; max-width: 480px; margin: 0 auto; }
+
+.btn {
+  font-family: var(--mono); font-size: 14px; padding: 10px 18px; border-radius: 4px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--foam); cursor: pointer;
+}
+.btn.primary { background: var(--heat); border-color: var(--heat); color: #241205; font-weight: 700; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.link { background: none; border: none; color: var(--shallow); cursor: pointer; font-family: var(--mono); font-size: 13px; padding: 0; }
+
+.app { max-width: 640px; margin: 0 auto; padding: 20px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { font-size: 24px; margin: 0 0 4px; }
+h2 { font-size: 18px; margin: 0; }
+.who { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.who .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+.who .dot.ok { background: var(--shallow); }
+.who .dot.bad { background: var(--heat); }
+
+.banner { margin: 14px 0; padding: 10px 14px; border-radius: 4px; border: 1px solid var(--line); font-size: 14px; }
+.banner.warn { border-color: var(--heat); background: rgba(255, 158, 94, 0.08); }
+
+.lobby-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 10px; }
+.games { list-style: none; padding: 0; margin: 0; }
+.games li {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 8px; cursor: pointer;
+}
+.games li:hover { border-color: var(--shallow); }
+.games .title { font-size: 15px; }
+
+.game { margin-top: 12px; }
+
+/* ── The reef grid ─────────────────────────────────────────────────────────── */
+.reef {
+  width: min(94vw, 540px);
+  margin: 16px auto;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  background: var(--water);
+  border: 2px solid var(--line);
+  border-radius: 6px;
+}
+.cell {
+  aspect-ratio: 1;
+  border: none;
+  border-radius: 3px;
+  background: var(--water-2);
+  padding: 0;
+  position: relative;
+  cursor: default;
+  transition: background 120ms ease, transform 80ms ease, box-shadow 120ms ease;
+}
+/* Actionable affordances for the local player. */
+.cell.act { cursor: pointer; }
+.cell.act.seed { box-shadow: inset 0 0 0 2px rgba(110, 211, 194, 0.55); }
+.cell.act.spread:hover { box-shadow: inset 0 0 0 2px var(--shallow); transform: scale(1.06); }
+.cell.act.tend:hover { box-shadow: inset 0 0 0 2px var(--foam); transform: scale(1.06); }
+.cell.act.contest:hover { box-shadow: inset 0 0 0 2px var(--heat); transform: scale(1.06); }
+.cell.mine { }
+.cell .pip {
+  position: absolute; inset: 0; margin: auto;
+  width: 26%; height: 26%; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.status { text-align: center; margin-top: 6px; }
+.status .fine { margin: 6px 0; line-height: 1.5; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 16px; justify-content: center; margin-bottom: 8px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.legend .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.overlay { position: fixed; inset: 0; background: rgba(4, 23, 30, 0.72); display: flex; align-items: center; justify-content: center; }
+.mining { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 24px 32px; text-align: center; }
+.spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--heat); border-radius: 50%; margin: 0 auto 12px; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
