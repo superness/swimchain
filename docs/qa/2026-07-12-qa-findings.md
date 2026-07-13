@@ -129,7 +129,16 @@ application + "public key is shared" note). Submit → ~8s to broadcast → clea
   two fixes for mobile onboarding to complete on-device (the mobile claim UI works,
   but a pre-fix phone's claim won't propagate).
 
-## Visual / UX audit (Group E) — running notes
+## Visual / UX audit (Group E)
+
+**Coverage:** Mobile (S4) — Feed, Discover, Space, Thread(partial), Profile,
+Sponsorship. PC feed (S3) — Feed, Discover, Space, Compose, Post detail,
+Sponsorship. Overall both UIs are **clean, dark-themed, well-contrasted, and
+readable**; layouts hold at their viewports; empty/loading/error states are
+present and clear. No broken/overflowing layouts or console errors on load
+(only a harmless favicon 404). Issues found: V1–V3 + F2 (below).
+
+### Running notes
 
 **Mobile (S4):**
 - **V1 · polish** — Profile header uses a large, full-width **bright-lime band**
@@ -141,10 +150,11 @@ application + "public key is shared" note). Submit → ~8s to broadcast → clea
   readable. Status strip ("Running · N peers · height H · 100%") is a nice touch.
 
 **PC feed (S3):**
-- **V2 · minor** — the **Space view renders post cards with a white/light
+- **V2 · minor** — the **PC Space view renders post cards with a white/light
   background** while the header, Feed, and Discover are dark — a jarring
-  light-in-dark-theme inconsistency (Feed/Discover use dark cards). Likely a
-  missing dark-mode style on the space/thread list card.
+  light-in-dark-theme inconsistency. **PC-only**: the mobile Space view renders
+  the same list with correct dark cards, so it's a desktop-viewport style bug in
+  the shared feed-client (missing dark-mode style on the space/thread list card).
 - **V3 · major (=F2)** — the Space **header shows the raw `sp1qqqsqrttr…` id**
   instead of the space name; same on Discover suggestions and post detail.
 - Positives: node-identity mode works; space content, thread counts, relative
@@ -282,6 +292,24 @@ Post action became available. The two propagation fixes (offer `created_at`, cla
   do resolve. Name resolution is inconsistent, so users repeatedly see cryptic
   raw `sp1…` ids instead of space names. Not just cosmetic — it makes spaces
   unidentifiable in the primary discovery surface.
+
+## F9 — Content bodies don't propagate after the block header syncs (real-time cross-surface broken) · blocker
+- **Surface:** all (measured local S1 → seed S2).
+- **Observed:** a PC post mined into block 49 in seconds; the block **header/tip
+  propagated to seed+bot in seconds** (all at height 49, identical tip
+  `cdec7c97`). But the post's **content body never propagated** — 400s+ later the
+  seed (same tip) could not view it via `list_space_posts` (an *older* post from
+  ~1.5h earlier had eventually backfilled, so it's a lag/gap, not total loss).
+- **Impact:** surfaces **cannot see each other's new content in real time** — the
+  headline of the QA ask. The control plane (tips, offers, RPC) is fast (seconds);
+  the content plane lags/stalls. Reactions untested but share this path.
+- **Status:** a concurrent agent is fixing it (hypothesis: "the block builder's
+  height only syncs at startup", so content backfill never requests bodies for
+  blocks synced after boot). I deferred the code fix to avoid conflicts. Re-run
+  the real-time post+react cross-surface test after their fix lands for real
+  latency numbers.
+- **Note:** this was **masked** earlier by the F6 stall + F8 forks; only after the
+  network converged did it become cleanly measurable.
 
 ## F4 — Magic-mismatch error message hardcodes "expected SWIM" on all networks · minor
 - **Surface:** node log (`src/network/error.rs:11`).
