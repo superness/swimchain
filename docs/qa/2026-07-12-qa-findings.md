@@ -118,8 +118,15 @@ application + "public key is shared" note). Submit → ~8s to broadcast → clea
   banner, claim modal, and success states are all clear, well-contrasted, and
   readable. Status strip ("Running · N peers · height H · 100%") is a nice touch.
 
-**PC feed (S3):** audit pending (node-identity mode confirmed working; feed empty
-for the fresh identity — Discover is the content surface).
+**PC feed (S3):**
+- **V2 · minor** — the **Space view renders post cards with a white/light
+  background** while the header, Feed, and Discover are dark — a jarring
+  light-in-dark-theme inconsistency (Feed/Discover use dark cards). Likely a
+  missing dark-mode style on the space/thread list card.
+- **V3 · major (=F2)** — the Space **header shows the raw `sp1qqqsqrttr…` id**
+  instead of the space name; same on Discover suggestions and post detail.
+- Positives: node-identity mode works; space content, thread counts, relative
+  timestamps, sort control, and "New Post" all render cleanly and readably.
 
 ### F5 CONFIRMED FIXED — full onboarding verified on-chain
 qa-user claimed the faucet offer, the bot approved (`approved=1`), the Sponsor
