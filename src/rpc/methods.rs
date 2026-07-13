@@ -16835,11 +16835,21 @@ impl RpcMethods {
             );
         }
 
-        // Create and store the claim
+        // Create and store the claim.
+        //
+        // claimed_at MUST be the client's *signed* `params.timestamp`, not server
+        // `current_time`: the claimant signs a message containing this timestamp
+        // (verified above via params.timestamp), and peers re-verify a propagated
+        // claim through `SponsorshipClaim::signature_message()`, which derives the
+        // signed timestamp from `claimed_at`. Storing server time here makes the
+        // signature fail on every other node, so the claim never reaches the
+        // sponsor (they see 0 pending claims) and auto-approve onboarding stalls —
+        // the same class of bug fixed for offer created_at. The tolerance check
+        // above bounds the skew.
         let claim = SponsorshipClaim {
             offer_id: offer_id_bytes,
             claimant: claimant_pk,
-            claimed_at: current_time,
+            claimed_at: params.timestamp,
             identity_pow_proof: IdentityCreationProof {
                 public_key: claimant_pk,
                 timestamp: params.timestamp,

@@ -1865,6 +1865,61 @@ mod public_offer_tests {
         assert_eq!(&msg[56..88], &[3u8; 32]); // pow_hash
     }
 
+    // Regression: `claim_sponsorship_offer` must store `claimed_at` equal to the
+    // claimant's *signed* timestamp. Peers re-verify a propagated claim via
+    // `signature_message()`, which derives the signed timestamp from `claimed_at`,
+    // so storing server time there makes the claim's signature fail on every other
+    // node — the sponsor never sees it (0 pending claims) and auto-approve
+    // onboarding stalls (same class as the offer created_at bug).
+    #[test]
+    fn claim_signature_reverifies_only_when_claimed_at_is_the_signed_timestamp() {
+        use crate::crypto::signature::{generate_keypair_from_seed, sign, verify};
+
+        let kp = generate_keypair_from_seed([11u8; 32]);
+        let timestamp = 1_735_689_600u64;
+        let pow_hash = [3u8; 32];
+
+        // Message the claimant signs (matches the RPC's verification message:
+        // offer_id + claimant + timestamp + pow_hash).
+        let mut signed_msg = Vec::with_capacity(88);
+        signed_msg.extend_from_slice(&[1u8; 16]);
+        signed_msg.extend_from_slice(kp.public_key.as_bytes());
+        signed_msg.extend_from_slice(&timestamp.to_be_bytes());
+        signed_msg.extend_from_slice(&pow_hash);
+        let signature = sign(&kp.private_key, &signed_msg);
+
+        let good = SponsorshipClaim {
+            offer_id: [1u8; 16],
+            claimant: kp.public_key.clone(),
+            claimed_at: timestamp,
+            identity_pow_proof: IdentityCreationProof {
+                public_key: kp.public_key.clone(),
+                timestamp,
+                nonce: 1,
+                pow_hash,
+            },
+            pow_nonce_space: [0u8; 32],
+            application_text: None,
+            attestation_signature: None,
+            claimant_signature: signature,
+            sponsor_approval: None,
+        };
+        assert_eq!(good.signature_message(), signed_msg);
+        assert!(
+            verify(&good.claimant, &good.signature_message(), &good.claimant_signature),
+            "claim with claimed_at == signed timestamp must re-verify on peers"
+        );
+
+        let bugged = SponsorshipClaim {
+            claimed_at: timestamp + 7,
+            ..good.clone()
+        };
+        assert!(
+            !verify(&bugged.claimant, &bugged.signature_message(), &bugged.claimant_signature),
+            "claim whose claimed_at != signed timestamp must fail re-verification"
+        );
+    }
+
     #[test]
     fn test_sponsorship_claim_approval_message() {
         let claim = SponsorshipClaim {
