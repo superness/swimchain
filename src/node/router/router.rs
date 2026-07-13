@@ -3608,55 +3608,23 @@ impl MessageRouter {
                 let prev_block = chain_store.get_root_block(&prev_hash).ok().flatten();
 
                 if let Some(prev) = prev_block {
-                    // Parse first space block to get space_id for validation
-                    let mut first_space_id: [u8; 16] = [0u8; 16];
-                    let mut temp_offset = offset;
-
-                    // Try to parse the first space block to extract space_id
-                    if temp_offset + 4 <= data.len() {
-                        let space_count = u32::from_le_bytes([
-                            data[temp_offset],
-                            data[temp_offset + 1],
-                            data[temp_offset + 2],
-                            data[temp_offset + 3],
-                        ]) as usize;
-                        temp_offset += 4;
-
-                        if space_count > 0 && temp_offset + 4 <= data.len() {
-                            let space_len = u32::from_le_bytes([
-                                data[temp_offset],
-                                data[temp_offset + 1],
-                                data[temp_offset + 2],
-                                data[temp_offset + 3],
-                            ]) as usize;
-                            temp_offset += 4;
-
-                            if temp_offset + space_len <= data.len() {
-                                if let Ok(space_block) =
-                                    bincode::deserialize::<crate::blocks::SpaceBlock>(
-                                        &data[temp_offset..temp_offset + space_len],
-                                    )
-                                {
-                                    first_space_id.copy_from_slice(&space_block.space_id[..16]);
-                                }
-                            }
-                        }
-                    }
-
-                    // Recent block timestamps for difficulty adjustment MUST come
-                    // from the chain THIS block extends (its own ancestors), not
-                    // from our current canonical chain. Walking our canonical chain
-                    // via get_root_hash_at_height judges a block that extends a
-                    // competing fork with the wrong difficulty, so a valid leader on
-                    // a heavier chain is falsely rejected as "ineligible" — which
-                    // permanently blocks reorg onto a chain that diverged below our
-                    // tip (two nodes on different chains never agree on eligibility).
-                    // Walk back from the block's actual parent instead, matching the
-                    // timestamps its creator used.
-                    let mut recent_timestamps = Vec::with_capacity(10);
+                    // Leader eligibility MUST be judged with the EXACT inputs the
+                    // block builder (spawn_block_formation) used, or a node forms a
+                    // block it deems eligible while peers compute a different result
+                    // and reject it as "ineligible" — the permanent-fork bug. Mirror
+                    // the builder precisely:
+                    //  - space_id: [0;16] (global eligibility), NOT the block's space
+                    //    (the builder uses [0;16]; using first_space_id changes the
+                    //    block seed and flips eligibility).
+                    //  - recent timestamps: the last 11 blocks (heights h-11 ..= h-1),
+                    //    oldest→newest, gathered from the chain THIS block extends by
+                    //    walking its own ancestors — so a block on a competing/heavier
+                    //    fork is judged on its own chain and reorg isn't blocked (two
+                    //    nodes on different chains otherwise never agree on eligibility).
+                    let mut recent_timestamps = Vec::with_capacity(11);
                     {
                         let mut cursor = prev_hash;
-                        for _ in 0..10 {
+                        for _ in 0..11 {
                             match chain_store.get_root_block(&cursor) {
                                 Ok(Some(ancestor)) => {
                                     recent_timestamps.push(ancestor.timestamp);
@@ -3668,15 +3636,16 @@ impl MessageRouter {
                                 _ => break, // missing ancestor: use what we have
                             }
                         }
+                        recent_timestamps.reverse(); // builder gathers oldest→newest
                     }
 
-                    // Validate the block leader
+                    // Validate the block leader with the builder's exact inputs.
                     let is_valid_leader = crate::blocks::leader::validate_block_leader(
                         &root_block.block_creator,
                         root_block.timestamp,
                         &prev_hash,
                         prev.timestamp,
-                        &first_space_id,
+                        &[0u8; 16],
                         &recent_timestamps,
                     );
 
