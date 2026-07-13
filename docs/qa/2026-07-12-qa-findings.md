@@ -70,6 +70,22 @@ application + "public key is shared" note). Submit → ~8s to broadcast → clea
   direct-sponsor. Whether `free_slots=10` reflects an unpublished capacity.
 - **Impact:** the advertised path to onboard (claim faucet offer) does not complete
   for a new user on the current testnet.
+- **ROOT CAUSE FOUND + FIXED (code):** `create_sponsorship_offer`
+  (`src/rpc/methods.rs`) verified the sponsor signature over the client's
+  `params.timestamp`, but then stored the offer with `created_at = current_time`
+  (server clock). Peers re-verify a propagated offer via
+  `PublicSponsorshipOffer::signature_message()`, which derives the signed
+  timestamp from `created_at` — so with server time stored there, the signature
+  never re-verifies on any other node and the offer is silently dropped
+  (`handle_sponsorship_offer` / `handle_sponsorship_offer_list` both `continue`).
+  The creating node keeps it (it verified against `params.timestamp`), which is
+  exactly why the faucet offer was marooned on the bot. Fix: anchor
+  `created_at`/`expires_at` to `params.timestamp`. Regression test added:
+  `offer_signature_reverifies_only_when_created_at_is_the_signed_timestamp`.
+- **Deploy note:** the pre-fix offer already stored on the bot keeps its bad
+  `created_at`, so after deploying the fix the bot's offer store must be cleared
+  (or the offer left to expire) so the faucet republishes a correctly-signed,
+  propagating offer.
 
 ## F4 — Magic-mismatch error message hardcodes "expected SWIM" on all networks · minor
 - **Surface:** node log (`src/network/error.rs:11`).

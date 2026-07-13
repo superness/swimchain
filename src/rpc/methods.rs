@@ -16423,8 +16423,18 @@ impl RpcMethods {
             }
         }
 
-        // Generate offer_id from hash
-        let expires_at = current_time + (params.expires_days as u64) * 86400;
+        // Generate offer_id from hash.
+        //
+        // created_at/expires_at MUST be anchored to the client's signed
+        // `params.timestamp`, NOT server `current_time`: peers re-verify a
+        // propagated offer via `signature_message()`, which derives the signed
+        // timestamp from `created_at`. If we stored server time here, that
+        // reconstruction would differ from what the sponsor actually signed, so
+        // every other node would reject the offer's signature and it would never
+        // propagate (the creating node keeps it because it verified against
+        // params.timestamp at creation). The tolerance check above bounds the
+        // skew between params.timestamp and current_time to a few minutes.
+        let expires_at = params.timestamp + (params.expires_days as u64) * 86400;
         let offer_id: [u8; 16] = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
@@ -16481,7 +16491,9 @@ impl RpcMethods {
         let offer = PublicSponsorshipOffer {
             sponsor: sponsor_pk,
             offer_id,
-            created_at: current_time,
+            // Must equal the signed timestamp (see expires_at note above), so the
+            // signature re-verifies when the offer propagates to other nodes.
+            created_at: params.timestamp,
             expires_at,
             max_sponsees: params.slots,
             offer_type,

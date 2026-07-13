@@ -1756,6 +1756,64 @@ mod public_offer_tests {
         assert_eq!(&msg[64..72], &1735689600u64.to_be_bytes()); // timestamp (created_at)
     }
 
+    // Regression: `create_sponsorship_offer` must store `created_at` equal to the
+    // client's *signed* timestamp. Peers re-verify a propagated offer by
+    // reconstructing the signed message from `created_at` (see
+    // `signature_message`), so if the RPC stored server time instead, the
+    // signature would fail on every other node and the offer would never
+    // propagate — the faucet offer was marooned on the bot for exactly this
+    // reason.
+    #[test]
+    fn offer_signature_reverifies_only_when_created_at_is_the_signed_timestamp() {
+        use crate::crypto::signature::{generate_keypair_from_seed, sign, verify};
+
+        let kp = generate_keypair_from_seed([7u8; 32]);
+        let timestamp = 1_735_689_600u64;
+        let expires_days = 30u32;
+
+        // What the client signs (matches the RPC's verification message).
+        let signed_msg = PublicSponsorshipOffer::signature_message_for_creation(
+            kp.public_key.as_bytes(),
+            5,
+            &SponsorshipOfferType::Open,
+            expires_days,
+            0,
+            false,
+            timestamp,
+        );
+        let signature = sign(&kp.private_key, &signed_msg);
+
+        // Offer stored the fixed way: created_at == the signed timestamp.
+        let good = PublicSponsorshipOffer {
+            sponsor: kp.public_key.clone(),
+            offer_id: [9u8; 16],
+            created_at: timestamp,
+            expires_at: timestamp + (expires_days as u64) * 86400,
+            max_sponsees: 5,
+            offer_type: SponsorshipOfferType::Open,
+            requirements: SponsorshipRequirements::default(),
+            signature,
+            auto_approve: true,
+        };
+        assert_eq!(good.signature_message(), signed_msg);
+        assert!(
+            verify(&good.sponsor, &good.signature_message(), &good.signature),
+            "offer with created_at == signed timestamp must re-verify on peers"
+        );
+
+        // The bug: created_at set to (server) time that differs from the signed
+        // timestamp — reconstruction diverges and every peer rejects it.
+        let bugged = PublicSponsorshipOffer {
+            created_at: timestamp + 5,
+            ..good.clone()
+        };
+        assert_ne!(bugged.signature_message(), signed_msg);
+        assert!(
+            !verify(&bugged.sponsor, &bugged.signature_message(), &bugged.signature),
+            "offer whose created_at != signed timestamp must fail re-verification"
+        );
+    }
+
     #[test]
     fn test_public_sponsorship_offer_expiration() {
         let offer = PublicSponsorshipOffer {
