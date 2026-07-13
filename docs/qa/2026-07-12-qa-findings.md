@@ -284,6 +284,21 @@ Post action became available. The two propagation fixes (offer `created_at`, cla
 - **Rollout:** fix must run on all nodes to keep the network fork-robust (a
   canonical node could otherwise be stranded by a future fork). Deploying to local
   + seed + bot after phone verification.
+- **F8 WAS PARTIAL — deeper root cause found (the real fix):** the recent_timestamps
+  *source* was one of THREE mismatches between the block builder
+  (`spawn_block_formation`) and the leader-*validation* path. A node formed a block
+  it deemed eligible while every peer computed a different eligibility and rejected
+  it as "ineligible leader" — permanent forks / stuck nodes. Observed live: local
+  stuck at height 50 deterministically rejecting the seed's height-51 block, `state:
+  synced`. The three mismatches (validation now mirrors the builder exactly):
+    1. **space_id** — builder uses `[0;16]` (global eligibility); validation used the
+       block's `first_space_id`, changing the block seed and flipping eligibility.
+    2. **window** — builder uses 11 timestamps (`tip-10..=tip`); validation used 10.
+    3. **order** — builder gathers oldest→newest; validation gathered newest→first.
+  Fixed in `10857049` (supersedes b50327af). Validation still walks the
+  *block's own ancestors* (F8's correct half) so reorg onto a heavier fork works,
+  but now with `[0;16]`, 11 timestamps, oldest→newest. This is THE root cause of the
+  recurring "stuck on a fork, 100% synced" instability.
 
 ## F2 (recurring) — space names frequently unresolved across views · major
 - Confirmed on **Discover** (suggested spaces render `sp1qqqsqrttr…`,
