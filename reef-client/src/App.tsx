@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Keypair } from '@swimchain/core';
 import {
   useRpc,
@@ -21,9 +21,11 @@ import {
   COST_GROW,
   COST_CONTEST,
   TEND_CAP,
+  BLOCKS_PER_EPOCH,
   type Intent,
   type ReefState,
   type RegionSummary,
+  type SeasonResult,
   type Identity,
 } from './lib/reefEngine';
 
@@ -39,6 +41,28 @@ export function App() {
   const [state, setState] = useState<ReefState | null>(null);
   const [mining, setMining] = useState<Mining>(null);
   const [error, setError] = useState<string | null>(null);
+  const [banner, setBanner] = useState<SeasonResult | null>(null);
+  const lastSeenSeason = useRef<number | null>(null);
+
+  // Flash a champion banner when a season actually closes (not on first entry).
+  useEffect(() => {
+    lastSeenSeason.current = null; // reset when switching reefs
+    setBanner(null);
+  }, [openId]);
+  useEffect(() => {
+    if (!state) return;
+    const idx = state.justCrownedSeason?.index ?? -1;
+    if (lastSeenSeason.current === null) {
+      lastSeenSeason.current = idx; // initialize without flashing
+      return;
+    }
+    if (idx > lastSeenSeason.current) {
+      lastSeenSeason.current = idx;
+      setBanner(state.justCrownedSeason);
+      const t = setTimeout(() => setBanner(null), 6000);
+      return () => clearTimeout(t);
+    }
+  }, [state]);
 
   // Authenticate RPC requests as this identity once the keypair is ready.
   useEffect(() => {
@@ -170,6 +194,7 @@ export function App() {
   const budget = state ? myBudget(state, publicKeyHex!, address!) : 0;
   const tendsLeft = state ? myTendsLeft(state, publicKeyHex!, address!) : TEND_CAP;
   const isMine = (o: string) => o === publicKeyHex || o === address;
+  const myCareer = state?.standings.find((s) => isMine(s.owner)) ?? null;
 
   return (
     <div className="app">
@@ -213,6 +238,19 @@ export function App() {
         state && (
           <section className="game">
             <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← reefs</button>
+            {banner && (
+              <div className="champion-banner">
+                👑 Season {banner.index} champion:{' '}
+                {banner.winner ? (
+                  <>
+                    <span className="swatch" style={{ background: `hsl(${ownerHue(banner.winner)} 68% 52%)` }} />
+                    <code>{banner.winner.slice(0, 8)}…</code>
+                    {isMine(banner.winner) ? ' — that’s you!' : ''}
+                  </>
+                ) : 'nobody'}{' '}
+                <span className="fine">({banner.points} pts) · new season begins</span>
+              </div>
+            )}
             <Reef
               state={state}
               myPubkeyHex={publicKeyHex!}
@@ -223,7 +261,10 @@ export function App() {
             <div className="status">
               <div className="season">
                 <strong>Season {state.season}</strong> · {state.epochsLeftInSeason} epoch{state.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
-                <span className="fine"> · epoch {state.epoch}</span>
+                <span className="fine"> · tide {state.epoch} (every {BLOCKS_PER_EPOCH} blocks)</span>
+                {state.tentative > 0 && (
+                  <span className="fine tentative"> · {state.tentative} move{state.tentative === 1 ? '' : 's'} pending ⟳</span>
+                )}
               </div>
 
               <div className="budget">
@@ -253,12 +294,22 @@ export function App() {
                     <span className="rank">{i + 1}</span>
                     <span className="swatch" style={{ background: `hsl(${ownerHue(s.owner)} 68% 52%)` }} />
                     <code>{s.owner.slice(0, 8)}…</code>
+                    {s.crowns > 0 && <span className="crowns" title={`${s.crowns} season${s.crowns === 1 ? '' : 's'} won`}>{'👑'.repeat(Math.min(s.crowns, 5))}</span>}
                     {isMine(s.owner) && <span className="you">you</span>}
                     <span className="pts"><strong>{s.seasonPoints}</strong> pts</span>
                     <span className="terr fine">{s.territory} cells</span>
                   </div>
                 ))}
               </div>
+
+              {myCareer && (myCareer.crowns > 0 || myCareer.peak > 0 || myCareer.conquests > 0) && (
+                <div className="career">
+                  <span className="fine">your reef legend</span>
+                  <span className="stat" title="seasons won">👑 {myCareer.crowns}</span>
+                  <span className="stat" title="largest empire ever held">▣ {myCareer.peak} peak</span>
+                  <span className="stat" title="enemy cells captured">⚔ {myCareer.conquests} taken</span>
+                </div>
+              )}
 
               {state.seasons.length > 0 && (
                 <div className="past fine">

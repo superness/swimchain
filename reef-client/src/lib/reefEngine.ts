@@ -91,6 +91,15 @@ export const TEND_CAP = 4;
 // Seasons
 export const SEASON_EPOCHS = 5;
 
+/**
+ * Phase 2: the tide is keyed to CONSENSUS BLOCK HEIGHT, not move order. Every this-many
+ * blocks is one epoch, so decay/regen/scoring advance with real chain time — ungameable
+ * (block height is consensus, not author-set) and never frantic (a burst of moves in one
+ * block is still one tide). Idle reefs keep decaying as blocks pass. Moves not yet in a
+ * block (null height) are the tentative frontier: shown, but not yet final.
+ */
+export const BLOCKS_PER_EPOCH = 2;
+
 export type SignFn = (
   message: Uint8Array
 ) => Uint8Array | null | Promise<Uint8Array | null>;
@@ -145,6 +154,10 @@ export interface Standing {
   seasonPoints: number; // banked this season
   territory: number; // living cells right now
   vitality: number; // Σ vitality of living cells right now (live score)
+  // Career / brag stats (cumulative over the whole region history):
+  crowns: number; // seasons won
+  peak: number; // largest territory ever held at once
+  conquests: number; // enemy cells captured via contest
 }
 
 export interface ReefState {
@@ -160,6 +173,9 @@ export interface ReefState {
   seasons: SeasonResult[]; // closed seasons, in order
   standings: Standing[]; // sorted leaderboard (season points desc, then live vitality)
   owners: string[]; // distinct current cell owners (for the grid legend)
+  tentative: number; // count of pending (not-yet-in-a-block) moves shown optimistically
+  confirmedEpoch: number; // epochs fully settled by consensus (the confirmed frontier)
+  justCrownedSeason: SeasonResult | null; // most recently closed season, for the banner
 }
 
 /** What clicking a cell would do for a given player, and whether it's currently possible. */
@@ -304,96 +320,143 @@ interface ReplyLike {
   created_at: number;
   content_id: string;
   author_id: string;
+  block_height?: number | null;
 }
 
 /**
- * Fold a region's reply chain into world-state — including budgets, season points, and
- * the leaderboard. Deterministic and byte-identical across replicas.
+ * Fold a region's reply chain into world-state, keyed to CONSENSUS BLOCK HEIGHT.
+ *
+ * Confirmed moves (in a block) are applied in height order; every BLOCKS_PER_EPOCH blocks
+ * one epoch ticks (decay → regen → score → maybe close a season) — including *empty* epochs
+ * when blocks pass with no moves, so an idle reef keeps decaying with real chain time. The
+ * tide is advanced up to the current chain tip (`tipHeight`). Pending moves (no block yet)
+ * are the tentative frontier: applied optimistically at the current epoch, but the confirmed
+ * frontier (`confirmedEpoch`) is what consensus has settled. Deterministic across replicas.
  */
-export function foldReef(header: ReefHeader, replies: ReplyLike[]): ReefState {
+export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: number): ReefState {
   const cells = new Map<string, Cell>();
   const budgets = new Map<string, number>();
   let tendsUsed = new Map<string, number>(); // resets every tide
   let seasonPoints = new Map<string, number>();
   const seasons: SeasonResult[] = [];
+  const peak = new Map<string, number>(); // largest territory ever held (brag stat)
+  const conquests = new Map<string, number>(); // enemy cells captured (brag stat)
   const moves: AppliedMove[] = [];
-  let attempts = 0;
   let epoch = 0;
+  let justCrowned: SeasonResult | null = null;
 
-  const sorted = replies
-    .slice()
+  const confirmed = replies
+    .filter((r) => typeof r.block_height === 'number')
+    .sort((a, b) => a.block_height! - b.block_height! || a.content_id.localeCompare(b.content_id));
+  const pending = replies
+    .filter((r) => typeof r.block_height !== 'number')
     .sort((a, b) => a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
 
-  for (const r of sorted) {
-    const parsed = parseMove(r.body);
-    if (!parsed) continue; // garbage doesn't even pace the clock
+  const baseHeight = confirmed.length ? confirmed[0].block_height! : tipHeight ?? 0;
+  const epochOf = (h: number) => Math.max(0, Math.floor((h - baseHeight) / BLOCKS_PER_EPOCH));
+
+  const updatePeaks = () => {
+    for (const [o, e] of livingByOwner(cells)) peak.set(o, Math.max(peak.get(o) ?? 0, e.cells));
+  };
+
+  const tickEpoch = () => {
+    epochTick(cells); // decay
+    const living = livingByOwner(cells);
+    for (const [owner, cur] of budgets) {
+      budgets.set(
+        owner,
+        Math.min(MAX_BUDGET, cur + REGEN_BASE + Math.floor((living.get(owner)?.cells ?? 0) / 2))
+      );
+    }
+    for (const [owner, l] of living) seasonPoints.set(owner, (seasonPoints.get(owner) ?? 0) + l.vitality);
+    tendsUsed = new Map();
+    epoch += 1;
+    if (epoch % SEASON_EPOCHS === 0) {
+      let winner: string | null = null;
+      let best = -1;
+      for (const [owner, pts] of [...seasonPoints].sort((a, b) => a[0].localeCompare(b[0]))) {
+        if (pts > best) {
+          best = pts;
+          winner = owner;
+        }
+      }
+      justCrowned = { index: epoch / SEASON_EPOCHS - 1, winner, points: Math.max(0, best) };
+      seasons.push(justCrowned);
+      seasonPoints = new Map();
+    }
+    updatePeaks();
+  };
+
+  const applyOne = (r: ReplyLike, p: { op: Op; x: number; y: number }) => {
     const author = r.author_id;
     if (!budgets.has(author)) budgets.set(author, START_BUDGET);
-
     const isAuthor = (owner: string) => owner === author;
-    const cls = classify(cells, header, isAuthor, parsed.op, parsed.x, parsed.y);
+    const cls = classify(cells, header, isAuthor, p.op, p.x, p.y);
     let ok = false;
     if (cls) {
       if (cls.kind === 'tend') {
-        // Free but rationed: only TEND_CAP refreshes per player per tide.
         const used = tendsUsed.get(author) ?? 0;
         if (used < TEND_CAP) {
-          mutate(cells, author, 'tend', parsed.x, parsed.y);
+          mutate(cells, author, 'tend', p.x, p.y);
           tendsUsed.set(author, used + 1);
           ok = true;
         }
       } else {
         const have = budgets.get(author)!;
         if (have >= cls.cost) {
-          mutate(cells, author, cls.kind, parsed.x, parsed.y);
+          const prevOwner = cls.kind === 'contest' ? cells.get(cellKey(p.x, p.y))?.owner : undefined;
+          mutate(cells, author, cls.kind, p.x, p.y);
           budgets.set(author, have - cls.cost);
           ok = true;
-        }
-      }
-    }
-    moves.push({ ...parsed, author, contentId: r.content_id, ok });
-
-    attempts += 1;
-    if (attempts % EPOCH_MOVES === 0) {
-      tendsUsed = new Map(); // the tide turns — tending capacity refreshes
-      // 1) decay
-      epochTick(cells);
-      // 2) regen + 3) score, both off the post-decay living map
-      const living = livingByOwner(cells);
-      for (const [owner, cur] of budgets) {
-        const live = living.get(owner);
-        const regen = REGEN_BASE + Math.floor((live?.cells ?? 0) / 2);
-        budgets.set(owner, Math.min(MAX_BUDGET, cur + regen));
-      }
-      for (const [owner, live] of living) {
-        seasonPoints.set(owner, (seasonPoints.get(owner) ?? 0) + live.vitality);
-      }
-      epoch += 1;
-      // 4) close the season on its boundary
-      if (epoch % SEASON_EPOCHS === 0) {
-        let winner: string | null = null;
-        let best = -1;
-        for (const [owner, pts] of [...seasonPoints].sort((a, b) => a[0].localeCompare(b[0]))) {
-          if (pts > best) {
-            best = pts;
-            winner = owner;
+          const now = cells.get(cellKey(p.x, p.y));
+          if (cls.kind === 'contest' && now?.owner === author && prevOwner && prevOwner !== author) {
+            conquests.set(author, (conquests.get(author) ?? 0) + 1);
           }
         }
-        seasons.push({ index: epoch / SEASON_EPOCHS - 1, winner, points: Math.max(0, best) });
-        seasonPoints = new Map();
       }
     }
+    moves.push({ ...p, author, contentId: r.content_id, ok });
+    if (ok) updatePeaks();
+  };
+
+  // 1) Confirmed moves, ticking epochs by block height between them.
+  for (const r of confirmed) {
+    const p = parseMove(r.body);
+    if (!p) continue;
+    const target = epochOf(r.block_height!);
+    while (epoch < target) tickEpoch();
+    applyOne(r, p);
   }
+  // 2) Advance the tide to the current chain tip — idle reefs decay as blocks pass.
+  if (typeof tipHeight === 'number') {
+    const tipEpoch = epochOf(tipHeight);
+    while (epoch < tipEpoch) tickEpoch();
+  }
+  const confirmedEpoch = epoch;
+
+  // 3) Pending (not-yet-in-a-block) moves: the tentative frontier, shown optimistically.
+  let tentative = 0;
+  for (const r of pending) {
+    const p = parseMove(r.body);
+    if (!p) continue;
+    tentative += 1;
+    applyOne(r, p);
+  }
+  updatePeaks();
 
   const living = livingByOwner(cells);
   const owners = [...living.keys()];
-  const standingOwners = new Set<string>([...owners, ...seasonPoints.keys()]);
+  const standingOwners = new Set<string>([...owners, ...seasonPoints.keys(), ...peak.keys()]);
+  const crownsOf = (o: string) => seasons.filter((s) => s.winner === o).length;
   const standings: Standing[] = [...standingOwners]
     .map((owner) => ({
       owner,
       seasonPoints: seasonPoints.get(owner) ?? 0,
       territory: living.get(owner)?.cells ?? 0,
       vitality: living.get(owner)?.vitality ?? 0,
+      crowns: crownsOf(owner),
+      peak: peak.get(owner) ?? 0,
+      conquests: conquests.get(owner) ?? 0,
     }))
     .sort(
       (a, b) => b.seasonPoints - a.seasonPoints || b.vitality - a.vitality || a.owner.localeCompare(b.owner)
@@ -412,6 +475,9 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[]): ReefState {
     seasons,
     standings,
     owners,
+    tentative,
+    confirmedEpoch,
+    justCrownedSeason: justCrowned,
   };
 }
 
@@ -575,8 +641,13 @@ export async function loadRegion(rpc: SwimchainRpc, regionId: string): Promise<R
   const header =
     parseRegionHeader(post.body) ??
     ({ v: 1, kind: 'reef', founder: '', w: GRID_W, h: GRID_H, created: 0 } as ReefHeader);
-  const { replies } = await rpc.getReplies(regionId);
-  return foldReef(header, replies as ReplyLike[]);
+  // Fetch replies and the current chain tip together — the tip advances the tide to
+  // "now" so idle reefs decay as blocks pass (getInfo failure just skips idle-catchup).
+  const [{ replies }, tipHeight] = await Promise.all([
+    rpc.getReplies(regionId),
+    rpc.getInfo().then((i) => i.block_height).catch(() => undefined),
+  ]);
+  return foldReef(header, replies as ReplyLike[], tipHeight);
 }
 
 /**
