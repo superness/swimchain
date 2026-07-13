@@ -79,20 +79,33 @@ h2 { font-size: 18px; margin: 0; }
   padding: 0;
   position: relative;
   cursor: default;
-  transition: background 120ms ease, transform 80ms ease, box-shadow 120ms ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: box-shadow 120ms ease;
 }
+/* Coral: an inner tile whose SIZE tracks vitality — fading coral visibly shrinks. */
+.cell .coral {
+  border-radius: 3px;
+  transition: width 260ms ease, height 260ms ease, box-shadow 200ms ease;
+}
+/* Your coral gets a bright ring so you can pick out your reef at a glance. */
+.cell .coral.mine { box-shadow: 0 0 0 2px var(--foam), 0 0 6px rgba(232, 241, 239, 0.35); }
+/* Fading = will recede within ~2 tides: a warning ring. Dying = gone next tide: it pulses. */
+.cell .coral.fading { box-shadow: 0 0 0 2px var(--heat); }
+.cell .coral.mine.fading { box-shadow: 0 0 0 2px var(--heat), 0 0 0 3px var(--foam); }
+.cell .coral.dying { animation: distress 0.9s ease-in-out infinite; }
+@keyframes distress {
+  0%, 100% { box-shadow: 0 0 0 2px var(--heat); }
+  50% { box-shadow: 0 0 0 3px var(--heat), 0 0 10px 2px rgba(255, 158, 94, 0.7); }
+}
+
 /* Actionable affordances for the local player. */
 .cell.act { cursor: pointer; }
 .cell.act.seed { box-shadow: inset 0 0 0 2px rgba(110, 211, 194, 0.55); }
-.cell.act.spread:hover { box-shadow: inset 0 0 0 2px var(--shallow); transform: scale(1.06); }
-.cell.act.tend:hover { box-shadow: inset 0 0 0 2px var(--foam); transform: scale(1.06); }
-.cell.act.contest:hover { box-shadow: inset 0 0 0 2px var(--heat); transform: scale(1.06); }
-.cell.mine { }
-.cell .pip {
-  position: absolute; inset: 0; margin: auto;
-  width: 26%; height: 26%; border-radius: 50%;
-  background: rgba(255, 255, 255, 0.85);
-}
+.cell.act.spread:hover { box-shadow: inset 0 0 0 2px var(--shallow); }
+.cell.act.tend:hover { box-shadow: inset 0 0 0 2px var(--foam); }
+.cell.act.contest:hover { box-shadow: inset 0 0 0 2px var(--heat); }
 
 .status { margin-top: 6px; }
 .status .fine { line-height: 1.5; }
@@ -117,6 +130,10 @@ h2 { font-size: 18px; margin: 0; }
 .board-scores .terr { min-width: 56px; text-align: right; }
 
 .past { text-align: center; margin-top: 10px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+.viskey { text-align: center; margin-top: 8px; opacity: 0.9; }
+.viskey .k-mine { color: var(--foam); font-weight: 600; }
+.viskey .k-warn { color: var(--heat); font-weight: 600; }
 
 .overlay { position: fixed; inset: 0; background: rgba(4, 23, 30, 0.72); display: flex; align-items: center; justify-content: center; }
 .mining { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 24px 32px; text-align: center; }

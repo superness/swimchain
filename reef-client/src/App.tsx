@@ -263,6 +263,10 @@ export function App() {
                 Click open water by your coral to <strong>grow</strong>, your own to <strong>tend</strong>, an enemy border to <strong>contest</strong>.
                 Score is the vitality you keep alive each epoch — sprawl you can't tend just feeds the tide. Every move is signed and mined onto the chain.
               </div>
+              <div className="fine viskey">
+                Coral <strong>shrinks as it fades</strong> · your reef has a <span className="k-mine">bright ring</span> ·
+                a <span className="k-warn">warning ring</span> means it recedes within two tides · a <span className="k-warn">pulsing</span> cell is gone next tide — tend it.
+              </div>
             </div>
           </section>
         )
