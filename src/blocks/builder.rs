@@ -68,6 +68,14 @@ pub const TIMESTAMP_QUANTUM_SECS: u64 = 10;
 /// already formed a block propagate it before we duplicate the work.
 pub const LAZY_BLOCK_WAIT_MS: u64 = 30_000; // 30 seconds
 
+/// Timeout-flush interval for pending actions that never meet the PoW threshold.
+/// A low-PoW onboarding action (a `pow=0` Sponsor/claim on a 0-difficulty offer)
+/// can't cross `total_pow >= difficulty_target` on its own, so on a quiet chain it
+/// hangs in every mempool forever, never mined. Once pending actions have waited
+/// this long below threshold, form a block anyway so they finalize. Bounds
+/// onboarding latency without turning quiet chains into a block mill.
+pub const PENDING_FLUSH_TIMEOUT_SECS: u64 = 60;
+
 /// Maximum capacity of seen_actions LRU cache.
 /// At 32 bytes per hash, 100,000 entries = ~3.2MB.
 /// This bounds memory growth from ~46MB/day to a fixed ~3.2MB.
@@ -136,6 +144,12 @@ pub struct BlockBuilder {
     seen_actions: LruCache<[u8; 32], ()>,
     /// When we started waiting for someone else's block (lazy formation)
     waiting_since: Option<Instant>,
+    /// When pending actions first sat below the PoW formation threshold. Drives
+    /// the timeout-flush: low-PoW onboarding actions (a `pow=0` Sponsor/claim on
+    /// a 0-difficulty offer) otherwise never cross `total_pow >= difficulty_target`
+    /// and hang in every mempool forever on a quiet chain. Separate from
+    /// `waiting_since` because `should_form_root` clears that one below threshold.
+    flush_since: Option<Instant>,
     /// Action hash -> (thread_id, index) for Replace-In-Mempool lookups
     action_locations: HashMap<[u8; 32], (ThreadId, usize)>,
     /// Per-space action counts for enforcing MAX_ACTIONS_PER_SPACE (H-BLOCK-2)
@@ -164,6 +178,7 @@ impl BlockBuilder {
             prev_space_hashes: HashMap::new(),
             seen_actions: LruCache::new(NonZeroUsize::new(SEEN_ACTIONS_CAPACITY).unwrap()),
             waiting_since: None,
+            flush_since: None,
             action_locations: HashMap::new(),
             space_action_counts: HashMap::new(),
             total_action_count: 0,
@@ -187,6 +202,7 @@ impl BlockBuilder {
             prev_space_hashes: HashMap::new(),
             seen_actions: LruCache::new(NonZeroUsize::new(SEEN_ACTIONS_CAPACITY).unwrap()),
             waiting_since: None,
+            flush_since: None,
             action_locations: HashMap::new(),
             space_action_counts: HashMap::new(),
             total_action_count: 0,
@@ -808,6 +824,30 @@ impl BlockBuilder {
     /// Reset waiting state (call when we receive a block from the network)
     pub fn reset_waiting(&mut self) {
         self.waiting_since = None;
+        self.flush_since = None;
+    }
+
+    /// Autonomous formation decision for the block-formation task.
+    ///
+    /// Forms when the PoW threshold is met (immediate — the task loop does not
+    /// lazy-wait), OR when there are pending actions that have sat below the
+    /// threshold for `flush_timeout_secs`. The flush arm is what lets a low-PoW
+    /// onboarding action (a `pow=0` Sponsor/claim) finalize on an otherwise-quiet
+    /// chain instead of stranding in every mempool. The caller must still pass
+    /// leader eligibility before forming; this only gates on mempool readiness.
+    pub fn should_form_or_flush(&mut self, flush_timeout_secs: u64) -> bool {
+        if self.pending_action_count() == 0 {
+            self.flush_since = None;
+            return false;
+        }
+        if self.is_threshold_met() {
+            // Threshold path forms right away; drop any flush timer.
+            self.flush_since = None;
+            return true;
+        }
+        // Below threshold with pending work: start/continue the flush timer.
+        let started = *self.flush_since.get_or_insert_with(Instant::now);
+        started.elapsed().as_secs() >= flush_timeout_secs
     }
 
     /// Get the expected next block height
@@ -1074,6 +1114,7 @@ impl BlockBuilder {
         self.current_height += 1;
         // Reset waiting timer - we just formed a block
         self.waiting_since = None;
+        self.flush_since = None;
         // NOTE: Do NOT clear seen_actions here! Actions that have been included in a block
         // should never be re-added to the mempool. If we clear this, the same action can
         // arrive via gossip from another peer and get included in multiple blocks.
@@ -1122,6 +1163,8 @@ impl BlockBuilder {
         self.action_locations.clear();
         self.space_action_counts.clear();
         self.total_action_count = 0;
+        self.waiting_since = None;
+        self.flush_since = None;
         self.persist();
     }
 
@@ -1179,6 +1222,7 @@ impl BlockBuilder {
             self.prev_root_hash = prev_root_hash;
             self.prev_cumulative_pow = cumulative_pow;
             self.waiting_since = None;
+            self.flush_since = None;
         }
     }
 
@@ -1506,6 +1550,38 @@ mod tests {
         assert!(
             regtest.is_threshold_met(),
             "regtest should seal on a single pow=1 action"
+        );
+    }
+
+    #[test]
+    fn should_form_or_flush_forms_low_pow_actions_after_timeout() {
+        // Regression for the onboarding stall: a low-PoW action (a pow=0 Sponsor/
+        // claim) can't meet total_pow >= difficulty_target, so on a quiet chain it
+        // never triggers a block and strands in the mempool. The flush timeout mines
+        // it anyway.
+        let mut builder = BlockBuilder::new(30); // difficulty_target = 30
+        // Empty mempool: nothing to form regardless of timeout.
+        assert!(!builder.should_form_or_flush(60));
+
+        // A single low-PoW action never meets the threshold.
+        builder.add_action([1u8; 32], [2u8; 32], make_test_action(5), BranchPath::root());
+        assert!(!builder.is_threshold_met());
+        // With a long flush timeout it keeps waiting (timer just started).
+        assert!(!builder.should_form_or_flush(3600));
+        // Once the flush timeout has elapsed (0s), it forms anyway.
+        assert!(
+            builder.should_form_or_flush(0),
+            "low-pow pending action must flush after the timeout"
+        );
+
+        // A high-PoW action meets the threshold and forms immediately — the flush
+        // timeout is irrelevant on the threshold path.
+        let mut b2 = BlockBuilder::new(30);
+        b2.add_action([3u8; 32], [4u8; 32], make_test_action(50), BranchPath::root());
+        assert!(b2.is_threshold_met());
+        assert!(
+            b2.should_form_or_flush(3600),
+            "threshold-met forms immediately regardless of flush timeout"
         );
     }
 

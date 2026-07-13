@@ -2261,10 +2261,16 @@ impl BackgroundTaskRunner {
                             }
                         }
 
-                        // Check PoW threshold first (cheap check)
+                        // Form when the PoW threshold is met, OR when pending actions
+                        // have sat below it past the flush timeout — so a low-PoW
+                        // onboarding action (a pow=0 Sponsor/claim) still finalizes on a
+                        // quiet chain instead of stranding in every mempool forever.
+                        // Needs a write lock: should_form_or_flush advances the flush timer.
                         let should_form = {
-                            match block_builder.read() {
-                                Ok(builder) => builder.pending_action_count() > 0 && builder.total_pow() >= builder.difficulty_target(),
+                            match block_builder.write() {
+                                Ok(mut builder) => builder.should_form_or_flush(
+                                    crate::blocks::builder::PENDING_FLUSH_TIMEOUT_SECS,
+                                ),
                                 Err(_) => false,
                             }
                         };
