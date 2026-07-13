@@ -174,6 +174,47 @@ Post action became available. The two propagation fixes (offer `created_at`, cla
   sees + can claim the faucet offer on the fixed binary); mobile claim delivery is
   blocked by F7, not by the timestamp bugs.
 
+### F7 FIXED + VERIFIED — claimant-side re-broadcast closes mobile onboarding
+- Fix (`98db6ab1` + `bf13aea3`): a claimant-side task re-broadcasts its own
+  still-pending claims every 30s until the node is sponsored (gated on the local
+  sponsorship store), so a claim reaches the sponsor even when the one-shot submit
+  broadcast missed it. `OfferStore::get_own_pending_claims` + unit test.
+- **Self-review catch:** first cut matched claims against `node_id()` (SHA256 of
+  the pubkey) instead of the raw public key, so it matched nothing — fixed to
+  thread the raw identity pubkey through `spawn_all_with_routing`.
+- **Verified end-to-end on the phone:** fresh mobile identity → claimed the faucet
+  offer → re-broadcast delivered the claim to the bot (previously stuck at
+  `pending=0`) → auto-approved → **phone sponsored on-chain**, "not sponsored"
+  banner cleared, Post enabled. This is the first fully-on-device faucet onboarding.
+- **Follow-on observation (F8 candidate):** the phone's re-broadcast keeps firing
+  after the bot shows it sponsored because the **phone is stuck at height 30 while
+  the network is at 40** — its *local confirmed* sponsorship view lags, so the gate
+  (correctly) doesn't trip. The mobile node not advancing past 30 (status "100%")
+  is a sync-lag/fork concern related to F6; worth a dedicated look.
+
+## Propagation / timing profile (partial — dominated by F6 block stall)
+
+| Action | Origin | Author node | Peer node (RPC/search) | Confirmed (block) |
+|--------|--------|-------------|------------------------|-------------------|
+| Sponsorship offer (post-F5 fix) | bot | n/a | **seed sees it in seconds** | — (offers are off-chain) |
+| Sponsorship claim (post-F7 fix) | phone/local | immediate | sponsor via re-broadcast ≤30s | — |
+| Claim → approval → sponsored | — | — | — | **block-gated; stalls until a leader forms a block (F6)** — needed manual activity + bot restart, ~40s once unstuck |
+| Post (content) | qa-user (S3) | **searchable immediately (own mempool)** | **NOT searchable on seed even after 137s** | never confirmed here — stuck in local mempool, not mined by an eligible leader (F6) |
+
+**Mempool-only content timing (Group D):**
+- Author's own node **indexes + serves** its mempool content immediately (search,
+  post-detail view work locally).
+- **Peers do NOT surface mempool content** (search/feed) until it is
+  block-confirmed — mempool actions gossip to peers' mempools but are not indexed
+  there. So cross-surface visibility of in-mempool content is asymmetric.
+- Confirmation latency is **dominated by the F6 block-formation stall** on a quiet
+  testnet: content can sit unmined indefinitely until a leader forms a block
+  (manual activity/restart needed here). This is the single biggest driver of
+  cross-surface latency observed.
+- `get_user_posts` returns **0** for a mempool-only post (excludes unconfirmed),
+  so an author's own just-posted content doesn't appear in their post count/list
+  until confirmed — confusing given the post is visible in the feed/detail view.
+
 ## F4 — Magic-mismatch error message hardcodes "expected SWIM" on all networks · minor
 - **Surface:** node log (`src/network/error.rs:11`).
 - **Observed:** `#[error("invalid magic bytes: expected SWIM, got {0:02x?}")]` always
