@@ -676,6 +676,11 @@ pub struct ReplyInfo {
     /// Attached media (images) on this reply.
     #[serde(default)]
     pub media_refs: Vec<MediaRefResult>,
+    /// Block height at which this reply was finalized; `null` while still pending in
+    /// the mempool (the tentative frontier). Lets clients key deterministic state to
+    /// consensus block height rather than move order or author timestamps.
+    #[serde(default)]
+    pub block_height: Option<u64>,
 }
 
 /// get_replies result

@@ -88,6 +88,11 @@ pub struct ChainStore {
     /// Finalized actions: Key = action_hash(32), Value = block_height(8, big-endian)
     /// Tracks which actions have been included in finalized blocks to prevent re-inclusion
     finalized_actions: sled::Tree,
+    /// Finalized content: Key = content_hash(32), Value = block_height(8, big-endian)
+    /// Parallel to `finalized_actions` but keyed by content hash, so RPC callers holding
+    /// a content id (e.g. get_replies) can resolve a reply's finalizing block height
+    /// without a full-chain scan. Written alongside `finalized_actions`.
+    finalized_content: sled::Tree,
 
     // === Behavioral Branching (SPEC_13 Phase A) ===
     /// Per-identity, per-space interaction metrics (SPEC_13 §3.2, §8.1):
@@ -211,6 +216,7 @@ impl ChainStore {
 
         // Finalized action tracking (prevents duplicate action inclusion)
         let finalized_actions = db.open_tree("finalized_actions")?;
+        let finalized_content = db.open_tree("finalized_content")?;
 
         // Behavioral branching trees (SPEC_13 Phase A)
         let identity_space_metrics = db.open_tree("identity_space_metrics")?;
@@ -259,6 +265,7 @@ impl ChainStore {
             branch_thread_index,
             space_registry,
             finalized_actions,
+            finalized_content,
             identity_space_metrics,
             communities,
             identity_community,
@@ -3054,8 +3061,37 @@ impl ChainStore {
         for action in &content_block.actions {
             let action_hash = BlockBuilder::action_hash(action);
             self.mark_action_finalized(&action_hash, height)?;
+            // Parallel content-hash index so RPC callers holding a content id can resolve
+            // a finalizing block height without a full-chain scan (see get_replies).
+            if let Some(content_hash) = action.content_hash {
+                self.finalized_content
+                    .insert(content_hash, &height.to_be_bytes())?;
+            }
         }
         Ok(())
+    }
+
+    /// Block height at which the content with this hash was finalized, if any.
+    ///
+    /// Returns `Ok(None)` for content that is not yet in a finalized block (still
+    /// pending in the mempool) or predates the `finalized_content` index.
+    pub fn get_content_finalized_height(
+        &self,
+        content_hash: &[u8; 32],
+    ) -> Result<Option<u64>, StorageError> {
+        match self.finalized_content.get(content_hash)? {
+            Some(height_bytes) if height_bytes.len() == 8 => Ok(Some(u64::from_be_bytes(
+                height_bytes.as_ref().try_into().map_err(|_| StorageError::CorruptedData {
+                    expected: "8 bytes for height".to_string(),
+                    actual: format!("{} bytes", height_bytes.len()),
+                })?,
+            ))),
+            Some(_) => Err(StorageError::CorruptedData {
+                expected: "8 bytes for height".to_string(),
+                actual: "wrong length".to_string(),
+            }),
+            None => Ok(None),
+        }
     }
 
     /// Remove finalized status for an action
@@ -3094,6 +3130,10 @@ impl ChainStore {
                             if self.unmark_action_finalized(&action_hash)? {
                                 count += 1;
                             }
+                            // Keep the parallel content-hash index in step on reorg.
+                            if let Some(content_hash) = action.content_hash {
+                                let _ = self.finalized_content.remove(content_hash);
+                            }
                         }
                     }
                 }
@@ -3104,6 +3144,20 @@ impl ChainStore {
         // This handles the case where content blocks were processed but root block was never stored
         let height_removed = self.clear_finalized_actions_by_height(height)?;
         count += height_removed;
+
+        // Keep the parallel content-hash index in step: drop any entries at this height.
+        let mut content_to_remove = Vec::new();
+        for result in self.finalized_content.iter() {
+            let (key, value) = result?;
+            if value.len() >= 8
+                && u64::from_be_bytes(value[..8].try_into().unwrap_or([0u8; 8])) == height
+            {
+                content_to_remove.push(key.to_vec());
+            }
+        }
+        for key in content_to_remove {
+            let _ = self.finalized_content.remove(key);
+        }
 
         if count > 0 {
             log::info!(

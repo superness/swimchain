@@ -9115,6 +9115,11 @@ impl RpcMethods {
                 .map(|c| c.len() as u32)
                 .unwrap_or(0);
 
+            let block_height = chain_store
+                .get_content_finalized_height(&reply_hash)
+                .ok()
+                .flatten();
+
             all_replies.push(ReplyInfo {
                 content_id: format!("sha256:{}", hex::encode(&reply_hash)),
                 author_id: hex::encode(&metadata.author),
@@ -9126,6 +9131,7 @@ impl RpcMethods {
                 child_count,
                 display_name,
                 media_refs,
+                block_height,
             });
 
             // Check for limit
@@ -9280,6 +9286,7 @@ impl RpcMethods {
                             child_count: 0,
                             display_name: action.display_name.clone(),
                             media_refs,
+                            block_height: None, // still pending in the mempool — tentative frontier
                         });
 
                         known_hashes.insert(*reply_hash);
