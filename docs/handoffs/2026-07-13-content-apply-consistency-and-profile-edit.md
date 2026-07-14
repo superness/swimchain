@@ -2,8 +2,10 @@
 
 **Date:** 2026-07-13
 **Author:** prior session (Claude)
-**Status:** two open issues, documented for a fresh session. All *consensus* fixes
-from this session are already committed + pushed to `main` (superness/swimchain)
+**Status:** RESOLVED 2026-07-13 (same-day follow-up session) — see
+"Resolution (2026-07-13 evening session)" at the bottom. Original analysis
+kept below for the investigation record. All *consensus* fixes
+from the prior session are already committed + pushed to `main` (superness/swimchain)
 and deployed to the live testnet — see "Session state" at the bottom.
 
 ---
@@ -179,3 +181,110 @@ against `validate_action_signature`'s expectation for that exact content.
   → `gradlew assembleArm64Release -x rustBuildArm64Release` → zipalign + apksigner
   (keystore `~/swimchain-release.keystore`, alias `swimchain`, pass `swimchain-alpha`)
   → `adb install -r`. adb at `~/AppData/Local/Android/Sdk/platform-tools/adb.exe`.
+
+---
+
+# Resolution (2026-07-13 evening session)
+
+## Issue 1 — root causes found (six converging holes) and redesigned
+
+The non-determinism was exactly the predicted class: one-shot applies embedded
+in transport paths. Full inventory of the holes found:
+
+1. **Five ingest paths, five different side-effect subsets.**
+   `process_orphan_block_data` (router.rs) stored content + marked actions
+   finalized but applied NOTHING — any block arriving out of order (3 formers
+   racing guarantees this) lost all side effects on that node forever. This
+   alone explains `4806eb5a` (phone=former=true, seed/bot=orphan-path=false).
+   The router-side former (`try_form_block_if_threshold_met`) also applied
+   nothing; the tasks.rs former had its own inline sponsorship copy (no
+   signature/Active validation, no finalize-marking); `handle_block_data`
+   applied sponsorship BEFORE the dup gate and storage; `handle_blocks`
+   applied after.
+2. **Deep reorgs poisoned the dup gates** — `make_canonical` (chain.rs)
+   rewrote the height index without unmarking displaced blocks' finalized
+   actions. The same actions in the new canonical chain then read "finalized
+   at a different height" and both dup gates skipped the canonical content
+   FOREVER: content never stored → `find_content_gap_heights` reports the gap
+   → 30s backfill loop (the phone's h12 loop). F9 only handled same-height.
+3. `handle_block_data`'s "already have block" early-return lacked the F9
+   content-missing fall-through — the gossip path dropped a header-first
+   block's content permanently.
+4. The GETBLOCKS server silently omits claimed space/content blocks it
+   doesn't hold, and the sync-loop backfill only ever asked `peer_ids.first()`
+   — one content-less peer wedged the loop permanently.
+5. Sponsorship apply is order-dependent (sponsor must already be Active) but
+   was one-shot — child-before-parent application dropped the action with no
+   retry.
+6. Reply-count/engagement/clustering effects ran on some paths and not others
+   (cosmetic but same class).
+
+### The redesign (implemented)
+
+**One deterministic apply point:** `MessageRouter::reconcile_block_side_effects(root)`
+(router.rs) — the ONLY place content-plane side effects run. Invariant: a
+canonical block's side effects run exactly once per node, once its claimed
+content bodies are all present, regardless of ingest path. Two-stage state in
+a new `applied_side_effects` ChainStore tree (`side_effects_state`): stage 1 =
+content effects (space registration, renames, reactions, engagements,
+clustering — run exactly once; some are increments), stage 2 = sponsorship
+(idempotent, retried until the sponsor chain lands; transient skips hold the
+block at stage 1). It also re-marks the block's actions finalized at the
+canonical height, healing stale cross-height marks.
+
+**Call sites:** every ingest path calls it after storing (handle_block_data,
+handle_blocks per block, process_orphan_block_data, both formers — the
+tasks.rs former's inline sponsorship copy is deleted), and the 30s sync loop
+runs a **reconciliation pass** (`find_unapplied_heights` → reconcile, height
+order) that retries anything left behind. The retry pass is what makes the
+outcome deterministic across nodes.
+
+**Supporting fixes:**
+- `make_canonical` now unmarks displaced blocks' finalized actions
+  (height-guarded via `unmark_actions_for_root`) and clears their applied flag.
+- Both dup gates now detect STALE marks: on a different-height hit they check
+  `canonical_block_contains_action(h', action)` — provably-absent marks no
+  longer block the canonical content (heals already-poisoned testnet nodes).
+- `handle_block_data` Check-1 got the F9 content-missing fall-through
+  (gossip-path parity with handle_blocks).
+- Sync-loop content backfill now asks up to 3 peers, not just the first; the
+  GETBLOCKS server logs when it omits blocks it doesn't hold.
+- Reply counts stay on the receive path only (submit_reply already counts at
+  RPC time on the origin — putting them in reconcile would double-count).
+
+**Tests:** `tests/side_effects_reconcile.rs` (6 storage-level tests: state
+tracking, completeness, unapplied scan, reorg unmark + height guard, stale
+mark detection) and 3 router-level tests in `src/node/router/tests.rs`
+(reconcile applies-once/idempotent, transient sponsor retry, non-canonical
+skip). The `build_create_space_blocks_payload` test helper now builds a root
+that CLAIMS its space block (reconcile only applies claimed content — content
+a root doesn't claim is not part of the block).
+
+## Issue 2 — profile-edit authorship: root cause found
+
+`submit_edit` hashed `Some("") != None` for the title: the node computed
+`sha256("\n\n" + body)` for an EMPTY title while every client computes the
+signing preimage with JS truthiness (`title ? title\n\nbody : body` →
+body-only hash). Every empty-title edit (feed posts, profile posts) therefore
+failed `validate_action_signature` with "action authorship verification
+failed". Fixed server-side: empty title now hashes like an absent one
+(matching all clients; no working flow signed the old way, so nothing breaks).
+
+Note: the feed-client Profile page actually saves via `submit_post` (a new
+profile post each time, newest wins) — that path verified consistent
+end-to-end in current source (preimage, keys, node-mode sign_message all
+match). If a profile save still fails on the phone, the installed APK likely
+carries an older feed bundle — rebuild it. The three authorship-failure sites
+(`submit_post`/`submit_reply`/`submit_edit`) now WARN-log the exact preimage
+components (actor, content_hash, ts, private/title_empty) so any remaining
+client divergence is diagnosable from the node log alone.
+
+## Caveats / follow-ups
+
+- Historical blocks (pre-upgrade) have no applied flag; the reconciliation
+  pass will re-run stage-1 effects once for complete blocks after upgrade —
+  engagement-graph counts can double once for those (~13 blocks on fresh
+  TES4). Acceptable; re-seed if it matters.
+- Blocks whose content never completes network-wide stay in both the gap scan
+  and the unapplied scan (bounded, 64 each) — that's honest, not a loop bug.
+- A `--no-mine` observer flag (handoff recommendation) is still unbuilt.
