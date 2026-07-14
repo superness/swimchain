@@ -17075,7 +17075,7 @@ impl RpcMethods {
         timestamp: u64,
         current_time: u64,
     ) -> Result<(u8, bool), (RpcErrorCode, String)> {
-        use crate::sponsorship::types::SponsorshipOfferType;
+        use crate::sponsorship::auto_approve::{self, ClaimApprovalError};
 
         let offer_store = self.node.offer_store.as_ref().ok_or((
             RpcErrorCode::SubsystemUnavailable,
@@ -17086,123 +17086,26 @@ impl RpcMethods {
             "Sponsorship store not available".to_string(),
         ))?;
 
-        let sponsor_pk = offer.sponsor;
-        let sponsor_bytes = *sponsor_pk.as_bytes();
-        let claimant_bytes = *claim.claimant.as_bytes();
-
-        // Verify sponsor is Active (or in genesis list)
-        let sponsor_record = match sponsorship_store.get(&sponsor_pk) {
-            Ok(Some(r)) => Some(r),
-            Ok(None) => {
-                // Genesis identities can sponsor without a store record
-                if crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&sponsor_pk) {
-                    None
-                } else {
-                    return Err((
-                        RpcErrorCode::PermissionDenied,
-                        "Sponsor not found".to_string(),
-                    ));
-                }
+        auto_approve::execute_claim_approval(
+            offer_store,
+            sponsorship_store,
+            self.node.chain_store.as_ref(),
+            self.node.block_builder.as_ref(),
+            self.node.connection_pool.as_ref(),
+            offer,
+            claim,
+            sponsor_sig_bytes,
+            timestamp,
+            current_time,
+        )
+        .await
+        .map_err(|e| match e {
+            ClaimApprovalError::SponsorNotFound | ClaimApprovalError::SponsorRestricted => {
+                (RpcErrorCode::PermissionDenied, e.to_string())
             }
-            Err(e) => {
-                return Err((
-                    RpcErrorCode::InternalError,
-                    format!("Failed to check sponsor: {}", e),
-                ));
-            }
-        };
-
-        // Genesis identities can always sponsor; others need to pass can_sponsor_basic
-        if let Some(ref record) = sponsor_record {
-            if !record.can_sponsor_basic(current_time) {
-                return Err((
-                    RpcErrorCode::PermissionDenied,
-                    "Sponsor cannot sponsor at this time".to_string(),
-                ));
-            }
-        }
-
-        // Genesis identities have depth 0, so children get depth 1
-        let depth = match &sponsor_record {
-            Some(r) => r.depth.saturating_add(1),
-            None => 1,
-        };
-        let probationary = offer.offer_type == SponsorshipOfferType::Probationary;
-
-        // Atomically claim a slot BEFORE any other side effect. This is the
-        // over-claim guard: increment_claimed_count uses sled fetch_and_update
-        // and fails with OfferFullyClaimed once max_sponsees is reached.
-        if let Err(e) = offer_store.increment_claimed_count(&offer.offer_id, offer.max_sponsees) {
-            return Err((
-                RpcErrorCode::InvalidParams,
-                format!("Offer has no remaining slots: {}", e),
-            ));
-        }
-
-        // NOTE: Do NOT create StoredSponsorship directly here.
-        // The on-chain Sponsor action (created below) will be processed by
-        // apply_sponsorship_actions_from_block when the block is formed,
-        // which creates the StoredSponsorship on all nodes including this one.
-        // This ensures the chain is the single source of truth.
-
-        // Remove the claim from pending
-        let _ = offer_store.remove_claim(&offer.offer_id, &claim.claimant);
-
-        // Create on-chain Sponsor action
-        {
-            use crate::blocks::action::Action;
-
-            // Compute actual pow_work from the claim's PoW proof
-            let pow_work = {
-                use sha2::{Digest, Sha256};
-                let mut pow_input = Vec::with_capacity(40);
-                pow_input.extend_from_slice(&claim.pow_nonce_space);
-                pow_input.extend_from_slice(&claim.identity_pow_proof.nonce.to_le_bytes());
-                let pow_hash = Sha256::digest(&pow_input);
-                pow_hash.iter().take_while(|&&b| b == 0).count() as u64
-            };
-
-            let action = Action::new_sponsor_with_pow(
-                sponsor_bytes,
-                claimant_bytes,
-                timestamp, // must match the timestamp covered by sponsor_sig_bytes
-                sponsor_sig_bytes,
-                claim.identity_pow_proof.nonce,
-                pow_work,
-                claim.pow_nonce_space, // pow_target = the challenge input, not the hash output
-            );
-
-            let system_space_id = [0u8; 32];
-            let action_hash = action.hash();
-
-            if let Some(ref block_builder) = self.node.block_builder {
-                // New thread in the system space: hash-derived branch (SPEC_08 §4)
-                let branch_path =
-                    self.resolve_branch_path(&system_space_id, &action_hash, Some(&sponsor_bytes));
-                if let Ok(mut builder) = block_builder.write() {
-                    builder.add_action(action_hash, system_space_id, action.clone(), branch_path);
-                }
-            }
-
-            // Broadcast to peers
-            if let Some(ref pool) = self.node.connection_pool {
-                use crate::network::messages::ActionAnnouncePayload;
-                use crate::types::network::{MessageEnvelope, MessageType};
-
-                let action_data = action.serialize();
-                let payload = ActionAnnouncePayload::new(action_hash, system_space_id, action_data);
-                let envelope = MessageEnvelope::new_fork_agnostic(
-                    MessageType::ActionAnnounce,
-                    payload.to_bytes().to_vec(),
-                );
-                let peers = pool.peer_ids().await;
-                for peer_id in peers {
-                    let _ = pool.send_to(&peer_id, &envelope).await;
-                }
-            }
-        }
-
-        Ok((depth, probationary))
+            ClaimApprovalError::NoSlots(_) => (RpcErrorCode::InvalidParams, e.to_string()),
+            ClaimApprovalError::Store(_) => (RpcErrorCode::InternalError, e.to_string()),
+        })
     }
 
     /// Approve a pending sponsorship claim (sponsor only)

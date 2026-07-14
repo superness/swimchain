@@ -490,7 +490,8 @@ impl NodeManager {
                 if let Some(ref chain_store) = self.chain_store {
                     let blob_store = BlobStore::new(&sync_blob_path).ok();
                     let content_store = self.content_store.clone();
-                    let mut indexables: Vec<crate::cli::search_index::IndexableContent> = Vec::new();
+                    let mut indexables: Vec<crate::cli::search_index::IndexableContent> =
+                        Vec::new();
                     for block in chain_store.iter_content_blocks().filter_map(|r| r.ok()) {
                         let space_id = {
                             use bech32::{Bech32m, Hrp};
@@ -1272,6 +1273,7 @@ impl NodeManager {
                 *self.keypair.public_key.as_bytes(),
                 self.sponsorship_store.clone(),
                 self.offer_store.clone(),
+                Some(self.keypair.clone()),
             );
             info!("[CONTENT-SYNC] Started background tasks with message routing, DHT, decay, block formation, and branch-selective sync");
 
@@ -1295,7 +1297,6 @@ impl NodeManager {
             tasks.spawn_all(self.syncer.clone(), self.connection_manager.clone());
         }
         self.tasks = Some(tasks);
-
 
         // 10. Start RPC server (if enabled)
         if self.config.rpc_enabled {
@@ -2501,8 +2502,14 @@ mod tests {
 
         // 1) Missing marker: assume current network — stamp, do NOT wipe.
         enforce_network_magic(dd, *b"TES2").unwrap();
-        assert!(dd.join("chain/block").exists(), "missing marker must not wipe");
-        assert_eq!(std::fs::read(dd.join(NETWORK_MAGIC_MARKER)).unwrap(), b"TES2");
+        assert!(
+            dd.join("chain/block").exists(),
+            "missing marker must not wipe"
+        );
+        assert_eq!(
+            std::fs::read(dd.join(NETWORK_MAGIC_MARKER)).unwrap(),
+            b"TES2"
+        );
 
         // 2) Same magic again: no-op, state preserved.
         enforce_network_magic(dd, *b"TES2").unwrap();
@@ -2511,10 +2518,16 @@ mod tests {
 
         // 3) Different magic (a hard fork): network-scoped stores cleared, identity kept.
         enforce_network_magic(dd, *b"TES3").unwrap();
-        assert!(!dd.join("chain").exists(), "chain must be cleared on magic change");
+        assert!(
+            !dd.join("chain").exists(),
+            "chain must be cleared on magic change"
+        );
         assert!(!dd.join("mempool.bin").exists(), "mempool must be cleared");
         assert_eq!(std::fs::read(dd.join("identity.enc")).unwrap(), b"keep-me");
-        assert_eq!(std::fs::read(dd.join(NETWORK_MAGIC_MARKER)).unwrap(), b"TES3");
+        assert_eq!(
+            std::fs::read(dd.join(NETWORK_MAGIC_MARKER)).unwrap(),
+            b"TES3"
+        );
     }
 
     #[test]

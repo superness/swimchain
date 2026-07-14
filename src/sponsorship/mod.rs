@@ -39,6 +39,7 @@
 //! Penalties can be reduced through contribution during penalty period.
 //! Requires MIN_PENALTY_RECOVERY_ATTESTATION_COUNT (3) attestations.
 
+pub mod auto_approve;
 pub mod error;
 pub mod genesis_list;
 pub mod linear_chain;

@@ -103,6 +103,13 @@ pub const SPONSORSHIP_OFFER_SYNC_INTERVAL_SECS: u64 = 120;
 /// the sponsor (e.g. a mobile node whose broadcast fan-out excluded it).
 pub const SPONSORSHIP_CLAIM_REBROADCAST_INTERVAL_SECS: u64 = 30;
 
+/// Sponsor-side sweep for auto-approve offers (SWIM-INV-1): how often this
+/// node checks its own `auto_approve` offers for gossiped pending claims and
+/// approves them. Claims arriving via RPC on this node are approved inline at
+/// claim time; this sweep covers the cross-node case where the claim arrived
+/// by gossip and the claim RPC ran on the claimant's node.
+pub const SPONSORSHIP_AUTO_APPROVE_INTERVAL_SECS: u64 = 20;
+
 /// Mempool re-broadcast interval. A self-originated action is announced once at
 /// submit time; if that broadcast misses (a peer mid-reconnect, a flaky/NAT link,
 /// a seed-node dropping the connection after its idle timeout) the action strands
@@ -940,9 +947,23 @@ impl BackgroundTaskRunner {
                         break;
                     }
                     _ = ticker.tick() => {
-                        // Once sponsored there is nothing to chase.
+                        // Once sponsored there is nothing to chase — and any own
+                        // still-pending claim records are stale (the approval
+                        // happened on the sponsor's node), so resolve them here
+                        // or get_my_claim_status reports a pending claim forever.
                         if let Some(ref ss) = sponsorship_store {
                             if ss.exists(&me).unwrap_or(false) {
+                                if let Ok(stale) = offer_store.get_own_pending_claims(&me) {
+                                    for claim in &stale {
+                                        let _ = offer_store.remove_claim(&claim.offer_id, &me);
+                                    }
+                                    if !stale.is_empty() {
+                                        info!(
+                                            "[CLAIM-REBROADCAST] Sponsored — cleared {} stale own pending claim(s)",
+                                            stale.len()
+                                        );
+                                    }
+                                }
                                 continue;
                             }
                         }
@@ -978,6 +999,149 @@ impl BackgroundTaskRunner {
                                 }
                                 Err(e) => {
                                     debug!("[CLAIM-REBROADCAST] serialize failed: {e}")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        self.handles.push(handle);
+    }
+
+    /// Spawn the sponsor-side auto-approve sweep (SWIM-INV-1, cross-node leg).
+    ///
+    /// `claim_sponsorship_offer` auto-approves inline ONLY when the claimant
+    /// submits on the node holding the sponsor identity. A real invitee's claim
+    /// arrives here by gossip (`handle_sponsorship_claim` stores it) and would
+    /// otherwise sit pending until a manual approval — defeating one-step
+    /// invite links. This task periodically approves pending claims on this
+    /// node's own `auto_approve` offers, signing with the node keypair and
+    /// running the same shared approval path as the approve RPC.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_sponsorship_auto_approve(
+        &mut self,
+        offer_store: Arc<OfferStore>,
+        sponsorship_store: Arc<crate::sponsorship::storage::SponsorshipStore>,
+        chain_store: Option<Arc<crate::storage::ChainStore>>,
+        block_builder: Option<Arc<RwLock<BlockBuilder>>>,
+        connection_pool: Arc<PeerConnectionPool>,
+        keypair: crate::types::identity::KeyPair,
+    ) {
+        let mut shutdown = self.shutdown_rx.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(SPONSORSHIP_AUTO_APPROVE_INTERVAL_SECS));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+            info!(
+                "[AUTO-APPROVE] Started ({}s interval)",
+                SPONSORSHIP_AUTO_APPROVE_INTERVAL_SECS
+            );
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    _ = shutdown.changed() => {
+                        info!("[AUTO-APPROVE] Received shutdown signal");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        let own_offers = match offer_store.list_by_sponsor(&keypair.public_key) {
+                            Ok(o) => o,
+                            Err(e) => {
+                                debug!("[AUTO-APPROVE] failed to list own offers: {e}");
+                                continue;
+                            }
+                        };
+
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+
+                        for offer in own_offers {
+                            if !offer.auto_approve || offer.expires_at <= now {
+                                continue;
+                            }
+                            let claims = match offer_store.get_pending_claims(&offer.offer_id) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    debug!("[AUTO-APPROVE] failed to read claims: {e}");
+                                    continue;
+                                }
+                            };
+
+                            for claim in claims {
+                                // Already sponsored elsewhere (another offer, direct
+                                // sponsorship) — the claim is moot; drop it so it
+                                // stops showing as pending.
+                                if sponsorship_store.exists(&claim.claimant).unwrap_or(false) {
+                                    let _ = offer_store.remove_claim(&offer.offer_id, &claim.claimant);
+                                    continue;
+                                }
+
+                                // Defense-in-depth: only approve claims the claimant
+                                // actually signed (the router verifies on receive,
+                                // but the store is reachable from other paths).
+                                let sig_msg = claim.signature_message();
+                                if !crate::identity::verify(
+                                    &claim.claimant,
+                                    &sig_msg,
+                                    &claim.claimant_signature,
+                                ) {
+                                    warn!(
+                                        "[AUTO-APPROVE] dropping claim with bad signature from {} on offer {}",
+                                        hex::encode(&claim.claimant.as_bytes()[..8]),
+                                        hex::encode(&offer.offer_id[..8]),
+                                    );
+                                    let _ = offer_store.remove_claim(&offer.offer_id, &claim.claimant);
+                                    continue;
+                                }
+
+                                // Sign the exact message the on-chain Sponsor action
+                                // carries: claimant(32) || timestamp(8 BE).
+                                let mut approval_msg = Vec::with_capacity(40);
+                                approval_msg.extend_from_slice(claim.claimant.as_bytes());
+                                approval_msg.extend_from_slice(&now.to_be_bytes());
+                                let approval_sig =
+                                    crate::identity::sign(&keypair.private_key, &approval_msg);
+
+                                match crate::sponsorship::auto_approve::execute_claim_approval(
+                                    &offer_store,
+                                    &sponsorship_store,
+                                    chain_store.as_ref(),
+                                    block_builder.as_ref(),
+                                    Some(&connection_pool),
+                                    &offer,
+                                    &claim,
+                                    *approval_sig.as_bytes(),
+                                    now,
+                                    now,
+                                )
+                                .await
+                                {
+                                    Ok((depth, probationary)) => {
+                                        info!(
+                                            "[AUTO-APPROVE] Approved gossiped claim: {} sponsored by {} (depth={}, probationary={}, offer {})",
+                                            hex::encode(&claim.claimant.as_bytes()[..8]),
+                                            hex::encode(&keypair.public_key.as_bytes()[..8]),
+                                            depth,
+                                            probationary,
+                                            hex::encode(&offer.offer_id[..8]),
+                                        );
+                                    }
+                                    Err(crate::sponsorship::auto_approve::ClaimApprovalError::NoSlots(e)) => {
+                                        // Will never succeed — drop so the claimant
+                                        // isn't left waiting on a full offer.
+                                        warn!("[AUTO-APPROVE] offer full, dropping claim: {e}");
+                                        let _ = offer_store.remove_claim(&offer.offer_id, &claim.claimant);
+                                    }
+                                    Err(e) => {
+                                        warn!("[AUTO-APPROVE] approval failed (will retry): {e}");
+                                    }
                                 }
                             }
                         }
@@ -2752,6 +2916,7 @@ impl BackgroundTaskRunner {
         identity_pubkey: [u8; 32],
         sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
         offer_store: Option<Arc<OfferStore>>,
+        keypair: Option<crate::types::identity::KeyPair>,
     ) {
         // Spawn the accept loop with routing - this enables full message propagation
         // If seed_idle_timeout is set, connections will be closed after that duration of inactivity
@@ -2788,6 +2953,7 @@ impl BackgroundTaskRunner {
 
         // Spawn block formation task for block-based propagation (SPEC_08)
         // Forms blocks when cumulative PoW threshold is met AND leader election passes
+        let block_builder_for_auto_approve = block_builder.clone();
         if let Some(bb) = block_builder {
             // Mempool re-broadcast: re-announce still-pending actions so a missed
             // one-shot broadcast (flaky/NAT link, seed-node idle drop) self-heals
@@ -2837,6 +3003,18 @@ impl BackgroundTaskRunner {
         // This ensures new nodes receive existing offers that were created before they joined
         if let Some(os) = offer_store {
             self.spawn_sponsorship_offer_sync(connection_pool.clone(), os.clone());
+            // Sponsor-side: approve gossiped claims on our own auto_approve
+            // offers (SWIM-INV-1 cross-node leg) — needs the keypair to sign.
+            if let (Some(ss), Some(kp)) = (sponsorship_store.clone(), keypair) {
+                self.spawn_sponsorship_auto_approve(
+                    os.clone(),
+                    ss,
+                    chain_store.clone(),
+                    block_builder_for_auto_approve,
+                    connection_pool.clone(),
+                    kp,
+                );
+            }
             // Claimant-side: keep re-broadcasting our own pending claims until we
             // are sponsored, since claims are not relayed/pull-synced (F7).
             self.spawn_sponsorship_claim_rebroadcast(
