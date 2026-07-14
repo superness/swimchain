@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784059258374,
+  "lastUpdate": 1784065119810,
   "repoUrl": "https://github.com/superness/swimchain",
   "entries": {
     "Swimchain benchmarks": [
@@ -52901,6 +52901,1156 @@ window.BENCHMARK_DATA = {
             "name": "cache_persist/10000",
             "value": 627943,
             "range": "± 16297",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "admin@adminwizard.tech",
+            "name": "AdminWizard"
+          },
+          "committer": {
+            "email": "admin@adminwizard.tech",
+            "name": "AdminWizard"
+          },
+          "distinct": true,
+          "id": "c7ec40031bdc5a1f550d1dcd8eb85c74b34e5a91",
+          "message": "docs(qa): round-3 UX study — confusing/bad/ugly pass, all surfaces\n\nFindings: R1 game spaces are social-class (leak into every social client),\nR2 DM/follow/save state unrecoverable from node (localStorage-only), R3\nspace names absent from search index, L1 launcher reports wrong password as\ncorrupted identity. Six inline fixes shipped (73c646ac). Adds\ndrive-launcher.mjs: headless CDP driving for the desktop launcher.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-14T17:14:15-04:00",
+          "tree_id": "f65dbe479b1f907e6d129b408bf85e67fbc2011e",
+          "url": "https://github.com/superness/swimchain/commit/c7ec40031bdc5a1f550d1dcd8eb85c74b34e5a91"
+        },
+        "date": 1784065118502,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "mobile_single_hash/mobile_64mib_p2",
+            "value": 93224493,
+            "range": "± 901835",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_single_hash/desktop_64mib_p4",
+            "value": 94011062,
+            "range": "± 630648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_single_hash/test_1mib_p1",
+            "value": 396127,
+            "range": "± 402",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/4",
+            "value": 654369158,
+            "range": "± 2393592409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/6",
+            "value": 3382162116,
+            "range": "± 3553595418",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/8",
+            "value": 13938969301,
+            "range": "± 17804969894",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/4",
+            "value": 6336955,
+            "range": "± 914013",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/6",
+            "value": 23419376,
+            "range": "± 7766913",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/8",
+            "value": 92819662,
+            "range": "± 78694895",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/10",
+            "value": 303245227,
+            "range": "± 341238355",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/12",
+            "value": 1134798107,
+            "range": "± 707004772",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Post",
+            "value": 1299014252,
+            "range": "± 1523778035",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Reply",
+            "value": 782593617,
+            "range": "± 527110397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Engage",
+            "value": 1032051059,
+            "range": "± 618545191",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/3G_2mbps",
+            "value": 3038447012,
+            "range": "± 2584928",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/4G_10mbps",
+            "value": 2985,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/WiFi_50mbps",
+            "value": 2989,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/1KB",
+            "value": 4716,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/4KB",
+            "value": 1219,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/16KB",
+            "value": 364,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/64KB",
+            "value": 127,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "node_startup",
+            "value": 2489751349,
+            "range": "± 102566123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "node_shutdown",
+            "value": 2357245355,
+            "range": "± 1988067",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/2",
+            "value": 4818850133,
+            "range": "± 27666106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/3",
+            "value": 7221152013,
+            "range": "± 23406631",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/5",
+            "value": 12073274092,
+            "range": "± 176479567",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/10",
+            "value": 24027416722,
+            "range": "± 256351584",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chain_store_access",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "connection_manager_access",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_info",
+            "value": 164451,
+            "range": "± 2084",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_sync_status",
+            "value": 648838,
+            "range": "± 2093",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_chain_stats",
+            "value": 166100,
+            "range": "± 1920",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_peers",
+            "value": 159218,
+            "range": "± 3233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/list_spaces",
+            "value": 160462,
+            "range": "± 1480",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/feed_poll",
+            "value": 980623,
+            "range": "± 5792",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/create_space",
+            "value": 7892795,
+            "range": "± 1065432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/submit_post",
+            "value": 19498908,
+            "range": "± 1225651",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/list_space_content_populated",
+            "value": 4142441,
+            "range": "± 9604",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keypair_generation",
+            "value": 20920,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sign_32bytes",
+            "value": 41226,
+            "range": "± 69",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sign_1kb",
+            "value": 45673,
+            "range": "± 439",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_signature",
+            "value": 48176,
+            "range": "± 138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "encode_address",
+            "value": 361,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decode_address",
+            "value": 542,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/8",
+            "value": 40611,
+            "range": "± 447",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/12",
+            "value": 331593,
+            "range": "± 19891",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/16",
+            "value": 4710342,
+            "range": "± 519653",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "encrypt_private_key",
+            "value": 93599940,
+            "range": "± 491478",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decrypt_private_key",
+            "value": 93346291,
+            "range": "± 376733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "export_identity",
+            "value": 93104718,
+            "range": "± 522806",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "import_identity",
+            "value": 93388438,
+            "range": "± 365131",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_1mib",
+            "value": 390212,
+            "range": "± 318",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/4",
+            "value": 6786913,
+            "range": "± 891382",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/8",
+            "value": 114709155,
+            "range": "± 42205944",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/10",
+            "value": 505329815,
+            "range": "± 460722824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/12",
+            "value": 1246272542,
+            "range": "± 2484340986",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_64mib",
+            "value": 94574175,
+            "range": "± 697979",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_mobile",
+            "value": 94928360,
+            "range": "± 1038876",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/test_1mib",
+            "value": 390104,
+            "range": "± 2276",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/mobile_64mib_p2",
+            "value": 94836653,
+            "range": "± 917836",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/prod_64mib_p4",
+            "value": 93869375,
+            "range": "± 976724",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/100",
+            "value": 1645941,
+            "range": "± 70233",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/500",
+            "value": 5587206,
+            "range": "± 61563",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/1000",
+            "value": 11021179,
+            "range": "± 110195",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/100",
+            "value": 268,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/1000",
+            "value": 273,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/5000",
+            "value": 351,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_with_branch/insert_default_threshold",
+            "value": 22909,
+            "range": "± 1496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_with_branch/insert_small_threshold",
+            "value": 100695,
+            "range": "± 12516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "space_state_lookup/get_space_branch_state",
+            "value": 258,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hash_branch_matching/assign_branch_unfractured",
+            "value": 238,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hash_branch_matching/assign_branch_fractured",
+            "value": 292,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/2MB",
+            "value": 1553962,
+            "range": "± 731",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/10MB",
+            "value": 12601344,
+            "range": "± 30602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/50MB",
+            "value": 64915178,
+            "range": "± 1801397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/100MB",
+            "value": 129154624,
+            "range": "± 296242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/2MB",
+            "value": 3080372,
+            "range": "± 42859",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/10MB",
+            "value": 15488439,
+            "range": "± 96694",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/50MB",
+            "value": 102998780,
+            "range": "± 447220",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/2MB",
+            "value": 1683295,
+            "range": "± 1009",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/10MB",
+            "value": 8410080,
+            "range": "± 22650",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/50MB",
+            "value": 43934075,
+            "range": "± 70750",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/2",
+            "value": 821,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/10",
+            "value": 3080,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/50",
+            "value": 13501,
+            "range": "± 181",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/100",
+            "value": 26537,
+            "range": "± 109",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/500",
+            "value": 128682,
+            "range": "± 262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/1024",
+            "value": 268872,
+            "range": "± 301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/2",
+            "value": 871,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/10",
+            "value": 3771,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/50",
+            "value": 17796,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/100",
+            "value": 35181,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/500",
+            "value": 173806,
+            "range": "± 529",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/1024",
+            "value": 355757,
+            "range": "± 399",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/1MB",
+            "value": 778172,
+            "range": "± 409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/10MB",
+            "value": 7848802,
+            "range": "± 11775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/100MB",
+            "value": 123810897,
+            "range": "± 3300904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/500MB",
+            "value": 635834329,
+            "range": "± 8176458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/1024MB",
+            "value": 1310604898,
+            "range": "± 10377069",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/10",
+            "value": 38043,
+            "range": "± 273",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/50",
+            "value": 146748,
+            "range": "± 303",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/100",
+            "value": 278644,
+            "range": "± 1956",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_simulation/10k_posts_60_days",
+            "value": 18217986,
+            "range": "± 677125",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_simulation_large/100k_posts_60_days",
+            "value": 223878608,
+            "range": "± 3049896",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/1000",
+            "value": 35,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/10000",
+            "value": 48374,
+            "range": "± 471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/50000",
+            "value": 219898,
+            "range": "± 2768",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/100",
+            "value": 32926,
+            "range": "± 41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/1000",
+            "value": 327972,
+            "range": "± 235",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/10000",
+            "value": 3286692,
+            "range": "± 5982",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/100000",
+            "value": 32668172,
+            "range": "± 19575",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/1000",
+            "value": 1876,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/10000",
+            "value": 18248,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/100000",
+            "value": 153176,
+            "range": "± 205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_hash",
+            "value": 327,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "meets_difficulty",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Budget_1GB",
+            "value": 3076159,
+            "range": "± 135892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Standard_5GB",
+            "value": 17137753,
+            "range": "± 829947",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Flagship_10GB",
+            "value": 37779284,
+            "range": "± 3000954",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/50",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/75",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/90",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/95",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/99",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/1KB",
+            "value": 350734,
+            "range": "± 48389",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/10KB",
+            "value": 364015,
+            "range": "± 73738",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/100KB",
+            "value": 540243,
+            "range": "± 160850",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/100",
+            "value": 1446,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/1000",
+            "value": 15473,
+            "range": "± 43",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/10000",
+            "value": 245295,
+            "range": "± 5075",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_7",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_14",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_30",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_60",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_90",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_7",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_14",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_30",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_60",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_90",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_7",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_14",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_30",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_60",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_90",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/steady_state",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/daily_growth",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/avg_post_size",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/10_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/100_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/1000_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/10000_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/budget_1gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/standard_5gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/flagship_10gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/root_block",
+            "value": 6385,
+            "range": "± 1605",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/space_block",
+            "value": 687,
+            "range": "± 46",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/content_block",
+            "value": 660,
+            "range": "± 72",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/1024",
+            "value": 10105,
+            "range": "± 7382",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/4096",
+            "value": 17472,
+            "range": "± 17433",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/65536",
+            "value": 200880,
+            "range": "± 76385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/1048576",
+            "value": 3985989,
+            "range": "± 424894",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "random_read/root_block_1000",
+            "value": 680,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/1024_bytes",
+            "value": 4709,
+            "range": "± 250",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/65536_bytes",
+            "value": 69476,
+            "range": "± 4776",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/1048576_bytes",
+            "value": 1074702,
+            "range": "± 88709",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache/add_entry",
+            "value": 697,
+            "range": "± 36",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache/access",
+            "value": 319,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/100",
+            "value": 32064,
+            "range": "± 1900",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/1000",
+            "value": 58040,
+            "range": "± 3226",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/10000",
+            "value": 58326,
+            "range": "± 2367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/1048576_bytes",
+            "value": 1010667,
+            "range": "± 76290",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/5242880_bytes",
+            "value": 5607592,
+            "range": "± 231107",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/10485760_bytes",
+            "value": 10907479,
+            "range": "± 763504",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "startup/empty_db",
+            "value": 5544223,
+            "range": "± 517548",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "startup/populated_db",
+            "value": 8818743,
+            "range": "± 1284565",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/100",
+            "value": 528915,
+            "range": "± 147228",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/1000",
+            "value": 506082,
+            "range": "± 51730",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/10000",
+            "value": 521676,
+            "range": "± 63060",
             "unit": "ns/iter"
           }
         ]
