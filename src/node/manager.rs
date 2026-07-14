@@ -2166,6 +2166,13 @@ impl NodeManager {
         self.sponsorship_store.clone()
     }
 
+    /// Get reference to the sponsorship OfferStore (offers + claims)
+    ///
+    /// Returns None if the node hasn't been started yet.
+    pub fn offer_store(&self) -> Option<Arc<crate::sponsorship::offer_store::OfferStore>> {
+        self.offer_store.clone()
+    }
+
     /// Get reference to the AchievementService (for testing/advanced usage)
     ///
     /// Returns None if the node hasn't been started yet.

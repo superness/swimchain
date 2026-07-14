@@ -904,11 +904,13 @@ impl BackgroundTaskRunner {
 
     /// Spawn the claimant-side sponsorship-claim re-broadcast task.
     ///
-    /// Claims are delivered by a single broadcast at submit time and are neither
-    /// relayed nor pull-synced by peers (see router `handle_sponsorship_claim`,
-    /// "Does NOT relay claims"), so a claim can silently fail to reach its
-    /// sponsor. Until this node is sponsored, periodically re-broadcast its own
-    /// still-pending claims so the sponsor eventually receives one and approves.
+    /// A claim's submit-time broadcast reaches direct peers only, and can miss
+    /// even those (peer mid-reconnect, sponsor node restarting). Peers now
+    /// RELAY a first-seen claim onward (router `handle_sponsorship_claim`),
+    /// but that relay only fires on first sight — if the whole first delivery
+    /// missed, nothing retries without this task. Until this node is
+    /// sponsored, periodically re-broadcast its own still-pending claims so
+    /// one eventually lands and the relay mesh carries it to the sponsor.
     pub fn spawn_sponsorship_claim_rebroadcast(
         &mut self,
         connection_pool: Arc<PeerConnectionPool>,

@@ -7597,7 +7597,9 @@ impl MessageRouter {
 
     /// Handle incoming SPONSORSHIP_OFFER_CLAIM message (0x4A)
     ///
-    /// Stores claims for local offers. Does NOT relay claims.
+    /// Stores claims for known offers and RELAYS them on first sight (storage
+    /// is the dedup), so a claim reaches its sponsor across multi-hop
+    /// topologies — the claimant's own broadcast only covers direct peers.
     async fn handle_sponsorship_claim(
         &self,
         peer_id: &[u8; 32],
@@ -7648,12 +7650,37 @@ impl MessageRouter {
                     hex::encode(&claim.claimant.as_bytes()[..8]),
                     hex::encode(&claim.offer_id[..8])
                 );
+
+                // RELAY on first sight: claims used to be delivered only by the
+                // claimant's own (re-)broadcast, which reaches DIRECT peers
+                // only — a sponsor that is not directly connected to the
+                // claimant never received the claim, no matter how often the
+                // claimant re-broadcast (observed live: client2 → seed/bot
+                // stored the claim, genesis two hops away saw 0 pending).
+                // Forward a newly-stored, signature-verified claim for a KNOWN
+                // offer to our other peers. Storage is the dedup: a node
+                // relays each unique claim at most once (re-receives hit the
+                // DuplicateClaim arm below and stop), so floods terminate.
+                if let Some(ref pool) = self.connection_pool {
+                    let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                        crate::types::network::MessageType::SponsorshipOfferClaim,
+                        payload.to_vec(),
+                    );
+                    let relayed = pool.broadcast_except(&envelope, peer_id).await;
+                    if relayed > 0 {
+                        info!(
+                            "[SPONSORSHIP] Relayed claim for offer {} to {} peers",
+                            hex::encode(&claim.offer_id[..8]),
+                            relayed
+                        );
+                    }
+                }
             }
             Err(e)
                 if e.to_string().contains("DuplicateClaim")
                     || e.to_string().contains("already") =>
             {
-                debug!("[SPONSORSHIP] Duplicate claim, ignoring");
+                debug!("[SPONSORSHIP] Duplicate claim, ignoring (already relayed once)");
             }
             Err(e) => {
                 return Err(RouteError::HandlerError(e.to_string()));

@@ -450,3 +450,146 @@ async fn test_sponsorship_validation_across_connected_nodes() {
 
     harness.shutdown_all().await.unwrap();
 }
+
+// ============================================================================
+// Claim relay (multi-hop delivery)
+// ============================================================================
+
+/// A sponsorship claim must reach a sponsor that is NOT a direct peer of the
+/// claimant. Line topology sponsor(0) — middle(1) — claimant(2): the claim
+/// enters node 1, which stores it (known offer, valid signature) and RELAYS
+/// it to node 0 over the real connection. Before the relay existed, node 1
+/// stored the claim and dropped it — the sponsor two hops away saw 0 pending
+/// claims forever (observed live during the F10 deploy: client2's claim
+/// never reached genesis).
+#[tokio::test(flavor = "multi_thread")]
+async fn test_claim_relays_across_multi_hop_topology() {
+    use swimchain::crypto::signature::{generate_keypair, sign};
+    use swimchain::sponsorship::types::{
+        PublicSponsorshipOffer, SponsorshipClaim, SponsorshipOfferType, SponsorshipRequirements,
+    };
+    use swimchain::sponsorship::wire::serialize_claim;
+    use swimchain::types::constants::MSG_SPONSORSHIP_OFFER_CLAIM;
+    use swimchain::types::identity::{IdentityCreationProof, Signature};
+
+    let _ = env_logger::try_init();
+
+    let mut harness = MultiNodeTestHarness::new(3).await.unwrap();
+    harness.start_all().await.unwrap();
+
+    // Line topology: 0 — 1 — 2 (no 0—2 link).
+    harness.connect_pair(1, 0).await.unwrap();
+    harness.connect_pair(1, 2).await.unwrap();
+    harness
+        .wait_for_connection(1, 0, Duration::from_secs(10))
+        .await
+        .unwrap();
+    harness
+        .wait_for_connection(1, 2, Duration::from_secs(10))
+        .await
+        .unwrap();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    // The offer is known to the sponsor (node 0) AND the middle node (node 1)
+    // — offers gossip/pull-sync in production; installed directly here.
+    let sponsor_pk = PublicKey::from_bytes(harness.nodes[0].node_id());
+    let offer = PublicSponsorshipOffer {
+        sponsor: sponsor_pk,
+        offer_id: [0xC1; 16],
+        created_at: now,
+        expires_at: now + 86_400,
+        max_sponsees: 3,
+        offer_type: SponsorshipOfferType::Probationary,
+        requirements: SponsorshipRequirements::none(),
+        signature: Signature::from_bytes([0u8; 64]),
+        auto_approve: false,
+    };
+    for i in [0usize, 1] {
+        harness.nodes[i]
+            .manager
+            .offer_store()
+            .expect("offer store")
+            .create_offer(&offer)
+            .unwrap();
+    }
+
+    // A fresh claimant identity signs a valid claim.
+    let claimant_keys = generate_keypair();
+    let claimant_pk = claimant_keys.public_key;
+    let mut claim = SponsorshipClaim {
+        offer_id: offer.offer_id,
+        claimant: claimant_pk,
+        claimed_at: now,
+        identity_pow_proof: IdentityCreationProof {
+            public_key: claimant_pk,
+            timestamp: now,
+            nonce: 7,
+            pow_hash: [0u8; 32],
+        },
+        pow_nonce_space: [0u8; 32],
+        application_text: None,
+        attestation_signature: None,
+        claimant_signature: Signature::from_bytes([0u8; 64]),
+        sponsor_approval: None,
+    };
+    claim.claimant_signature = sign(&claimant_keys.private_key, &claim.signature_message());
+    let claim_bytes = serialize_claim(&claim).unwrap();
+
+    // Deliver the claim to the MIDDLE node as if sent by the claimant node.
+    let router = harness.nodes[1]
+        .manager
+        .message_router()
+        .expect("router available");
+    let claimant_node_id = harness.nodes[2].node_id();
+    router
+        .route(
+            &claimant_node_id,
+            MSG_SPONSORSHIP_OFFER_CLAIM,
+            &[0u8; 32],
+            &claim_bytes,
+        )
+        .await
+        .expect("middle node accepts the claim");
+
+    // Middle node stored it...
+    assert!(harness.nodes[1]
+        .manager
+        .offer_store()
+        .unwrap()
+        .has_claimed(&offer.offer_id, &claimant_pk)
+        .unwrap());
+
+    // ...and the RELAY carries it over the real connection to the sponsor,
+    // which is not a peer of the claimant.
+    let sponsor_store = harness.nodes[0].manager.offer_store().unwrap();
+    harness
+        .wait_for(
+            "sponsor received relayed claim",
+            Duration::from_secs(15),
+            |_| {
+                sponsor_store
+                    .has_claimed(&offer.offer_id, &claimant_pk)
+                    .unwrap_or(false)
+            },
+        )
+        .await
+        .unwrap();
+
+    // Loop safety: re-delivering the same claim is a no-op duplicate (each
+    // node relays a unique claim at most once).
+    router
+        .route(
+            &claimant_node_id,
+            MSG_SPONSORSHIP_OFFER_CLAIM,
+            &[0u8; 32],
+            &claim_bytes,
+        )
+        .await
+        .expect("duplicate claim is ignored, not an error");
+
+    harness.shutdown_all().await.unwrap();
+}
