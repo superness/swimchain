@@ -254,6 +254,29 @@ impl OfferStore {
         }
     }
 
+    /// Raise the claimed count to at least `at_least` (monotonic max-merge).
+    ///
+    /// Used by offer-sync convergence (N3 follow-up): a claim/approval consumes
+    /// a slot only on the node that processed it, so `claimed_count` is stale on
+    /// other nodes (they show an offer as more open than it is). Peers gossip
+    /// their claimed_count in the offer-list; each node raises its own to the
+    /// max seen. Never lowers the count — an over-claim guard must not relax.
+    /// Returns the resulting count.
+    pub fn bump_claimed_count_to(
+        &self,
+        offer_id: &[u8; 16],
+        at_least: u8,
+    ) -> Result<u8, SponsorshipError> {
+        let result = self.claimed_counts.fetch_and_update(offer_id, |old| {
+            let current = old.map(|d| d[0]).unwrap_or(0);
+            Some(vec![current.max(at_least)])
+        })?;
+        let prev = result
+            .map(|d| if d.is_empty() { 0 } else { d[0] })
+            .unwrap_or(0);
+        Ok(prev.max(at_least))
+    }
+
     /// Decrement claimed count (for rollback on failure)
     pub fn decrement_claimed_count(&self, offer_id: &[u8; 16]) -> Result<u8, SponsorshipError> {
         let result = self.claimed_counts.fetch_and_update(offer_id, |old| {
@@ -654,6 +677,25 @@ mod tests {
         // Third should fail
         let result = store.increment_claimed_count(&offer.offer_id, 2);
         assert!(matches!(result, Err(SponsorshipError::OfferFullyClaimed)));
+    }
+
+    #[test]
+    fn test_bump_claimed_count_monotonic() {
+        let (store, _dir) = create_test_store();
+        let offer = make_test_offer([1u8; 32], [2u8; 16]);
+        store.create_offer(&offer).unwrap();
+
+        // Raises from 0 to a peer's higher count.
+        assert_eq!(store.bump_claimed_count_to(&offer.offer_id, 3).unwrap(), 3);
+        assert_eq!(store.get_claimed_count(&offer.offer_id).unwrap(), 3);
+
+        // A lower peer count never lowers ours (over-claim guard must not relax).
+        assert_eq!(store.bump_claimed_count_to(&offer.offer_id, 1).unwrap(), 3);
+        assert_eq!(store.get_claimed_count(&offer.offer_id).unwrap(), 3);
+
+        // Equal or higher raises.
+        assert_eq!(store.bump_claimed_count_to(&offer.offer_id, 5).unwrap(), 5);
+        assert_eq!(store.get_claimed_count(&offer.offer_id).unwrap(), 5);
     }
 
     #[test]

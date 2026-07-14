@@ -7873,14 +7873,22 @@ impl MessageRouter {
             .list_active_offers(current_time)
             .map_err(|e| RouteError::HandlerError(e.to_string()))?;
 
-        // Build response: count(2 LE) + (len(2) + offer_bytes)*
+        // Build response: count(2 LE) + (len(2) + offer_bytes + claimed_count(1))*
+        //
+        // The trailing claimed_count byte lets peers converge stale slot counts
+        // (N3 follow-up). It rides INSIDE the len-prefixed blob, and
+        // deserialize_offer ignores bytes past the offer it decodes (same trick
+        // as the optional auto_approve byte), so older nodes read the offer and
+        // silently drop the extra byte — backward compatible.
         let mut response = Vec::new();
         let count = offers.len().min(50) as u16; // Max 50 offers per response
         response.extend_from_slice(&count.to_le_bytes());
 
         for offer in offers.into_iter().take(50) {
-            let offer_bytes =
+            let mut offer_bytes =
                 serialize_offer(&offer).map_err(|e| RouteError::HandlerError(e.to_string()))?;
+            let claimed = offer_store.get_claimed_count(&offer.offer_id).unwrap_or(0);
+            offer_bytes.push(claimed);
             let len = (offer_bytes.len() as u16).to_le_bytes();
             response.extend_from_slice(&len);
             response.extend_from_slice(&offer_bytes);
@@ -7954,7 +7962,22 @@ impl MessageRouter {
                     continue;
                 }
 
-                // Skip if already have
+                // Trailing claimed_count byte (N3 follow-up): rides after the
+                // offer blob a peer serialized. deserialize_offer ignores it, so
+                // we recover it by re-serializing to find the base length. Older
+                // peers omit it (offer_bytes.len() == base_len) → None.
+                let peer_claimed = serialize_offer(&offer)
+                    .ok()
+                    .and_then(|base| offer_bytes.get(base.len()).copied());
+
+                // Converge slot counts even for offers we already have: a
+                // claim/approval consumes a slot only on the processing node,
+                // so peers carry a fresher claimed_count. Never lower it.
+                if let Some(pc) = peer_claimed {
+                    let _ = offer_store.bump_claimed_count_to(&offer.offer_id, pc);
+                }
+
+                // Skip storing if already have (count already merged above)
                 if offer_store.offer_exists(&offer.offer_id).unwrap_or(true) {
                     continue;
                 }
@@ -7965,8 +7988,11 @@ impl MessageRouter {
                     continue;
                 }
 
-                // Store
+                // Store, seeding the claimed_count from the peer if provided.
                 if offer_store.create_offer(&offer).is_ok() {
+                    if let Some(pc) = peer_claimed {
+                        let _ = offer_store.bump_claimed_count_to(&offer.offer_id, pc);
+                    }
                     stored += 1;
                 }
             }
