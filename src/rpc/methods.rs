@@ -2258,6 +2258,17 @@ impl RpcMethods {
             // enters our mempool. Prevents this node from ever building a block with a
             // forged-authorship post (front-door defense; block/gossip ingest re-check).
             if let Err(e) = crate::blocks::validate_content_action_authenticity(&action) {
+                // Log the exact preimage components the node verified against so a
+                // client-side signing divergence is diagnosable from the node log
+                // alone (compare with the client's signed preimage).
+                warn!(
+                    "[RPC] submit_post authorship FAILED: actor={} content_hash={} ts={} private={} ({:?})",
+                    hex::encode(&author_bytes[..8]),
+                    hex::encode(content_hash),
+                    params.timestamp,
+                    is_private,
+                    e
+                );
                 return RpcResponse::error(
                     RpcErrorCode::InvalidParams,
                     &format!(
@@ -3124,6 +3135,14 @@ impl RpcMethods {
             // AUTHENTICITY: verify the caller actually signed this reply before it
             // enters our mempool (front-door defense; block/gossip ingest re-check).
             if let Err(e) = crate::blocks::validate_content_action_authenticity(&action) {
+                warn!(
+                    "[RPC] submit_reply authorship FAILED: actor={} content_hash={} ts={} private={} ({:?})",
+                    hex::encode(&author_bytes[..8]),
+                    hex::encode(content_hash),
+                    params.timestamp,
+                    is_private,
+                    e
+                );
                 return RpcResponse::error(
                     RpcErrorCode::InvalidParams,
                     &format!(
@@ -3538,11 +3557,15 @@ impl RpcMethods {
             );
         }
 
-        // Create new content hash
-        let edit_content = if let Some(ref title) = params.title {
-            format!("{}\n\n{}", title, params.body)
-        } else {
-            params.body.clone()
+        // Create new content hash. An EMPTY title must hash exactly like an
+        // absent one: every client computes the signing preimage with JS
+        // truthiness (`title ? `${title}\n\n${body}` : body`), so treating
+        // Some("") as a real title here produced a "\n\n"-prefixed hash the
+        // client never signed — every empty-title edit (feed posts, profile
+        // posts) failed with "action authorship verification failed".
+        let edit_content = match params.title.as_deref() {
+            Some(title) if !title.is_empty() => format!("{}\n\n{}", title, params.body),
+            _ => params.body.clone(),
         };
         let new_content_hash = crate::crypto::sha256(edit_content.as_bytes());
         let content_id = format!("sha256:{}", hex::encode(new_content_hash));
@@ -3626,6 +3649,14 @@ impl RpcMethods {
         // AUTHENTICITY: verify the caller actually signed this edit before it enters
         // our mempool (front-door defense; block/gossip ingest re-check).
         if let Err(e) = crate::blocks::validate_content_action_authenticity(&action) {
+            warn!(
+                "[RPC] submit_edit authorship FAILED: actor={} content_hash={} ts={} title_empty={} ({:?})",
+                hex::encode(&author_bytes[..8]),
+                hex::encode(new_content_hash),
+                params.timestamp,
+                params.title.as_deref().map_or(true, str::is_empty),
+                e
+            );
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
                 &format!(
