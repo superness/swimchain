@@ -949,7 +949,13 @@ impl BlockBuilder {
         // Filter out CreateSpace actions that would fail validation
         // A CreateSpace is valid ONLY if the creator is:
         // 1. Already sponsored on-chain (in sponsorship_store), OR
-        // 2. Being sponsored in this block (Sponsor action in this batch)
+        // 2. Being sponsored in this block (Sponsor action in this batch), OR
+        // 3. A hardcoded genesis identity (the sponsor ROOT usually has no
+        //    store record of its own — without this fallback the builder
+        //    silently dropped genesis's own CreateSpace from every block it
+        //    formed, so a genesis-created space never mined; same bootstrap
+        //    deadlock as the CreateSpace validation in tasks.rs and the
+        //    sponsorship apply in the router).
         let mut removed_actions = Vec::new();
         for threads in space_threads.values_mut() {
             for thread in threads {
@@ -962,16 +968,23 @@ impl BlockBuilder {
                         let sponsored_in_batch =
                             identities_sponsored_in_batch.contains(&creator_bytes);
 
+                        let creator_pk =
+                            crate::types::identity::PublicKey::from_bytes(creator_bytes);
+
                         // Check if sponsored on-chain
                         let sponsored_on_chain = if let Some(store) = sponsorship_store {
-                            let creator_pk =
-                                crate::types::identity::PublicKey::from_bytes(creator_bytes);
                             store.exists(&creator_pk).unwrap_or(false)
                         } else {
                             false // No store = can't verify, exclude to be safe
                         };
 
-                        if !sponsored_on_chain && !sponsored_in_batch {
+                        // Hardcoded genesis identities are always eligible.
+                        let is_genesis =
+                            crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(
+                                &creator_pk,
+                            );
+
+                        if !sponsored_on_chain && !sponsored_in_batch && !is_genesis {
                             log::warn!(
                                 "[BLOCK_BUILDER] Excluding CreateSpace by {} from block: \
                                 creator not sponsored on-chain and no Sponsor action in batch",
@@ -2155,5 +2168,52 @@ mod tests {
 
         assert_eq!(builder.total_action_count, 0);
         assert!(builder.space_action_counts.is_empty());
+    }
+
+    /// A hardcoded-genesis creator's CreateSpace must survive the builder's
+    /// sponsorship filter even with NO sponsorship store record — genesis is
+    /// the sponsor root and usually has none. Regression for the live bug
+    /// where genesis's own "Latency Lab" CreateSpace was silently excluded
+    /// from every block it formed ("creator not sponsored on-chain and no
+    /// Sponsor action in batch") and the space never mined.
+    #[test]
+    fn test_genesis_create_space_survives_builder_filter() {
+        use crate::types::identity::PublicKey;
+
+        // Real hardcoded testnet genesis pubkey (genesis_list.rs).
+        let genesis: [u8; 32] = [
+            0x9e, 0xc9, 0x66, 0x1d, 0x3a, 0x97, 0x5a, 0xd1, 0x41, 0xca, 0xa5, 0xdf, 0x9f, 0x14,
+            0xb3, 0xc4, 0x6c, 0xf7, 0x25, 0x50, 0x9e, 0x7f, 0xa0, 0x44, 0xc1, 0x9d, 0x26, 0xfe,
+            0x76, 0xbd, 0x04, 0x20,
+        ];
+        assert!(crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(
+            &PublicKey::from_bytes(genesis)
+        ));
+
+        let mut space_id_32 = [0u8; 32];
+        space_id_32[0] = 0x01; // valid Social class byte
+        let action = Action::new_create_space(
+            genesis,
+            1_700_000_000,
+            space_id_32,
+            0,
+            1,
+            [0u8; 32],
+            [0u8; 64],
+        );
+
+        let mut builder = BlockBuilder::new(0);
+        builder.add_action(space_id_32, space_id_32, action, BranchPath::root());
+
+        // No sponsorship store at all — previously guaranteed exclusion.
+        let (root, _spaces, contents) = builder.build_root_block(1_700_000_000, [0u8; 32], None);
+
+        let kept: usize = contents
+            .iter()
+            .flat_map(|cb| cb.actions.iter())
+            .filter(|a| a.action_type == crate::blocks::ActionType::CreateSpace)
+            .count();
+        assert_eq!(kept, 1, "genesis CreateSpace must be included in the block");
+        assert!(!root.space_block_hashes.is_empty());
     }
 }

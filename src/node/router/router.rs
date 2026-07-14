@@ -3826,7 +3826,11 @@ impl MessageRouter {
                     }
                 }
 
-                // Validate all CreateSpace actions
+                // Validate all CreateSpace actions. Hardcoded genesis
+                // identities pass without a store record (the sponsor root
+                // has none — same bootstrap deadlock handled in the builder
+                // filter, the tasks.rs formation validation, and the
+                // sponsorship apply).
                 let mut is_valid = true;
                 for content_block in &parsed_content_blocks {
                     for action in &content_block.actions {
@@ -3838,8 +3842,10 @@ impl MessageRouter {
                             let is_sponsored_on_chain = ss.exists(&creator_pk).unwrap_or(false);
                             let is_sponsored_in_block =
                                 identities_sponsored_in_block.contains(&creator_bytes);
+                            let is_genesis =
+                                crate::sponsorship::is_in_hardcoded_genesis_list(&creator_pk);
 
-                            if !is_sponsored_on_chain && !is_sponsored_in_block {
+                            if !is_sponsored_on_chain && !is_sponsored_in_block && !is_genesis {
                                 warn!(
                                     "[BLOCK] VALIDATION FAILED: Block {} contains CreateSpace by unsponsored identity {}",
                                     hex::encode(&computed_hash[..8]),
