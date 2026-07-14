@@ -10,6 +10,7 @@ import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpa
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useBlocklist } from '../hooks/useBlocklist';
+import { useUserProfile } from '../hooks/useUserProfile';
 import { useReplyPow } from '../hooks/useActionPow';
 import { useSponsorship } from '../hooks/useSponsorship';
 import { solutionToRpcParams } from '../lib/action-pow';
@@ -74,6 +75,11 @@ function ReplyItem({
 }): JSX.Element {
   const maxDepth = 4;
   const actualDepth = Math.min(depth, maxDepth);
+  // Resolve the reply author's chosen display name (same source as the feed
+  // card), falling back to the truncated address (M4: post-detail bylines used
+  // to show only raw cs1… while the feed card and chat resolved the name).
+  const { profile: replyAuthorProfile } = useUserProfile(reply.author);
+  const replyAuthorName = replyAuthorProfile?.info?.displayName ?? truncateAddress(reply.author);
   const displayContent = decrypted[reply.id]
     ?? (isPrivateCiphertext(reply.content) ? '🔒 Encrypted — decrypting…' : reply.content);
 
@@ -87,7 +93,7 @@ function ReplyItem({
           to={`/profile/${reply.author}`}
           className="reply-author"
         >
-          {truncateAddress(reply.author)}
+          {replyAuthorName}
         </Link>
         <time
           className="reply-time"
@@ -192,6 +198,11 @@ export function Post(): JSX.Element {
   const { thread: post, loading, error, fetching } = useThread(postId || '');
   const { replies, loading: repliesLoading, fetching: repliesFetching, refetch: refetchReplies } = useReplies(postId || '');
   const { getMediaUrl } = useMediaUpload();
+  // Resolve the post author's chosen display name (M4 — the byline showed only
+  // the raw cs1… address while the feed card and chat resolved the name).
+  const { profile: postAuthorProfile } = useUserProfile(post?.author);
+  const postAuthorName = postAuthorProfile?.info?.displayName
+    ?? (post ? truncateAddress(post.author) : '');
 
   const { identity, hasValidIdentity, mode } = useIdentityContext();
   // Node-managed private-space crypto (desktop mode): encrypt/decrypt via the node.
@@ -450,7 +461,7 @@ export function Post(): JSX.Element {
               to={`/profile/${post.author}`}
               className="post-detail__author"
             >
-              {truncateAddress(post.author)}
+              {postAuthorName}
             </Link>
             <time
               className="post-detail__time"
