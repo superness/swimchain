@@ -42,16 +42,35 @@ export function Compose(): JSX.Element {
   const [pendingCompression, setPendingCompression] = useState<PendingCompression | null>(null);
 
   const { identity, hasValidIdentity, mode } = useIdentityContext();
-  // Unified signer: node's sign_message RPC when embedded, browser keypair otherwise.
-  const { sign } = useFeedIdentity();
+  // Unified signer + identity: node's sign_message RPC / node pubkey when embedded,
+  // browser keypair otherwise.
+  const { sign, publicKey: unifiedPublicKey } = useFeedIdentity();
   // Node-managed private-space crypto (desktop mode): encrypt the post before mining.
   const { encryptForSpace } = usePrivateContent();
-  const privateSpaceIds = usePrivateSpaceIds(identity?.publicKey);
+  // Key the private-space hooks by the UNIFIED public key: in node mode the browser
+  // identity context is empty (the node holds the key), so keying by
+  // identity?.publicKey never fetched and the Private optgroup silently vanished on
+  // desktop while working on the phone (whose shell populates the identity context).
+  const privateSpaceIds = usePrivateSpaceIds(unifiedPublicKey ?? identity?.publicKey);
   // Private spaces the user belongs to (with node-decrypted names) — they're not in
   // the public list_spaces result, so merge them into the space picker as their own
   // group. Keyed by bech32 id, which usePrivateSpaceIds also indexes for the encrypt
   // membership check below.
-  const { spaces: privateSpaces } = usePrivateSpaces(identity?.publicKey);
+  const { spaces: privateSpaces } = usePrivateSpaces(unifiedPublicKey ?? identity?.publicKey);
+
+  // The private-space page's "New Post"/"Create Thread" links pass the HEX space id
+  // (?space=04…), but the picker's private options are keyed by bech32 — resolve the
+  // param once the private list loads so the deep link actually preselects the space
+  // instead of silently falling back to "Select a space…".
+  useEffect(() => {
+    if (!spaceIdParam) return;
+    const match = privateSpaces.find(
+      (s) => s.spaceId === spaceIdParam || s.spaceIdBech32 === spaceIdParam
+    );
+    if (match) {
+      setSelectedSpace((cur) => (cur === '' || cur === spaceIdParam ? match.spaceIdBech32 : cur));
+    }
+  }, [spaceIdParam, privateSpaces]);
   const { state, minePost, cancel, progress, reset, solution } = usePostPow();
   const { isSponsored } = useSponsorship();
   const { submitPost, submitting, error: rpcError } = usePostSubmit();
