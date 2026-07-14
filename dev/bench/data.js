@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784054013158,
+  "lastUpdate": 1784055850236,
   "repoUrl": "https://github.com/superness/swimchain",
   "entries": {
     "Swimchain benchmarks": [
@@ -49451,6 +49451,1156 @@ window.BENCHMARK_DATA = {
             "name": "cache_persist/10000",
             "value": 494543,
             "range": "± 8717",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "admin@adminwizard.tech",
+            "name": "AdminWizard"
+          },
+          "committer": {
+            "email": "admin@adminwizard.tech",
+            "name": "AdminWizard"
+          },
+          "distinct": true,
+          "id": "5ec7f93142164ed72ed7e03cff9b8467858d5a14",
+          "message": "fix(rpc): exempt spam-attestation methods from cookie auth (self-verifying)\n\nsubmit_spam_attestation / submit_counter_attestation carry a self-verifying\nsignature + PoW in params — the same rationale that already exempts the\nsponsorship write methods directly above. get_spam_status is read-only\npublic data. Without the exemption a browser client's Report flow 401'd on\nthe write (reproduced live: list_spaces 200, get_spam_status 401 from the\nsame page), so reports silently failed and the modal never advanced past\nthe reason picker.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-14T14:40:18-04:00",
+          "tree_id": "1ec687121a6bb5e743439115470304f83f0a6e5a",
+          "url": "https://github.com/superness/swimchain/commit/5ec7f93142164ed72ed7e03cff9b8467858d5a14"
+        },
+        "date": 1784055848585,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "mobile_single_hash/mobile_64mib_p2",
+            "value": 90193163,
+            "range": "± 285890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_single_hash/desktop_64mib_p4",
+            "value": 90862760,
+            "range": "± 257415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_single_hash/test_1mib_p1",
+            "value": 396110,
+            "range": "± 369",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/4",
+            "value": 946103223,
+            "range": "± 1287738399",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/6",
+            "value": 2798139810,
+            "range": "± 7211948632",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/8",
+            "value": 19684346722,
+            "range": "± 10137453131",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/4",
+            "value": 6647081,
+            "range": "± 1248010",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/6",
+            "value": 26289584,
+            "range": "± 4327325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/8",
+            "value": 110344376,
+            "range": "± 41476087",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/10",
+            "value": 348667677,
+            "range": "± 164535948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/12",
+            "value": 674535231,
+            "range": "± 763973538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Post",
+            "value": 1578707937,
+            "range": "± 2543471845",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Reply",
+            "value": 951024374,
+            "range": "± 1163723564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Engage",
+            "value": 586637787,
+            "range": "± 832466270",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/3G_2mbps",
+            "value": 3035489435,
+            "range": "± 2275202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/4G_10mbps",
+            "value": 2984,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/WiFi_50mbps",
+            "value": 2989,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/1KB",
+            "value": 4715,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/4KB",
+            "value": 1217,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/16KB",
+            "value": 364,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/64KB",
+            "value": 127,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "node_startup",
+            "value": 2461986114,
+            "range": "± 81914021",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "node_shutdown",
+            "value": 2358544021,
+            "range": "± 2508186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/2",
+            "value": 4831350968,
+            "range": "± 35019386",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/3",
+            "value": 7248912286,
+            "range": "± 91003977",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/5",
+            "value": 12060434038,
+            "range": "± 153646333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/10",
+            "value": 24171582842,
+            "range": "± 326440283",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chain_store_access",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "connection_manager_access",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_info",
+            "value": 155906,
+            "range": "± 4080",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_sync_status",
+            "value": 613404,
+            "range": "± 3051",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_chain_stats",
+            "value": 156060,
+            "range": "± 1914",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_peers",
+            "value": 148340,
+            "range": "± 1831",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/list_spaces",
+            "value": 148526,
+            "range": "± 1594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/feed_poll",
+            "value": 927058,
+            "range": "± 6387",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/create_space",
+            "value": 7719476,
+            "range": "± 1636216",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/submit_post",
+            "value": 25866912,
+            "range": "± 3794892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/list_space_content_populated",
+            "value": 4252486,
+            "range": "± 3408",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keypair_generation",
+            "value": 20724,
+            "range": "± 12",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sign_32bytes",
+            "value": 41156,
+            "range": "± 203",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sign_1kb",
+            "value": 45621,
+            "range": "± 472",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_signature",
+            "value": 48990,
+            "range": "± 26",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "encode_address",
+            "value": 361,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decode_address",
+            "value": 530,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/8",
+            "value": 40414,
+            "range": "± 180",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/12",
+            "value": 329931,
+            "range": "± 8851",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/16",
+            "value": 4977418,
+            "range": "± 711583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "encrypt_private_key",
+            "value": 94098321,
+            "range": "± 782139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decrypt_private_key",
+            "value": 94553496,
+            "range": "± 842829",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "export_identity",
+            "value": 92498676,
+            "range": "± 615155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "import_identity",
+            "value": 92938874,
+            "range": "± 2132177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_1mib",
+            "value": 390689,
+            "range": "± 300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/4",
+            "value": 6271573,
+            "range": "± 1194972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/8",
+            "value": 64802139,
+            "range": "± 46615593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/10",
+            "value": 341670777,
+            "range": "± 252669985",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/12",
+            "value": 1109758864,
+            "range": "± 704480688",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_64mib",
+            "value": 97572022,
+            "range": "± 920187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_mobile",
+            "value": 95136088,
+            "range": "± 4283960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/test_1mib",
+            "value": 390385,
+            "range": "± 800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/mobile_64mib_p2",
+            "value": 97760370,
+            "range": "± 1048298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/prod_64mib_p4",
+            "value": 98725802,
+            "range": "± 3139918",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/100",
+            "value": 1657491,
+            "range": "± 29681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/500",
+            "value": 5617616,
+            "range": "± 42196",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/1000",
+            "value": 11128013,
+            "range": "± 139100",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/100",
+            "value": 261,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/1000",
+            "value": 269,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/5000",
+            "value": 349,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_with_branch/insert_default_threshold",
+            "value": 23122,
+            "range": "± 1606",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_with_branch/insert_small_threshold",
+            "value": 100752,
+            "range": "± 12718",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "space_state_lookup/get_space_branch_state",
+            "value": 256,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hash_branch_matching/assign_branch_unfractured",
+            "value": 235,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hash_branch_matching/assign_branch_fractured",
+            "value": 298,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/2MB",
+            "value": 1555761,
+            "range": "± 2238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/10MB",
+            "value": 12781407,
+            "range": "± 129789",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/50MB",
+            "value": 64590609,
+            "range": "± 182171",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/100MB",
+            "value": 129787467,
+            "range": "± 860638",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/2MB",
+            "value": 3081935,
+            "range": "± 23512",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/10MB",
+            "value": 15500065,
+            "range": "± 118851",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/50MB",
+            "value": 102862569,
+            "range": "± 681699",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/2MB",
+            "value": 1680936,
+            "range": "± 2251",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/10MB",
+            "value": 8439514,
+            "range": "± 17227",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/50MB",
+            "value": 45083806,
+            "range": "± 157945",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/2",
+            "value": 694,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/10",
+            "value": 2973,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/50",
+            "value": 13451,
+            "range": "± 30",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/100",
+            "value": 26148,
+            "range": "± 46",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/500",
+            "value": 130648,
+            "range": "± 235",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/1024",
+            "value": 266594,
+            "range": "± 475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/2",
+            "value": 868,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/10",
+            "value": 3835,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/50",
+            "value": 17719,
+            "range": "± 224",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/100",
+            "value": 35316,
+            "range": "± 314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/500",
+            "value": 173893,
+            "range": "± 152",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/1024",
+            "value": 355828,
+            "range": "± 511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/1MB",
+            "value": 777029,
+            "range": "± 384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/10MB",
+            "value": 7879760,
+            "range": "± 38322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/100MB",
+            "value": 128594088,
+            "range": "± 658512",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/500MB",
+            "value": 647257993,
+            "range": "± 6039839",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/1024MB",
+            "value": 1324517749,
+            "range": "± 1252949",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/10",
+            "value": 34812,
+            "range": "± 136",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/50",
+            "value": 139029,
+            "range": "± 1756",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/100",
+            "value": 258552,
+            "range": "± 823",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_simulation/10k_posts_60_days",
+            "value": 19216542,
+            "range": "± 907118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_simulation_large/100k_posts_60_days",
+            "value": 237430763,
+            "range": "± 2436440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/1000",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/10000",
+            "value": 48421,
+            "range": "± 492",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/50000",
+            "value": 221200,
+            "range": "± 2935",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/100",
+            "value": 31647,
+            "range": "± 41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/1000",
+            "value": 327120,
+            "range": "± 200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/10000",
+            "value": 3280190,
+            "range": "± 22648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/100000",
+            "value": 32717446,
+            "range": "± 34151",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/1000",
+            "value": 1851,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/10000",
+            "value": 18380,
+            "range": "± 408",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/100000",
+            "value": 152681,
+            "range": "± 659",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_hash",
+            "value": 350,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "meets_difficulty",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Budget_1GB",
+            "value": 2917315,
+            "range": "± 12561",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Standard_5GB",
+            "value": 15806865,
+            "range": "± 271268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Flagship_10GB",
+            "value": 33911754,
+            "range": "± 561065",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/50",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/75",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/90",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/95",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/99",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/1KB",
+            "value": 427328,
+            "range": "± 27753",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/10KB",
+            "value": 471986,
+            "range": "± 27760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/100KB",
+            "value": 645769,
+            "range": "± 14232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/100",
+            "value": 1456,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/1000",
+            "value": 16094,
+            "range": "± 417",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/10000",
+            "value": 216217,
+            "range": "± 2466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/steady_state",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/daily_growth",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/avg_post_size",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/10_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/100_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/1000_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/10000_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/budget_1gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/standard_5gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/flagship_10gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/root_block",
+            "value": 5133,
+            "range": "± 568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/space_block",
+            "value": 621,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/content_block",
+            "value": 602,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/1024",
+            "value": 9441,
+            "range": "± 8679",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/4096",
+            "value": 19658,
+            "range": "± 17157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/65536",
+            "value": 153061,
+            "range": "± 79397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/1048576",
+            "value": 2164512,
+            "range": "± 127313",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "random_read/root_block_1000",
+            "value": 711,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/1024_bytes",
+            "value": 8011,
+            "range": "± 61",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/65536_bytes",
+            "value": 51663,
+            "range": "± 179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/1048576_bytes",
+            "value": 732016,
+            "range": "± 564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache/add_entry",
+            "value": 578,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache/access",
+            "value": 275,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/100",
+            "value": 28155,
+            "range": "± 130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/1000",
+            "value": 52957,
+            "range": "± 213",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/10000",
+            "value": 53236,
+            "range": "± 314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/1048576_bytes",
+            "value": 703898,
+            "range": "± 774",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/5242880_bytes",
+            "value": 3527447,
+            "range": "± 5642",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/10485760_bytes",
+            "value": 7153697,
+            "range": "± 13046",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "startup/empty_db",
+            "value": 2392571,
+            "range": "± 61740",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "startup/populated_db",
+            "value": 6138834,
+            "range": "± 86667",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/100",
+            "value": 503555,
+            "range": "± 14966",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/1000",
+            "value": 649114,
+            "range": "± 26225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/10000",
+            "value": 637631,
+            "range": "± 15652",
             "unit": "ns/iter"
           }
         ]
