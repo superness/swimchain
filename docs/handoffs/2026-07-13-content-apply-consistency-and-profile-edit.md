@@ -279,6 +279,34 @@ carries an older feed bundle — rebuild it. The three authorship-failure sites
 components (actor, content_hash, ts, private/title_empty) so any remaining
 client divergence is diagnosable from the node log alone.
 
+## Deployed + verified live (2026-07-13 night)
+
+- Fleet upgraded: seed (167.71.241.252), bot (165.22.47.107), **new third
+  droplet swimchain-client2 (167.172.236.60** — remote client node, own
+  identity, sponsored), local genesis (Windows), phone (release APK, 18MB,
+  signed + installed). All formed/synced on the F10 binary.
+- **Second live fix (1b47c0fc):** the onboarding repro initially stalled 0/3
+  because `apply_sponsorship_actions_from_block` required the SPONSOR to be
+  Active in the store — the genesis identity has no store record (it's only
+  in the hardcoded genesis list). Same bootstrap deadlock CreateSpace already
+  handled; added the genesis-list fallback + regression test.
+- **Repro PASSED:** genesis offer `2d57cd66…` → fresh identities on seed+bot
+  claimed → genesis approved → `has_sponsorship:true` on ALL nodes (the exact
+  check that used to split true/false). client2's direct sponsorship
+  converged fleet-wide in one 30s reconcile tick. Seed's first reconcile pass
+  healed 7/13 old-chain blocks.
+- **New known gap:** sponsorship CLAIMS are one-shot gossip — no re-broadcast
+  if the sponsor's node was down when the claim was submitted (re-claim says
+  "already claimed"; restart doesn't re-announce). Same family as the fixed
+  mempool re-broadcast (45f8b492), needs the same treatment for claims.
+- Demos re-onboarded on the fresh chain: Daily Drift space
+  `sp1qqqsqpc0ulf4gsjf620m5lke5h3qu3x0pr` (live, 1 dispatch; generate.js's
+  hardcoded AUTHOR was a dead bot address — now genesis), Reef
+  `sp1qqqsqr9dfcyugxztn5nrpjd7r82sh9cd62` (genesis garden
+  `sha256:362a7acd…`), Chess `sp1qqqsqrsm2rq9fhtvwww9cts9n6wq536c23`;
+  reef/chess clients rebuilt + redeployed; chess-rpc-proxy restarted (node
+  restarts rotate the RPC cookie).
+
 ## Caveats / follow-ups
 
 - Historical blocks (pre-upgrade) have no applied flag; the reconciliation
