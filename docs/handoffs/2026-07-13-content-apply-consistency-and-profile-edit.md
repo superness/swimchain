@@ -295,10 +295,15 @@ client divergence is diagnosable from the node log alone.
   check that used to split true/false). client2's direct sponsorship
   converged fleet-wide in one 30s reconcile tick. Seed's first reconcile pass
   healed 7/13 old-chain blocks.
-- **New known gap:** sponsorship CLAIMS are one-shot gossip — no re-broadcast
-  if the sponsor's node was down when the claim was submitted (re-claim says
-  "already claimed"; restart doesn't re-announce). Same family as the fixed
-  mempool re-broadcast (45f8b492), needs the same treatment for claims.
+- **Claims gap — FIXED same night (3b9c7ef0):** the true cause wasn't missing
+  re-broadcast (a claimant-side re-broadcast task existed since F7) — claims
+  were never RELAYED, so they only ever reached the claimant's DIRECT peers;
+  a sponsor two hops away (genesis vs client2) saw 0 pending forever.
+  `handle_sponsorship_claim` now relays a first-seen valid claim to other
+  peers (storage is the dedup, floods terminate); 3-node line-topology
+  integration test added. Deployed fleet-wide and verified live: a fresh
+  claim from client2 appeared in genesis's pending list within ~5s via the
+  seed/bot hop, was approved, and the sponsorship converged on all nodes.
 - Demos re-onboarded on the fresh chain: Daily Drift space
   `sp1qqqsqpc0ulf4gsjf620m5lke5h3qu3x0pr` (live, 1 dispatch; generate.js's
   hardcoded AUTHOR was a dead bot address — now genesis), Reef
