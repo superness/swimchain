@@ -273,11 +273,24 @@ failed". Fixed server-side: empty title now hashes like an absent one
 Note: the feed-client Profile page actually saves via `submit_post` (a new
 profile post each time, newest wins) — that path verified consistent
 end-to-end in current source (preimage, keys, node-mode sign_message all
-match). If a profile save still fails on the phone, the installed APK likely
-carries an older feed bundle — rebuild it. The three authorship-failure sites
+match). The three authorship-failure sites
 (`submit_post`/`submit_reply`/`submit_edit`) now WARN-log the exact preimage
 components (actor, content_hash, ts, private/title_empty) so any remaining
 client divergence is diagnosable from the node log alone.
+
+**Phone repro CLOSED (2026-07-13 late, driven live via adb):** operated the
+mobile app through the full avatar-edit flow; the save failed with the new
+diagnostic (`submit_post authorship FAILED: actor=3b39e268… …
+SignatureVerificationFailed`). Root cause: the APK's **embedded feed bundle
+was stale** — `mobile-app/dist` was built 07-12 16:35, three hours BEFORE the
+client canonical-preimage signing fix (2608b1da, 07-12 19:37); the old bundle
+has zero `setBigUint64` preimage code, and the TES4 chain now enforces
+authorship. The `.so` embeds `mobile-app/dist` at cargo-build time, so every
+`.so` rebuilt that day silently shipped the stale frontend. Fix: `npm run
+build` in mobile-app/ (STEP 0 of the phone recipe, now documented) →
+rebuild `.so` → APK → install. Re-ran the same avatar flow on-device:
+mined, `Added POST action to block builder`, avatar renders on the profile.
+No node/client source change needed — deploy-process bug.
 
 ## Deployed + verified live (2026-07-13 night)
 
