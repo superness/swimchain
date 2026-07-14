@@ -553,9 +553,19 @@ pub struct ContentRetrievalManager {
     who_has_seen: RwLock<WhoHasSeenCache>,
     /// Content that user explicitly requested (for auto-fetching on I_HAVE)
     wanted_content: RwLock<HashSet<ContentBlobHash>>,
+    /// Per-hash throttle for WHO_HAS broadcasts WE originate. Block backfill
+    /// re-processes the same block every ~30s; without this, each pass
+    /// re-broadcasts WHO_HAS for every still-missing blob and the relay mesh
+    /// amplifies it into a network-wide storm (observed live 2026-07-14).
+    who_has_broadcasts: RwLock<HashMap<ContentBlobHash, Instant>>,
     /// Configuration
     config: ContentRetrievalConfig,
 }
+
+/// Minimum interval between WHO_HAS broadcasts this node originates for the
+/// same content hash. Retries stay possible (a lost broadcast self-heals on
+/// the next block re-process after the window) without machine-gunning peers.
+const WHO_HAS_BROADCAST_MIN_INTERVAL_SECS: u64 = 60;
 
 impl ContentRetrievalManager {
     /// Create a new content retrieval manager
@@ -571,6 +581,7 @@ impl ContentRetrievalManager {
             pending_requests: RwLock::new(HashMap::new()),
             who_has_seen: RwLock::new(WhoHasSeenCache::new(config.who_has_seen_ttl)),
             wanted_content: RwLock::new(HashSet::new()),
+            who_has_broadcasts: RwLock::new(HashMap::new()),
             config,
         }
     }
@@ -747,6 +758,35 @@ impl ContentRetrievalManager {
     pub fn mark_wanted(&self, hash: &ContentBlobHash) {
         if let Ok(mut wanted) = self.wanted_content.write() {
             wanted.insert(*hash);
+        }
+    }
+
+    /// Per-hash throttle for WHO_HAS broadcasts this node ORIGINATES.
+    ///
+    /// Returns true (and records the attempt) if we haven't broadcast WHO_HAS
+    /// for this hash within `WHO_HAS_BROADCAST_MIN_INTERVAL_SECS`. Callers
+    /// must skip the broadcast when this returns false — block backfill
+    /// re-processing would otherwise re-broadcast the same missing blob every
+    /// pass and the relay mesh amplifies it into a storm.
+    pub fn should_broadcast_who_has(&self, hash: &ContentBlobHash) -> bool {
+        let now = Instant::now();
+        if let Ok(mut recent) = self.who_has_broadcasts.write() {
+            // Opportunistic prune so the map can't grow unbounded.
+            if recent.len() > 4096 {
+                recent.retain(|_, ts| {
+                    now.duration_since(*ts).as_secs() < WHO_HAS_BROADCAST_MIN_INTERVAL_SECS
+                });
+            }
+            if let Some(last) = recent.get(hash) {
+                if now.duration_since(*last).as_secs() < WHO_HAS_BROADCAST_MIN_INTERVAL_SECS {
+                    return false;
+                }
+            }
+            recent.insert(*hash, now);
+            true
+        } else {
+            // Lock poisoned — fail open (broadcast) rather than strand content.
+            true
         }
     }
 
@@ -1154,6 +1194,22 @@ mod tests {
         let (manager, _dir) = create_test_manager();
         assert_eq!(manager.availability_count(), 0);
         assert_eq!(manager.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_who_has_broadcast_throttle() {
+        let (manager, _dir) = create_test_manager();
+        let a = ContentBlobHash::from_bytes([1u8; 32]);
+        let b = ContentBlobHash::from_bytes([2u8; 32]);
+
+        // First broadcast for a hash is allowed; an immediate repeat is not.
+        assert!(manager.should_broadcast_who_has(&a));
+        assert!(!manager.should_broadcast_who_has(&a));
+        assert!(!manager.should_broadcast_who_has(&a));
+
+        // Independent hashes are throttled independently.
+        assert!(manager.should_broadcast_who_has(&b));
+        assert!(!manager.should_broadcast_who_has(&b));
     }
 
     #[test]

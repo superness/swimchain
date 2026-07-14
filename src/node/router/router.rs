@@ -789,8 +789,26 @@ impl MessageRouter {
             );
             Ok(Some((MSG_I_HAVE, full_payload.to_bytes())))
         } else {
-            // We don't have the content locally, but check if we know peers that do
             let content_hash = ContentBlobHash::from_bytes(hash_bytes);
+
+            // F1 (storm fix): on_who_has returns None BOTH when we lack the
+            // content AND when we have it but recently answered this sender
+            // (WhoHasSeenCache dedup). Treating the suppressed case as "don't
+            // have" relayed every repeat request onward to the other
+            // providers, who did the same — one retrying requester became a
+            // network-wide WHO_HAS storm (observed live 2026-07-14, ~90
+            // msg/sec sustained). If we HAVE the content, the suppressed
+            // request needs no relay — drop it.
+            if content_mgr.has_content(&content_hash) {
+                debug!(
+                    "[CONTENT-SYNC] Suppressed repeat WHO_HAS for {} from {} (have content, recently answered)",
+                    hex::encode(&hash_bytes[..8]),
+                    hex::encode(&peer_id[..8])
+                );
+                return Ok(None);
+            }
+
+            // We don't have the content locally, but check if we know peers that do
             let known_peers = content_mgr.get_peers_with_content(&content_hash);
 
             // Relay WHO_HAS to peers that might have it
@@ -800,10 +818,44 @@ impl MessageRouter {
                     hash_bytes.to_vec(),
                 );
 
-                let mut relayed_count = 0;
-
                 if !known_peers.is_empty() {
+                    // F2 (relay throttle): relay each content hash at most once
+                    // per window. Repeat requests inside the window are only
+                    // RECORDED (so their I_HAVE still gets forwarded), not
+                    // re-relayed — the mesh must not multiply retries.
+                    let should_relay = if let Ok(mut pending) = self.pending_who_has_relay.write() {
+                        // Clean up old entries (older than 60 seconds)
+                        let now = Instant::now();
+                        pending.retain(|_, (ts, _)| now.duration_since(*ts).as_secs() < 60);
+
+                        match pending.entry(hash_bytes) {
+                            std::collections::hash_map::Entry::Occupied(mut e) => {
+                                let (_, peers) = e.get_mut();
+                                if !peers.contains(peer_id) {
+                                    peers.push(*peer_id);
+                                }
+                                false // fresh entry exists — already relayed this window
+                            }
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                e.insert((now, vec![*peer_id]));
+                                true
+                            }
+                        }
+                    } else {
+                        true
+                    };
+
+                    if !should_relay {
+                        debug!(
+                            "[CONTENT-SYNC] Throttled WHO_HAS relay for {} (already relayed this window; recorded requester {})",
+                            hex::encode(&hash_bytes[..8]),
+                            hex::encode(&peer_id[..8])
+                        );
+                        return Ok(None);
+                    }
+
                     // First try to relay to peers we know have the content
+                    let mut relayed_count = 0;
                     for known_peer in known_peers.iter() {
                         // Don't relay back to the requester
                         if known_peer == peer_id {
@@ -823,24 +875,6 @@ impl MessageRouter {
                     }
 
                     if relayed_count > 0 {
-                        // Record this relay so we can forward I_HAVE responses
-                        if let Ok(mut pending) = self.pending_who_has_relay.write() {
-                            // Clean up old entries (older than 60 seconds)
-                            let now = Instant::now();
-                            pending.retain(|_, (ts, _)| now.duration_since(*ts).as_secs() < 60);
-
-                            // Add or update the entry for this content
-                            pending
-                                .entry(hash_bytes)
-                                .and_modify(|(ts, peers)| {
-                                    *ts = now;
-                                    if !peers.contains(peer_id) {
-                                        peers.push(*peer_id);
-                                    }
-                                })
-                                .or_insert_with(|| (now, vec![*peer_id]));
-                        }
-
                         info!(
                             "[CONTENT-SYNC] Relayed WHO_HAS for {} to {} known peers, will forward I_HAVE to {}",
                             hex::encode(&hash_bytes[..8]),
@@ -2570,8 +2604,15 @@ impl MessageRouter {
                     content_mgr.mark_wanted(&blob_hash);
                 }
 
-                // Broadcast WHO_HAS to all connected peers for discovery
+                // Broadcast WHO_HAS to all connected peers for discovery.
+                // F3: per-hash throttle — block re-processing (backfill) hits
+                // this path every pass; without the throttle it re-broadcasts
+                // the same missing blob forever (storm origin, 2026-07-14).
                 for content_hash in missing_hashes {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(content_hash);
+                    if !content_mgr.should_broadcast_who_has(&blob_hash) {
+                        continue;
+                    }
                     let who_has_envelope =
                         crate::types::network::MessageEnvelope::new_fork_agnostic(
                             crate::types::network::MessageType::WhoHas,
@@ -2948,8 +2989,13 @@ impl MessageRouter {
                     content_mgr.mark_wanted(&blob_hash);
                 }
 
-                // Broadcast WHO_HAS to all connected peers for discovery
+                // Broadcast WHO_HAS to all connected peers for discovery.
+                // F3: per-hash throttle (see block-receive path).
                 for content_hash in missing_hashes {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(content_hash);
+                    if !content_mgr.should_broadcast_who_has(&blob_hash) {
+                        continue;
+                    }
                     let who_has_envelope =
                         crate::types::network::MessageEnvelope::new_fork_agnostic(
                             crate::types::network::MessageType::WhoHas,
@@ -4151,8 +4197,15 @@ impl MessageRouter {
                     content_mgr.mark_wanted(&blob_hash);
                 }
 
-                // Broadcast WHO_HAS to all connected peers for discovery
+                // Broadcast WHO_HAS to all connected peers for discovery.
+                // F3: per-hash throttle — block re-processing (backfill) hits
+                // this path every pass; without the throttle it re-broadcasts
+                // the same missing blob forever (storm origin, 2026-07-14).
                 for content_hash in missing_hashes {
+                    let blob_hash = crate::storage::blob::ContentBlobHash::from_bytes(content_hash);
+                    if !content_mgr.should_broadcast_who_has(&blob_hash) {
+                        continue;
+                    }
                     let who_has_envelope =
                         crate::types::network::MessageEnvelope::new_fork_agnostic(
                             crate::types::network::MessageType::WhoHas,
@@ -5763,8 +5816,14 @@ impl MessageRouter {
                         content_mgr.mark_wanted(&blob_hash);
                     }
 
-                    // Broadcast WHO_HAS to all connected peers
+                    // Broadcast WHO_HAS to all connected peers.
+                    // F3: per-hash throttle (see block-receive path).
                     for content_hash in missing_hashes {
+                        let blob_hash =
+                            crate::storage::blob::ContentBlobHash::from_bytes(content_hash);
+                        if !content_mgr.should_broadcast_who_has(&blob_hash) {
+                            continue;
+                        }
                         let who_has_envelope =
                             crate::types::network::MessageEnvelope::new_fork_agnostic(
                                 crate::types::network::MessageType::WhoHas,
