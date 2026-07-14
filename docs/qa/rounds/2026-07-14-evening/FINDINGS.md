@@ -97,12 +97,18 @@ identity or configuration issue."* + Retry. A typo reads as a destroyed
 identity — the scariest message the app can show, for the most common input
 error. Retry does return to the form (good). Map the exit/stderr to "wrong
 password, try again". Shots `launcher-unlock.png`, `launcher-home.png`.
-- Walkthrough incomplete past unlock: the launcher identity's password isn't
-  recorded anywhere the operator tooling knows (`testpass123` is not it) —
-  worth documenting alongside the genesis seed.
-- The launcher node binds the standard testnet ports (19735/6) — it cannot
-  coexist with an operator/genesis node on the same machine and would fail
-  with the same misleading L1 message.
+- **Walkthrough completed after the operator supplied the password.** Unlock →
+  app registry ("Connected · TESTNET · 3 peers · address chip", five app
+  tiles) → clicking a tile spawns the standalone `feed-app.exe`, which
+  connects to the launcher's node, adopts the launcher identity, and honestly
+  banners "Your identity is not sponsored. Your claim is pending review." with
+  a View Status button. The decoupled node/app architecture works end to end.
+  Shots `launcher-registry.png`, `launcher-feed-app.png`.
+- CORRECTION to the port-collision concern first filed this round: the
+  launcher's node started fine alongside the running genesis node (two sw.exe
+  processes coexist) — it does not fight over 19735/6.
+- Registry nit: all five app tiles share the same generic "S" placeholder
+  icon — indistinguishable at a glance; each client has a real logo in-app.
 - Unlock screen renders clean and centered at 1800×1200 (round-2's clipping
   at 1215px not reproduced); nit: the bech32 address wraps with one orphan
   character on line 2.
