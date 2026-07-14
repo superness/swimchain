@@ -325,7 +325,8 @@ impl Message {
             | MessageType::SponsorshipOfferClaim
             | MessageType::SponsorshipClaimResponse
             | MessageType::SponsorshipOfferQuery
-            | MessageType::SponsorshipOfferList => {
+            | MessageType::SponsorshipOfferList
+            | MessageType::SponsorshipOfferCancel => {
                 // Return the raw payload for router-level handling
                 Err(WireError::payload(format!(
                     "Sponsorship message type {:?} should be handled at router level",

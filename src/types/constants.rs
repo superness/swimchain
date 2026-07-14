@@ -583,6 +583,10 @@ pub const MSG_SPONSORSHIP_OFFER_QUERY: u8 = 0x4C;
 /// Response containing matching sponsorship offers.
 pub const MSG_SPONSORSHIP_OFFER_LIST: u8 = 0x4D;
 
+/// SPONSORSHIP_OFFER_CANCEL message type - signed cancellation of an offer.
+/// Peers delete the offer and tombstone it so offer-sync can't resurrect it.
+pub const MSG_SPONSORSHIP_OFFER_CANCEL: u8 = 0x4E;
+
 // === Mempool Gossip Protocol ===
 
 /// ACTION_ANNOUNCE message type - broadcast pending action to peers

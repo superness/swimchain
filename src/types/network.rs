@@ -350,6 +350,9 @@ pub enum MessageType {
     SponsorshipOfferQuery = 0x4C,
     /// Response with list of offers
     SponsorshipOfferList = 0x4D,
+    /// Signed cancellation of an offer (offer_id + sponsor sig). Peers delete
+    /// the offer and tombstone it so offer-sync can't resurrect it.
+    SponsorshipOfferCancel = 0x4E,
 }
 
 impl TryFrom<u8> for MessageType {
@@ -430,6 +433,7 @@ impl TryFrom<u8> for MessageType {
             0x4B => Ok(MessageType::SponsorshipClaimResponse),
             0x4C => Ok(MessageType::SponsorshipOfferQuery),
             0x4D => Ok(MessageType::SponsorshipOfferList),
+            0x4E => Ok(MessageType::SponsorshipOfferCancel),
             _ => Err(super::error::SerializeError::UnknownType(value)),
         }
     }

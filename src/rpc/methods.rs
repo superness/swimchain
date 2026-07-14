@@ -17580,6 +17580,35 @@ impl RpcMethods {
             );
         }
 
+        // Tombstone locally so the offer-sync task can't re-learn our own
+        // cancelled offer from a peer that hasn't heard the cancellation yet.
+        if let Err(e) = offer_store.tombstone_offer(&offer_id_bytes, current_time) {
+            warn!("[SPONSORSHIP] Failed to tombstone cancelled offer: {}", e);
+        }
+
+        // Gossip the signed cancellation so every node deletes + tombstones it.
+        // The signature we just verified IS the cancellation proof.
+        if let Some(ref pool) = self.node.connection_pool {
+            use crate::sponsorship::wire::{serialize_offer_cancel, OfferCancel};
+            use crate::types::network::{MessageEnvelope, MessageType};
+
+            let cancel = OfferCancel {
+                offer_id: offer_id_bytes,
+                sponsor: sponsor_bytes,
+                timestamp: params.timestamp,
+                signature: sig_bytes,
+            };
+            let envelope = MessageEnvelope::new_fork_agnostic(
+                MessageType::SponsorshipOfferCancel,
+                serialize_offer_cancel(&cancel),
+            );
+            let sent = pool.broadcast(&envelope).await;
+            info!(
+                "[SPONSORSHIP] Broadcast cancellation for offer {} to {} peers",
+                params.offer_id, sent
+            );
+        }
+
         info!("[SPONSORSHIP] Cancelled offer {}", params.offer_id);
 
         let result = CancelSponsorshipOfferResult {

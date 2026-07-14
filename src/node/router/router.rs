@@ -114,8 +114,8 @@ use crate::types::constants::{
     WIRE_ADDRESS_SIZE,
 };
 use crate::types::constants::{
-    MSG_SPONSORSHIP_CLAIM_RESPONSE, MSG_SPONSORSHIP_OFFER, MSG_SPONSORSHIP_OFFER_CLAIM,
-    MSG_SPONSORSHIP_OFFER_LIST, MSG_SPONSORSHIP_OFFER_QUERY,
+    MSG_SPONSORSHIP_CLAIM_RESPONSE, MSG_SPONSORSHIP_OFFER, MSG_SPONSORSHIP_OFFER_CANCEL,
+    MSG_SPONSORSHIP_OFFER_CLAIM, MSG_SPONSORSHIP_OFFER_LIST, MSG_SPONSORSHIP_OFFER_QUERY,
 };
 use crate::types::content::{ContentId, Reaction, ReactionType};
 use crate::types::identity::{IdentityId, PublicKey, Signature};
@@ -533,6 +533,9 @@ impl MessageRouter {
             }
             MSG_SPONSORSHIP_OFFER_LIST => {
                 self.handle_sponsorship_offer_list(peer_id, payload).await
+            }
+            MSG_SPONSORSHIP_OFFER_CANCEL => {
+                self.handle_sponsorship_offer_cancel(peer_id, payload).await
             }
 
             // === Unknown ===
@@ -7581,6 +7584,21 @@ impl MessageRouter {
             RouteError::DeserializationError(format!("Failed to deserialize offer: {}", e))
         })?;
 
+        // Never re-learn a cancelled offer (N3): offer-sync re-shares offers, so
+        // without this a tombstoned offer would keep coming back from peers that
+        // haven't seen the cancellation.
+        if offer_store
+            .is_offer_cancelled(&offer.offer_id)
+            .map_err(|e| RouteError::HandlerError(e.to_string()))?
+        {
+            debug!(
+                "[SPONSORSHIP] Ignoring cancelled offer {} from {}",
+                hex::encode(&offer.offer_id[..8]),
+                hex::encode(&peer_id[..8])
+            );
+            return Ok(None);
+        }
+
         // Check if we already have this offer (dedup)
         if offer_store
             .offer_exists(&offer.offer_id)
@@ -7928,6 +7946,14 @@ impl MessageRouter {
                     continue;
                 }
 
+                // Never re-learn a cancelled offer (N3).
+                if offer_store
+                    .is_offer_cancelled(&offer.offer_id)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+
                 // Skip if already have
                 if offer_store.offer_exists(&offer.offer_id).unwrap_or(true) {
                     continue;
@@ -7951,6 +7977,100 @@ impl MessageRouter {
             hex::encode(&peer_id[..8]),
             stored
         );
+
+        Ok(None)
+    }
+
+    /// Handle incoming SPONSORSHIP_OFFER_CANCEL message (0x4E)
+    ///
+    /// A signed cancellation: verify the sponsor's signature over
+    /// `offer_id || timestamp`, delete the offer + its claims locally, tombstone
+    /// it so offer-sync can't resurrect it, and relay on first sight (storage is
+    /// the dedup) so it reaches sponsors/claimants beyond our direct peers —
+    /// mirroring claim relay (N3).
+    async fn handle_sponsorship_offer_cancel(
+        &self,
+        peer_id: &[u8; 32],
+        payload: &[u8],
+    ) -> Result<Option<(u8, Vec<u8>)>, RouteError> {
+        use crate::sponsorship::wire::deserialize_offer_cancel;
+
+        let offer_store = match &self.offer_store {
+            Some(s) => s,
+            None => return Err(RouteError::SubsystemUnavailable("offer_store")),
+        };
+
+        let cancel = deserialize_offer_cancel(payload).map_err(|e| {
+            RouteError::DeserializationError(format!("Failed to deserialize cancel: {}", e))
+        })?;
+
+        // Verify the cancellation is signed by the offer's sponsor.
+        let sponsor_pk = crate::types::identity::PublicKey::from_bytes(cancel.sponsor);
+        if !ed25519_verify(
+            &sponsor_pk,
+            &cancel.signing_message(),
+            &Signature::from_bytes(cancel.signature),
+        ) {
+            warn!(
+                "[SPONSORSHIP] Invalid signature on offer cancellation {} from {}",
+                hex::encode(&cancel.offer_id[..8]),
+                hex::encode(&peer_id[..8])
+            );
+            return Err(RouteError::InvalidSignature);
+        }
+
+        // If the offer exists, verify the signer actually owns it before acting
+        // (a valid signature over a random offer_id must not delete someone
+        // else's offer). Unknown offers are still tombstoned: we may just not
+        // have learned the offer yet, and the tombstone stops us learning it.
+        if let Ok(Some(existing)) = offer_store.get_offer(&cancel.offer_id) {
+            if existing.sponsor.as_bytes() != &cancel.sponsor {
+                warn!(
+                    "[SPONSORSHIP] Cancellation for offer {} signed by non-owner, ignoring",
+                    hex::encode(&cancel.offer_id[..8])
+                );
+                return Ok(None);
+            }
+        }
+
+        // Already tombstoned → we've processed (and relayed) this already; stop.
+        if offer_store
+            .is_offer_cancelled(&cancel.offer_id)
+            .unwrap_or(false)
+        {
+            debug!(
+                "[SPONSORSHIP] Duplicate cancellation for offer {}, ignoring",
+                hex::encode(&cancel.offer_id[..8])
+            );
+            return Ok(None);
+        }
+
+        let _ = offer_store.delete_offer(&cancel.offer_id);
+        if let Err(e) = offer_store.tombstone_offer(&cancel.offer_id, cancel.timestamp) {
+            warn!("[SPONSORSHIP] Failed to tombstone cancelled offer: {}", e);
+        }
+        info!(
+            "[SPONSORSHIP] Applied cancellation for offer {} (from {})",
+            hex::encode(&cancel.offer_id[..8]),
+            hex::encode(&peer_id[..8])
+        );
+
+        // Relay on first sight (tombstone above is the dedup) so multi-hop
+        // topologies converge — same pattern as claim relay.
+        if let Some(ref pool) = self.connection_pool {
+            let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                crate::types::network::MessageType::SponsorshipOfferCancel,
+                payload.to_vec(),
+            );
+            let relayed = pool.broadcast_except(&envelope, peer_id).await;
+            if relayed > 0 {
+                debug!(
+                    "[SPONSORSHIP] Relayed cancellation for offer {} to {} peers",
+                    hex::encode(&cancel.offer_id[..8]),
+                    relayed
+                );
+            }
+        }
 
         Ok(None)
     }

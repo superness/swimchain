@@ -28,6 +28,12 @@ pub struct OfferStore {
     claims: Tree,
     /// Claimed count: offer_id(16) -> u8 (atomic counter)
     claimed_counts: Tree,
+    /// Cancellation tombstones: offer_id(16) -> cancel timestamp (8, big-endian).
+    /// A cancelled offer must STAY cancelled — offer-sync re-shares offers between
+    /// peers, so a plain delete gets re-learned (even by the canceller from a
+    /// peer). The tombstone makes the delete stick: receive/sync paths refuse to
+    /// (re-)store a tombstoned offer, and the offer-list responder omits it.
+    cancelled_offers: Tree,
 }
 
 impl OfferStore {
@@ -39,7 +45,30 @@ impl OfferStore {
             by_sponsor: db.open_tree("sponsorship_offers_by_sponsor")?,
             claims: db.open_tree("sponsorship_offer_claims")?,
             claimed_counts: db.open_tree("sponsorship_offer_claimed_counts")?,
+            cancelled_offers: db.open_tree("sponsorship_offers_cancelled")?,
         })
+    }
+
+    // === Cancellation tombstones ===
+
+    /// Mark an offer cancelled (tombstone) so it can't be re-learned via sync.
+    /// Idempotent; keeps the earliest cancel timestamp seen.
+    pub fn tombstone_offer(
+        &self,
+        offer_id: &[u8; 16],
+        cancelled_at: u64,
+    ) -> Result<(), SponsorshipError> {
+        if self.cancelled_offers.get(offer_id)?.is_none() {
+            self.cancelled_offers
+                .insert(offer_id, &cancelled_at.to_be_bytes())?;
+            self.db.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Whether this offer has been cancelled (tombstoned) on this node.
+    pub fn is_offer_cancelled(&self, offer_id: &[u8; 16]) -> Result<bool, SponsorshipError> {
+        Ok(self.cancelled_offers.contains_key(offer_id)?)
     }
 
     /// Get reference to underlying database

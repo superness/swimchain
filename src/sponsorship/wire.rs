@@ -504,6 +504,70 @@ pub fn deserialize_claim_response(data: &[u8]) -> Result<ClaimResponse, WireErro
     })
 }
 
+/// A signed offer-cancellation announcement (SponsorshipOfferCancel, 0x4E).
+///
+/// Wire: offer_id(16) || sponsor(32) || timestamp(8 BE) || signature(64) = 120 bytes.
+/// The signature is over `offer_id(16) || timestamp(8 BE)` — the exact message
+/// `cancel_sponsorship_offer` already produces — so any peer can verify the
+/// canceller owns the offer without holding extra state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfferCancel {
+    pub offer_id: [u8; 16],
+    pub sponsor: [u8; 32],
+    pub timestamp: u64,
+    pub signature: [u8; 64],
+}
+
+impl OfferCancel {
+    pub const WIRE_LEN: usize = 16 + 32 + 8 + 64;
+
+    /// The message the signature covers: offer_id(16) || timestamp(8 BE).
+    #[must_use]
+    pub fn signing_message(&self) -> Vec<u8> {
+        let mut m = Vec::with_capacity(24);
+        m.extend_from_slice(&self.offer_id);
+        m.extend_from_slice(&self.timestamp.to_be_bytes());
+        m
+    }
+}
+
+/// Serialize an offer cancellation to its 120-byte wire form.
+#[must_use]
+pub fn serialize_offer_cancel(c: &OfferCancel) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(OfferCancel::WIRE_LEN);
+    buf.extend_from_slice(&c.offer_id);
+    buf.extend_from_slice(&c.sponsor);
+    buf.extend_from_slice(&c.timestamp.to_be_bytes());
+    buf.extend_from_slice(&c.signature);
+    buf
+}
+
+/// Deserialize an offer cancellation from its wire form.
+///
+/// # Errors
+/// `BufferTooShort` if fewer than 120 bytes.
+pub fn deserialize_offer_cancel(data: &[u8]) -> Result<OfferCancel, WireError> {
+    if data.len() < OfferCancel::WIRE_LEN {
+        return Err(WireError::BufferTooShort {
+            expected: OfferCancel::WIRE_LEN,
+            actual: data.len(),
+        });
+    }
+    let mut offer_id = [0u8; 16];
+    offer_id.copy_from_slice(&data[0..16]);
+    let mut sponsor = [0u8; 32];
+    sponsor.copy_from_slice(&data[16..48]);
+    let timestamp = u64::from_be_bytes(data[48..56].try_into().unwrap());
+    let mut signature = [0u8; 64];
+    signature.copy_from_slice(&data[56..120]);
+    Ok(OfferCancel {
+        offer_id,
+        sponsor,
+        timestamp,
+        signature,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +775,31 @@ mod tests {
         let decoded = deserialize_offer(&bytes).unwrap();
 
         assert_eq!(offer.requirements, decoded.requirements);
+    }
+
+    #[test]
+    fn test_offer_cancel_roundtrip() {
+        let c = OfferCancel {
+            offer_id: [0xAB; 16],
+            sponsor: [0xCD; 32],
+            timestamp: 1_784_000_000,
+            signature: [0xEF; 64],
+        };
+        let bytes = serialize_offer_cancel(&c);
+        assert_eq!(bytes.len(), OfferCancel::WIRE_LEN);
+        assert_eq!(deserialize_offer_cancel(&bytes).unwrap(), c);
+
+        // Truncated buffer is rejected.
+        assert!(matches!(
+            deserialize_offer_cancel(&bytes[..OfferCancel::WIRE_LEN - 1]),
+            Err(WireError::BufferTooShort { .. })
+        ));
+
+        // Signing message is offer_id || timestamp(8 BE).
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&c.offer_id);
+        expected.extend_from_slice(&c.timestamp.to_be_bytes());
+        assert_eq!(c.signing_message(), expected);
     }
 
     #[test]
