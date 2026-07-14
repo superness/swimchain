@@ -6,6 +6,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useSpaceThreads, useSpaces, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext, stripTitleSeparator } from '../hooks/useRpc';
+import { humanizeRpcError } from '../lib/rpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useBlocklist } from '../hooks/useBlocklist';
 import { InviteModal } from '../components/InviteModal';
@@ -163,8 +164,8 @@ export function SpaceView(): JSX.Element {
     return (
       <div className="space-view">
         <div className="space-view__error">
-          <h1>Error Loading Space</h1>
-          <p>{error}</p>
+          <h1>Couldn't load this space</h1>
+          <p>{humanizeRpcError(error)}</p>
           <button onClick={() => refetch()} className="btn btn-primary">
             Retry
           </button>

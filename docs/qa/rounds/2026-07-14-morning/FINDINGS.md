@@ -158,13 +158,17 @@ nothing of this today).
 
 ### UX / polish (new)
 
-- **Report succeeds silently.** The attestation reaches the node (verified:
-  1/3 toward threshold, reason recorded) but the dialog never closes, no
-  toast, no state change. Users will re-report or give up. Post correctly
-  remains visible below threshold (no fail-open).
-- **Feed's "Manage Blocklist" settings button is dead** — no handler, no
-  navigation. Chat and forum both have working blocked-content managers with
-  honest copy; feed has a button to nowhere.
+- **Report succeeds silently.** ROOT-CAUSED + FIXED 2026-07-14 afternoon
+  (commit 5ec7f931): the report WRITE 401'd — `submit_spam_attestation` /
+  `get_spam_status` were not in the node's `AUTH_EXEMPT_METHODS`, though they
+  carry a self-verifying signature + PoW exactly like the sponsorship writes
+  that are exempt. The modal itself has proper mining/success/error states;
+  it just never got a success because the call was rejected. (My original
+  "silent, no state change" read was right about the symptom, wrong that the
+  attestation reached the node — it did in round 2 via CLI, not via the UI.)
+- **Feed's "Manage Blocklist" settings button** — RETRACTED (stale-bundle
+  false positive). The button has a handler and opens a working Blocklist
+  Manager modal in the current build; verified live 2026-07-14 afternoon.
 - **DM sender gets zero feedback** ("No DMs yet" persists, no pending badge),
   and the DM sidebar entry flickers in/out around accept (poll/render race).
 - **Space create/invite asks for a raw 64-hex public key** while the DM modal

@@ -1292,3 +1292,37 @@ export async function getLocalConfigWithAuth(network: 'mainnet' | 'testnet' | 'r
 
   return config;
 }
+
+/**
+ * Map a raw RPC/HTTP error (as thrown by RpcClient.call) to human-facing copy.
+ *
+ * The client throws technical strings like
+ *   `HTTP 401: Unauthorized - {"jsonrpc":"2.0","error":{...}}`
+ * or `RPC Error -32001: Authentication required`. Surfacing those verbatim to a
+ * non-technical user reads as a crash (round-2 finding M2). Use this at the
+ * DISPLAY layer only — the thrown Error text is unchanged so code that
+ * pattern-matches on it (e.g. "already exists") still works.
+ */
+export function humanizeRpcError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '');
+
+  // Auth failures: the node is up but rejected us (stale/missing cookie).
+  if (/\b401\b|-32001|Authentication required|Invalid cookie|-32002/i.test(raw)) {
+    return "Couldn't reach your Swimchain node — check that it's running and try again.";
+  }
+  // Rate limiter / auth lockout.
+  if (/-32017|locked out/i.test(raw)) {
+    return 'Too many requests to your node. Give it a moment, then retry.';
+  }
+  // Network-level: fetch failed, connection refused, timeout/abort.
+  if (/Failed to fetch|NetworkError|ECONNREFUSED|aborted|timeout/i.test(raw)) {
+    return "Can't connect to your Swimchain node. Is it running?";
+  }
+  // Not found — content that decayed or never synced here.
+  if (/-32004|not found/i.test(raw)) {
+    return 'This content is no longer available on your node.';
+  }
+  // Fallback: strip any embedded JSON-RPC envelope so at least no raw JSON shows.
+  const cleaned = raw.replace(/\s*-\s*\{.*\}\s*$/, '').trim();
+  return cleaned || 'Something went wrong talking to your node.';
+}
