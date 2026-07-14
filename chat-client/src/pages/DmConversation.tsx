@@ -84,19 +84,26 @@ export function DmConversation(): JSX.Element {
         .sort();
       if (posts.length > 0) return posts[0]!;
 
-      // None yet — create the channel thread once.
+      // None yet — create the channel thread once. Private-space rules (SPEC/private
+      // Phase 1): no plaintext title, body must be a [PRIVATE:v1:] envelope — so the
+      // channel marker goes in the encrypted body and the title stays empty.
       if (creatingChannel.current) return null;
       creatingChannel.current = true;
-      const solution = await minePost(`${CHANNEL_TITLE}\n\n`, publicKeyBytes, true);
+      const cipher = await encryptForSpace(spaceId, CHANNEL_TITLE);
+      if (!cipher) {
+        creatingChannel.current = false;
+        return null;
+      }
+      const solution = await minePost(`\n\n${cipher}`, publicKeyBytes, true);
       const powParams = solutionToRpcParams(solution);
-      const created = await submitPost(spaceId, CHANNEL_TITLE, '', myPk, signAsync, powParams);
+      const created = await submitPost(spaceId, '', cipher, myPk, signAsync, powParams);
       creatingChannel.current = false;
       return created.success ? created.contentId : null;
     } catch {
       creatingChannel.current = false;
       return null;
     }
-  }, [rpc, connected, spaceId, myPk, publicKeyBytes, minePost, submitPost, signAsync]);
+  }, [rpc, connected, spaceId, myPk, publicKeyBytes, minePost, submitPost, signAsync, encryptForSpace]);
 
   // Load + decrypt the DM messages (replies to the channel).
   const load = useCallback(async () => {

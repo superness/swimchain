@@ -15,6 +15,7 @@ import { Chat } from './pages/Chat';
 import { SettingsPage } from './pages/SettingsPage';
 import { IdentityPage } from './pages/IdentityPage';
 import { CreatePrivateChannel } from './pages/CreatePrivateChannel';
+import { DmConversation } from './pages/DmConversation';
 
 function AppRoutes(): JSX.Element {
   return (
@@ -39,6 +40,16 @@ function AppRoutes(): JSX.Element {
         element={
           <RequireIdentity>
             <Chat />
+          </RequireIdentity>
+        }
+      />
+
+      {/* /channels/@me/:spaceId - A direct-message conversation */}
+      <Route
+        path="/channels/@me/:spaceId"
+        element={
+          <RequireIdentity>
+            <DmConversation />
           </RequireIdentity>
         }
       />

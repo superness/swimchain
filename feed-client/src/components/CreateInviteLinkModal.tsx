@@ -9,7 +9,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRpc } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
-import { useStoredKeypair } from '../hooks/useStoredKeypair';
+import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { encodeInviteToken, buildInviteUrl } from '../lib/invite';
 import { logger } from '../lib/logger';
 import './CreateOfferModal.css';
@@ -75,7 +75,7 @@ export function CreateInviteLinkModal({
 }: CreateInviteLinkModalProps): JSX.Element | null {
   const { rpc } = useRpc();
   const { identity } = useIdentityContext();
-  const { sign } = useStoredKeypair();
+  const { sign } = useFeedIdentity();
   const [slots, setSlots] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,7 +140,7 @@ export function CreateInviteLinkModal({
         identity.publicKey, slots, offerType, INVITE_EXPIRES_DAYS,
         INVITE_MIN_POW, false /* applicationRequired */, timestamp,
       );
-      const sigBytes = sign(sigMsg);
+      const sigBytes = await sign(sigMsg);
       if (!sigBytes) {
         setError('Failed to sign the invite. Check your identity.');
         return;
