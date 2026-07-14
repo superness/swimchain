@@ -81,12 +81,17 @@ saved posts (wiki namespaces stay unreachable — wiki's empty-state promise
 "follow spaces to see them here" is unfulfillable from inside the bundle).
 Needs the node-side prefs/DM-index store (design item, unchanged from N4).
 
-**R3 — Search cannot find spaces by name.** `search("commons")` → 0 results
-with a space literally named "The Commons" holding 24 posts on the same node.
-Space names are not in the Tantivy index at all, so the search UI's **"Spaces"
-tab is structurally dead** — it can never return anything. (M3's content-side
-gaps unchanged: synced third-party content still unindexed, private ciphertext
-still indexed as noise.)
+**R3 — Search cannot find spaces by name. FIXED same day.** `search("commons")`
+→ 0 results with a space literally named "The Commons" holding 24 posts on the
+same node. Root cause: the search RPC's space branch matched only the raw
+on-chain space registry, but space names are content-derived and are resolved
+(registry + config.toml overrides + app markers) only inside `list_spaces` —
+so search could never see the names clients display. Fix: extracted that
+resolution into `resolved_space_list()` (shared, behind the existing 3s
+cache) and search now matches against it. Verified in the UI: "commons"
+returns The Commons space card (`search-spaces-fixed.png`). (M3's
+content-side gaps unchanged: synced third-party content still unindexed,
+private ciphertext still indexed as noise.)
 
 ### Desktop launcher (round-2 leftover, walked this round)
 

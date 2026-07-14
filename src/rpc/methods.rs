@@ -4710,39 +4710,38 @@ impl RpcMethods {
             let query_lower = query_trimmed.to_lowercase();
             let search_terms: Vec<&str> = query_lower.split_whitespace().collect();
 
-            if let Some(ref chain_store) = self.node.chain_store {
-                for result in chain_store.list_spaces() {
-                    if let Ok(space_info) = result {
-                        let name_lower = space_info.name.to_lowercase();
-                        let desc_lower = space_info
-                            .description
-                            .as_ref()
-                            .map(|d| d.to_lowercase())
-                            .unwrap_or_default();
-
-                        let matches = search_terms
-                            .iter()
-                            .any(|term| name_lower.contains(term) || desc_lower.contains(term));
-
-                        if matches {
-                            results.push(serde_json::json!({
-                                "id": hex::encode(&space_info.space_id),
-                                "type": "space",
-                                "score": 1.0,
-                                "highlights": { "name": space_info.name },
-                                "data": {
-                                    "spaceId": hex::encode(&space_info.space_id),
-                                    "name": space_info.name,
-                                    "description": space_info.description,
-                                    "threadCount": 0,
-                                    "memberCount": 0,
-                                    "lastActivity": space_info.created_at,
-                                    "isActive": true
-                                }
-                            }));
-                        }
-                    }
+            // Match against the same resolved list `list_spaces` serves. Space names
+            // are content-derived (CreateSpace payload → registry) plus local
+            // config.toml overrides; matching only the raw registry missed every
+            // locally-named space (R3: search "commons" found nothing while
+            // Discover showed "The Commons").
+            for space in self.resolved_space_list() {
+                let Some(ref name) = space.name else { continue };
+                let name_lower = name.to_lowercase();
+                if !search_terms.iter().any(|term| name_lower.contains(term)) {
+                    continue;
                 }
+                // Same 16-byte hex id shape the space results always used;
+                // bech32 added so clients can link without converting.
+                let space_id_hex = decode_space_id(&space.space_id)
+                    .map(hex::encode)
+                    .unwrap_or_else(|_| space.space_id.clone());
+                results.push(serde_json::json!({
+                    "id": space_id_hex,
+                    "type": "space",
+                    "score": 1.0,
+                    "highlights": { "name": name },
+                    "data": {
+                        "spaceId": space_id_hex,
+                        "spaceIdBech32": space.space_id,
+                        "name": name,
+                        "description": serde_json::Value::Null,
+                        "threadCount": space.post_count,
+                        "memberCount": 0,
+                        "lastActivity": space.last_activity.unwrap_or(0),
+                        "isActive": true
+                    }
+                }));
             }
         }
 
@@ -5288,27 +5287,52 @@ impl RpcMethods {
         // Fast path: serve from the short-TTL cache. Building the list below does full
         // chain + content-store scans, and the feed polls this rapidly — without the cache
         // that pegs every core and RPC stops responding. Pagination is applied per-request.
+        let spaces = self.resolved_space_list();
+
+        // total reflects the public spaces actually returned (after hiding private/system).
+        let total = spaces.len();
+
+        // Apply pagination
+        let spaces: Vec<_> = spaces
+            .into_iter()
+            .skip(params.offset)
+            .take(params.limit)
+            .collect();
+
+        let result = ListSpacesResult { spaces, total };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// The full resolved space list — exactly what `list_spaces` serves, before
+    /// pagination — behind the short-TTL cache. Search matches space names against
+    /// this same list, so a space found in Discover is findable in search
+    /// (registry names, config.toml overrides, and app markers all resolve
+    /// identically).
+    fn resolved_space_list(&self) -> Vec<SpaceSummary> {
         const SPACE_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(3);
         {
             let guard = self.node.space_list_cache.lock().unwrap();
             if let Some((computed_at, ref full)) = *guard {
                 if computed_at.elapsed() < SPACE_LIST_TTL {
-                    let total = full.len();
-                    let page: Vec<_> = full
-                        .iter()
-                        .skip(params.offset)
-                        .take(params.limit)
-                        .cloned()
-                        .collect();
-                    let result = ListSpacesResult {
-                        spaces: page,
-                        total,
-                    };
-                    return RpcResponse::success(serde_json::to_value(result).unwrap(), id);
+                    return full.clone();
                 }
             }
         }
 
+        let spaces = self.build_space_list();
+
+        // Cache the fully-computed, sorted list so rapid follow-up calls (the feed) skip the
+        // full scans for SPACE_LIST_TTL. Pagination is applied per-request by callers.
+        *self.node.space_list_cache.lock().unwrap() =
+            Some((std::time::Instant::now(), spaces.clone()));
+
+        spaces
+    }
+
+    /// Compute the space list from chain blocks, the space registry, content
+    /// stores, the mempool, and config.toml name overrides. Callers go through
+    /// `resolved_space_list` for caching.
+    fn build_space_list(&self) -> Vec<SpaceSummary> {
         use std::collections::HashMap;
         let mut space_stats: HashMap<[u8; 16], (String, Option<String>, u64, u64, u64)> =
             HashMap::new();
@@ -5590,23 +5614,7 @@ impl RpcMethods {
             (None, None) => a.name.cmp(&b.name),
         });
 
-        // Cache the fully-computed, sorted list so rapid follow-up calls (the feed) skip the
-        // full scans above for SPACE_LIST_TTL. Pagination is applied per-request below.
-        *self.node.space_list_cache.lock().unwrap() =
-            Some((std::time::Instant::now(), spaces.clone()));
-
-        // total reflects the public spaces actually returned (after hiding private/system).
-        let total = spaces.len();
-
-        // Apply pagination
-        let spaces: Vec<_> = spaces
-            .into_iter()
-            .skip(params.offset)
-            .take(params.limit)
-            .collect();
-
-        let result = ListSpacesResult { spaces, total };
-        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+        spaces
     }
 
     /// Create a new space
