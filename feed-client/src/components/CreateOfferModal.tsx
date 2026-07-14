@@ -72,7 +72,10 @@ export function CreateOfferModal({
   const [slots, setSlots] = useState(1);
   const [expiresDays, setExpiresDays] = useState(7);
   const [applicationRequired, setApplicationRequired] = useState(false);
-  const [minPowDifficulty, setMinPowDifficulty] = useState(0);
+  // The node floors offers at 8 bits (MIN_OFFER_POW_DIFFICULTY_BITS) so
+  // onboarding always carries real proof-of-work — anything lower is
+  // rejected with "min_pow_difficulty must be >= 8 bits".
+  const [minPowDifficulty, setMinPowDifficulty] = useState(8);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const previousActiveElement = useRef<Element | null>(null);
@@ -270,13 +273,13 @@ export function CreateOfferModal({
               type="number"
               className="create-offer-input"
               value={minPowDifficulty}
-              onChange={(e) => setMinPowDifficulty(Math.max(0, Math.min(8, parseInt(e.target.value) || 0)))}
-              min={0}
-              max={8}
+              onChange={(e) => setMinPowDifficulty(Math.max(8, Math.min(255, parseInt(e.target.value) || 8)))}
+              min={8}
+              max={255}
               disabled={submitting}
             />
             <span className="create-offer-hint">
-              0 = no PoW required. Higher values require more computational work from claimants (0-8)
+              Minimum 8 bits — the network requires real proof-of-work from claimants. Higher values require more work (8-255).
             </span>
           </div>
 

@@ -132,9 +132,13 @@ export function CreateInviteLinkModal({
       const timestamp = Math.floor(Date.now() / 1000);
       const offerType = 'probationary' as const;
 
+      // The node floors offers at 8 bits — a 0-PoW invite offer is rejected
+      // with "min_pow_difficulty must be >= 8 bits". 8 keeps invite-link
+      // onboarding near-instant while carrying real proof-of-work.
+      const INVITE_MIN_POW = 8;
       const sigMsg = buildCreateOfferSignatureMessage(
         identity.publicKey, slots, offerType, INVITE_EXPIRES_DAYS,
-        0 /* minPow */, false /* applicationRequired */, timestamp,
+        INVITE_MIN_POW, false /* applicationRequired */, timestamp,
       );
       const sigBytes = sign(sigMsg);
       if (!sigBytes) {
@@ -147,7 +151,7 @@ export function CreateInviteLinkModal({
         slots,
         offerType,
         expiresDays: INVITE_EXPIRES_DAYS,
-        minPowDifficulty: 0,
+        minPowDifficulty: INVITE_MIN_POW,
         applicationRequired: false,
         autoApprove: true,
         signature: bytesToHex(sigBytes),
