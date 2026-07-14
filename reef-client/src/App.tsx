@@ -10,7 +10,7 @@ import { Reef } from './Reef';
 import {
   REEF_SPACE,
   createRegion,
-  ensureSponsored,
+  ensureReefSponsored,
   listRegions,
   loadRegion,
   submitReefMove,
@@ -99,7 +99,7 @@ export function App() {
     if (!rpc || !connected || !me || sponsored || sponsoringRef.current) return;
     sponsoringRef.current = true;
     setSponsorPhase('Checking your access…');
-    ensureSponsored(rpc, me, (phase) => setSponsorPhase(phase))
+    ensureReefSponsored(rpc, me, (phase) => setSponsorPhase(phase))
       .then(() => {
         setSponsored(true);
         setSponsorPhase(null);

@@ -171,6 +171,14 @@ export {
   type SignFn,
 } from "./lib/signAction";
 
+// One-click onboarding: claim a standing auto-approve offer so a fresh identity
+// can act (shared by the reef/chess public pages).
+export {
+  ensureSponsored,
+  type SponsorableIdentity,
+  type EnsureSponsoredOptions,
+} from "./lib/ensureSponsored";
+
 // Caching utilities
 export {
   getMediaFromCache,

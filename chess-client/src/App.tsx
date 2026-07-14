@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Keypair } from '@swimchain/core';
 import {
   useRpc,
@@ -10,6 +10,7 @@ import { Board } from './Board';
 import {
   CHESS_SPACE,
   createGame,
+  ensureChessSponsored,
   listGames,
   loadGame,
   submitMove,
@@ -32,6 +33,10 @@ export function App() {
   const [state, setState] = useState<GameState | null>(null);
   const [mining, setMining] = useState<Mining>(null);
   const [error, setError] = useState<string | null>(null);
+  // Onboarding: a brand-new identity must be sponsored before it can post/move.
+  const [sponsored, setSponsored] = useState(false);
+  const [sponsorPhase, setSponsorPhase] = useState<string | null>(null);
+  const sponsoringRef = useRef(false);
 
   // Authenticate RPC requests as this identity once the keypair is ready.
   const { setAuth } = useRpc();
@@ -53,8 +58,30 @@ export function App() {
       publicKeyHex && address
         ? { publicKeyHex, address, sign: (m: Uint8Array) => sign(m) }
         : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [publicKeyHex, address, sign]
   );
+
+  // Auto-sponsor once the keypair is ready (one-click play): return early if
+  // already sponsored, otherwise claim a standing auto-approve offer and wait.
+  useEffect(() => {
+    if (!rpc || !connected || !me || sponsored || sponsoringRef.current) return;
+    sponsoringRef.current = true;
+    setSponsorPhase('Checking your access…');
+    ensureChessSponsored(rpc, me, (phase) => setSponsorPhase(phase))
+      .then(() => {
+        setSponsored(true);
+        setSponsorPhase(null);
+        setError(null);
+      })
+      .catch((e) => {
+        setSponsorPhase(null);
+        setError(e instanceof Error ? e.message : 'sponsorship failed');
+      })
+      .finally(() => {
+        sponsoringRef.current = false;
+      });
+  }, [rpc, connected, me, sponsored]);
 
   // Reads require signature auth too, so wait until the keypair (publicKeyHex) is
   // ready — otherwise the first fetch races ahead of auth and returns "Authentication
@@ -146,6 +173,40 @@ export function App() {
         <p className="muted">Every move is provably yours, written to the chain. No server, no referee.</p>
         <button className="btn primary" onClick={newIdentity}>Create an identity</button>
         <p className="fine">Your keypair is generated and stored locally in this browser. It never leaves your device.</p>
+      </div>
+    );
+  }
+
+  // Identity exists but isn't sponsored yet — auto-sponsor is running (or hit a
+  // snag). Moves need sponsorship, so gate on it rather than letting the first
+  // move fail with a raw node error.
+  if (!sponsored) {
+    return (
+      <div className="center col">
+        <h1>♟ Swimchain Chess</h1>
+        {sponsorPhase && !error ? (
+          <>
+            <p className="muted">♟ {sponsorPhase}…</p>
+            <p className="fine">
+              Getting you connected to the network so your moves are provably yours. One time only.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="muted">{error ?? 'Setting up your access…'}</p>
+            <button
+              className="btn primary"
+              onClick={() => {
+                setError(null);
+                setSponsored(false);
+                sponsoringRef.current = false;
+                setSponsorPhase('Retrying…');
+              }}
+            >
+              Try again
+            </button>
+          </>
+        )}
       </div>
     );
   }

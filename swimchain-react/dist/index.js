@@ -52,6 +52,9 @@ export { SwimchainRpc, getLocalConfig, LOCAL_TESTNET, LOCAL_REGTEST, LOCAL_MAINN
 export { ActionType, computePow, createChallenge, createPostChallenge, createReplyChallenge, createEngageChallenge, createSpaceChallenge, solutionToRpcParams, getDifficulty, getConfig, estimateMiningTime, serializeChallenge, leadingZeros, hexToBytes, bytesToHex, sha256, generateNonceSpace, DIFFICULTY, TESTNET_DIFFICULTY, PRODUCTION_CONFIG, TESTNET_CONFIG, TEST_CONFIG, } from "./lib/action-pow";
 // Canonical action signing (Post / Reply / Edit) — the one preimage the node verifies
 export { signAction, actionSignaturePreimage, contentHashForPost, contentHashForReply, } from "./lib/signAction";
+// One-click onboarding: claim a standing auto-approve offer so a fresh identity
+// can act (shared by the reef/chess public pages).
+export { ensureSponsored, } from "./lib/ensureSponsored";
 // Caching utilities
 export { getMediaFromCache, setMediaInCache, getContentFromCache, setContentInCache, deleteContentFromCache, getFromMemory, setInMemory, invalidateMemory, getFromStorage, setInStorage, removeFromStorage, getCacheStats, clearDecryptedMediaCache, clearAllCaches, } from "./lib/cache";
 // Encryption utilities

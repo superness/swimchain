@@ -18,6 +18,7 @@ import {
   getDifficulty,
   solutionToRpcParams,
   hexToBytes,
+  ensureSponsored,
   signAction,
   contentHashForPost,
   contentHashForReply,
@@ -30,6 +31,28 @@ const TESTNET = true;
 /** The chess space id (bech32 `sp1…`). Set via VITE_CHESS_SPACE at build/dev time. */
 export const CHESS_SPACE: string =
   (import.meta.env.VITE_CHESS_SPACE as string | undefined)?.trim() || '';
+
+/**
+ * Preferred onboarding sponsor (hex) — the always-online node whose standing
+ * auto-approve offer new players claim. Configurable via VITE_GAME_SPONSOR;
+ * defaults to the testnet genesis root. See ensureSponsored / reef's GAME_SPONSOR.
+ */
+export const GAME_SPONSOR: string =
+  (import.meta.env.VITE_GAME_SPONSOR as string | undefined)?.trim() ||
+  '9ec9661d3a975ad141caa5df9f14b3c46cf725509e7fa044c19d26fe76bd0420';
+
+/**
+ * Make a brand-new identity able to play: claim a standing auto-approve offer
+ * from the game sponsor and wait for the chain to record it. Thin wrapper over
+ * the shared ensureSponsored so reef and chess share one path.
+ */
+export function ensureChessSponsored(
+  rpc: SwimchainRpc,
+  id: Identity,
+  onProgress?: (phase: string) => void
+): Promise<void> {
+  return ensureSponsored(rpc, id, { preferredSponsorHex: GAME_SPONSOR, onProgress });
+}
 
 export type SignFn = (
   message: Uint8Array
