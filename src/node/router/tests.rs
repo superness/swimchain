@@ -1092,6 +1092,81 @@ fn test_reconcile_retries_transient_sponsor_skip() {
     assert!(chain_store.side_effects_applied(&root.hash()).unwrap());
 }
 
+/// A sponsor in the HARDCODED GENESIS LIST applies even with no store record
+/// of its own — genesis is the sponsor root and frequently has none (the
+/// bootstrap deadlock: without the fallback, every genesis-sponsored
+/// onboarding transiently skipped forever on nodes lacking a genesis record).
+#[test]
+fn test_reconcile_applies_genesis_sponsor_without_store_record() {
+    use crate::blocks::action::Action;
+    use crate::blocks::branch_path::BranchPath;
+    use crate::blocks::{ContentBlock, RootBlock, SpaceBlock};
+    use crate::types::identity::PublicKey;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    // The real hardcoded testnet genesis seed (GENESIS_IDENTITY.md) — its
+    // pubkey is in the genesis list, so the fallback path is exercised.
+    let seed_hex = "11b0b8c92806d893c77b547b87ad5763cb1005104ba13086e0bf184e3a277471";
+    let mut seed = [0u8; 32];
+    hex::decode_to_slice(seed_hex, &mut seed).unwrap();
+    let signing_key = SigningKey::from_bytes(&seed);
+    let sponsor_pub = signing_key.verifying_key().to_bytes();
+    assert!(crate::sponsorship::is_in_hardcoded_genesis_list(
+        &PublicKey::from_bytes(sponsor_pub)
+    ));
+
+    let sponsee_pub = [0x5A; 32];
+    let timestamp = 1_700_000_000u64;
+    let mut msg = [0u8; 40];
+    msg[..32].copy_from_slice(&sponsee_pub);
+    msg[32..].copy_from_slice(&timestamp.to_be_bytes());
+    let sig = signing_key.sign(&msg).to_bytes();
+    let action = Action::new_sponsor(sponsor_pub, sponsee_pub, timestamp, sig);
+
+    let space_id = [0u8; 32];
+    let content = ContentBlock::new(
+        action.hash(),
+        space_id,
+        vec![action],
+        None,
+        timestamp,
+        BranchPath::root(),
+    )
+    .unwrap();
+    let space = SpaceBlock::from_content_blocks(
+        space_id,
+        std::slice::from_ref(&content),
+        None,
+        timestamp,
+    );
+    let root = RootBlock::from_space_blocks(
+        std::slice::from_ref(&space),
+        [0u8; 32],
+        0,
+        timestamp,
+        1,
+        0,
+        [0u8; 32],
+    );
+
+    // Sponsorship store is EMPTY — no genesis record.
+    let (router, chain_store, sponsorship_store, _d1, _d2) = make_reconcile_router(None);
+    chain_store
+        .put_root_block_with_fork_resolution(&root)
+        .unwrap();
+    chain_store.put_space_block(&space).unwrap();
+    chain_store.put_content_block(&content).unwrap();
+
+    assert!(
+        router.reconcile_block_side_effects(&root),
+        "genesis-sponsored action must fully apply with no genesis store record"
+    );
+    assert!(sponsorship_store
+        .exists(&PublicKey::from_bytes(sponsee_pub))
+        .unwrap());
+    assert!(chain_store.side_effects_applied(&root.hash()).unwrap());
+}
+
 /// Side effects must NEVER run for a block that is not canonical at its
 /// height (fork blocks wait until a reorg promotes them, then the
 /// reconciliation pass picks them up).

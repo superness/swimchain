@@ -4958,14 +4958,22 @@ impl MessageRouter {
                             }
                         }
 
-                        // Phase 0 validation: Verify sponsor is Active in SponsorshipStore.
-                        // Sponsor-not-yet-known is TRANSIENT: the sponsor's own
-                        // record may land when an earlier block's side effects
-                        // apply, so report partial application for a retry.
+                        // Phase 0 validation: Verify sponsor is Active in SponsorshipStore,
+                        // OR a hardcoded genesis identity. Genesis is the sponsor ROOT
+                        // and often has no store record of its own (same bootstrap
+                        // deadlock the CreateSpace validation already handles) — without
+                        // this fallback every genesis-sponsored onboarding transiently
+                        // skips forever on nodes that never stored a genesis record.
+                        // Sponsor-not-yet-known (non-genesis) is TRANSIENT: the
+                        // sponsor's own record may land when an earlier block's side
+                        // effects apply, so report partial application for a retry.
+                        let sponsor_is_genesis =
+                            crate::sponsorship::is_in_hardcoded_genesis_list(&sponsor_pk);
                         match sponsorship_store.get(&sponsor_pk) {
                             Ok(Some(sponsor_record)) => {
                                 if sponsor_record.status
                                     != crate::sponsorship::types::SponsorshipStatus::Active
+                                    && !sponsor_is_genesis
                                 {
                                     log::warn!(
                                         "[BLOCK] Sponsor {} is not Active (status={:?}) — skipping",
@@ -4975,6 +4983,10 @@ impl MessageRouter {
                                     fully_applied = false;
                                     continue;
                                 }
+                            }
+                            Ok(None) if sponsor_is_genesis => {
+                                // Hardcoded genesis sponsor without a store record:
+                                // proceed (depth lookup below falls back to 1).
                             }
                             Ok(None) => {
                                 log::warn!(
