@@ -2496,6 +2496,11 @@ impl MessageRouter {
                         elsewhere.len(),
                         elsewhere
                     );
+                    // Record the skip so completeness/gap checks stop treating
+                    // this block as missing content (harmless for non-canonical
+                    // roots — only canonical roots' claims are gap-scanned).
+                    let cb_hash = content_block.hash();
+                    let _ = chain_store.mark_content_block_skipped(&cb_hash, block_height);
                     return Err(RouteError::InvalidData(format!(
                         "block re-includes {} already-finalized actions",
                         elsewhere.len()
@@ -3989,6 +3994,11 @@ impl MessageRouter {
                             "[BLOCK] Skipping content block: {} action(s) already finalized in another block",
                             other
                         );
+                        // Record the skip so completeness/gap checks stop
+                        // treating this block as missing content — the
+                        // mismatch drove a permanent 30s backfill loop.
+                        let cb_hash = content_block.hash();
+                        let _ = chain_store.mark_content_block_skipped(&cb_hash, block_height);
                         continue;
                     }
                     Err(e) => {

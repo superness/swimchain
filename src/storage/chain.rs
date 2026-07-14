@@ -101,6 +101,16 @@ pub struct ChainStore {
     /// regardless of which transport path delivered it. Cleared when the block
     /// is displaced by a reorg.
     applied_side_effects: sled::Tree,
+    /// Content blocks this node deliberately refused to store because every
+    /// missing action in them is canonically finalized in ANOTHER block
+    /// (double-inclusion protection). Key = content_block_hash(32),
+    /// Value = claiming block height(8, big-endian). Consulted by the
+    /// completeness/gap checks so a legitimately-skipped block does not read
+    /// as "missing content" forever — that mismatch drove a permanent 30s
+    /// GETBLOCKS-backfill + WHO_HAS loop (observed live 2026-07-14 on the
+    /// height-12 header). A stored content block always takes precedence over
+    /// a stale skip entry (completeness checks storage first).
+    skipped_content_blocks: sled::Tree,
 
     // === Behavioral Branching (SPEC_13 Phase A) ===
     /// Per-identity, per-space interaction metrics (SPEC_13 §3.2, §8.1):
@@ -226,6 +236,7 @@ impl ChainStore {
         let finalized_actions = db.open_tree("finalized_actions")?;
         let finalized_content = db.open_tree("finalized_content")?;
         let applied_side_effects = db.open_tree("applied_side_effects")?;
+        let skipped_content_blocks = db.open_tree("skipped_content_blocks")?;
 
         // Behavioral branching trees (SPEC_13 Phase A)
         let identity_space_metrics = db.open_tree("identity_space_metrics")?;
@@ -276,6 +287,7 @@ impl ChainStore {
             finalized_actions,
             finalized_content,
             applied_side_effects,
+            skipped_content_blocks,
             identity_space_metrics,
             communities,
             identity_community,
@@ -669,9 +681,13 @@ impl ChainStore {
                         // Space block present, but the content blocks it
                         // claims (which carry space names and posts) may
                         // still be missing — the gap actually observed on
-                        // fresh nodes.
+                        // fresh nodes. Blocks deliberately skipped as
+                        // canonical duplicates are NOT gaps (they will never
+                        // be stored; re-fetching them loops forever).
                         for content_hash in &space_block.content_block_hashes {
-                            if self.get_content_block(content_hash)?.is_none() {
+                            if self.get_content_block(content_hash)?.is_none()
+                                && !self.is_content_block_skipped(content_hash)?
+                            {
                                 gaps.push(height);
                                 break 'spaces;
                             }
@@ -3101,6 +3117,39 @@ impl ChainStore {
         Ok(duplicates)
     }
 
+    /// Record that this node deliberately refused to store a content block
+    /// because its missing actions are canonically finalized in another block
+    /// (double-inclusion protection). Completeness/gap checks treat a skipped
+    /// block as satisfied so the sync loop stops re-fetching it forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database write fails.
+    pub fn mark_content_block_skipped(
+        &self,
+        content_block_hash: &[u8; 32],
+        claiming_height: u64,
+    ) -> Result<(), StorageError> {
+        self.skipped_content_blocks
+            .insert(content_block_hash, &claiming_height.to_be_bytes())?;
+        Ok(())
+    }
+
+    /// Whether this content block was deliberately skipped as a canonical
+    /// duplicate (see `mark_content_block_skipped`).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn is_content_block_skipped(
+        &self,
+        content_block_hash: &[u8; 32],
+    ) -> Result<bool, StorageError> {
+        Ok(self
+            .skipped_content_blocks
+            .contains_key(content_block_hash)?)
+    }
+
     /// Mark all actions in a content block as finalized
     pub fn mark_content_block_actions_finalized(
         &self,
@@ -3226,7 +3275,13 @@ impl ChainStore {
                 return Ok(false);
             };
             for content_hash in &space_block.content_block_hashes {
-                if self.get_content_block(content_hash)?.is_none() {
+                if self.get_content_block(content_hash)?.is_none()
+                    // A block deliberately skipped as a canonical duplicate
+                    // counts as satisfied — it will never be stored, and
+                    // treating it as missing wedged the sync loop in a
+                    // permanent 30s backfill (2026-07-14, height-12 header).
+                    && !self.is_content_block_skipped(content_hash)?
+                {
                     return Ok(false);
                 }
             }
@@ -3978,6 +4033,44 @@ mod tests {
     /// (node/tasks.rs) and the reorg re-add guards (node/router) rely on this
     /// detection: an action finalized in a surviving block must be reported as a
     /// duplicate if re-included.
+    /// A content block deliberately skipped as a canonical duplicate must
+    /// satisfy the completeness and gap checks — otherwise the sync loop
+    /// re-fetches the claiming block forever (the height-12 backfill loop,
+    /// 2026-07-14): every re-receive re-skips the same block and the gap
+    /// never closes.
+    #[test]
+    fn skipped_content_block_satisfies_completeness_and_gap_checks() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        // A space block claiming one content block we will never store.
+        let missing_cb_hash = [0xAB; 32];
+        let mut space_block = create_test_space_block([0x11; 32]);
+        space_block.content_block_hashes = vec![missing_cb_hash];
+        space_block.content_block_count = 1;
+        let space_hash = store.put_space_block(&space_block).unwrap();
+
+        let mut root = create_test_root_block(0, [0u8; 32]);
+        root.space_block_hashes = vec![space_hash];
+        root.space_block_count = 1;
+        let root_hash = store.put_root_block(&root).unwrap();
+        store.index_height(0, root_hash).unwrap();
+
+        // Missing content block → incomplete, and the height is a gap.
+        assert!(!store.root_content_complete(&root).unwrap());
+        assert_eq!(store.find_content_gap_heights(16).unwrap(), vec![0]);
+
+        // After recording the deliberate skip, the block reads complete and
+        // the gap scan stops chasing it.
+        assert!(!store.is_content_block_skipped(&missing_cb_hash).unwrap());
+        store
+            .mark_content_block_skipped(&missing_cb_hash, 0)
+            .unwrap();
+        assert!(store.is_content_block_skipped(&missing_cb_hash).unwrap());
+        assert!(store.root_content_complete(&root).unwrap());
+        assert!(store.find_content_gap_heights(16).unwrap().is_empty());
+    }
+
     #[test]
     fn reincluded_finalized_action_is_detected_as_duplicate() {
         use crate::blocks::builder::BlockBuilder;

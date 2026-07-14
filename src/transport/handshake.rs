@@ -101,7 +101,7 @@ pub async fn perform_outbound_handshake(
     let peer_info = parse_version_payload(&peer_version.payload, conn.remote_addr())?;
 
     // 3. Validate VERSION
-    validate_version(&peer_info, conn.our_nonce())?;
+    validate_version(&peer_info, conn.our_nonce(), local_info)?;
     conn.set_peer_info(peer_info.clone());
 
     // 4. Send VERACK
@@ -153,7 +153,7 @@ pub async fn perform_inbound_handshake(
     conn.set_state(ConnectionState::VersionReceived)?;
 
     // 2. Validate VERSION
-    validate_version(&peer_info, conn.our_nonce())?;
+    validate_version(&peer_info, conn.our_nonce(), local_info)?;
     conn.set_peer_info(peer_info.clone());
 
     // 3. Send VERSION + VERACK (inbound sends both together per spec)
@@ -186,10 +186,30 @@ pub async fn perform_inbound_handshake(
 }
 
 /// Validate received VERSION payload
-fn validate_version(peer_info: &PeerInfo, our_nonce: u64) -> Result<(), TransportError> {
-    // Self-connection check (nonce collision)
+fn validate_version(
+    peer_info: &PeerInfo,
+    our_nonce: u64,
+    local_info: &LocalNodeInfo,
+) -> Result<(), TransportError> {
+    // Self-connection check (nonce collision). NOTE: nonces are generated per
+    // CONNECTION (listener.rs), so a genuine self-dial involves two different
+    // nonces and this check alone never fires — it only catches the
+    // astronomically-unlikely collision. Kept for spec parity.
     if peer_info.nonce == our_nonce {
         return Err(TransportError::SelfConnection);
+    }
+
+    // Self-connection check (identity): the peer's node_id is
+    // SHA-256(public_key); if it matches OURS, we dialed ourselves (e.g. our
+    // own advertised address came back via discovery — observed live
+    // 2026-07-14, genesis held itself as a peer). Skip when our key is unset
+    // (all-zero Default, minimal/test mode) so keyless test nodes don't
+    // false-positive against each other.
+    if local_info.public_key != [0u8; 32] {
+        let our_node_id: [u8; 32] = Sha256::digest(local_info.public_key).into();
+        if peer_info.node_id == our_node_id {
+            return Err(TransportError::SelfConnection);
+        }
     }
 
     // Version compatibility (we only support version 1)
@@ -333,7 +353,7 @@ mod tests {
         };
 
         // Different nonce, same version = OK
-        assert!(validate_version(&peer_info, 12345).is_ok());
+        assert!(validate_version(&peer_info, 12345, &LocalNodeInfo::default()).is_ok());
     }
 
     #[tokio::test]
@@ -353,8 +373,44 @@ mod tests {
         };
 
         // Same nonce = self-connection
-        let result = validate_version(&peer_info, 12345);
+        let result = validate_version(&peer_info, 12345, &LocalNodeInfo::default());
         assert!(matches!(result, Err(TransportError::SelfConnection)));
+    }
+
+    /// Nonces are per-connection, so a real self-dial has two DIFFERENT
+    /// nonces — the identity check (peer node_id == SHA-256(our key)) is
+    /// what actually catches it.
+    #[tokio::test]
+    async fn test_validate_version_self_connection_by_identity() {
+        let our_key = [7u8; 32];
+        let our_node_id: [u8; 32] = Sha256::digest(our_key).into();
+        let peer_info = PeerInfo {
+            node_id: our_node_id, // the "peer" is us
+            protocol_version: PROTOCOL_VERSION as u32,
+            services: 0x0001,
+            user_agent: "Test/1.0".to_string(),
+            start_height: 100,
+            relay: true,
+            nonce: 99999, // DIFFERENT nonce — the nonce check must not be needed
+            remote_addr: "127.0.0.1:9735".parse().unwrap(),
+            timestamp: 0,
+            observed_external_addr: None,
+            advertised_addr: None,
+        };
+
+        let local = LocalNodeInfo {
+            public_key: our_key,
+            ..LocalNodeInfo::default()
+        };
+        let result = validate_version(&peer_info, 12345, &local);
+        assert!(matches!(result, Err(TransportError::SelfConnection)));
+
+        // A different identity with a different nonce passes.
+        let other = LocalNodeInfo {
+            public_key: [8u8; 32],
+            ..LocalNodeInfo::default()
+        };
+        assert!(validate_version(&peer_info, 12345, &other).is_ok());
     }
 
     #[tokio::test]
@@ -373,7 +429,7 @@ mod tests {
             advertised_addr: None,
         };
 
-        let result = validate_version(&peer_info, 12345);
+        let result = validate_version(&peer_info, 12345, &LocalNodeInfo::default());
         assert!(matches!(
             result,
             Err(TransportError::VersionMismatch { .. })
