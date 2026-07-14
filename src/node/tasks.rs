@@ -258,6 +258,7 @@ impl BackgroundTaskRunner {
         _syncer: Arc<ChainSyncer>,
         connection_pool: Arc<PeerConnectionPool>,
         chain_store: Option<Arc<crate::storage::ChainStore>>,
+        router: Arc<MessageRouter>,
     ) {
         use crate::network::messages::{GetBlocksLocatorPayload, GetHeadersLocatorPayload};
 
@@ -396,17 +397,59 @@ impl BackgroundTaskRunner {
                                         crate::types::network::MessageType::GetBlocks,
                                         backfill.to_bytes(),
                                     );
-                                if let Some(peer_id) = peer_ids.first() {
+                                // Ask up to 3 peers, not just the first: the
+                                // GETBLOCKS server silently omits content it
+                                // doesn't hold, so a single content-less peer
+                                // wedged this backfill in a permanent 30s loop.
+                                let mut sent_backfill = 0;
+                                for peer_id in peer_ids.iter().take(3) {
                                     if let Ok(()) = connection_pool.send_to(peer_id, &backfill_envelope).await {
                                         info!(
                                             "[SYNC-LOOP] Sent GETBLOCKS backfill to peer {}",
                                             hex::encode(&peer_id[..8])
                                         );
+                                        sent_backfill += 1;
                                     }
+                                }
+                                if sent_backfill == 0 {
+                                    warn!("[SYNC-LOOP] Content backfill: no peer accepted the request");
                                 }
                             }
                             Ok(_) => {}
                             Err(e) => warn!("[SYNC-LOOP] Content gap scan failed: {}", e),
+                        }
+
+                        // Side-effects reconciliation pass: apply any canonical
+                        // block whose content is complete but whose side
+                        // effects haven't run (form/receive/orphan/backfill
+                        // ordering left it behind). This retry is what makes
+                        // sponsorship/content side effects deterministic
+                        // across nodes — see reconcile_block_side_effects.
+                        match store.find_unapplied_heights(64) {
+                            Ok(heights) if !heights.is_empty() => {
+                                let mut applied = 0usize;
+                                for height in &heights {
+                                    let Ok(Some(hash)) = store.get_root_hash_at_height(*height)
+                                    else {
+                                        continue;
+                                    };
+                                    let Ok(Some(root)) = store.get_root_block(&hash) else {
+                                        continue;
+                                    };
+                                    if router.reconcile_block_side_effects(&root) {
+                                        applied += 1;
+                                    }
+                                }
+                                if applied > 0 {
+                                    info!(
+                                        "[SYNC-LOOP] Reconciled side effects for {}/{} pending blocks",
+                                        applied,
+                                        heights.len()
+                                    );
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => warn!("[SYNC-LOOP] Unapplied-block scan failed: {}", e),
                         }
                     }
                 }
@@ -876,8 +919,9 @@ impl BackgroundTaskRunner {
         let mut shutdown = self.shutdown_rx.clone();
 
         let handle = tokio::spawn(async move {
-            let mut ticker =
-                interval(Duration::from_secs(SPONSORSHIP_CLAIM_REBROADCAST_INTERVAL_SECS));
+            let mut ticker = interval(Duration::from_secs(
+                SPONSORSHIP_CLAIM_REBROADCAST_INTERVAL_SECS,
+            ));
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
             info!(
@@ -2199,6 +2243,7 @@ impl BackgroundTaskRunner {
         chain_store: Option<Arc<crate::storage::ChainStore>>,
         node_identity: [u8; 32],
         sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
+        router: Arc<MessageRouter>,
     ) {
         let mut shutdown = self.shutdown_rx.clone();
 
@@ -2494,74 +2539,14 @@ impl BackgroundTaskRunner {
                                 }
                             }
 
-                            // SPEC_11 Phase 6: Apply sponsorship actions from locally formed blocks
-                            if let Some(ref ss) = sponsorship_store {
-                                for action in &content_block.actions {
-                                    match action.action_type {
-                                        crate::blocks::ActionType::Sponsor => {
-                                            if let Some(sponsee_bytes) = action.content_hash {
-                                                let sponsor_bytes = action.actor;
-                                                let sponsee_pk = crate::types::identity::PublicKey::from_bytes(sponsee_bytes);
-                                                let sponsor_pk = crate::types::identity::PublicKey::from_bytes(sponsor_bytes);
-                                                if let Ok(false) = ss.exists(&sponsee_pk) {
-                                                    let depth = match ss.get(&sponsor_pk) {
-                                                        Ok(Some(rec)) => rec.depth.saturating_add(1),
-                                                        _ => 1,
-                                                    };
-                                                    let stored = crate::sponsorship::types::StoredSponsorship {
-                                                        sponsored_identity: sponsee_pk,
-                                                        sponsor: Some(sponsor_pk),
-                                                        creation_timestamp: action.timestamp,
-                                                        status: crate::sponsorship::types::SponsorshipStatus::Active,
-                                                        penalty_until: None,
-                                                        depth,
-                                                        probationary: false,
-                                                        probation_expires: None,
-                                                        positive_contribution_score: 0,
-                                                        is_genesis: false,
-                                                        orphaned_at: None,
-                                                    };
-                                                    if let Err(e) = ss.put(&stored) {
-                                                        warn!("[BLOCKS] Failed to store on-chain sponsorship: {}", e);
-                                                    } else {
-                                                        info!("[BLOCKS] Applied on-chain sponsorship: {} by {} (depth={})",
-                                                            hex::encode(&sponsee_bytes[..8]),
-                                                            hex::encode(&sponsor_bytes[..8]),
-                                                            depth);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        crate::blocks::ActionType::GenesisRegister => {
-                                            if let Some(genesis_bytes) = action.content_hash {
-                                                let genesis_pk = crate::types::identity::PublicKey::from_bytes(genesis_bytes);
-                                                if let Ok(false) = ss.exists(&genesis_pk) {
-                                                    let stored = crate::sponsorship::types::StoredSponsorship {
-                                                        sponsored_identity: genesis_pk,
-                                                        sponsor: None,
-                                                        creation_timestamp: action.timestamp,
-                                                        status: crate::sponsorship::types::SponsorshipStatus::Active,
-                                                        penalty_until: None,
-                                                        depth: 0,
-                                                        probationary: false,
-                                                        probation_expires: None,
-                                                        positive_contribution_score: 0,
-                                                        is_genesis: true,
-                                                        orphaned_at: None,
-                                                    };
-                                                    if let Err(e) = ss.put(&stored) {
-                                                        warn!("[BLOCKS] Failed to store on-chain genesis registration: {}", e);
-                                                    } else {
-                                                        info!("[BLOCKS] Applied on-chain genesis registration: {}",
-                                                            hex::encode(&genesis_bytes[..8]));
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
+                            // Side effects (sponsorship apply, reactions,
+                            // engagements, space registration) run once via
+                            // the router's reconcile_block_side_effects()
+                            // after the root block is stored below — the same
+                            // single apply point every ingest path uses. The
+                            // inline sponsorship copy that used to live here
+                            // skipped signature/Active validation and left the
+                            // applied-state flag unset, so it was removed.
                         }
 
                         // Store space blocks (referenced by root block)
@@ -2590,6 +2575,11 @@ impl BackgroundTaskRunner {
                                         root.cumulative_pow
                                     );
                                 }
+
+                                // Single apply point: run the formed block's
+                                // content-plane side effects (sponsorship etc.)
+                                // exactly like every other ingest path.
+                                router.reconcile_block_side_effects(&root);
                             }
                             Err(e) => {
                                 warn!("[BLOCKS] Failed to store root block: {}", e);
@@ -2790,7 +2780,7 @@ impl BackgroundTaskRunner {
             connection_pool.clone(),
             connection_manager.clone(),
             transport,
-            router,
+            router.clone(),
             data_dir.clone(),
         );
 
@@ -2807,11 +2797,17 @@ impl BackgroundTaskRunner {
                 chain_store.clone(),
                 node_identity,
                 sponsorship_store.clone(),
+                router.clone(),
             );
         }
 
         if let Some(s) = syncer {
-            self.spawn_sync_loop(s, connection_pool.clone(), chain_store.clone());
+            self.spawn_sync_loop(
+                s,
+                connection_pool.clone(),
+                chain_store.clone(),
+                router.clone(),
+            );
         }
 
         // Branch-selective sync - syncs subscribed branches (BRANCH_SELECTIVE_SYNC.md)

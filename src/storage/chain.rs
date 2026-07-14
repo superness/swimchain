@@ -93,6 +93,14 @@ pub struct ChainStore {
     /// a content id (e.g. get_replies) can resolve a reply's finalizing block height
     /// without a full-chain scan. Written alongside `finalized_actions`.
     finalized_content: sled::Tree,
+    /// Side-effects-applied markers: Key = root_block_hash(32), Value = height(8, big-endian)
+    /// Set once a canonical block's content-plane side effects (sponsorship,
+    /// reactions, engagements, space registration/rename) have run to completion
+    /// on this node. Drives the reconciliation pass: a canonical block whose
+    /// content is complete but whose flag is missing gets (re-)applied,
+    /// regardless of which transport path delivered it. Cleared when the block
+    /// is displaced by a reorg.
+    applied_side_effects: sled::Tree,
 
     // === Behavioral Branching (SPEC_13 Phase A) ===
     /// Per-identity, per-space interaction metrics (SPEC_13 §3.2, §8.1):
@@ -217,6 +225,7 @@ impl ChainStore {
         // Finalized action tracking (prevents duplicate action inclusion)
         let finalized_actions = db.open_tree("finalized_actions")?;
         let finalized_content = db.open_tree("finalized_content")?;
+        let applied_side_effects = db.open_tree("applied_side_effects")?;
 
         // Behavioral branching trees (SPEC_13 Phase A)
         let identity_space_metrics = db.open_tree("identity_space_metrics")?;
@@ -266,6 +275,7 @@ impl ChainStore {
             space_registry,
             finalized_actions,
             finalized_content,
+            applied_side_effects,
             identity_space_metrics,
             communities,
             identity_community,
@@ -1973,6 +1983,31 @@ impl ChainStore {
         }
 
         self.set_best_tip(&new_tip.hash())?;
+
+        // Displaced blocks lose their finalized-action marks and applied flag.
+        // Leaving marks behind poisons the duplicate gates: the same actions in
+        // the NEW canonical chain read as "finalized at a different height" and
+        // their content is skipped forever (the content-backfill loop bug).
+        for old_hash in &orphaned {
+            if let Some(old_root) = self.get_root_block(old_hash)? {
+                match self.unmark_actions_for_root(&old_root) {
+                    Ok(n) if n > 0 => log::info!(
+                        "[REORG] Unmarked {} finalized actions from displaced block {} (height {})",
+                        n,
+                        hex::encode(&old_hash[..8]),
+                        old_root.height
+                    ),
+                    Ok(_) => {}
+                    Err(e) => log::warn!(
+                        "[REORG] Failed to unmark actions for displaced block {}: {}",
+                        hex::encode(&old_hash[..8]),
+                        e
+                    ),
+                }
+            }
+            let _ = self.clear_side_effects_applied(old_hash);
+        }
+
         Ok(Some(orphaned))
     }
 
@@ -3097,10 +3132,13 @@ impl ChainStore {
     ) -> Result<Option<u64>, StorageError> {
         match self.finalized_content.get(content_hash)? {
             Some(height_bytes) if height_bytes.len() == 8 => Ok(Some(u64::from_be_bytes(
-                height_bytes.as_ref().try_into().map_err(|_| StorageError::CorruptedData {
-                    expected: "8 bytes for height".to_string(),
-                    actual: format!("{} bytes", height_bytes.len()),
-                })?,
+                height_bytes
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| StorageError::CorruptedData {
+                        expected: "8 bytes for height".to_string(),
+                        actual: format!("{} bytes", height_bytes.len()),
+                    })?,
             ))),
             Some(_) => Err(StorageError::CorruptedData {
                 expected: "8 bytes for height".to_string(),
@@ -3115,6 +3153,194 @@ impl ChainStore {
     /// Called during reorg when orphaning a block.
     pub fn unmark_action_finalized(&self, action_hash: &[u8; 32]) -> Result<bool, StorageError> {
         Ok(self.finalized_actions.remove(action_hash)?.is_some())
+    }
+
+    // === Side-Effects Reconciliation (content-plane apply consistency) ===
+
+    /// Side-effects application state for a block: 0 = nothing applied,
+    /// 1 = content effects applied (reactions, engagements, spaces — the
+    /// non-retryable increments), 2 = fully applied (sponsorship included).
+    ///
+    /// State 1 exists so a TRANSIENT sponsorship skip (sponsor's own record not
+    /// landed yet) can be retried without re-running increment-style effects.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn side_effects_state(&self, root_hash: &BlockHash) -> Result<u8, StorageError> {
+        match self.applied_side_effects.get(root_hash)? {
+            Some(v) if v.len() >= 9 => Ok(v[8]),
+            Some(_) => Ok(2), // legacy 8-byte value: treat as fully applied
+            None => Ok(0),
+        }
+    }
+
+    /// Whether a block's side effects are FULLY applied (state 2).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn side_effects_applied(&self, root_hash: &BlockHash) -> Result<bool, StorageError> {
+        Ok(self.side_effects_state(root_hash)? >= 2)
+    }
+
+    /// Record a block's side-effects application state (see `side_effects_state`).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database write fails.
+    pub fn set_side_effects_state(
+        &self,
+        root_hash: &BlockHash,
+        height: u64,
+        state: u8,
+    ) -> Result<(), StorageError> {
+        let mut value = [0u8; 9];
+        value[..8].copy_from_slice(&height.to_be_bytes());
+        value[8] = state;
+        self.applied_side_effects.insert(root_hash, &value)?;
+        Ok(())
+    }
+
+    /// Clear the side-effects-applied marker (block displaced by a reorg).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database write fails.
+    pub fn clear_side_effects_applied(&self, root_hash: &BlockHash) -> Result<(), StorageError> {
+        self.applied_side_effects.remove(root_hash)?;
+        Ok(())
+    }
+
+    /// Whether every space block a root claims — and every content block those
+    /// space blocks claim — is present in local storage. Side effects must only
+    /// run once this returns true, so a partially-backfilled block is never
+    /// half-applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn root_content_complete(&self, root: &RootBlock) -> Result<bool, StorageError> {
+        for space_hash in &root.space_block_hashes {
+            let Some(space_block) = self.get_space_block(space_hash)? else {
+                return Ok(false);
+            };
+            for content_hash in &space_block.content_block_hashes {
+                if self.get_content_block(content_hash)?.is_none() {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Canonical heights whose block has NOT had its side effects applied yet,
+    /// scanning genesis upward, capped at `max` results. The reconciliation
+    /// pass walks these each sync tick and applies any block whose content has
+    /// since become complete — the retry that makes side effects deterministic
+    /// regardless of form/receive/backfill order.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn find_unapplied_heights(&self, max: usize) -> Result<Vec<u64>, StorageError> {
+        let mut heights = Vec::new();
+        let Some(tip) = self.get_latest_height()? else {
+            return Ok(heights);
+        };
+        for height in 0..=tip {
+            if heights.len() >= max {
+                break;
+            }
+            let Some(hash) = self.get_root_hash_at_height(height)? else {
+                continue;
+            };
+            if !self.side_effects_applied(&hash)? {
+                heights.push(height);
+            }
+        }
+        Ok(heights)
+    }
+
+    /// Unmark the finalized actions of a specific (displaced) root block.
+    ///
+    /// Only removes marks that still point at this root's height — an action
+    /// re-marked at a different height by a surviving block must keep that mark.
+    /// Walks the root's claimed space/content blocks; content not stored locally
+    /// is covered by the height-keyed sweep in `clear_finalized_actions_by_height`
+    /// callers where needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read/write fails.
+    pub fn unmark_actions_for_root(&self, root: &RootBlock) -> Result<usize, StorageError> {
+        use crate::blocks::builder::BlockBuilder;
+
+        let mut count = 0;
+        for space_hash in &root.space_block_hashes {
+            let Some(space_block) = self.get_space_block(space_hash)? else {
+                continue;
+            };
+            for content_hash in &space_block.content_block_hashes {
+                let Some(content_block) = self.get_content_block(content_hash)? else {
+                    continue;
+                };
+                for action in &content_block.actions {
+                    let action_hash = BlockBuilder::action_hash(action);
+                    if self.is_action_finalized(&action_hash)? == Some(root.height) {
+                        if self.unmark_action_finalized(&action_hash)? {
+                            count += 1;
+                        }
+                        if let Some(ch) = action.content_hash {
+                            let _ = self.finalized_content.remove(ch);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    /// Whether the canonical block at `height` actually contains the action.
+    ///
+    /// Used to detect STALE finalized marks: a mark can point at a height whose
+    /// canonical block does not include the action (left behind by a fork block
+    /// or a pre-fix reorg). Returns `Ok(None)` when the canonical block's
+    /// content is not fully stored locally, i.e. containment cannot be proven
+    /// either way.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database read fails.
+    pub fn canonical_block_contains_action(
+        &self,
+        height: u64,
+        action_hash: &[u8; 32],
+    ) -> Result<Option<bool>, StorageError> {
+        use crate::blocks::builder::BlockBuilder;
+
+        let Some(root_hash) = self.get_root_hash_at_height(height)? else {
+            return Ok(None);
+        };
+        let Some(root) = self.get_root_block(&root_hash)? else {
+            return Ok(None);
+        };
+        for space_hash in &root.space_block_hashes {
+            let Some(space_block) = self.get_space_block(space_hash)? else {
+                return Ok(None);
+            };
+            for content_hash in &space_block.content_block_hashes {
+                let Some(content_block) = self.get_content_block(content_hash)? else {
+                    return Ok(None);
+                };
+                for action in &content_block.actions {
+                    if &BlockBuilder::action_hash(action) == action_hash {
+                        return Ok(Some(true));
+                    }
+                }
+            }
+        }
+        Ok(Some(false))
     }
 
     /// Unmark all finalized actions at a given height
@@ -3883,7 +4109,7 @@ mod tests {
         competitor.cumulative_pow = tip.cumulative_pow;
         competitor.total_pow = 0;
         competitor.block_creator = [0x99; 32]; // different hash, not the current tip's child-of-record
-        // current tip is now `flush` at height 3; competitor.height (3) != tip.height+1 (4)
+                                               // current tip is now `flush` at height 3; competitor.height (3) != tip.height+1 (4)
         assert!(
             !store.is_heavier_than_best_tip(&competitor).unwrap(),
             "equal-work non-extending block must not be adopted by the extension rule"

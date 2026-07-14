@@ -524,7 +524,19 @@ fn build_create_space_blocks_payload(creator: [u8; 32], space_id_32: [u8; 32]) -
         1_700_000_000,
     );
 
-    let root_block = RootBlock::genesis(1_700_000_000);
+    // The root must CLAIM the space block (like every builder-formed block):
+    // side effects now run via reconcile_block_side_effects, which walks the
+    // root's claimed space/content hashes — content a root does not claim is
+    // not part of the block and gets no side effects.
+    let root_block = RootBlock::from_space_blocks(
+        std::slice::from_ref(&space_block),
+        [0u8; 32],
+        0,
+        1_700_000_000,
+        1,
+        0,
+        [0u8; 32],
+    );
 
     let root_bytes = bincode::serialize(&root_block).unwrap();
     let space_bytes = bincode::serialize(&space_block).unwrap();
@@ -865,4 +877,240 @@ async fn test_all_known_types_no_panic() {
             Err(e) => panic!("Unexpected error for type 0x{:02x}: {:?}", msg_type, e),
         }
     }
+}
+
+// ========== Side-Effects Reconciliation (content-apply consistency) ==========
+
+/// Build a full single-block hierarchy (root -> space -> content) carrying one
+/// Sponsor action with a REAL ed25519 signature, so
+/// `apply_sponsorship_actions_from_block`'s Phase 0 signature check passes.
+/// Returns (root, space, content, sponsor_pubkey, sponsee_pubkey).
+fn build_sponsor_block(
+    seed: u8,
+) -> (
+    crate::blocks::RootBlock,
+    crate::blocks::SpaceBlock,
+    crate::blocks::ContentBlock,
+    [u8; 32],
+    [u8; 32],
+) {
+    use crate::blocks::action::Action;
+    use crate::blocks::branch_path::BranchPath;
+    use crate::blocks::{ContentBlock, RootBlock, SpaceBlock};
+    use ed25519_dalek::{Signer, SigningKey};
+
+    let signing_key = SigningKey::from_bytes(&[seed; 32]);
+    let sponsor_pub = signing_key.verifying_key().to_bytes();
+    let sponsee_pub = [seed.wrapping_add(1); 32];
+    let timestamp = 1_700_000_000u64;
+
+    // Signature message = sponsee_pubkey(32) || timestamp(8 BE) — must match
+    // apply_sponsorship_actions_from_block's Phase 0 verification.
+    let mut msg = [0u8; 40];
+    msg[..32].copy_from_slice(&sponsee_pub);
+    msg[32..].copy_from_slice(&timestamp.to_be_bytes());
+    let sig = signing_key.sign(&msg).to_bytes();
+
+    let action = Action::new_sponsor(sponsor_pub, sponsee_pub, timestamp, sig);
+
+    let space_id = [0u8; 32]; // system space, like real sponsorship actions
+    let content_block = ContentBlock::new(
+        action.hash(),
+        space_id,
+        vec![action],
+        None,
+        timestamp,
+        BranchPath::root(),
+    )
+    .unwrap();
+
+    let space_block = SpaceBlock::from_content_blocks(
+        space_id,
+        std::slice::from_ref(&content_block),
+        None,
+        timestamp,
+    );
+
+    let root_block = RootBlock::from_space_blocks(
+        std::slice::from_ref(&space_block),
+        [0u8; 32],
+        0,
+        timestamp,
+        1,
+        0, // height 0: first block, becomes canonical unconditionally
+        [0u8; 32],
+    );
+
+    (
+        root_block,
+        space_block,
+        content_block,
+        sponsor_pub,
+        sponsee_pub,
+    )
+}
+
+fn make_reconcile_router(
+    sponsor: Option<[u8; 32]>,
+) -> (
+    MessageRouter,
+    Arc<crate::storage::chain::ChainStore>,
+    Arc<crate::sponsorship::storage::SponsorshipStore>,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
+    use crate::sponsorship::storage::SponsorshipStore;
+    use crate::sponsorship::types::{SponsorshipStatus, StoredSponsorship};
+    use crate::types::identity::PublicKey;
+
+    let chain_dir = tempfile::tempdir().unwrap();
+    let chain_store = Arc::new(crate::storage::chain::ChainStore::open(chain_dir.path()).unwrap());
+
+    let sponsorship_dir = tempfile::tempdir().unwrap();
+    let sponsorship_store = Arc::new(SponsorshipStore::open(sponsorship_dir.path()).unwrap());
+    if let Some(sponsor_pub) = sponsor {
+        sponsorship_store
+            .put(&StoredSponsorship {
+                sponsored_identity: PublicKey::from_bytes(sponsor_pub),
+                sponsor: None,
+                creation_timestamp: 1_699_000_000,
+                status: SponsorshipStatus::Active,
+                penalty_until: None,
+                depth: 0,
+                probationary: false,
+                probation_expires: None,
+                positive_contribution_score: 0,
+                is_genesis: true,
+                orphaned_at: None,
+            })
+            .unwrap();
+    }
+
+    let metrics = Arc::new(NodeMetrics::new());
+    let router = MessageRouter::builder()
+        .metrics(metrics)
+        .chain_store(chain_store.clone())
+        .sponsorship_store(sponsorship_store.clone())
+        .build();
+
+    (
+        router,
+        chain_store,
+        sponsorship_store,
+        chain_dir,
+        sponsorship_dir,
+    )
+}
+
+/// The single-apply-point invariant: reconcile refuses to run on incomplete
+/// content, applies exactly once when the content is complete, and is
+/// idempotent afterwards.
+#[test]
+fn test_reconcile_applies_sponsorship_once_content_complete() {
+    use crate::types::identity::PublicKey;
+
+    let (root, space, content, sponsor_pub, sponsee_pub) = build_sponsor_block(0x21);
+    let (router, chain_store, sponsorship_store, _d1, _d2) =
+        make_reconcile_router(Some(sponsor_pub));
+
+    // Canonical header only — content bodies not yet stored (headers-first sync).
+    chain_store
+        .put_root_block_with_fork_resolution(&root)
+        .unwrap();
+    assert!(!router.reconcile_block_side_effects(&root));
+    assert!(!sponsorship_store
+        .exists(&PublicKey::from_bytes(sponsee_pub))
+        .unwrap());
+    assert_eq!(chain_store.side_effects_state(&root.hash()).unwrap(), 0);
+
+    // Content arrives (backfill completes) — reconcile applies everything.
+    chain_store.put_space_block(&space).unwrap();
+    chain_store.put_content_block(&content).unwrap();
+    assert!(router.reconcile_block_side_effects(&root));
+    assert!(sponsorship_store
+        .exists(&PublicKey::from_bytes(sponsee_pub))
+        .unwrap());
+    assert!(chain_store.side_effects_applied(&root.hash()).unwrap());
+
+    // Actions were (re-)marked finalized at the canonical height.
+    let action_hash = crate::blocks::builder::BlockBuilder::action_hash(&content.actions[0]);
+    assert_eq!(
+        chain_store.is_action_finalized(&action_hash).unwrap(),
+        Some(root.height)
+    );
+
+    // Idempotent: a second reconcile is a no-op that still reports applied.
+    assert!(router.reconcile_block_side_effects(&root));
+}
+
+/// A transient sponsorship skip (sponsor's record not landed yet) leaves the
+/// block at stage 1 — content effects done, sponsorship retried later — and a
+/// later reconcile completes it once the sponsor exists. This is the
+/// cross-block ordering case (sponsee's block applied before sponsor's).
+#[test]
+fn test_reconcile_retries_transient_sponsor_skip() {
+    use crate::sponsorship::types::{SponsorshipStatus, StoredSponsorship};
+    use crate::types::identity::PublicKey;
+
+    let (root, space, content, sponsor_pub, sponsee_pub) = build_sponsor_block(0x33);
+    // Sponsor NOT registered yet.
+    let (router, chain_store, sponsorship_store, _d1, _d2) = make_reconcile_router(None);
+
+    chain_store
+        .put_root_block_with_fork_resolution(&root)
+        .unwrap();
+    chain_store.put_space_block(&space).unwrap();
+    chain_store.put_content_block(&content).unwrap();
+
+    // First pass: content effects apply (stage 1) but sponsorship is pending.
+    assert!(!router.reconcile_block_side_effects(&root));
+    assert_eq!(chain_store.side_effects_state(&root.hash()).unwrap(), 1);
+    assert!(!sponsorship_store
+        .exists(&PublicKey::from_bytes(sponsee_pub))
+        .unwrap());
+
+    // Sponsor's own record lands (its block applied) — retry completes.
+    sponsorship_store
+        .put(&StoredSponsorship {
+            sponsored_identity: PublicKey::from_bytes(sponsor_pub),
+            sponsor: None,
+            creation_timestamp: 1_699_000_000,
+            status: SponsorshipStatus::Active,
+            penalty_until: None,
+            depth: 0,
+            probationary: false,
+            probation_expires: None,
+            positive_contribution_score: 0,
+            is_genesis: true,
+            orphaned_at: None,
+        })
+        .unwrap();
+    assert!(router.reconcile_block_side_effects(&root));
+    assert!(sponsorship_store
+        .exists(&PublicKey::from_bytes(sponsee_pub))
+        .unwrap());
+    assert!(chain_store.side_effects_applied(&root.hash()).unwrap());
+}
+
+/// Side effects must NEVER run for a block that is not canonical at its
+/// height (fork blocks wait until a reorg promotes them, then the
+/// reconciliation pass picks them up).
+#[test]
+fn test_reconcile_skips_non_canonical_block() {
+    use crate::types::identity::PublicKey;
+
+    let (root, space, content, sponsor_pub, sponsee_pub) = build_sponsor_block(0x44);
+    let (router, chain_store, sponsorship_store, _d1, _d2) =
+        make_reconcile_router(Some(sponsor_pub));
+
+    // Store WITHOUT canonicalizing (no height-index entry).
+    chain_store.put_root_block(&root).unwrap();
+    chain_store.put_space_block(&space).unwrap();
+    chain_store.put_content_block(&content).unwrap();
+
+    assert!(!router.reconcile_block_side_effects(&root));
+    assert!(!sponsorship_store
+        .exists(&PublicKey::from_bytes(sponsee_pub))
+        .unwrap());
+    assert_eq!(chain_store.side_effects_state(&root.hash()).unwrap(), 0);
 }

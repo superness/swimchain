@@ -1908,13 +1908,34 @@ impl MessageRouter {
         // Check 1: If we already have a block at this height, apply fork resolution
         if let Ok(Some(existing_hash)) = chain_store.get_root_hash_at_height(block_height) {
             if existing_hash == computed_hash {
-                // Same block, already have it - skip but don't error
+                // Same block, already have it — but after headers-first sync we
+                // can hold the header WITHOUT its space/content blocks. Only
+                // skip when nothing the header claims is missing; otherwise
+                // fall through so the content parsing below backfills the gap
+                // (mirrors the F9 fix in handle_blocks — without this, the
+                // gossip path dropped a known header's content forever).
+                let content_missing = match chain_store.get_root_block(&computed_hash) {
+                    Ok(Some(known_root)) => !chain_store
+                        .root_content_complete(&known_root)
+                        .unwrap_or(false),
+                    _ => true,
+                };
+                if !content_missing {
+                    info!(
+                        "[BLOCK] Already have block {} at height {}, skipping",
+                        hex::encode(&computed_hash[..8]),
+                        block_height
+                    );
+                    return Ok(None);
+                }
                 info!(
-                    "[BLOCK] Already have block {} at height {}, skipping",
+                    "[BACKFILL] Known header {} at height {} is missing claimed space/content blocks - storing content from full block",
                     hex::encode(&computed_hash[..8]),
                     block_height
                 );
-                return Ok(None);
+                // Fall through: the storage below is keyed by hash and
+                // idempotent; the duplicate gate treats same-height finalized
+                // actions as this block's own backfill.
             } else {
                 // Different block at same height - FORK RESOLUTION
                 // Priority: 1) Higher cumulative_pow wins, 2) Lower hash wins (tiebreaker)
@@ -2359,10 +2380,6 @@ impl MessageRouter {
                     }
                 };
 
-            // CRITICAL: Register spaces FIRST, before validating reply parents.
-            // This ensures spaces are registered even if some content has orphan parents.
-            // Space creation is idempotent and doesn't depend on parent existence.
-            // Log the content block info for debugging
             info!(
                 "[BLOCK-SYNC] ContentBlock: {} actions, space_metadata={}",
                 content_block.actions.len(),
@@ -2372,59 +2389,13 @@ impl MessageRouter {
                     "NONE"
                 }
             );
-            if let Some(ref metadata) = content_block.space_metadata {
-                for action in &content_block.actions {
-                    if action.action_type == crate::blocks::ActionType::CreateSpace {
-                        // Extract space_id from the action's content_hash (first 16 bytes)
-                        if let Some(space_id_32) = action.content_hash {
-                            let mut space_id_16 = [0u8; 16];
-                            space_id_16.copy_from_slice(&space_id_32[..16]);
+            // Side effects (space registration, renames, sponsorship,
+            // reactions, engagements) are NOT applied inline here. They run
+            // exactly once via reconcile_block_side_effects() after the root
+            // block is stored — the single apply point shared by every
+            // ingest path (form/receive/orphan/backfill).
 
-                            // Create SpaceInfo and register
-                            let space_info = crate::storage::SpaceInfo {
-                                space_id: space_id_16,
-                                name: metadata.name.clone(),
-                                description: metadata.description.clone(),
-                                creator: action.actor,
-                                created_at: action.timestamp,
-                                pow_work: action.pow_work,
-                                // Private space fields (defaults for public spaces)
-                                is_private: false,
-                                encrypted_name: None,
-                                creator_encrypted_key: None,
-                                key_version: 0,
-                            };
-
-                            // Always upsert block-derived metadata. The gossip mempool
-                            // path (this file, ~line 4715) writes a placeholder name
-                            // before the block arrives; this must overwrite it.
-                            // Mirrors the unconditional pattern at the PHASE 3 storage
-                            // step further down.
-                            if let Err(e) = chain_store.register_space(&space_info) {
-                                warn!(
-                                    "[BLOCK] Failed to register space {}: {}",
-                                    hex::encode(&space_id_16[..8]),
-                                    e
-                                );
-                            } else {
-                                info!(
-                                    "[BLOCK] Registered space '{}' ({}) from synced block",
-                                    metadata.name,
-                                    hex::encode(&space_id_16[..8])
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // SPEC_13 Phase 2: Process space-rename actions
-            self.apply_rename_space_actions_from_block(&content_block);
-
-            // SPEC_11 Phase 6: Process on-chain sponsorship actions
-            self.apply_sponsorship_actions_from_block(&content_block);
-
-            // NOW validate reply parents and store content block
+            // Validate reply parents and store content block
             // Parent must exist in: 1) blockchain, or 2) another block in this batch
             let parent_exists = |parent_id: &[u8; 32]| -> bool {
                 // Check if parent is in this batch
@@ -2460,9 +2431,26 @@ impl MessageRouter {
             // adopted (marking its actions finalized) before the content arrived;
             // rejecting it would drop the block's content and its side effects
             // (sponsorship, reactions) forever.
+            //
+            // A different-height mark can also be STALE — left behind by a fork
+            // block or a pre-fix reorg that never unmarked. Verify against the
+            // canonical block at the recorded height: if that block provably
+            // does NOT contain the action, the mark is stale and this content
+            // must be processed, or the block's content is lost forever (the
+            // 30s content-backfill loop bug).
             match chain_store.check_content_block_for_duplicates(&content_block) {
                 Ok(duplicates)
-                    if duplicates.iter().any(|(_, h)| *h != block_height) =>
+                    if duplicates.iter().any(|(idx, h)| {
+                        *h != block_height
+                            && content_block.actions.get(*idx).is_some_and(|a| {
+                                let ah = crate::blocks::builder::BlockBuilder::action_hash(a);
+                                chain_store
+                                    .canonical_block_contains_action(*h, &ah)
+                                    .ok()
+                                    .flatten()
+                                    != Some(false)
+                            })
+                    }) =>
                 {
                     let elsewhere: Vec<_> = duplicates
                         .iter()
@@ -2483,7 +2471,8 @@ impl MessageRouter {
                     warn!("[BLOCK] Failed to check for duplicate actions: {}", e);
                     // Continue anyway - don't block on storage errors
                 }
-                // No duplicates, or all at this block's own height (backfill) — proceed.
+                // No duplicates, all at this block's own height (backfill), or
+                // only stale marks — proceed.
                 Ok(_) => {}
             }
 
@@ -2510,14 +2499,13 @@ impl MessageRouter {
                     {
                         warn!("[BLOCK] Failed to mark actions as finalized: {}", e);
                     }
-                    // Extract and store reactions from Engage actions
-                    self.extract_reactions_from_block(&content_block);
-                    // Track engagements in the engagement graph
-                    self.extract_engagements_from_block(&content_block);
-                    // SPEC_13 Phase A: behavioral clustering (organic communities)
-                    self.process_behavioral_clustering(&content_block);
-                    // Update reply counts in aggregation cache
+                    // Update reply counts in aggregation cache. Receive-path
+                    // only (NOT in reconcile): the origin node already counted
+                    // its own replies at submit_reply RPC time.
                     self.update_reply_counts_from_block(&content_block);
+                    // All other side effects run once via
+                    // reconcile_block_side_effects() after the root block is
+                    // stored below.
                 }
             }
         }
@@ -2707,6 +2695,11 @@ impl MessageRouter {
 
         // Check for orphan blocks that were waiting for this block
         self.process_orphans_for_block(&computed_hash).await;
+
+        // Single apply point: run the block's content-plane side effects
+        // (idempotent; no-op if the block ended up non-canonical or content
+        // is still incomplete — the sync-loop reconciliation pass retries).
+        self.reconcile_block_side_effects(&root_block);
 
         Ok(None)
     }
@@ -2968,6 +2961,12 @@ impl MessageRouter {
             }
         }
 
+        // Single apply point: orphan-path blocks previously stored content and
+        // marked actions finalized but NEVER ran side effects — the largest
+        // source of cross-node sponsorship divergence. Reconcile now that the
+        // block is stored (no-op if non-canonical or incomplete).
+        self.reconcile_block_side_effects(&root_block);
+
         Ok(Some(stored_hash))
     }
 
@@ -3051,7 +3050,18 @@ impl MessageRouter {
 
                 // Serialize space blocks with their content blocks
                 for space_hash in &root_block.space_block_hashes {
-                    if let Ok(Some(space_block)) = chain_store.get_space_block(space_hash) {
+                    let space_lookup = chain_store.get_space_block(space_hash);
+                    if !matches!(space_lookup, Ok(Some(_))) {
+                        // The requester cannot distinguish "block has no more
+                        // content" from "this peer lacks it" — log so a wedged
+                        // backfill loop can be traced to the serving side.
+                        debug!(
+                            "[BLOCK] GETBLOCKS: omitting space block {} at height {} (not stored locally)",
+                            hex::encode(&space_hash[..8]),
+                            height
+                        );
+                    }
+                    if let Ok(Some(space_block)) = space_lookup {
                         if let Ok(space_bytes) = bincode::serialize(&space_block) {
                             // Length-prefixed space block
                             full_data.extend_from_slice(&(space_bytes.len() as u32).to_le_bytes());
@@ -3063,9 +3073,15 @@ impl MessageRouter {
 
                             // Serialize content blocks
                             for content_hash in &space_block.content_block_hashes {
-                                if let Ok(Some(content_block)) =
-                                    chain_store.get_content_block(content_hash)
-                                {
+                                let content_lookup = chain_store.get_content_block(content_hash);
+                                if !matches!(content_lookup, Ok(Some(_))) {
+                                    debug!(
+                                        "[BLOCK] GETBLOCKS: omitting content block {} at height {} (not stored locally)",
+                                        hex::encode(&content_hash[..8]),
+                                        height
+                                    );
+                                }
+                                if let Ok(Some(content_block)) = content_lookup {
                                     debug!(
                                         "[BLOCK-SEND] Sending ContentBlock with {} actions, space_metadata={}",
                                         content_block.actions.len(),
@@ -3878,41 +3894,10 @@ impl MessageRouter {
             }
 
             for content_block in &parsed_content_blocks {
-                // Register space if CreateSpace action is present
-                if let Some(ref metadata) = content_block.space_metadata {
-                    for action in &content_block.actions {
-                        if action.action_type == crate::blocks::ActionType::CreateSpace {
-                            if let Some(space_id_32) = action.content_hash {
-                                let mut space_id_16 = [0u8; 16];
-                                space_id_16.copy_from_slice(&space_id_32[..16]);
-
-                                let space_info = crate::storage::SpaceInfo {
-                                    space_id: space_id_16,
-                                    name: metadata.name.clone(),
-                                    description: metadata.description.clone(),
-                                    created_at: action.timestamp,
-                                    creator: action.actor,
-                                    pow_work: action.pow_work,
-                                    // Private space fields (defaults for public spaces)
-                                    is_private: false,
-                                    encrypted_name: None,
-                                    creator_encrypted_key: None,
-                                    key_version: 0,
-                                };
-
-                                if let Err(e) = chain_store.register_space(&space_info) {
-                                    warn!("[BLOCK] Failed to register space: {}", e);
-                                } else {
-                                    info!(
-                                        "[BLOCK] Registered space {} ({})",
-                                        hex::encode(&space_id_16),
-                                        metadata.name
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+                // Side effects (space registration, sponsorship, reactions,
+                // engagements, renames) run once via
+                // reconcile_block_side_effects() after the root block is
+                // stored below — the single apply point for every ingest path.
 
                 // Check for duplicate actions before storing. Only a genuine
                 // cross-block re-inclusion (an action finalized at a DIFFERENT
@@ -3922,13 +3907,32 @@ impl MessageRouter {
                 // finalized) before the content arrived. Skipping it here left the
                 // content unstored and its side effects (sponsorship application,
                 // reactions) never ran, so a synced sponsor block never sponsored
-                // the identity on receivers. Process it instead; the side effects
-                // are idempotent (apply_sponsorship checks existence first).
+                // the identity on receivers.
+                //
+                // A different-height mark can also be STALE (fork block or
+                // pre-fix reorg that never unmarked). Verify against the
+                // canonical block at the recorded height: only skip when that
+                // block is not proven to lack the action — otherwise this
+                // block's content would be unstorable forever (the 30s
+                // content-backfill loop bug).
                 match chain_store.check_content_block_for_duplicates(content_block) {
                     Ok(duplicates)
-                        if duplicates.iter().any(|(_, h)| *h != block_height) =>
+                        if duplicates.iter().any(|(idx, h)| {
+                            *h != block_height
+                                && content_block.actions.get(*idx).is_some_and(|a| {
+                                    let ah = crate::blocks::builder::BlockBuilder::action_hash(a);
+                                    chain_store
+                                        .canonical_block_contains_action(*h, &ah)
+                                        .ok()
+                                        .flatten()
+                                        != Some(false)
+                                })
+                        }) =>
                     {
-                        let other = duplicates.iter().filter(|(_, h)| *h != block_height).count();
+                        let other = duplicates
+                            .iter()
+                            .filter(|(_, h)| *h != block_height)
+                            .count();
                         warn!(
                             "[BLOCK] Skipping content block: {} action(s) already finalized in another block",
                             other
@@ -3939,8 +3943,8 @@ impl MessageRouter {
                         warn!("[BLOCK] Failed to check for duplicate actions: {}", e);
                         // Continue anyway
                     }
-                    // No duplicates, or all finalized at this block's own height
-                    // (backfill) — fall through and store so side effects apply.
+                    // No duplicates, all finalized at this block's own height
+                    // (backfill), or only stale marks — fall through and store.
                     Ok(_) => {}
                 }
 
@@ -3966,16 +3970,8 @@ impl MessageRouter {
                         warn!("[BLOCK] Failed to mark actions as finalized: {}", e);
                     }
                     content_count_total += 1;
-                    // Extract and store reactions from Engage actions
-                    self.extract_reactions_from_block(content_block);
-                    // Track engagements in the engagement graph
-                    self.extract_engagements_from_block(content_block);
-                    // SPEC_13 Phase A: behavioral clustering (organic communities)
-                    self.process_behavioral_clustering(content_block);
-                    // SPEC_13 Phase 2: Process space-rename actions
-                    self.apply_rename_space_actions_from_block(content_block);
-                    // SPEC_11 Phase 6: Process on-chain sponsorship actions from synced blocks
-                    self.apply_sponsorship_actions_from_block(content_block);
+                    // Side effects run once via reconcile_block_side_effects()
+                    // after the root block is stored below.
                 }
             }
 
@@ -4005,6 +4001,11 @@ impl MessageRouter {
 
                     // Check for orphan blocks waiting for this block
                     self.process_orphans_for_block(&hash).await;
+
+                    // Single apply point: run this block's content-plane side
+                    // effects (idempotent; no-op when non-canonical or
+                    // incomplete — the sync-loop reconciliation pass retries).
+                    self.reconcile_block_side_effects(&root_block);
                 }
                 Err(e) => {
                     warn!("[BLOCK] Failed to store block: {}", e);
@@ -4742,12 +4743,186 @@ impl MessageRouter {
     ///
     /// Called from both `handle_block_data` and `handle_blocks` to ensure sponsorship
     /// records propagate to all nodes regardless of how blocks are received.
-    fn apply_sponsorship_actions_from_block(&self, content_block: &crate::blocks::ContentBlock) {
-        let sponsorship_store = match &self.sponsorship_store {
+    /// Register any spaces a content block creates (CreateSpace + metadata).
+    /// Idempotent upsert — safe to re-run; block-derived metadata overwrites
+    /// gossip-path placeholder names.
+    fn register_spaces_from_content_block(&self, content_block: &crate::blocks::ContentBlock) {
+        let chain_store = match &self.chain_store {
             Some(store) => store,
             None => return,
         };
+        let Some(ref metadata) = content_block.space_metadata else {
+            return;
+        };
+        for action in &content_block.actions {
+            if action.action_type != crate::blocks::ActionType::CreateSpace {
+                continue;
+            }
+            let Some(space_id_32) = action.content_hash else {
+                continue;
+            };
+            let mut space_id_16 = [0u8; 16];
+            space_id_16.copy_from_slice(&space_id_32[..16]);
 
+            let space_info = crate::storage::SpaceInfo {
+                space_id: space_id_16,
+                name: metadata.name.clone(),
+                description: metadata.description.clone(),
+                created_at: action.timestamp,
+                creator: action.actor,
+                pow_work: action.pow_work,
+                // Private space fields (defaults for public spaces)
+                is_private: false,
+                encrypted_name: None,
+                creator_encrypted_key: None,
+                key_version: 0,
+            };
+
+            if let Err(e) = chain_store.register_space(&space_info) {
+                warn!(
+                    "[BLOCK] Failed to register space {}: {}",
+                    hex::encode(&space_id_16[..8]),
+                    e
+                );
+            } else {
+                info!(
+                    "[BLOCK] Registered space '{}' ({})",
+                    metadata.name,
+                    hex::encode(&space_id_16[..8])
+                );
+            }
+        }
+    }
+
+    /// SINGLE deterministic apply point for a canonical block's content-plane
+    /// side effects (the content-apply-consistency redesign).
+    ///
+    /// Invariant: a canonical block's side effects run exactly once per node,
+    /// once its content bodies are all present — regardless of whether the
+    /// block was formed locally, received as a full block, processed as an
+    /// orphan, or backfilled header-first. Every block-ingest path calls this
+    /// after storing what it has; the sync-loop reconciliation pass retries
+    /// any canonical block that is still unapplied, which is what makes the
+    /// outcome deterministic across nodes.
+    ///
+    /// Application is two-stage (tracked in `ChainStore::side_effects_state`):
+    /// stage 1 runs the content effects (space registration, renames,
+    /// reactions, engagements, clustering, reply counts) exactly once — some
+    /// of these are increments and must not re-run; stage 2 runs the
+    /// idempotent sponsorship apply, which may be retried until the sponsor
+    /// chain has landed (transient skips leave the block at stage 1).
+    ///
+    /// Returns `true` once the block is fully applied (now or previously).
+    pub(crate) fn reconcile_block_side_effects(&self, root: &crate::blocks::RootBlock) -> bool {
+        let chain_store = match &self.chain_store {
+            Some(store) => store,
+            None => return false,
+        };
+        let root_hash = root.hash();
+        let height = root.height;
+
+        // Only canonical blocks get side effects.
+        match chain_store.get_root_hash_at_height(height) {
+            Ok(Some(canonical)) if canonical == root_hash => {}
+            _ => return false,
+        }
+
+        let state = chain_store.side_effects_state(&root_hash).unwrap_or(0);
+        if state >= 2 {
+            return true;
+        }
+
+        // Side effects only run on COMPLETE content — never half-apply a
+        // partially backfilled block.
+        match chain_store.root_content_complete(root) {
+            Ok(true) => {}
+            _ => return false,
+        }
+
+        // Collect the block's content blocks in claimed order (deterministic
+        // on every node).
+        let mut content_blocks = Vec::new();
+        for space_hash in &root.space_block_hashes {
+            let Ok(Some(space_block)) = chain_store.get_space_block(space_hash) else {
+                return false;
+            };
+            for content_hash in &space_block.content_block_hashes {
+                let Ok(Some(content_block)) = chain_store.get_content_block(content_hash) else {
+                    return false;
+                };
+                content_blocks.push(content_block);
+            }
+        }
+
+        // Stage 1: content effects, exactly once.
+        // NOTE: reply counts (aggregation cache) are deliberately NOT here —
+        // submit_reply increments them at RPC time on the origin node, so
+        // running them in reconcile would double-count locally authored
+        // replies. They stay on the handle_block_data receive path.
+        if state < 1 {
+            for content_block in &content_blocks {
+                self.register_spaces_from_content_block(content_block);
+                self.apply_rename_space_actions_from_block(content_block);
+                self.extract_reactions_from_block(content_block);
+                self.extract_engagements_from_block(content_block);
+                self.process_behavioral_clustering(content_block);
+                // Repair pass: (re-)mark this block's actions finalized at its
+                // canonical height, healing stale cross-height marks left by
+                // pre-fix reorgs.
+                if let Err(e) =
+                    chain_store.mark_content_block_actions_finalized(content_block, height)
+                {
+                    warn!("[RECONCILE] Failed to mark actions finalized: {}", e);
+                }
+            }
+            if let Err(e) = chain_store.set_side_effects_state(&root_hash, height, 1) {
+                warn!("[RECONCILE] Failed to persist stage-1 state: {}", e);
+            }
+        }
+
+        // Stage 2: sponsorship — idempotent, retried until the sponsor chain
+        // has landed.
+        let mut fully_applied = true;
+        for content_block in &content_blocks {
+            fully_applied &= self.apply_sponsorship_actions_from_block(content_block);
+        }
+
+        if fully_applied {
+            if let Err(e) = chain_store.set_side_effects_state(&root_hash, height, 2) {
+                warn!("[RECONCILE] Failed to persist applied state: {}", e);
+            } else {
+                info!(
+                    "[RECONCILE] Applied side effects for block {} at height {}",
+                    hex::encode(&root_hash[..8]),
+                    height
+                );
+            }
+        } else {
+            debug!(
+                "[RECONCILE] Block {} at height {} partially applied (sponsor chain pending) — will retry",
+                hex::encode(&root_hash[..8]),
+                height
+            );
+        }
+        fully_applied
+    }
+
+    /// Returns `true` when every sponsorship action either applied or was
+    /// skipped for a PERMANENT reason (bad signature, bad PoW, not in genesis
+    /// list, already exists). Returns `false` on a TRANSIENT skip — sponsor not
+    /// yet known/Active or a storage error — so the caller can leave the
+    /// block's side-effects-applied flag unset and the reconciliation pass
+    /// retries once earlier blocks have applied.
+    fn apply_sponsorship_actions_from_block(
+        &self,
+        content_block: &crate::blocks::ContentBlock,
+    ) -> bool {
+        let sponsorship_store = match &self.sponsorship_store {
+            Some(store) => store,
+            None => return true,
+        };
+
+        let mut fully_applied = true;
         for action in &content_block.actions {
             match action.action_type {
                 crate::blocks::ActionType::Sponsor => {
@@ -4783,7 +4958,10 @@ impl MessageRouter {
                             }
                         }
 
-                        // Phase 0 validation: Verify sponsor is Active in SponsorshipStore
+                        // Phase 0 validation: Verify sponsor is Active in SponsorshipStore.
+                        // Sponsor-not-yet-known is TRANSIENT: the sponsor's own
+                        // record may land when an earlier block's side effects
+                        // apply, so report partial application for a retry.
                         match sponsorship_store.get(&sponsor_pk) {
                             Ok(Some(sponsor_record)) => {
                                 if sponsor_record.status
@@ -4794,6 +4972,7 @@ impl MessageRouter {
                                         hex::encode(&sponsor_bytes[..8]),
                                         sponsor_record.status
                                     );
+                                    fully_applied = false;
                                     continue;
                                 }
                             }
@@ -4802,6 +4981,7 @@ impl MessageRouter {
                                     "[BLOCK] Sponsor {} not found in sponsorship store — skipping",
                                     hex::encode(&sponsor_bytes[..8])
                                 );
+                                fully_applied = false;
                                 continue;
                             }
                             Err(e) => {
@@ -4810,6 +4990,7 @@ impl MessageRouter {
                                     hex::encode(&sponsor_bytes[..8]),
                                     e
                                 );
+                                fully_applied = false;
                                 continue;
                             }
                         }
@@ -4868,6 +5049,7 @@ impl MessageRouter {
                                         hex::encode(&sponsee_bytes[..8]),
                                         e
                                     );
+                                    fully_applied = false;
                                 } else {
                                     log::info!(
                                         "[BLOCK] Applied on-chain sponsorship: {} sponsored by {} (depth={})",
@@ -4879,6 +5061,7 @@ impl MessageRouter {
                             }
                             Err(e) => {
                                 log::warn!("[BLOCK] Failed to check sponsorship existence: {}", e);
+                                fully_applied = false;
                             }
                         }
                     }
@@ -4960,6 +5143,7 @@ impl MessageRouter {
                                         hex::encode(&genesis_bytes[..8]),
                                         e
                                     );
+                                    fully_applied = false;
                                 } else {
                                     log::info!(
                                         "[BLOCK] Applied on-chain genesis registration: {}",
@@ -4972,6 +5156,7 @@ impl MessageRouter {
                                     "[BLOCK] Failed to check genesis identity existence: {}",
                                     e
                                 );
+                                fully_applied = false;
                             }
                         }
                     }
@@ -4979,6 +5164,7 @@ impl MessageRouter {
                 _ => {}
             }
         }
+        fully_applied
     }
 
     /// Handle GETBLOCKS_LOCATOR - find common ancestor using Bitcoin-style locator
@@ -6318,6 +6504,11 @@ impl MessageRouter {
 
                     // Check for orphan blocks waiting for this block
                     self.process_orphans_for_block(&hash).await;
+
+                    // Single apply point: this former previously never ran
+                    // side effects at all, so the forming node itself missed
+                    // its own block's sponsorships. Reconcile now.
+                    self.reconcile_block_side_effects(&root);
                 }
                 Err(e) => {
                     warn!("[BLOCKS] Failed to store root block: {}", e);
