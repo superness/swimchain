@@ -111,6 +111,8 @@ export interface ReplyResult {
     survival_probability?: number;
     is_protected?: boolean;
     time_since_engagement?: number;
+    /** Block height where this reply was finalized; null/absent while pending (tentative). */
+    block_height?: number | null;
 }
 export interface ReactionResult {
     emoji: string;

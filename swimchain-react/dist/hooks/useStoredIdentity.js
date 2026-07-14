@@ -13,6 +13,27 @@ import { hexToBytes, bytesToHex } from '../lib/utils';
 // Constants
 // =========================================================================
 const IDENTITY_STORAGE_KEY = 'swimchain-identity';
+// -------------------------------------------------------------------------
+// Same-tab sync
+// -------------------------------------------------------------------------
+// Every useStoredIdentity() call has its own useState, and the browser's
+// `storage` event only fires in OTHER tabs — so when one instance saves an
+// identity (e.g. the reef "Create an identity" button), sibling instances in
+// the SAME tab (notably the one inside useStoredKeypair) never re-read it and
+// stay null until a manual reload. That was the reef/chess "identity created
+// but the UI doesn't transition" bug. A tiny module-level pub-sub lets all
+// instances re-sync immediately on any same-tab save/clear.
+const identityListeners = new Set();
+function notifyIdentityChanged() {
+    identityListeners.forEach((fn) => {
+        try {
+            fn();
+        }
+        catch {
+            // A broken listener must not block the others.
+        }
+    });
+}
 // =========================================================================
 // Hooks
 // =========================================================================
@@ -32,27 +53,39 @@ export function useStoredIdentity() {
     const [identity, setIdentity] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
-    // Load from localStorage on mount
+    // Load from localStorage on mount, and re-sync whenever ANY instance in this
+    // tab saves/clears (same-tab pub-sub) or another tab does (storage event).
     useEffect(() => {
-        try {
-            const stored = localStorage.getItem(IDENTITY_STORAGE_KEY);
-            if (stored) {
-                const parsed = JSON.parse(stored);
-                setIdentity(parsed);
+        const resync = () => {
+            try {
+                const stored = localStorage.getItem(IDENTITY_STORAGE_KEY);
+                setIdentity(stored ? JSON.parse(stored) : null);
             }
-        }
-        catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to load identity');
-        }
-        finally {
-            setIsLoading(false);
-        }
+            catch (err) {
+                setError(err instanceof Error ? err.message : 'Failed to load identity');
+            }
+            finally {
+                setIsLoading(false);
+            }
+        };
+        resync();
+        identityListeners.add(resync);
+        const onStorage = (e) => {
+            if (e.key === IDENTITY_STORAGE_KEY)
+                resync();
+        };
+        window.addEventListener('storage', onStorage);
+        return () => {
+            identityListeners.delete(resync);
+            window.removeEventListener('storage', onStorage);
+        };
     }, []);
     const saveIdentity = useCallback((newIdentity) => {
         try {
             localStorage.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(newIdentity));
             setIdentity(newIdentity);
             setError(null);
+            notifyIdentityChanged(); // wake sibling instances (e.g. useStoredKeypair)
         }
         catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to save identity');
@@ -63,6 +96,7 @@ export function useStoredIdentity() {
             localStorage.removeItem(IDENTITY_STORAGE_KEY);
             setIdentity(null);
             setError(null);
+            notifyIdentityChanged();
         }
         catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to clear identity');

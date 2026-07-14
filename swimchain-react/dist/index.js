@@ -50,6 +50,8 @@ export { useStoredIdentity, useStoredKeypair, createNewIdentity, loadStoredIdent
 export { SwimchainRpc, getLocalConfig, LOCAL_TESTNET, LOCAL_REGTEST, LOCAL_MAINNET, TESTNET_SEED_SF, TESTNET_SEED_NYC, } from "./lib/rpc";
 // Action PoW (Argon2id)
 export { ActionType, computePow, createChallenge, createPostChallenge, createReplyChallenge, createEngageChallenge, createSpaceChallenge, solutionToRpcParams, getDifficulty, getConfig, estimateMiningTime, serializeChallenge, leadingZeros, hexToBytes, bytesToHex, sha256, generateNonceSpace, DIFFICULTY, TESTNET_DIFFICULTY, PRODUCTION_CONFIG, TESTNET_CONFIG, TEST_CONFIG, } from "./lib/action-pow";
+// Canonical action signing (Post / Reply / Edit) — the one preimage the node verifies
+export { signAction, actionSignaturePreimage, contentHashForPost, contentHashForReply, } from "./lib/signAction";
 // Caching utilities
 export { getMediaFromCache, setMediaInCache, getContentFromCache, setContentInCache, deleteContentFromCache, getFromMemory, setInMemory, invalidateMemory, getFromStorage, setInStorage, removeFromStorage, getCacheStats, clearDecryptedMediaCache, clearAllCaches, } from "./lib/cache";
 // Encryption utilities

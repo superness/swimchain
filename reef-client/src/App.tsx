@@ -10,6 +10,7 @@ import { Reef } from './Reef';
 import {
   REEF_SPACE,
   createRegion,
+  ensureSponsored,
   listRegions,
   loadRegion,
   submitReefMove,
@@ -43,6 +44,11 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [banner, setBanner] = useState<SeasonResult | null>(null);
   const lastSeenSeason = useRef<number | null>(null);
+  // Onboarding: a brand-new identity must be sponsored before it can post/move.
+  // We claim a standing auto-approve offer automatically (one-click play).
+  const [sponsored, setSponsored] = useState(false);
+  const [sponsorPhase, setSponsorPhase] = useState<string | null>(null);
+  const sponsoringRef = useRef(false);
 
   // Flash a champion banner when a season actually closes (not on first entry).
   useEffect(() => {
@@ -85,6 +91,28 @@ export function App() {
         : null,
     [publicKeyHex, address, sign]
   );
+
+  // Auto-sponsor once the keypair is ready: return early if already sponsored,
+  // otherwise claim a standing auto-approve offer and wait for the chain to
+  // record it. Runs once per identity (guarded by a ref).
+  useEffect(() => {
+    if (!rpc || !connected || !me || sponsored || sponsoringRef.current) return;
+    sponsoringRef.current = true;
+    setSponsorPhase('Checking your access…');
+    ensureSponsored(rpc, me, (phase) => setSponsorPhase(phase))
+      .then(() => {
+        setSponsored(true);
+        setSponsorPhase(null);
+        setError(null);
+      })
+      .catch((e) => {
+        setSponsorPhase(null);
+        setError(e instanceof Error ? e.message : 'sponsorship failed');
+      })
+      .finally(() => {
+        sponsoringRef.current = false;
+      });
+  }, [rpc, connected, me, sponsored]);
 
   // Reads require signature auth too, so wait until the keypair is ready — otherwise the
   // first fetch races ahead of auth and returns "Authentication required".
@@ -187,6 +215,40 @@ export function App() {
         </p>
         <button className="btn primary" onClick={newIdentity}>Create an identity</button>
         <p className="fine">Your keypair is generated and stored locally in this browser. It never leaves your device.</p>
+      </div>
+    );
+  }
+
+  // Identity exists but isn't sponsored yet — auto-sponsor is running (or hit a
+  // snag). The game needs sponsorship to post/move, so gate on it here rather
+  // than letting the first move fail with a raw node error.
+  if (!sponsored) {
+    return (
+      <div className="center col">
+        <h1>🪸 The Reef</h1>
+        {sponsorPhase && !error ? (
+          <>
+            <p className="muted">🌊 {sponsorPhase}…</p>
+            <p className="fine">
+              Getting you connected to the network so your coral is provably yours. One time only.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="muted">{error ?? 'Setting up your access…'}</p>
+            <button
+              className="btn primary"
+              onClick={() => {
+                setError(null);
+                setSponsored(false);
+                sponsoringRef.current = false;
+                setSponsorPhase('Retrying…');
+              }}
+            >
+              Try again
+            </button>
+          </>
+        )}
       </div>
     );
   }
