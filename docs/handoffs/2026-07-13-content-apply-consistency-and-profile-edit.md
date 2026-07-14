@@ -325,6 +325,46 @@ No node/client source change needed — deploy-process bug.
   reef/chess clients rebuilt + redeployed; chess-rpc-proxy restarted (node
   restarts rotate the RPC cookie).
 
+## Cross-client interaction test (2026-07-13 late night)
+
+Drove the PC feed client (swim-auto, node mode = genesis), the phone (adb),
+and the droplets (RPC) through posts, spaces, profile edits, and the full
+sponsorship UI loop. Results:
+
+**Latency (all through real mining + blocks + reconcile):**
+- PC post → visible on seed+bot+client2: within the first poll (≤~3min incl.
+  browser PoW). Phone post → all 3 droplets: **≤64s from tap** (incl. on-device
+  PoW). Both posts render in the opposite client's UI (phone shows the PC
+  post and vice versa).
+- Sponsorship UI loop: claim submitted on client2 (2 hops from genesis) →
+  **visible in the PC sponsor UI in 19s** (relay); approve in UI →
+  sponsored=true on all fleet nodes in ~75s.
+- Space create (post-fix): node acceptance → named registration on seed+bot
+  in **~23s**.
+- Profile edit (name+bio): saved in ~10s on PC incl. PoW; propagates on-chain
+  (post + body present on remotes) — but see the get_user_profile bug below.
+
+**Bugs found by the test (fixed same session):**
+- Genesis CreateSpace was dropped by the BUILDER filter and would have been
+  rejected by handle_blocks PHASE 2 (missing genesis fallback, sites 3+4) —
+  ec064653. "Latency Lab" (first attempt) died this way; "Latency Lab 2"
+  propagated fleet-wide after the fix.
+- Offer/invite modals sent min-PoW 0 which the node floors at 8 — every
+  default offer + every invite link failed (feed + forum modals, invite
+  hardcode) — 282dc49e.
+
+**Open findings:**
+- `get_user_profile` returns null on nodes that didn't author the profile
+  even when the profile post + body are present (its content_store iteration
+  filter misses synced items; the chain-indexed list_space_posts on the SAME
+  node returns the post). Cross-node profile display is broken until fixed —
+  methods.rs get_user_profile, compare space_id/body_inline handling vs the
+  chain index path.
+- Ops gotcha: restarting a node under an open node-mode client leaves the
+  page hammering with the STALE cookie → RPC auth lockout (429, 300s) that
+  then blocks even the fresh cookie. Reload the client after node restarts;
+  a node restart also clears the limiter.
+
 ## Caveats / follow-ups
 
 - Historical blocks (pre-upgrade) have no applied flag; the reconciliation
