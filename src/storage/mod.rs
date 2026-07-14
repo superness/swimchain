@@ -72,6 +72,7 @@ pub mod manager;
 pub mod manifest;
 pub mod membership;
 pub mod metrics;
+pub mod prefs;
 
 // Re-export main types
 pub use aggregation_cache::{AggregationCache, CacheStats, ContentAggregation, SpaceAggregation};

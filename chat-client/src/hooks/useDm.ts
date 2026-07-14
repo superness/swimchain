@@ -62,56 +62,54 @@ export function useDm(): UseDmResult {
     [reload]
   );
 
-  // Node mode: poll the node for DM requests addressed to us and surface them as
-  // pending_received conversations (deduped against what we already track).
+  // Node mode: the node is the authoritative conversation list (R2).
+  // `list_dm_conversations` returns every DM record we're a party to — sent and
+  // received, all statuses — so the sidebar rebuilds from node state on any
+  // profile/device. localStorage keeps only ephemeral UI state (unread counts,
+  // last activity) and doubles as a cache for spaceId → peer lookups.
   useEffect(() => {
     if (!isNode || !rpc || !connected || !myPubKey) return;
     let cancelled = false;
     const poll = async () => {
       try {
-        const [incoming, outgoing] = await Promise.all([
-          rpc.getPendingDmRequests({ user: myPubKey }),
-          rpc.getSentDmRequests({ user: myPubKey }).catch(() => ({ requests: [] })),
-        ]);
+        const res = await rpc.call<{
+          conversations: Array<{
+            other: string;
+            direction: 'sent' | 'received';
+            status: 'pending' | 'accepted' | 'declined';
+            space_id: string | null;
+            created_at: number;
+          }>;
+        }>('list_dm_conversations', { user: myPubKey });
         if (cancelled) return;
-        const existing = loadDmList();
+        const overlay = loadDmList();
         let changed = false;
 
-        // Incoming requests → surface as pending_received.
-        for (const req of incoming.requests) {
-          const other = req.requester;
-          const cur = existing.find(e => e.otherPk.toLowerCase() === other.toLowerCase());
-          // Never downgrade an already-active conversation back to a request.
-          if (cur && cur.status === 'active') continue;
+        for (const conv of res.conversations) {
+          if (conv.status === 'declined') {
+            if (overlay.some(e => e.otherPk.toLowerCase() === conv.other.toLowerCase())) {
+              removeDmEntry(conv.other);
+              changed = true;
+            }
+            continue;
+          }
+          const status: DmEntry['status'] =
+            conv.status === 'accepted'
+              ? 'active'
+              : conv.direction === 'sent'
+                ? 'pending_sent'
+                : 'pending_received';
+          const cur = overlay.find(e => e.otherPk.toLowerCase() === conv.other.toLowerCase());
+          if (cur && cur.status === status && (cur.spaceId || !conv.space_id)) continue;
           upsertDmEntry({
-            otherPk: other,
-            spaceId: cur?.spaceId ?? '',
-            status: 'pending_received',
-            createdAt: (req.created_at ?? 0) * 1000 || Date.now(),
-            unreadCount: cur?.unreadCount ?? 1,
+            otherPk: conv.other,
+            spaceId: conv.space_id ?? cur?.spaceId ?? '',
+            status,
+            createdAt: cur?.createdAt ?? ((conv.created_at ?? 0) * 1000 || Date.now()),
+            lastActivity: cur?.lastActivity,
+            unreadCount: cur?.unreadCount ?? (status === 'pending_received' ? 1 : 0),
           });
           changed = true;
-        }
-
-        // Outgoing requests: accepted → active; declined → drop.
-        for (const req of outgoing.requests) {
-          const other = req.recipient;
-          const cur = existing.find(e => e.otherPk.toLowerCase() === other.toLowerCase());
-          if (req.status === 'accepted') {
-            if (cur?.status === 'active') continue;
-            upsertDmEntry({
-              otherPk: other,
-              spaceId: req.space_id ?? cur?.spaceId ?? '',
-              status: 'active',
-              createdAt: cur?.createdAt ?? ((req.created_at ?? 0) * 1000 || Date.now()),
-              lastActivity: Date.now(),
-              unreadCount: cur?.unreadCount ?? 0,
-            });
-            changed = true;
-          } else if (req.status === 'declined' && cur && cur.status !== 'active') {
-            removeDmEntry(other);
-            changed = true;
-          }
         }
 
         if (changed) reload();

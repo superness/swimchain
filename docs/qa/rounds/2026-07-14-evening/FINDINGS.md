@@ -75,11 +75,17 @@ then, every social surface leaks gibberish.
 loss").** As qa2 — whose node still holds the round-2 DM space and its key —
 a fresh browser profile shows **"No DMs yet"**. The DM list lives only in
 `swimchain-chat-dms` localStorage; the node has the space, the membership, and
-the key, but no client can rediscover a DM from node state. Any profile
-wipe/new machine silently orphans every DM. Same store powers follows and
-saved posts (wiki namespaces stay unreachable — wiki's empty-state promise
-"follow spaces to see them here" is unfulfillable from inside the bundle).
-Needs the node-side prefs/DM-index store (design item, unchanged from N4).
+the key, but no RPC returns DM spaces (`get_my_private_spaces` filters them
+out on purpose), so no client can rediscover a DM from node state. Any profile
+wipe/new machine silently orphans every DM. Scope (corrected 2026-07-14
+evening): exactly three localStorage-where-the-node-should-answer stores —
+chat's DM list, feed's follows, feed's saved posts. **Wiki is NOT part of
+R2**: its namespaces are `@wiki:` app-class spaces from list_spaces, a world
+disjoint from social spaces; follows were never part of that mechanism. The
+"follow spaces to see them as wiki namespaces" empty-state string was stale
+copy describing a design that doesn't exist (fixed this round), and round 2's
+"wiki namespaces unreachable" claim is retracted — they appear as soon as a
+@wiki: space exists on the chain (no create flow in the wiki client yet).
 
 **R3 — Search cannot find spaces by name. FIXED same day.** `search("commons")`
 → 0 results with a space literally named "The Commons" holding 24 posts on the

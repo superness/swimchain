@@ -604,6 +604,37 @@ impl MembershipStore {
         Ok(out)
     }
 
+    /// Every DM record this user is a party to (sent or received, all statuses).
+    /// This is the durable conversation list: clients rebuild their DM sidebar
+    /// from it instead of trusting a browser-local cache (R2 — a profile wipe
+    /// used to orphan DMs whose spaces and keys this node still holds).
+    pub fn list_dm_records(
+        &self,
+        user_pk: &[u8; 32],
+    ) -> Result<Vec<DMRequestRecord>, StorageError> {
+        let mut out = Vec::new();
+        // Sent (primary key = requester||recipient, so prefix = user).
+        for result in self.dm_requests.scan_prefix(user_pk) {
+            let (_, data) = result?;
+            let rec: DMRequestRecord = bincode::deserialize(&data)?;
+            if &rec.requester_pk == user_pk {
+                out.push(rec);
+            }
+        }
+        // Received (reverse index = recipient||requester).
+        for result in self.dm_requests_by_recipient.scan_prefix(user_pk) {
+            let (key, _) = result?;
+            if key.len() >= 64 {
+                let mut requester = [0u8; 32];
+                requester.copy_from_slice(&key[32..64]);
+                if let Some(rec) = self.get_dm_request(&requester, user_pk)? {
+                    out.push(rec);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Check if a DM request exists between two users
     pub fn dm_request_exists(
         &self,

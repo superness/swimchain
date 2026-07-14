@@ -514,6 +514,8 @@ pub struct NodeRef {
     pub sponsorship_manager: Option<Arc<crate::sponsorship::manager::SponsorshipManager>>,
     /// Membership store for private spaces (DMs, group chats)
     pub membership_store: Option<Arc<MembershipStore>>,
+    /// Per-identity preference store (follows, saved posts) — node-authoritative (R2)
+    pub prefs_store: Option<Arc<crate::storage::prefs::PrefsStore>>,
     /// Sponsorship store for identity chain enforcement
     pub sponsorship_store: Option<Arc<crate::sponsorship::storage::SponsorshipStore>>,
     /// Offer store for public sponsorship offer lifecycle
@@ -1142,6 +1144,13 @@ impl RpcMethods {
             "get_my_invites" => self.get_my_invites(params, id).await,
             "get_space_members" => self.get_space_members(params, id).await,
             "get_my_private_spaces" => self.get_my_private_spaces(params, id).await,
+            "list_dm_conversations" => self.list_dm_conversations(params, id).await,
+            "follow_space" => self.follow_space(params, id).await,
+            "unfollow_space" => self.unfollow_space(params, id).await,
+            "list_followed_spaces" => self.list_followed_spaces(params, id).await,
+            "save_post" => self.save_post(params, id).await,
+            "unsave_post" => self.unsave_post(params, id).await,
+            "list_saved_posts" => self.list_saved_posts(params, id).await,
             "get_pending_dm_requests" => self.get_pending_dm_requests(params, id).await,
             "get_sent_dm_requests" => self.get_sent_dm_requests(params, id).await,
             "encode_address" => self.encode_address(params, id).await,
@@ -11143,6 +11152,275 @@ impl RpcMethods {
     }
 
     /// Get all private spaces a user is a member of
+    /// Parse a `user` param as a 32-byte hex public key.
+    fn parse_user_pk(params: &Value) -> Result<[u8; 32], String> {
+        let user = params
+            .get("user")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'user' (32-byte hex public key)")?;
+        let bytes = hex::decode(user).map_err(|_| "Invalid user: must be hex")?;
+        bytes
+            .try_into()
+            .map_err(|_| "Invalid user: must be 32 bytes".to_string())
+    }
+
+    /// Parse a `content_id` param (with or without the `sha256:` prefix) to 32 bytes.
+    fn parse_content_id_param(params: &Value) -> Result<[u8; 32], String> {
+        let raw = params
+            .get("content_id")
+            .and_then(|v| v.as_str())
+            .ok_or("Missing 'content_id'")?;
+        let hex_part = raw.strip_prefix("sha256:").unwrap_or(raw);
+        let bytes = hex::decode(hex_part).map_err(|_| "Invalid content_id: must be hex")?;
+        bytes
+            .try_into()
+            .map_err(|_| "Invalid content_id: must be 32 bytes".to_string())
+    }
+
+    /// Every DM conversation this identity is a party to — sent and received,
+    /// all statuses. The durable DM list (R2): clients rebuild their sidebar
+    /// from this instead of a browser-local cache, so DMs survive profile
+    /// wipes and new devices as long as the node has the records.
+    async fn list_dm_conversations(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let membership_store = match &self.node.membership_store {
+            Some(store) => store,
+            None => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    "Membership store not available",
+                    id,
+                );
+            }
+        };
+        let records = match membership_store.list_dm_records(&user_pk) {
+            Ok(r) => r,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InternalError,
+                    &format!("Failed to list DM records: {}", e),
+                    id,
+                );
+            }
+        };
+        let conversations: Vec<Value> = records
+            .iter()
+            .map(|rec| {
+                let sent = rec.requester_pk == user_pk;
+                let other = if sent {
+                    rec.recipient_pk
+                } else {
+                    rec.requester_pk
+                };
+                let status = match rec.status {
+                    crate::storage::membership::DMRequestStatus::Pending => "pending",
+                    crate::storage::membership::DMRequestStatus::Accepted => "accepted",
+                    crate::storage::membership::DMRequestStatus::Declined => "declined",
+                };
+                serde_json::json!({
+                    "other": hex::encode(other),
+                    "other_address": crate::crypto::address::encode_address_from_pubkey(
+                        &crate::types::identity::PublicKey(other)
+                    ),
+                    "direction": if sent { "sent" } else { "received" },
+                    "status": status,
+                    "space_id": rec.space_id.map(|s| hex::encode(s)),
+                    "space_id_bech32": rec.space_id.map(|s| encode_space_id(&s)),
+                    "created_at": rec.created_at,
+                })
+            })
+            .collect();
+        RpcResponse::success(serde_json::json!({ "conversations": conversations }), id)
+    }
+
+    fn prefs_store_or_err(&self, id: &Value) -> Result<&Arc<crate::storage::prefs::PrefsStore>, RpcResponse> {
+        self.node.prefs_store.as_ref().ok_or_else(|| {
+            RpcResponse::error(
+                RpcErrorCode::InternalError,
+                "Prefs store not available",
+                id.clone(),
+            )
+        })
+    }
+
+    /// Follow a space for this identity (node-authoritative prefs, R2).
+    async fn follow_space(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let space_id = match params
+            .get("space_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'space_id'".to_string())
+            .and_then(|s| decode_space_id(s))
+        {
+            Ok(s) => s,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        match prefs.follow_space(&user_pk, &space_id, now) {
+            Ok(()) => RpcResponse::success(serde_json::json!({ "success": true }), id),
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// Unfollow a space for this identity.
+    async fn unfollow_space(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let space_id = match params
+            .get("space_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'space_id'".to_string())
+            .and_then(|s| decode_space_id(s))
+        {
+            Ok(s) => s,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        match prefs.unfollow_space(&user_pk, &space_id) {
+            Ok(()) => RpcResponse::success(serde_json::json!({ "success": true }), id),
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// List the spaces this identity follows.
+    ///
+    /// First call for the NODE's own identity performs a one-time import of the
+    /// legacy `followed_spaces` list from config.toml (guarded by a meta marker
+    /// so an unfollow doesn't resurrect on the next call).
+    async fn list_followed_spaces(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+
+        if user_pk == self.node.keypair.public_key.0
+            && !prefs.config_follows_imported().unwrap_or(true)
+        {
+            if let Ok(config) = crate::cli::config::CliConfig::load_from_dir(&self.node.data_dir) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                for space in &config.followed_spaces {
+                    if let Ok(space_id) = decode_space_id(space) {
+                        let _ = prefs.follow_space(&user_pk, &space_id, now);
+                    }
+                }
+            }
+            let _ = prefs.mark_config_follows_imported();
+        }
+
+        match prefs.followed_spaces(&user_pk) {
+            Ok(follows) => {
+                let spaces: Vec<Value> = follows
+                    .iter()
+                    .map(|(space_id, ts)| {
+                        serde_json::json!({
+                            "space_id": encode_space_id(space_id),
+                            "space_id_hex": hex::encode(space_id),
+                            "followed_at": ts,
+                        })
+                    })
+                    .collect();
+                RpcResponse::success(serde_json::json!({ "spaces": spaces }), id)
+            }
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// Save a post for this identity.
+    async fn save_post(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let content_id = match Self::parse_content_id_param(&params) {
+            Ok(c) => c,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        match prefs.save_post(&user_pk, &content_id, now) {
+            Ok(()) => RpcResponse::success(serde_json::json!({ "success": true }), id),
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// Unsave a post for this identity.
+    async fn unsave_post(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let content_id = match Self::parse_content_id_param(&params) {
+            Ok(c) => c,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        match prefs.unsave_post(&user_pk, &content_id) {
+            Ok(()) => RpcResponse::success(serde_json::json!({ "success": true }), id),
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// List this identity's saved posts (newest save first).
+    async fn list_saved_posts(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        match prefs.saved_posts(&user_pk) {
+            Ok(saved) => {
+                let posts: Vec<Value> = saved
+                    .iter()
+                    .map(|(content_id, ts)| {
+                        serde_json::json!({
+                            "content_id": format!("sha256:{}", hex::encode(content_id)),
+                            "saved_at": ts,
+                        })
+                    })
+                    .collect();
+                RpcResponse::success(serde_json::json!({ "posts": posts }), id)
+            }
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
     async fn get_my_private_spaces(&self, params: Value, id: Value) -> RpcResponse {
         let params: GetMyPrivateSpacesParams = match serde_json::from_value(params) {
             Ok(p) => p,

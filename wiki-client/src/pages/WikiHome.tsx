@@ -76,7 +76,9 @@ export function WikiHome(): JSX.Element {
         {!nsLoading && !nsError && namespaces.length === 0 && (
           <div className="wiki-empty">
             <div className="wiki-empty__title">No namespaces yet</div>
-            <p>Follow spaces on your node to see them as wiki namespaces.</p>
+            {/* Namespaces are @wiki: app-class spaces synced from the network —
+                follows play no part, and this client has no create flow yet. */}
+            <p>No wiki namespaces exist on this network yet. They'll appear here as they sync.</p>
           </div>
         )}
 

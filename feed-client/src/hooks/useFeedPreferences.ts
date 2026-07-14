@@ -9,6 +9,8 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { FeedSource, FeedPreferences, StoredFeedPreferences } from '../types/feed';
 import { useStoredIdentity } from './useStoredIdentity';
 import { useParentRpcConfig } from './useParentRpcConfig';
+import { useRpc } from './useRpc';
+import { useFeedIdentity } from './useFeedIdentity';
 
 const STORAGE_KEY_PREFIX = 'feed_prefs_';
 const CURRENT_VERSION = 1;
@@ -22,6 +24,82 @@ function getStorageKey(userPkHex: string): string {
 
 /** Same-document event fired whenever any hook instance saves preferences. */
 const PREFS_CHANGED_EVENT = 'swimchain:feed-preferences-changed';
+
+/**
+ * Node-backed prefs sync (R2). The node's prefs store is the durable source of
+ * truth for followed spaces and saved posts; localStorage is a write-through
+ * cache of it (plus purely-local metadata: display names, mutes, UI settings,
+ * followed users). Once per session per identity, pull the node's lists, push
+ * any local-only entries up (one-time migration of pre-R2 localStorage state),
+ * and write the merged result back to localStorage so every hook instance —
+ * unchanged — sees it.
+ */
+const nodeSyncStarted = new Set<string>();
+
+interface PrefsRpc {
+  call<T = unknown>(method: string, params: Record<string, unknown>): Promise<T>;
+}
+
+async function syncPrefsWithNode(rpc: PrefsRpc, userPkHex: string, prefsKey: string): Promise<boolean> {
+  const [followRes, savedRes] = await Promise.all([
+    rpc.call<{ spaces: Array<{ space_id: string; space_id_hex: string; followed_at: number }> }>(
+      'list_followed_spaces',
+      { user: userPkHex }
+    ),
+    rpc.call<{ posts: Array<{ content_id: string; saved_at: number }> }>('list_saved_posts', {
+      user: userPkHex,
+    }),
+  ]);
+
+  const local = loadPreferences(prefsKey);
+  // The node returns bech32 + hex forms; local entries may hold either.
+  const nodeFollowIds = new Set(
+    followRes.spaces.flatMap(s => [s.space_id, s.space_id_hex])
+  );
+  const nodeSavedIds = new Set(savedRes.posts.map(p => p.content_id));
+
+  // Push local-only entries up (migration of pre-R2 localStorage state).
+  for (const s of local.followedSpaces) {
+    if (s.id && !nodeFollowIds.has(s.id)) {
+      await rpc.call('follow_space', { user: userPkHex, space_id: s.id }).catch(() => undefined);
+    }
+  }
+  for (const postId of local.savedPosts) {
+    if (postId && !nodeSavedIds.has(postId)) {
+      await rpc.call('save_post', { user: userPkHex, content_id: postId }).catch(() => undefined);
+    }
+  }
+
+  // Merge node entries into the local cache, keeping local metadata
+  // (displayName, muted) for spaces we already knew about.
+  const byId = new Map(local.followedSpaces.map(s => [s.id, s]));
+  const mergedSpaces: FeedSource[] = followRes.spaces.map(s => {
+    const existing = byId.get(s.space_id) ?? byId.get(s.space_id_hex);
+    return existing
+      ? { ...existing, id: s.space_id }
+      : {
+          type: 'space' as const,
+          id: s.space_id,
+          addedAt: (s.followed_at || 0) * 1000,
+          muted: false,
+          notifications: true,
+        };
+  });
+  // Local-only follows we just pushed stay in the list.
+  for (const s of local.followedSpaces) {
+    if (s.id && !nodeFollowIds.has(s.id) && !mergedSpaces.some(m => m.id === s.id)) {
+      mergedSpaces.push(s);
+    }
+  }
+  const mergedSaved = Array.from(new Set([...savedRes.posts.map(p => p.content_id), ...local.savedPosts]));
+
+  savePreferences(prefsKey, {
+    ...local,
+    followedSpaces: mergedSpaces,
+    savedPosts: mergedSaved,
+  });
+  return true;
+}
 
 /**
  * Default preferences for new users
@@ -141,6 +219,8 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
   // Subscribing hook (not getParentConfig()) so prefsKey recomputes when the
   // desktop shell's config arrives async via postMessage after first render.
   const parentConfig = useParentRpcConfig();
+  const { rpc, connected } = useRpc();
+  const { publicKey: identityPubKey } = useFeedIdentity();
   const [preferences, setPreferences] = useState<FeedPreferences>(getDefaultPreferences);
   const [loading, setLoading] = useState(true);
 
@@ -174,6 +254,33 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
     window.addEventListener(PREFS_CHANGED_EVENT, onChanged);
     return () => window.removeEventListener(PREFS_CHANGED_EVENT, onChanged);
   }, [prefsKey]);
+
+  // Pull the node's follows/saves once per session per identity (R2): the node
+  // is durable, localStorage is the cache — so a fresh browser profile
+  // rehydrates instead of showing an empty feed and losing saved posts.
+  useEffect(() => {
+    if (!rpc || !connected || !identityPubKey || !prefsKey) return;
+    if (nodeSyncStarted.has(identityPubKey)) return;
+    nodeSyncStarted.add(identityPubKey);
+    syncPrefsWithNode(rpc, identityPubKey, prefsKey)
+      .then(() => window.dispatchEvent(new CustomEvent(PREFS_CHANGED_EVENT)))
+      .catch(() => {
+        // Node unreachable this attempt — allow a retry on next mount.
+        nodeSyncStarted.delete(identityPubKey);
+      });
+  }, [rpc, connected, identityPubKey, prefsKey]);
+
+  // Mirror a prefs mutation to the node (fire-and-forget: the local update is
+  // already applied; the node is eventually consistent for durability).
+  const mirrorToNode = useCallback(
+    (method: string, params: Record<string, unknown>) => {
+      if (!rpc || !identityPubKey) return;
+      rpc.call(method, { user: identityPubKey, ...params }).catch((e: unknown) => {
+        console.warn(`[FeedPrefs] ${method} did not reach the node:`, e);
+      });
+    },
+    [rpc, identityPubKey]
+  );
 
   // Helper to save preferences
   const persist = useCallback((newPrefs: FeedPreferences) => {
@@ -211,7 +318,8 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
       persist(newPrefs);
       return newPrefs;
     });
-  }, [persist]);
+    mirrorToNode('follow_space', { space_id: spaceId });
+  }, [persist, mirrorToNode]);
 
   const unfollowSpace = useCallback((spaceId: string) => {
     setPreferences(prev => {
@@ -222,7 +330,8 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
       persist(newPrefs);
       return newPrefs;
     });
-  }, [persist]);
+    mirrorToNode('unfollow_space', { space_id: spaceId });
+  }, [persist, mirrorToNode]);
 
   const muteSpace = useCallback((spaceId: string, muted: boolean) => {
     setPreferences(prev => {
@@ -313,7 +422,8 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
       persist(newPrefs);
       return newPrefs;
     });
-  }, [persist]);
+    mirrorToNode('save_post', { content_id: postId });
+  }, [persist, mirrorToNode]);
 
   const unsavePost = useCallback((postId: string) => {
     setPreferences(prev => {
@@ -324,7 +434,8 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
       persist(newPrefs);
       return newPrefs;
     });
-  }, [persist]);
+    mirrorToNode('unsave_post', { content_id: postId });
+  }, [persist, mirrorToNode]);
 
   const isPostSaved = useCallback((postId: string) => {
     return preferences.savedPosts.includes(postId);

@@ -99,6 +99,8 @@ pub struct NodeManager {
     /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5).
     reputation_store: Option<Arc<ReputationStore>>,
     membership_store: Option<Arc<MembershipStore>>,
+    /// Per-identity preference store (follows, saved posts) — node-authoritative (R2)
+    prefs_store: Option<Arc<crate::storage::prefs::PrefsStore>>,
     sponsorship_store: Option<Arc<SponsorshipStore>>,
     /// Sponsorship penalty manager (SPEC_11) — node-local penalty policy
     sponsorship_manager: Option<Arc<crate::sponsorship::manager::SponsorshipManager>>,
@@ -238,6 +240,7 @@ impl NodeManager {
             spam_attestation_store: None,
             reputation_store: None,
             membership_store: None,
+            prefs_store: None,
             sponsorship_store: None,
             sponsorship_manager: None,
             offer_store: None,
@@ -811,6 +814,18 @@ impl NodeManager {
             }
             Err(e) => {
                 warn!("[MEMBERSHIP] Failed to open membership database: {}", e);
+            }
+        }
+
+        // 4.5.3c-2. Initialize per-identity prefs store (follows, saved posts — R2)
+        let prefs_path = self.config.data_dir.join("prefs");
+        match crate::storage::prefs::PrefsStore::open(&prefs_path) {
+            Ok(prefs_store) => {
+                self.prefs_store = Some(Arc::new(prefs_store));
+                info!("[PREFS] Preference store initialized");
+            }
+            Err(e) => {
+                warn!("[PREFS] Failed to open prefs database: {}", e);
             }
         }
 
@@ -1916,6 +1931,7 @@ impl NodeManager {
             reputation_store: self.reputation_store.clone(),
             sponsorship_manager: self.sponsorship_manager.clone(),
             membership_store: self.membership_store.clone(),
+            prefs_store: self.prefs_store.clone(),
             sponsorship_store: self.sponsorship_store.clone(),
             offer_store: self.offer_store.clone(),
             achievement_service: self.achievement_service.clone(),
