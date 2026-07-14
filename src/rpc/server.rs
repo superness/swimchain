@@ -485,6 +485,13 @@ async fn handle_request(
         "reject_sponsorship_claim",
         "list_my_sponsorship_offers",
         "get_sponsorship_offer", // Alias used by forum-client
+        // Spam attestations (SPEC_12) — same rationale as sponsorship writes:
+        // the attestation carries a self-verifying signature + PoW in params, so
+        // it needs no cookie. Without this a browser client's Report button
+        // 401'd on the write (get_spam_status is read-only public data).
+        "submit_spam_attestation",
+        "submit_counter_attestation",
+        "get_spam_status",
     ];
 
     // In regtest mode, exempt all read-only methods from auth for easier testing
