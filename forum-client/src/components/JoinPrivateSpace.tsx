@@ -9,6 +9,7 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSpaceInvites } from '../hooks/useRpc';
 import { isInIframe } from '../hooks/useParentRpcConfig';
+import './JoinPrivateSpace.css';
 
 export function JoinPrivateSpace(): JSX.Element | null {
   const { redeem } = useSpaceInvites();

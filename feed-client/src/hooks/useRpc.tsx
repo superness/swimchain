@@ -419,7 +419,7 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       const transformedSpaces: Space[] = namedSpaces.map(s => ({
         id: s.space_id,
         name: s.name ?? s.space_id.substring(0, 12) + '...', // Use space_id prefix if no name
-        description: `${s.post_count} posts`,
+        description: `${s.post_count} ${s.post_count === 1 ? 'post' : 'posts'}`,
         creator: '', // Not tracked in RPC response
         createdAt: s.last_activity ?? 0, // Use last activity as proxy
         activePostCount: s.post_count, // No separate active count from RPC
@@ -479,6 +479,9 @@ function contentToThread(
   content: {
     content_id: string;
     space_id: string;
+    // bech32m sp1… form (get_content only) — matches list_spaces ids, so the
+    // space name resolves and links stay in one id form.
+    space_id_bech32?: string | null;
     author_id: string;
     title: string | null;
     body: string | null;
@@ -565,7 +568,7 @@ function contentToThread(
 
   return {
     id: content.content_id,
-    spaceId: content.space_id,
+    spaceId: content.space_id_bech32 ?? content.space_id,
     author: content.author_id,
     displayName: content.display_name ?? undefined,
     title: derivedTitle,

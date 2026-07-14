@@ -6,7 +6,7 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpaceIds, isPrivateCiphertext, stripTitleSeparator, useMediaUpload } from '../hooks/useRpc';
+import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpaceIds, useSpaces, isPrivateCiphertext, stripTitleSeparator, useMediaUpload } from '../hooks/useRpc';
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useBlocklist } from '../hooks/useBlocklist';
@@ -203,6 +203,13 @@ export function Post(): JSX.Element {
   const { profile: postAuthorProfile } = useUserProfile(post?.author);
   const postAuthorName = postAuthorProfile?.info?.displayName
     ?? (post ? truncateAddress(post.author) : '');
+
+  // Resolve the space chip to its registered name (M1 — the detail header showed
+  // the raw zero-padded space id while Discover and the space page resolve it).
+  const { spaces } = useSpaces();
+  const spaceName = post?.spaceId
+    ? spaces.find((s) => s.id === post.spaceId)?.name
+    : undefined;
 
   const { identity, hasValidIdentity, mode } = useIdentityContext();
   // Node-managed private-space crypto (desktop mode): encrypt/decrypt via the node.
@@ -475,7 +482,7 @@ export function Post(): JSX.Element {
                 to={`/space/${post.spaceId}`}
                 className="post-detail__space"
               >
-                in {truncateAddress(post.spaceId)}
+                in {spaceName || truncateAddress(post.spaceId)}
               </Link>
             )}
           </div>

@@ -512,7 +512,7 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       const transformedSpaces: Space[] = result.spaces.map(s => ({
         id: s.space_id,
         name: s.name ?? s.space_id.substring(0, 12) + '...', // Use space_id prefix if no name
-        description: `${s.post_count} posts`,
+        description: `${s.post_count} ${s.post_count === 1 ? 'post' : 'posts'}`,
         creator: '', // Not tracked in RPC response
         createdAt: s.last_activity ?? 0, // Use last activity as proxy
         activePostCount: s.post_count, // No separate active count from RPC

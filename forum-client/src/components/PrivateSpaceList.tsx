@@ -47,9 +47,12 @@ export function PrivateSpaceList(): JSX.Element {
       const decrypted: DecryptedSpace[] = [];
 
       for (const space of spaces) {
-        let decryptedName: string | null = null;
+        // Node-managed mode: the node holds the key and returns the name
+        // pre-decrypted — browser-side key lookup below would find nothing and
+        // every space rendered as the generic "Private Space" label.
+        let decryptedName: string | null = space.name ?? null;
 
-        if (space.encryptedName) {
+        if (!decryptedName && space.encryptedName) {
           const spaceKey = getSpaceKey(space.spaceId);
           if (spaceKey) {
             try {
@@ -63,7 +66,9 @@ export function PrivateSpaceList(): JSX.Element {
 
         decrypted.push({
           ...space,
-          decryptedName: decryptedName || `Private Space`,
+          // Disambiguate the no-key fallback — two spaces both labeled
+          // "Private Space" are indistinguishable in the sidebar.
+          decryptedName: decryptedName || `Private Space ${space.spaceIdBech32.slice(3, 9)}`,
         });
       }
 

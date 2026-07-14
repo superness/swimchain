@@ -94,8 +94,10 @@ export function useMessages(
 
       // Add original post as the first message if it has content
       if (postResult && (postResult.title || postResult.body)) {
+        // Plain text — MessageItem has no markdown renderer, so `**title**`
+        // would show its literal asterisks.
         const postContent = postResult.title
-          ? `**${postResult.title}**\n\n${postResult.body || ''}`
+          ? `${postResult.title}\n\n${postResult.body || ''}`
           : postResult.body || '';
 
         transformedMessages.push({

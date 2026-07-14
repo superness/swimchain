@@ -36,7 +36,9 @@ function ThreadCard({ thread, decrypted }: { thread: Thread; decrypted?: { title
 
   // Prefer node-decrypted content for private posts; fall back to raw fields.
   const displayTitle = decrypted?.title || thread.title;
-  const displayBody = decrypted?.body ?? thread.content;
+  // The node stores bodies as `title\n\nbody`; strip the prefix or the title
+  // renders twice (once as the card header, again as the excerpt's first line).
+  const displayBody = decrypted?.body ?? stripTitleSeparator(thread.content ?? '');
   const stillEncrypted = !decrypted && isPrivateCiphertext(thread.content);
 
   return (

@@ -475,8 +475,12 @@ pub struct GetContentResult {
     pub content_type: String,
     /// Author ID (bech32)
     pub author_id: String,
-    /// Space ID (bech32)
+    /// Space ID (zero-padded hex; kept for backward compatibility)
     pub space_id: String,
+    /// Space ID in bech32m `sp1…` form — matches list_spaces / list_space_posts,
+    /// so clients can resolve names and build links without converting the hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_id_bech32: Option<String>,
     /// Parent ID (for replies)
     pub parent_id: Option<String>,
     /// Creation timestamp

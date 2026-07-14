@@ -4291,11 +4291,15 @@ impl RpcMethods {
                 item.last_engagement
             };
 
+            let space_id_16: [u8; 16] = item.space_id.as_bytes()[..16]
+                .try_into()
+                .expect("SpaceId holds at least 16 bytes");
             let result = GetContentResult {
                 content_id: params.content_id,
                 content_type: format!("{:?}", item.content_type),
                 author_id: crate::crypto::address::encode_address(&item.author_id),
                 space_id: hex::encode(item.space_id.as_bytes()),
+                space_id_bech32: Some(encode_space_id(&space_id_16)),
                 parent_id: item
                     .parent_id
                     .map(|p: ContentId| format!("sha256:{}", hex::encode(p.as_bytes()))),
@@ -4642,6 +4646,9 @@ impl RpcMethods {
                     content_id: params.content_id,
                     content_type,
                     author_id,
+                    space_id_bech32: decode_space_id(&space_id)
+                        .ok()
+                        .map(|b| encode_space_id(&b)),
                     space_id,
                     parent_id: parent_id_opt,
                     created_at: created_at_ms,
