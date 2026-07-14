@@ -2214,8 +2214,11 @@ export function useSpamReport() {
         timestamp,
       });
 
+      // The node responds with `success: true` (not `stored`); accept either
+      // so a stored attestation actually advances the modal to its success
+      // state instead of looking like a silent failure.
       return {
-        success: result.stored,
+        success: result.success ?? result.stored ?? false,
         thresholdReached: result.threshold_reached,
       };
     } catch (err) {
@@ -2298,8 +2301,11 @@ export function useSpamReport() {
         timestamp,
       });
 
+      // The node responds with `success: true` (not `stored`); accept either
+      // so a stored attestation actually advances the modal to its success
+      // state instead of looking like a silent failure.
       return {
-        success: result.stored,
+        success: result.success ?? result.stored ?? false,
         thresholdReached: result.threshold_reached,
       };
     } catch (err) {

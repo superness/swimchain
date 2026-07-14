@@ -896,9 +896,13 @@ export class SwimchainRpc {
     signature: string;
     timestamp: number;
   }): Promise<{
-    stored: boolean;
+    // The node returns `success` (not `stored`) plus `unique_trees`; it does
+    // not return an attestation_count. Keep both success/stored optional so
+    // callers can read whichever the running node emits.
+    success?: boolean;
+    stored?: boolean;
     content_id: string;
-    attestation_count: number;
+    unique_trees?: number;
     threshold_reached: boolean;
   }> {
     return this.call('submit_spam_attestation', {
@@ -928,9 +932,10 @@ export class SwimchainRpc {
     signature: string;
     timestamp: number;
   }): Promise<{
-    stored: boolean;
+    success?: boolean;
+    stored?: boolean;
     content_id: string;
-    counter_count: number;
+    counter_count?: number;
     threshold_reached: boolean;
   }> {
     return this.call('submit_counter_attestation', {
