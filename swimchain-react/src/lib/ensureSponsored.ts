@@ -134,11 +134,21 @@ export async function ensureSponsored(
   const preferred = (o: OpenOffer) =>
     !!preferredSponsorHex &&
     o.sponsor_pubkey?.toLowerCase() === preferredSponsorHex.toLowerCase();
+  // Within each tier, take the offer with the MOST remaining slots. Public
+  // pages have many concurrent newcomers; picking the first match kept landing
+  // everyone on the same near-exhausted 1-slot invite (which then auto-approves
+  // only the first claimant and drops the rest with "no slots"). Preferring the
+  // largest standing offer spreads the load and avoids that thundering herd.
+  const mostSlots = (candidates: OpenOffer[]): OpenOffer | undefined =>
+    candidates.reduce<OpenOffer | undefined>(
+      (best, o) => (best && best.slots_remaining >= o.slots_remaining ? best : o),
+      undefined
+    );
   const pick =
-    offers.find((o) => preferred(o) && o.auto_approve && hasRoom(o)) ??
-    offers.find((o) => preferred(o) && hasRoom(o)) ??
-    offers.find((o) => o.auto_approve && hasRoom(o)) ??
-    offers.find(hasRoom);
+    mostSlots(offers.filter((o) => preferred(o) && o.auto_approve && hasRoom(o))) ??
+    mostSlots(offers.filter((o) => preferred(o) && hasRoom(o))) ??
+    mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o))) ??
+    mostSlots(offers.filter(hasRoom));
   if (!pick) throw new Error('No sponsorship offers are open right now — try again shortly.');
 
   onProgress?.('Requesting sponsorship (proof-of-work)');
