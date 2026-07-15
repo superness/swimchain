@@ -48,6 +48,12 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [banner, setBanner] = useState<SeasonResult | null>(null);
   const lastSeenSeason = useRef<number | null>(null);
+  // Content-ids of moves WE submitted this session, so we can explain their
+  // settled outcome (tie-lost/refunded, contested, rejected) exactly once —
+  // without spamming a notice for every historical move on region open.
+  const mySubmittedRef = useRef<Set<string>>(new Set());
+  const notifiedRef = useRef<Set<string>>(new Set());
+  const [notice, setNotice] = useState<string | null>(null);
   // Onboarding: a brand-new identity must be sponsored before it can post/move.
   // We claim a standing auto-approve offer automatically (one-click play).
   const [sponsored, setSponsored] = useState(false);
@@ -179,6 +185,56 @@ export function App() {
     return () => clearInterval(t);
   }, [openId, refreshOpen]);
 
+  // Reset per-region notice tracking when switching reefs.
+  useEffect(() => {
+    mySubmittedRef.current = new Set();
+    notifiedRef.current = new Set();
+    setNotice(null);
+  }, [openId]);
+
+  // Explain the settled outcome of OUR OWN moves exactly once. Only moves we
+  // submitted this session (tracked by content-id) are eligible, so opening a
+  // region with lots of history never spams. Successful grows/tends stay silent
+  // (the grid already shows them); we only speak up when something surprising
+  // happened to a move the player made.
+  useEffect(() => {
+    if (!state || !publicKeyHex) return;
+    for (const m of state.moves) {
+      if (m.author !== publicKeyHex) continue;
+      if (!mySubmittedRef.current.has(m.contentId)) continue;
+      if (notifiedRef.current.has(m.contentId)) continue;
+      let msg: string | null = null;
+      switch (m.outcome) {
+        case 'tie-lost':
+          msg = `(${m.x},${m.y}) was claimed by another player at the same moment — you lost the tie, and your budget was refunded.`;
+          break;
+        case 'contested':
+          msg = `Contested (${m.x},${m.y}) — you damaged it but didn't capture. Hit it again.`;
+          break;
+        case 'rejected-unaffordable':
+          msg = `Couldn't grow (${m.x},${m.y}) — not enough budget.`;
+          break;
+        case 'rejected-invalid':
+          msg = `Couldn't grow (${m.x},${m.y}) — it must connect to your reef.`;
+          break;
+        case 'rejected-capped':
+          msg = `Tend limit reached this tide — (${m.x},${m.y}) wasn't refreshed.`;
+          break;
+        default:
+          msg = null; // grew / tended / captured: no news is good news
+      }
+      notifiedRef.current.add(m.contentId);
+      if (msg) setNotice(msg);
+    }
+  }, [state, publicKeyHex]);
+
+  // Auto-dismiss a notice after a few seconds.
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
   function newIdentity() {
     const seed = new Uint8Array(32);
     crypto.getRandomValues(seed);
@@ -218,9 +274,11 @@ export function App() {
     const where = `(${x},${y})`;
     setMining({ active: true, label: `${verb} ${where}`, attempts: 0 });
     try {
-      await submitReefMove(rpc, me, openId, intent.op, x, y, state.moves.length, (attempts) =>
+      const cid = await submitReefMove(rpc, me, openId, intent.op, x, y, state.moves.length, (attempts) =>
         setMining({ active: true, label: `${verb} ${where} (proof-of-work)`, attempts })
       );
+      // Track our own move so we can explain its settled outcome once it folds.
+      if (cid) mySubmittedRef.current.add(cid);
       setMining(null);
       // Show my growth immediately; the poll reconciles once it seals on-chain.
       setState((prev) => (prev ? applyMoveOptimistic(prev, publicKeyHex!, intent.op, x, y) : prev));
@@ -306,6 +364,7 @@ export function App() {
       )}
       {rpcError && <div className="banner warn">Node: {rpcError}</div>}
       {error && <div className="banner warn">{error}</div>}
+      {notice && <div className="banner notice" role="status">{notice}</div>}
 
       {!openId ? (
         <section className="lobby">

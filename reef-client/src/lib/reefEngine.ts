@@ -107,7 +107,7 @@ const TESTNET = true;
 
 /** The reef space id (bech32 `sp1…`). Set via VITE_REEF_SPACE at build/dev time. */
 export const REEF_SPACE: string =
-  (import.meta.env.VITE_REEF_SPACE as string | undefined)?.trim() || '';
+  (import.meta.env?.VITE_REEF_SPACE as string | undefined)?.trim() || '';
 
 /**
  * Preferred onboarding sponsor's public key (hex). Auto-sponsor claims an
@@ -118,7 +118,7 @@ export const REEF_SPACE: string =
  * via VITE_GAME_SPONSOR; defaults to the testnet genesis root.
  */
 export const GAME_SPONSOR: string =
-  (import.meta.env.VITE_GAME_SPONSOR as string | undefined)?.trim() ||
+  (import.meta.env?.VITE_GAME_SPONSOR as string | undefined)?.trim() ||
   '9ec9661d3a975ad141caa5df9f14b3c46cf725509e7fa044c19d26fe76bd0420';
 
 // ── Engine constants (all integer; changing these changes the shared ruleset) ──────
@@ -184,6 +184,30 @@ export interface RegionSummary {
 export type Op = 'grow' | 'tend';
 export type MoveKind = 'seed' | 'spread' | 'tend' | 'contest';
 
+/**
+ * The settled result of a move, so a client can explain to a player what
+ * happened to *their* action instead of silently reverting the optimistic view.
+ * - `grew`     seeded / spread onto open water; the tile is now yours
+ * - `tended`   refreshed one of your own cells
+ * - `captured` a contest that flipped an enemy cell to you
+ * - `contested`a contest that damaged an enemy cell but didn't capture it
+ * - `tie-lost` you and another player grabbed the same open tile in the same
+ *              block; they won the (deterministic) tie, and YOUR budget was NOT
+ *              spent — a refund, not a wasted resource
+ * - `rejected-unaffordable` you couldn't afford it (no tile, no charge)
+ * - `rejected-invalid`      disconnected / out-of-bounds placement (no charge)
+ * - `rejected-capped`       a tend beyond this tide's TEND_CAP (no charge)
+ */
+export type MoveOutcome =
+  | 'grew'
+  | 'tended'
+  | 'captured'
+  | 'contested'
+  | 'tie-lost'
+  | 'rejected-unaffordable'
+  | 'rejected-invalid'
+  | 'rejected-capped';
+
 export interface Cell {
   owner: string; // author_id (pubkey hex) of whoever holds the cell
   vitality: number;
@@ -196,6 +220,7 @@ export interface AppliedMove {
   author: string;
   contentId: string;
   ok: boolean; // did it change the world? (illegal / unaffordable moves are inert)
+  outcome: MoveOutcome; // the settled result, for client-side explanation
 }
 
 export interface SeasonResult {
@@ -397,6 +422,13 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   const peak = new Map<string, number>(); // largest territory ever held (brag stat)
   const conquests = new Map<string, number>(); // enemy cells captured (brag stat)
   const moves: AppliedMove[] = [];
+  // Height at which each occupied cell's CURRENT owner claimed it (seed / spread
+  // / capture). Lets us tell a same-block race (a "tie" — refund the loser) from
+  // a deliberate attack on an established cell (a real contest — costs). Pending
+  // (unconfirmed) claims use PENDING_HEIGHT so two racing pending moves also tie.
+  const claimedAt = new Map<string, number>();
+  const PENDING_HEIGHT = Number.MAX_SAFE_INTEGER;
+  let curHeight = 0; // the effective height of the move currently being applied
   let epoch = 0;
   let justCrowned: SeasonResult | null = null;
 
@@ -445,32 +477,64 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   const applyOne = (r: ReplyLike, p: { op: Op; x: number; y: number }) => {
     const author = r.author_id;
     if (!budgets.has(author)) budgets.set(author, START_BUDGET);
+    const key = cellKey(p.x, p.y);
     const isAuthor = (owner: string) => owner === author;
+
+    // Tie: a grow onto a cell another author claimed in THIS SAME block (or
+    // another still-pending move) is a race you couldn't have seen coming. The
+    // deterministic winner (earlier in fold order — lowest content_id in the
+    // block) already owns it; refund this one (no cost, no effect) instead of
+    // treating it as a contest/invalid attempt. A grow onto a cell claimed in
+    // an EARLIER block is a deliberate contest and falls through to classify.
+    const target = cells.get(key);
+    if (p.op === 'grow' && target && target.owner !== author && claimedAt.get(key) === curHeight) {
+      moves.push({ ...p, author, contentId: r.content_id, ok: false, outcome: 'tie-lost' });
+      return;
+    }
+
     const cls = classify(cells, header, isAuthor, p.op, p.x, p.y);
     let ok = false;
-    if (cls) {
-      if (cls.kind === 'tend') {
-        const used = tendsUsed.get(author) ?? 0;
-        if (used < TEND_CAP) {
-          mutate(cells, author, 'tend', p.x, p.y);
-          tendsUsed.set(author, used + 1);
-          ok = true;
-        }
+    let outcome: MoveOutcome;
+    if (!cls) {
+      outcome = 'rejected-invalid';
+    } else if (cls.kind === 'tend') {
+      const used = tendsUsed.get(author) ?? 0;
+      if (used < TEND_CAP) {
+        mutate(cells, author, 'tend', p.x, p.y);
+        tendsUsed.set(author, used + 1);
+        ok = true;
+        outcome = 'tended';
       } else {
-        const have = budgets.get(author)!;
-        if (have >= cls.cost) {
-          const prevOwner = cls.kind === 'contest' ? cells.get(cellKey(p.x, p.y))?.owner : undefined;
-          mutate(cells, author, cls.kind, p.x, p.y);
-          budgets.set(author, have - cls.cost);
-          ok = true;
-          const now = cells.get(cellKey(p.x, p.y));
-          if (cls.kind === 'contest' && now?.owner === author && prevOwner && prevOwner !== author) {
-            conquests.set(author, (conquests.get(author) ?? 0) + 1);
+        outcome = 'rejected-capped';
+      }
+    } else {
+      const have = budgets.get(author)!;
+      if (have >= cls.cost) {
+        const prevOwner = cls.kind === 'contest' ? cells.get(key)?.owner : undefined;
+        mutate(cells, author, cls.kind, p.x, p.y);
+        budgets.set(author, have - cls.cost);
+        ok = true;
+        const now = cells.get(key);
+        if (cls.kind === 'contest') {
+          if (now?.owner === author) {
+            outcome = 'captured';
+            if (prevOwner && prevOwner !== author) {
+              conquests.set(author, (conquests.get(author) ?? 0) + 1);
+            }
+          } else {
+            outcome = 'contested';
           }
+        } else {
+          outcome = 'grew'; // seed or spread onto open water
         }
+        // Record the claim height whenever ownership just became this author's,
+        // so a same-block follower on this tile is detected as a tie.
+        if (now?.owner === author) claimedAt.set(key, curHeight);
+      } else {
+        outcome = 'rejected-unaffordable';
       }
     }
-    moves.push({ ...p, author, contentId: r.content_id, ok });
+    moves.push({ ...p, author, contentId: r.content_id, ok, outcome });
     if (ok) updatePeaks();
   };
 
@@ -480,6 +544,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     if (!p) continue;
     const target = epochOf(r.block_height!);
     while (epoch < target) tickEpoch();
+    curHeight = r.block_height!;
     applyOne(r, p);
   }
   // 2) Advance the tide to the current chain tip — idle reefs decay as blocks pass.
@@ -489,8 +554,11 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   }
   const confirmedEpoch = epoch;
 
-  // 3) Pending (not-yet-in-a-block) moves: the tentative frontier, shown optimistically.
+  // 3) Pending (not-yet-in-a-block) moves: the tentative frontier, shown
+  // optimistically. All pending claims share PENDING_HEIGHT, so two racing
+  // pending grows on the same tile resolve as a tie just like a same-block race.
   let tentative = 0;
+  curHeight = PENDING_HEIGHT;
   for (const r of pending) {
     const p = parseMove(r.body);
     if (!p) continue;
@@ -775,6 +843,9 @@ export function applyMoveOptimistic(
   const isAuthor = (owner: string) => owner === authorPubkeyHex;
   const cls = classify(cells, state.header, isAuthor, op, x, y);
   let ok = false;
+  // Optimistic outcome is a best-guess for immediate feedback; the authoritative
+  // outcome (incl. tie-lost / capture) comes from the fold once the move seals.
+  let outcome: MoveOutcome = 'rejected-invalid';
   if (cls) {
     if (cls.kind === 'tend') {
       const used = tendsUsed.get(authorPubkeyHex) ?? 0;
@@ -782,6 +853,9 @@ export function applyMoveOptimistic(
         mutate(cells, authorPubkeyHex, 'tend', x, y);
         tendsUsed.set(authorPubkeyHex, used + 1);
         ok = true;
+        outcome = 'tended';
+      } else {
+        outcome = 'rejected-capped';
       }
     } else {
       const have = budgets.get(authorPubkeyHex) ?? START_BUDGET;
@@ -789,6 +863,9 @@ export function applyMoveOptimistic(
         mutate(cells, authorPubkeyHex, cls.kind, x, y);
         budgets.set(authorPubkeyHex, have - cls.cost);
         ok = true;
+        outcome = cls.kind === 'contest' ? 'contested' : 'grew';
+      } else {
+        outcome = 'rejected-unaffordable';
       }
     }
   }
@@ -801,7 +878,7 @@ export function applyMoveOptimistic(
     owners: [...living.keys()],
     moves: [
       ...state.moves,
-      { op, x, y, author: authorPubkeyHex, contentId: `pending-${state.moves.length}`, ok },
+      { op, x, y, author: authorPubkeyHex, contentId: `pending-${state.moves.length}`, ok, outcome },
     ],
   };
 }
