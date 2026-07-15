@@ -100,6 +100,14 @@ h2 { font-size: 18px; margin: 0; }
   0%, 100% { box-shadow: 0 0 0 2px var(--heat); }
   50% { box-shadow: 0 0 0 3px var(--heat), 0 0 10px 2px rgba(255, 158, 94, 0.7); }
 }
+/* Settling = ownership not yet reorg-safe (recent/pending move). Softly breathes
+   so a chain re-order that flips it reads as "it was still settling", not a glitch. */
+.cell .coral.settling { opacity: 0.62; animation: settling 1.4s ease-in-out infinite; }
+.cell .coral.mine.settling { opacity: 0.78; }
+@keyframes settling {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.9; }
+}
 
 /* Actionable affordances for the local player. */
 .cell.act { cursor: pointer; }

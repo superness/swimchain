@@ -256,7 +256,15 @@ export interface ReefState {
   tentative: number; // count of pending (not-yet-in-a-block) moves shown optimistically
   confirmedEpoch: number; // epochs fully settled by consensus (the confirmed frontier)
   justCrownedSeason: SeasonResult | null; // most recently closed season, for the banner
+  // Cell keys whose current ownership is NOT yet reorg-safe — claimed within
+  // CONFIRM_DEPTH blocks of the tip, or by a still-pending move. These can still
+  // flip as the chain settles, so the client renders them as "settling" rather
+  // than committing a hard state that later swaps and looks like a glitch.
+  frontier: Set<string>;
 }
+
+/** Blocks a move must be buried before its cell ownership is treated as final. */
+export const CONFIRM_DEPTH = 2;
 
 /** What clicking a cell would do for a given player, and whether it's currently possible. */
 export interface Intent {
@@ -598,6 +606,16 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
       (a, b) => b.seasonPoints - a.seasonPoints || b.vitality - a.vitality || a.owner.localeCompare(b.owner)
     );
 
+  // Frontier: cells whose current owner claimed them within CONFIRM_DEPTH of the
+  // tip (still reorg-eligible) or via a pending move — the ones that can still flip.
+  const frontier = new Set<string>();
+  const confirmH = (tipHeight ?? 0) - CONFIRM_DEPTH;
+  for (const k of cells.keys()) {
+    const c = claimedAt.get(k);
+    if (c === undefined) continue;
+    if (c === PENDING_HEIGHT || c > confirmH) frontier.add(k);
+  }
+
   return {
     header,
     cells,
@@ -614,6 +632,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     tentative,
     confirmedEpoch,
     justCrownedSeason: justCrowned,
+    frontier,
   };
 }
 
@@ -883,12 +902,17 @@ export function applyMoveOptimistic(
     }
   }
   const living = livingByOwner(cells);
+  // The optimistically-touched cell is unsettled by definition — add it to the
+  // frontier so it renders as "settling" until the real move confirms.
+  const frontier = new Set(state.frontier);
+  if (ok) frontier.add(cellKey(x, y));
   return {
     ...state,
     cells,
     budgets,
     tendsUsed,
     owners: [...living.keys()],
+    frontier,
     moves: [
       ...state.moves,
       { op, x, y, author: authorPubkeyHex, contentId: `pending-${state.moves.length}`, ok, outcome },

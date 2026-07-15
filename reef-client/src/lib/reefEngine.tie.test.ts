@@ -101,5 +101,18 @@ const reply = (
   check('build-order: both cells owned by A', s.cells.get('5,5')?.owner === A && s.cells.get('5,6')?.owner === A);
 }
 
+// ── 6) frontier: recently-claimed / pending cells are "settling"; buried ones aren't
+{
+  const replies = [
+    reply(A, 'grow 1 1', 5, 'c_old', 900), // claimed long ago (buried by tip 20)
+    reply(A, 'grow 2 2', 20, 'c_new', 1000), // claimed at the tip (still reorg-eligible)
+    reply(B, 'grow 3 3', null, 'c_pend', 1100), // pending
+  ];
+  const s = foldReef(H, replies, 20); // tip 20, CONFIRM_DEPTH 2 → confirmH 18
+  check('frontier: buried cell (h=5) is settled', !s.frontier.has('1,1'));
+  check('frontier: tip cell (h=20) is settling', s.frontier.has('2,2'));
+  check('frontier: pending cell is settling', s.frontier.has('3,3'));
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

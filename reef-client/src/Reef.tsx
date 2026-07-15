@@ -51,8 +51,10 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, onAct }: Props) {
           const hue = ownerHue(cell.owner);
           const size = `${Math.round(vitalityScale(cell.vitality) * 100)}%`;
           const mine = isMe(cell.owner);
+          const settling = state.frontier.has(cellKey(x, y)); // not yet reorg-safe
           let coralCls = 'coral';
           if (mine) coralCls += ' mine';
+          if (settling) coralCls += ' settling'; // ownership can still flip as the chain buries this move
           if (cell.vitality <= 2) coralCls += ' fading'; // will recede within ~2 tides
           if (cell.vitality <= 1) coralCls += ' dying'; // recedes NEXT tide
           coral = (
@@ -64,7 +66,9 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, onAct }: Props) {
         }
 
         const base = cell
-          ? `(${x},${y}) ${isMe(cell.owner) ? 'yours' : 'coral'} · vitality ${cell.vitality}/${MAX_VITALITY}${cell.vitality <= 1 ? ' — recedes next tide!' : ''}`
+          ? `(${x},${y}) ${isMe(cell.owner) ? 'yours' : 'coral'} · vitality ${cell.vitality}/${MAX_VITALITY}` +
+            (cell.vitality <= 1 ? ' — recedes next tide!' : '') +
+            (state.frontier.has(cellKey(x, y)) ? ' · settling (not yet final)' : '')
           : `(${x},${y}) open water`;
         let note = '';
         if (intent) {
