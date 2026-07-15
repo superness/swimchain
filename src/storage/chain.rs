@@ -3630,7 +3630,7 @@ impl ChainStore {
             None => return Ok(Vec::new()),
         };
 
-        // Collect actions first (before deleting)
+        // Collect the block's actions so callers can return them to the mempool
         let actions = self.get_actions_at_height(height)?;
 
         // Unmark all actions as finalized
@@ -3639,22 +3639,15 @@ impl ChainStore {
             self.unmark_action_finalized(&action_hash)?;
         }
 
-        // Delete content blocks
-        for space_hash in &root_block.space_block_hashes {
-            if let Some(space_block) = self.get_space_block(space_hash)? {
-                for content_hash in &space_block.content_block_hashes {
-                    self.delete_block(content_hash)?;
-                }
-            }
-        }
-
-        // Delete space blocks
-        for space_hash in &root_block.space_block_hashes {
-            self.delete_block(space_hash)?;
-        }
-
-        // Delete root block
-        self.delete_block(&root_hash)?;
+        // NON-DESTRUCTIVE (2026-07-14 chain-poisoning incident): the root,
+        // space, and content blocks are KEPT — a rollback only detaches this
+        // height from the canonical index. Deleting them turned a wrong
+        // fork-choice into permanent data destruction (genesis kept 16 of 80
+        // root blocks; recovery needed a lucky offline replica). Kept blocks
+        // are plain orphans, exactly like fork blocks we already store on
+        // receipt: retrievable by hash, re-adoptable by a future reorg or
+        // repair by re-inserting height-index entries. Bitcoin-style nodes
+        // never delete block data on reorg; neither do we.
 
         // Remove from height index
         self.height_index.remove(&height.to_be_bytes())?;
@@ -3896,6 +3889,42 @@ mod tests {
             branch_path: crate::blocks::BranchPath::root(),
             space_metadata: None,
         }
+    }
+
+    // Rollback must be NON-DESTRUCTIVE: it detaches heights from the canonical
+    // index but keeps every block retrievable by hash, so even a wrong reorg is
+    // locally reversible. Regression test for the 2026-07-14 chain-poisoning
+    // incident, where cascading rollback DELETED the chain suffix fleet-wide.
+    #[test]
+    fn test_rollback_keeps_block_data() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let chain = build_chain([0u8; 32], 0, 10, 0, 0x77);
+        for b in &chain {
+            store.put_root_block_with_fork_resolution(b).unwrap();
+        }
+        assert_eq!(store.get_latest_height().unwrap(), Some(9));
+
+        // Roll back heights 4..=9 (cascades from the tip down to 4).
+        store.rollback_block_at_height(4).unwrap();
+        assert_eq!(store.get_latest_height().unwrap(), Some(3));
+        assert!(store.get_root_hash_at_height(4).unwrap().is_none());
+
+        // Every rolled-back block is still in the store, retrievable by hash —
+        // orphaned, not destroyed.
+        for b in &chain[4..] {
+            let kept = store.get_root_block(&b.hash()).unwrap();
+            assert!(kept.is_some(), "block at height {} was deleted", b.height);
+        }
+
+        // And re-adoptable: putting the height-4 block back through fork
+        // resolution restores it to the canonical index.
+        store.put_root_block_with_fork_resolution(&chain[4]).unwrap();
+        assert_eq!(
+            store.get_root_hash_at_height(4).unwrap(),
+            Some(chain[4].hash())
+        );
     }
 
     #[test]
