@@ -2322,52 +2322,73 @@ impl MessageRouter {
         // If so, we need to unmark finalized actions from orphaned blocks BEFORE
         // checking for duplicate actions (otherwise legitimate reorg blocks get rejected)
         if let Ok(Some(current_tip)) = chain_store.get_best_tip_block() {
-            if root_block.cumulative_pow > current_tip.cumulative_pow {
-                // This block is heavier - find and orphan blocks from the old chain
-                // We need to unmark finalized actions so they don't cause duplicate rejection
+            // Gate on REAL chain weight, not the stored cumulative_pow field
+            // (builder-stamped, garbage on this chain — see chain_weight docs).
+            // A weight of None means the incoming ancestry is incomplete: the
+            // block cannot be adopted yet, so pre-unmarking would be both
+            // premature and destructive. This comparison used to run — and
+            // walk-unmark the ENTIRE canonical chain — on every re-announce
+            // of an un-adoptable block (the same block 6,823x in 7 min on
+            // genesis, 2026-07-14).
+            let incoming_heavier = matches!(
+                (
+                    chain_store.chain_weight(&root_block),
+                    chain_store.chain_weight(&current_tip),
+                ),
+                (Ok(Some(incoming_weight)), Ok(Some(tip_weight))) if incoming_weight > tip_weight
+            );
+            if incoming_heavier {
                 info!(
-                    "[REORG] Incoming block {} (pow={}) is heavier than tip {} (pow={}), unmarking orphaned actions",
+                    "[REORG] Incoming block {} is heavier than tip {} (real chain weight), unmarking orphaned actions",
                     hex::encode(&computed_hash[..8]),
-                    root_block.cumulative_pow,
                     hex::encode(&current_tip.hash()[..8]),
-                    current_tip.cumulative_pow
                 );
 
-                // Find common ancestor by tracing back the incoming block's chain
-                // and unmark all actions from the current tip down to where chains diverge
-                let incoming_parent = root_block.prev_root_hash;
-
-                // Walk back from current tip, unmarking actions until we find the common ancestor
-                // (which is the parent of the incoming block)
-                let mut height_to_check = current_tip.height;
-                while height_to_check > 0 {
-                    if let Ok(Some(hash_at_height)) =
-                        chain_store.get_root_hash_at_height(height_to_check)
+                // Find the true fork height by walking the incoming block's
+                // ancestry (complete, per the weight gate above) down to its
+                // first canonical ancestor. The old code scanned from the tip
+                // looking for the incoming block's DIRECT parent — for a deep
+                // fork that parent is never canonical, so the scan fell
+                // through to height 0 and unmarked the whole chain.
+                let mut fork_height: u64 = 0;
+                let mut cursor = root_block.clone();
+                loop {
+                    if chain_store
+                        .get_root_hash_at_height(cursor.height)
+                        .ok()
+                        .flatten()
+                        == Some(cursor.hash())
                     {
-                        // Check if this is the common ancestor (parent of incoming block)
-                        if hash_at_height == incoming_parent {
-                            info!(
-                                "[REORG] Found common ancestor at height {} ({})",
-                                height_to_check,
-                                hex::encode(&hash_at_height[..8])
-                            );
-                            break;
-                        }
-                        // Unmark actions from this orphaned block
-                        if let Err(e) = chain_store.unmark_actions_at_height(height_to_check) {
-                            warn!(
-                                "[REORG] Failed to unmark actions at height {}: {}",
-                                height_to_check, e
-                            );
-                        } else {
-                            info!(
-                                "[REORG] Unmarked finalized actions at height {} (block {})",
-                                height_to_check,
-                                hex::encode(&hash_at_height[..8])
-                            );
-                        }
+                        fork_height = cursor.height;
+                        break;
                     }
-                    height_to_check = height_to_check.saturating_sub(1);
+                    if cursor.prev_root_hash == [0u8; 32] {
+                        break;
+                    }
+                    match chain_store
+                        .get_root_block(&cursor.prev_root_hash)
+                        .ok()
+                        .flatten()
+                    {
+                        Some(parent) => cursor = parent,
+                        None => break, // unreachable post-gate; bail conservatively
+                    }
+                }
+                info!(
+                    "[REORG] Fork point at height {} — unmarking canonical heights {}..={}",
+                    fork_height,
+                    fork_height + 1,
+                    current_tip.height
+                );
+
+                // Unmark ONLY the canonical blocks above the fork point.
+                for height in (fork_height + 1)..=current_tip.height {
+                    if let Err(e) = chain_store.unmark_actions_at_height(height) {
+                        warn!(
+                            "[REORG] Failed to unmark actions at height {}: {}",
+                            height, e
+                        );
+                    }
                 }
             }
         }

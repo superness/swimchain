@@ -143,6 +143,16 @@ pub struct ChainStore {
     /// Community lineage records (Phase 2 space-tree navigation):
     /// Key = community_id(32), Value = CommunityLineage (bincode)
     community_lineage: sled::Tree,
+
+    // === Real chain weight (SPEC_05 fork choice) ===
+    /// Memo: root block hash -> real chain weight (sum of every ancestor's
+    /// OWN `total_pow` from genesis, inclusive). Blocks are immutable and
+    /// append-only, so entries stay valid for the process lifetime. Exists
+    /// because the STORED `cumulative_pow` field is untrustworthy — builders
+    /// historically stamped it from stale state, so canonical chains carry
+    /// per-block-ish values and tip-vs-incoming comparisons on it are garbage
+    /// (how the 2026-07-14 poisoning got past two guards).
+    chain_weight_cache: std::sync::RwLock<std::collections::HashMap<BlockHash, u64>>,
 }
 
 /// Compact content metadata for indexed lookups
@@ -298,6 +308,7 @@ impl ChainStore {
             behavioral_events,
             space_behavioral_events,
             community_lineage,
+            chain_weight_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
         })
     }
 
@@ -1839,23 +1850,99 @@ impl ChainStore {
         match self.get_best_tip_block()? {
             Some(tip) => {
                 // A block that DIRECTLY EXTENDS the current tip advances the
-                // canonical chain even at equal cumulative_pow. Without this a
-                // valid zero-PoW block — a timeout-flush block carrying only
-                // low-PoW onboarding actions (a pow=0 Sponsor/claim) — is stored
-                // but never adopted, because `cumulative_pow += 0` leaves it not
-                // strictly heavier than its own parent, so its actions never
-                // finalize. Competing forks (same height, or a different branch)
-                // still require strictly-heavier work; same-height ties are broken
+                // canonical chain even at equal work. Without this a valid
+                // zero-PoW block — a timeout-flush block carrying only low-PoW
+                // onboarding actions (a pow=0 Sponsor/claim) — is stored but
+                // never adopted, because `+= 0` leaves it not strictly heavier
+                // than its own parent, so its actions never finalize.
+                // Competing forks (same height, or a different branch) still
+                // require strictly-heavier work; same-height ties are broken
                 // by the router's lower-hash rule.
                 if block.height == tip.height.saturating_add(1)
                     && block.prev_root_hash == tip.hash()
                 {
                     return Ok(true);
                 }
-                Ok(block.cumulative_pow > tip.cumulative_pow)
+
+                // Fork choice on REAL chain weight (walk-parents sum of each
+                // block's own total_pow), NOT the stored cumulative_pow field
+                // — that field is builder-stamped from possibly-stale state
+                // and the canonical chain carries per-block-ish values, so
+                // comparing it let a 2-node fork's inflated claim displace a
+                // 74-block chain (2026-07-14 poisoning).
+                match (self.chain_weight(block)?, self.chain_weight(&tip)?) {
+                    (Some(block_weight), Some(tip_weight)) => Ok(block_weight > tip_weight),
+                    // Incoming ancestry incomplete: its weight is unknowable
+                    // and make_canonical would defer anyway — not heavier yet.
+                    // Adoption re-runs once the ancestry arrives (locator sync
+                    // re-delivers the fork's blocks through fork resolution).
+                    (None, _) => Ok(false),
+                    // Our own tip's ancestry has a gap (recovered/legacy DB):
+                    // fall back to the stored field rather than wedging
+                    // adoption entirely.
+                    (Some(_), None) => Ok(block.cumulative_pow > tip.cumulative_pow),
+                }
             }
             None => Ok(true), // No tip yet, any block is heavier
         }
+    }
+
+    /// Real chain weight of `block`: the sum of every ancestor's OWN work
+    /// (`total_pow`) from genesis to `block`, inclusive. Walks
+    /// `prev_root_hash` with memoization (`chain_weight_cache`), so repeated
+    /// evaluations cost O(new suffix) instead of O(chain length).
+    ///
+    /// Returns `Ok(None)` when any ancestor is missing from local storage —
+    /// the weight is unknowable and the block cannot be adopted yet. This is
+    /// also what silences the reorg re-evaluation hot loop: an un-adoptable
+    /// heavier claim no longer enters the reorg path at all (genesis logged
+    /// the same block 6,823x in 7 minutes re-running that comparison).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if a database operation fails.
+    pub fn chain_weight(&self, block: &RootBlock) -> Result<Option<u64>, StorageError> {
+        let hash = block.hash();
+        if let Ok(cache) = self.chain_weight_cache.read() {
+            if let Some(w) = cache.get(&hash) {
+                return Ok(Some(*w));
+            }
+        }
+
+        // Walk down the ancestry until genesis or a memoized ancestor,
+        // collecting each block's own work along the way.
+        let mut suffix: Vec<(BlockHash, u64)> = vec![(hash, block.total_pow)];
+        let mut prev = block.prev_root_hash;
+        let mut base: u64 = 0;
+        while prev != [0u8; 32] {
+            if let Ok(cache) = self.chain_weight_cache.read() {
+                if let Some(w) = cache.get(&prev) {
+                    base = *w;
+                    break;
+                }
+            }
+            match self.get_root_block(&prev)? {
+                Some(parent) => {
+                    suffix.push((parent.hash(), parent.total_pow));
+                    prev = parent.prev_root_hash;
+                }
+                None => return Ok(None), // ancestry incomplete
+            }
+        }
+
+        // Fill the memo upward from the deepest collected ancestor.
+        let mut acc = base;
+        if let Ok(mut cache) = self.chain_weight_cache.write() {
+            for (h, own_work) in suffix.into_iter().rev() {
+                acc = acc.saturating_add(own_work);
+                cache.insert(h, acc);
+            }
+        } else {
+            for (_, own_work) in suffix.into_iter().rev() {
+                acc = acc.saturating_add(own_work);
+            }
+        }
+        Ok(Some(acc))
     }
 
     /// Update best tip if the new block is heavier
@@ -3920,7 +4007,9 @@ mod tests {
 
         // And re-adoptable: putting the height-4 block back through fork
         // resolution restores it to the canonical index.
-        store.put_root_block_with_fork_resolution(&chain[4]).unwrap();
+        store
+            .put_root_block_with_fork_resolution(&chain[4])
+            .unwrap();
         assert_eq!(
             store.get_root_hash_at_height(4).unwrap(),
             Some(chain[4].hash())
@@ -4352,6 +4441,79 @@ mod tests {
             .unwrap();
         assert!(is_new_tip, "adopts once ancestry is present");
         assert_eq!(store.get_latest_height().unwrap(), Some(16));
+    }
+
+    // ========== Real chain weight (SPEC_05; 2026-07-14 poisoning) ==========
+
+    /// chain_weight sums each ancestor's OWN total_pow and ignores the stored
+    /// cumulative_pow field entirely; missing ancestry yields None.
+    #[test]
+    fn test_chain_weight_walks_ancestry() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        // Heights 0..=4, per-block work = height (pow_base 0) → weight 0+1+2+3+4.
+        let chain = build_chain([0u8; 32], 0, 5, 0, 0x11);
+        for b in &chain {
+            store.put_root_block(b).unwrap();
+        }
+        assert_eq!(
+            store.chain_weight(chain.last().unwrap()).unwrap(),
+            Some(10),
+            "weight must be the sum of ancestors' own work"
+        );
+
+        // A block whose ancestry is absent has unknowable weight.
+        let orphan_chain = build_chain([0xEE; 32], 3, 4, 50, 0x22);
+        assert_eq!(
+            store.chain_weight(orphan_chain.last().unwrap()).unwrap(),
+            None,
+            "missing ancestry must yield None, not a guess"
+        );
+    }
+
+    /// The 2026-07-14 poisoning shape: a SHORT fork whose tip CLAIMS a huge
+    /// cumulative_pow must not displace a longer chain with more real work.
+    /// The old comparison trusted the stored field and rolled a 74-block
+    /// fleet chain back to height 7 on the say-so of a 2-node fork.
+    #[test]
+    fn test_inflated_cumulative_pow_claim_does_not_displace_real_work() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        // Shared history 0..=5, honest canonical fork 6..=12 with real work.
+        let shared = build_chain([0u8; 32], 0, 6, 0, 0x11);
+        for b in &shared {
+            store.put_root_block_with_fork_resolution(b).unwrap();
+        }
+        let fork_point = shared.last().unwrap().hash();
+        let honest = build_chain(fork_point, 6, 7, 10, 0xAA);
+        for b in &honest {
+            store.put_root_block_with_fork_resolution(b).unwrap();
+        }
+        assert_eq!(store.get_latest_height().unwrap(), Some(12));
+
+        // Junk fork 6..=8: little real work, but its tip CLAIMS enormous
+        // cumulative_pow. Ancestry fully present (worst case for the guard).
+        let mut junk = build_chain(fork_point, 6, 3, 0, 0xBB);
+        junk.last_mut().unwrap().cumulative_pow = 999_999_999;
+        for b in &junk[..junk.len() - 1] {
+            store.put_root_block(b).unwrap();
+        }
+
+        let (_, is_new_tip) = store
+            .put_root_block_with_fork_resolution(junk.last().unwrap())
+            .unwrap();
+        assert!(
+            !is_new_tip,
+            "an inflated cumulative_pow claim must not beat real chain weight"
+        );
+        assert_eq!(store.get_latest_height().unwrap(), Some(12));
+        assert_eq!(
+            store.get_root_hash_at_height(12).unwrap(),
+            Some(honest.last().unwrap().hash()),
+            "canonical chain must be untouched"
+        );
     }
 
     #[test]
