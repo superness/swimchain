@@ -15,10 +15,14 @@
 >   now that loopback is exempt)
 > - bonus `516a9eba`: clients hide spaces with no resolved name (operator
 >   request).
-> **NOT done:** fleet deploy of the new binary (blocked on operator
-> authorization — binary ready at `target-linux/release/sw`), the
-> post-deploy `bvt.sh --e2e --failover` gate, and Tier-2 UI sweep.
-> #4 guarded APK: in progress this session — check git/adb for outcome.
+> **ALL FOUR ITEMS CLOSED (later same session, operator-authorized):**
+> fleet deployed client2→bot→seed (every gate opened on peer-tip
+> parity), guarded release APK signed + installed on the phone (U12
+> pass at fleet height 78), and `bvt.sh --e2e --failover` ran **9/10**
+> — sole FAIL is A3 counting the 07-14 incident inside its 24h window
+> (0 cascading rollbacks since deploy); see
+> `docs/qa/bvt-runs/2026-07-15.md`. Remaining for launch: Tier-2 UI
+> sweep (U1–U11) and A3 rolling green.
 > Known-red: `cargo test --lib` has 7 PRE-EXISTING stale-test failures
 > (old error strings, node_id sha256 semantics, lazy-wait never reflected
 > in should_form_root tests, sled-lock restart flake) plus 3 eternal PoW
