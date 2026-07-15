@@ -139,7 +139,24 @@ h2 { font-size: 18px; margin: 0; }
 /* Coral: an inner tile whose SIZE tracks vitality — fading coral visibly shrinks. */
 .cell .coral {
   border-radius: 3px;
-  transition: width 260ms ease, height 260ms ease, box-shadow 200ms ease;
+  /* vitality change animates size; owner change (capture) cross-fades colour. */
+  transition: width 260ms ease, height 260ms ease, box-shadow 200ms ease, background 340ms ease;
+  animation: grow-in 440ms cubic-bezier(0.2, 0.9, 0.3, 1.25); /* bloom in on appear */
+}
+@keyframes grow-in {
+  0% { transform: scale(0.15); opacity: 0; }
+  70% { transform: scale(1.1); }
+  100% { transform: scale(1); opacity: 1; }
+}
+/* Receded coral evaporates: drifts up, shrinks, blurs into the water. */
+.cell .coral.ghost {
+  pointer-events: none;
+  animation: evaporate 750ms ease-out forwards;
+}
+@keyframes evaporate {
+  0% { opacity: 0.85; transform: translateY(0) scale(1); filter: blur(0); }
+  55% { opacity: 0.5; }
+  100% { opacity: 0; transform: translateY(-32%) scale(0.45); filter: blur(2px); }
 }
 /* Your coral gets a bright ring so you can pick out your reef at a glance. */
 .cell .coral.mine { box-shadow: 0 0 0 2px var(--foam), 0 0 6px rgba(232, 241, 239, 0.35); }
