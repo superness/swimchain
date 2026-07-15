@@ -59,7 +59,49 @@ import {
   contentHashForReply,
   type SwimchainRpc,
   type ProgressCallback,
+  type PoWChallenge,
+  type PoWConfig,
+  type PoWSolution,
 } from '@swimchain/react';
+
+/**
+ * Mine an action PoW off the main thread. A difficulty-8 Argon2id search is
+ * several seconds of CPU; on the main thread it froze the tab (and the
+ * progress modal couldn't paint). Runs the same `computePow` in a Web Worker
+ * and resolves with the solution, streaming progress through. Falls back to
+ * on-thread mining only if the worker can't be constructed (very old runtime).
+ */
+function minePow(
+  challenge: PoWChallenge,
+  config: PoWConfig,
+  onProgress?: ProgressCallback
+): Promise<PoWSolution> {
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL('./pow.worker.ts', import.meta.url), { type: 'module' });
+  } catch {
+    return computePow(challenge, config, onProgress);
+  }
+  return new Promise<PoWSolution>((resolve, reject) => {
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data;
+      if (m?.type === 'progress') {
+        onProgress?.(m.attempts, m.elapsedMs, m.hashRate);
+      } else if (m?.type === 'solution') {
+        resolve(m.solution as PoWSolution);
+        worker.terminate();
+      } else if (m?.type === 'error') {
+        reject(new Error(m.message));
+        worker.terminate();
+      }
+    };
+    worker.onerror = (err) => {
+      reject(new Error(err.message || 'pow worker error'));
+      worker.terminate();
+    };
+    worker.postMessage({ challenge, config });
+  });
+}
 
 const TESTNET = true;
 
@@ -555,7 +597,7 @@ async function submitMinedPost(
     hexToBytes(id.publicKeyHex),
     getDifficulty(ActionType.Post, TESTNET)
   );
-  const solution = await computePow(challenge, getConfig(TESTNET), onProgress);
+  const solution = await minePow(challenge, getConfig(TESTNET), onProgress);
   const p = solutionToRpcParams(solution);
   const contentHash = await contentHashForPost(title, body);
   const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
@@ -587,7 +629,7 @@ async function submitMinedReply(
     hexToBytes(id.publicKeyHex),
     getDifficulty(ActionType.Reply, TESTNET)
   );
-  const solution = await computePow(challenge, getConfig(TESTNET), onProgress);
+  const solution = await minePow(challenge, getConfig(TESTNET), onProgress);
   const p = solutionToRpcParams(solution);
   const contentHash = await contentHashForReply(body);
   const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
