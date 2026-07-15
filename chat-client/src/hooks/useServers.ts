@@ -53,16 +53,20 @@ export function useServers() {
     setLoading(true);
     try {
       // Public spaces (browsable) — list_spaces now returns only public spaces.
+      // Spaces with no resolved name (name: null on the wire) are hidden — a
+      // bare hex id is meaningless to browse; they appear once the name resolves.
       const result = await rpc.listSpaces();
-      const publicServers: Server[] = result.spaces.map(space => ({
-        id: space.space_id,
-        name: space.name ?? space.space_id.substring(0, 12) + '...',
-        icon: getServerIcon(space.name ?? ''),
-        unreadCount: 0, // TODO: Track unread counts per server
-        hasNotification: false,
-        memberCount: space.post_count,
-        description: `${space.post_count} posts`,
-      }));
+      const publicServers: Server[] = result.spaces
+        .filter(space => space.name)
+        .map(space => ({
+          id: space.space_id,
+          name: space.name ?? space.space_id.substring(0, 12) + '...',
+          icon: getServerIcon(space.name ?? ''),
+          unreadCount: 0, // TODO: Track unread counts per server
+          hasNotification: false,
+          memberCount: space.post_count,
+          description: `${space.post_count} posts`,
+        }));
 
       // Merge the user's own private channels so they still appear as servers even
       // though public browse omits them. get_my_private_spaces already hides DM and

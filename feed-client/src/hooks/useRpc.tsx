@@ -413,7 +413,10 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       // space id's first byte (known the instant the block syncs — no name needed),
       // so utility spaces (profile/dm/private/app) never leak in and there is no
       // "No spaces found" gap waiting on name resolution.
-      const namedSpaces = result.spaces.filter(s => s.class === 'social');
+      // Spaces with no resolved name (name: null on the wire) are hidden — a
+      // bare hex id is meaningless to browse; the space appears once its name
+      // resolves via GET_SPACE_META.
+      const namedSpaces = result.spaces.filter(s => s.class === 'social' && s.name);
 
       // Transform RPC result to Space format
       const transformedSpaces: Space[] = namedSpaces.map(s => ({
