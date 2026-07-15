@@ -85,5 +85,21 @@ const reply = (
   check('pending tie: B refunded', s.budgets.get(B) === START_BUDGET, s.budgets.get(B));
 }
 
+// ── 5) same-block build chain: a seed then a spread FROM it must both apply,
+//     even when content_id order would put the spread first. Creation order wins.
+{
+  const replies = [
+    // seed made FIRST (earlier created_at) but HIGHER content_id
+    reply(A, 'grow 5 5', 10, 'c_zzz_seed', 1000),
+    // spread made SECOND (later created_at) but LOWER content_id — hash order
+    // alone would apply this before the seed and orphan it.
+    reply(A, 'grow 5 6', 10, 'c_aaa_spread', 1001),
+  ];
+  const s = foldReef(H, replies, 10);
+  const spread = s.moves.find((m) => m.x === 5 && m.y === 6)!;
+  check('build-order: spread from same-block seed is NOT rejected', spread.outcome === 'grew', spread.outcome);
+  check('build-order: both cells owned by A', s.cells.get('5,5')?.owner === A && s.cells.get('5,6')?.owner === A);
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -432,9 +432,22 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   let epoch = 0;
   let justCrowned: SeasonResult | null = null;
 
+  // Within a block, apply moves in CREATION order (then content_id as the final
+  // deterministic tiebreak) — NOT content_id alone. Ordering same-block moves by
+  // hash reorders a player's own build chain: a `spread` could be applied before
+  // the `seed` it grows from, so a perfectly valid spread got rejected as "not
+  // connected to your reef" even though the supporting cell is right there in the
+  // final grid. created_at is on the reply (identical for every client) and the
+  // node validates it within a tolerance window, so this stays deterministic and
+  // only-mildly-nudgeable. Matches the pending sort and this file's header doc.
   const confirmed = replies
     .filter((r) => typeof r.block_height === 'number')
-    .sort((a, b) => a.block_height! - b.block_height! || a.content_id.localeCompare(b.content_id));
+    .sort(
+      (a, b) =>
+        a.block_height! - b.block_height! ||
+        a.created_at - b.created_at ||
+        a.content_id.localeCompare(b.content_id)
+    );
   const pending = replies
     .filter((r) => typeof r.block_height !== 'number')
     .sort((a, b) => a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
