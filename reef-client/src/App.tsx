@@ -40,6 +40,10 @@ export function App() {
   const [regions, setRegions] = useState<RegionSummary[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [state, setState] = useState<ReefState | null>(null);
+  // Consecutive polls where we held optimistic state because the chain fold
+  // hadn't caught up to our own moves. Bounded so a move that never seals
+  // (e.g. a dedup-collided body) can't strand the grid on a phantom forever.
+  const staleHoldsRef = useRef(0);
   const [mining, setMining] = useState<Mining>(null);
   const [error, setError] = useState<string | null>(null);
   const [banner, setBanner] = useState<SeasonResult | null>(null);
@@ -138,10 +142,25 @@ export function App() {
       // Once our moves seal, `loaded` counts them too and we adopt the exact
       // chain state (picking up everyone else's moves and any decay).
       setState((prev) => {
-        if (!prev) return loaded;
-        const mine = (s: ReefState) =>
+        if (!prev) {
+          staleHoldsRef.current = 0;
+          return loaded;
+        }
+        const mineOf = (s: ReefState) =>
           s.moves.reduce((n, m) => (m.author === publicKeyHex ? n + 1 : n), 0);
-        return mine(loaded) >= mine(prev) ? loaded : prev;
+        // Hold our optimistic view until the chain fold reflects our own moves
+        // (gate on OUR move count, not the global one — other players bump the
+        // global count independently). But never hold indefinitely: if the fold
+        // hasn't caught up after STALE_HOLD_LIMIT polls, the move almost
+        // certainly won't seal (dedup/drop), so adopt the chain truth and clear
+        // the phantom rather than strand the grid forever.
+        const STALE_HOLD_LIMIT = 6; // ~9s at the 1500ms poll
+        const caughtUp = mineOf(loaded) >= mineOf(prev);
+        if (caughtUp) staleHoldsRef.current = 0;
+        else staleHoldsRef.current += 1;
+        const forceAdopt = staleHoldsRef.current >= STALE_HOLD_LIMIT;
+        if (forceAdopt) staleHoldsRef.current = 0;
+        return caughtUp || forceAdopt ? loaded : prev;
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to load region');

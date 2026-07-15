@@ -681,10 +681,21 @@ export async function loadRegion(rpc: SwimchainRpc, regionId: string): Promise<R
 /**
  * Submit a move as a reply to the region thread.
  *
- * Replies are content-addressed by sha256(body), so identical bodies collide/dedup.
- * The body embeds regionId, a monotonically-growing seq, and a slice of the author id,
- * so two different players (or the same player at different seqs) never collide. The
- * fold reads only the first three tokens (`<op> <x> <y>`).
+ * Replies are content-addressed by sha256(body), so IDENTICAL bodies dedup to
+ * one on-chain — desirable for a re-broadcast of the same submission, but a
+ * silent data-loss trap for two DISTINCT clicks that happen to produce the
+ * same body. The old scheme keyed uniqueness on `seq` (= the client's current
+ * move count) + a slice of the author id, and claimed collisions were
+ * impossible. They aren't: the same identity on two devices (or two fast
+ * clicks before the fold updates) sees the same `seq`, and a same-cell move
+ * then yields a byte-identical body → the node dedups it, the move never
+ * seals, and the client is left showing a phantom that can never land.
+ *
+ * Fix: append a per-submission random nonce. Distinct clicks now ALWAYS get
+ * distinct bodies (so every real move seals), while the node's mempool
+ * rebroadcast still resends the exact same bytes (so a genuine re-broadcast
+ * still dedups correctly). The fold only reads the first three tokens
+ * (`<op> <x> <y>`), so the nonce is inert to game state.
  */
 export async function submitReefMove(
   rpc: SwimchainRpc,
@@ -696,7 +707,10 @@ export async function submitReefMove(
   seq: number,
   onProgress?: ProgressCallback
 ): Promise<string> {
-  const body = `${op} ${x} ${y} ${regionId}#${seq}~${id.publicKeyHex.slice(0, 10)}`;
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  const body = `${op} ${x} ${y} ${regionId}#${seq}~${id.publicKeyHex.slice(0, 10)}~${nonce}`;
   return submitMinedReply(rpc, id, regionId, body, onProgress);
 }
 
