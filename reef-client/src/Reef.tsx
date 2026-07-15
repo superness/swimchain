@@ -13,6 +13,8 @@ interface Props {
   myPubkeyHex: string;
   myAddress: string;
   canAct: boolean;
+  /** The tile a move is currently taking root on — animates in place. */
+  growingCell: { x: number; y: number } | null;
   onAct: (x: number, y: number, intent: Intent) => void;
 }
 
@@ -22,8 +24,9 @@ function vitalityScale(v: number): number {
   return 0.28 + 0.72 * t; // 28%..100% of the tile
 }
 
-export function Reef({ state, myPubkeyHex, myAddress, canAct, onAct }: Props) {
+export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct }: Props) {
   const { w, h } = state.header;
+  const myHue = ownerHue(myPubkeyHex);
 
   const cellsView = useMemo(() => {
     const out: Array<{ x: number; y: number; intent: Intent | null }> = [];
@@ -65,7 +68,12 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, onAct }: Props) {
           );
         }
 
-        const base = cell
+        const growing = !!growingCell && growingCell.x === x && growingCell.y === y;
+        if (growing) cls += ' growing';
+
+        const base = growing
+          ? `(${x},${y}) taking root…`
+          : cell
           ? `(${x},${y}) ${isMe(cell.owner) ? 'yours' : 'coral'} · vitality ${cell.vitality}/${MAX_VITALITY}` +
             (cell.vitality <= 1 ? ' — recedes next tide!' : '') +
             (state.frontier.has(cellKey(x, y)) ? ' · still taking hold…' : '')
@@ -91,6 +99,13 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, onAct }: Props) {
             onClick={() => actionable && intent && onAct(x, y, intent)}
           >
             {coral}
+            {growing && (
+              <span className="sprout" style={{ ['--grow-hue' as string]: String(myHue) }}>
+                <span className="sprout-core" />
+                <span className="sprout-ring" />
+                <span className="sprout-ring r2" />
+              </span>
+            )}
           </button>
         );
       })}

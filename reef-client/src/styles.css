@@ -109,6 +109,57 @@ h2 { font-size: 18px; margin: 0; }
   50% { opacity: 0.9; }
 }
 
+/* A move taking root: the coral sprouts in place (a pulsing core + sonar rings
+   rippling out in the player's colour) instead of a blocking modal. The board
+   stays live around it. --grow-hue is the local player's hue. */
+.cell.growing { z-index: 2; }
+.sprout {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.sprout-core {
+  width: 34%;
+  height: 34%;
+  border-radius: 50%;
+  background: hsl(var(--grow-hue) 75% 58%);
+  box-shadow: 0 0 8px 1px hsl(var(--grow-hue) 80% 60% / 0.7);
+  animation: sprout-core 1.05s ease-in-out infinite;
+}
+.sprout-ring, .sprout-ring.r2 {
+  position: absolute;
+  width: 30%;
+  height: 30%;
+  border-radius: 50%;
+  border: 2px solid hsl(var(--grow-hue) 78% 62%);
+  animation: sprout-ring 1.6s ease-out infinite;
+}
+.sprout-ring.r2 { animation-delay: 0.8s; }
+@keyframes sprout-core {
+  0%, 100% { transform: scale(0.72); opacity: 0.85; }
+  50% { transform: scale(1); opacity: 1; }
+}
+@keyframes sprout-ring {
+  0% { transform: scale(0.5); opacity: 0.7; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+
+/* Non-blocking inline "growing" chip in the status line. */
+.growing-status { color: var(--shallow, #6ed3c2); }
+.growing-status .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--shallow, #6ed3c2);
+  margin-right: 4px;
+  vertical-align: middle;
+  animation: settling 1s ease-in-out infinite;
+}
+
 /* Actionable affordances for the local player. */
 .cell.act { cursor: pointer; }
 .cell.act.seed { box-shadow: inset 0 0 0 2px rgba(110, 211, 194, 0.55); }

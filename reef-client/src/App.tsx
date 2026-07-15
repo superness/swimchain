@@ -29,7 +29,14 @@ import {
   type Identity,
 } from './lib/reefEngine';
 
-type Mining = { active: boolean; label: string; flavor: string } | null;
+// `cell` is the tile a move is taking root on (absent while founding a reef),
+// so the board can animate the growth in place instead of blocking the screen.
+type Mining = {
+  active: boolean;
+  label: string;
+  flavor: string;
+  cell?: { x: number; y: number };
+} | null;
 
 // Ambient lines shown while a move takes hold (the few seconds of PoW). The
 // player is growing coral, not mining hashes — so we give them the reef, not a
@@ -286,7 +293,7 @@ export function App() {
           : intent.kind === 'contest'
             ? 'Contesting'
             : 'Tending';
-    setMining({ active: true, label: `${verb} at (${x},${y})`, flavor: pickFlavor(GROW_FLAVOR) });
+    setMining({ active: true, label: `${verb} at (${x},${y})`, flavor: pickFlavor(GROW_FLAVOR), cell: { x, y } });
     try {
       const cid = await submitReefMove(rpc, me, openId, intent.op, x, y, state.moves.length);
       // Track our own move so we can explain its settled outcome once it folds.
@@ -418,15 +425,20 @@ export function App() {
               myPubkeyHex={publicKeyHex!}
               myAddress={address!}
               canAct={!mining}
+              growingCell={mining?.cell ?? null}
               onAct={onAct}
             />
             <div className="status">
               <div className="season">
                 <strong>Season {state.season}</strong> · {state.epochsLeftInSeason} tide{state.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
                 <span className="fine"> · tide {state.epoch}</span>
-                {state.tentative > 0 && (
+                {mining?.cell ? (
+                  <span className="fine growing-status">
+                    {' '}· <span className="dot" /> {mining.label} — <em>{mining.flavor}</em>
+                  </span>
+                ) : state.tentative > 0 ? (
                   <span className="fine tentative"> · {state.tentative} growth{state.tentative === 1 ? '' : 's'} drifting in…</span>
-                )}
+                ) : null}
               </div>
 
               <div className="budget">
@@ -497,7 +509,10 @@ export function App() {
         )
       )}
 
-      {mining?.active && (
+      {/* Founding a reef has no board to animate on yet, so it keeps a light
+          loader. In-reef moves animate on the tile itself (see growingCell) —
+          no blocking overlay. */}
+      {mining?.active && !mining.cell && (
         <div className="overlay">
           <div className="mining">
             <div className="spinner" />
