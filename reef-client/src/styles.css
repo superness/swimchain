@@ -63,6 +63,7 @@ h2 { font-size: 18px; margin: 0; }
 
 /* ── The reef grid ─────────────────────────────────────────────────────────── */
 .reef {
+  position: relative;
   width: min(94vw, 540px);
   margin: 16px auto;
   display: grid;
@@ -71,6 +72,56 @@ h2 { font-size: 18px; margin: 0; }
   background: var(--water);
   border: 2px solid var(--line);
   border-radius: 6px;
+}
+/* While a claim is resolving the whole board charges — a breathing glow so it
+   reads as the reef straining to win the spot, not one idle tile. */
+.reef.claiming { animation: reef-charge 1.5s ease-in-out infinite; }
+@keyframes reef-charge {
+  0%, 100% { border-color: var(--line); }
+  50% { border-color: var(--shallow, #6ed3c2); }
+}
+/* Energy layer: concentric waves ripple out from the target tile (--cx,--cy)
+   across the entire board in the player's colour, plus a soft focal glow. */
+.reef-claim {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+  box-shadow: inset 0 0 34px 6px hsl(var(--grow-hue) 70% 55% / 0.10);
+}
+.reef-claim .claim-glow {
+  position: absolute;
+  left: var(--cx);
+  top: var(--cy);
+  width: 46%;
+  height: 46%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, hsl(var(--grow-hue) 82% 60% / 0.30), transparent 68%);
+  animation: claim-glow 1.2s ease-in-out infinite;
+}
+.reef-claim .claim-wave {
+  position: absolute;
+  left: var(--cx);
+  top: var(--cy);
+  width: 22%;
+  height: 22%;
+  border-radius: 50%;
+  border: 2px solid hsl(var(--grow-hue) 80% 64% / 0.6);
+  transform: translate(-50%, -50%) scale(0.3);
+  animation: claim-wave 2.1s ease-out infinite;
+}
+.reef-claim .claim-wave.w2 { animation-delay: 0.7s; }
+.reef-claim .claim-wave.w3 { animation-delay: 1.4s; }
+@keyframes claim-wave {
+  0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0.65; }
+  100% { transform: translate(-50%, -50%) scale(7); opacity: 0; }
+}
+@keyframes claim-glow {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.95; }
 }
 .cell {
   aspect-ratio: 1;

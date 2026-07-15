@@ -41,7 +41,30 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct
   const isMe = (owner: string) => owner === myPubkeyHex || owner === myAddress;
 
   return (
-    <div className="reef" style={{ gridTemplateColumns: `repeat(${w}, 1fr)` }}>
+    <div
+      className={`reef${growingCell ? ' claiming' : ''}`}
+      style={{ gridTemplateColumns: `repeat(${w}, 1fr)` }}
+    >
+      {/* Whole-board "the reef is working to claim this spot" layer: energy waves
+          ripple out from the target tile across the entire grid while the move
+          takes hold, with a soft board-wide charge glow. */}
+      {growingCell && (
+        <div
+          className="reef-claim"
+          style={
+            {
+              '--cx': `${((growingCell.x + 0.5) / w) * 100}%`,
+              '--cy': `${((growingCell.y + 0.5) / h) * 100}%`,
+              '--grow-hue': String(myHue),
+            } as React.CSSProperties
+          }
+        >
+          <span className="claim-glow" />
+          <span className="claim-wave" />
+          <span className="claim-wave w2" />
+          <span className="claim-wave w3" />
+        </div>
+      )}
       {cellsView.map(({ x, y, intent }) => {
         const cell = state.cells.get(cellKey(x, y));
         const actionable = !!intent && intent.affordable;
