@@ -130,9 +130,19 @@ export function App() {
     if (!rpc || !connected || !publicKeyHex || !openId) return;
     try {
       const loaded = await loadRegion(rpc, openId);
-      // Monotonic: never drop below what we're showing, so an optimistic move isn't
-      // clobbered by a poll that reads only finalized replies.
-      setState((prev) => (!prev || loaded.moves.length >= prev.moves.length ? loaded : prev));
+      // Keep our own not-yet-sealed optimistic moves visible until the chain
+      // fold actually reflects them. Gate on MY move count, not the global one:
+      // the region is shared, so other players' moves bump `moves.length`
+      // independently — comparing the global count let an unrelated move seal
+      // and clobber our still-in-flight growth (the grid "rubberbanded" back).
+      // Once our moves seal, `loaded` counts them too and we adopt the exact
+      // chain state (picking up everyone else's moves and any decay).
+      setState((prev) => {
+        if (!prev) return loaded;
+        const mine = (s: ReefState) =>
+          s.moves.reduce((n, m) => (m.author === publicKeyHex ? n + 1 : n), 0);
+        return mine(loaded) >= mine(prev) ? loaded : prev;
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to load region');
     }
