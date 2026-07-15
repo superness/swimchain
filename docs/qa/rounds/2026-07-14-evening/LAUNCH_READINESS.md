@@ -37,11 +37,16 @@ unattended restart can partition or poison the chain again.
    that stub then fights the real chain. A node should not form blocks until
    it has synced with at least one peer (or a grace period expires). Small
    node-side change, removes the incident class at its source.
-2. **Genesis must move off the operator's PC.** It is currently the
-   auto-approve sponsor, the name authority, and (post-recovery) the chain
-   archive — on a machine that sleeps. Relocate the genesis identity + node to
-   an always-on droplet; the PC becomes a normal dev node. (This was already
-   flagged for game onboarding; tonight made it a consensus concern too.)
+2. **Genesis goes COLD — done 2026-07-14 late.** (Replaces an earlier
+   "relocate genesis to an always-on droplet" recommendation, retracted: a
+   root key belongs offline, not on the network's most exposed host. The
+   services the genesis node happened to provide were the real dependency,
+   and they all moved: game/newcomer sponsorship → the faucet identity on the
+   bot droplet; chain serving → the droplets; the operator's QA node →
+   should use a bespoke dev identity, faucet-sponsored.) All six open
+   genesis offers were sign-cancelled (tombstones verified on the seed) and
+   the genesis node is shut down. The key comes up only for deliberate,
+   brief root-sponsor ceremonies.
 3. **Non-destructive rollback.** (Replaces an earlier "chain snapshot"
    recommendation, retracted — backing up a chain is a non-concept; the
    network's replicas ARE the durability, and Bitcoin-style nodes never
