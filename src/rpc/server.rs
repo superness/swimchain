@@ -644,7 +644,23 @@ async fn handle_request(
         // not missing auth headers (client hasn't created identity yet)
         let is_missing_auth = matches!(e, RpcError::AuthenticationRequired);
         if !is_missing_auth {
-            state.rate_limiter.record_auth_failure(client_ip).await;
+            // Fingerprint the failing credential so the limiter can dedupe:
+            // a stale cookie re-polled by a client is ONE failure, not one
+            // per request. For signature auth the identity is the credential.
+            let credential_fingerprint = {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                if has_signature_headers {
+                    cs_identity.hash(&mut hasher);
+                } else {
+                    auth_header.hash(&mut hasher);
+                }
+                hasher.finish()
+            };
+            state
+                .rate_limiter
+                .record_auth_failure(client_ip, credential_fingerprint)
+                .await;
         }
 
         if !is_auth_exempt {
