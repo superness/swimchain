@@ -8,6 +8,7 @@
 //!
 //! - `followed_spaces`: user_pk(32) || space_id(16) → timestamp(8 BE)
 //! - `saved_posts`:     user_pk(32) || content_id(32) → timestamp(8 BE)
+//! - `hidden_spaces`:   user_pk(32) || space_id(16) → timestamp(8 BE)
 
 use std::path::Path;
 
@@ -21,6 +22,7 @@ pub struct PrefsStore {
     db: Db,
     followed_spaces: sled::Tree,
     saved_posts: sled::Tree,
+    hidden_spaces: sled::Tree,
     meta: sled::Tree,
 }
 
@@ -39,6 +41,9 @@ impl PrefsStore {
         let saved_posts = db
             .open_tree("saved_posts")
             .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+        let hidden_spaces = db
+            .open_tree("hidden_spaces")
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
         let meta = db
             .open_tree("meta")
             .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
@@ -46,6 +51,7 @@ impl PrefsStore {
             db,
             followed_spaces,
             saved_posts,
+            hidden_spaces,
             meta,
         })
     }
@@ -121,6 +127,62 @@ impl PrefsStore {
     ) -> Result<Vec<([u8; 16], u64)>, StorageError> {
         let mut out = Vec::new();
         for result in self.followed_spaces.scan_prefix(user_pk) {
+            let (key, value) = result.map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+            if key.len() != 48 {
+                continue;
+            }
+            let mut space_id = [0u8; 16];
+            space_id.copy_from_slice(&key[32..48]);
+            let ts = value
+                .as_ref()
+                .try_into()
+                .map(u64::from_be_bytes)
+                .unwrap_or(0);
+            out.push((space_id, ts));
+        }
+        Ok(out)
+    }
+
+    /// Hide a space from this identity's browse surfaces. Idempotent.
+    pub fn hide_space(
+        &self,
+        user_pk: &[u8; 32],
+        space_id: &[u8; 16],
+        timestamp: u64,
+    ) -> Result<(), StorageError> {
+        let key = Self::follow_key(user_pk, space_id);
+        if self
+            .hidden_spaces
+            .get(key)
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?
+            .is_none()
+        {
+            self.hidden_spaces
+                .insert(key, &timestamp.to_be_bytes())
+                .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Unhide a space. Idempotent.
+    pub fn unhide_space(
+        &self,
+        user_pk: &[u8; 32],
+        space_id: &[u8; 16],
+    ) -> Result<(), StorageError> {
+        self.hidden_spaces
+            .remove(Self::follow_key(user_pk, space_id))
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// All spaces this identity hid, with the hide timestamp.
+    pub fn hidden_spaces(
+        &self,
+        user_pk: &[u8; 32],
+    ) -> Result<Vec<([u8; 16], u64)>, StorageError> {
+        let mut out = Vec::new();
+        for result in self.hidden_spaces.scan_prefix(user_pk) {
             let (key, value) = result.map_err(|e| StorageError::DatabaseError(e.to_string()))?;
             if key.len() != 48 {
                 continue;
@@ -221,6 +283,23 @@ mod tests {
         assert!(store.followed_spaces(&user).unwrap().is_empty());
         // Unfollow of a non-followed space is a no-op.
         store.unfollow_space(&user, &space).unwrap();
+    }
+
+    #[test]
+    fn hide_unhide_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let store = PrefsStore::open(dir.path()).unwrap();
+        let user = pk(1);
+        let space = [9u8; 16];
+
+        store.hide_space(&user, &space, 100).unwrap();
+        store.hide_space(&user, &space, 200).unwrap();
+        assert_eq!(store.hidden_spaces(&user).unwrap(), vec![(space, 100)]);
+        // Hidden is independent of followed.
+        assert!(store.followed_spaces(&user).unwrap().is_empty());
+
+        store.unhide_space(&user, &space).unwrap();
+        assert!(store.hidden_spaces(&user).unwrap().is_empty());
     }
 
     #[test]

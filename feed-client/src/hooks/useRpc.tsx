@@ -361,7 +361,7 @@ export function useNetworkStatus(): { status: SyncStatus | null; loading: boolea
 /**
  * Hook to fetch spaces from the node
  */
-export function useSpaces(): { spaces: Space[]; loading: boolean; error: string | null; refetch: () => Promise<void> } {
+export function useSpaces(): { spaces: Space[]; loading: boolean; error: string | null; refetch: (skipCache?: boolean) => Promise<void> } {
   const { rpc, connected } = useRpc();
   const [spaces, setSpaces] = useState<Space[]>([]);
   const [loading, setLoading] = useState(true);

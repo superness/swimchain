@@ -711,6 +711,9 @@ pub struct ListSpacesParams {
     /// Offset for pagination
     #[serde(default)]
     pub offset: usize,
+    /// Include spaces the node identity has hidden (for the manage-hidden UI)
+    #[serde(default)]
+    pub include_hidden: bool,
 }
 
 fn default_spaces_limit() -> usize {

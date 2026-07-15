@@ -1148,6 +1148,9 @@ impl RpcMethods {
             "follow_space" => self.follow_space(params, id).await,
             "unfollow_space" => self.unfollow_space(params, id).await,
             "list_followed_spaces" => self.list_followed_spaces(params, id).await,
+            "hide_space" => self.hide_space(params, id).await,
+            "unhide_space" => self.unhide_space(params, id).await,
+            "list_hidden_spaces" => self.list_hidden_spaces(params, id).await,
             "save_post" => self.save_post(params, id).await,
             "unsave_post" => self.unsave_post(params, id).await,
             "list_saved_posts" => self.list_saved_posts(params, id).await,
@@ -4724,7 +4727,12 @@ impl RpcMethods {
             // config.toml overrides; matching only the raw registry missed every
             // locally-named space (R3: search "commons" found nothing while
             // Discover showed "The Commons").
+            let hidden = self.node_hidden_space_ids();
             for space in self.resolved_space_list() {
+                // Hidden means hidden — search doesn't resurface it.
+                if hidden.contains(&space.space_id) {
+                    continue;
+                }
                 let Some(ref name) = space.name else { continue };
                 let name_lower = name.to_lowercase();
                 if !search_terms.iter().any(|term| name_lower.contains(term)) {
@@ -5296,7 +5304,16 @@ impl RpcMethods {
         // Fast path: serve from the short-TTL cache. Building the list below does full
         // chain + content-store scans, and the feed polls this rapidly — without the cache
         // that pegs every core and RPC stops responding. Pagination is applied per-request.
-        let spaces = self.resolved_space_list();
+        let mut spaces = self.resolved_space_list();
+
+        // Right-click → Hide Space: drop spaces the node identity has hidden,
+        // unless the caller (the manage-hidden UI) asks for everything.
+        if !params.include_hidden {
+            let hidden = self.node_hidden_space_ids();
+            if !hidden.is_empty() {
+                spaces.retain(|s| !hidden.contains(&s.space_id));
+            }
+        }
 
         // total reflects the public spaces actually returned (after hiding private/system).
         let total = spaces.len();
@@ -11348,6 +11365,106 @@ impl RpcMethods {
             }
             Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
         }
+    }
+
+    /// Hide a space from this identity's browse surfaces (right-click → hide).
+    /// The node filters hidden spaces out of `list_spaces` for its own
+    /// identity, so every client's space list cleans up at once.
+    async fn hide_space(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let space_id = match params
+            .get("space_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'space_id'".to_string())
+            .and_then(|s| decode_space_id(s))
+        {
+            Ok(s) => s,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        match prefs.hide_space(&user_pk, &space_id, now) {
+            Ok(()) => RpcResponse::success(serde_json::json!({ "success": true }), id),
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// Unhide a space for this identity.
+    async fn unhide_space(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let space_id = match params
+            .get("space_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Missing 'space_id'".to_string())
+            .and_then(|s| decode_space_id(s))
+        {
+            Ok(s) => s,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        match prefs.unhide_space(&user_pk, &space_id) {
+            Ok(()) => RpcResponse::success(serde_json::json!({ "success": true }), id),
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// List the spaces this identity has hidden.
+    async fn list_hidden_spaces(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        match prefs.hidden_spaces(&user_pk) {
+            Ok(hidden) => {
+                let spaces: Vec<Value> = hidden
+                    .iter()
+                    .map(|(space_id, ts)| {
+                        serde_json::json!({
+                            "space_id": encode_space_id(space_id),
+                            "space_id_hex": hex::encode(space_id),
+                            "hidden_at": ts,
+                        })
+                    })
+                    .collect();
+                RpcResponse::success(serde_json::json!({ "spaces": spaces }), id)
+            }
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// The NODE identity's hidden space ids in bech32 form, for filtering
+    /// browse lists. Empty when no prefs store or nothing hidden.
+    fn node_hidden_space_ids(&self) -> std::collections::HashSet<String> {
+        self.node
+            .prefs_store
+            .as_ref()
+            .and_then(|prefs| prefs.hidden_spaces(&self.node.keypair.public_key.0).ok())
+            .map(|hidden| {
+                hidden
+                    .iter()
+                    .map(|(space_id, _)| encode_space_id(space_id))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Save a post for this identity.

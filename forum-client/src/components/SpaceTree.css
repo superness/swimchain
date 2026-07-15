@@ -162,3 +162,41 @@
   font-size: var(--font-size-sm);
   text-align: center;
 }
+
+/* Right-click → hide-a-space menu */
+.space-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 220px;
+  padding: 4px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.space-context-menu__item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.space-context-menu__item:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.space-context-menu__hint {
+  padding: 4px 12px 6px;
+  color: var(--color-text-tertiary);
+  font-size: 0.75rem;
+}

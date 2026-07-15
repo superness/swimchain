@@ -14,6 +14,7 @@ import { FollowButton } from '../components/FollowButton';
 import { PrivateSpaceList } from '../components/PrivateSpaceList';
 import { JoinPrivateSpace } from '../components/JoinPrivateSpace';
 import { CreateSpaceModal } from '../components/CreateSpaceModal';
+import { SpaceContextMenu, type SpaceMenuTarget } from '../components/SpaceContextMenu';
 import './Discover.css';
 
 interface SpaceCardProps {
@@ -21,9 +22,11 @@ interface SpaceCardProps {
   name: string | null;
   postCount: number;
   lastActivity: number | null;
+  /** Right-click → hide-a-space menu. */
+  onContextMenu?: (e: React.MouseEvent, spaceId: string, name: string | null) => void;
 }
 
-function SpaceCard({ spaceId, name, postCount, lastActivity }: SpaceCardProps): JSX.Element {
+function SpaceCard({ spaceId, name, postCount, lastActivity, onContextMenu }: SpaceCardProps): JSX.Element {
   const { isFollowing, isMuted, toggle, toggleMute, loading } = useFollowSpace(spaceId);
 
   const displayName = name ?? spaceId.substring(0, 12) + '...';
@@ -32,7 +35,10 @@ function SpaceCard({ spaceId, name, postCount, lastActivity }: SpaceCardProps): 
     : 'No recent activity';
 
   return (
-    <div className="space-card">
+    <div
+      className="space-card"
+      onContextMenu={onContextMenu ? (e) => onContextMenu(e, spaceId, name) : undefined}
+    >
       <div className="space-card__icon" aria-hidden="true">
         #
       </div>
@@ -123,7 +129,13 @@ export function Discover(): JSX.Element {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'spaces' | 'users'>('spaces');
   const [showCreate, setShowCreate] = useState(false);
+  const [spaceMenu, setSpaceMenu] = useState<SpaceMenuTarget | null>(null);
   const { spaces, loading, error, refetch: refresh } = useSpaces();
+
+  const openSpaceMenu = (e: React.MouseEvent, spaceId: string, name: string | null) => {
+    e.preventDefault();
+    setSpaceMenu({ x: e.clientX, y: e.clientY, spaceId, name });
+  };
   const { preferences } = useFeedPreferences();
   const { identity } = useStoredIdentity();
 
@@ -196,6 +208,14 @@ export function Discover(): JSX.Element {
         <CreateSpaceModal onClose={() => setShowCreate(false)} />
       )}
 
+      {spaceMenu && (
+        <SpaceContextMenu
+          target={spaceMenu}
+          onClose={() => setSpaceMenu(null)}
+          onHidden={() => refresh(true)}
+        />
+      )}
+
       {/* Search */}
       <div className="discover-page__search">
         <input
@@ -246,7 +266,7 @@ export function Discover(): JSX.Element {
             {error && (
               <div className="discover-page__error" role="alert">
                 <span>Failed to load spaces</span>
-                <button onClick={refresh} type="button">Retry</button>
+                <button onClick={() => refresh()} type="button">Retry</button>
               </div>
             )}
 
@@ -266,6 +286,7 @@ export function Discover(): JSX.Element {
                           name={space.name}
                           postCount={space.postCount}
                           lastActivity={space.createdAt}
+                          onContextMenu={openSpaceMenu}
                         />
                       ))}
                     </div>
@@ -286,6 +307,7 @@ export function Discover(): JSX.Element {
                           name={space.name}
                           postCount={space.postCount}
                           lastActivity={space.createdAt}
+                          onContextMenu={openSpaceMenu}
                         />
                       ))}
                     </div>

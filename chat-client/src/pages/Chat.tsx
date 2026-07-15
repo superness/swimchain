@@ -37,7 +37,7 @@ export function Chat() {
   const { identity, sign: signAsync, publicKeyBytes, hasIdentity, mode } = useChatIdentity();
 
   // Fetch servers and channels
-  const { servers, loading: serversLoading } = useServers();
+  const { servers, loading: serversLoading, refetch: refetchServers } = useServers();
   const { channels, loading: channelsLoading, markRead: markChannelRead, refetch: refetchChannels } = useChannels(serverId ?? '');
 
   // Get current server info
@@ -483,6 +483,7 @@ export function Chat() {
           hasNotification: false,
         }))}
         currentServerId={serverId}
+        onServerHidden={refetchServers}
       />
 
       {/* Channel sidebar (in a server) OR the Direct Messages home sidebar (@me). */}

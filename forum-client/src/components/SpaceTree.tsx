@@ -2,9 +2,10 @@
  * Hierarchical space navigation tree
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { useSpaces } from '../hooks/useRpc';
+import { useRpc, useSpaces } from '../hooks/useRpc';
+import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { formatErrorMessage } from '../lib/errorMessages';
 import type { Space } from '../types';
 import './SpaceTree.css';
@@ -12,9 +13,10 @@ import './SpaceTree.css';
 interface SpaceNodeProps {
   space: Space;
   level: number;
+  onContextMenu: (e: React.MouseEvent, space: Space) => void;
 }
 
-function SpaceNode({ space, level }: SpaceNodeProps): JSX.Element {
+function SpaceNode({ space, level, onContextMenu }: SpaceNodeProps): JSX.Element {
   // TODO: Implement hierarchical spaces - for now, all spaces are flat
 
   return (
@@ -22,6 +24,7 @@ function SpaceNode({ space, level }: SpaceNodeProps): JSX.Element {
       <div
         className="space-item"
         style={{ paddingLeft: `${level * 16 + 8}px` }}
+        onContextMenu={(e) => onContextMenu(e, space)}
       >
         {/* Placeholder for expand/collapse when hierarchical spaces are added */}
         <span className="space-toggle-placeholder" aria-hidden="true" />
@@ -51,7 +54,42 @@ function SpaceNode({ space, level }: SpaceNodeProps): JSX.Element {
 
 export function SpaceTree(): JSX.Element {
   const { spaces, loading, error, refetch } = useSpaces();
+  const { rpc } = useRpc();
+  const { identity: nodeIdentity } = useNodeIdentity();
   const [retrying, setRetrying] = useState(false);
+  // Right-click → hide-a-space (node-side pref; hides across all clients).
+  const [menu, setMenu] = useState<{ x: number; y: number; space: Space } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close();
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  const openMenu = (e: React.MouseEvent, space: Space) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, space });
+  };
+
+  const hideSpace = async () => {
+    const target = menu?.space;
+    setMenu(null);
+    if (!target || !rpc || !nodeIdentity?.publicKey) return;
+    try {
+      await rpc.call('hide_space', { user: nodeIdentity.publicKey, space_id: target.id });
+      await refetch();
+    } catch (err) {
+      console.warn('[HideSpace] hide_space failed:', err);
+    }
+  };
 
   const handleRetry = async () => {
     setRetrying(true);
@@ -112,9 +150,23 @@ export function SpaceTree(): JSX.Element {
     <nav className="space-tree" aria-label="Spaces">
       <ul className="space-list" role="tree">
         {spaces.map((space) => (
-          <SpaceNode key={space.id} space={space} level={0} />
+          <SpaceNode key={space.id} space={space} level={0} onContextMenu={openMenu} />
         ))}
       </ul>
+
+      {menu && (
+        <div
+          className="space-context-menu"
+          style={{ left: menu.x, top: menu.y }}
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button type="button" className="space-context-menu__item" role="menuitem" onClick={hideSpace}>
+            🚫 Hide “{menu.space.name}”
+          </button>
+          <div className="space-context-menu__hint">Hidden everywhere · undo in feed Settings</div>
+        </div>
+      )}
     </nav>
   );
 }

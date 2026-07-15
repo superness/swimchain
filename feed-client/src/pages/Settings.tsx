@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useFeedPreferences } from '../hooks/useFeedPreferences';
 import { BlocklistManager } from '../components/BlocklistManager';
+import { HiddenSpacesManager } from '../components/HiddenSpacesManager';
 import { DebugPanel } from '../components/DebugPanel';
 import { useToast } from '../components/Toast';
 import './Settings.css';
@@ -14,6 +15,7 @@ export function Settings(): JSX.Element {
   const { preferences, updateSettings, loading } = useFeedPreferences();
   const { success } = useToast();
   const [showBlocklist, setShowBlocklist] = useState(false);
+  const [showHiddenSpaces, setShowHiddenSpaces] = useState(false);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
 
   const handleToggle = (key: 'compactMode' | 'showRepliesInFeed' | 'showEngagementsInFeed', value: boolean) => {
@@ -127,6 +129,25 @@ export function Settings(): JSX.Element {
                 <polyline points="9 18 15 12 9 6" />
               </svg>
             </button>
+
+            <button
+              type="button"
+              className="settings-action-btn"
+              onClick={() => setShowHiddenSpaces(true)}
+            >
+              <div className="settings-action-btn__content">
+                <span className="settings-action-btn__icon" aria-hidden="true">🙈</span>
+                <div className="settings-action-btn__info">
+                  <span className="settings-action-btn__label">Hidden Spaces</span>
+                  <span className="settings-action-btn__description">
+                    Spaces you've hidden from Discover and your feed (right-click a space to hide it)
+                  </span>
+                </div>
+              </div>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </button>
           </div>
         </section>
 
@@ -207,6 +228,35 @@ export function Settings(): JSX.Element {
               </button>
             </div>
             <BlocklistManager />
+          </div>
+        </div>
+      )}
+
+      {/* Hidden Spaces Modal */}
+      {showHiddenSpaces && (
+        <div className="settings-modal-overlay" onClick={() => setShowHiddenSpaces(false)}>
+          <div
+            className="settings-modal"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="hidden-spaces-title"
+          >
+            <div className="settings-modal__header">
+              <h3 id="hidden-spaces-title">Hidden Spaces</h3>
+              <button
+                type="button"
+                className="settings-modal__close"
+                onClick={() => setShowHiddenSpaces(false)}
+                aria-label="Close"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <HiddenSpacesManager />
           </div>
         </div>
       )}

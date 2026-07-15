@@ -5,7 +5,10 @@
  * Maps: Server = Space in Swimchain terminology.
  */
 
+import { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
+import { useRpc } from '../hooks/useRpc';
+import { useChatIdentity } from '../hooks/useChatIdentity';
 import './ServerList.css';
 
 interface Server {
@@ -20,6 +23,8 @@ interface ServerListProps {
   servers: Server[];
   currentServerId?: string;
   onServerSelect?: (serverId: string) => void;
+  /** Called after a server is hidden via right-click (refetch the list). */
+  onServerHidden?: () => void;
 }
 
 /**
@@ -57,7 +62,15 @@ function getServerColor(id: string): string {
   return colors[Math.abs(hash) % colors.length] ?? colors[0]!;
 }
 
-function ServerIcon({ server, isActive }: { server: Server; isActive: boolean }) {
+function ServerIcon({
+  server,
+  isActive,
+  onContextMenu,
+}: {
+  server: Server;
+  isActive: boolean;
+  onContextMenu: (e: React.MouseEvent, server: Server) => void;
+}) {
   const navigate = useNavigate();
   const initials = getServerInitials(server.name);
   const bgColor = getServerColor(server.id);
@@ -74,6 +87,7 @@ function ServerIcon({ server, isActive }: { server: Server; isActive: boolean })
       <button
         className={`server-icon ${isActive ? 'active' : ''}`}
         onClick={handleClick}
+        onContextMenu={(e) => onContextMenu(e, server)}
         title={server.name}
         aria-label={`${server.name}${server.unreadCount > 0 ? `, ${server.unreadCount} unread` : ''}`}
       >
@@ -92,7 +106,44 @@ function ServerIcon({ server, isActive }: { server: Server; isActive: boolean })
   );
 }
 
-export function ServerList({ servers, currentServerId, onServerSelect: _onServerSelect }: ServerListProps) {
+export function ServerList({ servers, currentServerId, onServerSelect: _onServerSelect, onServerHidden }: ServerListProps) {
+  const { rpc } = useRpc();
+  const { identity } = useChatIdentity();
+  // Right-click → hide-a-space. Hiding is a node-side pref, so the space
+  // disappears from every client's browse surfaces, not just chat's rail.
+  const [menu, setMenu] = useState<{ x: number; y: number; server: Server } | null>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close();
+    window.addEventListener('click', close);
+    window.addEventListener('contextmenu', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('contextmenu', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
+
+  const openMenu = (e: React.MouseEvent, server: Server) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY, server });
+  };
+
+  const hideServer = async () => {
+    const target = menu?.server;
+    setMenu(null);
+    if (!target || !rpc || !identity?.publicKey) return;
+    try {
+      await rpc.call('hide_space', { user: identity.publicKey, space_id: target.id });
+      onServerHidden?.();
+    } catch (e) {
+      console.warn('[HideSpace] hide_space failed:', e);
+    }
+  };
+
   return (
     <nav className="server-list" aria-label="Servers">
       {/* Home button - DMs and activity */}
@@ -119,10 +170,24 @@ export function ServerList({ servers, currentServerId, onServerSelect: _onServer
             key={server.id}
             server={server}
             isActive={server.id === currentServerId}
+            onContextMenu={openMenu}
           />
         ))}
       </div>
 
+      {menu && (
+        <div
+          className="server-context-menu"
+          style={{ left: menu.x, top: menu.y }}
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button type="button" className="server-context-menu__item" role="menuitem" onClick={hideServer}>
+            🚫 Hide “{menu.server.name}”
+          </button>
+          <div className="server-context-menu__hint">Hidden everywhere · undo in feed Settings</div>
+        </div>
+      )}
     </nav>
   );
 }
