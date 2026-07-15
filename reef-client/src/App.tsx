@@ -7,6 +7,7 @@ import {
   createNewIdentity,
 } from '@swimchain/react';
 import { Reef } from './Reef';
+import { useUrlRoom, roomLink } from './lib/useUrlRoom';
 import {
   REEF_SPACE,
   createRegion,
@@ -22,10 +23,12 @@ import {
   COST_GROW,
   COST_CONTEST,
   TEND_CAP,
+  SEASON_EPOCHS,
   type Intent,
   type ReefState,
   type RegionSummary,
   type SeasonResult,
+  type TideSummary,
   type Identity,
 } from './lib/reefEngine';
 
@@ -60,8 +63,11 @@ export function App() {
   const { keypair, publicKeyHex, address, sign } = useStoredKeypair();
 
   const [regions, setRegions] = useState<RegionSummary[]>([]);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // The open reef lives in the URL (?r=<id>): Back/Forward return to the reef
+  // list, and the URL is a shareable link to invite others into this reef.
+  const [openId, setOpenId] = useUrlRoom('r');
   const [state, setState] = useState<ReefState | null>(null);
+  const [copied, setCopied] = useState(false);
   // Consecutive polls where we held optimistic state because the chain fold
   // hadn't caught up to our own moves. Bounded so a move that never seals
   // (e.g. a dedup-collided body) can't strand the grid on a phantom forever.
@@ -76,6 +82,11 @@ export function App() {
   const mySubmittedRef = useRef<Set<string>>(new Set());
   const notifiedRef = useRef<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  // End-of-round report: when the tide turns, we pause the reef and show the
+  // player a real summary of what happened (decay, points banked, territory
+  // change) that they must acknowledge — the game's "round over" beat.
+  const [tideReport, setTideReport] = useState<{ summary: TideSummary; tidesPassed: number } | null>(null);
+  const prevTideEpoch = useRef<number | null>(null);
   // Onboarding: a brand-new identity must be sponsored before it can post/move.
   // We claim a standing auto-approve offer automatically (one-click play).
   const [sponsored, setSponsored] = useState(false);
@@ -212,7 +223,41 @@ export function App() {
     mySubmittedRef.current = new Set();
     notifiedRef.current = new Set();
     setNotice(null);
+    prevTideEpoch.current = null;
+    setTideReport(null);
+    setCopied(false);
+    // Clear the board when the open reef changes (incl. via Back/Forward or a deep
+    // link), so one reef's grid never briefly shows under another.
+    setState(null);
   }, [openId]);
+
+  // The tide report: when the fold's epoch advances, pause and show the player
+  // what the tide did. We init prevTideEpoch on first load so opening a region
+  // mid-history never pops a report; only a live tide-turn does. If several
+  // tides passed in one poll (idle catch-up), we report the latest and note how
+  // many. Coalesces naturally: a fresh tide while the modal is open just swaps
+  // in the newer summary instead of stacking.
+  useEffect(() => {
+    if (!state || !publicKeyHex) return;
+    const epoch = state.epoch;
+    const prev = prevTideEpoch.current;
+    if (prev === null) {
+      prevTideEpoch.current = epoch; // initialize silently on region open
+      return;
+    }
+    if (epoch <= prev) return;
+    const tidesPassed = epoch - prev;
+    prevTideEpoch.current = epoch;
+    const summary = state.lastTide;
+    if (!summary) return;
+    // Only interrupt for a tide the player has a stake in — they held coral
+    // going in or coming out, or a season just closed. Pure spectators (and the
+    // empty-lobby case) are never stopped by a modal.
+    const mine = summary.byOwner.get(publicKeyHex);
+    const hasStake = !!mine && (mine.territoryBefore > 0 || mine.territoryAfter > 0);
+    if (!hasStake && !summary.crownedSeason) return;
+    setTideReport({ summary, tidesPassed });
+  }, [state, publicKeyHex]);
 
   // Explain the settled outcome of OUR OWN moves exactly once. Only moves we
   // submitted this session (tracked by content-id) are eligible, so opening a
@@ -295,7 +340,7 @@ export function App() {
             : 'Tending';
     setMining({ active: true, label: `${verb} at (${x},${y})`, flavor: pickFlavor(GROW_FLAVOR), cell: { x, y } });
     try {
-      const cid = await submitReefMove(rpc, me, openId, intent.op, x, y, state.moves.length);
+      const cid = await submitReefMove(rpc, me, openId, intent.op, x, y);
       // Track our own move so we can explain its settled outcome once it folds.
       if (cid) mySubmittedRef.current.add(cid);
       setMining(null);
@@ -305,6 +350,13 @@ export function App() {
       setMining(null);
       setError(e instanceof Error ? e.message : 'the coral would not take — try again');
     }
+  }
+
+  function copyInvite() {
+    if (!openId) return;
+    navigator.clipboard?.writeText(roomLink('r', openId));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   }
 
   // --- render ---
@@ -406,7 +458,10 @@ export function App() {
       ) : (
         state && (
           <section className="game">
-            <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← reefs</button>
+            <div className="game-bar">
+              <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← reefs</button>
+              <button className="link" onClick={copyInvite}>{copied ? 'link copied ✓' : 'copy invite link'}</button>
+            </div>
             {banner && (
               <div className="champion-banner">
                 👑 Season {banner.index} champion:{' '}
@@ -424,7 +479,7 @@ export function App() {
               state={state}
               myPubkeyHex={publicKeyHex!}
               myAddress={address!}
-              canAct={!mining}
+              canAct={!mining && !tideReport}
               growingCell={mining?.cell ?? null}
               onAct={onAct}
             />
@@ -501,8 +556,7 @@ export function App() {
               </div>
               <div className="fine viskey">
                 Coral <strong>shrinks as it fades</strong> · your reef has a <span className="k-mine">bright ring</span> ·
-                a <span className="k-warn">warning ring</span> means it recedes within two tides · a <span className="k-warn">pulsing</span> cell is gone next tide — tend it ·
-                <span className="k-soft">softly breathing</span> coral is still taking hold.
+                a <span className="k-warn">warning ring</span> means it recedes within two tides · a <span className="k-warn">pulsing</span> cell is gone next tide — tend it.
               </div>
             </div>
           </section>
@@ -521,6 +575,113 @@ export function App() {
           </div>
         </div>
       )}
+
+      {tideReport && (
+        <TideReport
+          report={tideReport}
+          myPubkeyHex={publicKeyHex!}
+          onClose={() => setTideReport(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** The end-of-round beat: a real, must-acknowledge summary of the tide that just
+ *  turned — how much coral the tide claimed, what the player banked, how their
+ *  reef changed, and any season crown — framed as the reef's story, not a stat dump. */
+function TideReport({
+  report,
+  myPubkeyHex,
+  onClose,
+}: {
+  report: { summary: TideSummary; tidesPassed: number };
+  myPubkeyHex: string;
+  onClose: () => void;
+}) {
+  const { summary, tidesPassed } = report;
+  const mine = summary.byOwner.get(myPubkeyHex);
+  const terrDelta = mine ? mine.territoryAfter - mine.territoryBefore : 0;
+  const banked = mine?.pointsBanked ?? 0;
+  const lost = mine ? Math.max(0, mine.territoryBefore - mine.territoryAfter) : 0;
+  const gained = mine ? Math.max(0, mine.territoryAfter - mine.territoryBefore) : 0;
+  const tidesToReckoning = SEASON_EPOCHS - (summary.epoch % SEASON_EPOCHS);
+  const crown = summary.crownedSeason;
+  const iWon = crown?.winner === myPubkeyHex;
+
+  // Dismiss on Enter/Escape too — this is a "press to continue" moment.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === 'Escape' || e.key === ' ') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="overlay tide-report-overlay" onClick={onClose}>
+      <div className="tide-report" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="tr-wave" aria-hidden="true" />
+        <header className="tr-head">
+          <div className="tr-kicker">🌊 The tide turns{tidesPassed > 1 ? ` · ${tidesPassed} tides passed` : ''}</div>
+          <h2>Tide {summary.epoch}</h2>
+        </header>
+
+        {crown && (
+          <div className={`tr-crown${iWon ? ' won' : ''}`}>
+            👑 Season {crown.index} closed —{' '}
+            {crown.winner ? (
+              iWon ? <strong>you took the crown!</strong> : <>champion <code>{crown.winner.slice(0, 8)}…</code></>
+            ) : (
+              'no champion'
+            )}
+            <span className="fine"> ({crown.points} pts) · a new season opens</span>
+          </div>
+        )}
+
+        <div className="tr-hero">
+          <div className={`tr-stat ${banked > 0 ? 'good' : 'flat'}`}>
+            <span className="tr-num">+{banked}</span>
+            <span className="tr-lbl">points banked</span>
+            <span className="tr-sub">vitality you kept alive this tide</span>
+          </div>
+          <div className={`tr-stat ${terrDelta > 0 ? 'good' : terrDelta < 0 ? 'bad' : 'flat'}`}>
+            <span className="tr-num">
+              {mine?.territoryBefore ?? 0}
+              <span className="tr-arrow">→</span>
+              {mine?.territoryAfter ?? 0}
+            </span>
+            <span className="tr-lbl">your reef</span>
+            <span className="tr-sub">
+              {gained > 0 && lost === 0 && `grew by ${gained} coral`}
+              {lost > 0 && gained === 0 && `${lost} coral receded`}
+              {gained > 0 && lost > 0 && `+${gained} grew · −${lost} receded`}
+              {gained === 0 && lost === 0 && 'held the line'}
+            </span>
+          </div>
+        </div>
+
+        <div className="tr-world">
+          {summary.decayedGlobal > 0 ? (
+            <>The tide claimed <strong>{summary.decayedGlobal}</strong> coral across the reef.</>
+          ) : (
+            <>The reef held fast — no coral lost to this tide.</>
+          )}{' '}
+          <span className="fine">{summary.survivorsGlobal} coral still standing.</span>
+        </div>
+
+        <div className="tr-season fine">
+          {mine ? <>Your season tally: <strong>{mine.seasonPointsAfter}</strong> pts · </> : null}
+          {tidesToReckoning} tide{tidesToReckoning === 1 ? '' : 's'} to the reckoning.
+        </div>
+
+        <button className="btn primary tr-continue" onClick={onClose} autoFocus>
+          Ride the tide →
+        </button>
+      </div>
     </div>
   );
 }

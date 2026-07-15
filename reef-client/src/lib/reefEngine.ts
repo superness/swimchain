@@ -229,6 +229,30 @@ export interface SeasonResult {
   points: number;
 }
 
+/** Per-owner ledger of what one tide (epoch tick) did to a player. */
+export interface TideOwnerDelta {
+  territoryBefore: number; // living cells the instant before the tide
+  territoryAfter: number; // living cells after decay
+  vitalityBefore: number; // Σ vitality before
+  vitalityAfter: number; // Σ vitality after (also = points banked this tide)
+  pointsBanked: number; // vitality added to the season score this tide
+  seasonPointsAfter: number; // season tally after this tide (0 if the season just closed)
+}
+
+/**
+ * A settled snapshot of the most recent tide (epoch tick), so a client can show
+ * the player a real end-of-round report — how much coral the tide claimed, what
+ * they banked, how their reef changed — instead of numbers silently shifting.
+ * Reflects the LAST tick folded (the newest tide reaching the current tip).
+ */
+export interface TideSummary {
+  epoch: number; // the epoch number that just began
+  decayedGlobal: number; // living cells lost to decay reef-wide this tide
+  survivorsGlobal: number; // living cells remaining reef-wide after the tide
+  crownedSeason: SeasonResult | null; // the season this tide closed, if any
+  byOwner: Map<string, TideOwnerDelta>;
+}
+
 export interface Standing {
   owner: string;
   seasonPoints: number; // banked this season
@@ -256,6 +280,7 @@ export interface ReefState {
   tentative: number; // count of pending (not-yet-in-a-block) moves shown optimistically
   confirmedEpoch: number; // epochs fully settled by consensus (the confirmed frontier)
   justCrownedSeason: SeasonResult | null; // most recently closed season, for the banner
+  lastTide: TideSummary | null; // ledger of the most recent tide, for the end-of-round report
   // Cell keys whose current ownership is NOT yet reorg-safe — claimed within
   // CONFIRM_DEPTH blocks of the tip, or by a still-pending move. These can still
   // flip as the chain settles, so the client renders them as "settling" rather
@@ -403,7 +428,32 @@ function parseMove(body: string | null | undefined): { op: Op; x: number; y: num
   return { op, x, y };
 }
 
-interface ReplyLike {
+/**
+ * The AUTHORING sequence embedded in a move body — the `#<n>~` field written at
+ * submit time (`submitReefMove`). It lives in the signed, immutable body, so it
+ * is byte-identical for every client and stable across fetches — unlike the
+ * node's `created_at`, which is query-stamped (and thus unstable, ~equal) for
+ * pending mempool replies. This is what puts a player's `seed` before the
+ * `spread` that grows from it, even while both are still pending. Returns
+ * `undefined` when a body has no such field (legacy/foreign), so callers can
+ * fall back to `created_at`.
+ */
+function authorSeqOf(body: string | null | undefined): number | undefined {
+  if (!body) return undefined;
+  const m = /#(\d+)~/.exec(body);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : undefined;
+}
+/** Authoring-sequence tiebreak: 0 unless BOTH replies carry a seq (so a missing
+ *  seq never reorders against one that has it). */
+function seqCmp(a: ReplyLike, b: ReplyLike): number {
+  const sa = authorSeqOf(a.body);
+  const sb = authorSeqOf(b.body);
+  return sa !== undefined && sb !== undefined ? sa - sb : 0;
+}
+
+export interface ReplyLike {
   body?: string | null;
   created_at: number;
   content_id: string;
@@ -439,6 +489,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   let curHeight = 0; // the effective height of the move currently being applied
   let epoch = 0;
   let justCrowned: SeasonResult | null = null;
+  let lastTide: TideSummary | null = null; // ledger of the most recent epoch tick
 
   // Within a block, apply moves in CREATION order (then content_id as the final
   // deterministic tiebreak) — NOT content_id alone. Ordering same-block moves by
@@ -448,17 +499,25 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   // final grid. created_at is on the reply (identical for every client) and the
   // node validates it within a tolerance window, so this stays deterministic and
   // only-mildly-nudgeable. Matches the pending sort and this file's header doc.
+  // Confirmed moves: block height, then the node's (stable, consensus) created_at,
+  // then the embedded authoring seq to break same-second ties, then id. The seq
+  // tiebreak is what keeps a same-block, same-second seed ahead of its spread.
   const confirmed = replies
     .filter((r) => typeof r.block_height === 'number')
     .sort(
       (a, b) =>
         a.block_height! - b.block_height! ||
         a.created_at - b.created_at ||
+        seqCmp(a, b) ||
         a.content_id.localeCompare(b.content_id)
     );
+  // Pending (mempool) moves: created_at is query-stamped here and thus unstable/
+  // ~equal, so the AUTHORING seq leads (it is stable, in the signed body), with
+  // created_at then id as fallbacks. This is the fix for "not next to your reef"
+  // on freshly-taken tiles: a seed always precedes the spread that grows from it.
   const pending = replies
     .filter((r) => typeof r.block_height !== 'number')
-    .sort((a, b) => a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
+    .sort((a, b) => seqCmp(a, b) || a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
 
   const baseHeight = confirmed.length ? confirmed[0].block_height! : tipHeight ?? 0;
   const epochOf = (h: number) => Math.max(0, Math.floor((h - baseHeight) / BLOCKS_PER_EPOCH));
@@ -468,8 +527,13 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   };
 
   const tickEpoch = () => {
+    const before = livingByOwner(cells); // snapshot the reef the instant before the tide
+    let beforeCells = 0;
+    for (const l of before.values()) beforeCells += l.cells;
     epochTick(cells); // decay
     const living = livingByOwner(cells);
+    let afterCells = 0;
+    for (const l of living.values()) afterCells += l.cells;
     for (const [owner, cur] of budgets) {
       budgets.set(
         owner,
@@ -479,6 +543,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     for (const [owner, l] of living) seasonPoints.set(owner, (seasonPoints.get(owner) ?? 0) + l.vitality);
     tendsUsed = new Map();
     epoch += 1;
+    let crownedThisTick: SeasonResult | null = null;
     if (epoch % SEASON_EPOCHS === 0) {
       let winner: string | null = null;
       let best = -1;
@@ -489,10 +554,34 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
         }
       }
       justCrowned = { index: epoch / SEASON_EPOCHS - 1, winner, points: Math.max(0, best) };
+      crownedThisTick = justCrowned;
       seasons.push(justCrowned);
       seasonPoints = new Map();
     }
     updatePeaks();
+
+    // Record this tick's ledger so the client can show a real tide report. Every
+    // owner that held coral before OR after the tide gets a line.
+    const byOwner = new Map<string, TideOwnerDelta>();
+    for (const owner of new Set([...before.keys(), ...living.keys()])) {
+      const b = before.get(owner);
+      const a = living.get(owner);
+      byOwner.set(owner, {
+        territoryBefore: b?.cells ?? 0,
+        territoryAfter: a?.cells ?? 0,
+        vitalityBefore: b?.vitality ?? 0,
+        vitalityAfter: a?.vitality ?? 0,
+        pointsBanked: a?.vitality ?? 0,
+        seasonPointsAfter: seasonPoints.get(owner) ?? 0, // 0 if the season just reset
+      });
+    }
+    lastTide = {
+      epoch,
+      decayedGlobal: Math.max(0, beforeCells - afterCells),
+      survivorsGlobal: afterCells,
+      crownedSeason: crownedThisTick,
+      byOwner,
+    };
   };
 
   const applyOne = (r: ReplyLike, p: { op: Op; x: number; y: number }) => {
@@ -632,6 +721,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     tentative,
     confirmedEpoch,
     justCrownedSeason: justCrowned,
+    lastTide,
     frontier,
   };
 }
@@ -846,13 +936,17 @@ export async function submitReefMove(
   op: Op,
   x: number,
   y: number,
-  seq: number,
   onProgress?: ProgressCallback
 ): Promise<string> {
   const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
-  const body = `${op} ${x} ${y} ${regionId}#${seq}~${id.publicKeyHex.slice(0, 10)}~${nonce}`;
+  // The `#<n>~` field is the AUTHORING timestamp (ms). The fold orders moves by
+  // it (see `authorSeqOf`/`seqCmp`), so a seed always precedes the spread that
+  // grows from it — even while both are pending and the node's `created_at` is
+  // still query-stamped. Real wall-clock time, so it is monotonic across reloads
+  // and reorgs (unlike a move-count seq). The random nonce keeps bodies unique.
+  const body = `${op} ${x} ${y} ${regionId}#${Date.now()}~${id.publicKeyHex.slice(0, 10)}~${nonce}`;
   return submitMinedReply(rpc, id, regionId, body, onProgress);
 }
 
