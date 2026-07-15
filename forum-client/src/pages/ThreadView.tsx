@@ -5,7 +5,7 @@
 
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useThread, usePoolContribution, useReplies, useReactions } from '../hooks/useRpc';
+import { useThread, usePoolContribution, useReplies, useReactions, useSpaces } from '../hooks/useRpc';
 import { useSponsorship } from '../hooks/useSponsorship';
 import { ImageGallery } from '../components/ImageGallery';
 import { useIdentityContext } from '../providers/IdentityProvider';
@@ -47,8 +47,11 @@ export function ThreadView(): JSX.Element {
   const displayTitle = decryptedTitle || thread?.title || 'Thread';
   const displayContent = decryptedContent || thread?.content || '';
 
-  // Derive space name from ID
-  const spaceName = spaceId ? `Space ${spaceId.substring(0, 12)}...` : 'Space';
+  // Breadcrumb space name: prefer the resolved name, fall back to a short id.
+  const { spaces } = useSpaces();
+  const spaceName =
+    spaces.find((s) => s.id === spaceId)?.name ??
+    (spaceId ? `Space ${spaceId.substring(0, 12)}...` : 'Space');
 
   if (loading) {
     return (
