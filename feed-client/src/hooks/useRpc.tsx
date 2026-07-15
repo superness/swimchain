@@ -27,6 +27,8 @@ const IDENTITY_STORAGE_KEY = 'swimchain-identity';
 
 // Bounded retry when list_spaces comes back empty on a freshly-synced node.
 let emptySpacesRetries = 0;
+// Space ids we've already asked peers to resolve names for (once per session).
+const spaceNamesAsked = new Set<string>();
 
 /**
  * Load stored identity from localStorage
@@ -136,23 +138,24 @@ export function RpcProvider({ children }: { children: ReactNode }) {
    */
   const buildConfigWithIdentity = async (): Promise<RpcConfig> => {
     // Get base config - check sources in order of priority:
-    // 1. VITE_RPC_PORT env var (for multi-instance setups)
-    // 2. Parent frame config (when running in desktop-app iframe)
+    // 1. Parent frame config (when running in a shell iframe — the shell's
+    //    endpoint/auth is authoritative; a baked-in VITE_RPC_PORT must not
+    //    override it)
+    // 2. VITE_RPC_PORT env var (dev-server / multi-instance setups)
     // 3. VITE_USE_REMOTE_SEED env var
     // 4. Tauri (standalone Tauri app with cookie auth)
     // 5. Local fallback (development)
     let baseConfig: RpcConfig;
 
-    // Check for VITE_RPC_PORT env var (set at dev server startup)
     const rpcPort = import.meta.env.VITE_RPC_PORT;
-    if (rpcPort) {
-      baseConfig = { endpoint: `http://127.0.0.1:${rpcPort}`, timeout: 30000 };
-    } else if (getParentConfig() && isInIframe()) {
+    if (getParentConfig() && isInIframe()) {
       const parentConfig = getParentConfig()!;
       baseConfig = {
         endpoint: parentConfig.rpcEndpoint,
         authHeader: parentConfig.rpcAuth,
       };
+    } else if (rpcPort) {
+      baseConfig = { endpoint: `http://127.0.0.1:${rpcPort}`, timeout: 30000 };
     } else if (USE_REMOTE_SEED) {
       baseConfig = REMOTE_SEED_CONFIG;
     } else if (isInTauri()) {
@@ -417,6 +420,24 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       // bare hex id is meaningless to browse; the space appears once its name
       // resolves via GET_SPACE_META.
       const namedSpaces = result.spaces.filter(s => s.class === 'social' && s.name);
+
+      // Nudge the node to resolve the hidden spaces' names from peers.
+      // Names are NOT derivable from the chain for legacy spaces, so without
+      // this an unnamed space would stay hidden forever on a node that never
+      // resolved it (forum-client does the same; feed previously relied on
+      // placeholder rendering instead).
+      const unnamedIds = result.spaces
+        .filter(s => s.class === 'social' && !s.name)
+        .map(s => s.space_id)
+        .filter(id => !spaceNamesAsked.has(id));
+      if (unnamedIds.length > 0) {
+        unnamedIds.forEach(id => {
+          spaceNamesAsked.add(id);
+          rpc.resolveSpaceName(id).catch(() => undefined);
+        });
+        // Refresh once after peers have had a chance to answer.
+        setTimeout(() => refetch(true, true).catch(() => undefined), 2000);
+      }
 
       // Transform RPC result to Space format
       const transformedSpaces: Space[] = namedSpaces.map(s => ({

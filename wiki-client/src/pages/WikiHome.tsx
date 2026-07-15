@@ -117,7 +117,7 @@ export function WikiHome(): JSX.Element {
         {!rcLoading && !rcError && recentChanges.length === 0 && (
           <div className="wiki-empty">
             <div className="wiki-empty__title">No recent changes</div>
-            <p>Content from followed spaces will appear here.</p>
+            <p>Page edits will appear here as wiki namespaces sync.</p>
           </div>
         )}
 

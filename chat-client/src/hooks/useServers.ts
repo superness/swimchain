@@ -30,6 +30,9 @@ function getServerIcon(name: string): string | undefined {
   return undefined;
 }
 
+// Space ids we've already asked peers to resolve names for (once per session).
+const spaceNamesAsked = new Set<string>();
+
 /**
  * Hook to fetch and manage server (space) list
  *
@@ -56,6 +59,23 @@ export function useServers() {
       // Spaces with no resolved name (name: null on the wire) are hidden — a
       // bare hex id is meaningless to browse; they appear once the name resolves.
       const result = await rpc.listSpaces();
+
+      // Nudge the node to resolve hidden spaces' names from peers (names are
+      // not derivable from the chain for legacy spaces); refresh once after.
+      const unnamedIds = result.spaces
+        .filter(space => !space.name)
+        .map(space => space.space_id)
+        .filter(id => !spaceNamesAsked.has(id));
+      if (unnamedIds.length > 0) {
+        unnamedIds.forEach(id => {
+          spaceNamesAsked.add(id);
+          rpc.call('resolve_space_name', { space_id: id }).catch(() => undefined);
+        });
+        setTimeout(() => {
+          fetchServers().catch(() => undefined);
+        }, 2000);
+      }
+
       const publicServers: Server[] = result.spaces
         .filter(space => space.name)
         .map(space => ({

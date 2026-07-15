@@ -185,19 +185,18 @@ export function RpcProvider({ children }: { children: ReactNode }) {
    */
   const buildConfigWithIdentity = async (): Promise<RpcConfig> => {
     // Get base config - check sources in order of priority:
-    // 1. VITE_RPC_PORT env var (for multi-instance setups)
-    // 2. Parent frame config (when running in desktop-app iframe)
+    // 1. Parent frame config (when running in a shell iframe — the shell's
+    //    endpoint/auth is authoritative; a baked-in VITE_RPC_PORT from
+    //    .env.local must NOT override it, that pointed node-mode at the
+    //    wrong node's port with no auth)
+    // 2. VITE_RPC_PORT env var (dev-server / multi-instance setups)
     // 3. VITE_USE_REMOTE_SEED env var
     // 4. Tauri (standalone Tauri app with cookie auth)
     // 5. Local fallback (development)
     let baseConfig: RpcConfig;
 
-    // Check for VITE_RPC_PORT env var (set at dev server startup)
     const rpcPort = import.meta.env.VITE_RPC_PORT;
-    if (rpcPort) {
-      logger.info('[RPC] Using VITE_RPC_PORT:', rpcPort);
-      baseConfig = { endpoint: `http://127.0.0.1:${rpcPort}`, timeout: 30000 };
-    } else if (getParentConfig() && isInIframe()) {
+    if (getParentConfig() && isInIframe()) {
       const parentConfig = getParentConfig()!;
       logger.info('[RPC] Using parent frame config:', {
         endpoint: parentConfig.rpcEndpoint,
@@ -207,6 +206,9 @@ export function RpcProvider({ children }: { children: ReactNode }) {
         endpoint: parentConfig.rpcEndpoint,
         authHeader: parentConfig.rpcAuth,
       };
+    } else if (rpcPort) {
+      logger.info('[RPC] Using VITE_RPC_PORT:', rpcPort);
+      baseConfig = { endpoint: `http://127.0.0.1:${rpcPort}`, timeout: 30000 };
     } else if (USE_REMOTE_SEED) {
       logger.info('[RPC] Using remote seed:', REMOTE_SEED_CONFIG.endpoint);
       baseConfig = REMOTE_SEED_CONFIG;
