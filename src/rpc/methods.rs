@@ -851,6 +851,21 @@ impl RpcMethods {
             None => return,
         };
 
+        // Solo-block formation gate: never form while we might be the lone
+        // height-authority (isolated restart). The submitted action stays
+        // queued in the mempool and seals once the gate opens.
+        if let Some(gate) = self.node.router.as_ref().and_then(|r| r.formation_gate()) {
+            let our_height = self
+                .node
+                .chain_store
+                .as_ref()
+                .and_then(|cs| cs.get_latest_height().ok().flatten())
+                .unwrap_or(0);
+            if !gate.allow_formation(our_height) {
+                return;
+            }
+        }
+
         // Get node identity for leader election
         let node_identity: [u8; 32] = match hex::decode(&self.node.node_id) {
             Ok(bytes) if bytes.len() == 32 => {
@@ -4661,9 +4676,7 @@ impl RpcMethods {
                     content_id: params.content_id,
                     content_type,
                     author_id,
-                    space_id_bech32: decode_space_id(&space_id)
-                        .ok()
-                        .map(|b| encode_space_id(&b)),
+                    space_id_bech32: decode_space_id(&space_id).ok().map(|b| encode_space_id(&b)),
                     space_id,
                     parent_id: parent_id_opt,
                     created_at: created_at_ms,
@@ -11256,7 +11269,10 @@ impl RpcMethods {
         RpcResponse::success(serde_json::json!({ "conversations": conversations }), id)
     }
 
-    fn prefs_store_or_err(&self, id: &Value) -> Result<&Arc<crate::storage::prefs::PrefsStore>, RpcResponse> {
+    fn prefs_store_or_err(
+        &self,
+        id: &Value,
+    ) -> Result<&Arc<crate::storage::prefs::PrefsStore>, RpcResponse> {
         self.node.prefs_store.as_ref().ok_or_else(|| {
             RpcResponse::error(
                 RpcErrorCode::InternalError,

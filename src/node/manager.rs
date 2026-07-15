@@ -1066,8 +1066,21 @@ impl NodeManager {
         // the hole-punch dialer task (the router has no transport handle to dial itself).
         let (hole_punch_tx, hole_punch_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::node::router::HolePunchRequest>();
+
+        // Solo-block formation gate: defer block formation until we've
+        // confirmed peer-tip parity or the grace window expires. Regtest is
+        // single-node by design, so its gate opens immediately.
+        let formation_grace = match self.config.network_mode {
+            crate::network::NetworkMode::Regtest => std::time::Duration::ZERO,
+            _ => std::time::Duration::from_secs(crate::node::formation_gate::FORMATION_GRACE_SECS),
+        };
+        let formation_gate = Arc::new(crate::node::formation_gate::FormationGate::new(
+            formation_grace,
+        ));
+
         let mut router_builder = MessageRouter::builder()
             .metrics(metrics.clone())
+            .formation_gate(formation_gate)
             .event_manager(self.event_manager.clone()) // For real-time WS events (H-RPC-2)
             .content_retrieval(content_retrieval)
             .data_dir(self.config.data_dir.clone()) // For multi-hop propagation
@@ -1634,6 +1647,11 @@ impl NodeManager {
                                     }
                                 }
 
+                                // Feed the handshake height to the solo-block formation gate
+                                if let Some(gate) = router.formation_gate() {
+                                    gate.note_peer_height(info.start_height as u64);
+                                }
+
                                 // Chain negotiation: Compare heights and sync if peer is ahead
                                 if let Some(ref cs) = self.chain_store {
                                     let our_height =
@@ -1815,6 +1833,11 @@ impl NodeManager {
                             hex::encode(&peer_id[..8])
                         );
                     }
+                }
+
+                // Feed the handshake height to the solo-block formation gate
+                if let Some(gate) = router.formation_gate() {
+                    gate.note_peer_height(info.start_height as u64);
                 }
 
                 // Chain sync if peer is ahead

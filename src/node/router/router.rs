@@ -205,6 +205,12 @@ pub struct MessageRouter {
     /// Block builder for mempool (pending actions)
     block_builder: Option<Arc<RwLock<crate::blocks::builder::BlockBuilder>>>,
 
+    /// Solo-block formation gate: defers block formation until the node has
+    /// confirmed peer-tip parity or a grace window expires. Shared with the
+    /// RPC formation site and the periodic formation task via
+    /// `formation_gate()`. None (tests/minimal setups) = always allowed.
+    formation_gate: Option<Arc<crate::node::formation_gate::FormationGate>>,
+
     /// Spam attestation store for community flagging (SPEC_12 §3)
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
     /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5). Fed from the
@@ -284,6 +290,7 @@ impl MessageRouter {
             dht: None,
             content_store: None,
             block_builder: None,
+            formation_gate: None,
             spam_attestation_store: None,
             reputation_store: None,
             sponsorship_manager: None,
@@ -332,6 +339,7 @@ impl MessageRouter {
             dht: None,
             content_store: None,
             block_builder: None,
+            formation_gate: None,
             spam_attestation_store: None,
             reputation_store: None,
             sponsorship_manager: None,
@@ -356,6 +364,13 @@ impl MessageRouter {
     /// Create a MessageRouterBuilder for fluent configuration
     pub fn builder() -> MessageRouterBuilder {
         MessageRouterBuilder::new()
+    }
+
+    /// The solo-block formation gate, if configured. All block-formation
+    /// sites (router, RPC, periodic task) consult this before forming, and
+    /// connection paths feed peer handshake heights into it.
+    pub fn formation_gate(&self) -> Option<Arc<crate::node::formation_gate::FormationGate>> {
+        self.formation_gate.clone()
     }
 
     /// Route a message to its handler
@@ -3350,8 +3365,8 @@ impl MessageRouter {
 
                     // A same-height win is not a chain-weight win for blocks
                     // below the tip — see deep_fork_blocked.
-                    let incoming_wins = incoming_wins
-                        && !deep_fork_blocked(chain_store, &root_block, block_height);
+                    let incoming_wins =
+                        incoming_wins && !deep_fork_blocked(chain_store, &root_block, block_height);
 
                     if incoming_wins {
                         // Rollback existing block and get orphaned actions
@@ -6488,11 +6503,25 @@ impl MessageRouter {
     /// from all pending actions meets/exceeds the difficulty target, we form
     /// and broadcast a block immediately. This removes the need for timer-based
     /// block formation - blocks are formed naturally when enough work accumulates.
-    async fn try_form_block_if_threshold_met(&self) {
+    pub(crate) async fn try_form_block_if_threshold_met(&self) {
         let block_builder = match &self.block_builder {
             Some(bb) => bb,
             None => return,
         };
+
+        // Solo-block formation gate: never form while we might be the lone
+        // height-authority (isolated restart). Actions stay queued in the
+        // mempool and seal once the gate opens.
+        if let Some(ref gate) = self.formation_gate {
+            let our_height = self
+                .chain_store
+                .as_ref()
+                .and_then(|cs| cs.get_latest_height().ok().flatten())
+                .unwrap_or(0);
+            if !gate.allow_formation(our_height) {
+                return;
+            }
+        }
 
         // Get node identity for block creator (defaults to zero if not set)
         let block_creator = self.node_id.unwrap_or([0u8; 32]);
@@ -8667,6 +8696,7 @@ pub struct MessageRouterBuilder {
     dht: Option<Arc<DhtManager>>,
     content_store: Option<Arc<PersistentContentStore>>,
     block_builder: Option<Arc<RwLock<crate::blocks::builder::BlockBuilder>>>,
+    formation_gate: Option<Arc<crate::node::formation_gate::FormationGate>>,
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
     reputation_store: Option<Arc<ReputationStore>>,
     sponsorship_manager: Option<Arc<crate::sponsorship::manager::SponsorshipManager>>,
@@ -8706,6 +8736,7 @@ impl MessageRouterBuilder {
             dht: None,
             content_store: None,
             block_builder: None,
+            formation_gate: None,
             spam_attestation_store: None,
             reputation_store: None,
             sponsorship_manager: None,
@@ -8816,6 +8847,12 @@ impl MessageRouterBuilder {
         builder: Arc<RwLock<crate::blocks::builder::BlockBuilder>>,
     ) -> Self {
         self.block_builder = Some(builder);
+        self
+    }
+
+    /// Set the solo-block formation gate shared by all formation sites
+    pub fn formation_gate(mut self, gate: Arc<crate::node::formation_gate::FormationGate>) -> Self {
+        self.formation_gate = Some(gate);
         self
     }
 
@@ -8965,6 +9002,7 @@ impl MessageRouterBuilder {
             dht: self.dht,
             content_store: self.content_store,
             block_builder: self.block_builder,
+            formation_gate: self.formation_gate,
             spam_attestation_store: self.spam_attestation_store,
             reputation_store: self.reputation_store,
             sponsorship_manager: self.sponsorship_manager,
@@ -9007,6 +9045,7 @@ impl MessageRouterBuilder {
             dht: self.dht,
             content_store: self.content_store,
             block_builder: self.block_builder,
+            formation_gate: self.formation_gate,
             spam_attestation_store: self.spam_attestation_store,
             reputation_store: self.reputation_store,
             sponsorship_manager: self.sponsorship_manager,

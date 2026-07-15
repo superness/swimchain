@@ -1133,12 +1133,8 @@ fn test_reconcile_applies_genesis_sponsor_without_store_record() {
         BranchPath::root(),
     )
     .unwrap();
-    let space = SpaceBlock::from_content_blocks(
-        space_id,
-        std::slice::from_ref(&content),
-        None,
-        timestamp,
-    );
+    let space =
+        SpaceBlock::from_content_blocks(space_id, std::slice::from_ref(&content), None, timestamp);
     let root = RootBlock::from_space_blocks(
         std::slice::from_ref(&space),
         [0u8; 32],
@@ -1188,4 +1184,113 @@ fn test_reconcile_skips_non_canonical_block() {
         .exists(&PublicKey::from_bytes(sponsee_pub))
         .unwrap());
     assert_eq!(chain_store.side_effects_state(&root.hash()).unwrap(), 0);
+}
+
+// ========== Solo-block formation gate (2026-07-14 incident) ==========
+
+/// Router wired with a chain_store, a threshold-met block builder holding one
+/// pending action (lazy wait backdated so `should_form_root` fires), and the
+/// given formation gate. Calling `try_form_block_if_threshold_met` is then a
+/// pure test of the gate: with it open a block forms, closed nothing does.
+fn make_formation_gate_router(
+    gate: Arc<crate::node::formation_gate::FormationGate>,
+) -> (
+    MessageRouter,
+    Arc<crate::storage::chain::ChainStore>,
+    tempfile::TempDir,
+) {
+    use crate::blocks::action::Action;
+    use crate::blocks::branch_path::BranchPath;
+    use crate::blocks::builder::BlockBuilder;
+
+    let chain_dir = tempfile::tempdir().unwrap();
+    let chain_store = Arc::new(crate::storage::chain::ChainStore::open(chain_dir.path()).unwrap());
+
+    // Threshold 1 with a pow_work=1 action pending => threshold met.
+    let mut builder = BlockBuilder::new(1);
+    let mut space_id_32 = [0u8; 32];
+    space_id_32[0] = 0x01; // SpaceClass::Social
+    let action = Action::new_create_space(
+        [0x55u8; 32],
+        1_700_000_000,
+        space_id_32,
+        0,
+        1,
+        [0u8; 32],
+        [0u8; 64],
+    );
+    assert!(builder.add_action(space_id_32, space_id_32, action, BranchPath::root()));
+    builder.backdate_lazy_wait_for_test();
+
+    let router = MessageRouter::builder()
+        .metrics(Arc::new(NodeMetrics::new()))
+        .chain_store(chain_store.clone())
+        .block_builder(Arc::new(RwLock::new(builder)))
+        .formation_gate(gate)
+        .build();
+
+    (router, chain_store, chain_dir)
+}
+
+/// The incident shape: a node with pending work but no confirmed sync (a peer
+/// is ahead, grace not expired) must NOT form a block alone.
+#[tokio::test]
+async fn test_formation_gate_closed_defers_solo_block() {
+    use crate::node::formation_gate::FormationGate;
+    use std::time::Duration;
+
+    let gate = Arc::new(FormationGate::new(Duration::from_secs(3600)));
+    // Zero peers seen: gate must stay closed pre-grace.
+    let (router, chain_store, _dir) = make_formation_gate_router(gate.clone());
+
+    router.try_form_block_if_threshold_met().await;
+    assert_eq!(
+        chain_store.get_latest_height().unwrap(),
+        None,
+        "gate closed (zero peers, pre-grace): no block may form"
+    );
+
+    // A peer ahead of us must also keep the gate closed.
+    gate.note_peer_height(50);
+    router.try_form_block_if_threshold_met().await;
+    assert_eq!(
+        chain_store.get_latest_height().unwrap(),
+        None,
+        "gate closed (peer ahead, pre-grace): no block may form"
+    );
+}
+
+/// Peer-tip parity opens the gate: same setup, but the best peer handshake
+/// height is already at our height, so forming is legitimate.
+#[tokio::test]
+async fn test_formation_gate_peer_parity_allows_block() {
+    use crate::node::formation_gate::FormationGate;
+    use std::time::Duration;
+
+    let gate = Arc::new(FormationGate::new(Duration::from_secs(3600)));
+    gate.note_peer_height(0); // parity with our (empty) chain
+    let (router, chain_store, _dir) = make_formation_gate_router(gate);
+
+    router.try_form_block_if_threshold_met().await;
+    assert!(
+        chain_store.get_latest_height().unwrap().is_some(),
+        "gate open via peer parity: block must form"
+    );
+}
+
+/// Grace expiry opens the gate: a genuinely-first node (no peers ever) must
+/// still bootstrap once the grace window has elapsed.
+#[tokio::test]
+async fn test_formation_gate_grace_expiry_allows_block() {
+    use crate::node::formation_gate::FormationGate;
+    use std::time::Duration;
+
+    let gate = Arc::new(FormationGate::new(Duration::ZERO));
+    let (router, chain_store, _dir) = make_formation_gate_router(gate);
+
+    router.try_form_block_if_threshold_met().await;
+    assert!(
+        chain_store.get_latest_height().unwrap().is_some(),
+        "gate open via grace expiry: block must form"
+    );
 }
