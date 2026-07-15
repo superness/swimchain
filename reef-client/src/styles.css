@@ -142,6 +142,60 @@ h2 { font-size: 18px; margin: 0; }
   0%, 100% { opacity: 0.45; }
   50% { opacity: 0.95; }
 }
+
+/* Tide ceremony: a wash of light sweeps the whole board and a caption rises when
+   the epoch turns, so the decay that follows reads as the tide, not a glitch. */
+.reef.tide-turning { animation: tide-edge 1.6s ease-in-out; }
+@keyframes tide-edge {
+  0%, 100% { border-color: var(--line); }
+  30% { border-color: var(--shallow, #6ed3c2); box-shadow: 0 0 22px hsl(190 70% 58% / 0.22); }
+}
+.tide {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 3;
+}
+.tide-wash {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -60%;
+  width: 60%;
+  background: linear-gradient(
+    100deg,
+    transparent,
+    hsl(190 72% 72% / 0.16) 38%,
+    hsl(190 85% 88% / 0.30) 50%,
+    hsl(190 72% 72% / 0.16) 62%,
+    transparent
+  );
+  animation: tide-wash 1.5s ease-in-out forwards;
+}
+@keyframes tide-wash {
+  from { transform: translateX(0); }
+  to { transform: translateX(300%); }
+}
+.tide-caption {
+  position: absolute;
+  left: 50%;
+  top: 44%;
+  transform: translate(-50%, -50%);
+  font-size: clamp(16px, 3.4vw, 22px);
+  font-weight: 600;
+  color: var(--foam);
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.65);
+  white-space: nowrap;
+  animation: tide-caption 1.6s ease-out forwards;
+}
+@keyframes tide-caption {
+  0% { opacity: 0; transform: translate(-50%, -32%) scale(0.96); letter-spacing: 0.05em; }
+  22% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  72% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -64%) scale(1.03); }
+}
 .cell {
   aspect-ratio: 1;
   border: none;

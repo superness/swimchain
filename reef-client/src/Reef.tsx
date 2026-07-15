@@ -61,6 +61,19 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct
     return () => clearTimeout(t);
   }, [state.cells]);
 
+  // Ceremony: when the tide turns (epoch advances), sweep the board so the decay
+  // that comes with it reads as the tide claiming the weak coral, not a glitch.
+  const prevEpoch = useRef<number | null>(null);
+  const [tideTurn, setTideTurn] = useState(false);
+  useEffect(() => {
+    const prev = prevEpoch.current;
+    prevEpoch.current = state.epoch;
+    if (prev === null || state.epoch <= prev) return; // no ceremony on load or idle
+    setTideTurn(true);
+    const t = setTimeout(() => setTideTurn(false), 1600); // matches the sweep animation
+    return () => clearTimeout(t);
+  }, [state.epoch]);
+
   const cellsView = useMemo(() => {
     const out: Array<{ x: number; y: number; intent: Intent | null }> = [];
     for (let y = 0; y < h; y++) {
@@ -75,9 +88,17 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct
 
   return (
     <div
-      className={`reef${growingCell ? ' claiming' : ''}`}
+      className={`reef${growingCell ? ' claiming' : ''}${tideTurn ? ' tide-turning' : ''}`}
       style={{ gridTemplateColumns: `repeat(${w}, 1fr)` }}
     >
+      {/* Tide ceremony: a wave sweeps the whole board and a caption rises when the
+          epoch advances — the reef's heartbeat (decay + regen + scoring). */}
+      {tideTurn && (
+        <div className="tide" aria-hidden="true">
+          <span className="tide-wash" />
+          <span className="tide-caption">🌊 The tide turns</span>
+        </div>
+      )}
       {/* Whole-board "the reef is working to claim this spot" layer: energy waves
           ripple out from the target tile across the entire grid while the move
           takes hold, with a soft board-wide charge glow. */}
