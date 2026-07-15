@@ -7,6 +7,7 @@
 //! # Storage Structure
 //!
 //! - `followed_spaces`: user_pk(32) || space_id(16) → timestamp(8 BE)
+//! - `followed_users`:  user_pk(32) || followed_pk(32) → timestamp(8 BE)
 //! - `saved_posts`:     user_pk(32) || content_id(32) → timestamp(8 BE)
 //! - `hidden_spaces`:   user_pk(32) || space_id(16) → timestamp(8 BE)
 
@@ -21,6 +22,7 @@ pub struct PrefsStore {
     #[allow(dead_code)]
     db: Db,
     followed_spaces: sled::Tree,
+    followed_users: sled::Tree,
     saved_posts: sled::Tree,
     hidden_spaces: sled::Tree,
     meta: sled::Tree,
@@ -41,6 +43,9 @@ impl PrefsStore {
         let saved_posts = db
             .open_tree("saved_posts")
             .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+        let followed_users = db
+            .open_tree("followed_users")
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
         let hidden_spaces = db
             .open_tree("hidden_spaces")
             .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
@@ -50,6 +55,7 @@ impl PrefsStore {
         Ok(Self {
             db,
             followed_spaces,
+            followed_users,
             saved_posts,
             hidden_spaces,
             meta,
@@ -139,6 +145,62 @@ impl PrefsStore {
                 .map(u64::from_be_bytes)
                 .unwrap_or(0);
             out.push((space_id, ts));
+        }
+        Ok(out)
+    }
+
+    /// Follow another identity. Idempotent; keeps the original timestamp.
+    pub fn follow_user(
+        &self,
+        user_pk: &[u8; 32],
+        followed_pk: &[u8; 32],
+        timestamp: u64,
+    ) -> Result<(), StorageError> {
+        let key = Self::save_key(user_pk, followed_pk);
+        if self
+            .followed_users
+            .get(key)
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?
+            .is_none()
+        {
+            self.followed_users
+                .insert(key, &timestamp.to_be_bytes())
+                .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Unfollow an identity. Idempotent.
+    pub fn unfollow_user(
+        &self,
+        user_pk: &[u8; 32],
+        followed_pk: &[u8; 32],
+    ) -> Result<(), StorageError> {
+        self.followed_users
+            .remove(Self::save_key(user_pk, followed_pk))
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+        Ok(())
+    }
+
+    /// All identities this user follows, with the follow timestamp.
+    pub fn followed_users(
+        &self,
+        user_pk: &[u8; 32],
+    ) -> Result<Vec<([u8; 32], u64)>, StorageError> {
+        let mut out = Vec::new();
+        for result in self.followed_users.scan_prefix(user_pk) {
+            let (key, value) = result.map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+            if key.len() != 64 {
+                continue;
+            }
+            let mut followed = [0u8; 32];
+            followed.copy_from_slice(&key[32..64]);
+            let ts = value
+                .as_ref()
+                .try_into()
+                .map(u64::from_be_bytes)
+                .unwrap_or(0);
+            out.push((followed, ts));
         }
         Ok(out)
     }

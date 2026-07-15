@@ -2030,6 +2030,11 @@ impl MessageRouter {
                     ChainStore::hash_wins(&computed_hash, &existing_hash)
                 };
 
+                // A same-height win is not a chain-weight win for blocks below
+                // the tip — see deep_fork_blocked (2026-07-14 chain poisoning).
+                let incoming_wins =
+                    incoming_wins && !deep_fork_blocked(chain_store, &root_block, block_height);
+
                 if incoming_wins {
                     // Rollback existing block and get orphaned actions
                     match chain_store.rollback_block_at_height(block_height) {
@@ -3335,6 +3340,11 @@ impl MessageRouter {
                         // Can't get existing block - fall back to hash comparison
                         ChainStore::hash_wins(&computed_hash, &existing_hash)
                     };
+
+                    // A same-height win is not a chain-weight win for blocks
+                    // below the tip — see deep_fork_blocked.
+                    let incoming_wins = incoming_wins
+                        && !deep_fork_blocked(chain_store, &root_block, block_height);
 
                     if incoming_wins {
                         // Rollback existing block and get orphaned actions
@@ -8584,6 +8594,50 @@ impl MessageRouter {
         );
 
         Ok(None)
+    }
+}
+
+/// SPEC_05 deep-fork guard: true when an incoming fork block sits BELOW our
+/// current tip and does not carry more cumulative work than the tip itself.
+///
+/// The per-height fork resolution compares only the two blocks at one height.
+/// For a block below the tip that is not a chain-weight test at all — in the
+/// 2026-07-14 chain-poisoning incident, a 2-node solo fork's height-8 block
+/// had aggregated more PoW than our height-8 block, so every node that heard
+/// it rolled a 74-block chain back to height 7 and deleted the suffix. A
+/// deeper block may displace ours only if it alone outweighs the cumulative
+/// work at our tip — i.e. the incoming CHAIN is provably heavier than ours.
+fn deep_fork_blocked(
+    chain_store: &crate::storage::chain::ChainStore,
+    incoming: &crate::blocks::RootBlock,
+    block_height: u64,
+) -> bool {
+    let Some(tip_height) = chain_store.get_latest_height().ok().flatten() else {
+        return false;
+    };
+    if block_height >= tip_height {
+        // Tip-level fork: the same-height comparison IS the chain-weight test.
+        return false;
+    }
+    let tip_cumulative = chain_store
+        .get_root_hash_at_height(tip_height)
+        .ok()
+        .flatten()
+        .and_then(|h| chain_store.get_root_block(&h).ok().flatten())
+        .map(|b| b.cumulative_pow);
+    match tip_cumulative {
+        Some(tip_pow) if incoming.cumulative_pow > tip_pow => false,
+        Some(tip_pow) => {
+            log::info!(
+                "[REORG] Deep-fork guard: keeping our chain — incoming block at height {} (pow={}) does not outweigh our tip at height {} (pow={})",
+                block_height,
+                incoming.cumulative_pow,
+                tip_height,
+                tip_pow
+            );
+            true
+        }
+        None => false,
     }
 }
 

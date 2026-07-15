@@ -41,7 +41,7 @@ interface PrefsRpc {
 }
 
 async function syncPrefsWithNode(rpc: PrefsRpc, userPkHex: string, prefsKey: string): Promise<boolean> {
-  const [followRes, savedRes] = await Promise.all([
+  const [followRes, savedRes, usersRes] = await Promise.all([
     rpc.call<{ spaces: Array<{ space_id: string; space_id_hex: string; followed_at: number }> }>(
       'list_followed_spaces',
       { user: userPkHex }
@@ -49,6 +49,10 @@ async function syncPrefsWithNode(rpc: PrefsRpc, userPkHex: string, prefsKey: str
     rpc.call<{ posts: Array<{ content_id: string; saved_at: number }> }>('list_saved_posts', {
       user: userPkHex,
     }),
+    rpc.call<{ users: Array<{ user: string; address: string; followed_at: number }> }>(
+      'list_followed_users',
+      { user: userPkHex }
+    ),
   ]);
 
   const local = loadPreferences(prefsKey);
@@ -57,6 +61,8 @@ async function syncPrefsWithNode(rpc: PrefsRpc, userPkHex: string, prefsKey: str
     followRes.spaces.flatMap(s => [s.space_id, s.space_id_hex])
   );
   const nodeSavedIds = new Set(savedRes.posts.map(p => p.content_id));
+  // Users may be keyed locally by hex pubkey OR cs1 address.
+  const nodeUserIds = new Set(usersRes.users.flatMap(u => [u.user, u.address]));
 
   // Push local-only entries up (migration of pre-R2 localStorage state).
   for (const s of local.followedSpaces) {
@@ -67,6 +73,11 @@ async function syncPrefsWithNode(rpc: PrefsRpc, userPkHex: string, prefsKey: str
   for (const postId of local.savedPosts) {
     if (postId && !nodeSavedIds.has(postId)) {
       await rpc.call('save_post', { user: userPkHex, content_id: postId }).catch(() => undefined);
+    }
+  }
+  for (const u of local.followedUsers) {
+    if (u.id && !nodeUserIds.has(u.id)) {
+      await rpc.call('follow_user', { user: userPkHex, target: u.id }).catch(() => undefined);
     }
   }
 
@@ -93,9 +104,30 @@ async function syncPrefsWithNode(rpc: PrefsRpc, userPkHex: string, prefsKey: str
   }
   const mergedSaved = Array.from(new Set([...savedRes.posts.map(p => p.content_id), ...local.savedPosts]));
 
+  // Merge followed users, keeping local metadata (displayName, muted); the
+  // canonical id for node-sourced entries is the cs1 address (what the feed's
+  // author cards use).
+  const usersById = new Map(local.followedUsers.map(u => [u.id, u]));
+  const mergedUsers: FeedSource[] = usersRes.users.map(u => {
+    const existing = usersById.get(u.address) ?? usersById.get(u.user);
+    return existing ?? {
+      type: 'user' as const,
+      id: u.address,
+      addedAt: (u.followed_at || 0) * 1000,
+      muted: false,
+      notifications: true,
+    };
+  });
+  for (const u of local.followedUsers) {
+    if (u.id && !nodeUserIds.has(u.id) && !mergedUsers.some(m => m.id === u.id)) {
+      mergedUsers.push(u);
+    }
+  }
+
   savePreferences(prefsKey, {
     ...local,
     followedSpaces: mergedSpaces,
+    followedUsers: mergedUsers,
     savedPosts: mergedSaved,
   });
   return true;
@@ -375,7 +407,8 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
       persist(newPrefs);
       return newPrefs;
     });
-  }, [persist]);
+    mirrorToNode('follow_user', { target: userPk });
+  }, [persist, mirrorToNode]);
 
   const unfollowUser = useCallback((userPk: string) => {
     setPreferences(prev => {
@@ -386,7 +419,8 @@ export function useFeedPreferences(): UseFeedPreferencesResult {
       persist(newPrefs);
       return newPrefs;
     });
-  }, [persist]);
+    mirrorToNode('unfollow_user', { target: userPk });
+  }, [persist, mirrorToNode]);
 
   const muteUser = useCallback((userPk: string, muted: boolean) => {
     setPreferences(prev => {

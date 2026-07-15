@@ -1151,6 +1151,9 @@ impl RpcMethods {
             "hide_space" => self.hide_space(params, id).await,
             "unhide_space" => self.unhide_space(params, id).await,
             "list_hidden_spaces" => self.list_hidden_spaces(params, id).await,
+            "follow_user" => self.follow_user(params, id).await,
+            "unfollow_user" => self.unfollow_user(params, id).await,
+            "list_followed_users" => self.list_followed_users(params, id).await,
             "save_post" => self.save_post(params, id).await,
             "unsave_post" => self.unsave_post(params, id).await,
             "list_saved_posts" => self.list_saved_posts(params, id).await,
@@ -11465,6 +11468,98 @@ impl RpcMethods {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Parse a param that identifies another user as either a 32-byte hex
+    /// public key or a `cs1…` address (the feed follows authors by address).
+    fn parse_target_user(params: &Value, field: &str) -> Result<[u8; 32], String> {
+        let raw = params
+            .get(field)
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("Missing '{}' (hex public key or cs1… address)", field))?;
+        if raw.starts_with("cs1") {
+            return crate::crypto::address::decode_address_to_pubkey(raw)
+                .map(|pk| pk.0)
+                .map_err(|e| format!("Invalid {} address: {:?}", field, e));
+        }
+        let bytes = hex::decode(raw).map_err(|_| format!("Invalid {}: must be hex", field))?;
+        bytes
+            .try_into()
+            .map_err(|_| format!("Invalid {}: must be 32 bytes", field))
+    }
+
+    /// Follow another identity (node-authoritative prefs).
+    async fn follow_user(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let target = match Self::parse_target_user(&params, "target") {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        match prefs.follow_user(&user_pk, &target, now) {
+            Ok(()) => RpcResponse::success(serde_json::json!({ "success": true }), id),
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// Unfollow an identity.
+    async fn unfollow_user(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let target = match Self::parse_target_user(&params, "target") {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        match prefs.unfollow_user(&user_pk, &target) {
+            Ok(()) => RpcResponse::success(serde_json::json!({ "success": true }), id),
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
+    }
+
+    /// List the identities this user follows (hex pubkey + cs1 address forms).
+    async fn list_followed_users(&self, params: Value, id: Value) -> RpcResponse {
+        let user_pk = match Self::parse_user_pk(&params) {
+            Ok(pk) => pk,
+            Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+        };
+        let prefs = match self.prefs_store_or_err(&id) {
+            Ok(p) => p,
+            Err(resp) => return resp,
+        };
+        match prefs.followed_users(&user_pk) {
+            Ok(follows) => {
+                let users: Vec<Value> = follows
+                    .iter()
+                    .map(|(pk, ts)| {
+                        serde_json::json!({
+                            "user": hex::encode(pk),
+                            "address": crate::crypto::address::encode_address_from_pubkey(
+                                &crate::types::identity::PublicKey(*pk)
+                            ),
+                            "followed_at": ts,
+                        })
+                    })
+                    .collect();
+                RpcResponse::success(serde_json::json!({ "users": users }), id)
+            }
+            Err(e) => RpcResponse::error(RpcErrorCode::InternalError, &format!("{}", e), id),
+        }
     }
 
     /// Save a post for this identity.
