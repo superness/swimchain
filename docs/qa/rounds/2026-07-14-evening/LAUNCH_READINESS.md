@@ -42,9 +42,17 @@ unattended restart can partition or poison the chain again.
    archive — on a machine that sleeps. Relocate the genesis identity + node to
    an always-on droplet; the PC becomes a normal dev node. (This was already
    flagged for game onboarding; tonight made it a consensus concern too.)
-3. **Deliberate chain snapshots.** Tonight's recovery existed because qa2
-   happened to be stopped at the right time. A nightly `chain/` snapshot on
-   two hosts (cron + rsync) makes that luck a policy.
+3. **Non-destructive rollback.** (Replaces an earlier "chain snapshot"
+   recommendation, retracted — backing up a chain is a non-concept; the
+   network's replicas ARE the durability, and Bitcoin-style nodes never
+   delete block data on reorg.) Our `rollback_block_at_height` DELETES the
+   rolled-back blocks, which is what turned tonight's wrong fork-choice into
+   data destruction (genesis: 80 root blocks → 16). Rolled-back blocks must
+   be kept (unindexed orphans), making any reorg — even a wrong one — locally
+   reversible. With this landed, an incident like tonight's is an index
+   repair, not a hunt for a surviving replica. Until node count grows, the
+   fleet is a same-binary monoculture, so this is the property that stands in
+   for replica diversity.
 4. **The reorg-apply loop.** A node that decides to reorg and can't complete
    it retries forever (6,823 iterations in 7 minutes tonight). With deep
    displacement now disabled the trigger is rarer, but partitioned nodes
