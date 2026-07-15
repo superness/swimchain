@@ -147,6 +147,7 @@ h2 { font-size: 18px; margin: 0; }
 .viskey { text-align: center; margin-top: 8px; opacity: 0.9; }
 .viskey .k-mine { color: var(--foam); font-weight: 600; }
 .viskey .k-warn { color: var(--heat); font-weight: 600; }
+.viskey .k-soft { color: var(--shallow, #6ed3c2); font-weight: 600; }
 
 .champion-banner {
   display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
@@ -169,6 +170,7 @@ h2 { font-size: 18px; margin: 0; }
 .career .stat { font-family: var(--mono); font-size: 13px; color: var(--foam); }
 
 .overlay { position: fixed; inset: 0; background: rgba(4, 23, 30, 0.72); display: flex; align-items: center; justify-content: center; }
-.mining { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 24px 32px; text-align: center; }
+.mining { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 24px 32px; text-align: center; max-width: 320px; }
+.mining .flavor { margin-top: 8px; font-style: italic; opacity: 0.85; }
 .spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--heat); border-radius: 50%; margin: 0 auto 12px; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }

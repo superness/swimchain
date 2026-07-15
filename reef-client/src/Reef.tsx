@@ -68,7 +68,7 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, onAct }: Props) {
         const base = cell
           ? `(${x},${y}) ${isMe(cell.owner) ? 'yours' : 'coral'} · vitality ${cell.vitality}/${MAX_VITALITY}` +
             (cell.vitality <= 1 ? ' — recedes next tide!' : '') +
-            (state.frontier.has(cellKey(x, y)) ? ' · settling (not yet final)' : '')
+            (state.frontier.has(cellKey(x, y)) ? ' · still taking hold…' : '')
           : `(${x},${y}) open water`;
         let note = '';
         if (intent) {

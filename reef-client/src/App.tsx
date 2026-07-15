@@ -22,7 +22,6 @@ import {
   COST_GROW,
   COST_CONTEST,
   TEND_CAP,
-  BLOCKS_PER_EPOCH,
   type Intent,
   type ReefState,
   type RegionSummary,
@@ -30,7 +29,23 @@ import {
   type Identity,
 } from './lib/reefEngine';
 
-type Mining = { active: boolean; label: string; attempts: number } | null;
+type Mining = { active: boolean; label: string; flavor: string } | null;
+
+// Ambient lines shown while a move takes hold (the few seconds of PoW). The
+// player is growing coral, not mining hashes — so we give them the reef, not a
+// counter. One is picked at random each time.
+const GROW_FLAVOR = [
+  'The current carries your spore into place…',
+  'Coral reaches for the seabed…',
+  'Roots feel for a hold in the reef…',
+  'The tide weighs your claim…',
+  'Polyps stir and begin to build…',
+];
+const FOUND_FLAVOR = [
+  'A new reef stirs to life…',
+  'The seabed clears for open water…',
+];
+const pickFlavor = (pool: string[]) => pool[Math.floor(Math.random() * pool.length)];
 
 export function App() {
   const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
@@ -206,19 +221,19 @@ export function App() {
       let msg: string | null = null;
       switch (m.outcome) {
         case 'tie-lost':
-          msg = `(${m.x},${m.y}) was claimed by another player at the same moment — you lost the tie, and your budget was refunded.`;
+          msg = `Another swimmer reached (${m.x},${m.y}) first — your energy drifts back to you.`;
           break;
         case 'contested':
-          msg = `Contested (${m.x},${m.y}) — you damaged it but didn't capture. Hit it again.`;
+          msg = `You struck the coral at (${m.x},${m.y}), but it held. Strike again to break it.`;
           break;
         case 'rejected-unaffordable':
-          msg = `Couldn't grow (${m.x},${m.y}) — not enough budget.`;
+          msg = `Not enough energy to grow at (${m.x},${m.y}) — the tide will replenish you.`;
           break;
         case 'rejected-invalid':
-          msg = `Couldn't grow (${m.x},${m.y}) — it must connect to your reef.`;
+          msg = `Coral can only spread from your own reef — (${m.x},${m.y}) is out of reach.`;
           break;
         case 'rejected-capped':
-          msg = `Tend limit reached this tide — (${m.x},${m.y}) wasn't refreshed.`;
+          msg = `You've tended all you can this tide — (${m.x},${m.y}) will have to wait.`;
           break;
         default:
           msg = null; // grew / tended / captured: no news is good news
@@ -248,16 +263,16 @@ export function App() {
 
   async function onNewRegion() {
     if (!rpc || !me) return;
-    setMining({ active: true, label: 'Founding a reef', attempts: 0 });
+    // The wait is real (the coral takes its time) and deliberate — it paces the
+    // game. Dress it as the reef, not a hash counter; no per-attempt updates.
+    setMining({ active: true, label: 'Seeding a new reef', flavor: pickFlavor(FOUND_FLAVOR) });
     try {
-      const id = await createRegion(rpc, me, REEF_SPACE, (attempts) =>
-        setMining({ active: true, label: 'Founding a reef (proof-of-work)', attempts })
-      );
+      const id = await createRegion(rpc, me, REEF_SPACE);
       setMining(null);
       setOpenId(id);
     } catch (e) {
       setMining(null);
-      setError(e instanceof Error ? e.message : 'failed to found a reef');
+      setError(e instanceof Error ? e.message : 'the reef would not take — try again');
     }
   }
 
@@ -271,20 +286,17 @@ export function App() {
           : intent.kind === 'contest'
             ? 'Contesting'
             : 'Tending';
-    const where = `(${x},${y})`;
-    setMining({ active: true, label: `${verb} ${where}`, attempts: 0 });
+    setMining({ active: true, label: `${verb} at (${x},${y})`, flavor: pickFlavor(GROW_FLAVOR) });
     try {
-      const cid = await submitReefMove(rpc, me, openId, intent.op, x, y, state.moves.length, (attempts) =>
-        setMining({ active: true, label: `${verb} ${where} (proof-of-work)`, attempts })
-      );
+      const cid = await submitReefMove(rpc, me, openId, intent.op, x, y, state.moves.length);
       // Track our own move so we can explain its settled outcome once it folds.
       if (cid) mySubmittedRef.current.add(cid);
       setMining(null);
-      // Show my growth immediately; the poll reconciles once it seals on-chain.
+      // Show the growth immediately; the reef reconciles it as the move settles.
       setState((prev) => (prev ? applyMoveOptimistic(prev, publicKeyHex!, intent.op, x, y) : prev));
     } catch (e) {
       setMining(null);
-      setError(e instanceof Error ? e.message : 'failed to submit move');
+      setError(e instanceof Error ? e.message : 'the coral would not take — try again');
     }
   }
 
@@ -410,15 +422,15 @@ export function App() {
             />
             <div className="status">
               <div className="season">
-                <strong>Season {state.season}</strong> · {state.epochsLeftInSeason} epoch{state.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
-                <span className="fine"> · tide {state.epoch} (every {BLOCKS_PER_EPOCH} blocks)</span>
+                <strong>Season {state.season}</strong> · {state.epochsLeftInSeason} tide{state.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
+                <span className="fine"> · tide {state.epoch}</span>
                 {state.tentative > 0 && (
-                  <span className="fine tentative"> · {state.tentative} move{state.tentative === 1 ? '' : 's'} pending ⟳</span>
+                  <span className="fine tentative"> · {state.tentative} growth{state.tentative === 1 ? '' : 's'} drifting in…</span>
                 )}
               </div>
 
               <div className="budget">
-                <span className="fine">budget</span>
+                <span className="fine">energy</span>
                 <span className="pips">
                   {Array.from({ length: MAX_BUDGET }, (_, i) => (
                     <span key={i} className={`bpip${i < budget ? ' on' : ''}`} />
@@ -434,11 +446,11 @@ export function App() {
                   </span>
                   <strong> {tendsLeft}</strong>/{TEND_CAP}
                 </span>
-                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free but only {TEND_CAP}/tide · budget regens each epoch</span>
+                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({TEND_CAP}/tide) · energy returns with each tide</span>
               </div>
 
               <div className="board-scores">
-                {state.standings.length === 0 && <span className="fine">Open water. Seed your first coral anywhere — it's free-form until budgets bite.</span>}
+                {state.standings.length === 0 && <span className="fine">Open water. Seed your first coral anywhere — it's free until your energy starts to matter.</span>}
                 {state.standings.map((s, i) => (
                   <div key={s.owner} className={`row${isMine(s.owner) ? ' me' : ''}`}>
                     <span className="rank">{i + 1}</span>
@@ -473,11 +485,12 @@ export function App() {
 
               <div className="fine hint">
                 Click open water by your coral to <strong>grow</strong>, your own to <strong>tend</strong>, an enemy border to <strong>contest</strong>.
-                Score is the vitality you keep alive each epoch — sprawl you can't tend just feeds the tide. Every move is signed and mined onto the chain.
+                You score the vitality you keep alive each tide — sprawl you can't tend just feeds the current. Every coral you grow is provably, only ever yours.
               </div>
               <div className="fine viskey">
                 Coral <strong>shrinks as it fades</strong> · your reef has a <span className="k-mine">bright ring</span> ·
-                a <span className="k-warn">warning ring</span> means it recedes within two tides · a <span className="k-warn">pulsing</span> cell is gone next tide — tend it.
+                a <span className="k-warn">warning ring</span> means it recedes within two tides · a <span className="k-warn">pulsing</span> cell is gone next tide — tend it ·
+                <span className="k-soft">softly breathing</span> coral is still taking hold.
               </div>
             </div>
           </section>
@@ -489,7 +502,7 @@ export function App() {
           <div className="mining">
             <div className="spinner" />
             <div>{mining.label}…</div>
-            {mining.attempts > 0 && <div className="fine">{mining.attempts} attempts</div>}
+            <div className="fine flavor">{mining.flavor}</div>
           </div>
         </div>
       )}
