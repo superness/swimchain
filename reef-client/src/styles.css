@@ -455,7 +455,7 @@ h2 { font-size: 18px; margin: 0; }
 .tide-meter {
   position: relative;
   height: 22px;
-  margin: 6px 0 2px;
+  margin: 6px 0 14px; /* breathing room above the leaderboard */
   border-radius: 11px;
   background: rgba(20, 60, 90, 0.25);
   border: 1px solid rgba(90, 170, 220, 0.25);
