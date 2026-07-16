@@ -53,20 +53,21 @@ for client in "${CLIENTS[@]}"; do
     echo "   deployed to $host"
   done
 
-  # Post-deploy: the LIVE asset must carry the same markers. Retry: the fetch
-  # immediately after the atomic swap can race nginx's file cache (observed
-  # transient empty/404 that passes seconds later).
-  live=$(curl -s "https://swimchain.io/$webroot/" | grep -o 'index-[A-Za-z0-9_-]*\.js' | head -1)
-  for m in "${REQ[@]}"; do
-    ok=false
-    for attempt in 1 2 3; do
-      if curl -s "https://swimchain.io/$webroot/assets/$live" | grep -q "$m"; then
-        ok=true; break
-      fi
-      sleep 2
+  # Post-deploy: verify ON EACH HOST that the served index references a bundle
+  # whose file carries the markers. Checking the deployed files over ssh is
+  # authoritative; the old HTTPS probe raced nginx and flaked ~50% despite
+  # retries while a manual curl seconds later always passed.
+  for host in "$SEED" "$GATEWAY"; do
+    k=""; [ "$host" != "$SEED" ] && k="-i $KEY"
+    live=$(ssh $k "root@$host" "grep -o 'index-[A-Za-z0-9_-]*\\.js' /var/www/$webroot/index.html | head -1")
+    for m in "${REQ[@]}"; do
+      ssh $k "root@$host" "grep -q '$m' /var/www/$webroot/assets/$live" || {
+        echo "FATAL: $host serves $client asset $live WITHOUT '$m' — investigate immediately"; exit 1; }
     done
-    $ok || { echo "FATAL: LIVE $client asset $live lacks '$m' after 3 tries — investigate immediately"; exit 1; }
+    echo "   $host verified ($live)"
   done
-  echo "   live $live verified"
+  # Bonus end-to-end probe (non-fatal: nginx timing can lag a beat).
+  curl -s "https://swimchain.io/$webroot/" | grep -o 'index-[A-Za-z0-9_-]*\.js' | head -1 |
+    xargs -I{} echo "   https serves: {}"
 done
 echo "ALL DEPLOYED + VERIFIED"

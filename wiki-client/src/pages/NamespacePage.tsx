@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useRpc } from '../hooks/useRpc';
+import { toUnixSeconds } from '../lib/time';
 import { useWikiNamespaces } from '../hooks/useWikiNamespaces';
 import type { WikiPage } from '../types/wiki';
 import './NamespacePage.css';
@@ -41,8 +42,8 @@ function mapToWikiPage(raw: RpcContentSummary): WikiPage {
     content: raw.body ?? '',
     author: raw.display_name ?? raw.author_id,
     authorAddress: raw.author_id,
-    createdAt: raw.created_at,
-    lastEdited: raw.last_engagement,
+    createdAt: toUnixSeconds(raw.created_at),
+    lastEdited: toUnixSeconds(raw.last_engagement),
     revisionCount: raw.reply_count,
     discussionCount: 0,
     tags: [],

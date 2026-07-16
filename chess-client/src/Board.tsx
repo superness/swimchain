@@ -22,6 +22,15 @@ export function Board({ chess, orientation, canMove, onMove }: BoardProps) {
   const [selected, setSelected] = useState<Square | null>(null);
   const board = chess.board(); // [rank8..rank1][fileA..fileH]
 
+  // Last move's from/to squares — highlighted so a player returning to the
+  // board (or one who can't read SAN) can instantly see what just happened,
+  // without decoding "Nf3". chess.js history carries verbose move objects.
+  const lastMove = useMemo(() => {
+    const hist = chess.history({ verbose: true });
+    const m = hist[hist.length - 1];
+    return m ? { from: m.from as string, to: m.to as string, san: m.san } : null;
+  }, [chess]);
+
   const legalTargets = useMemo(() => {
     if (!selected) return new Set<string>();
     return new Set(chess.moves({ square: selected, verbose: true }).map((m) => m.to));
@@ -64,14 +73,18 @@ export function Board({ chess, orientation, canMove, onMove }: BoardProps) {
             const dark = (8 - rank + FILES.indexOf(file)) % 2 === 1;
             const isSel = selected === sq;
             const isTarget = legalTargets.has(sq);
+            const isLastFrom = lastMove?.from === sq;
+            const isLastTo = lastMove?.to === sq;
             return (
               <div
                 key={sq}
-                className={`sq ${dark ? 'dark' : 'light'}${isSel ? ' sel' : ''}${isTarget ? ' target' : ''}${canMove ? ' active' : ''}`}
+                className={`sq ${dark ? 'dark' : 'light'}${isSel ? ' sel' : ''}${isTarget ? ' target' : ''}${isLastFrom ? ' last-from' : ''}${isLastTo ? ' last-to' : ''}${canMove ? ' active' : ''}`}
                 onClick={() => handleClick(sq)}
+                title={isLastTo ? `last move: ${lastMove?.san}` : undefined}
               >
                 {cell && <span className="piece">{GLYPH[cell.color + cell.type]}</span>}
                 {isTarget && !cell && <span className="dot" />}
+                {isLastTo && <span className="last-badge" aria-hidden="true" />}
               </div>
             );
           })}

@@ -8596,20 +8596,60 @@ impl RpcMethods {
         let mut best_info_ts: u64 = 0;
         let mut best_avatar_ts: u64 = 0;
 
-        // Iterate the profile space, keeping the NEWEST info and avatar segments
-        // (profiles are updated by posting a new version).
-        for result in content_store.iter_content() {
-            let item = match result {
-                Ok(i) => i,
-                Err(_) => continue,
-            };
-            if item.space_id.as_bytes()[..16] != profile_space_id {
-                continue;
+        // Collect this profile space's posts as (body, created_at). Source them
+        // from the CHAIN-BACKED space index (get_content_for_space) — the same
+        // path list_space_content uses — NOT content_store.iter_content(), which
+        // only holds locally-authored/fetched bodies. On a peer node the synced
+        // profile lives in the chain index but not iter_content, so the old code
+        // returned null for everyone else's profile even when fully synced (the
+        // "phone has a profile, PC clients show nothing" bug, 2026-07-16). Body
+        // text resolves via content_store (body_inline / get_body_by_hash) then
+        // the blob store, mirroring list_space_content.
+        let mut profile_posts: Vec<(String, u64)> = Vec::new();
+        if let Some(ref chain_store) = self.node.chain_store {
+            let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
+            if let Ok(indexed) =
+                chain_store.get_content_for_space(&profile_space_id, 500, 0)
+            {
+                for (content_hash, metadata) in indexed {
+                    let mut text: Option<String> = None;
+                    let cid = crate::types::content::ContentId::from_bytes(content_hash);
+                    if let Ok(Some(item)) = content_store.get(&cid) {
+                        if let Some(ref b) = item.body_inline {
+                            if !b.is_empty() {
+                                text = Some(b.clone());
+                            }
+                        }
+                    }
+                    if text.is_none() {
+                        if let Ok(Some(b)) = content_store.get_body_by_hash(&content_hash) {
+                            if !b.is_empty() {
+                                text = Some(b);
+                            }
+                        }
+                    }
+                    if text.is_none() {
+                        if let Some(ref bs) = blob_store {
+                            let bh = ContentBlobHash::from_bytes(content_hash);
+                            if let Ok(bytes) = bs.get(&bh) {
+                                if let Ok(s) = String::from_utf8(bytes) {
+                                    text = Some(s);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(t) = text {
+                        profile_posts.push((t, metadata.timestamp));
+                    }
+                }
             }
-            let body = match &item.body_inline {
-                Some(b) => b.trim(),
-                None => continue,
-            };
+        }
+
+        // Keep the NEWEST info and avatar segments (profiles are updated by
+        // posting a new version).
+        for (raw_body, created_at) in &profile_posts {
+            let created_at = *created_at;
+            let body = raw_body.trim();
             for raw_segment in body.split("\n---\n") {
                 let seg = raw_segment.trim();
                 if let Some(json_str) = seg.strip_prefix(info_marker) {
@@ -8617,7 +8657,7 @@ impl RpcMethods {
                         let ts = info
                             .get("updatedAt")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(item.created_at);
+                            .unwrap_or(created_at);
                         if ts >= best_info_ts {
                             best_info_ts = ts;
                             display_name = info
@@ -8637,7 +8677,7 @@ impl RpcMethods {
                         let ts = meta
                             .get("updatedAt")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(item.created_at);
+                            .unwrap_or(created_at);
                         if ts >= best_info_ts {
                             best_info_ts = ts;
                             display_name = meta
@@ -8652,7 +8692,7 @@ impl RpcMethods {
                         let ts = av
                             .get("updatedAt")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(item.created_at);
+                            .unwrap_or(created_at);
                         if ts >= best_avatar_ts {
                             best_avatar_ts = ts;
                             avatar_content_id = av

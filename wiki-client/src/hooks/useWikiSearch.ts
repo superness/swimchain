@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
+import { toUnixSeconds } from '../lib/time';
 import type { WikiPage } from '../types/wiki';
 import type { SearchResult, ThreadInfo, ReplyInfo } from '../types';
 
@@ -25,8 +26,8 @@ function resultToWikiPage(result: SearchResult): WikiPage | null {
       content: info.body,
       author: info.authorName ?? info.authorId,
       authorAddress: info.authorId,
-      createdAt: info.createdAt,
-      lastEdited: info.lastEngagement,
+      createdAt: toUnixSeconds(info.createdAt),
+      lastEdited: toUnixSeconds(info.lastEngagement),
       revisionCount: 0,
       discussionCount: info.replyCount,
       tags: [],
@@ -43,8 +44,8 @@ function resultToWikiPage(result: SearchResult): WikiPage | null {
       content: info.body,
       author: info.authorName ?? info.authorId,
       authorAddress: info.authorId,
-      createdAt: info.createdAt,
-      lastEdited: info.createdAt,
+      createdAt: toUnixSeconds(info.createdAt),
+      lastEdited: toUnixSeconds(info.createdAt),
       revisionCount: 0,
       discussionCount: 0,
       tags: [],
