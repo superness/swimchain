@@ -702,15 +702,24 @@ export function App() {
                   away. Purely fold-derived — identical on every device. */}
               <div
                 className={`tide-meter${state.params.epochMoves - state.tideMoves === 1 ? ' imminent' : ''}`}
-                title={`the tide turns after ${state.params.epochMoves} moves — energy returns, coral fades a little`}
+                title={`the tide turns after ${state.params.epochMoves} CONFIRMED moves — pending moves (the pale swell) push it once they seal`}
               >
+                {/* Pale swell: pending moves that will drive the tide once sealed. */}
+                {state.tentative > 0 && (
+                  <div
+                    className="tide-swell"
+                    style={{ width: `${Math.min(100, Math.round(((state.tideMoves + state.tentative) / state.params.epochMoves) * 100))}%` }}
+                  />
+                )}
                 <div className="tide-water" style={{ width: `${Math.round((state.tideMoves / state.params.epochMoves) * 100)}%` }}>
                   <span className="tide-wave" />
                 </div>
                 <span className="tide-label fine">
-                  {state.params.epochMoves - state.tideMoves === 1
-                    ? '🌊 the tide strains — one move from turning'
-                    : `🌊 tide in ${state.params.epochMoves - state.tideMoves} moves`}
+                  {state.tideMoves + state.tentative >= state.params.epochMoves
+                    ? `🌊 the tide swells — ${state.tentative} drifting in will turn it`
+                    : state.params.epochMoves - state.tideMoves === 1
+                      ? '🌊 the tide strains — one move from turning'
+                      : `🌊 tide in ${state.params.epochMoves - state.tideMoves} moves${state.tentative > 0 ? ` · ${state.tentative} drifting in` : ''}`}
                 </span>
               </div>
 

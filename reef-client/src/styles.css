@@ -496,3 +496,18 @@ h2 { font-size: 18px; margin: 0; }
   0%, 100% { box-shadow: 0 0 4px rgba(120, 210, 255, 0.3); }
   50% { box-shadow: 0 0 14px rgba(120, 210, 255, 0.75); }
 }
+
+/* Pale swell: pending (unconfirmed) moves — water that's coming but hasn't
+   turned the tide yet. Sits under the solid confirmed fill. */
+.tide-swell {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, rgba(70, 150, 200, 0.18), rgba(120, 200, 240, 0.3));
+  border-radius: 11px 0 0 11px;
+  transition: width 0.8s ease;
+  animation: swell-breathe 2.4s ease-in-out infinite;
+}
+@keyframes swell-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
