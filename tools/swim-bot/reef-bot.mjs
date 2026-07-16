@@ -136,16 +136,18 @@ async function minePow(contentHash32) {
 
 /** Submit a reef move (grow|tend at x,y). Body carries a unique nonce so two
  *  distinct moves never dedup-collide; the fold reads only `<op> <x> <y>`. */
-async function submitMove(op, x, y) {
-  const nonce = randomBytes(8).toString('hex');
-  // `#<ms>~` is the authoring timestamp the fold orders by (matches the client's
-  // submitReefMove); the random nonce keeps distinct moves from dedup-colliding.
-  const body = `${op} ${x} ${y} ${REGION}#${Date.now()}~${authorPrefix}~${nonce}`;
+async function submitBody(body) {
   const ch = sha256(Buffer.from(body, 'utf-8'));
   const pow = await minePow(ch);
   const sig = await signBytesWithNode(actionSigPreimage(ch, pow.timestamp));
   await rpc('submit_reply', { parent_id: REGION, body, author_id: AUTHOR, ...pow, signature: sig });
   return 'sha256:' + ch.toString('hex'); // the reply's content_id (= sha256 of body)
+}
+async function submitMove(op, x, y) {
+  const nonce = randomBytes(8).toString('hex');
+  // `#<ms>~` is the authoring timestamp the fold orders by (matches the client's
+  // submitReefMove); the random nonce keeps distinct moves from dedup-colliding.
+  return submitBody(`${op} ${x} ${y} ${REGION}#${Date.now()}~${authorPrefix}~${nonce}`);
 }
 
 // ── board reading: THE PRODUCTION ENGINE, not a copy ──────────────────────────
@@ -190,7 +192,7 @@ async function readBoard() {
       else if (occ.owner !== AUTHOR) enemyAdjacent.push([nx, ny, occ.vitality]);
     }
   }
-  return { cells, budget, mine, openAdjacent, enemyAdjacent, outcomes, epoch: state.epoch };
+  return { cells, budget, mine, openAdjacent, enemyAdjacent, outcomes, epoch: state.epoch, params: state.params };
 }
 
 // ── strategy (rule-based, no AI) ──────────────────────────────────────────────
@@ -351,8 +353,19 @@ async function main() {
     const b = await readBoard();
     const owners = new Map();
     for (const c of b.cells.values()) owners.set(c.owner, (owners.get(c.owner) ?? 0) + 1);
-    console.log(`[${TAG}] epoch=${b.epoch} totalCells=${b.cells.size} mine=${b.mine.length} budget=${b.budget}`);
+    console.log(
+      `[${TAG}] epoch=${b.epoch} params=${JSON.stringify(b.params)} totalCells=${b.cells.size} mine=${b.mine.length} budget=${b.budget}`
+    );
     for (const [o, n] of [...owners].sort((a, z) => z[1] - a[1])) console.log(`  ${o.slice(0, 10)}… ${n} cells`);
+    return;
+  }
+  if (process.env.BOT_MODE === 'retune') {
+    // One-shot founder rule change: RETUNE="epochMoves=6 tendCap=4". Only the
+    // region FOUNDER's identity makes this take effect (the fold ignores others).
+    const tune = (process.env.RETUNE || '').trim();
+    if (!/^((epochMoves|tendCap)=\d+\s*)+$/.test(tune)) throw new Error('RETUNE must be like "epochMoves=6 tendCap=4"');
+    const cid = await submitBody(`retune ${tune} #${Date.now()}~${authorPrefix}`);
+    console.log(`[${TAG}] retune submitted: ${tune} · cid=${cid.slice(0, 20)}…`);
     return;
   }
   if (process.env.BOT_MODE === 'repro') { await reproMode(); return; }
