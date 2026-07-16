@@ -46,7 +46,10 @@ check('second sweep is a no-op (per-session dedup)', firedAgain === false && cal
 
 // Fully-resolved list: no-op from the start.
 calls.length = 0;
-const firedResolved = resolveUnresolvedAppSpaces(rpc, [spaces[1]]);
+const resolvedOnly = [
+  { space_id: 'sp1_other_resolved', class: 'app', app: 'wiki', name: 'Docs', name_unresolved: false },
+];
+const firedResolved = resolveUnresolvedAppSpaces(rpc, resolvedOnly);
 check('fully-resolved list fires nothing', firedResolved === false && calls.length === 0);
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
