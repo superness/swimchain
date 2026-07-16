@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784080179224,
+  "lastUpdate": 1784161411399,
   "repoUrl": "https://github.com/superness/swimchain",
   "entries": {
     "Swimchain benchmarks": [
@@ -60951,6 +60951,1158 @@ window.BENCHMARK_DATA = {
             "name": "cache_persist/10000",
             "value": 624087,
             "range": "± 13340",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "super.hero.excuse@gmail.com",
+            "name": "superness",
+            "username": "superness"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cc3a51216e2407f19596ff33231dc08d2e50d486",
+          "message": "Chess & reef: room names, bots, invite links, URL routing (#78)\n\n* fix(consensus): gate solo block formation behind peer-tip parity or grace\n\nRoot cause of the 2026-07-14 chain-poisoning incident: a node that\n(re)starts isolated forms blocks alone the moment its bot/faucet/user\nacts, and that solo block competes with the real chain. The deep-fork\nguard stops the poisoning, but the stub still creates junk forks and\nreorg churn. Close the class at the source: never form a block until\nthe node has confirmed it is not the lone height-authority.\n\nNew FormationGate (src/node/formation_gate.rs), shared via the router:\n- opens on peer-tip parity (>=1 handshake seen AND our height >= the\n  highest start_height any peer advertised since process start), or\n- on grace expiry (90s, restarted by the first peer handshake so an\n  in-flight sync gets a full window) so a genuinely-first node\n  bootstrapping a new network cannot deadlock. Regtest grace is zero -\n  single-node dev flows are unchanged.\nSticky once open; guards formation only, actions still queue and seal\nwhen the gate opens.\n\nGuarded at all THREE formation sites (the handoff listed two; the\nperiodic backup task would have defeated the gate on its own):\n- router try_form_block_if_threshold_met (gossip-triggered)\n- rpc methods try_form_block_if_threshold_met (RPC-submit-triggered)\n- tasks spawn_block_formation (periodic threshold/flush backstop)\n\nHandshake heights feed the gate from all three connection paths\n(bootstrap outbound, integrate outbound, inbound accept loop).\n\nTests: FormationGate unit tests + router-level regression tests\n(threshold-met builder + closed gate -> no block; peer parity or grace\nexpiry -> block forms). BlockBuilder gets a test-only lazy-wait\nbackdater so the tests don't sleep through LAZY_BLOCK_WAIT_MS.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(consensus): fork choice on real chain weight; silence reorg-apply loop\n\nRootBlock.cumulative_pow is builder-stamped from possibly-stale state\nand is NOT chain-cumulative on this chain (canonical blocks carry\nper-block-ish values), so tip-vs-incoming comparisons on it are\ngarbage - it is how the 2026-07-14 poisoning got a 2-node fork's\ninflated claim past two guards, and why genesis re-ran the same failed\nreorg 6,823x in 7 minutes.\n\nChainStore::chain_weight computes REAL chain weight: walk-parents sum\nof each ancestor's own total_pow, memoized per process (append-only\ndata), returning None when ancestry is missing locally.\n\nis_heavier_than_best_tip now compares real weights. An incoming block\nwith incomplete ancestry has unknowable weight and is simply not\nheavier yet - it never enters the reorg path, which kills the hot loop\nby construction (previously it was declared heavier on the stored\nfield, then make_canonical deferred, and every re-announce repeated\nthe whole dance). Once a locator sync delivers the ancestry, the\nweight becomes known and adoption proceeds. Direct tip extension keeps\nits equal-weight fast path (zero-pow flush blocks). If OUR tip's own\nancestry has a gap (recovered/legacy DB) the comparison falls back to\nthe stored field instead of wedging adoption.\n\nThe handle_block_data pre-unmark walk is gated on the same real-weight\ncomparison and now unmarks only canonical heights above the true fork\npoint (found by walking the incoming block's ancestry) - the old scan\nlooked for the incoming block's direct parent in the height index,\nwhich for a deep fork never matched, so it unmarked the ENTIRE chain\nback to height 0 on every re-announce.\n\nTests: chain_weight ancestry-sum + missing-ancestry cases, and the\nincident shape - a short fork claiming cumulative_pow=999,999,999 with\nfull ancestry present must not displace a chain with more real work.\nExisting deep-reorg and zero-pow-flush tests pass unchanged.\n\nPartitioned-node recovery beyond what the orphan/locator path can\nassemble remains documented wipe-to-rejoin for now.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(rpc): exempt loopback from auth lockout; dedupe failures by credential\n\nThe RPC cookie rotates on node restart; any client still polling with\nthe stale cookie burned through the 10-failure threshold in seconds\nand locked the IP out for 5 minutes - valid credentials included. Hit\n3x on 2026-07-14, each time curable only by another restart. Worse,\nthe web proxy reaches the node from localhost, so the node sees every\nweb visitor as 127.0.0.1: ten bad authed requests from ONE browser\nwould have locked out ALL web traffic globally.\n\nTwo changes to the auth-failure limiter:\n- Loopback (127.0.0.1/::1) is exempt from lockout entirely. Anyone on\n  loopback can read the cookie file anyway, so the lockout protected\n  nothing there. Read/write/admin rate quotas still apply.\n- Failures are deduped by credential fingerprint (hash of the auth\n  header, or the signing identity for signature auth): the same stale\n  cookie counts once per 5-minute window, not once per request. Only\n  distinct bad credentials accumulate toward the threshold, so the\n  non-loopback posture against actual credential-guessing is intact.\n\nTests: loopback exemption (v4+v6), stale-credential dedupe vs distinct\ncredentials reaching the threshold; existing lockout tests moved to a\nnon-loopback IP.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(clients): hide spaces with no resolved name from space lists\n\nA space whose name hasn't resolved yet (name: null on the wire,\nname_unresolved) rendered as a bare hex-id placeholder in the feed,\nforum, and chat space lists - meaningless to browse. Hide unnamed\nspaces from the lists; they appear as soon as their name resolves via\nGET_SPACE_META.\n\n- feed-client: filter alongside the existing social-class filter\n- forum-client: filter the displayed list, but keep firing the lazy\n  resolve_space_name pass for the hidden spaces (now keyed off the raw\n  RPC result and null names, not just the legacy \"Space <hex8>\"\n  placeholder shape) so they surface once named\n- chat-client: filter the public space list; the user's own private\n  channels keep their fallback label (encrypted names are expected)\n- analytics-client intentionally untouched: it's an operator\n  diagnostics surface where unnamed spaces are signal\n\nRebuilt dists included.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(qa): handoff status — items 1-3 landed, deploy + BVT gate pending\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(qa): BVT run 2026-07-15 — post launch-blocker deploy, 9/10\n\nFleet deployed (client2 -> bot -> seed) with the formation gate, real\nchain weight, and auth-lockout fixes; every node's gate opened on\npeer-tip parity at restart. Guarded release APK on the test phone,\nU12 pass at fleet height. Sole FAIL is A3 counting the 2026-07-14\npre-guard incident inside its 24h window — 0 cascading rollbacks since\nthe deploy.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(qa): handoff — all four launch blockers closed, deployed, BVT 9/10\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(clients): shell config precedence, unnamed-space resolve nudge, wiki copy\n\nThree fixes out of the Tier-2 BVT sweep:\n\n- forum/feed: parent-frame (shell) RPC config now takes priority over a\n  baked-in VITE_RPC_PORT. forum-client/.env.local bakes 19736 into every\n  local build, and the old priority order made node-mode forum dial the\n  wrong port with no auth and hang on \"Loading identity...\" forever\n  (U4 was unrunnable; latent in feed which has no .env.local).\n- feed/chat: when unnamed spaces are hidden from the list, fire\n  resolve_space_name for them (as forum already did) and refresh once -\n  otherwise a space whose name only peers hold would stay hidden\n  forever on nodes that never resolved it. Verified live: \"Newbies\"\n  resolved and appeared in Discover within seconds.\n- wiki: Recent Changes empty state no longer mentions follows (U7).\n\nRebuilt dists included.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(qa): Tier-2 UI sweep U1-U12 — 11 pass (2 after fixes), U11 partial\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(website): point android download at mobile-v0.1.1-alpha release\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(qa): distribution closed — installer + APK v0.1.1 published and verified live\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(qa): U11 launcher PASS — full Tier-2 green; L1 root cause refined\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* test(stress): multi-client action storm driver + run record\n\nstorm.mjs drives a weighted mix of real client actions (react/reply/post/\ncreate-space/profile/reef-game-move) against a node's RPC, with the exact\nPoW and canonical signatures the clients use. Two auth modes: cookie\n(droplets, local nodes) and signature (phone — signs via the node's own\nauth-exempt sign_message).\n\nFirst run: 5 identities / 7 workers (local PC + phone + 2 droplets) for\n~12 min. 262 actions accepted, 3 client-side RPC timeouts, 0 consensus/\nauth failures. Chain 100->119 under load; 16 tip reorgs resolved on real\nchain weight and bounded to the contested height; 0 cascading rollbacks,\n0 deep-fork guard hits, 0 formation-gate defers, 0 auth lockouts. Full\nwriteup in docs/qa/bvt-runs/2026-07-15.md.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(cli,launcher): distinct exit code for wrong password (L1 UX trap)\n\nThe CLI returned exit code 3 for THREE cases — no identity, unparseable\nidentity file, AND wrong password — so the desktop launcher could only\nshow \"Node failed to start (exit code: 3)… corrupted identity\" for a\nsimple password typo, the worst first-run scare in the launcher.\n\nCLI: DecryptionFailed now returns its own exit code 5 (5 was unused;\n1/2/3/4 taken). Launcher maps 5 -> \"Incorrect password. Please try\nagain.\", 3 -> \"identity file missing or unreadable\", other -> generic.\n\nVerified: `SWIMCHAIN_PASSWORD=wrong sw node start` exits 5.\nNote for future debugging: `sw identity show` does NOT verify the\npassword (prints plaintext public fields), so it can't be used as a\ndecryption check — only `node start` / `identity show --seed` decrypt.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(forum): thread breadcrumb shows resolved space name, not raw id\n\nThreadView built the breadcrumb label as \"Space <id-prefix>…\"\nunconditionally, so a thread in \"Latency Lab 2\" showed\n\"Spaces / Space sp1qqqsqqehw… / <title>\". Look the name up via useSpaces\n(falls back to the short id for spaces with no resolved name). Verified:\nbreadcrumb now reads \"Spaces / Latency Lab 2 / <title>\".\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* release(mobile): Android v0.1.2-alpha — feed resolve-nudge + config priority\n\nDownload page points at mobile-v0.1.2-alpha (SHA-256 + size updated).\nAPK carries the current feed-client (hides unnamed spaces AND nudges\npeer name-resolution; shell RPC config priority). Same guarded\nin-process node, same signing key (in-place update).\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(qa): UX fixes + full redistribution (launcher app exes, APK v0.1.2)\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(cli): DecryptionFailed exit code is now 5, not 3\n\nMatches src/cli/error.rs after the L1 wrong-password fix (6e23515d).\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(reef): stop optimistic moves rubberbanding on a shared region\n\nThe region poll's monotonic guard compared the GLOBAL move count\n(loaded.moves.length >= prev.moves.length) to decide whether to keep\nlocally-applied optimistic moves. On a shared reef with several active\nplayers, another author's move bumps the global count independently, so\nthe guard accepted a chain fold that did NOT yet contain the local\nplayer's still-sealing moves — the grid rubberbanded their fresh cells\naway for a few seconds (budget flickering with it) until the moves\nsealed.\n\nGate on the LOCAL player's own move count instead: hold our optimistic\ngrowth until the chain fold actually reflects our moves, then adopt the\nexact chain state (picking up everyone else's moves and any real decay).\n\nRoot cause confirmed on-chain: all region moves sealed (0 pending), 7\nauthors active — nothing lost from the ledger; the undo was purely this\nclient reconciliation flaw. Legit contests are unaffected.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(reef): unique move bodies so distinct clicks never dedup away\n\nRoot cause of moves (grow AND tend) placing then reverting, found via\nin-client instrumentation: reef replies are content-addressed by\nsha256(body), and the body's uniqueness was keyed on seq (= the client's\nmove count) + a 10-char author-id slice. That is NOT collision-proof —\nthe same identity on two devices, or two fast clicks before the poll\nupdates, computes the same seq, and a same-cell move then yields a\nbyte-identical body. The node dedups it, so the move never seals; the\nclient had counted it optimistically, so the grid was left showing a\nphantom that could never land (console showed loadedMine dropping below\nthe optimistic count and sticking there permanently).\n\nFix: append a per-submission random nonce to the body. Distinct clicks\nnow always get distinct bodies (every real move seals), while the node's\nmempool rebroadcast still resends identical bytes (a genuine rebroadcast\nstill dedups). The fold reads only `<op> <x> <y>`, so the nonce is inert\nto game state.\n\nAlso: bound the optimistic-hold guard (added earlier for the shared-region\nrubberband) with a stale-hold escape (STALE_HOLD_LIMIT polls) so a\nnever-sealing move can't strand the grid on a phantom even if some other\nnon-sealing case arises. Diagnostic logging removed.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(reef): mine move PoW in a Web Worker so the tab stops freezing\n\nA reef move is difficulty-8 Argon2id over 8 MiB — several seconds of CPU.\ncomputePow ran that loop on the main thread, so every move froze the whole\ntab: the \"Growing…\" progress modal couldn't even paint, the page locked\nfor the mining duration, then unfroze with the move already done.\n\nThe shared usePow/PowWorker helpers only cover IDENTITY PoW (SHA-256);\nthere was no worker for ACTION PoW (Argon2id). Add a reef-local\npow.worker.ts running the same computePow off-thread, and route\nsubmitMinedPost/submitMinedReply through a `minePow` helper that drives it\n(streaming progress back, falling back to on-thread only if a Worker can't\nbe constructed). The UI and the progress modal now stay live during mining.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs: capture reef + profile design threads from 2026-07-15 testing\n\nOpen threads with analysis pre-done so they can be picked up cold:\n- reef confirmation-depth buffer (fixes tip-frontier flicker/swap)\n- reef same-tile tie semantics (hash order vs PoW-weighted vs true contest)\n- reef time-based epochs (enforceable only via consensus block timestamps)\n- MySpace-level sandboxed custom profile pages (Artifact-grade isolation +\n  the client-conformance caveat)\n\nAlso records the three reef bugs already fixed this session for context.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* feat(reef): per-move outcome annotation + same-tile tie refund/notify\n\nEvery move now folds to an explicit outcome instead of a bare ok bool, so\nthe client can explain what happened to a player's own move instead of\nsilently reverting the optimistic view.\n\nTie resolution: when two players grab the SAME open tile in the same block\n(or two racing pending moves), it's a tie you couldn't have seen coming.\nThe deterministic winner (earlier in fold order = lowest content_id) owns\nit; the loser is now REFUNDED (no budget spent) and tagged `tie-lost`\ninstead of being silently mis-charged as a contest. A grow onto a cell\nclaimed in an EARLIER block is still a real, costed contest — distinguished\nby tracking each cell's claim height in the fold.\n\nOutcomes: grew | tended | captured | contested | tie-lost |\nrejected-{unaffordable,invalid,capped}. The client watches its OWN\nsubmitted moves (by content-id, so region history never spams) and shows a\none-shot notice: tie refunded, contest chipped-not-captured, or why a move\nwas rejected. Successful grows stay silent.\n\nVerified by src/lib/reefEngine.tie.test.ts (npm test, via tsx): winner+\nrefund, prior-block contest is not a tie, same-author double-grab is a\ntend, pending-frontier ties. Guarded import.meta.env reads so the pure fold\nis importable under the test runner.\n\nLive at swimchain.io/reef (index-CEfEHdP1.js).\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(reef): order same-block moves by creation time, not hash\n\nThe confirmed-move fold sort was (block_height, content_id), ignoring\ncreated_at — even though the file header AND the pending-move sort both\nuse creation order. So within a block, a player's own moves were ordered\nby content-hash: a `spread` could be applied BEFORE the `seed` it grows\nfrom, and the spread got rejected as \"not connected to your reef\" despite\nthe supporting cell sitting right there in the final grid.\n\nSort confirmed moves by (block_height, created_at, content_id). created_at\nis on the reply (identical for all clients) and node-validated within a\ntolerance window, so this stays deterministic and only mildly nudgeable,\nwhile a player's seed→spread→spread build chain now applies in order.\n\nTest: build-order case added (seed earlier created_at but higher\ncontent_id; spread must still apply). npm test green (14 assertions).\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* feat(reef): confirmation-depth buffer — render unsettled cells as \"settling\"\n\nThe grid rendered the raw chain tip, so cells claimed by recent/pending\nmoves flipped owner as the chain settled (optimism reconciling, tip\nreorgs re-ordering moves). Indistinguishable from a glitch, and it made\nevery transitory artifact look like a bug to chase.\n\nfoldReef now marks a `frontier` set: cells whose current owner claimed\nthem within CONFIRM_DEPTH (2) blocks of the tip, or via a still-pending\nmove — i.e. the ones that can still flip. applyMoveOptimistic adds its\nown touched cell. The grid renders frontier cells as \"settling\" (softly\nbreathing, dimmed, tooltip \"not yet final\") so a chain re-order reads as\n\"it was still settling\", not a surprise. Once a move buries CONFIRM_DEPTH\ndeep it goes solid automatically.\n\nThis is the structural fix for the whole transitory class (rubberband,\nsame-tile swap, momentary orphan) — the player can see what's provisional\ninstead of us diagnosing each flicker from logs.\n\nTest: frontier cases (buried=settled, tip=settling, pending=settling).\nnpm test green (17 assertions).\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* polish(reef): immersion pass — hide the plumbing, speak the reef's language\n\nBackstage blockchain terms were leaking into the play surface and breaking\nimmersion. A game-UX pass, keeping the good in-world verbs (seed/grow/\ntend/contest) and leaning INTO the mining wait as a deliberate, thematic\npacing beat rather than something to apologize for:\n\n- Mining modal: drop \"(proof-of-work)\" and the raw attempt counter. Show\n  the verb + a random ambient line (\"The current carries your spore into\n  place…\"). The variable wait now reads as the coral taking its time.\n- Notices rethemed: budget→\"energy\" that \"drifts back\"; a lost tie is\n  \"another swimmer reached it first\"; a partial contest is \"you struck it\n  but it held — strike again\"; rejects speak of reach and tides, not errors.\n- Status: \"budget\"→\"energy\" (returns each tide), \"N moves pending ⟳\"→\n  \"N growths drifting in…\", tide line drops the \"(every N blocks)\"\n  parenthetical, \"mined onto the chain\"→\"provably, only ever yours.\"\n- Settling coral: tooltip \"still taking hold…\" + a legend entry so the\n  confirmation-buffer breathing reads as intentional.\n\nText/CSS only; engine untouched (npm test still green, 17 assertions).\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* polish(reef): coral takes root ON the board — kill the blocking mine modal\n\nThe full-screen \"please wait\" overlay during a move was a web-app dialog,\nnot a game beat. Since action PoW already runs in a Web Worker, the main\nthread is free — so the growth is now DIEGETIC: the tile you clicked\nsprouts in place (a pulsing coral core with sonar rings rippling out in\nyour colour) while the rest of the reef stays visible around it. A small\nnon-blocking chip in the status line carries the label + ambient flavor.\n\nThe board stays non-interactive until the move settles (the wait is still\nthe intended pacing leveler) — but the world is alive, not hidden behind a\nspinner. Founding a reef keeps a light loader since there's no board yet.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* polish(reef): whole-board energy layer while a claim resolves\n\nThe per-tile sprout was good but local; a claim should feel like the whole\nreef straining to win the spot. Added a board-wide layer active during a\nmove: concentric energy waves ripple out from the target tile across the\nentire grid in the player's colour, a soft focal glow pulses at the target,\nand the board border breathes (a \"charging\" state). The target cell's\nsprout still sits on top. All CSS-driven off the target tile's board\nposition (--cx/--cy) and the player's hue; pointer-events:none so it's\npurely visual.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* polish(reef): smooth state transitions — coral blooms in, evaporates on decay\n\nCell state changes used to snap: a receded cell just disappeared between\npolls (the fold drops it), and new coral popped in. Now:\n\n- Decay/recede: we diff each update against the previous cells and keep a\n  short-lived \"ghost\" of any coral that vanished, which evaporates in place\n  (drifts up, shrinks, blurs into the water) over 750ms instead of blinking\n  out. The named \"things evaporate on us\" moment now reads as loss.\n- Appear: coral blooms in (scale/opacity, slight overshoot) on first mount.\n- Capture: owner change cross-fades the coral colour (background transition)\n  rather than hard-swapping.\n\nPure client visuals — no engine change. Ghosts are ephemeral UI state,\nauto-cleaned after the animation.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* fix(reef): float game notices as a toast — no board reflow, always in view\n\nThe notice banner rendered in normal flow above the board, so every\nin-play notification (tie refunded, contest held, etc.) shoved the reef\ndown and yanked it back on dismiss — jarring — and appeared up top, out of\nview, so you had to scroll to read it. Anchor .banner.notice to the\nviewport (fixed, bottom-center, slide-in) so it never reflows the board\nand is always visible regardless of scroll.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* polish(reef): ceremonial tide-turn transition on epoch advance\n\nThe tide (epoch) is the reef's heartbeat — decay, budget regen, and\nscoring all happen there — but it passed silently, so coral just faded\nwith no sense of why. Now when the epoch advances, a wash of light sweeps\nthe whole board, a \"🌊 The tide turns\" caption rises and fades, and the\nboard edge flushes teal. Timed to the receded-coral evaporations so the\nfade reads as the tide claiming the weak coral, a clear ceremonial beat.\n\nDetected client-side by watching state.epoch (no ceremony on load or idle\ncatch-up). Pure visual; engine untouched.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* feat(games): room names, bots, invite links, and URL routing for chess & reef\n\nChess:\n- name / private / vs-computer options in a New Game modal (GameHeader flags)\n- non-AI computer opponent via a node-side chess-bot daemon (shallow\n  alpha-beta over material + center eval)\n- private (unlisted) games are hidden from the lobby, joinable only by link\n- mine move/creation PoW in a Web Worker so the tab no longer freezes\n\nReef:\n- fix \"not next to your reef\" on freshly-taken tiles: order moves by the\n  authoring timestamp embedded in the signed body, not the node's\n  query-stamped (unstable) pending created_at; regression test added\n- end-of-tide report modal from a per-tide ledger (state.lastTide)\n- drop the confusing \"settling / softly breathing\" cell state\n\nShared:\n- useUrlRoom hook: the open game/reef lives in the URL, so browser\n  back/forward returns to the lobby and rooms are shareable invite links\n- tools/swim-bot: rule-based reef-bot + chess-bot daemons (no AI), plus a\n  reef fold diagnostic and a one-off chess-game E2E helper\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: AdminWizard <admin@adminwizard.tech>\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-15T20:01:15-04:00",
+          "tree_id": "bf78d60f760ab05115dbd883f919801286e6d3ec",
+          "url": "https://github.com/superness/swimchain/commit/cc3a51216e2407f19596ff33231dc08d2e50d486"
+        },
+        "date": 1784161409536,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "mobile_single_hash/mobile_64mib_p2",
+            "value": 76022694,
+            "range": "± 367179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_single_hash/desktop_64mib_p4",
+            "value": 76532118,
+            "range": "± 123581",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_single_hash/test_1mib_p1",
+            "value": 306439,
+            "range": "± 157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/4",
+            "value": 1403108682,
+            "range": "± 1003065217",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/6",
+            "value": 1513697444,
+            "range": "± 2302076548",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/8",
+            "value": 7279841977,
+            "range": "± 15138997482",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/4",
+            "value": 4736432,
+            "range": "± 821146",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/6",
+            "value": 19190734,
+            "range": "± 7525536",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/8",
+            "value": 100245651,
+            "range": "± 56582367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/10",
+            "value": 190207772,
+            "range": "± 283044504",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/12",
+            "value": 390486371,
+            "range": "± 1338870862",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Post",
+            "value": 1478275546,
+            "range": "± 925285827",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Reply",
+            "value": 985286357,
+            "range": "± 931081430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Engage",
+            "value": 2232595130,
+            "range": "± 1689749468",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/3G_2mbps",
+            "value": 3057193858,
+            "range": "± 422258",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/4G_10mbps",
+            "value": 2555,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/WiFi_50mbps",
+            "value": 2572,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/1KB",
+            "value": 4019,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/4KB",
+            "value": 1048,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/16KB",
+            "value": 313,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/64KB",
+            "value": 109,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "node_startup",
+            "value": 2498394219,
+            "range": "± 1545756350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "node_shutdown",
+            "value": 2354876703,
+            "range": "± 3828039",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/2",
+            "value": 4848555996,
+            "range": "± 72401820",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/3",
+            "value": 7263104661,
+            "range": "± 44576506",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/5",
+            "value": 12177242947,
+            "range": "± 266252483",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/10",
+            "value": 24267969200,
+            "range": "± 300697586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chain_store_access",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "connection_manager_access",
+            "value": 3,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_info",
+            "value": 113233,
+            "range": "± 1950",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_sync_status",
+            "value": 577795,
+            "range": "± 4981",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_chain_stats",
+            "value": 114518,
+            "range": "± 2501",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_peers",
+            "value": 108229,
+            "range": "± 2003",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/list_spaces",
+            "value": 112786,
+            "range": "± 1681",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/feed_poll",
+            "value": 807840,
+            "range": "± 10023",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/create_space",
+            "value": 5650117,
+            "range": "± 594321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/submit_post",
+            "value": 17225710,
+            "range": "± 1822615",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/list_space_content_populated",
+            "value": 4156548,
+            "range": "± 9854",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keypair_generation",
+            "value": 18696,
+            "range": "± 278",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sign_32bytes",
+            "value": 37031,
+            "range": "± 41",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sign_1kb",
+            "value": 41207,
+            "range": "± 85",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_signature",
+            "value": 47441,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "encode_address",
+            "value": 344,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decode_address",
+            "value": 483,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/8",
+            "value": 37032,
+            "range": "± 245",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/12",
+            "value": 312971,
+            "range": "± 10546",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/16",
+            "value": 4876903,
+            "range": "± 596691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "encrypt_private_key",
+            "value": 89130995,
+            "range": "± 494044",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decrypt_private_key",
+            "value": 89347860,
+            "range": "± 671510",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "export_identity",
+            "value": 89370530,
+            "range": "± 511917",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "import_identity",
+            "value": 89668155,
+            "range": "± 543766",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_1mib",
+            "value": 392379,
+            "range": "± 629",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/4",
+            "value": 5859235,
+            "range": "± 731747",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/8",
+            "value": 119639461,
+            "range": "± 67728767",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/10",
+            "value": 293415216,
+            "range": "± 261703221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/12",
+            "value": 599908086,
+            "range": "± 958613727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_64mib",
+            "value": 91997646,
+            "range": "± 411869",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_mobile",
+            "value": 91900535,
+            "range": "± 1001672",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/test_1mib",
+            "value": 393199,
+            "range": "± 2150",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/mobile_64mib_p2",
+            "value": 92488200,
+            "range": "± 1032221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/prod_64mib_p4",
+            "value": 92379768,
+            "range": "± 646680",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/100",
+            "value": 1732843,
+            "range": "± 37319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/500",
+            "value": 5517610,
+            "range": "± 85940",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/1000",
+            "value": 10953508,
+            "range": "± 211973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/100",
+            "value": 238,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/1000",
+            "value": 250,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/5000",
+            "value": 321,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_with_branch/insert_default_threshold",
+            "value": 23116,
+            "range": "± 1947",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_with_branch/insert_small_threshold",
+            "value": 98467,
+            "range": "± 13079",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "space_state_lookup/get_space_branch_state",
+            "value": 233,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hash_branch_matching/assign_branch_unfractured",
+            "value": 219,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hash_branch_matching/assign_branch_fractured",
+            "value": 256,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/2MB",
+            "value": 1404173,
+            "range": "± 3531",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/10MB",
+            "value": 11210597,
+            "range": "± 44552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/50MB",
+            "value": 56706186,
+            "range": "± 465169",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/100MB",
+            "value": 113369071,
+            "range": "± 208986",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/2MB",
+            "value": 2760735,
+            "range": "± 30124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/10MB",
+            "value": 13985967,
+            "range": "± 180608",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/50MB",
+            "value": 90558540,
+            "range": "± 1531671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/2MB",
+            "value": 1517093,
+            "range": "± 2824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/10MB",
+            "value": 7588823,
+            "range": "± 18831",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/50MB",
+            "value": 41267837,
+            "range": "± 172665",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/2",
+            "value": 810,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/10",
+            "value": 3371,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/50",
+            "value": 15184,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/100",
+            "value": 29652,
+            "range": "± 145",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/500",
+            "value": 145803,
+            "range": "± 432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/1024",
+            "value": 297599,
+            "range": "± 1026",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/2",
+            "value": 862,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/10",
+            "value": 3763,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/50",
+            "value": 17745,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/100",
+            "value": 35223,
+            "range": "± 58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/500",
+            "value": 172468,
+            "range": "± 177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/1024",
+            "value": 352452,
+            "range": "± 399",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/1MB",
+            "value": 700031,
+            "range": "± 1120",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/10MB",
+            "value": 7104421,
+            "range": "± 45737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/100MB",
+            "value": 110534318,
+            "range": "± 114023",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/500MB",
+            "value": 558091546,
+            "range": "± 3129470",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/1024MB",
+            "value": 1152389720,
+            "range": "± 953818",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/10",
+            "value": 33713,
+            "range": "± 325",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/50",
+            "value": 138639,
+            "range": "± 183",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/100",
+            "value": 259405,
+            "range": "± 1106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_simulation/10k_posts_60_days",
+            "value": 17993763,
+            "range": "± 564306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_simulation_large/100k_posts_60_days",
+            "value": 208466559,
+            "range": "± 1935504",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/1000",
+            "value": 27,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/10000",
+            "value": 53279,
+            "range": "± 611",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/50000",
+            "value": 241435,
+            "range": "± 2484",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/100",
+            "value": 29748,
+            "range": "± 49",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/1000",
+            "value": 302846,
+            "range": "± 231",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/10000",
+            "value": 2974298,
+            "range": "± 2082",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/100000",
+            "value": 29830414,
+            "range": "± 26424",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/1000",
+            "value": 1738,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/10000",
+            "value": 25240,
+            "range": "± 334",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/100000",
+            "value": 202499,
+            "range": "± 4495",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_hash",
+            "value": 297,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "meets_difficulty",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Budget_1GB",
+            "value": 2846883,
+            "range": "± 53090",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Standard_5GB",
+            "value": 15462113,
+            "range": "± 39502",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Flagship_10GB",
+            "value": 31941215,
+            "range": "± 149599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/50",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/75",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/90",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/95",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/99",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/1KB",
+            "value": 311387,
+            "range": "± 16837",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/10KB",
+            "value": 347924,
+            "range": "± 33908",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/100KB",
+            "value": 555048,
+            "range": "± 19593",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/100",
+            "value": 1439,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/1000",
+            "value": 15154,
+            "range": "± 71",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/10000",
+            "value": 225965,
+            "range": "± 3614",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/steady_state",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/daily_growth",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/avg_post_size",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/10_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/100_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/1000_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/10000_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/budget_1gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/standard_5gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/flagship_10gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/root_block",
+            "value": 4886,
+            "range": "± 467",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/space_block",
+            "value": 593,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/content_block",
+            "value": 597,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/1024",
+            "value": 6586,
+            "range": "± 3890",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/4096",
+            "value": 13741,
+            "range": "± 7684",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/65536",
+            "value": 147355,
+            "range": "± 52376",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/1048576",
+            "value": 2152064,
+            "range": "± 97087",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "random_read/root_block_1000",
+            "value": 769,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/1024_bytes",
+            "value": 10477,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/65536_bytes",
+            "value": 59774,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/1048576_bytes",
+            "value": 819105,
+            "range": "± 5487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache/add_entry",
+            "value": 586,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache/access",
+            "value": 285,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/100",
+            "value": 29208,
+            "range": "± 73",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/1000",
+            "value": 51090,
+            "range": "± 145",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/10000",
+            "value": 51257,
+            "range": "± 120",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/1048576_bytes",
+            "value": 780657,
+            "range": "± 582",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/5242880_bytes",
+            "value": 3909328,
+            "range": "± 598",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/10485760_bytes",
+            "value": 7829206,
+            "range": "± 960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "startup/empty_db",
+            "value": 2256658,
+            "range": "± 19086",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "startup/populated_db",
+            "value": 6375518,
+            "range": "± 30467",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/100",
+            "value": 393112,
+            "range": "± 8056",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/1000",
+            "value": 508761,
+            "range": "± 49518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/10000",
+            "value": 508560,
+            "range": "± 31889",
             "unit": "ns/iter"
           }
         ]
