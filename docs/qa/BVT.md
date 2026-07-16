@@ -33,6 +33,7 @@ A run PASSES only if every non-optional item passes.
 | A2 | Chain liveness | tip advanced within the last 2 h (bot posts hourly) |
 | A3 | Consensus quiet | no `Rolled back` and <10 `Deep-fork guard` lines in any droplet journal in 24 h |
 | A4 | Node sanity | every droplet: `root_blocks >= latest_height`, RPC responds < 5 s |
+| A5 | Fork-race health | ≤2 `lower hash tiebreaker` reorgs in 6 h on the seed; rollbacks re-announce orphans (regression: height-365 colliding-creators incident, `docs/CONSENSUS_ACTION_LOSS.md`; unit guard `tests/fork_race_reinclusion.rs`) |
 | B1 | Website up | `/`, `/reef/`, `/chess/`, `/example/`, `/download` all 200 via gateway |
 | B2 | RPC through gateway | `list_spaces` returns ≥1 space **with a resolved name** |
 | B3 | Offer availability | ≥1 auto-approve offer with `slots_remaining > 0` from the faucet identity |

@@ -23,14 +23,19 @@ pub const MAX_ELIGIBILITY_TIME: u64 = 480; // 8 minutes
 
 /// Time until anyone becomes eligible, gated by network mode.
 ///
-/// On mainnet this is the full 8-minute expansion (fast eligibility means more
-/// nodes eligible at once, i.e. more competing blocks / forks — undesirable at
-/// scale). On test networks it is short so a quiet chain still seals blocks
-/// promptly for demos/development rather than grinding at ~10 min/block.
+/// Mainnet AND testnet use the full 8-minute expansion. The window must dwarf
+/// block propagation (seconds) or the leader filter stops staggering forgers:
+/// with the old 45s testnet window, any action arriving >45s after the previous
+/// block (i.e. almost all of them on a bursty network) found the threshold at
+/// 100%, EVERY node eligible, and each formation ticker racing to forge — one in
+/// six testnet blocks ended up a fork race (measured 2026-07-15, 62/376 heights;
+/// see docs/CONSENSUS_ACTION_LOSS.md). Same window as mainnet means the same
+/// fork behavior we intend to ship. Regtest stays short: single-node local dev
+/// has no competing forgers and wants fast blocks.
 pub fn max_eligibility_time() -> u64 {
     match crate::network::NetworkContext::mode() {
-        crate::network::NetworkMode::Mainnet => MAX_ELIGIBILITY_TIME,
-        _ => 45, // testnet / regtest: lively blocks
+        crate::network::NetworkMode::Regtest => 45,
+        _ => MAX_ELIGIBILITY_TIME,
     }
 }
 
@@ -417,7 +422,10 @@ mod tests {
                 first_eligible = Some(dt);
             }
             if let Some(f) = first_eligible {
-                assert!(e, "eligibility regressed at elapsed {dt} (first eligible {f})");
+                assert!(
+                    e,
+                    "eligibility regressed at elapsed {dt} (first eligible {f})"
+                );
             }
         }
         let f = first_eligible.expect("identity should become eligible before max_time");
@@ -426,7 +434,8 @@ mod tests {
         // exactly the formation/validation mismatch the fix closes.
         if f % crate::blocks::builder::TIMESTAMP_QUANTUM_SECS != 0 {
             let raw = prev_ts + f;
-            let quantized = (raw / crate::blocks::builder::TIMESTAMP_QUANTUM_SECS) * crate::blocks::builder::TIMESTAMP_QUANTUM_SECS;
+            let quantized = (raw / crate::blocks::builder::TIMESTAMP_QUANTUM_SECS)
+                * crate::blocks::builder::TIMESTAMP_QUANTUM_SECS;
             assert!(elig.is_eligible(&identity, raw), "eligible at raw now");
             assert!(
                 !elig.is_eligible(&identity, quantized),

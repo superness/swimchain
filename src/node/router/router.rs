@@ -1895,6 +1895,81 @@ impl MessageRouter {
         Ok(Some((MSG_BLOCK_DATA, response.to_bytes())))
     }
 
+    /// Return rolled-back actions to the mempool AND re-announce them to peers.
+    ///
+    /// Re-inclusion after a reorg is only as good as distribution: an action
+    /// submitted seconds before a fork race may never have gossiped past the
+    /// losing side, so after a rollback it sits in a few mempools waiting for
+    /// one of those nodes to win a block — minutes of "orphan limbo" for
+    /// content users already saw confirmed (docs/CONSENSUS_ACTION_LOSS.md,
+    /// the height-365 race). Re-announcing every re-queued orphan puts it in
+    /// every forger's mempool in time for the next block. Receivers dedup via
+    /// the mempool seen_actions/finalized checks, so the echo is bounded.
+    ///
+    /// Actions still finalized in a surviving block (shared ancestor below the
+    /// fork point) are skipped: `rollback_block_at_height()` already unmarked
+    /// every action in the rolled-back blocks, so `is_action_finalized()` is
+    /// `Some` only for actions that ALSO live in a surviving block — re-mining
+    /// one gets the block rejected as carrying an "already-finalized action",
+    /// permanently forking this node off the network.
+    async fn requeue_and_regossip_orphans(
+        &self,
+        orphaned_actions: Vec<(
+            [u8; 32],
+            [u8; 32],
+            crate::blocks::Action,
+            crate::blocks::BranchPath,
+        )>,
+    ) {
+        if orphaned_actions.is_empty() {
+            return;
+        }
+        let chain_store = match &self.chain_store {
+            Some(store) => store,
+            None => return,
+        };
+
+        // (thread_id, space_id, wire bytes) for actions actually re-queued.
+        let mut regossip: Vec<(
+            [u8; 32],
+            [u8; 32],
+            [u8; crate::blocks::action::ACTION_SERIALIZED_SIZE],
+        )> = Vec::new();
+
+        if let Some(ref bb) = self.block_builder {
+            if let Ok(mut builder) = bb.write() {
+                for (thread_id, space_id, action, branch_path) in orphaned_actions {
+                    let action_hash = crate::blocks::builder::BlockBuilder::action_hash(&action);
+                    if matches!(chain_store.is_action_finalized(&action_hash), Ok(Some(_))) {
+                        continue;
+                    }
+                    let wire = action.serialize();
+                    if builder.add_action(thread_id, space_id, action, branch_path) {
+                        regossip.push((thread_id, space_id, wire));
+                    }
+                }
+                info!("[REORG] Returned orphaned actions to mempool");
+            }
+        }
+
+        if regossip.is_empty() {
+            return;
+        }
+        if let Some(ref pool) = self.connection_pool {
+            let count = regossip.len();
+            for (thread_id, space_id, wire) in regossip {
+                let payload =
+                    crate::network::messages::ActionAnnouncePayload::new(thread_id, space_id, wire);
+                let envelope = crate::types::network::MessageEnvelope::new_fork_agnostic(
+                    crate::types::network::MessageType::ActionAnnounce,
+                    payload.to_bytes().to_vec(),
+                );
+                let _ = pool.broadcast(&envelope).await;
+            }
+            info!("[REORG] Re-announced {} orphaned actions to peers", count);
+        }
+    }
+
     /// Handle BLOCK_DATA - receive and store block data
     ///
     /// When we receive block data in response to GET_BLOCK, we verify
@@ -2061,42 +2136,10 @@ impl MessageRouter {
                                 orphaned_actions.len()
                             );
 
-                            // Return orphaned actions to mempool
-                            if let Some(ref bb) = self.block_builder {
-                                if let Ok(mut builder) = bb.write() {
-                                    for (thread_id, space_id, action, branch_path) in
-                                        orphaned_actions
-                                    {
-                                        // Skip actions still finalized in a surviving block.
-                                        // rollback_block_at_height() already unmarked every
-                                        // action in the blocks we just rolled back, so
-                                        // is_action_finalized() now returns Some ONLY when this
-                                        // action ALSO lives in a block that survived the reorg
-                                        // (e.g. a shared ancestor below the fork point).
-                                        // Re-adding such an action lets the builder re-mine it
-                                        // into a future block, which every synced peer then
-                                        // rejects as an "already-finalized action" — permanently
-                                        // forking this node off the network.
-                                        let action_hash =
-                                            crate::blocks::builder::BlockBuilder::action_hash(
-                                                &action,
-                                            );
-                                        if matches!(
-                                            chain_store.is_action_finalized(&action_hash),
-                                            Ok(Some(_))
-                                        ) {
-                                            continue;
-                                        }
-                                        builder.add_action(
-                                            thread_id,
-                                            space_id,
-                                            action,
-                                            branch_path,
-                                        );
-                                    }
-                                    info!("[REORG] Returned orphaned actions to mempool");
-                                }
-                            }
+                            // Return orphaned actions to mempool AND re-announce
+                            // them so every forger has them for the next block
+                            // (finalized-in-surviving-block guard lives inside).
+                            self.requeue_and_regossip_orphans(orphaned_actions).await;
                         }
                         Err(e) => {
                             warn!(
@@ -2934,9 +2977,17 @@ impl MessageRouter {
             if deep_fork_blocked(chain_store, &root_block, block_height) {
                 return Ok(None);
             }
-            // Rollback existing block
-            if let Err(e) = chain_store.rollback_block_at_height(block_height) {
-                return Err(RouteError::StorageError(format!("rollback failed: {}", e)));
+            // Rollback existing block. This path used to DROP the orphaned
+            // actions on the floor (never returned to the mempool) — the other
+            // two rollback sites always re-queued them. Route through the same
+            // requeue + re-announce helper so no rollback site loses actions.
+            match chain_store.rollback_block_at_height(block_height) {
+                Ok(orphaned_actions) => {
+                    self.requeue_and_regossip_orphans(orphaned_actions).await;
+                }
+                Err(e) => {
+                    return Err(RouteError::StorageError(format!("rollback failed: {}", e)));
+                }
             }
         }
 
@@ -3400,37 +3451,10 @@ impl MessageRouter {
                                     orphaned_actions.len()
                                 );
 
-                                // Return orphaned actions to mempool
-                                if let Some(ref bb) = self.block_builder {
-                                    if let Ok(mut builder) = bb.write() {
-                                        for (thread_id, space_id, action, branch_path) in
-                                            orphaned_actions
-                                        {
-                                            // Skip actions still finalized in a surviving block
-                                            // (shared ancestor below the fork point). Re-adding a
-                                            // finalized action lets it be re-mined and rejected as
-                                            // an "already-finalized action", forking this node off
-                                            // the network. Mirrors the guard on the reorg path above.
-                                            let action_hash =
-                                                crate::blocks::builder::BlockBuilder::action_hash(
-                                                    &action,
-                                                );
-                                            if matches!(
-                                                chain_store.is_action_finalized(&action_hash),
-                                                Ok(Some(_))
-                                            ) {
-                                                continue;
-                                            }
-                                            builder.add_action(
-                                                thread_id,
-                                                space_id,
-                                                action,
-                                                branch_path,
-                                            );
-                                        }
-                                        info!("[REORG] Returned orphaned actions to mempool");
-                                    }
-                                }
+                                // Return orphaned actions to mempool AND re-announce
+                                // them so every forger has them for the next block
+                                // (finalized-in-surviving-block guard lives inside).
+                                self.requeue_and_regossip_orphans(orphaned_actions).await;
                             }
                             Err(e) => {
                                 warn!(

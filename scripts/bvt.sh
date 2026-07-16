@@ -71,6 +71,24 @@ else
   report A3 fail "cascading=$ANOMALIES guard-hits=$GUARDS (24h, seed)"
 fi
 
+# ---- A5: fork-race health ------------------------------------------------------
+# Regression guard for the colliding-block-creators incident (height 365,
+# docs/CONSENSUS_ACTION_LOSS.md): equal-work tie reorgs should be RARE with the
+# 8-min eligibility window (measured 31/24h under the old 45s window), and every
+# rollback must re-announce its orphaned actions (requeue_and_regossip_orphans)
+# so nothing sits in orphan limbo. Unit-level guard: tests/fork_race_reinclusion.rs
+TIES=$(ssh -o ConnectTimeout=8 root@$SEED \
+  'journalctl -u swimchain.service --since "6 hours ago" --no-pager --output=cat 2>/dev/null | grep -c "lower hash tiebreaker"' 2>/dev/null)
+ROLLBACKS=$(ssh -o ConnectTimeout=8 root@$SEED \
+  'journalctl -u swimchain.service --since "6 hours ago" --no-pager --output=cat 2>/dev/null | grep -c "Returned orphaned actions"' 2>/dev/null)
+REGOSSIP=$(ssh -o ConnectTimeout=8 root@$SEED \
+  'journalctl -u swimchain.service --since "6 hours ago" --no-pager --output=cat 2>/dev/null | grep -c "Re-announced .* orphaned actions"' 2>/dev/null)
+if [ "${TIES:-0}" -le 2 ] 2>/dev/null; then
+  report A5 ok "tie-reorgs=$TIES rollbacks=$ROLLBACKS re-announced=$REGOSSIP (6h, seed)"
+else
+  report A5 fail "tie-reorgs=$TIES (>2 in 6h — collision regime is back?) rollbacks=$ROLLBACKS re-announced=$REGOSSIP"
+fi
+
 # ---- B1: website up through gateway ------------------------------------------
 B1_OK=true; B1_DETAIL=""
 for path in / /reef/ /chess/ /example/ /download; do
