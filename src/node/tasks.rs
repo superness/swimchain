@@ -75,8 +75,9 @@ pub const AVAILABILITY_ANNOUNCE_INTERVAL_SECS: u64 = 300;
 pub const BLOCK_FORMATION_CHECK_INTERVAL_SECS: u64 = 300;
 
 /// Backup block-formation check interval, gated by network mode. Short on test
-/// networks so a quiet chain seals blocks promptly for demos/dev (pairs with the
-/// short `max_eligibility_time()` on those networks); the full 5 minutes on mainnet.
+/// networks so the loop notices eligibility promptly once the leader window opens
+/// (`max_eligibility_time()` is the mainnet-length 8 minutes everywhere but
+/// regtest); the full 5 minutes on mainnet.
 pub fn block_formation_check_interval_secs() -> u64 {
     match crate::network::NetworkContext::mode() {
         crate::network::NetworkMode::Mainnet => BLOCK_FORMATION_CHECK_INTERVAL_SECS,
