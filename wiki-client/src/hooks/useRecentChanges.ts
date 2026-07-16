@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
 import { WIKI_APP } from '../lib/appNamespace';
+import { resolveUnresolvedAppSpaces } from '../lib/resolveSpaces';
 import { toUnixSeconds } from '../lib/time';
 import type { WikiPage } from '../types/wiki';
 
@@ -104,6 +105,14 @@ export function useRecentChanges(limit = 50): UseRecentChangesResult {
           .filter(s => s.app === WIKI_APP && s.last_activity != null && s.post_count > 0)
           .sort((a, b) => (b.last_activity ?? 0) - (a.last_activity ?? 0))
           .slice(0, 10);
+
+        // Fresh nodes: unresolved app-class spaces may be wikis we can't see
+        // yet — ask peers for their metadata and refetch once it can land.
+        if (resolveUnresolvedAppSpaces(rpc, spacesResult.spaces)) {
+          setTimeout(() => {
+            if (!cancelled) refetch();
+          }, 4000);
+        }
 
         // Fetch recent content from each active space in parallel
         const contentPromises = activeSpaces.map(space =>
