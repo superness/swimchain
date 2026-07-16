@@ -20,6 +20,7 @@ import {
   myBudget,
   myTendsLeft,
   MAX_BUDGET,
+  REGEN_BASE,
   COST_GROW,
   COST_CONTEST,
   TEND_CAP,
@@ -736,7 +737,7 @@ export function App() {
                   </span>
                   <strong> {tendsLeft}</strong>/{view.params.tendCap}
                 </span>
-                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · energy returns with each tide</span>
+                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · each tide restores {REGEN_BASE} + 1 per 2 coral you hold</span>
               </div>
 
               {/* Tide meter: how close the water is to turning. Fills as confirmed
@@ -863,6 +864,22 @@ function TideReport({
   const tidesToReckoning = SEASON_EPOCHS - (summary.epoch % SEASON_EPOCHS);
   const crown = summary.crownedSeason;
   const iWon = crown?.winner === myPubkeyHex || crown?.winner === myAddress;
+  // What this tide fed the player: base regen + 1 per 2 living coral (the
+  // engine's core loop — territory compounds into tempo). Mirrors tickEpoch.
+  const regen = REGEN_BASE + Math.floor((mine?.territoryAfter ?? 0) / 2);
+  // One-time lesson: the first tide report a player ever sees teaches WHERE
+  // energy comes from. Sticky per browser; a compact stat line thereafter.
+  const [showLesson] = useState(() => {
+    try {
+      if (!localStorage.getItem('reef-lesson-regen')) {
+        localStorage.setItem('reef-lesson-regen', '1');
+        return true;
+      }
+    } catch {
+      /* storage unavailable — skip the lesson rather than repeat it forever */
+    }
+    return false;
+  });
 
   // Dismiss on Enter/Escape too — this is a "press to continue" moment.
   useEffect(() => {
@@ -903,6 +920,13 @@ function TideReport({
             <span className="tr-lbl">points banked</span>
             <span className="tr-sub">vitality you kept alive this tide</span>
           </div>
+          <div className="tr-stat good">
+            <span className="tr-num">+{regen}</span>
+            <span className="tr-lbl">energy restored</span>
+            <span className="tr-sub">
+              {REGEN_BASE} base + 1 per 2 coral you hold (cap {MAX_BUDGET})
+            </span>
+          </div>
           <div className={`tr-stat ${terrDelta > 0 ? 'good' : terrDelta < 0 ? 'bad' : 'flat'}`}>
             <span className="tr-num">
               {mine?.territoryBefore ?? 0}
@@ -918,6 +942,18 @@ function TideReport({
             </span>
           </div>
         </div>
+
+        {showLesson && (
+          <div className="tr-lesson">
+            <span className="tr-lesson-mark">💡</span>
+            <div>
+              <strong>Your reef is your engine.</strong> Every tide restores{' '}
+              <strong>{REGEN_BASE} energy + 1 for every 2 living coral</strong> you hold. Grow
+              a bigger reef and tend it well — it rides every tide harder: more energy, more
+              growth, more points banked.
+            </div>
+          </div>
+        )}
 
         <div className="tr-world">
           {summary.decayedGlobal > 0 ? (

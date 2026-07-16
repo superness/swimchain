@@ -511,3 +511,21 @@ h2 { font-size: 18px; margin: 0; }
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
 }
+
+/* One-time lesson inside the tide report: where energy comes from. */
+.tr-lesson {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(80, 190, 235, 0.12);
+  border: 1px solid rgba(120, 210, 255, 0.35);
+  animation: lesson-in 0.6s ease;
+}
+.tr-lesson-mark { font-size: 1.2em; }
+@keyframes lesson-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
