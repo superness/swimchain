@@ -95,14 +95,22 @@ rebuild all clients for mainnet; re-found reef/chess spaces on mainnet.
 
 ## RISKS (fix before, or accept with a documented plan)
 
-- **R1 — Moderation is operator-manual only.** Blocklist works and rejects on
-  store+retrieve (`src/blocklist/mod.rs:24`), but automatic illegal-content
-  flagging needs 3 independent sponsor trees
-  (`blocklist/types.rs:20`), impractical on a small launch net. In practice,
-  launch moderation = operator pre-seeding known-illegal hash lists on seed/
-  gateway nodes (`blocklist/import.rs`). A public mainnet with no enforceable
-  global takedown is real legal exposure — needs a documented abuse process and
-  a pre-seeded CSAM hash blocklist before going public.
+- **R1 — No global content takedown (architectural, not a defect).** This is
+  inherent to any serverless P2P network (Nostr, BitTorrent, IPFS): no node can
+  purge content network-wide; each only refuses to store/serve locally. The
+  blocklist works for exactly that — rejects on store+retrieve
+  (`src/blocklist/mod.rs:24`), and an operator running seed/gateway nodes can
+  pre-seed known-illegal hash lists (`blocklist/import.rs`) so THOSE nodes won't
+  relay them. Automatic flagging needs 3 independent sponsor trees
+  (`blocklist/types.rs:20`), impractical on a small net, so practical moderation
+  = per-node local refusal + operator hash-list seeding.
+  **Whose concern:** this is the *infrastructure operator's* consideration (the
+  person/entity running the public seed + gateway), not a contributor's or the
+  protocol's — the same way running a public relay is. Not an engineering
+  blocker; a "who runs the public nodes, and do they pre-seed a blocklist"
+  operational decision. Right-sized to the actual deployment: an invite-only
+  network among known people needs little here; a wide-open public one warrants
+  the operator pre-seeding a CSAM hash list and having a takedown-request path.
 - **R2 — No forward secrecy in private spaces.** The wrapping key is derived
   deterministically from the ed25519 identity seed
   (`crypto/private_space.rs:58`); leaking the seed once decrypts all past+future
