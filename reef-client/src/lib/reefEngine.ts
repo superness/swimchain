@@ -904,8 +904,11 @@ export async function loadRegion(rpc: SwimchainRpc, regionId: string): Promise<R
     ({ v: 1, kind: 'reef', founder: '', w: GRID_W, h: GRID_H, created: 0 } as ReefHeader);
   // Fetch replies and the current chain tip together — the tip advances the tide to
   // "now" so idle reefs decay as blocks pass (getInfo failure just skips idle-catchup).
+  // limit: the node's get_replies defaults to 1000 — a reef region outgrows that
+  // within days of play, and every move past the cap silently vanished from the
+  // fold (the 2026-07-16 "board wipe": sealed moves invisible, cells reaped).
   const [{ replies }, tipHeight] = await Promise.all([
-    rpc.getReplies(regionId),
+    rpc.getReplies(regionId, { limit: 100000 }),
     rpc.getInfo().then((i) => i.block_height).catch(() => undefined),
   ]);
   return foldReef(header, replies as ReplyLike[], tipHeight);

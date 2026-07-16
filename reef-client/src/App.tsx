@@ -57,6 +57,19 @@ const FOUND_FLAVOR = [
 ];
 const pickFlavor = (pool: string[]) => pool[Math.floor(Math.random() * pool.length)];
 
+// ── [reef-diag] in-app diagnostic log ────────────────────────────────────────
+// A small ring buffer the player can copy with one button and paste back to us,
+// so we can see rollbacks without them digging in the browser console. To remove
+// this whole feature later: delete this block, the `diag(...)` calls, and the
+// "copy log" button in the game bar.
+const DIAG_MAX = 500;
+const diagBuffer: string[] = [];
+function diag(msg: string) {
+  diagBuffer.push(`${new Date().toISOString().slice(11, 23)} ${msg}`);
+  if (diagBuffer.length > DIAG_MAX) diagBuffer.shift();
+  console.log(msg);
+}
+
 export function App() {
   const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
   const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
@@ -68,6 +81,7 @@ export function App() {
   const [openId, setOpenId] = useUrlRoom('r');
   const [state, setState] = useState<ReefState | null>(null);
   const [copied, setCopied] = useState(false);
+  const [diagCopied, setDiagCopied] = useState(false);
   // Consecutive polls where we held optimistic state because the chain fold
   // hadn't caught up to our own moves. Bounded so a move that never seals
   // (e.g. a dedup-collided body) can't strand the grid on a phantom forever.
@@ -80,13 +94,50 @@ export function App() {
   // settled outcome (tie-lost/refunded, contested, rejected) exactly once —
   // without spamming a notice for every historical move on region open.
   const mySubmittedRef = useRef<Set<string>>(new Set());
+  // [reef-diag] every move content-id we've already logged, so each poll we can
+  // log only the NEW moves that appeared in the fold — including ones from the
+  // player's OTHER device (same identity, submitted elsewhere) and other players.
+  const seenMovesRef = useRef<Set<string>>(new Set());
   const notifiedRef = useRef<Set<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   // End-of-round report: when the tide turns, we pause the reef and show the
   // player a real summary of what happened (decay, points banked, territory
   // change) that they must acknowledge — the game's "round over" beat.
-  const [tideReport, setTideReport] = useState<{ summary: TideSummary; tidesPassed: number } | null>(null);
-  const prevTideEpoch = useRef<number | null>(null);
+  const [tideReport, setTideReport] = useState<{
+    summary: TideSummary;
+    tidesPassed: number;
+    epoch: number;
+  } | null>(null);
+  // Last tide epoch this player ACKNOWLEDGED, persisted per region+identity.
+  // The epoch itself is chain-derived (every device folds the same history to
+  // the same epoch); persisting the ack makes the round-over beat fire
+  // identically after reloads, background-tab freezes, and on every device —
+  // a tab that missed the live transition still owes the player the report.
+  // In-memory fallback covers storage-less contexts (private browsing).
+  const tideAckMem = useRef<number | null>(null);
+  const readTideAck = useCallback((): number | null => {
+    try {
+      const raw = localStorage.getItem(`reef-tide-ack:${openId}:${publicKeyHex}`);
+      if (raw !== null) {
+        const n = Number(raw);
+        if (!Number.isNaN(n)) return n;
+      }
+    } catch {
+      /* storage unavailable */
+    }
+    return tideAckMem.current;
+  }, [openId, publicKeyHex]);
+  const writeTideAck = useCallback(
+    (epoch: number) => {
+      tideAckMem.current = epoch;
+      try {
+        localStorage.setItem(`reef-tide-ack:${openId}:${publicKeyHex}`, String(epoch));
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    [openId, publicKeyHex]
+  );
   // Onboarding: a brand-new identity must be sponsored before it can post/move.
   // We claim a standing auto-approve offer automatically (one-click play).
   const [sponsored, setSponsored] = useState(false);
@@ -173,6 +224,27 @@ export function App() {
     if (!rpc || !connected || !publicKeyHex || !openId) return;
     try {
       const loaded = await loadRegion(rpc, openId);
+      // [reef-diag] log NEW moves that appeared in the fold since the last poll —
+      // from any source. On the first poll we baseline the existing history
+      // silently; after that, every fresh move is logged with its origin:
+      //   me/local  = this device submitted it   me/REMOTE = my other device
+      //   other:…   = another player (e.g. the bot)
+      {
+        const mineTag = (a: string) => a === publicKeyHex || a === address;
+        const firstPoll = seenMovesRef.current.size === 0;
+        for (const m of loaded.moves) {
+          if (m.contentId.startsWith('pending-')) continue; // local optimistic placeholder
+          if (seenMovesRef.current.has(m.contentId)) continue;
+          seenMovesRef.current.add(m.contentId);
+          if (firstPoll) continue; // baseline existing history without spamming
+          const origin = mineTag(m.author)
+            ? mySubmittedRef.current.has(m.contentId)
+              ? 'me/local'
+              : 'me/REMOTE'
+            : `other:${m.author.slice(0, 8)}`;
+          diag(`[reef-diag] move ${m.op} (${m.x},${m.y}) ${m.outcome} · by ${origin} · cid=${m.contentId.slice(0, 14)}…`);
+        }
+      }
       // Keep our own not-yet-sealed optimistic moves visible until the chain
       // fold actually reflects them. Gate on MY move count, not the global one:
       // the region is shared, so other players' moves bump `moves.length`
@@ -199,7 +271,39 @@ export function App() {
         else staleHoldsRef.current += 1;
         const forceAdopt = staleHoldsRef.current >= STALE_HOLD_LIMIT;
         if (forceAdopt) staleHoldsRef.current = 0;
-        return caughtUp || forceAdopt ? loaded : prev;
+        const next = caughtUp || forceAdopt ? loaded : prev;
+
+        // ── [reef-diag] rollback logging ──────────────────────────────────────
+        // Log what happens to OUR cells each poll so a rollback is visible in the
+        // browser console. A "ROLLBACK" line means cells we were showing vanished
+        // from the state we just rendered.
+        const isMine = (o: string) => o === publicKeyHex || o === address;
+        const myKeys = (s: ReefState) => {
+          const set = new Set<string>();
+          for (const [k, c] of s.cells) if (isMine(c.owner)) set.add(k);
+          return set;
+        };
+        const before = myKeys(prev);
+        const after = myKeys(next);
+        const lost = [...before].filter((k) => !after.has(k));
+        const gained = [...after].filter((k) => !before.has(k));
+        const decision = caughtUp ? 'adopt' : forceAdopt ? 'FORCE-ADOPT' : 'hold';
+        if (lost.length || gained.length || decision === 'FORCE-ADOPT') {
+          diag(
+            `[reef-diag] ${decision} · epoch ${prev.epoch}→${loaded.epoch} · myCells ${before.size}→${after.size}` +
+              ` · mineOf prev=${mineOf(prev)} loaded=${mineOf(loaded)} tentative=${loaded.tentative}` +
+              (lost.length ? ` · ROLLBACK lost=[${lost.join(' ')}]` : '') +
+              (gained.length ? ` · gained=[${gained.join(' ')}]` : '')
+          );
+          for (const k of lost) {
+            const [x, y] = k.split(',').map(Number);
+            const nowOwner = loaded.cells.get(k)?.owner;
+            const myMv = [...loaded.moves].reverse().find((m) => m.x === x && m.y === y && isMine(m.author));
+            const why = nowOwner ? `taken by ${nowOwner.slice(0, 8)}…` : myMv ? `my move ${myMv.outcome}` : 'gone (decayed/never-sealed)';
+            diag(`[reef-diag]   lost (${k}): ${why}`);
+          }
+        }
+        return next;
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to load region');
@@ -221,9 +325,10 @@ export function App() {
   // Reset per-region notice tracking when switching reefs.
   useEffect(() => {
     mySubmittedRef.current = new Set();
+    seenMovesRef.current = new Set();
     notifiedRef.current = new Set();
     setNotice(null);
-    prevTideEpoch.current = null;
+    tideAckMem.current = null; // per-region ack lives in localStorage; drop only the fallback
     setTideReport(null);
     setCopied(false);
     // Clear the board when the open reef changes (incl. via Back/Forward or a deep
@@ -231,23 +336,24 @@ export function App() {
     setState(null);
   }, [openId]);
 
-  // The tide report: when the fold's epoch advances, pause and show the player
-  // what the tide did. We init prevTideEpoch on first load so opening a region
-  // mid-history never pops a report; only a live tide-turn does. If several
-  // tides passed in one poll (idle catch-up), we report the latest and note how
-  // many. Coalesces naturally: a fresh tide while the modal is open just swaps
-  // in the newer summary instead of stacking.
+  // The tide report: shown whenever the chain's epoch is past the player's
+  // last ACKNOWLEDGED tide. The epoch is fold-derived (pure function of the
+  // on-chain history — identical on every device); the ack is persisted per
+  // region+identity, so reloads, frozen background tabs, and other devices all
+  // owe the player the same report until they dismiss it. First visit on a
+  // device baselines silently so opening a region mid-history never pops. If
+  // several tides passed since the ack, we report the latest and note how
+  // many. Coalesces naturally: a fresh tide while the modal is open swaps in
+  // the newer summary instead of stacking.
   useEffect(() => {
-    if (!state || !publicKeyHex) return;
+    if (!state || !publicKeyHex || !openId) return;
     const epoch = state.epoch;
-    const prev = prevTideEpoch.current;
-    if (prev === null) {
-      prevTideEpoch.current = epoch; // initialize silently on region open
+    const ack = readTideAck();
+    if (ack === null) {
+      writeTideAck(epoch); // first visit on this device: baseline silently
       return;
     }
-    if (epoch <= prev) return;
-    const tidesPassed = epoch - prev;
-    prevTideEpoch.current = epoch;
+    if (epoch <= ack) return;
     const summary = state.lastTide;
     if (!summary) return;
     // Only interrupt for a tide the player has a stake in — they held coral
@@ -255,9 +361,14 @@ export function App() {
     // empty-lobby case) are never stopped by a modal.
     const mine = summary.byOwner.get(publicKeyHex);
     const hasStake = !!mine && (mine.territoryBefore > 0 || mine.territoryAfter > 0);
-    if (!hasStake && !summary.crownedSeason) return;
-    setTideReport({ summary, tidesPassed });
-  }, [state, publicKeyHex]);
+    if (!hasStake && !summary.crownedSeason) {
+      writeTideAck(epoch); // nothing to tell — don't keep re-checking
+      return;
+    }
+    setTideReport((cur) =>
+      cur && cur.epoch === epoch ? cur : { summary, tidesPassed: epoch - ack, epoch }
+    );
+  }, [state, publicKeyHex, openId, readTideAck, writeTideAck]);
 
   // Explain the settled outcome of OUR OWN moves exactly once. Only moves we
   // submitted this session (tracked by content-id) are eligible, so opening a
@@ -343,6 +454,7 @@ export function App() {
       const cid = await submitReefMove(rpc, me, openId, intent.op, x, y);
       // Track our own move so we can explain its settled outcome once it folds.
       if (cid) mySubmittedRef.current.add(cid);
+      diag(`[reef-diag] submit ${intent.op} (${x},${y}) ${intent.kind} cost=${intent.cost} cid=${cid?.slice(0, 16)}…`);
       setMining(null);
       // Show the growth immediately; the reef reconciles it as the move settles.
       setState((prev) => (prev ? applyMoveOptimistic(prev, publicKeyHex!, intent.op, x, y) : prev));
@@ -357,6 +469,25 @@ export function App() {
     navigator.clipboard?.writeText(roomLink('r', openId));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  // [reef-diag] one-click copy of the diagnostic log to paste back to us.
+  // The header carries the device's receipts — WHICH bundle this tab runs and
+  // what it folded — so cross-device mismatch reports are diagnosable from the
+  // paste alone (no more guessing which code/data a device had).
+  function copyDiag() {
+    const bundle =
+      Array.from(document.querySelectorAll<HTMLScriptElement>('script[src]'))
+        .map((s) => s.src.split('/').pop())
+        .find((n) => n?.startsWith('index-')) ?? 'unknown-bundle';
+    const head =
+      `reef-diag · region=${openId} · me=${address} · at=${new Date().toISOString()}` +
+      ` · bundle=${bundle} · epoch=${state?.epoch ?? '?'} · moves=${state?.moves.length ?? '?'}` +
+      ` · myCells=${state ? [...state.cells.values()].filter((c) => c.owner === publicKeyHex || c.owner === address).length : '?'}` +
+      ` · ${diagBuffer.length} lines\n`;
+    navigator.clipboard?.writeText(head + diagBuffer.join('\n'));
+    setDiagCopied(true);
+    setTimeout(() => setDiagCopied(false), 1500);
   }
 
   // --- render ---
@@ -460,6 +591,9 @@ export function App() {
           <section className="game">
             <div className="game-bar">
               <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← reefs</button>
+              <button className="link" onClick={copyDiag} title="copy the diagnostic log to paste back for debugging">
+                {diagCopied ? 'log copied ✓' : '🐞 copy log'}
+              </button>
               <button className="link" onClick={copyInvite}>{copied ? 'link copied ✓' : 'copy invite link'}</button>
             </div>
             {banner && (
@@ -580,7 +714,12 @@ export function App() {
         <TideReport
           report={tideReport}
           myPubkeyHex={publicKeyHex!}
-          onClose={() => setTideReport(null)}
+          onClose={() => {
+            // Acknowledge THIS tide durably — the report never re-fires for
+            // epochs at or below the ack, on this or any future load.
+            writeTideAck(tideReport.epoch);
+            setTideReport(null);
+          }}
         />
       )}
     </div>
