@@ -57,6 +57,35 @@ h2 { font-size: 18px; margin: 0; }
 .games li:hover { border-color: var(--shallow); }
 .games .title { font-size: 15px; }
 
+/* New-game modal */
+.modal {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 22px 24px; width: min(400px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.modal h3 { margin: 0 0 4px; font-size: 20px; }
+.modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 16px; margin-top: 6px; }
+.name-input {
+  width: 100%; font-family: var(--serif); font-size: 15px;
+  padding: 9px 12px; border-radius: 4px; border: 1px solid var(--line);
+  background: var(--ink); color: var(--foam);
+}
+.name-input::placeholder { color: var(--muted); }
+.opt { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--foam); cursor: pointer; white-space: nowrap; }
+.opt input { accent-color: var(--heat); }
+
+/* Badges on games */
+.badge {
+  font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 10px; margin-left: 8px;
+  border: 1px solid var(--line); color: var(--shallow); vertical-align: middle;
+}
+.badge.bot { border-color: var(--shallow); }
+.badge.priv { border-color: var(--heat); color: var(--heat); }
+
+/* Game top bar */
+.game-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.game-name { font-size: 15px; font-weight: 600; flex: 1; text-align: center; min-width: 120px; }
+
 .game { margin-top: 12px; }
 .board { width: min(92vw, 520px); margin: 14px auto; border: 2px solid var(--line); border-radius: 4px; overflow: hidden; }
 .board-row { display: flex; }

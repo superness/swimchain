@@ -24,9 +24,52 @@ import {
   contentHashForReply,
   type SwimchainRpc,
   type ProgressCallback,
+  type PoWChallenge,
+  type PoWConfig,
+  type PoWSolution,
 } from '@swimchain/react';
 
 const TESTNET = true;
+
+/**
+ * Mine an action PoW off the main thread. A difficulty-8 Argon2id search is
+ * several seconds of CPU; on the main thread it froze the tab (and the progress
+ * overlay couldn't paint). Runs the same `computePow` in a Web Worker and
+ * resolves with the solution, streaming progress through. Falls back to
+ * on-thread mining only if the worker can't be constructed (very old runtime).
+ * Same fix as reef-client.
+ */
+function minePow(
+  challenge: PoWChallenge,
+  config: PoWConfig,
+  onProgress?: ProgressCallback
+): Promise<PoWSolution> {
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL('./pow.worker.ts', import.meta.url), { type: 'module' });
+  } catch {
+    return computePow(challenge, config, onProgress);
+  }
+  return new Promise<PoWSolution>((resolve, reject) => {
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data;
+      if (m?.type === 'progress') {
+        onProgress?.(m.attempts, m.elapsedMs, m.hashRate);
+      } else if (m?.type === 'solution') {
+        resolve(m.solution as PoWSolution);
+        worker.terminate();
+      } else if (m?.type === 'error') {
+        reject(new Error(m.message));
+        worker.terminate();
+      }
+    };
+    worker.onerror = (err) => {
+      reject(new Error(err.message || 'pow worker error'));
+      worker.terminate();
+    };
+    worker.postMessage({ challenge, config });
+  });
+}
 
 /** The chess space id (bech32 `sp1…`). Set via VITE_CHESS_SPACE at build/dev time. */
 export const CHESS_SPACE: string =
@@ -71,6 +114,15 @@ export interface GameHeader {
   white: string; // creator's bech32 address
   variant: 'standard';
   created: number;
+  name?: string; // optional player-chosen room name
+  bot?: boolean; // creator requested the computer opponent (a bot service plays Black)
+  unlisted?: boolean; // hidden from the public lobby; joinable only via invite link
+}
+
+export interface CreateGameOpts {
+  name?: string;
+  vsBot?: boolean; // request the non-AI computer opponent
+  unlisted?: boolean; // invite-only (not shown in the lobby)
 }
 
 export interface GameSummary {
@@ -89,6 +141,7 @@ export interface AppliedMove {
 
 export interface GameState {
   chess: Chess;
+  header: GameHeader;
   white: string;
   black: string | null;
   moves: AppliedMove[];
@@ -115,7 +168,7 @@ async function submitMinedPost(
     hexToBytes(id.publicKeyHex),
     getDifficulty(ActionType.Post, TESTNET)
   );
-  const solution = await computePow(challenge, getConfig(TESTNET), onProgress);
+  const solution = await minePow(challenge, getConfig(TESTNET), onProgress);
   const p = solutionToRpcParams(solution);
   const contentHash = await contentHashForPost(title, body);
   const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
@@ -147,7 +200,7 @@ async function submitMinedReply(
     hexToBytes(id.publicKeyHex),
     getDifficulty(ActionType.Reply, TESTNET)
   );
-  const solution = await computePow(challenge, getConfig(TESTNET), onProgress);
+  const solution = await minePow(challenge, getConfig(TESTNET), onProgress);
   const p = solutionToRpcParams(solution);
   const contentHash = await contentHashForReply(body);
   const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
@@ -169,25 +222,36 @@ async function submitMinedReply(
 // Games.
 // ---------------------------------------------------------------------------
 
-/** Create a new game. The creator is White; Black is an open seat until claimed. */
+/** Create a new game. The creator is White; Black is an open seat until claimed.
+ *  `opts` carries an optional room name, a request for the computer opponent, and
+ *  an invite-only (unlisted) flag. */
 export async function createGame(
   rpc: SwimchainRpc,
   id: Identity,
   spaceId: string,
+  opts: CreateGameOpts = {},
   onProgress?: ProgressCallback
 ): Promise<string> {
   // White is stored as the pubkey hex, because move replies come back from
   // get_replies with author_id in pubkey-hex form (list_space_posts uses bech32 —
   // an RPC inconsistency). The fold compares against reply author_id, so the header
   // must use the same form.
+  const name = opts.name?.trim().slice(0, 60) || undefined;
   const header: GameHeader = {
     v: 1,
     kind: 'chess',
     white: id.publicKeyHex,
     variant: 'standard',
     created: Date.now(),
+    ...(name ? { name } : {}),
+    ...(opts.vsBot ? { bot: true } : {}),
+    ...(opts.unlisted ? { unlisted: true } : {}),
   };
-  const title = `Chess — ${id.address.slice(0, 10)}… as White · open seat`;
+  const label = name ?? `${id.address.slice(0, 10)}… as White`;
+  const tags = [opts.vsBot ? 'vs computer' : null, opts.unlisted ? 'private' : 'open seat']
+    .filter(Boolean)
+    .join(' · ');
+  const title = `Chess — ${label}${tags ? ` · ${tags}` : ''}`;
   return submitMinedPost(rpc, id, spaceId, title, JSON.stringify(header), onProgress);
 }
 
@@ -263,7 +327,7 @@ export async function loadGame(rpc: SwimchainRpc, gameId: string): Promise<GameS
 
   // Black = the author of the first Black move (ply 1), for display / seat detection.
   const black = moves.length >= 2 ? moves[1].author : null;
-  return { chess, white: header.white, black, moves, turn: chess.turn(), result: gameResult(chess) };
+  return { chess, header, white: header.white, black, moves, turn: chess.turn(), result: gameResult(chess) };
 }
 
 /**

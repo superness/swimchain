@@ -20,6 +20,7 @@ import {
   type GameSummary,
   type Identity,
 } from './lib/chessGame';
+import { useUrlRoom, roomLink } from './lib/useUrlRoom';
 
 type Mining = { active: boolean; label: string; attempts: number } | null;
 
@@ -29,10 +30,18 @@ export function App() {
   const { keypair, publicKeyHex, address, sign } = useStoredKeypair();
 
   const [games, setGames] = useState<GameSummary[]>([]);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // The open game lives in the URL (?g=<id>): Back/Forward return to the lobby,
+  // and the URL is a shareable invite link.
+  const [openId, setOpenId] = useUrlRoom('g');
   const [state, setState] = useState<GameState | null>(null);
   const [mining, setMining] = useState<Mining>(null);
   const [error, setError] = useState<string | null>(null);
+  // New-game modal.
+  const [showCreate, setShowCreate] = useState(false);
+  const [gameName, setGameName] = useState('');
+  const [vsBot, setVsBot] = useState(false);
+  const [unlisted, setUnlisted] = useState(false);
+  const [copied, setCopied] = useState(false);
   // Onboarding: a brand-new identity must be sponsored before it can post/move.
   const [sponsored, setSponsored] = useState(false);
   const [sponsorPhase, setSponsorPhase] = useState<string | null>(null);
@@ -112,6 +121,13 @@ export function App() {
     if (!openId) refreshGames();
   }, [openId, refreshGames]);
 
+  // Clear the board whenever the open game changes (including via Back/Forward or a
+  // deep link), so one game's position never briefly shows under another.
+  useEffect(() => {
+    setState(null);
+    setCopied(false);
+  }, [openId]);
+
   // Poll the open game for the opponent's moves.
   useEffect(() => {
     if (!openId) return;
@@ -133,17 +149,32 @@ export function App() {
 
   async function onNewGame() {
     if (!rpc || !me) return;
+    setShowCreate(false);
     setMining({ active: true, label: 'Creating game', attempts: 0 });
     try {
-      const id = await createGame(rpc, me, CHESS_SPACE, (attempts) =>
-        setMining({ active: true, label: 'Creating game (proof-of-work)', attempts })
+      const id = await createGame(
+        rpc,
+        me,
+        CHESS_SPACE,
+        { name: gameName, vsBot, unlisted },
+        (attempts) => setMining({ active: true, label: 'Creating game (proof-of-work)', attempts })
       );
       setMining(null);
+      setGameName('');
+      setVsBot(false);
+      setUnlisted(false);
       setOpenId(id);
     } catch (e) {
       setMining(null);
       setError(e instanceof Error ? e.message : 'failed to create game');
     }
+  }
+
+  function copyInvite() {
+    if (!openId) return;
+    navigator.clipboard?.writeText(roomLink('g', openId));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   }
 
   async function onMove(san: string) {
@@ -238,24 +269,52 @@ export function App() {
         <section className="lobby">
           <div className="lobby-head">
             <h2>Games</h2>
-            <button className="btn primary" disabled={!connected || !CHESS_SPACE || !!mining} onClick={onNewGame}>
+            <button
+              className="btn primary"
+              disabled={!connected || !CHESS_SPACE || !!mining}
+              onClick={() => setShowCreate(true)}
+            >
               New game
             </button>
           </div>
-          {games.length === 0 && <p className="muted">No games yet. Start one — you'll play White.</p>}
-          <ul className="games">
-            {games.map((g) => (
-              <li key={g.id} onClick={() => setOpenId(g.id)}>
-                <span className="title">{g.title}</span>
-                <span className="fine">{g.header.white === publicKeyHex ? 'you are White' : 'join as Black'}</span>
-              </li>
-            ))}
-          </ul>
+
+          {(() => {
+            // Unlisted games never appear in the public lobby — only via invite link.
+            const listed = games.filter((g) => !g.header.unlisted);
+            if (listed.length === 0)
+              return <p className="muted">No open games. Start one — you'll play White.</p>;
+            return (
+              <ul className="games">
+                {listed.map((g) => (
+                  <li key={g.id} onClick={() => setOpenId(g.id)}>
+                    <span className="title">
+                      {g.header.name || g.title}
+                      {g.header.bot && <span className="badge bot">vs computer</span>}
+                    </span>
+                    <span className="fine">{g.header.white === publicKeyHex ? 'you are White' : 'join as Black'}</span>
+                  </li>
+                ))}
+              </ul>
+            );
+          })()}
         </section>
+      ) : !state ? (
+        <div className="center col">
+          <button className="link" onClick={() => setOpenId(null)}>← games</button>
+          <p className="muted">Loading game…</p>
+        </div>
       ) : (
         state && (
           <section className="game">
-            <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← games</button>
+            <div className="game-bar">
+              <button className="link" onClick={() => setOpenId(null)}>← games</button>
+              <span className="game-name">
+                {state.header.name || 'Chess game'}
+                {state.header.bot && <span className="badge bot">vs computer</span>}
+                {state.header.unlisted && <span className="badge priv">private</span>}
+              </span>
+              <button className="link" onClick={copyInvite}>{copied ? 'link copied ✓' : 'copy invite link'}</button>
+            </div>
             <Board
               chess={state.chess}
               orientation={iAmWhite ? 'w' : 'b'}
@@ -287,6 +346,41 @@ export function App() {
             </div>
           </section>
         )
+      )}
+
+      {showCreate && (
+        <div className="overlay" onClick={() => setShowCreate(false)}>
+          <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <h3>New game</h3>
+            <input
+              className="name-input"
+              type="text"
+              placeholder="Room name (optional)"
+              maxLength={60}
+              autoFocus
+              value={gameName}
+              onChange={(e) => setGameName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && onNewGame()}
+            />
+            <label className="opt">
+              <input type="checkbox" checked={vsBot} onChange={(e) => setVsBot(e.target.checked)} />
+              Play the computer
+            </label>
+            <label className="opt">
+              <input type="checkbox" checked={unlisted} onChange={(e) => setUnlisted(e.target.checked)} />
+              Private (invite-only)
+            </label>
+            {unlisted && (
+              <p className="fine">Hidden from the lobby — you'll get an invite link to share once it's created.</p>
+            )}
+            <div className="modal-actions">
+              <button className="link" onClick={() => setShowCreate(false)}>Cancel</button>
+              <button className="btn primary" disabled={!connected || !CHESS_SPACE} onClick={onNewGame}>
+                Create game
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {mining?.active && (

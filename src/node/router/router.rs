@@ -205,6 +205,12 @@ pub struct MessageRouter {
     /// Block builder for mempool (pending actions)
     block_builder: Option<Arc<RwLock<crate::blocks::builder::BlockBuilder>>>,
 
+    /// Solo-block formation gate: defers block formation until the node has
+    /// confirmed peer-tip parity or a grace window expires. Shared with the
+    /// RPC formation site and the periodic formation task via
+    /// `formation_gate()`. None (tests/minimal setups) = always allowed.
+    formation_gate: Option<Arc<crate::node::formation_gate::FormationGate>>,
+
     /// Spam attestation store for community flagging (SPEC_12 §3)
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
     /// Identity-level poster reputation store (SPEC_12 §3.4/§4.5). Fed from the
@@ -284,6 +290,7 @@ impl MessageRouter {
             dht: None,
             content_store: None,
             block_builder: None,
+            formation_gate: None,
             spam_attestation_store: None,
             reputation_store: None,
             sponsorship_manager: None,
@@ -332,6 +339,7 @@ impl MessageRouter {
             dht: None,
             content_store: None,
             block_builder: None,
+            formation_gate: None,
             spam_attestation_store: None,
             reputation_store: None,
             sponsorship_manager: None,
@@ -356,6 +364,13 @@ impl MessageRouter {
     /// Create a MessageRouterBuilder for fluent configuration
     pub fn builder() -> MessageRouterBuilder {
         MessageRouterBuilder::new()
+    }
+
+    /// The solo-block formation gate, if configured. All block-formation
+    /// sites (router, RPC, periodic task) consult this before forming, and
+    /// connection paths feed peer handshake heights into it.
+    pub fn formation_gate(&self) -> Option<Arc<crate::node::formation_gate::FormationGate>> {
+        self.formation_gate.clone()
     }
 
     /// Route a message to its handler
@@ -2307,52 +2322,73 @@ impl MessageRouter {
         // If so, we need to unmark finalized actions from orphaned blocks BEFORE
         // checking for duplicate actions (otherwise legitimate reorg blocks get rejected)
         if let Ok(Some(current_tip)) = chain_store.get_best_tip_block() {
-            if root_block.cumulative_pow > current_tip.cumulative_pow {
-                // This block is heavier - find and orphan blocks from the old chain
-                // We need to unmark finalized actions so they don't cause duplicate rejection
+            // Gate on REAL chain weight, not the stored cumulative_pow field
+            // (builder-stamped, garbage on this chain — see chain_weight docs).
+            // A weight of None means the incoming ancestry is incomplete: the
+            // block cannot be adopted yet, so pre-unmarking would be both
+            // premature and destructive. This comparison used to run — and
+            // walk-unmark the ENTIRE canonical chain — on every re-announce
+            // of an un-adoptable block (the same block 6,823x in 7 min on
+            // genesis, 2026-07-14).
+            let incoming_heavier = matches!(
+                (
+                    chain_store.chain_weight(&root_block),
+                    chain_store.chain_weight(&current_tip),
+                ),
+                (Ok(Some(incoming_weight)), Ok(Some(tip_weight))) if incoming_weight > tip_weight
+            );
+            if incoming_heavier {
                 info!(
-                    "[REORG] Incoming block {} (pow={}) is heavier than tip {} (pow={}), unmarking orphaned actions",
+                    "[REORG] Incoming block {} is heavier than tip {} (real chain weight), unmarking orphaned actions",
                     hex::encode(&computed_hash[..8]),
-                    root_block.cumulative_pow,
                     hex::encode(&current_tip.hash()[..8]),
-                    current_tip.cumulative_pow
                 );
 
-                // Find common ancestor by tracing back the incoming block's chain
-                // and unmark all actions from the current tip down to where chains diverge
-                let incoming_parent = root_block.prev_root_hash;
-
-                // Walk back from current tip, unmarking actions until we find the common ancestor
-                // (which is the parent of the incoming block)
-                let mut height_to_check = current_tip.height;
-                while height_to_check > 0 {
-                    if let Ok(Some(hash_at_height)) =
-                        chain_store.get_root_hash_at_height(height_to_check)
+                // Find the true fork height by walking the incoming block's
+                // ancestry (complete, per the weight gate above) down to its
+                // first canonical ancestor. The old code scanned from the tip
+                // looking for the incoming block's DIRECT parent — for a deep
+                // fork that parent is never canonical, so the scan fell
+                // through to height 0 and unmarked the whole chain.
+                let mut fork_height: u64 = 0;
+                let mut cursor = root_block.clone();
+                loop {
+                    if chain_store
+                        .get_root_hash_at_height(cursor.height)
+                        .ok()
+                        .flatten()
+                        == Some(cursor.hash())
                     {
-                        // Check if this is the common ancestor (parent of incoming block)
-                        if hash_at_height == incoming_parent {
-                            info!(
-                                "[REORG] Found common ancestor at height {} ({})",
-                                height_to_check,
-                                hex::encode(&hash_at_height[..8])
-                            );
-                            break;
-                        }
-                        // Unmark actions from this orphaned block
-                        if let Err(e) = chain_store.unmark_actions_at_height(height_to_check) {
-                            warn!(
-                                "[REORG] Failed to unmark actions at height {}: {}",
-                                height_to_check, e
-                            );
-                        } else {
-                            info!(
-                                "[REORG] Unmarked finalized actions at height {} (block {})",
-                                height_to_check,
-                                hex::encode(&hash_at_height[..8])
-                            );
-                        }
+                        fork_height = cursor.height;
+                        break;
                     }
-                    height_to_check = height_to_check.saturating_sub(1);
+                    if cursor.prev_root_hash == [0u8; 32] {
+                        break;
+                    }
+                    match chain_store
+                        .get_root_block(&cursor.prev_root_hash)
+                        .ok()
+                        .flatten()
+                    {
+                        Some(parent) => cursor = parent,
+                        None => break, // unreachable post-gate; bail conservatively
+                    }
+                }
+                info!(
+                    "[REORG] Fork point at height {} — unmarking canonical heights {}..={}",
+                    fork_height,
+                    fork_height + 1,
+                    current_tip.height
+                );
+
+                // Unmark ONLY the canonical blocks above the fork point.
+                for height in (fork_height + 1)..=current_tip.height {
+                    if let Err(e) = chain_store.unmark_actions_at_height(height) {
+                        warn!(
+                            "[REORG] Failed to unmark actions at height {}: {}",
+                            height, e
+                        );
+                    }
                 }
             }
         }
@@ -3350,8 +3386,8 @@ impl MessageRouter {
 
                     // A same-height win is not a chain-weight win for blocks
                     // below the tip — see deep_fork_blocked.
-                    let incoming_wins = incoming_wins
-                        && !deep_fork_blocked(chain_store, &root_block, block_height);
+                    let incoming_wins =
+                        incoming_wins && !deep_fork_blocked(chain_store, &root_block, block_height);
 
                     if incoming_wins {
                         // Rollback existing block and get orphaned actions
@@ -6488,11 +6524,25 @@ impl MessageRouter {
     /// from all pending actions meets/exceeds the difficulty target, we form
     /// and broadcast a block immediately. This removes the need for timer-based
     /// block formation - blocks are formed naturally when enough work accumulates.
-    async fn try_form_block_if_threshold_met(&self) {
+    pub(crate) async fn try_form_block_if_threshold_met(&self) {
         let block_builder = match &self.block_builder {
             Some(bb) => bb,
             None => return,
         };
+
+        // Solo-block formation gate: never form while we might be the lone
+        // height-authority (isolated restart). Actions stay queued in the
+        // mempool and seal once the gate opens.
+        if let Some(ref gate) = self.formation_gate {
+            let our_height = self
+                .chain_store
+                .as_ref()
+                .and_then(|cs| cs.get_latest_height().ok().flatten())
+                .unwrap_or(0);
+            if !gate.allow_formation(our_height) {
+                return;
+            }
+        }
 
         // Get node identity for block creator (defaults to zero if not set)
         let block_creator = self.node_id.unwrap_or([0u8; 32]);
@@ -8667,6 +8717,7 @@ pub struct MessageRouterBuilder {
     dht: Option<Arc<DhtManager>>,
     content_store: Option<Arc<PersistentContentStore>>,
     block_builder: Option<Arc<RwLock<crate::blocks::builder::BlockBuilder>>>,
+    formation_gate: Option<Arc<crate::node::formation_gate::FormationGate>>,
     spam_attestation_store: Option<Arc<SpamAttestationStore>>,
     reputation_store: Option<Arc<ReputationStore>>,
     sponsorship_manager: Option<Arc<crate::sponsorship::manager::SponsorshipManager>>,
@@ -8706,6 +8757,7 @@ impl MessageRouterBuilder {
             dht: None,
             content_store: None,
             block_builder: None,
+            formation_gate: None,
             spam_attestation_store: None,
             reputation_store: None,
             sponsorship_manager: None,
@@ -8816,6 +8868,12 @@ impl MessageRouterBuilder {
         builder: Arc<RwLock<crate::blocks::builder::BlockBuilder>>,
     ) -> Self {
         self.block_builder = Some(builder);
+        self
+    }
+
+    /// Set the solo-block formation gate shared by all formation sites
+    pub fn formation_gate(mut self, gate: Arc<crate::node::formation_gate::FormationGate>) -> Self {
+        self.formation_gate = Some(gate);
         self
     }
 
@@ -8965,6 +9023,7 @@ impl MessageRouterBuilder {
             dht: self.dht,
             content_store: self.content_store,
             block_builder: self.block_builder,
+            formation_gate: self.formation_gate,
             spam_attestation_store: self.spam_attestation_store,
             reputation_store: self.reputation_store,
             sponsorship_manager: self.sponsorship_manager,
@@ -9007,6 +9066,7 @@ impl MessageRouterBuilder {
             dht: self.dht,
             content_store: self.content_store,
             block_builder: self.block_builder,
+            formation_gate: self.formation_gate,
             spam_attestation_store: self.spam_attestation_store,
             reputation_store: self.reputation_store,
             sponsorship_manager: self.sponsorship_manager,

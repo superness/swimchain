@@ -33,6 +33,7 @@ pub mod config;
 pub mod connection_event;
 pub mod connection_manager;
 pub mod error;
+pub mod formation_gate;
 pub mod manager;
 pub mod metrics;
 pub mod origin_privacy;
@@ -48,6 +49,7 @@ pub use connection_manager::{
     ConnectionConfig, ConnectionHandle, ConnectionManager, ConnectionManagerError, ReconnectState,
 };
 pub use error::NodeError;
+pub use formation_gate::{FormationGate, FORMATION_GRACE_SECS};
 pub use manager::NodeManager;
 pub use metrics::NodeMetrics;
 pub use origin_privacy::{route_relayed, route_self_originated, OriginPrivacyConfig, OriginRoute};

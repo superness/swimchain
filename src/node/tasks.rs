@@ -2075,6 +2075,11 @@ impl BackgroundTaskRunner {
                                     // port); use it for discovery so others can actually reach it.
                                     let discovery_addr = info.inbound_discovery_addr();
 
+                                    // Feed the handshake height to the solo-block formation gate
+                                    if let Some(gate) = router.formation_gate() {
+                                        gate.note_peer_height(info.start_height as u64);
+                                    }
+
                                     // Register with ConnectionManager (metadata tracking)
                                     match connection_manager.add_connection_with_discovery(
                                         peer_id,
@@ -2442,6 +2447,22 @@ impl BackgroundTaskRunner {
                             Some(s) => s,
                             None => continue,
                         };
+
+                        // Solo-block formation gate: never form while we might be
+                        // the lone height-authority (isolated restart). This is the
+                        // backup/flush site — without this check the periodic flush
+                        // would defeat the gate on the triggered sites. Pending
+                        // actions stay queued and seal once the gate opens.
+                        if let Some(gate) = router.formation_gate() {
+                            let our_height = chain_store
+                                .get_latest_height()
+                                .ok()
+                                .flatten()
+                                .unwrap_or(0);
+                            if !gate.allow_formation(our_height) {
+                                continue;
+                            }
+                        }
 
                         // Keep the builder's tip in step with the canonical chain before
                         // deciding anything. Blocks received from peers advance the chain

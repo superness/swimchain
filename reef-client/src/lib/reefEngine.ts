@@ -59,13 +59,55 @@ import {
   contentHashForReply,
   type SwimchainRpc,
   type ProgressCallback,
+  type PoWChallenge,
+  type PoWConfig,
+  type PoWSolution,
 } from '@swimchain/react';
+
+/**
+ * Mine an action PoW off the main thread. A difficulty-8 Argon2id search is
+ * several seconds of CPU; on the main thread it froze the tab (and the
+ * progress modal couldn't paint). Runs the same `computePow` in a Web Worker
+ * and resolves with the solution, streaming progress through. Falls back to
+ * on-thread mining only if the worker can't be constructed (very old runtime).
+ */
+function minePow(
+  challenge: PoWChallenge,
+  config: PoWConfig,
+  onProgress?: ProgressCallback
+): Promise<PoWSolution> {
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL('./pow.worker.ts', import.meta.url), { type: 'module' });
+  } catch {
+    return computePow(challenge, config, onProgress);
+  }
+  return new Promise<PoWSolution>((resolve, reject) => {
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data;
+      if (m?.type === 'progress') {
+        onProgress?.(m.attempts, m.elapsedMs, m.hashRate);
+      } else if (m?.type === 'solution') {
+        resolve(m.solution as PoWSolution);
+        worker.terminate();
+      } else if (m?.type === 'error') {
+        reject(new Error(m.message));
+        worker.terminate();
+      }
+    };
+    worker.onerror = (err) => {
+      reject(new Error(err.message || 'pow worker error'));
+      worker.terminate();
+    };
+    worker.postMessage({ challenge, config });
+  });
+}
 
 const TESTNET = true;
 
 /** The reef space id (bech32 `sp1…`). Set via VITE_REEF_SPACE at build/dev time. */
 export const REEF_SPACE: string =
-  (import.meta.env.VITE_REEF_SPACE as string | undefined)?.trim() || '';
+  (import.meta.env?.VITE_REEF_SPACE as string | undefined)?.trim() || '';
 
 /**
  * Preferred onboarding sponsor's public key (hex). Auto-sponsor claims an
@@ -76,7 +118,7 @@ export const REEF_SPACE: string =
  * via VITE_GAME_SPONSOR; defaults to the testnet genesis root.
  */
 export const GAME_SPONSOR: string =
-  (import.meta.env.VITE_GAME_SPONSOR as string | undefined)?.trim() ||
+  (import.meta.env?.VITE_GAME_SPONSOR as string | undefined)?.trim() ||
   '9ec9661d3a975ad141caa5df9f14b3c46cf725509e7fa044c19d26fe76bd0420';
 
 // ── Engine constants (all integer; changing these changes the shared ruleset) ──────
@@ -142,6 +184,30 @@ export interface RegionSummary {
 export type Op = 'grow' | 'tend';
 export type MoveKind = 'seed' | 'spread' | 'tend' | 'contest';
 
+/**
+ * The settled result of a move, so a client can explain to a player what
+ * happened to *their* action instead of silently reverting the optimistic view.
+ * - `grew`     seeded / spread onto open water; the tile is now yours
+ * - `tended`   refreshed one of your own cells
+ * - `captured` a contest that flipped an enemy cell to you
+ * - `contested`a contest that damaged an enemy cell but didn't capture it
+ * - `tie-lost` you and another player grabbed the same open tile in the same
+ *              block; they won the (deterministic) tie, and YOUR budget was NOT
+ *              spent — a refund, not a wasted resource
+ * - `rejected-unaffordable` you couldn't afford it (no tile, no charge)
+ * - `rejected-invalid`      disconnected / out-of-bounds placement (no charge)
+ * - `rejected-capped`       a tend beyond this tide's TEND_CAP (no charge)
+ */
+export type MoveOutcome =
+  | 'grew'
+  | 'tended'
+  | 'captured'
+  | 'contested'
+  | 'tie-lost'
+  | 'rejected-unaffordable'
+  | 'rejected-invalid'
+  | 'rejected-capped';
+
 export interface Cell {
   owner: string; // author_id (pubkey hex) of whoever holds the cell
   vitality: number;
@@ -154,12 +220,37 @@ export interface AppliedMove {
   author: string;
   contentId: string;
   ok: boolean; // did it change the world? (illegal / unaffordable moves are inert)
+  outcome: MoveOutcome; // the settled result, for client-side explanation
 }
 
 export interface SeasonResult {
   index: number;
   winner: string | null;
   points: number;
+}
+
+/** Per-owner ledger of what one tide (epoch tick) did to a player. */
+export interface TideOwnerDelta {
+  territoryBefore: number; // living cells the instant before the tide
+  territoryAfter: number; // living cells after decay
+  vitalityBefore: number; // Σ vitality before
+  vitalityAfter: number; // Σ vitality after (also = points banked this tide)
+  pointsBanked: number; // vitality added to the season score this tide
+  seasonPointsAfter: number; // season tally after this tide (0 if the season just closed)
+}
+
+/**
+ * A settled snapshot of the most recent tide (epoch tick), so a client can show
+ * the player a real end-of-round report — how much coral the tide claimed, what
+ * they banked, how their reef changed — instead of numbers silently shifting.
+ * Reflects the LAST tick folded (the newest tide reaching the current tip).
+ */
+export interface TideSummary {
+  epoch: number; // the epoch number that just began
+  decayedGlobal: number; // living cells lost to decay reef-wide this tide
+  survivorsGlobal: number; // living cells remaining reef-wide after the tide
+  crownedSeason: SeasonResult | null; // the season this tide closed, if any
+  byOwner: Map<string, TideOwnerDelta>;
 }
 
 export interface Standing {
@@ -189,7 +280,16 @@ export interface ReefState {
   tentative: number; // count of pending (not-yet-in-a-block) moves shown optimistically
   confirmedEpoch: number; // epochs fully settled by consensus (the confirmed frontier)
   justCrownedSeason: SeasonResult | null; // most recently closed season, for the banner
+  lastTide: TideSummary | null; // ledger of the most recent tide, for the end-of-round report
+  // Cell keys whose current ownership is NOT yet reorg-safe — claimed within
+  // CONFIRM_DEPTH blocks of the tip, or by a still-pending move. These can still
+  // flip as the chain settles, so the client renders them as "settling" rather
+  // than committing a hard state that later swaps and looks like a glitch.
+  frontier: Set<string>;
 }
+
+/** Blocks a move must be buried before its cell ownership is treated as final. */
+export const CONFIRM_DEPTH = 2;
 
 /** What clicking a cell would do for a given player, and whether it's currently possible. */
 export interface Intent {
@@ -328,7 +428,32 @@ function parseMove(body: string | null | undefined): { op: Op; x: number; y: num
   return { op, x, y };
 }
 
-interface ReplyLike {
+/**
+ * The AUTHORING sequence embedded in a move body — the `#<n>~` field written at
+ * submit time (`submitReefMove`). It lives in the signed, immutable body, so it
+ * is byte-identical for every client and stable across fetches — unlike the
+ * node's `created_at`, which is query-stamped (and thus unstable, ~equal) for
+ * pending mempool replies. This is what puts a player's `seed` before the
+ * `spread` that grows from it, even while both are still pending. Returns
+ * `undefined` when a body has no such field (legacy/foreign), so callers can
+ * fall back to `created_at`.
+ */
+function authorSeqOf(body: string | null | undefined): number | undefined {
+  if (!body) return undefined;
+  const m = /#(\d+)~/.exec(body);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : undefined;
+}
+/** Authoring-sequence tiebreak: 0 unless BOTH replies carry a seq (so a missing
+ *  seq never reorders against one that has it). */
+function seqCmp(a: ReplyLike, b: ReplyLike): number {
+  const sa = authorSeqOf(a.body);
+  const sb = authorSeqOf(b.body);
+  return sa !== undefined && sb !== undefined ? sa - sb : 0;
+}
+
+export interface ReplyLike {
   body?: string | null;
   created_at: number;
   content_id: string;
@@ -355,15 +480,44 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   const peak = new Map<string, number>(); // largest territory ever held (brag stat)
   const conquests = new Map<string, number>(); // enemy cells captured (brag stat)
   const moves: AppliedMove[] = [];
+  // Height at which each occupied cell's CURRENT owner claimed it (seed / spread
+  // / capture). Lets us tell a same-block race (a "tie" — refund the loser) from
+  // a deliberate attack on an established cell (a real contest — costs). Pending
+  // (unconfirmed) claims use PENDING_HEIGHT so two racing pending moves also tie.
+  const claimedAt = new Map<string, number>();
+  const PENDING_HEIGHT = Number.MAX_SAFE_INTEGER;
+  let curHeight = 0; // the effective height of the move currently being applied
   let epoch = 0;
   let justCrowned: SeasonResult | null = null;
+  let lastTide: TideSummary | null = null; // ledger of the most recent epoch tick
 
+  // Within a block, apply moves in CREATION order (then content_id as the final
+  // deterministic tiebreak) — NOT content_id alone. Ordering same-block moves by
+  // hash reorders a player's own build chain: a `spread` could be applied before
+  // the `seed` it grows from, so a perfectly valid spread got rejected as "not
+  // connected to your reef" even though the supporting cell is right there in the
+  // final grid. created_at is on the reply (identical for every client) and the
+  // node validates it within a tolerance window, so this stays deterministic and
+  // only-mildly-nudgeable. Matches the pending sort and this file's header doc.
+  // Confirmed moves: block height, then the node's (stable, consensus) created_at,
+  // then the embedded authoring seq to break same-second ties, then id. The seq
+  // tiebreak is what keeps a same-block, same-second seed ahead of its spread.
   const confirmed = replies
     .filter((r) => typeof r.block_height === 'number')
-    .sort((a, b) => a.block_height! - b.block_height! || a.content_id.localeCompare(b.content_id));
+    .sort(
+      (a, b) =>
+        a.block_height! - b.block_height! ||
+        a.created_at - b.created_at ||
+        seqCmp(a, b) ||
+        a.content_id.localeCompare(b.content_id)
+    );
+  // Pending (mempool) moves: created_at is query-stamped here and thus unstable/
+  // ~equal, so the AUTHORING seq leads (it is stable, in the signed body), with
+  // created_at then id as fallbacks. This is the fix for "not next to your reef"
+  // on freshly-taken tiles: a seed always precedes the spread that grows from it.
   const pending = replies
     .filter((r) => typeof r.block_height !== 'number')
-    .sort((a, b) => a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
+    .sort((a, b) => seqCmp(a, b) || a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
 
   const baseHeight = confirmed.length ? confirmed[0].block_height! : tipHeight ?? 0;
   const epochOf = (h: number) => Math.max(0, Math.floor((h - baseHeight) / BLOCKS_PER_EPOCH));
@@ -373,8 +527,13 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   };
 
   const tickEpoch = () => {
+    const before = livingByOwner(cells); // snapshot the reef the instant before the tide
+    let beforeCells = 0;
+    for (const l of before.values()) beforeCells += l.cells;
     epochTick(cells); // decay
     const living = livingByOwner(cells);
+    let afterCells = 0;
+    for (const l of living.values()) afterCells += l.cells;
     for (const [owner, cur] of budgets) {
       budgets.set(
         owner,
@@ -384,6 +543,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     for (const [owner, l] of living) seasonPoints.set(owner, (seasonPoints.get(owner) ?? 0) + l.vitality);
     tendsUsed = new Map();
     epoch += 1;
+    let crownedThisTick: SeasonResult | null = null;
     if (epoch % SEASON_EPOCHS === 0) {
       let winner: string | null = null;
       let best = -1;
@@ -394,41 +554,97 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
         }
       }
       justCrowned = { index: epoch / SEASON_EPOCHS - 1, winner, points: Math.max(0, best) };
+      crownedThisTick = justCrowned;
       seasons.push(justCrowned);
       seasonPoints = new Map();
     }
     updatePeaks();
+
+    // Record this tick's ledger so the client can show a real tide report. Every
+    // owner that held coral before OR after the tide gets a line.
+    const byOwner = new Map<string, TideOwnerDelta>();
+    for (const owner of new Set([...before.keys(), ...living.keys()])) {
+      const b = before.get(owner);
+      const a = living.get(owner);
+      byOwner.set(owner, {
+        territoryBefore: b?.cells ?? 0,
+        territoryAfter: a?.cells ?? 0,
+        vitalityBefore: b?.vitality ?? 0,
+        vitalityAfter: a?.vitality ?? 0,
+        pointsBanked: a?.vitality ?? 0,
+        seasonPointsAfter: seasonPoints.get(owner) ?? 0, // 0 if the season just reset
+      });
+    }
+    lastTide = {
+      epoch,
+      decayedGlobal: Math.max(0, beforeCells - afterCells),
+      survivorsGlobal: afterCells,
+      crownedSeason: crownedThisTick,
+      byOwner,
+    };
   };
 
   const applyOne = (r: ReplyLike, p: { op: Op; x: number; y: number }) => {
     const author = r.author_id;
     if (!budgets.has(author)) budgets.set(author, START_BUDGET);
+    const key = cellKey(p.x, p.y);
     const isAuthor = (owner: string) => owner === author;
+
+    // Tie: a grow onto a cell another author claimed in THIS SAME block (or
+    // another still-pending move) is a race you couldn't have seen coming. The
+    // deterministic winner (earlier in fold order — lowest content_id in the
+    // block) already owns it; refund this one (no cost, no effect) instead of
+    // treating it as a contest/invalid attempt. A grow onto a cell claimed in
+    // an EARLIER block is a deliberate contest and falls through to classify.
+    const target = cells.get(key);
+    if (p.op === 'grow' && target && target.owner !== author && claimedAt.get(key) === curHeight) {
+      moves.push({ ...p, author, contentId: r.content_id, ok: false, outcome: 'tie-lost' });
+      return;
+    }
+
     const cls = classify(cells, header, isAuthor, p.op, p.x, p.y);
     let ok = false;
-    if (cls) {
-      if (cls.kind === 'tend') {
-        const used = tendsUsed.get(author) ?? 0;
-        if (used < TEND_CAP) {
-          mutate(cells, author, 'tend', p.x, p.y);
-          tendsUsed.set(author, used + 1);
-          ok = true;
-        }
+    let outcome: MoveOutcome;
+    if (!cls) {
+      outcome = 'rejected-invalid';
+    } else if (cls.kind === 'tend') {
+      const used = tendsUsed.get(author) ?? 0;
+      if (used < TEND_CAP) {
+        mutate(cells, author, 'tend', p.x, p.y);
+        tendsUsed.set(author, used + 1);
+        ok = true;
+        outcome = 'tended';
       } else {
-        const have = budgets.get(author)!;
-        if (have >= cls.cost) {
-          const prevOwner = cls.kind === 'contest' ? cells.get(cellKey(p.x, p.y))?.owner : undefined;
-          mutate(cells, author, cls.kind, p.x, p.y);
-          budgets.set(author, have - cls.cost);
-          ok = true;
-          const now = cells.get(cellKey(p.x, p.y));
-          if (cls.kind === 'contest' && now?.owner === author && prevOwner && prevOwner !== author) {
-            conquests.set(author, (conquests.get(author) ?? 0) + 1);
+        outcome = 'rejected-capped';
+      }
+    } else {
+      const have = budgets.get(author)!;
+      if (have >= cls.cost) {
+        const prevOwner = cls.kind === 'contest' ? cells.get(key)?.owner : undefined;
+        mutate(cells, author, cls.kind, p.x, p.y);
+        budgets.set(author, have - cls.cost);
+        ok = true;
+        const now = cells.get(key);
+        if (cls.kind === 'contest') {
+          if (now?.owner === author) {
+            outcome = 'captured';
+            if (prevOwner && prevOwner !== author) {
+              conquests.set(author, (conquests.get(author) ?? 0) + 1);
+            }
+          } else {
+            outcome = 'contested';
           }
+        } else {
+          outcome = 'grew'; // seed or spread onto open water
         }
+        // Record the claim height whenever ownership just became this author's,
+        // so a same-block follower on this tile is detected as a tie.
+        if (now?.owner === author) claimedAt.set(key, curHeight);
+      } else {
+        outcome = 'rejected-unaffordable';
       }
     }
-    moves.push({ ...p, author, contentId: r.content_id, ok });
+    moves.push({ ...p, author, contentId: r.content_id, ok, outcome });
     if (ok) updatePeaks();
   };
 
@@ -438,6 +654,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     if (!p) continue;
     const target = epochOf(r.block_height!);
     while (epoch < target) tickEpoch();
+    curHeight = r.block_height!;
     applyOne(r, p);
   }
   // 2) Advance the tide to the current chain tip — idle reefs decay as blocks pass.
@@ -447,8 +664,11 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   }
   const confirmedEpoch = epoch;
 
-  // 3) Pending (not-yet-in-a-block) moves: the tentative frontier, shown optimistically.
+  // 3) Pending (not-yet-in-a-block) moves: the tentative frontier, shown
+  // optimistically. All pending claims share PENDING_HEIGHT, so two racing
+  // pending grows on the same tile resolve as a tie just like a same-block race.
   let tentative = 0;
+  curHeight = PENDING_HEIGHT;
   for (const r of pending) {
     const p = parseMove(r.body);
     if (!p) continue;
@@ -475,6 +695,16 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
       (a, b) => b.seasonPoints - a.seasonPoints || b.vitality - a.vitality || a.owner.localeCompare(b.owner)
     );
 
+  // Frontier: cells whose current owner claimed them within CONFIRM_DEPTH of the
+  // tip (still reorg-eligible) or via a pending move — the ones that can still flip.
+  const frontier = new Set<string>();
+  const confirmH = (tipHeight ?? 0) - CONFIRM_DEPTH;
+  for (const k of cells.keys()) {
+    const c = claimedAt.get(k);
+    if (c === undefined) continue;
+    if (c === PENDING_HEIGHT || c > confirmH) frontier.add(k);
+  }
+
   return {
     header,
     cells,
@@ -491,6 +721,8 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     tentative,
     confirmedEpoch,
     justCrownedSeason: justCrowned,
+    lastTide,
+    frontier,
   };
 }
 
@@ -555,7 +787,7 @@ async function submitMinedPost(
     hexToBytes(id.publicKeyHex),
     getDifficulty(ActionType.Post, TESTNET)
   );
-  const solution = await computePow(challenge, getConfig(TESTNET), onProgress);
+  const solution = await minePow(challenge, getConfig(TESTNET), onProgress);
   const p = solutionToRpcParams(solution);
   const contentHash = await contentHashForPost(title, body);
   const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
@@ -587,7 +819,7 @@ async function submitMinedReply(
     hexToBytes(id.publicKeyHex),
     getDifficulty(ActionType.Reply, TESTNET)
   );
-  const solution = await computePow(challenge, getConfig(TESTNET), onProgress);
+  const solution = await minePow(challenge, getConfig(TESTNET), onProgress);
   const p = solutionToRpcParams(solution);
   const contentHash = await contentHashForReply(body);
   const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
@@ -681,10 +913,21 @@ export async function loadRegion(rpc: SwimchainRpc, regionId: string): Promise<R
 /**
  * Submit a move as a reply to the region thread.
  *
- * Replies are content-addressed by sha256(body), so identical bodies collide/dedup.
- * The body embeds regionId, a monotonically-growing seq, and a slice of the author id,
- * so two different players (or the same player at different seqs) never collide. The
- * fold reads only the first three tokens (`<op> <x> <y>`).
+ * Replies are content-addressed by sha256(body), so IDENTICAL bodies dedup to
+ * one on-chain — desirable for a re-broadcast of the same submission, but a
+ * silent data-loss trap for two DISTINCT clicks that happen to produce the
+ * same body. The old scheme keyed uniqueness on `seq` (= the client's current
+ * move count) + a slice of the author id, and claimed collisions were
+ * impossible. They aren't: the same identity on two devices (or two fast
+ * clicks before the fold updates) sees the same `seq`, and a same-cell move
+ * then yields a byte-identical body → the node dedups it, the move never
+ * seals, and the client is left showing a phantom that can never land.
+ *
+ * Fix: append a per-submission random nonce. Distinct clicks now ALWAYS get
+ * distinct bodies (so every real move seals), while the node's mempool
+ * rebroadcast still resends the exact same bytes (so a genuine re-broadcast
+ * still dedups correctly). The fold only reads the first three tokens
+ * (`<op> <x> <y>`), so the nonce is inert to game state.
  */
 export async function submitReefMove(
   rpc: SwimchainRpc,
@@ -693,10 +936,17 @@ export async function submitReefMove(
   op: Op,
   x: number,
   y: number,
-  seq: number,
   onProgress?: ProgressCallback
 ): Promise<string> {
-  const body = `${op} ${x} ${y} ${regionId}#${seq}~${id.publicKeyHex.slice(0, 10)}`;
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  // The `#<n>~` field is the AUTHORING timestamp (ms). The fold orders moves by
+  // it (see `authorSeqOf`/`seqCmp`), so a seed always precedes the spread that
+  // grows from it — even while both are pending and the node's `created_at` is
+  // still query-stamped. Real wall-clock time, so it is monotonic across reloads
+  // and reorgs (unlike a move-count seq). The random nonce keeps bodies unique.
+  const body = `${op} ${x} ${y} ${regionId}#${Date.now()}~${id.publicKeyHex.slice(0, 10)}~${nonce}`;
   return submitMinedReply(rpc, id, regionId, body, onProgress);
 }
 
@@ -719,6 +969,9 @@ export function applyMoveOptimistic(
   const isAuthor = (owner: string) => owner === authorPubkeyHex;
   const cls = classify(cells, state.header, isAuthor, op, x, y);
   let ok = false;
+  // Optimistic outcome is a best-guess for immediate feedback; the authoritative
+  // outcome (incl. tie-lost / capture) comes from the fold once the move seals.
+  let outcome: MoveOutcome = 'rejected-invalid';
   if (cls) {
     if (cls.kind === 'tend') {
       const used = tendsUsed.get(authorPubkeyHex) ?? 0;
@@ -726,6 +979,9 @@ export function applyMoveOptimistic(
         mutate(cells, authorPubkeyHex, 'tend', x, y);
         tendsUsed.set(authorPubkeyHex, used + 1);
         ok = true;
+        outcome = 'tended';
+      } else {
+        outcome = 'rejected-capped';
       }
     } else {
       const have = budgets.get(authorPubkeyHex) ?? START_BUDGET;
@@ -733,19 +989,27 @@ export function applyMoveOptimistic(
         mutate(cells, authorPubkeyHex, cls.kind, x, y);
         budgets.set(authorPubkeyHex, have - cls.cost);
         ok = true;
+        outcome = cls.kind === 'contest' ? 'contested' : 'grew';
+      } else {
+        outcome = 'rejected-unaffordable';
       }
     }
   }
   const living = livingByOwner(cells);
+  // The optimistically-touched cell is unsettled by definition — add it to the
+  // frontier so it renders as "settling" until the real move confirms.
+  const frontier = new Set(state.frontier);
+  if (ok) frontier.add(cellKey(x, y));
   return {
     ...state,
     cells,
     budgets,
     tendsUsed,
     owners: [...living.keys()],
+    frontier,
     moves: [
       ...state.moves,
-      { op, x, y, author: authorPubkeyHex, contentId: `pending-${state.moves.length}`, ok },
+      { op, x, y, author: authorPubkeyHex, contentId: `pending-${state.moves.length}`, ok, outcome },
     ],
   };
 }

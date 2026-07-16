@@ -850,6 +850,14 @@ impl BlockBuilder {
         started.elapsed().as_secs() >= flush_timeout_secs
     }
 
+    /// Test-only: backdate the lazy-wait timer so `should_form_root` fires
+    /// immediately instead of sleeping through LAZY_BLOCK_WAIT_MS in tests.
+    #[cfg(test)]
+    pub fn backdate_lazy_wait_for_test(&mut self) {
+        self.waiting_since = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(LAZY_BLOCK_WAIT_MS + 1_000));
+    }
+
     /// Get the expected next block height
     #[must_use]
     pub fn next_height(&self) -> u64 {
@@ -1472,11 +1480,19 @@ mod tests {
 
         // advance-only sync CANNOT pull it back to the real tip (5)...
         builder.sync_chain_state(5, [0xAA; 32], 500);
-        assert_eq!(builder.current_height(), 6, "sync_chain_state must not regress");
+        assert_eq!(
+            builder.current_height(),
+            6,
+            "sync_chain_state must not regress"
+        );
 
         // ...but reset_to_chain_tip forces it back to the canonical tip.
         builder.reset_to_chain_tip(5, [0xAA; 32], 500);
-        assert_eq!(builder.current_height(), 5, "reset_to_chain_tip must regress to the real tip");
+        assert_eq!(
+            builder.current_height(),
+            5,
+            "reset_to_chain_tip must regress to the real tip"
+        );
         // And next_height now points at the correct height to form (tip + 1).
         assert_eq!(builder.next_height(), 6);
     }
@@ -1573,11 +1589,16 @@ mod tests {
         // never triggers a block and strands in the mempool. The flush timeout mines
         // it anyway.
         let mut builder = BlockBuilder::new(30); // difficulty_target = 30
-        // Empty mempool: nothing to form regardless of timeout.
+                                                 // Empty mempool: nothing to form regardless of timeout.
         assert!(!builder.should_form_or_flush(60));
 
         // A single low-PoW action never meets the threshold.
-        builder.add_action([1u8; 32], [2u8; 32], make_test_action(5), BranchPath::root());
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(5),
+            BranchPath::root(),
+        );
         assert!(!builder.is_threshold_met());
         // With a long flush timeout it keeps waiting (timer just started).
         assert!(!builder.should_form_or_flush(3600));
@@ -1590,7 +1611,12 @@ mod tests {
         // A high-PoW action meets the threshold and forms immediately — the flush
         // timeout is irrelevant on the threshold path.
         let mut b2 = BlockBuilder::new(30);
-        b2.add_action([3u8; 32], [4u8; 32], make_test_action(50), BranchPath::root());
+        b2.add_action(
+            [3u8; 32],
+            [4u8; 32],
+            make_test_action(50),
+            BranchPath::root(),
+        );
         assert!(b2.is_threshold_met());
         assert!(
             b2.should_form_or_flush(3600),
@@ -1606,15 +1632,38 @@ mod tests {
         let mut builder = BlockBuilder::new(30);
         assert!(builder.pending_action_announcements().is_empty());
 
-        builder.add_action([10u8; 32], [11u8; 32], make_test_action(5), BranchPath::root());
-        builder.add_action([10u8; 32], [11u8; 32], make_test_action(5), BranchPath::root());
-        builder.add_action([12u8; 32], [13u8; 32], make_test_action(5), BranchPath::root());
+        builder.add_action(
+            [10u8; 32],
+            [11u8; 32],
+            make_test_action(5),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [10u8; 32],
+            [11u8; 32],
+            make_test_action(5),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [12u8; 32],
+            [13u8; 32],
+            make_test_action(5),
+            BranchPath::root(),
+        );
 
         let snap = builder.pending_action_announcements();
-        assert_eq!(snap.len(), 3, "all pending actions across threads are included");
+        assert_eq!(
+            snap.len(),
+            3,
+            "all pending actions across threads are included"
+        );
         // Thread/space are carried so peers can place the re-announced action.
-        assert!(snap.iter().any(|(t, s, _)| *t == [10u8; 32] && *s == [11u8; 32]));
-        assert!(snap.iter().any(|(t, s, _)| *t == [12u8; 32] && *s == [13u8; 32]));
+        assert!(snap
+            .iter()
+            .any(|(t, s, _)| *t == [10u8; 32] && *s == [11u8; 32]));
+        assert!(snap
+            .iter()
+            .any(|(t, s, _)| *t == [12u8; 32] && *s == [13u8; 32]));
     }
 
     #[test]
@@ -2186,9 +2235,11 @@ mod tests {
             0xb3, 0xc4, 0x6c, 0xf7, 0x25, 0x50, 0x9e, 0x7f, 0xa0, 0x44, 0xc1, 0x9d, 0x26, 0xfe,
             0x76, 0xbd, 0x04, 0x20,
         ];
-        assert!(crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(
-            &PublicKey::from_bytes(genesis)
-        ));
+        assert!(
+            crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&PublicKey::from_bytes(
+                genesis
+            ))
+        );
 
         let mut space_id_32 = [0u8; 32];
         space_id_32[0] = 0x01; // valid Social class byte

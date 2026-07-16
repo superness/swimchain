@@ -223,13 +223,18 @@ impl NodeManager {
         // Check if process is still running
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Process exited immediately - likely wrong password or corrupted identity
+                // Process exited immediately. The CLI uses distinct exit codes
+                // (src/cli/error.rs): 5 = wrong password (decryption failed),
+                // 3 = missing/unparseable identity file. Map 5 to a friendly
+                // "wrong password" so the common typo doesn't read as
+                // "corrupted identity". (Older sw.exe binaries returned 3 for
+                // BOTH cases; the shell now ships its own sidecar so this is
+                // the current contract.)
                 let exit_code = status.code().unwrap_or(-1);
-                let error_msg = if exit_code == 1 {
-                    // Exit code 1 typically indicates authentication/decryption failure
-                    "Incorrect password. Please try again.".to_string()
-                } else {
-                    format!("Node failed to start (exit code: {}). This may indicate a corrupted identity or configuration issue.", exit_code)
+                let error_msg = match exit_code {
+                    5 => "Incorrect password. Please try again.".to_string(),
+                    3 => "Could not load your identity — the identity file is missing or unreadable.".to_string(),
+                    other => format!("Node failed to start (exit code: {}). This may indicate a configuration issue.", other),
                 };
                 return Err(error_msg.into());
             }

@@ -1,5 +1,33 @@
 # Launch-blockers handoff — remaining work after 2026-07-14 evening
 
+> **STATUS UPDATE (2026-07-15 early AM):** items 1–3 are implemented,
+> tested, and committed on main:
+> - #1 solo-block formation gate → `e333e4c9` (guarded at THREE sites —
+>   the periodic `spawn_block_formation` backstop in tasks.rs was a third
+>   formation site this doc missed; regtest grace is zero so dev flows
+>   are unchanged)
+> - #3 reorg loop → `b94516eb` (real chain weight `ChainStore::chain_weight`
+>   replaced the garbage `cumulative_pow` comparison in fork choice; the
+>   hot loop dies by construction, so no separate negative cache was
+>   needed; deep displacement guard unchanged)
+> - #2 auth lockout → `9cb2dda8` (loopback exempt + per-credential dedupe;
+>   client-side cookie re-read on 401 [fix shape 2.3] NOT done — optional
+>   now that loopback is exempt)
+> - bonus `516a9eba`: clients hide spaces with no resolved name (operator
+>   request).
+> **ALL FOUR ITEMS CLOSED (later same session, operator-authorized):**
+> fleet deployed client2→bot→seed (every gate opened on peer-tip
+> parity), guarded release APK signed + installed on the phone (U12
+> pass at fleet height 78), and `bvt.sh --e2e --failover` ran **9/10**
+> — sole FAIL is A3 counting the 07-14 incident inside its 24h window
+> (0 cascading rollbacks since deploy); see
+> `docs/qa/bvt-runs/2026-07-15.md`. Remaining for launch: Tier-2 UI
+> sweep (U1–U11) and A3 rolling green.
+> Known-red: `cargo test --lib` has 7 PRE-EXISTING stale-test failures
+> (old error strings, node_id sha256 semantics, lazy-wait never reflected
+> in should_form_root tests, sled-lock restart flake) plus 3 eternal PoW
+> tests (`api::commands`) that run 25+ min — none related to these fixes.
+
 Context: the 2026-07-14 evening session closed the two consensus **correctness**
 blockers (deep-fork guard `fbaba8e9`, non-destructive rollback `26952890`),
 took genesis cold, stood up the gateway droplet, moved game sponsorship to the

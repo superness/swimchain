@@ -57,14 +57,21 @@ impl CliError {
     /// - 0: Success
     /// - 1: General error
     /// - 2: Resource not found (space, content, network)
-    /// - 3: Identity-related error (no identity, wrong password)
+    /// - 3: Identity-related error (missing or unparseable identity file)
+    /// - 4: No node running (actionable)
+    /// - 5: Wrong password (decryption failed) — distinct so UIs can say
+    ///      "wrong password" rather than "corrupted identity"
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            // Identity-related errors: exit code 3
-            CliError::NoIdentity
-            | CliError::InvalidIdentityFile(_)
-            | CliError::DecryptionFailed => 3,
+            // Wrong password: its OWN code so callers (the desktop launcher)
+            // can say "wrong password, try again" instead of the alarming
+            // "corrupted identity" that a bare identity-error code implies.
+            CliError::DecryptionFailed => 5,
+
+            // Other identity-related errors (missing file, unparseable file):
+            // exit code 3
+            CliError::NoIdentity | CliError::InvalidIdentityFile(_) => 3,
 
             // Resource not found errors: exit code 2
             CliError::SpaceNotFound(_)

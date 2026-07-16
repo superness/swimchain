@@ -12,6 +12,17 @@
 //!
 //! - 10 auth failures within 5 minutes = 5-minute lockout
 //! - Lockout applies per client IP address
+//! - **Loopback is exempt**: anyone on 127.0.0.1/::1 can read the cookie
+//!   file anyway, so locking them out protects nothing — and it caused real
+//!   damage twice over: (a) a node restart rotates the RPC cookie, and any
+//!   client still polling with the stale cookie burned through the threshold
+//!   in seconds, locking out the *valid* credentials too; (b) the web proxy
+//!   connects from localhost, so one misbehaving browser would lock out ALL
+//!   web traffic globally.
+//! - **Failures are deduped by credential**: the same bad credential (e.g. a
+//!   stale cookie hammered by a polling client) counts once per window, not
+//!   once per request. Only distinct bad credentials accumulate toward the
+//!   threshold.
 //!
 //! # Implementation
 //!
@@ -166,16 +177,25 @@ impl ClientLimiter {
 
 /// Auth failure tracking for lockout
 struct AuthFailureTracker {
-    /// Timestamps of recent auth failures
+    /// Timestamps of recent auth failures (one per *distinct* bad credential)
     failures: Vec<Instant>,
+    /// Fingerprints of recently-seen bad credentials with when they were
+    /// first seen — repeats within the window don't re-count toward lockout.
+    seen_bad_credentials: Vec<(u64, Instant)>,
     /// Lockout expiry (None if not locked out)
     lockout_until: Option<Instant>,
 }
+
+/// Cap on remembered bad-credential fingerprints per IP (memory bound; an
+/// attacker cycling more distinct credentials than this trips the threshold
+/// long before the cap matters).
+const MAX_SEEN_BAD_CREDENTIALS: usize = 32;
 
 impl AuthFailureTracker {
     fn new() -> Self {
         Self {
             failures: Vec::new(),
+            seen_bad_credentials: Vec::new(),
             lockout_until: None,
         }
     }
@@ -272,7 +292,24 @@ impl RpcRateLimiter {
     /// Record an authentication failure
     ///
     /// If the failure threshold is reached, the client will be locked out.
-    pub async fn record_auth_failure(&self, client_ip: IpAddr) {
+    ///
+    /// `credential_fingerprint` identifies the credential that failed (a hash
+    /// of the auth header / signing identity). The same bad credential only
+    /// counts once per window — a client hammering with one stale cookie is
+    /// one failure, not ten.
+    ///
+    /// Loopback clients are exempt: they can read the cookie file anyway, so
+    /// locking them out protects nothing and (pre-exemption) turned every
+    /// node restart with an open client tab into a 5-minute global lockout.
+    pub async fn record_auth_failure(&self, client_ip: IpAddr, credential_fingerprint: u64) {
+        if client_ip.is_loopback() {
+            log::debug!(
+                "Auth failure from loopback {} ignored (lockout-exempt)",
+                client_ip
+            );
+            return;
+        }
+
         let mut auth_failures = self.auth_failures.write().await;
         let tracker = auth_failures
             .entry(client_ip)
@@ -281,8 +318,27 @@ impl RpcRateLimiter {
         let now = Instant::now();
         let window = Duration::from_secs(self.config.auth_failure_window_secs);
 
-        // Remove old failures outside the window
+        // Remove old failures and stale credential fingerprints outside the window
         tracker.failures.retain(|&t| now.duration_since(t) < window);
+        tracker
+            .seen_bad_credentials
+            .retain(|&(_, t)| now.duration_since(t) < window);
+
+        // Dedupe: a credential we've already counted this window doesn't
+        // count again (the stale-cookie case).
+        if tracker
+            .seen_bad_credentials
+            .iter()
+            .any(|&(fp, _)| fp == credential_fingerprint)
+        {
+            return;
+        }
+        if tracker.seen_bad_credentials.len() >= MAX_SEEN_BAD_CREDENTIALS {
+            tracker.seen_bad_credentials.remove(0);
+        }
+        tracker
+            .seen_bad_credentials
+            .push((credential_fingerprint, now));
 
         // Add new failure
         tracker.failures.push(now);
@@ -297,6 +353,7 @@ impl RpcRateLimiter {
             tracker.lockout_until =
                 Some(now + Duration::from_secs(self.config.lockout_duration_secs));
             tracker.failures.clear();
+            tracker.seen_bad_credentials.clear();
         }
     }
 
@@ -307,7 +364,12 @@ impl RpcRateLimiter {
     }
 
     /// Check if client is currently locked out
+    ///
+    /// Loopback is never locked out (see `record_auth_failure`).
     pub async fn is_locked_out(&self, client_ip: IpAddr) -> bool {
+        if client_ip.is_loopback() {
+            return false;
+        }
         let auth_failures = self.auth_failures.read().await;
         if let Some(tracker) = auth_failures.get(&client_ip) {
             if let Some(lockout_until) = tracker.lockout_until {
@@ -440,6 +502,11 @@ mod tests {
         ));
     }
 
+    /// Non-loopback IP for lockout tests (loopback is lockout-exempt).
+    fn remote_ip() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50))
+    }
+
     #[tokio::test]
     async fn test_auth_failure_lockout() {
         let config = RateLimitConfig {
@@ -448,16 +515,16 @@ mod tests {
             ..Default::default()
         };
         let limiter = RpcRateLimiter::with_config(config);
-        let ip = test_ip();
+        let ip = remote_ip();
 
-        // First 2 failures shouldn't lock out
-        limiter.record_auth_failure(ip).await;
+        // First 2 distinct-credential failures shouldn't lock out
+        limiter.record_auth_failure(ip, 1).await;
         assert!(!limiter.is_locked_out(ip).await);
-        limiter.record_auth_failure(ip).await;
+        limiter.record_auth_failure(ip, 2).await;
         assert!(!limiter.is_locked_out(ip).await);
 
         // Third failure should trigger lockout
-        limiter.record_auth_failure(ip).await;
+        limiter.record_auth_failure(ip, 3).await;
         assert!(limiter.is_locked_out(ip).await);
 
         // Rate limit check should return locked out
@@ -472,18 +539,67 @@ mod tests {
             ..Default::default()
         };
         let limiter = RpcRateLimiter::with_config(config);
-        let ip = test_ip();
+        let ip = remote_ip();
 
         // One failure
-        limiter.record_auth_failure(ip).await;
+        limiter.record_auth_failure(ip, 1).await;
         assert!(!limiter.is_locked_out(ip).await);
 
         // Clear failures
         limiter.clear_auth_failures(ip).await;
 
         // One more failure shouldn't trigger lockout (counter was reset)
-        limiter.record_auth_failure(ip).await;
+        limiter.record_auth_failure(ip, 2).await;
         assert!(!limiter.is_locked_out(ip).await);
+    }
+
+    /// Loopback must never lock out: the node restart + open client tab case
+    /// (stale cookie hammering from 127.0.0.1) and the web-proxy case (all
+    /// browsers appear as 127.0.0.1) both depend on this.
+    #[tokio::test]
+    async fn test_loopback_is_lockout_exempt() {
+        let config = RateLimitConfig {
+            auth_failure_threshold: 2,
+            ..Default::default()
+        };
+        let limiter = RpcRateLimiter::with_config(config);
+        let v4 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let v6 = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+
+        for i in 0..20u64 {
+            limiter.record_auth_failure(v4, i).await;
+            limiter.record_auth_failure(v6, i).await;
+        }
+        assert!(!limiter.is_locked_out(v4).await);
+        assert!(!limiter.is_locked_out(v6).await);
+        assert!(matches!(
+            limiter.check_rate_limit(v4, "get_info").await,
+            RateLimitResult::Allowed
+        ));
+    }
+
+    /// The same bad credential (a stale cookie being re-polled) counts once,
+    /// not once per request — only distinct credentials reach the threshold.
+    #[tokio::test]
+    async fn test_stale_credential_counts_once() {
+        let config = RateLimitConfig {
+            auth_failure_threshold: 3,
+            ..Default::default()
+        };
+        let limiter = RpcRateLimiter::with_config(config);
+        let ip = remote_ip();
+
+        // The same stale cookie hammered 20x: one failure, no lockout.
+        for _ in 0..20 {
+            limiter.record_auth_failure(ip, 0xC00C1E).await;
+        }
+        assert!(!limiter.is_locked_out(ip).await);
+
+        // Two more *distinct* bad credentials reach the threshold of 3.
+        limiter.record_auth_failure(ip, 2).await;
+        assert!(!limiter.is_locked_out(ip).await);
+        limiter.record_auth_failure(ip, 3).await;
+        assert!(limiter.is_locked_out(ip).await);
     }
 
     #[tokio::test]

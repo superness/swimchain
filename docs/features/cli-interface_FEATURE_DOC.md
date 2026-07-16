@@ -106,7 +106,7 @@ CLI-specific errors with exit code mapping. Defined in `src/cli/error.rs:8-51`.
 | `NoNodeRunning` | 4 | No node running - required for content operations |
 | `NoIdentity` | 3 | No identity found in data directory |
 | `InvalidIdentityFile` | 3 | Identity file exists but has invalid format |
-| `DecryptionFailed` | 3 | Decryption failed (wrong password) |
+| `DecryptionFailed` | 5 | Decryption failed (wrong password) — distinct code so UIs can say "wrong password" instead of "corrupted identity" |
 | `SpaceNotFound` | 2 | Space not found |
 | `InvalidSpaceId` | 2 | Invalid space ID format |
 | `InvalidContentId` | 2 | Invalid content ID format |

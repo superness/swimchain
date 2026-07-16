@@ -185,19 +185,18 @@ export function RpcProvider({ children }: { children: ReactNode }) {
    */
   const buildConfigWithIdentity = async (): Promise<RpcConfig> => {
     // Get base config - check sources in order of priority:
-    // 1. VITE_RPC_PORT env var (for multi-instance setups)
-    // 2. Parent frame config (when running in desktop-app iframe)
+    // 1. Parent frame config (when running in a shell iframe — the shell's
+    //    endpoint/auth is authoritative; a baked-in VITE_RPC_PORT from
+    //    .env.local must NOT override it, that pointed node-mode at the
+    //    wrong node's port with no auth)
+    // 2. VITE_RPC_PORT env var (dev-server / multi-instance setups)
     // 3. VITE_USE_REMOTE_SEED env var
     // 4. Tauri (standalone Tauri app with cookie auth)
     // 5. Local fallback (development)
     let baseConfig: RpcConfig;
 
-    // Check for VITE_RPC_PORT env var (set at dev server startup)
     const rpcPort = import.meta.env.VITE_RPC_PORT;
-    if (rpcPort) {
-      logger.info('[RPC] Using VITE_RPC_PORT:', rpcPort);
-      baseConfig = { endpoint: `http://127.0.0.1:${rpcPort}`, timeout: 30000 };
-    } else if (getParentConfig() && isInIframe()) {
+    if (getParentConfig() && isInIframe()) {
       const parentConfig = getParentConfig()!;
       logger.info('[RPC] Using parent frame config:', {
         endpoint: parentConfig.rpcEndpoint,
@@ -207,6 +206,9 @@ export function RpcProvider({ children }: { children: ReactNode }) {
         endpoint: parentConfig.rpcEndpoint,
         authHeader: parentConfig.rpcAuth,
       };
+    } else if (rpcPort) {
+      logger.info('[RPC] Using VITE_RPC_PORT:', rpcPort);
+      baseConfig = { endpoint: `http://127.0.0.1:${rpcPort}`, timeout: 30000 };
     } else if (USE_REMOTE_SEED) {
       logger.info('[RPC] Using remote seed:', REMOTE_SEED_CONFIG.endpoint);
       baseConfig = REMOTE_SEED_CONFIG;
@@ -508,8 +510,13 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
     try {
       const result = await rpc.listSpaces();
 
+      // Spaces with no resolved name (name: null on the wire) are hidden from
+      // the list — a bare hex id is meaningless to browse. They still get a
+      // targeted name-resolve below, so they appear once the name arrives.
+      const namedSpaces = result.spaces.filter(s => s.name);
+
       // Transform RPC result to Space format
-      const transformedSpaces: Space[] = result.spaces.map(s => ({
+      const transformedSpaces: Space[] = namedSpaces.map(s => ({
         id: s.space_id,
         name: s.name ?? s.space_id.substring(0, 12) + '...', // Use space_id prefix if no name
         description: `${s.post_count} ${s.post_count === 1 ? 'post' : 'posts'}`,
@@ -539,13 +546,14 @@ export function useSpaces(): { spaces: Space[]; loading: boolean; error: string 
       setError(null);
 
       // Resolve placeholder names lazily (Bug #4).
-      // Server returns names like "Space 000be491" when the content block carrying
-      // the real name hasn't reached us yet. Fire targeted GET_SPACE_META queries
-      // to peers and re-fetch once if any peer responds.
+      // Current nodes report an unresolved name as null (the space is hidden
+      // above until it resolves); older nodes sent a literal "Space 000be491"
+      // placeholder. Fire targeted GET_SPACE_META queries to peers for both
+      // shapes and re-fetch once if any peer responds.
       const PLACEHOLDER = /^Space [0-9a-f]{8}$/;
-      const placeholderIds = transformedSpaces
-        .filter(s => PLACEHOLDER.test(s.name))
-        .map(s => s.id)
+      const placeholderIds = result.spaces
+        .filter(s => !s.name || PLACEHOLDER.test(s.name))
+        .map(s => s.space_id)
         .filter(id => !spaceNamesAsked.has(id));
 
       if (placeholderIds.length > 0) {
