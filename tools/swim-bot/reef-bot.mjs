@@ -55,6 +55,26 @@ const AUTH = 'Basic ' + Buffer.from(`__cookie__:${COOKIE}`).toString('base64');
 const authorBytes = Buffer.from(AUTHOR, 'hex');
 const authorPrefix = AUTHOR.slice(0, 10);
 
+// Local signing (SIGN_SEED_HEX): sign as an identity WITHOUT a running node —
+// used for founder one-shots (retune) when the founder's node is cold. The
+// seed is the raw 32-byte ed25519 seed (same derivation as `sw identity
+// import-seed`). Never logged.
+const SIGN_SEED = (process.env.SIGN_SEED_HEX || '').trim();
+let localSign = null;
+if (SIGN_SEED) {
+  const ed = await import('@noble/ed25519');
+  const { sha512 } = await import('@noble/hashes/sha2.js').catch(() => import('@noble/hashes/sha512.js'));
+  ed.etc.sha512Sync = (...m) => sha512(ed.etc.concatBytes(...m));
+  const seed = Buffer.from(SIGN_SEED, 'hex');
+  if (seed.length !== 32) throw new Error('SIGN_SEED_HEX must be 64 hex chars');
+  const derivedPub = Buffer.from(ed.getPublicKey(seed)).toString('hex');
+  if (derivedPub !== AUTHOR) {
+    throw new Error(`SIGN_SEED_HEX derives pubkey ${derivedPub.slice(0, 10)}… but AUTHOR_PUBKEY is ${authorPrefix}… — refusing to sign`);
+  }
+  localSign = (bytes) => Buffer.from(ed.sign(new Uint8Array(bytes), seed)).toString('hex');
+  console.log(`[${TAG}] local-sign mode as ${authorPrefix}… (no node needed)`);
+}
+
 // Game rules come EXCLUSIVELY from reefEngine.bundle.mjs (imported above).
 const ActionType = { Reply: 3 };
 const POW_CONFIG = { memoryKib: 8192, iterations: 1, parallelism: 2 };
@@ -86,10 +106,12 @@ async function rpc(method, params, timeoutMs = 30000) {
   } else {
     const ts = String(Math.floor(Date.now() / 1000));
     const preimage = `swimchain-rpc:${method}:${sha256(Buffer.from(paramsJson, 'utf-8')).toString('hex')}:${ts}`;
-    const r = await rpcBare('sign_message', { message: Buffer.from(preimage, 'utf-8').toString('hex') });
+    const sig = localSign
+      ? localSign(Buffer.from(preimage, 'utf-8'))
+      : (await rpcBare('sign_message', { message: Buffer.from(preimage, 'utf-8').toString('hex') })).signature;
     headers['x-cs-identity'] = AUTHOR;
     headers['x-cs-timestamp'] = ts;
-    headers['x-cs-signature'] = r.signature;
+    headers['x-cs-signature'] = sig;
   }
   const body = `{"jsonrpc":"2.0","id":${++rpcId},"method":${JSON.stringify(method)},"params":${paramsJson}}`;
   const res = await fetch(RPC, { method: 'POST', headers, body, signal: AbortSignal.timeout(timeoutMs) });
@@ -98,6 +120,7 @@ async function rpc(method, params, timeoutMs = 30000) {
   return j.result;
 }
 async function signBytesWithNode(buf) {
+  if (localSign) return localSign(buf);
   const call = MODE === 'cookie' ? rpc : rpcBare;
   const r = await call('sign_message', { message: Buffer.from(buf).toString('hex') });
   if (!r?.signature) throw new Error('sign_message returned no signature');
