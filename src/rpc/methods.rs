@@ -2766,6 +2766,19 @@ impl RpcMethods {
             }
         };
 
+        // BLOCKLIST: never serve a blocklisted media hash over RPC — this is the
+        // path the swimchain.io /browse gateway reads, so a takedown applied via
+        // the blocklist must stop the gateway handing out the image immediately.
+        if let Some(ref blocklist) = self.node.blocklist {
+            if blocklist.read().unwrap().is_blocked(&hash_bytes) {
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    "media not available",
+                    id,
+                );
+            }
+        }
+
         // Retrieve from blob store
         let blob_hash = ContentBlobHash::from_bytes(hash_bytes);
         let blob_store = match BlobStore::new(&self.node.sync_blob_path) {
@@ -4124,6 +4137,19 @@ impl RpcMethods {
                 id,
             );
         };
+
+        // BLOCKLIST: never serve blocklisted content over RPC — the /browse
+        // gateway reads here, so blocklisting a content id must stop it being
+        // handed out immediately (takedown at the operator's own node).
+        if let Some(ref blocklist) = self.node.blocklist {
+            if blocklist.read().unwrap().is_blocked(&content_hash) {
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    "content not available",
+                    id,
+                );
+            }
+        }
 
         // Use shared content store
         let content_store = match &self.node.content_store {

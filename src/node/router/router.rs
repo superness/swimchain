@@ -1116,6 +1116,25 @@ impl MessageRouter {
             hex::encode(&hash_bytes[..8])
         );
 
+        // BLOCKLIST CHECK on the SERVE path: refuse to serve content whose
+        // SHA-256 is blocklisted, even if it was stored BEFORE the hash was
+        // added. Ingest already rejects new matches (see DATA_CONTENT gate),
+        // but a gateway operator honoring a takedown needs blocklisting a hash
+        // to stop serving already-stored content immediately — otherwise
+        // /browse keeps handing it out. SHA-1/MD5 aux matching needs the bytes,
+        // so it stays on the ingest path; the content id (SHA-256) is what a
+        // takedown targets here.
+        if let Some(ref blocklist) = self.blocklist {
+            if blocklist.read().unwrap().is_blocked(&hash_bytes) {
+                warn!(
+                    "[BLOCKLIST] Refused to SERVE {} to {} — content id is blocklisted",
+                    hex::encode(&hash_bytes[..8]),
+                    hex::encode(&peer_id[..8])
+                );
+                return Ok(None);
+            }
+        }
+
         // Try to get the content
         match content_mgr.on_get(&get_payload) {
             Ok(data_payload) => {
