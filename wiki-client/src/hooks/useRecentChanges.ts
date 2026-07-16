@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
 import { WIKI_APP } from '../lib/appNamespace';
+import { toUnixSeconds } from '../lib/time';
 import type { WikiPage } from '../types/wiki';
 
 interface UseRecentChangesResult {
@@ -60,8 +61,8 @@ function mapToWikiPage(raw: RpcContentSummary): WikiPage {
     content: raw.body ?? '',
     author: raw.display_name ?? raw.author_id,
     authorAddress: raw.author_id,
-    createdAt: raw.created_at,
-    lastEdited: raw.last_engagement,
+    createdAt: toUnixSeconds(raw.created_at),
+    lastEdited: toUnixSeconds(raw.last_engagement),
     revisionCount: raw.reply_count,
     discussionCount: 0,
     tags: [],

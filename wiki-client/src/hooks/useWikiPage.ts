@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
+import { toUnixSeconds } from '../lib/time';
 import { fetchWikiRevisions } from './useWikiRevisions';
 import type { WikiPage } from '../types/wiki';
 import type { WikiRevision } from '../types/wiki';
@@ -48,8 +49,8 @@ function mapToWikiPage(raw: RpcContentResult, revisions: WikiRevision[]): WikiPa
     baseContent,
     author: raw.display_name ?? raw.author_id,
     authorAddress: raw.author_id,
-    createdAt: raw.created_at,
-    lastEdited: latest ? latest.timestamp : raw.last_engagement,
+    createdAt: toUnixSeconds(raw.created_at),
+    lastEdited: toUnixSeconds(latest ? latest.timestamp : raw.last_engagement),
     revisionCount: revisions.length,
     discussionCount: 0,
     tags: [],
