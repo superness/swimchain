@@ -158,7 +158,7 @@ function foldReef(header, replies, tipHeight) {
   const updatePeaks = () => {
     for (const [o, e] of livingByOwner(cells)) peak.set(o, Math.max(peak.get(o) ?? 0, e.cells));
   };
-  const tickEpoch = () => {
+  const tickEpoch = (provisional = false) => {
     const before = livingByOwner(cells);
     let beforeCells = 0;
     for (const l of before.values()) beforeCells += l.cells;
@@ -176,7 +176,7 @@ function foldReef(header, replies, tipHeight) {
     tendsUsed = /* @__PURE__ */ new Map();
     epoch += 1;
     let crownedThisTick = null;
-    if (epoch % SEASON_EPOCHS === 0) {
+    if (!provisional && epoch % SEASON_EPOCHS === 0) {
       let winner = null;
       let best = -1;
       for (const [owner, pts] of [...seasonPoints].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -299,7 +299,6 @@ function foldReef(header, replies, tipHeight) {
     }
   }
   const confirmedEpoch = epoch;
-  const tideMoves = sinceTide;
   let tentative = 0;
   curHeight = PENDING_HEIGHT;
   for (const r of pending) {
@@ -312,7 +311,13 @@ function foldReef(header, replies, tipHeight) {
     if (!p) continue;
     tentative += 1;
     applyOne(r, p);
+    sinceTide += 1;
+    if (sinceTide >= params.epochMoves) {
+      tickEpoch(true);
+      sinceTide = 0;
+    }
   }
+  const tideMoves = sinceTide;
   updatePeaks();
   const living = livingByOwner(cells);
   const owners = [...living.keys()];

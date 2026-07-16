@@ -394,7 +394,10 @@ export function App() {
   // the newer summary instead of stacking.
   useEffect(() => {
     if (!state || !publicKeyHex || !openId) return;
-    const epoch = state.epoch;
+    // CONFIRMED epoch only: the round-over ceremony must never announce a tide
+    // that could un-happen. Provisional (pending-driven) ticks move the world
+    // and the meter, but the report waits for the chain to seal the turn.
+    const epoch = state.confirmedEpoch;
     const ack = readTideAck();
     if (ack === null) {
       writeTideAck(epoch); // first visit on this device: baseline silently
@@ -700,26 +703,19 @@ export function App() {
               {/* Tide meter: how close the water is to turning. Fills as confirmed
                   moves accumulate toward params.epochMoves; strains when one move
                   away. Purely fold-derived — identical on every device. */}
+              {/* The tide clock counts every move — pending included (they act on
+                  the world provisionally; the chain reconciles at each block). */}
               <div
                 className={`tide-meter${state.params.epochMoves - state.tideMoves === 1 ? ' imminent' : ''}`}
-                title={`the tide turns after ${state.params.epochMoves} CONFIRMED moves — pending moves (the pale swell) push it once they seal`}
+                title={`the tide turns every ${state.params.epochMoves} moves — energy returns, coral fades a little`}
               >
-                {/* Pale swell: pending moves that will drive the tide once sealed. */}
-                {state.tentative > 0 && (
-                  <div
-                    className="tide-swell"
-                    style={{ width: `${Math.min(100, Math.round(((state.tideMoves + state.tentative) / state.params.epochMoves) * 100))}%` }}
-                  />
-                )}
                 <div className="tide-water" style={{ width: `${Math.round((state.tideMoves / state.params.epochMoves) * 100)}%` }}>
                   <span className="tide-wave" />
                 </div>
                 <span className="tide-label fine">
-                  {state.tideMoves + state.tentative >= state.params.epochMoves
-                    ? `🌊 the tide swells — ${state.tentative} drifting in will turn it`
-                    : state.params.epochMoves - state.tideMoves === 1
-                      ? '🌊 the tide strains — one move from turning'
-                      : `🌊 tide in ${state.params.epochMoves - state.tideMoves} moves${state.tentative > 0 ? ` · ${state.tentative} drifting in` : ''}`}
+                  {state.params.epochMoves - state.tideMoves === 1
+                    ? '🌊 the tide strains — one move from turning'
+                    : `🌊 tide in ${state.params.epochMoves - state.tideMoves} moves`}
                 </span>
               </div>
 

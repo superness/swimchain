@@ -101,5 +101,35 @@ function check(name: string, cond: boolean) {
   check('both corals alive', s.cells.size === 2);
 }
 
+// ── provisional tides: pending moves act on the world ───────────────────────
+// Mempool moves tick the tide locally (decay/regen) so play never waits on a
+// block; ceremonies stay confirmed-only. Bitcoin-style local-view + reconcile.
+{
+  n = 0;
+  const pendingReply = (author: string, body: string): ReplyLike => ({
+    body: `${body} #${1000 + n}~`,
+    created_at: 1000 + n,
+    content_id: `sha256:p${String(n++).padStart(4, '0')}`,
+    author_id: author,
+    block_height: null,
+  });
+  const replies: ReplyLike[] = [
+    reply(FOUNDER, 'retune epochMoves=6', 1), // confirmed
+    reply(FOUNDER, 'grow 2 2', 2), // confirmed — 1 toward tide
+  ];
+  // 5 PENDING moves cross the 6-move threshold → provisional tide.
+  replies.push(pendingReply(MALLORY, 'grow 8 8'));
+  for (let i = 0; i < 4; i++) replies.push(pendingReply(FOUNDER, 'tend 2 2'));
+  const s = foldReef(header, replies);
+  check('provisional tide turned (epoch=1)', s.epoch === 1);
+  check('confirmedEpoch untouched by pending ticks', s.confirmedEpoch === 0);
+  check('tide clock reset after provisional turn', s.tideMoves === 0);
+  check(
+    'regen applied provisionally (founder budget above post-spend 6)',
+    (s.budgets.get(FOUNDER) ?? 0) > 6
+  );
+  check('no crown from provisional ticks', s.seasons.length === 0);
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

@@ -565,7 +565,13 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     for (const [o, e] of livingByOwner(cells)) peak.set(o, Math.max(peak.get(o) ?? 0, e.cells));
   };
 
-  const tickEpoch = () => {
+  // provisional=true (pending-move ticks): the world acts on mempool moves —
+  // decay, regen, fresh tends — but season CROWNS are ceremonies and only ever
+  // fire from confirmed history, so a champion can never be announced and then
+  // un-happen. The whole fold is recomputed from history every poll, so a
+  // provisional tick self-corrects the moment confirmations replace assumptions
+  // (Bitcoin-style: act on your local view, reconcile at the block).
+  const tickEpoch = (provisional = false) => {
     const before = livingByOwner(cells); // snapshot the reef the instant before the tide
     let beforeCells = 0;
     for (const l of before.values()) beforeCells += l.cells;
@@ -583,7 +589,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     tendsUsed = new Map();
     epoch += 1;
     let crownedThisTick: SeasonResult | null = null;
-    if (epoch % SEASON_EPOCHS === 0) {
+    if (!provisional && epoch % SEASON_EPOCHS === 0) {
       let winner: string | null = null;
       let best = -1;
       for (const [owner, pts] of [...seasonPoints].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -730,11 +736,17 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     }
   }
   const confirmedEpoch = epoch;
-  const tideMoves = sinceTide; // confirmed moves toward the next tide
 
   // 3) Pending (not-yet-in-a-block) moves: the tentative frontier, shown
   // optimistically. All pending claims share PENDING_HEIGHT, so two racing
   // pending grows on the same tile resolve as a tie just like a same-block race.
+  // Pending moves ACT ON THE WORLD like confirmed ones — including turning the
+  // tide provisionally (decay + regen + tend reset) — so play never waits on a
+  // block to feel real. Ceremonies (crowns, the round-over report) stay keyed
+  // to confirmedEpoch. Divergence risk is accepted Bitcoin-style: two devices
+  // may briefly disagree while their mempool views differ, and both snap to
+  // the identical confirmed world at the next block (the fold is pure, so
+  // nothing needs undoing — it simply refolds).
   let tentative = 0;
   curHeight = PENDING_HEIGHT;
   for (const r of pending) {
@@ -747,7 +759,13 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     if (!p) continue;
     tentative += 1;
     applyOne(r, p);
+    sinceTide += 1;
+    if (sinceTide >= params.epochMoves) {
+      tickEpoch(true);
+      sinceTide = 0;
+    }
   }
+  const tideMoves = sinceTide; // moves (confirmed + pending) toward the next tide
   updatePeaks();
 
   const living = livingByOwner(cells);
