@@ -691,7 +691,51 @@ impl NodeManager {
         std::fs::create_dir_all(&blocklist_path).ok();
         match crate::storage::open_db(&blocklist_path) {
             Ok(blocklist_db) => match BlocklistStore::open(Arc::new(blocklist_db)) {
-                Ok(blocklist) => {
+                Ok(mut blocklist) => {
+                    // Operator seed auto-load: if a hash-list file is present, import
+                    // it on every start so operators (e.g. the swimchain.io gateway)
+                    // can drop in an NCMEC/IWF/Arachnid export and have their node
+                    // refuse to store/serve matching content — the good-faith,
+                    // known-hash-only CSAM defense (THREAT_MODEL.md §4, docs/
+                    // LEGAL_POSTURE.md). Import is idempotent (already-present hashes
+                    // are skipped). Path: SWIMCHAIN_BLOCKLIST_SEED env, else
+                    // <data_dir>/blocklist-seed.txt. Missing file = silent no-op.
+                    let seed_path = std::env::var_os("SWIMCHAIN_BLOCKLIST_SEED")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| self.config.data_dir.join("blocklist-seed.txt"));
+                    if seed_path.exists() {
+                        match std::fs::read_to_string(&seed_path) {
+                            Ok(contents) => match crate::blocklist::parse_import(&contents) {
+                                Ok(records) => {
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+                                    match blocklist.import_records(&records, [0u8; 32], now) {
+                                        Ok(stats) => info!(
+                                            "[BLOCKLIST] Seeded from {}: {} sha256 added ({} skipped), {} sha1, {} md5",
+                                            seed_path.display(),
+                                            stats.sha256_added,
+                                            stats.sha256_skipped,
+                                            stats.sha1_indexed,
+                                            stats.md5_indexed
+                                        ),
+                                        Err(e) => warn!("[BLOCKLIST] Seed import failed: {}", e),
+                                    }
+                                }
+                                Err(e) => warn!(
+                                    "[BLOCKLIST] Seed file {} failed to parse: {}",
+                                    seed_path.display(),
+                                    e
+                                ),
+                            },
+                            Err(e) => warn!(
+                                "[BLOCKLIST] Could not read seed file {}: {}",
+                                seed_path.display(),
+                                e
+                            ),
+                        }
+                    }
                     self.blocklist = Some(Arc::new(RwLock::new(blocklist)));
                     info!("[BLOCKLIST] Blocklist store initialized");
                 }
