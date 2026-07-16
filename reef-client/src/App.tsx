@@ -147,6 +147,10 @@ export function App() {
   // a tab that missed the live transition still owes the player the report.
   // In-memory fallback covers storage-less contexts (private browsing).
   const tideAckMem = useRef<number | null>(null);
+  // Pre-tide snapshot: captured when a poll's fold crosses an epoch, rendered
+  // while the tide-report modal is up so the turn's visual ceremony plays on
+  // dismiss (not hidden behind the modal). Cleared on dismiss/region switch.
+  const preTideHoldRef = useRef<ReefState | null>(null);
   const readTideAck = useCallback((): number | null => {
     try {
       const raw = localStorage.getItem(`reef-tide-ack:${openId}:${publicKeyHex}`);
@@ -320,6 +324,13 @@ export function App() {
         if (forceAdopt) staleHoldsRef.current = 0;
         const next = caughtUp || forceAdopt ? loaded : prev;
 
+        // Capture the last pre-tide world so the turn's ceremony can play AFTER
+        // the player dismisses the tide report (only the first crossing per
+        // report is held — later polls keep the same "before" picture).
+        if (next.epoch > prev.epoch && !preTideHoldRef.current) {
+          preTideHoldRef.current = prev;
+        }
+
         // ── [reef-diag] rollback logging ──────────────────────────────────────
         // Log what happens to OUR cells each poll so a rollback is visible in the
         // browser console. A "ROLLBACK" line means cells we were showing vanished
@@ -376,6 +387,7 @@ export function App() {
     notifiedRef.current = new Set();
     setNotice(null);
     tideAckMem.current = null; // per-region ack lives in localStorage; drop only the fallback
+    preTideHoldRef.current = null;
     setTideReport(null);
     setCopied(false);
     // Clear the board when the open reef changes (incl. via Back/Forward or a deep
@@ -433,6 +445,7 @@ export function App() {
     const hasStake = !!mine && (mine.territoryBefore > 0 || mine.territoryAfter > 0);
     if (!hasStake && !summary.crownedSeason) {
       writeTideAck(epoch); // nothing to tell — don't keep re-checking
+      preTideHoldRef.current = null; // no report → no held ceremony
       return;
     }
     setTideReport((cur) =>
@@ -612,10 +625,16 @@ export function App() {
     );
   }
 
-  const budget = state ? myBudget(state, publicKeyHex!, address!) : 0;
-  const tendsLeft = state ? myTendsLeft(state, publicKeyHex!, address!) : TEND_CAP;
+  // Hold the ceremony: while the tide-report modal is up, the board and HUD
+  // render the PRE-tide snapshot — the decay sweep, coral evaporation, and
+  // energy refill all play the moment the player dismisses the report, instead
+  // of being spent invisibly behind the modal. Live `state` keeps advancing
+  // underneath (the report logic reads it); only the view is frozen.
+  const view = tideReport && preTideHoldRef.current ? preTideHoldRef.current : state;
+  const budget = view ? myBudget(view, publicKeyHex!, address!) : 0;
+  const tendsLeft = view ? myTendsLeft(view, publicKeyHex!, address!) : TEND_CAP;
   const isMine = (o: string) => o === publicKeyHex || o === address;
-  const myCareer = state?.standings.find((s) => isMine(s.owner)) ?? null;
+  const myCareer = view?.standings.find((s) => isMine(s.owner)) ?? null;
 
   return (
     <div className="app">
@@ -657,7 +676,7 @@ export function App() {
           </ul>
         </section>
       ) : (
-        state && (
+        view && (
           <section className="game">
             <div className="game-bar">
               <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← reefs</button>
@@ -680,7 +699,7 @@ export function App() {
               </div>
             )}
             <Reef
-              state={state}
+              state={view}
               myPubkeyHex={publicKeyHex!}
               myAddress={address!}
               canAct={!mining && !tideReport}
@@ -689,14 +708,14 @@ export function App() {
             />
             <div className="status">
               <div className="season">
-                <strong>Season {state.season}</strong> · {state.epochsLeftInSeason} tide{state.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
-                <span className="fine"> · tide {state.epoch}</span>
+                <strong>Season {view.season}</strong> · {view.epochsLeftInSeason} tide{view.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
+                <span className="fine"> · tide {view.epoch}</span>
                 {mining?.cell ? (
                   <span className="fine growing-status">
                     {' '}· <span className="dot" /> {mining.label} — <em>{mining.flavor}</em>
                   </span>
-                ) : state.tentative > 0 ? (
-                  <span className="fine tentative"> · {state.tentative} growth{state.tentative === 1 ? '' : 's'} drifting in…</span>
+                ) : view.tentative > 0 ? (
+                  <span className="fine tentative"> · {view.tentative} growth{view.tentative === 1 ? '' : 's'} drifting in…</span>
                 ) : null}
               </div>
 
@@ -711,13 +730,13 @@ export function App() {
                 <span className="tends fine">
                   tends this tide{' '}
                   <span className="pips">
-                    {Array.from({ length: state.params.tendCap }, (_, i) => (
+                    {Array.from({ length: view.params.tendCap }, (_, i) => (
                       <span key={i} className={`tpip${i < tendsLeft ? ' on' : ''}`} />
                     ))}
                   </span>
-                  <strong> {tendsLeft}</strong>/{state.params.tendCap}
+                  <strong> {tendsLeft}</strong>/{view.params.tendCap}
                 </span>
-                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({state.params.tendCap}/tide) · energy returns with each tide</span>
+                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · energy returns with each tide</span>
               </div>
 
               {/* Tide meter: how close the water is to turning. Fills as confirmed
@@ -726,22 +745,22 @@ export function App() {
               {/* The tide clock counts every move — pending included (they act on
                   the world provisionally; the chain reconciles at each block). */}
               <div
-                className={`tide-meter${state.params.epochMoves - state.tideMoves === 1 ? ' imminent' : ''}`}
-                title={`the tide turns every ${state.params.epochMoves} moves — energy returns, coral fades a little`}
+                className={`tide-meter${view.params.epochMoves - view.tideMoves === 1 ? ' imminent' : ''}`}
+                title={`the tide turns every ${view.params.epochMoves} moves — energy returns, coral fades a little`}
               >
-                <div className="tide-water" style={{ width: `${Math.round((state.tideMoves / state.params.epochMoves) * 100)}%` }}>
+                <div className="tide-water" style={{ width: `${Math.round((view.tideMoves / view.params.epochMoves) * 100)}%` }}>
                   <span className="tide-wave" />
                 </div>
                 <span className="tide-label fine">
-                  {state.params.epochMoves - state.tideMoves === 1
+                  {view.params.epochMoves - view.tideMoves === 1
                     ? '🌊 the tide strains — one move from turning'
-                    : `🌊 tide in ${state.params.epochMoves - state.tideMoves} moves`}
+                    : `🌊 tide in ${view.params.epochMoves - view.tideMoves} moves`}
                 </span>
               </div>
 
               <div className="board-scores">
-                {state.standings.length === 0 && <span className="fine">Open water. Seed your first coral anywhere — it's free until your energy starts to matter.</span>}
-                {state.standings.map((s, i) => (
+                {view.standings.length === 0 && <span className="fine">Open water. Seed your first coral anywhere — it's free until your energy starts to matter.</span>}
+                {view.standings.map((s, i) => (
                   <div key={s.owner} className={`row${isMine(s.owner) ? ' me' : ''}`}>
                     <span className="rank">{i + 1}</span>
                     <span className="swatch" style={{ background: `hsl(${ownerHue(s.owner)} 68% 52%)` }} />
@@ -763,9 +782,9 @@ export function App() {
                 </div>
               )}
 
-              {state.seasons.length > 0 && (
+              {view.seasons.length > 0 && (
                 <div className="past fine">
-                  {state.seasons.slice(-3).map((sr) => (
+                  {view.seasons.slice(-3).map((sr) => (
                     <span key={sr.index} className="past-item">
                       Season {sr.index}: {sr.winner ? <code>{sr.winner.slice(0, 8)}…</code> : 'nobody'} won ({sr.points})
                     </span>
@@ -808,6 +827,10 @@ export function App() {
             // Acknowledge THIS tide durably — the report never re-fires for
             // epochs at or below the ack, on this or any future load.
             writeTideAck(tideReport.epoch);
+            // Release the held pre-tide world: the board now advances to the
+            // post-tide state and the ceremony (sweep, evaporation, refill)
+            // plays in full view.
+            preTideHoldRef.current = null;
             setTideReport(null);
           }}
         />
