@@ -2,9 +2,13 @@
  * Verifies the per-tide summary (`state.lastTide`) that powers the end-of-round
  * report: decay counts, per-owner territory/points deltas, and season crowns.
  * Run with: npx tsx src/lib/reefEngine.tide.test.ts
- * (Pure fold, no PoW/crypto — same style as reefEngine.tie.test.ts.)
+ *
+ * The tide is driven by REEF ACTIVITY: every EPOCH_MOVES well-formed moves ticks
+ * one epoch (decay → regen → scoring). We advance the tide with `filler` moves —
+ * parseable-but-inert `tend 0 0` on empty water (rejected, but they still count
+ * toward the epoch clock) — so a test can tick K epochs with 8·K moves.
  */
-import { foldReef, MAX_VITALITY, type ReefHeader } from './reefEngine';
+import { foldReef, EPOCH_MOVES, MAX_VITALITY, type ReefHeader } from './reefEngine';
 
 const H: ReefHeader = { v: 1, kind: 'reef', founder: 'F', w: 12, h: 12, created: 0 };
 const A = 'aaaa000000000000';
@@ -17,14 +21,21 @@ function check(name: string, cond: boolean, extra?: unknown) {
     console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`);
   }
 }
-const reply = (author: string, body: string, block_height: number | null, content_id: string, created_at = 1000) =>
+const reply = (author: string, body: string, block_height: number | null, content_id: string, created_at: number) =>
   ({ author_id: author, body, block_height, content_id, created_at });
 
-// baseHeight = first confirmed height (10). epochOf(h) = floor((h-10)/2).
+// Inert well-formed moves that only advance the epoch clock (tend on empty water).
+const fillers = (n: number) =>
+  Array.from({ length: n }, (_, i) =>
+    reply('ffff' + (i % 3), `tend 0 0 x#${2000 + i}~f`, 10, `f_${String(i).padStart(4, '0')}`, 2000 + i)
+  );
+// A seeds (5,5) as move #1 (earliest created_at), then K·EPOCH_MOVES total moves → K ticks.
+const foldTicks = (k: number) =>
+  foldReef(H, [reply(A, 'grow 5 5', 10, 'c_seed', 1000), ...fillers(k * EPOCH_MOVES - 1)]);
 
-// ── 1) one quiet tide: a seeded cell survives, decays by 1, banks its vitality
+// ── 1) one quiet tide: the seeded cell survives, decays by 1, banks its vitality
 {
-  const s = foldReef(H, [reply(A, 'grow 5 5', 10, 'c1')], 12); // tipEpoch 1 → exactly one tick
+  const s = foldTicks(1);
   const t = s.lastTide!;
   check('quiet: a tide summary exists', !!t, t);
   check('quiet: epoch is 1', t.epoch === 1, t.epoch);
@@ -37,12 +48,11 @@ const reply = (author: string, body: string, block_height: number | null, conten
   check('quiet: no season crowned', t.crownedSeason === null, t.crownedSeason);
 }
 
-// ── 2) decay claims coral: a lone cell (vitality 6) starved over 6 tides dies on
-//     the last one — the summary must report the reef-wide loss on that tide.
+// ── 2) decay claims coral: a lone untended cell dies on the 6th tide
 {
-  const s = foldReef(H, [reply(A, 'grow 5 5', 10, 'c1')], 22); // 6 ticks (6×2 blocks); cell dies on tick 6
+  const s = foldTicks(MAX_VITALITY); // 6 ticks
   const t = s.lastTide!;
-  check('decay: final tide is epoch 6', t.epoch === 6, t.epoch);
+  check('decay: final tide is epoch 6', t.epoch === MAX_VITALITY, t.epoch);
   check('decay: the tide claimed 1 coral reef-wide', t.decayedGlobal === 1, t.decayedGlobal);
   check('decay: no survivors left', t.survivorsGlobal === 0, t.survivorsGlobal);
   const mine = t.byOwner.get(A)!;
@@ -53,7 +63,7 @@ const reply = (author: string, body: string, block_height: number | null, conten
 
 // ── 3) season crown surfaces in the tide that closes a season (epoch 5)
 {
-  const s = foldReef(H, [reply(A, 'grow 5 5', 10, 'c1')], 20); // 5 ticks (5×2 blocks) → season 0 closes on tick 5
+  const s = foldTicks(5); // 5 ticks → season 0 closes
   const t = s.lastTide!;
   check('crown: final tide is epoch 5', t.epoch === 5, t.epoch);
   check('crown: a season closed this tide', t.crownedSeason !== null, t.crownedSeason);
