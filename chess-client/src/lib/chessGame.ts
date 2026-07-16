@@ -298,7 +298,7 @@ export async function listGames(rpc: SwimchainRpc, spaceId: string): Promise<Gam
 export async function loadGame(rpc: SwimchainRpc, gameId: string): Promise<GameState> {
   const post = await rpc.getContent(gameId);
   const header = parseGameHeader(post.body) ?? { v: 1, kind: 'chess', white: '', variant: 'standard', created: 0 };
-  const { replies } = await rpc.getReplies(gameId);
+  const { replies } = await rpc.getReplies(gameId, { limit: 100000 });
   const sorted = replies
     .slice()
     .sort((a, b) => a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));

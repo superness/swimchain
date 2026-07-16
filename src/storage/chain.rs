@@ -498,14 +498,20 @@ impl ChainStore {
                             .insert(&index_key, &content_hash)?;
                     }
                     crate::blocks::ActionType::Reply => {
-                        // Index reply by parent: Key = parent_hash(32) || timestamp(8) → content_hash
+                        // Index reply by parent: Key = parent_hash(32) || timestamp(8) || content_hash(32)
+                        // The content_hash suffix makes the key UNIQUE: with the old 40-byte
+                        // (parent || timestamp-seconds) key, two replies to the same parent in
+                        // the same SECOND collided and the later insert silently ERASED the
+                        // earlier reply from the index — sealed on-chain but invisible to
+                        // get_replies (found via a reef move that vanished while the bot moved
+                        // in the same second). scan_prefix(parent) readers are key-length
+                        // agnostic, so old and new rows coexist; repair_reply_index() migrates.
                         // Never index content as a reply to ITSELF: a self-parent entry makes the
                         // reply-tree walk (count_all_replies) cycle forever.
                         if let Some(parent) = action.parent_id {
                             if parent != content_hash {
-                                let mut reply_key = [0u8; 40];
-                                reply_key[..32].copy_from_slice(&parent);
-                                reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                                let reply_key =
+                                    Self::reply_index_key(&parent, action.timestamp, &content_hash);
                                 self.replies_by_parent_index
                                     .insert(&reply_key, &content_hash)?;
                             } else {
@@ -535,9 +541,13 @@ impl ChainStore {
                         // source of the mobile CPU peg (self-parenting wiki content).
                         if let Some(original_id) = action.parent_id {
                             if original_id != content_hash {
-                                let mut edit_key = [0u8; 40];
-                                edit_key[..32].copy_from_slice(&original_id);
-                                edit_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                                // Unique 72-byte key — same-second edit/reply collisions
+                                // erased index rows with the old 40-byte key (see Reply above).
+                                let edit_key = Self::reply_index_key(
+                                    &original_id,
+                                    action.timestamp,
+                                    &content_hash,
+                                );
                                 // Reuse replies_by_parent_index for edits (edit is like a special reply to original)
                                 self.replies_by_parent_index
                                     .insert(&edit_key, &content_hash)?;
@@ -1305,6 +1315,100 @@ impl ChainStore {
         }
 
         Ok(results)
+    }
+
+    /// Unique reply-index key: parent(32) || timestamp(8, BE) || content_hash(32).
+    ///
+    /// The content_hash suffix is what makes the key collision-free — the legacy
+    /// 40-byte (parent || timestamp) key silently dropped one of any two replies
+    /// to the same parent within the same second. Prefix scans by parent work
+    /// unchanged; chronological order within a parent is preserved by the BE
+    /// timestamp in bytes 32..40.
+    fn reply_index_key(parent: &[u8; 32], timestamp: u64, content_hash: &[u8; 32]) -> [u8; 72] {
+        let mut key = [0u8; 72];
+        key[..32].copy_from_slice(parent);
+        key[32..40].copy_from_slice(&timestamp.to_be_bytes());
+        key[40..].copy_from_slice(content_hash);
+        key
+    }
+
+    /// One-time repair/migration of the reply index to unique 72-byte keys.
+    ///
+    /// The legacy 40-byte key (parent || timestamp-seconds) collided for replies
+    /// to the same parent within the same second — the later block-processing
+    /// insert ERASED the earlier reply from the index, so content sealed
+    /// on-chain became invisible to `get_replies` (e.g. a reef move landing in
+    /// the same second as a bot move). This walks every stored content block,
+    /// re-inserts every Reply/Edit under the new unique key — resurrecting all
+    /// past collision victims — then drops the superseded 40-byte rows.
+    /// Idempotent; guarded by a marker row so it runs once per data dir.
+    ///
+    /// # Errors
+    /// Returns error on database failures. Partial progress is safe to re-run.
+    pub fn repair_reply_index(&self) -> Result<usize, StorageError> {
+        // 18-byte marker key: can never match a 32-byte parent prefix scan.
+        const MARKER: &[u8] = b"__reply_index_v2__";
+        if self.replies_by_parent_index.get(MARKER)?.is_some() {
+            return Ok(0);
+        }
+
+        let mut inserted = 0usize;
+        for root in self.iter_root_blocks() {
+            let root = root?;
+            for space_hash in &root.space_block_hashes {
+                let Some(space) = self.get_space_block(space_hash)? else {
+                    continue;
+                };
+                for content_hash in &space.content_block_hashes {
+                    let Some(content) = self.get_content_block(content_hash)? else {
+                        continue;
+                    };
+                    for action in &content.actions {
+                        let is_reply_like = matches!(
+                            action.action_type,
+                            crate::blocks::ActionType::Reply | crate::blocks::ActionType::Edit
+                        );
+                        if !is_reply_like {
+                            continue;
+                        }
+                        let (Some(parent), Some(child)) = (action.parent_id, action.content_hash)
+                        else {
+                            continue;
+                        };
+                        if parent == child {
+                            continue; // self-parent corruption, never index
+                        }
+                        let key = Self::reply_index_key(&parent, action.timestamp, &child);
+                        if self.replies_by_parent_index.insert(&key, &child)?.is_none() {
+                            inserted += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Drop the superseded legacy rows so scans don't return duplicates
+        // (every legacy row's reply was just re-inserted under a unique key).
+        let mut legacy_rows = Vec::new();
+        for row in self.replies_by_parent_index.iter() {
+            let (key, _) = row?;
+            if key.len() == 40 {
+                legacy_rows.push(key);
+            }
+        }
+        let removed = legacy_rows.len();
+        for key in legacy_rows {
+            self.replies_by_parent_index.remove(&key)?;
+        }
+
+        self.replies_by_parent_index.insert(MARKER, &[])?;
+        self.replies_by_parent_index.flush()?;
+        log::info!(
+            "[REPLY-INDEX-REPAIR] migrated to unique keys: {} rows re-indexed from blocks, {} legacy rows dropped",
+            inserted,
+            removed
+        );
+        Ok(inserted)
     }
 
     /// Get replies to a specific content item (post or reply)
@@ -3976,6 +4080,154 @@ mod tests {
             branch_path: crate::blocks::BranchPath::root(),
             space_metadata: None,
         }
+    }
+
+    fn make_reply_action(
+        parent: [u8; 32],
+        content: [u8; 32],
+        timestamp: u64,
+    ) -> crate::blocks::Action {
+        crate::blocks::Action {
+            action_type: crate::blocks::ActionType::Reply,
+            actor: content, // any unique 32 bytes
+            timestamp,
+            content_hash: Some(content),
+            parent_id: Some(parent),
+            pow_nonce: 0,
+            pow_work: 1,
+            pow_target: [0u8; 32],
+            signature: [0u8; 64],
+            emoji: None,
+            display_name: None,
+            media_refs: vec![],
+            replaces_pending: None,
+            private: false,
+        }
+    }
+
+    // Two replies to the SAME parent in the SAME second must BOTH be indexed.
+    // The legacy 40-byte (parent || timestamp) key collided here and the later
+    // insert erased the earlier reply — sealed on-chain yet invisible to
+    // get_replies (2026-07-16 reef incident: a player's move vanished when the
+    // bot moved in the same second).
+    #[test]
+    fn test_same_second_replies_both_indexed() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let parent = [0x11u8; 32];
+        let ts = 1_784_173_169; // the actual colliding second from the incident
+        let reply_a = make_reply_action(parent, [0xA1u8; 32], ts);
+        let reply_b = make_reply_action(parent, [0xB2u8; 32], ts);
+
+        let content = ContentBlock::new(
+            [0xCCu8; 32],
+            [0xDDu8; 32],
+            vec![reply_a, reply_b],
+            None,
+            ts,
+            crate::blocks::BranchPath::root(),
+        )
+        .unwrap();
+        store.put_content_block(&content).unwrap();
+
+        let replies = store.get_replies_for_content(&parent, 100, 0).unwrap();
+        let hashes: Vec<[u8; 32]> = replies.iter().map(|(h, _)| *h).collect();
+        assert!(
+            hashes.contains(&[0xA1u8; 32]),
+            "first same-second reply lost"
+        );
+        assert!(
+            hashes.contains(&[0xB2u8; 32]),
+            "second same-second reply lost"
+        );
+    }
+
+    // repair_reply_index must resurrect replies erased by legacy-key collisions
+    // (re-derived from stored blocks) and drop the superseded 40-byte rows.
+    #[test]
+    fn test_repair_reply_index_resurrects_collision_victims() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let parent = [0x22u8; 32];
+        let ts = 1_784_173_169;
+        let reply_a = make_reply_action(parent, [0xA1u8; 32], ts);
+        let reply_b = make_reply_action(parent, [0xB2u8; 32], ts);
+
+        // Store the full block hierarchy so the repair can walk it.
+        let content = ContentBlock::new(
+            [0xCCu8; 32],
+            [0xDDu8; 32],
+            vec![reply_a, reply_b],
+            None,
+            ts,
+            crate::blocks::BranchPath::root(),
+        )
+        .unwrap();
+        let content_hash = store.put_content_block(&content).unwrap();
+        let space = SpaceBlock {
+            space_id: [0xDDu8; 32],
+            merkle_root: [0u8; 32],
+            content_block_hashes: vec![content_hash],
+            prev_space_hash: None,
+            timestamp: ts,
+            total_pow: 2,
+            content_block_count: 1,
+        };
+        let space_hash = store.put_space_block(&space).unwrap();
+        let mut root = create_test_root_block(0, [0u8; 32]);
+        root.space_block_hashes = vec![space_hash];
+        root.space_block_count = 1;
+        store.put_root_block_with_fork_resolution(&root).unwrap();
+
+        // Simulate the legacy on-disk state: wipe the (correct) index rows the
+        // put above created, and insert ONE legacy 40-byte row where the
+        // collision left only reply_b visible.
+        let keys: Vec<_> = store
+            .replies_by_parent_index
+            .scan_prefix(parent)
+            .map(|r| r.unwrap().0)
+            .collect();
+        for k in keys {
+            store.replies_by_parent_index.remove(&k).unwrap();
+        }
+        let mut legacy_key = [0u8; 40];
+        legacy_key[..32].copy_from_slice(&parent);
+        legacy_key[32..].copy_from_slice(&ts.to_be_bytes());
+        store
+            .replies_by_parent_index
+            .insert(&legacy_key, &[0xB2u8; 32])
+            .unwrap();
+        assert_eq!(
+            store
+                .get_replies_for_content(&parent, 100, 0)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let migrated = store.repair_reply_index().unwrap();
+        assert!(
+            migrated >= 2,
+            "expected both replies re-indexed, got {migrated}"
+        );
+
+        let replies = store.get_replies_for_content(&parent, 100, 0).unwrap();
+        let hashes: Vec<[u8; 32]> = replies.iter().map(|(h, _)| *h).collect();
+        assert!(
+            hashes.contains(&[0xA1u8; 32]),
+            "collision victim not resurrected"
+        );
+        assert!(hashes.contains(&[0xB2u8; 32]));
+        assert_eq!(
+            replies.len(),
+            2,
+            "legacy row must be dropped (no duplicates)"
+        );
+
+        // Second run is a marker-guarded no-op.
+        assert_eq!(store.repair_reply_index().unwrap(), 0);
     }
 
     // Rollback must be NON-DESTRUCTIVE: it detaches heights from the canonical

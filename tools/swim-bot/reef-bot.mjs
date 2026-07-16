@@ -218,7 +218,7 @@ function fold(reps, tip) {
 }
 async function readBoard() {
   const [res, info] = await Promise.all([
-    rpc('get_replies', { content_id: REGION }),
+    rpc('get_replies', { content_id: REGION, limit: 100000 }),
     rpc('get_info', {}).catch(() => ({})),
   ]);
   const tip = typeof info.block_height === 'number' ? info.block_height : undefined;
@@ -323,7 +323,7 @@ async function findRegion() {
 // that's the real bug — a stale/ordering race, not decay.
 async function traceOnce(cid1, cid2, t1, t2) {
   const [res, info] = await Promise.all([
-    rpc('get_replies', { content_id: REGION }),
+    rpc('get_replies', { content_id: REGION, limit: 100000 }),
     rpc('get_info', {}).catch(() => ({})),
   ]);
   const reps = res?.replies ?? [];
