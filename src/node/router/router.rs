@@ -2113,26 +2113,40 @@ impl MessageRouter {
                         );
                         false
                     } else {
-                        // Equal cumulative_pow - use lower hash as tiebreaker
-                        let hash_wins = ChainStore::hash_wins(&computed_hash, &existing_hash);
-                        if hash_wins {
-                            info!(
-                                "[REORG] Block {} beats existing {} at height {} (lower hash tiebreaker, equal pow={})",
-                                hex::encode(&computed_hash[..8]),
-                                hex::encode(&existing_hash[..8]),
-                                block_height,
-                                root_block.cumulative_pow
-                            );
-                        } else {
-                            info!(
-                                "[REORG] Keeping existing block {} over incoming {} at height {} (lower hash tiebreaker, equal pow={})",
-                                hex::encode(&existing_hash[..8]),
-                                hex::encode(&computed_hash[..8]),
-                                block_height,
-                                root_block.cumulative_pow
-                            );
-                        }
-                        hash_wins
+                        // Equal cumulative_pow — CONTENT-AWARE tiebreak (B4): the
+                        // block carrying MORE actions wins so a block holding a
+                        // user's action can't lose to an emptier one on a coin
+                        // flip; equal counts fall back to lowest hash. Both
+                        // blocks' content is present here (incoming arrives with
+                        // content, existing is our tip), so this is deterministic.
+                        let incoming_count = block_data
+                            .content_blocks
+                            .iter()
+                            .filter_map(|cb| {
+                                bincode::deserialize::<crate::blocks::ContentBlock>(cb).ok()
+                            })
+                            .map(|cb| cb.actions.len())
+                            .sum::<usize>();
+                        let existing_count = chain_store
+                            .block_action_count(existing)
+                            .unwrap_or(incoming_count);
+                        let wins = ChainStore::content_aware_wins(
+                            &computed_hash,
+                            incoming_count,
+                            &existing_hash,
+                            existing_count,
+                        );
+                        info!(
+                            "[REORG] Content-aware tie at height {} (equal pow={}): incoming {} ({} actions) vs existing {} ({} actions) → {}",
+                            block_height,
+                            root_block.cumulative_pow,
+                            hex::encode(&computed_hash[..8]),
+                            incoming_count,
+                            hex::encode(&existing_hash[..8]),
+                            existing_count,
+                            if wins { "incoming wins" } else { "keep existing" }
+                        );
+                        wins
                     }
                 } else {
                     // Can't get existing block - fall back to hash comparison
@@ -3428,26 +3442,32 @@ impl MessageRouter {
                             );
                             false
                         } else {
-                            // Equal cumulative_pow - use lower hash as tiebreaker
-                            let hash_wins = ChainStore::hash_wins(&computed_hash, &existing_hash);
-                            if hash_wins {
-                                info!(
-                                    "[REORG] Block {} beats existing {} at height {} (lower hash tiebreaker, equal pow={})",
-                                    hex::encode(&computed_hash[..8]),
-                                    hex::encode(&existing_hash[..8]),
-                                    block_height,
-                                    root_block.cumulative_pow
-                                );
-                            } else {
-                                info!(
-                                    "[REORG] Keeping existing block {} over incoming {} at height {} (lower hash tiebreaker, equal pow={})",
-                                    hex::encode(&existing_hash[..8]),
-                                    hex::encode(&computed_hash[..8]),
-                                    block_height,
-                                    root_block.cumulative_pow
-                                );
-                            }
-                            hash_wins
+                            // Equal cumulative_pow — CONTENT-AWARE tiebreak (B4):
+                            // more actions wins, else lowest hash. Count both from
+                            // the store; if EITHER block's content isn't fully
+                            // present, fall back to hash-only so the decision
+                            // stays deterministic across nodes.
+                            let counts = chain_store
+                                .block_action_count(&root_block)
+                                .zip(chain_store.block_action_count(existing));
+                            let wins = match counts {
+                                Some((inc, exist)) => ChainStore::content_aware_wins(
+                                    &computed_hash,
+                                    inc,
+                                    &existing_hash,
+                                    exist,
+                                ),
+                                None => ChainStore::hash_wins(&computed_hash, &existing_hash),
+                            };
+                            info!(
+                                "[REORG] Content-aware tie at height {} (equal pow={}): {} vs existing {} → {}",
+                                block_height,
+                                root_block.cumulative_pow,
+                                hex::encode(&computed_hash[..8]),
+                                hex::encode(&existing_hash[..8]),
+                                if wins { "incoming wins" } else { "keep existing" }
+                            );
+                            wins
                         }
                     } else {
                         // Can't get existing block - fall back to hash comparison

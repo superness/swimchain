@@ -1104,6 +1104,11 @@ fn test_reconcile_applies_genesis_sponsor_without_store_record() {
     use crate::types::identity::PublicKey;
     use ed25519_dalek::{Signer, SigningKey};
 
+    // The genesis list is network-gated (mainnet uses ONLY the vaulted mainnet
+    // genesis; the dev/testnet keys are testnet-only). This test uses a testnet
+    // genesis seed, so run it in Testnet mode.
+    crate::network::NetworkContext::set_mode(crate::network::NetworkMode::Testnet);
+
     // The real hardcoded testnet genesis seed (GENESIS_IDENTITY.md) — its
     // pubkey is in the genesis list, so the fallback path is exercised.
     let seed_hex = "11b0b8c92806d893c77b547b87ad5763cb1005104ba13086e0bf184e3a277471";

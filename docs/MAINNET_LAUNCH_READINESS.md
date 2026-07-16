@@ -3,6 +3,16 @@
 Status: **NO-GO for immediate launch** — 2026-07-16 (progress tracked inline).
 
 **Progress since first assessment:**
+- ✅ **B1-B3 CLOSED** — network-gated genesis list (fresh vaulted mainnet
+  genesis; public dev keys are testnet-only), mainnet seed wired, and a
+  deterministic canonical genesis anchor seeded on fresh chains.
+- ✅ **B4 SUBSTANTIALLY CLOSED** — content-aware tie handling: a block carrying
+  a user's action can no longer lose an equal-work tie to an emptier block on a
+  coin flip (common asymmetric case). The rare symmetric case (equal work AND
+  equal action count) is recovered via immediate re-gossip + 20s periodic
+  re-announce, not dropped. A zero-latency guarantee for the symmetric case
+  needs a block-format change (future work), not required for durability. Tests:
+  `content_aware_tie_prefers_the_fuller_block`, `fork_race_reinclusion`.
 - ✅ **B5 CLOSED** — `sign_message` signing oracle gated (now requires auth);
   the public RPC allowlist proxy brought into the repo and audited
   (`web-gateway/rpc-proxy/`). It was already a real allowlist (method +
@@ -12,9 +22,9 @@ Status: **NO-GO for immediate launch** — 2026-07-16 (progress tracked inline).
   serve paths (P2P `handle_get`, `get_media`, `get_content` RPC), so an
   operator blocklisting a hash stops their node serving it immediately — real
   takedown capability at the swimchain.io gateway without touching the network.
-- Remaining blockers: **B1, B2, B3** (genesis identity/seeds/anchor — the
-  bootstrap foundation), **B4** (fork-race durability — the protocol long
-  pole), **B6** (faucet claim cost), **B7** (clients mainnet flip).
+- Remaining: **B6** (faucet claim cost — folding into B7), **B7** (clients
+  mainnet flip — config + rebuilds + the pre-flip PoW discussion). The bootstrap
+  and durability blockers are done.
 
 Assessment of the Swimchain node + clients for switching from testnet to a live
 public mainnet. Two independent read-only audits (consensus/networking,

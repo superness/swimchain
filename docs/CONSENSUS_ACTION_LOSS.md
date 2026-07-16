@@ -247,6 +247,35 @@ yet; after the reorg nothing re-broadcasts it, so it waits in the holders' mempo
 until one of THEM wins a block. **Targeted fix: re-gossip orphaned actions on
 rollback** — cheap, no consensus change, bounds limbo to ~the next block.
 
+### SHIPPED (2026-07-16, launch readiness B4)
+
+**Content-aware tie handling.** At an equal-`cumulative_pow` tie between two
+same-height blocks, the block carrying MORE actions now wins; only equal action
+counts fall back to lowest hash (`ChainStore::content_aware_wins` +
+`block_action_count`, applied at both router tie sites). So a block that
+contains a user's action can no longer be orphaned by a coin flip in favor of an
+emptier competitor — the asymmetric-tie case (one forger saw more pending
+actions than the other), which is the common shape.
+
+Determinism is preserved because this only fires for TIP-level ties: the
+incoming block arrives WITH its content in BLOCK_DATA, the existing block is the
+node's stored tip, and below-tip forks are excluded by `deep_fork_blocked`. Every
+node resolving the same tie has both action sets and picks the same winner. When
+either block's content isn't fully present, it falls back to hash-only.
+
+For the residual SYMMETRIC case (both blocks tie on work AND action count but
+carry different actions), the loser's unique actions are recovered by:
+immediate re-gossip on rollback (`requeue_and_regossip_orphans`) + the periodic
+mempool re-announce (`MEMPOOL_REBROADCAST_INTERVAL_SECS = 20`), so every forger
+gets them within ~20s and includes them in the next block. Same-node
+re-inclusion is proven by `tests/fork_race_reinclusion.rs`; the content-aware
+preference by `content_aware_tie_prefers_the_fuller_block`.
+
+**Not a coin flip anymore in the common case; recovered (not dropped) in the
+rare symmetric one.** A true zero-latency guarantee for the symmetric case would
+need a block-format commitment to action identity (a hard fork) — noted as
+future work, not required for the durability the reliability principle demands.
+
 ### Real fixes (protocol)
 - **Guaranteed re-inclusion (highest value).** Track every accepted action until it is
   in the canonical chain. On a reorg, its orphaned actions must be re-queued on the
