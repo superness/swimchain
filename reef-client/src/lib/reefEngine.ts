@@ -285,6 +285,11 @@ export interface RegionParams {
 
 export interface ReefState {
   header: ReefHeader;
+  /** The region this state was folded FROM (set by loadRegion). Lets the UI
+   *  reject cross-region races: during a region switch, one render can pair
+   *  the OLD region's state with the NEW region's identity keys — which once
+   *  poisoned a tide-ack baseline and permanently suppressed the tide report. */
+  regionId?: string;
   params: RegionParams; // live (possibly retuned) rules for THIS region
   /** Confirmed well-formed moves since the last tide — the tide turns when
    *  this reaches params.epochMoves. Drives the "tide is coming" indicator. */
@@ -1003,7 +1008,7 @@ export async function loadRegion(rpc: SwimchainRpc, regionId: string): Promise<R
     rpc.getReplies(regionId, { limit: 100000 }),
     rpc.getInfo().then((i) => i.block_height).catch(() => undefined),
   ]);
-  return foldReef(header, replies as ReplyLike[], tipHeight);
+  return { ...foldReef(header, replies as ReplyLike[], tipHeight), regionId };
 }
 
 /**

@@ -394,6 +394,11 @@ export function App() {
   // the newer summary instead of stacking.
   useEffect(() => {
     if (!state || !publicKeyHex || !openId) return;
+    // Cross-region race guard: during a region switch one render can pair the
+    // OLD region's state with the NEW region's ack key — that once baselined a
+    // fresh reef's ack at the old reef's epoch (~450), silently suppressing the
+    // tide report forever. Only act on state folded FROM this region.
+    if (state.regionId && state.regionId !== openId) return;
     // CONFIRMED epoch only: the round-over ceremony must never announce a tide
     // that could un-happen. Provisional (pending-driven) ticks move the world
     // and the meter, but the report waits for the chain to seal the turn.
@@ -403,13 +408,25 @@ export function App() {
       writeTideAck(epoch); // first visit on this device: baseline silently
       return;
     }
+    if (ack > epoch) {
+      // A stored ack can never legitimately exceed the chain's confirmed epoch —
+      // it's a poisoned baseline (the race above, before this guard existed).
+      // Self-heal so reports resume from here.
+      writeTideAck(epoch);
+      return;
+    }
     if (epoch <= ack) return;
     const summary = state.lastTide;
     if (!summary) return;
     // Only interrupt for a tide the player has a stake in — they held coral
     // going in or coming out, or a season just closed. Pure spectators (and the
     // empty-lobby case) are never stopped by a modal.
-    const mine = summary.byOwner.get(publicKeyHex);
+    // Match EITHER identity form — moves carry the author_id the node returns,
+    // which is the bech32 address for browser identities (the pubkey-hex-only
+    // lookup silently classed real players as spectators: no report, ack
+    // advanced, modal never appeared).
+    const mine =
+      summary.byOwner.get(publicKeyHex) ?? (address ? summary.byOwner.get(address) : undefined);
     const hasStake = !!mine && (mine.territoryBefore > 0 || mine.territoryAfter > 0);
     if (!hasStake && !summary.crownedSeason) {
       writeTideAck(epoch); // nothing to tell — don't keep re-checking
@@ -418,7 +435,7 @@ export function App() {
     setTideReport((cur) =>
       cur && cur.epoch === epoch ? cur : { summary, tidesPassed: epoch - ack, epoch }
     );
-  }, [state, publicKeyHex, openId, readTideAck, writeTideAck]);
+  }, [state, publicKeyHex, address, openId, readTideAck, writeTideAck]);
 
   // Explain the settled outcome of OUR OWN moves exactly once. Only moves we
   // submitted this session (tracked by content-id) are eligible, so opening a
@@ -783,6 +800,7 @@ export function App() {
         <TideReport
           report={tideReport}
           myPubkeyHex={publicKeyHex!}
+          myAddress={address ?? ''}
           onClose={() => {
             // Acknowledge THIS tide durably — the report never re-fires for
             // epochs at or below the ack, on this or any future load.
@@ -801,21 +819,24 @@ export function App() {
 function TideReport({
   report,
   myPubkeyHex,
+  myAddress,
   onClose,
 }: {
   report: { summary: TideSummary; tidesPassed: number };
   myPubkeyHex: string;
+  myAddress: string;
   onClose: () => void;
 }) {
   const { summary, tidesPassed } = report;
-  const mine = summary.byOwner.get(myPubkeyHex);
+  // author_id may be either identity form (pubkey hex or bech32 address).
+  const mine = summary.byOwner.get(myPubkeyHex) ?? summary.byOwner.get(myAddress);
   const terrDelta = mine ? mine.territoryAfter - mine.territoryBefore : 0;
   const banked = mine?.pointsBanked ?? 0;
   const lost = mine ? Math.max(0, mine.territoryBefore - mine.territoryAfter) : 0;
   const gained = mine ? Math.max(0, mine.territoryAfter - mine.territoryBefore) : 0;
   const tidesToReckoning = SEASON_EPOCHS - (summary.epoch % SEASON_EPOCHS);
   const crown = summary.crownedSeason;
-  const iWon = crown?.winner === myPubkeyHex;
+  const iWon = crown?.winner === myPubkeyHex || crown?.winner === myAddress;
 
   // Dismiss on Enter/Escape too — this is a "press to continue" moment.
   useEffect(() => {
