@@ -409,6 +409,18 @@ impl NodeManager {
             }
         }
 
+        // 3.2. One-time reply-index migration to unique keys. The legacy
+        // (parent || timestamp-seconds) key ERASED one of any two same-second
+        // replies to the same parent — sealed content became invisible to
+        // get_replies. Re-derives the index from stored blocks (resurrecting
+        // past collision victims) then drops legacy rows. Marker-guarded no-op
+        // on every subsequent start.
+        match chain_store.repair_reply_index() {
+            Ok(0) => debug!("[INDEX] Reply index already on unique keys"),
+            Ok(n) => info!("[INDEX] Reply index migrated: {} rows re-indexed", n),
+            Err(e) => warn!("[INDEX] Reply index repair failed: {}", e),
+        }
+
         // 3.1b. Ensure branch placement state is built (SPEC_08 §5).
         // Deterministic rebuild from canonical chain data: runs once per
         // BRANCH_STATE_VERSION (first startup after upgrade / fresh node),

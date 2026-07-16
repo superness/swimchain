@@ -22,6 +22,19 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { argon2id } from 'hash-wasm';
+// THE PRODUCTION ENGINE — the bot reads the board with the exact same fold the
+// client ships. There is deliberately NO local copy of the rules: the old
+// hand-mirrored fold drifted (block-height vs move-count epochs) and the bot
+// spent hours playing a board that didn't exist (2,284 rejected-invalid moves).
+// Rebuild the bundle after any engine change (see engine-entry.ts / deploy script).
+import {
+  foldReef,
+  myBudget,
+  GRID_W,
+  GRID_H,
+  COST_GROW,
+  COST_CONTEST,
+} from './reefEngine.bundle.mjs';
 
 const RPC = process.env.RPC_URL || 'http://127.0.0.1:19736';
 const AUTHOR = (process.env.AUTHOR_PUBKEY || '').toLowerCase();
@@ -36,16 +49,13 @@ const RUN_MS = Number(process.env.BOT_MS || Infinity);
 const HOME = (process.env.BOT_HOME || '').split(',').map(Number);
 const NET = 'testnet';
 if (!AUTHOR) throw new Error('AUTHOR_PUBKEY required');
-if (MODE === 'cookie' && !COOKIE) throw new Error('RPC_COOKIE required in cookie mode');
+if (MODE === 'cookie' && !COOKIE && process.env.BOT_MODE !== 'status')
+  throw new Error('RPC_COOKIE required in cookie mode');
 const AUTH = 'Basic ' + Buffer.from(`__cookie__:${COOKIE}`).toString('base64');
 const authorBytes = Buffer.from(AUTHOR, 'hex');
 const authorPrefix = AUTHOR.slice(0, 10);
 
-// ── game constants (MUST match reef-client/src/lib/reefEngine.ts) ──────────────
-const GRID_W = 12, GRID_H = 12;
-const MAX_VITALITY = 6, CONTEST_DAMAGE = 2, CAPTURE_VITALITY = 1;
-const COST_GROW = 2, COST_CONTEST = 3, START_BUDGET = 8, MAX_BUDGET = 14, REGEN_BASE = 2;
-const EPOCH_MOVES = 8; // one tide per this-many well-formed reef moves (lockstep with the engine)
+// Game rules come EXCLUSIVELY from reefEngine.bundle.mjs (imported above).
 const ActionType = { Reply: 3 };
 const POW_CONFIG = { memoryKib: 8192, iterations: 1, parallelism: 2 };
 const POW_DIFF = { 3: 8 }; // reply difficulty on testnet
@@ -72,7 +82,7 @@ async function rpc(method, params, timeoutMs = 30000) {
   const paramsJson = JSON.stringify(params ?? {});
   const headers = { 'Content-Type': 'application/json' };
   if (MODE === 'cookie') {
-    headers.Authorization = AUTH;
+    if (COOKIE) headers.Authorization = AUTH; // cookie-less read-only (status via gateway)
   } else {
     const ts = String(Math.floor(Date.now() / 1000));
     const preimage = `swimchain-rpc:${method}:${sha256(Buffer.from(paramsJson, 'utf-8')).toString('hex')}:${ts}`;
@@ -138,92 +148,34 @@ async function submitMove(op, x, y) {
   return 'sha256:' + ch.toString('hex'); // the reply's content_id (= sha256 of body)
 }
 
-// ── board reading: a DECAY-ACCURATE fold, mirroring reefEngine.foldReef ────────
-// The old version ignored decay and thought it owned coral that had long rotted
-// away, so it spread from dead cells → "not next to your reef" 26/30 of the time.
-// This ports the engine's real rules: sort by (height, created_at, id), tick
-// decay by block-height epochs, apply seed/spread/tend/contest, so the bot sees
-// the SAME living board the chain (and every client) sees.
+// ── board reading: THE PRODUCTION ENGINE, not a copy ──────────────────────────
+// foldReef comes from reefEngine.bundle.mjs — bit-identical rules to every
+// client. The bot cannot disagree with players about the board, by construction.
 const ORTHO = [[0, -1], [0, 1], [-1, 0], [1, 0]];
 const inBounds = (x, y) => x >= 0 && y >= 0 && x < GRID_W && y < GRID_H;
-function parseMove(b) {
-  if (!b) return null;
-  const t = b.trim().split(/\s+/);
-  if (t[0] !== 'grow' && t[0] !== 'tend') return null;
-  const x = Number(t[1]), y = Number(t[2]);
-  if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
-  return { op: t[0], x, y };
-}
-const ownsAny = (cells, me) => { for (const c of cells.values()) if (c.owner === me) return true; return false; };
-const adjOwnedBy = (cells, me, x, y) => ORTHO.some(([dx, dy]) => cells.get(key(x + dx, y + dy))?.owner === me);
-function classify(cells, me, op, x, y) {
-  if (!inBounds(x, y)) return null;
-  const cell = cells.get(key(x, y));
-  if (op === 'tend') return cell && cell.owner === me ? { kind: 'tend', cost: 0 } : null;
-  if (!cell) {
-    if (!ownsAny(cells, me)) return { kind: 'seed', cost: COST_GROW };
-    if (adjOwnedBy(cells, me, x, y)) return { kind: 'spread', cost: COST_GROW };
-    return null;
+function parseHeader(body) {
+  const brace = (body || '').indexOf('{');
+  if (brace >= 0) {
+    try {
+      const h = JSON.parse(body.slice(brace));
+      if (h.kind === 'reef') return h;
+    } catch { /* fall through */ }
   }
-  if (cell.owner === me) return { kind: 'tend', cost: 0 };
-  if (adjOwnedBy(cells, me, x, y)) return { kind: 'contest', cost: COST_CONTEST };
-  return null;
-}
-// Authoring seq embedded in the body (`#<n>~`) — stable across fetches, unlike the
-// node's query-stamped pending created_at. Mirrors reefEngine.authorSeqOf/seqCmp.
-function authorSeqOf(body) { const m = /#(\d+)~/.exec(body || ''); const n = m ? Number(m[1]) : NaN; return Number.isFinite(n) ? n : undefined; }
-function seqCmp(a, b) { const sa = authorSeqOf(a.body), sb = authorSeqOf(b.body); return sa !== undefined && sb !== undefined ? sa - sb : 0; }
-function fold(reps, tip) {
-  const parsed = reps.map((r) => ({ ...r, m: parseMove(r.body) })).filter((r) => r.m);
-  const confirmed = parsed.filter((r) => typeof r.block_height === 'number')
-    .sort((a, b) => a.block_height - b.block_height || (a.created_at ?? 0) - (b.created_at ?? 0) || seqCmp(a, b) || String(a.content_id).localeCompare(b.content_id));
-  const pending = parsed.filter((r) => typeof r.block_height !== 'number')
-    .sort((a, b) => seqCmp(a, b) || (a.created_at ?? 0) - (b.created_at ?? 0) || String(a.content_id).localeCompare(b.content_id));
-  const cells = new Map();
-  const budgets = new Map();
-  let epoch = 0;
-  const tick = () => {
-    for (const [k, c] of cells) { c.vitality -= 1; if (c.vitality <= 0) cells.delete(k); }
-    const live = new Map();
-    for (const c of cells.values()) live.set(c.owner, (live.get(c.owner) ?? 0) + 1);
-    for (const [o, b] of budgets) budgets.set(o, Math.min(MAX_BUDGET, b + REGEN_BASE + Math.floor((live.get(o) ?? 0) / 2)));
-    epoch += 1;
-  };
-  const outcomes = new Map(); // content_id -> settled outcome (for tracing)
-  const apply = (r) => {
-    const me = r.author_id; const { op, x, y } = r.m;
-    if (!budgets.has(me)) budgets.set(me, START_BUDGET);
-    const cls = classify(cells, me, op, x, y);
-    if (!cls) { outcomes.set(r.content_id, 'rejected-invalid'); return; }
-    if (cls.kind === 'tend') { const c = cells.get(key(x, y)); if (c) c.vitality = MAX_VITALITY; outcomes.set(r.content_id, 'tended'); return; }
-    const have = budgets.get(me);
-    if (have < cls.cost) { outcomes.set(r.content_id, 'rejected-unaffordable'); return; }
-    if (cls.kind === 'contest') {
-      const c = cells.get(key(x, y)); if (!c) { outcomes.set(r.content_id, 'rejected-invalid'); return; }
-      c.vitality -= CONTEST_DAMAGE;
-      if (c.vitality <= 0) { c.owner = me; c.vitality = CAPTURE_VITALITY; outcomes.set(r.content_id, 'captured'); }
-      else outcomes.set(r.content_id, 'contested');
-    } else {
-      cells.set(key(x, y), { owner: me, vitality: MAX_VITALITY });
-      outcomes.set(r.content_id, 'grew');
-    }
-    budgets.set(me, have - cls.cost);
-  };
-  // Tide driven by reef activity: one epoch per EPOCH_MOVES well-formed moves
-  // (mirrors reefEngine.foldReef). No global-tip advance — the reef only ages when
-  // the reef is played, so unrelated chain activity can't decay it.
-  let wellFormed = 0;
-  for (const r of confirmed) { apply(r); if (++wellFormed % EPOCH_MOVES === 0) tick(); }
-  for (const r of pending) apply(r);
-  return { cells, budget: budgets.get(AUTHOR) ?? START_BUDGET, outcomes, epoch };
+  return { v: 1, kind: 'reef', founder: '', w: GRID_W, h: GRID_H, created: 0 };
 }
 async function readBoard() {
-  const [res, info] = await Promise.all([
-    rpc('get_replies', { content_id: REGION }),
+  const [post, res, info] = await Promise.all([
+    rpc('get_content', { content_id: REGION }).catch(() => null),
+    rpc('get_replies', { content_id: REGION, limit: 100000 }),
     rpc('get_info', {}).catch(() => ({})),
   ]);
+  const header = parseHeader(post?.body ?? '');
   const tip = typeof info.block_height === 'number' ? info.block_height : undefined;
-  const { cells, budget } = fold(res?.replies ?? [], tip);
+  const state = foldReef(header, res?.replies ?? [], tip);
+  const cells = state.cells;
+  const budget = myBudget(state, AUTHOR, AUTHOR);
+  // content_id -> settled outcome, for repro-mode tracing.
+  const outcomes = new Map(state.moves.map((m) => [m.contentId, m.outcome]));
 
   const mine = []; // [x, y, vitality] of my LIVING coral
   for (const [k, c] of cells) if (c.owner === AUTHOR) { const [x, y] = k.split(',').map(Number); mine.push([x, y, c.vitality]); }
@@ -238,7 +190,7 @@ async function readBoard() {
       else if (occ.owner !== AUTHOR) enemyAdjacent.push([nx, ny, occ.vitality]);
     }
   }
-  return { cells, budget, mine, openAdjacent, enemyAdjacent };
+  return { cells, budget, mine, openAdjacent, enemyAdjacent, outcomes, epoch: state.epoch };
 }
 
 // ── strategy (rule-based, no AI) ──────────────────────────────────────────────
@@ -324,12 +276,14 @@ async function findRegion() {
 // that's the real bug — a stale/ordering race, not decay.
 async function traceOnce(cid1, cid2, t1, t2) {
   const [res, info] = await Promise.all([
-    rpc('get_replies', { content_id: REGION }),
+    rpc('get_replies', { content_id: REGION, limit: 100000 }),
     rpc('get_info', {}).catch(() => ({})),
   ]);
   const reps = res?.replies ?? [];
   const tip = typeof info.block_height === 'number' ? info.block_height : undefined;
-  const { cells, outcomes } = fold(reps, tip);
+  const state = foldReef(parseHeader(''), reps, tip);
+  const cells = state.cells;
+  const outcomes = new Map(state.moves.map((m) => [m.contentId, m.outcome]));
   const find = (cid) => reps.find((r) => r.content_id === cid);
   const r1 = find(cid1), r2 = find(cid2);
   const fmt = (r, cid) => {
@@ -392,6 +346,15 @@ async function main() {
   REGION = await findRegion();
   if (!REGION) throw new Error('no reef region found (set REEF_REGION or REEF_SPACE)');
   console.log(`[${TAG}] region ${REGION.slice(0, 20)}… as ${authorPrefix}…`);
+  if (process.env.BOT_MODE === 'status') {
+    // Read-only: print the engine-truth board as this bot sees it, then exit.
+    const b = await readBoard();
+    const owners = new Map();
+    for (const c of b.cells.values()) owners.set(c.owner, (owners.get(c.owner) ?? 0) + 1);
+    console.log(`[${TAG}] epoch=${b.epoch} totalCells=${b.cells.size} mine=${b.mine.length} budget=${b.budget}`);
+    for (const [o, n] of [...owners].sort((a, z) => z[1] - a[1])) console.log(`  ${o.slice(0, 10)}… ${n} cells`);
+    return;
+  }
   if (process.env.BOT_MODE === 'repro') { await reproMode(); return; }
   console.log(`[${TAG}] playing (${PERSONALITY})`);
   const deadline = Date.now() + RUN_MS;

@@ -9126,7 +9126,10 @@ impl RpcMethods {
 
         // Get params with defaults
         let limit = params.limit.unwrap_or(1000) as usize;
-        let _offset = params.offset.unwrap_or(0) as usize;
+        // offset was parsed-but-IGNORED for its whole life, so clients could never
+        // page past `limit` — combined with the 1000 default, threads longer than
+        // 1000 replies silently truncated (the reef board-wipe of 2026-07-16).
+        let offset = params.offset.unwrap_or(0) as usize;
         let depth_limit = params.depth_limit.unwrap_or(5) as u32; // Default 5 levels
 
         // Fetch replies with depth tracking
@@ -9135,7 +9138,7 @@ impl RpcMethods {
         let mut to_process: Vec<([u8; 32], [u8; 32], u32)> = Vec::new();
 
         // Start with direct replies to the root content (depth 0)
-        match chain_store.get_replies_for_content(&content_bytes, limit, 0) {
+        match chain_store.get_replies_for_content(&content_bytes, limit, offset) {
             Ok(direct_replies) => {
                 for (reply_hash, _) in direct_replies {
                     to_process.push((reply_hash, content_bytes, 0));

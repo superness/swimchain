@@ -210,7 +210,7 @@ async function tick() {
     try {
       const white = (g.header.white || '').toLowerCase();
       if (white === AUTHOR) continue; // never play both sides of our own game
-      const { replies } = await rpc('get_replies', { content_id: g.id });
+      const { replies } = await rpc('get_replies', { content_id: g.id, limit: 100000 });
       const { chess, black, ply } = foldGame(replies ?? []);
       if (chess.isGameOver()) continue;
       if (chess.turn() !== 'b') continue; // only the human's move (White) unblocks us
