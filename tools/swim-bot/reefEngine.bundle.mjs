@@ -1,4 +1,4 @@
-// src/lib/reefEngine.ts
+// reef-client/src/lib/reefEngine.ts
 var REEF_SPACE = import.meta.env?.VITE_REEF_SPACE?.trim() || "";
 var GAME_SPONSOR = import.meta.env?.VITE_GAME_SPONSOR?.trim() || "9ec9661d3a975ad141caa5df9f14b3c46cf725509e7fa044c19d26fe76bd0420";
 var GRID_W = 12;
@@ -43,6 +43,7 @@ function costOf(kind) {
       return COST_GROW;
     case "tend":
       return 0;
+    // tend is capped, not priced
     case "contest":
       return COST_CONTEST;
   }
@@ -298,6 +299,7 @@ function foldReef(header, replies, tipHeight) {
     }
   }
   const confirmedEpoch = epoch;
+  const tideMoves = sinceTide;
   let tentative = 0;
   curHeight = PENDING_HEIGHT;
   for (const r of pending) {
@@ -337,6 +339,7 @@ function foldReef(header, replies, tipHeight) {
   return {
     header,
     params,
+    tideMoves,
     cells,
     moves,
     epoch,

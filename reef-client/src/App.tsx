@@ -70,6 +70,38 @@ function diag(msg: string) {
   console.log(msg);
 }
 
+// ── stale-bundle guard ─────────────────────────────────────────────────────────
+// The reef's rules live in the CLIENT bundle (the chain stores moves, clients
+// fold them). A tab running an old bundle after a rules change (e.g. a founder
+// `retune`) folds a DIFFERENT world — wrong epoch, wrong budgets, moves that
+// die on refresh (observed 2026-07-16: a stale tab drifted 8 epochs and let the
+// player build coral that never existed). All durable state (identity, tide
+// ack) lives in localStorage, so reloading is free: poll the server's index
+// with the HTTP cache bypassed, and the moment the deployed bundle name is not
+// OUR bundle name, reload onto current code.
+function myBundleName(): string | null {
+  return (
+    Array.from(document.querySelectorAll<HTMLScriptElement>('script[src]'))
+      .map((s) => s.src.split('/').pop())
+      .find((n) => n?.startsWith('index-')) ?? null
+  );
+}
+async function reloadIfStale(): Promise<void> {
+  const mine = myBundleName();
+  if (!mine) return;
+  try {
+    const res = await fetch(window.location.pathname, { cache: 'no-store' });
+    const html = await res.text();
+    const live = /index-[A-Za-z0-9_-]+\.js/.exec(html)?.[0];
+    if (live && live !== mine) {
+      diag(`[reef-diag] bundle ${mine} is stale (live: ${live}) — reloading onto current rules`);
+      window.location.reload();
+    }
+  } catch {
+    /* offline/transient — try again next tick */
+  }
+}
+
 export function App() {
   const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
   const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
@@ -143,6 +175,21 @@ export function App() {
   const [sponsored, setSponsored] = useState(false);
   const [sponsorPhase, setSponsorPhase] = useState<string | null>(null);
   const sponsoringRef = useRef(false);
+
+  // Stale-bundle guard: check on load, on tab wake (the classic stale case —
+  // a background/frozen tab resuming days later), and every 5 minutes.
+  useEffect(() => {
+    reloadIfStale();
+    const onWake = () => {
+      if (document.visibilityState === 'visible') reloadIfStale();
+    };
+    document.addEventListener('visibilitychange', onWake);
+    const t = setInterval(reloadIfStale, 5 * 60 * 1000);
+    return () => {
+      document.removeEventListener('visibilitychange', onWake);
+      clearInterval(t);
+    };
+  }, []);
 
   // Flash a champion banner when a season actually closes (not on first entry).
   useEffect(() => {
@@ -641,13 +688,30 @@ export function App() {
                 <span className="tends fine">
                   tends this tide{' '}
                   <span className="pips">
-                    {Array.from({ length: TEND_CAP }, (_, i) => (
+                    {Array.from({ length: state.params.tendCap }, (_, i) => (
                       <span key={i} className={`tpip${i < tendsLeft ? ' on' : ''}`} />
                     ))}
                   </span>
-                  <strong> {tendsLeft}</strong>/{TEND_CAP}
+                  <strong> {tendsLeft}</strong>/{state.params.tendCap}
                 </span>
-                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({TEND_CAP}/tide) · energy returns with each tide</span>
+                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({state.params.tendCap}/tide) · energy returns with each tide</span>
+              </div>
+
+              {/* Tide meter: how close the water is to turning. Fills as confirmed
+                  moves accumulate toward params.epochMoves; strains when one move
+                  away. Purely fold-derived — identical on every device. */}
+              <div
+                className={`tide-meter${state.params.epochMoves - state.tideMoves === 1 ? ' imminent' : ''}`}
+                title={`the tide turns after ${state.params.epochMoves} moves — energy returns, coral fades a little`}
+              >
+                <div className="tide-water" style={{ width: `${Math.round((state.tideMoves / state.params.epochMoves) * 100)}%` }}>
+                  <span className="tide-wave" />
+                </div>
+                <span className="tide-label fine">
+                  {state.params.epochMoves - state.tideMoves === 1
+                    ? '🌊 the tide strains — one move from turning'
+                    : `🌊 tide in ${state.params.epochMoves - state.tideMoves} moves`}
+                </span>
               </div>
 
               <div className="board-scores">

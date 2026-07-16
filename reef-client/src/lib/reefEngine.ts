@@ -286,6 +286,9 @@ export interface RegionParams {
 export interface ReefState {
   header: ReefHeader;
   params: RegionParams; // live (possibly retuned) rules for THIS region
+  /** Confirmed well-formed moves since the last tide — the tide turns when
+   *  this reaches params.epochMoves. Drives the "tide is coming" indicator. */
+  tideMoves: number;
   cells: Map<string, Cell>;
   moves: AppliedMove[];
   epoch: number;
@@ -727,6 +730,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     }
   }
   const confirmedEpoch = epoch;
+  const tideMoves = sinceTide; // confirmed moves toward the next tide
 
   // 3) Pending (not-yet-in-a-block) moves: the tentative frontier, shown
   // optimistically. All pending claims share PENDING_HEIGHT, so two racing
@@ -777,6 +781,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   return {
     header,
     params,
+    tideMoves,
     cells,
     moves,
     epoch,
