@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRpc } from './useRpc';
 import { WIKI_APP } from '../lib/appNamespace';
+import { resolveUnresolvedAppSpaces } from '../lib/resolveSpaces';
 import type { WikiNamespace } from '../types/wiki';
 
 interface UseWikiNamespacesResult {
@@ -71,6 +72,15 @@ export function useWikiNamespaces(): UseWikiNamespacesResult {
           // since other app clients also produce app-class spaces).
           const wikiOnly = result.spaces.filter(s => s.class === 'app' && s.app === WIKI_APP);
           setData(wikiOnly.map(mapToNamespace));
+          // Self-sufficient discovery: app-class spaces whose name/app tag is
+          // still unresolved on THIS node get their metadata fetched from
+          // peers automatically, and the list refetches to pick them up —
+          // wiki namespaces appear on fresh nodes without any manual RPC.
+          if (resolveUnresolvedAppSpaces(rpc, result.spaces)) {
+            setTimeout(() => {
+              if (!cancelled) refetch();
+            }, 4000);
+          }
         }
       })
       .catch(err => {

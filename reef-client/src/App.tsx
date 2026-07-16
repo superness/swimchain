@@ -121,6 +121,12 @@ export function App() {
   const staleHoldsRef = useRef(0);
   const [mining, setMining] = useState<Mining>(null);
   const [error, setError] = useState<string | null>(null);
+  // Transient network trouble (a failed poll), kept SEPARATE from action
+  // errors: it auto-clears on the next successful poll, so a single hiccup
+  // can't leave a raw "Failed to fetch" banner parked over a working board
+  // (seen on the phone during the 2026-07-16 BVT). Action errors (`error`)
+  // persist until the player acts again — they must stay readable.
+  const [netError, setNetError] = useState<string | null>(null);
   const [banner, setBanner] = useState<SeasonResult | null>(null);
   const lastSeenSeason = useRef<number | null>(null);
   // Content-ids of moves WE submitted this session, so we can explain their
@@ -267,8 +273,10 @@ export function App() {
     try {
       setRegions(await listRegions(rpc, REEF_SPACE));
       setError(null);
+      setNetError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'failed to list regions');
+      diag(`[reef-diag] region list failed: ${e instanceof Error ? e.message : String(e)}`);
+      setNetError('the current flickers — reconnecting…');
     }
   }, [rpc, connected, publicKeyHex]);
 
@@ -364,8 +372,10 @@ export function App() {
         }
         return next;
       });
+      setNetError(null); // healthy poll — clear any transient network banner
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'failed to load region');
+      diag(`[reef-diag] poll failed: ${e instanceof Error ? e.message : String(e)}`);
+      setNetError('the current flickers — reconnecting…');
     }
   }, [rpc, connected, publicKeyHex, openId]);
 
@@ -656,6 +666,7 @@ export function App() {
       )}
       {rpcError && <div className="banner warn">Node: {rpcError}</div>}
       {error && <div className="banner warn">{error}</div>}
+      {!error && netError && <div className="banner warn fine">🌊 {netError}</div>}
       {notice && <div className="banner notice" role="status">{notice}</div>}
 
       {!openId ? (
