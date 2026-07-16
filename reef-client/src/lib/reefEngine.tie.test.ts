@@ -103,15 +103,18 @@ const reply = (
 
 // ── 6) frontier: recently-claimed / pending cells are "settling"; buried ones aren't
 {
+  // Distinct authors so each is an independently-legal seed (frontier membership
+  // is by claim height, not owner) — no reliance on decay clearing a cell.
+  const C = 'cccc222222222222';
   const replies = [
     reply(A, 'grow 1 1', 5, 'c_old', 900), // claimed long ago (buried by tip 20)
-    reply(A, 'grow 2 2', 20, 'c_new', 1000), // claimed at the tip (still reorg-eligible)
-    reply(B, 'grow 3 3', null, 'c_pend', 1100), // pending
+    reply(B, 'grow 8 8', 20, 'c_new', 1000), // claimed at the tip (still reorg-eligible)
+    reply(C, 'grow 3 3', null, 'c_pend', 1100), // pending
   ];
   const s = foldReef(H, replies, 20); // tip 20, CONFIRM_DEPTH 2 → confirmH 18
-  check('frontier: buried cell (h=5) is settled', !s.frontier.has('1,1'));
-  check('frontier: tip cell (h=20) is settling', s.frontier.has('2,2'));
-  check('frontier: pending cell is settling', s.frontier.has('3,3'));
+  check('frontier: buried cell (h=5) is settled', !s.frontier.has('1,1'), [...s.frontier]);
+  check('frontier: tip cell (h=20) is settling', s.frontier.has('8,8'), [...s.frontier]);
+  check('frontier: pending cell is settling', s.frontier.has('3,3'), [...s.frontier]);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

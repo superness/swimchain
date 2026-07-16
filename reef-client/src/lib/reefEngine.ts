@@ -31,18 +31,18 @@
  * client shows is derived identically — the chain is the scorekeeper.
  *
  * ── Epoch pacing ───────────────────────────────────────────────────────────────────
- * Phase 1 keys epochs to the *move sequence*: every EPOCH_MOVES **well-formed** moves
+ * The tide is keyed to REEF ACTIVITY: every EPOCH_MOVES **well-formed** confirmed moves
  * (any parseable grow/tend, whether or not it was affordable/legal) ticks one epoch —
- * decay, then budget regen, then scoring. Pacing is decoupled from budget on purpose,
- * so budgets can never deadlock (as long as anyone keeps playing, epochs advance and
- * everyone regenerates). Fully deterministic with ZERO node changes.
+ * decay, then budget regen, then scoring. It is deliberately NOT keyed to block height:
+ * doing so coupled reef decay to *global* chain activity (chess games, other spaces, raw
+ * block cadence), so a burst of unrelated blocks could cull the whole under-tended board
+ * at once. Keying to reef moves means only playing the reef ages it, and an idle reef
+ * doesn't decay. Pending (not-yet-in-a-block) moves are the tentative frontier — shown
+ * optimistically, but they don't tick the clock until they confirm.
  *
- * ── Phase 2 (later; see docs/GAMES_ON_SWIMCHAIN.md) ─────────────────────────────────
- * Rekey epochs to block height; add the confirmed/tentative reorg frontier; spaces-as-
- * shards across many regions.
- *
- * Determinism rules honored here: integer-only state, no floats, no wall-clock, moves
- * sorted by (created_at, content_id), deterministic tie-breaks by id string.
+ * Determinism: integer-only state, no floats, no wall-clock. Confirmed moves are ordered
+ * by (block_height, created_at, authoring-seq, content_id); the reorg frontier is still
+ * computed from the chain tip (CONFIRM_DEPTH), just not the decay clock.
  */
 
 import {
@@ -147,11 +147,13 @@ export const TEND_CAP = 4;
 export const SEASON_EPOCHS = 5;
 
 /**
- * Phase 2: the tide is keyed to CONSENSUS BLOCK HEIGHT, not move order. Every this-many
- * blocks is one epoch, so decay/regen/scoring advance with real chain time — ungameable
- * (block height is consensus, not author-set) and never frantic (a burst of moves in one
- * block is still one tide). Idle reefs keep decaying as blocks pass. Moves not yet in a
- * block (null height) are the tentative frontier: shown, but not yet final.
+ * LEGACY — no longer used by the fold. The tide was briefly keyed to consensus
+ * BLOCK HEIGHT (every BLOCKS_PER_EPOCH blocks = one epoch), but that coupled reef
+ * decay to *global* chain activity: chess games, other spaces, and raw block
+ * cadence all advanced the reef's tide, so a burst of unrelated blocks could cull
+ * the whole under-tended board at once ("the reef poofed"). The tide is now driven
+ * by reef activity — EPOCH_MOVES reef moves per tide — so only playing the reef
+ * ages it. Kept exported for the diagnostics/bot that still reference it.
  */
 export const BLOCKS_PER_EPOCH = 2;
 
@@ -519,9 +521,6 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     .filter((r) => typeof r.block_height !== 'number')
     .sort((a, b) => seqCmp(a, b) || a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
 
-  const baseHeight = confirmed.length ? confirmed[0].block_height! : tipHeight ?? 0;
-  const epochOf = (h: number) => Math.max(0, Math.floor((h - baseHeight) / BLOCKS_PER_EPOCH));
-
   const updatePeaks = () => {
     for (const [o, e] of livingByOwner(cells)) peak.set(o, Math.max(peak.get(o) ?? 0, e.cells));
   };
@@ -648,19 +647,21 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     if (ok) updatePeaks();
   };
 
-  // 1) Confirmed moves, ticking epochs by block height between them.
+  // 1) Confirmed moves. The tide is driven by REEF ACTIVITY, not global block
+  // height: every EPOCH_MOVES well-formed moves ticks one epoch (decay → regen →
+  // scoring). This decouples reef decay from unrelated chain activity — chess
+  // games, other spaces, and the raw block cadence no longer age the reef, so a
+  // burst of blocks elsewhere can't cull the whole board. The reef only ages when
+  // the reef is played, and an idle reef doesn't decay at all. curHeight is still
+  // the real block height (for same-block tie detection and the reorg frontier).
+  let wellFormed = 0;
   for (const r of confirmed) {
     const p = parseMove(r.body);
     if (!p) continue;
-    const target = epochOf(r.block_height!);
-    while (epoch < target) tickEpoch();
     curHeight = r.block_height!;
     applyOne(r, p);
-  }
-  // 2) Advance the tide to the current chain tip — idle reefs decay as blocks pass.
-  if (typeof tipHeight === 'number') {
-    const tipEpoch = epochOf(tipHeight);
-    while (epoch < tipEpoch) tickEpoch();
+    wellFormed += 1;
+    if (wellFormed % EPOCH_MOVES === 0) tickEpoch();
   }
   const confirmedEpoch = epoch;
 
