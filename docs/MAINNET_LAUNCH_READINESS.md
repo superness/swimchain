@@ -1,6 +1,20 @@
 # Mainnet Launch Readiness — Go/No-Go
 
-Status: **NO-GO for immediate launch** — 2026-07-16.
+Status: **NO-GO for immediate launch** — 2026-07-16 (progress tracked inline).
+
+**Progress since first assessment:**
+- ✅ **B5 CLOSED** — `sign_message` signing oracle gated (now requires auth);
+  the public RPC allowlist proxy brought into the repo and audited
+  (`web-gateway/rpc-proxy/`). It was already a real allowlist (method +
+  source-IP + POST-only, no admin methods).
+- ✅ **R1 ADDRESSED** — `docs/LEGAL_POSTURE.md` (two-layer no-owner posture);
+  blocklist now auto-loads an operator seed file at startup AND gates the
+  serve paths (P2P `handle_get`, `get_media`, `get_content` RPC), so an
+  operator blocklisting a hash stops their node serving it immediately — real
+  takedown capability at the swimchain.io gateway without touching the network.
+- Remaining blockers: **B1, B2, B3** (genesis identity/seeds/anchor — the
+  bootstrap foundation), **B4** (fork-race durability — the protocol long
+  pole), **B6** (faucet claim cost), **B7** (clients mainnet flip).
 
 Assessment of the Swimchain node + clients for switching from testnet to a live
 public mainnet. Two independent read-only audits (consensus/networking,
