@@ -1,4 +1,4 @@
-// src/lib/reefEngine.ts
+// reef-client/src/lib/reefEngine.ts
 var REEF_SPACE = import.meta.env?.VITE_REEF_SPACE?.trim() || "";
 var GAME_SPONSOR = import.meta.env?.VITE_GAME_SPONSOR?.trim() || "9ec9661d3a975ad141caa5df9f14b3c46cf725509e7fa044c19d26fe76bd0420";
 var GRID_W = 12;
@@ -43,6 +43,7 @@ function costOf(kind) {
       return COST_GROW;
     case "tend":
       return 0;
+    // tend is capped, not priced
     case "contest":
       return COST_CONTEST;
   }
@@ -108,6 +109,20 @@ function parseMove(body) {
   if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
   return { op, x, y };
 }
+function parseRetune(body) {
+  if (!body) return null;
+  const t = body.trim().split(/\s+/);
+  if (t[0] !== "retune") return null;
+  const out = {};
+  for (const tok of t.slice(1)) {
+    const m = /^(epochMoves|tendCap)=(\d+)$/.exec(tok);
+    if (!m) continue;
+    const n = Number(m[2]);
+    if (m[1] === "epochMoves") out.epochMoves = Math.min(64, Math.max(2, n));
+    else out.tendCap = Math.min(12, Math.max(1, n));
+  }
+  return out.epochMoves !== void 0 || out.tendCap !== void 0 ? out : null;
+}
 function authorSeqOf(body) {
   if (!body) return void 0;
   const m = /#(\d+)~/.exec(body);
@@ -133,6 +148,7 @@ function foldReef(header, replies, tipHeight) {
   const PENDING_HEIGHT = Number.MAX_SAFE_INTEGER;
   let curHeight = 0;
   let epoch = 0;
+  const params = { epochMoves: EPOCH_MOVES, tendCap: TEND_CAP };
   let justCrowned = null;
   let lastTide = null;
   const confirmed = replies.filter((r) => typeof r.block_height === "number").sort(
@@ -142,7 +158,7 @@ function foldReef(header, replies, tipHeight) {
   const updatePeaks = () => {
     for (const [o, e] of livingByOwner(cells)) peak.set(o, Math.max(peak.get(o) ?? 0, e.cells));
   };
-  const tickEpoch = () => {
+  const tickEpoch = (provisional = false) => {
     const before = livingByOwner(cells);
     let beforeCells = 0;
     for (const l of before.values()) beforeCells += l.cells;
@@ -160,7 +176,7 @@ function foldReef(header, replies, tipHeight) {
     tendsUsed = /* @__PURE__ */ new Map();
     epoch += 1;
     let crownedThisTick = null;
-    if (epoch % SEASON_EPOCHS === 0) {
+    if (!provisional && epoch % SEASON_EPOCHS === 0) {
       let winner = null;
       let best = -1;
       for (const [owner, pts] of [...seasonPoints].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -214,7 +230,7 @@ function foldReef(header, replies, tipHeight) {
       outcome = "rejected-invalid";
     } else if (cls.kind === "tend") {
       const used = tendsUsed.get(author) ?? 0;
-      if (used < TEND_CAP) {
+      if (used < params.tendCap) {
         mutate(cells, author, "tend", p.x, p.y);
         tendsUsed.set(author, used + 1);
         ok = true;
@@ -250,24 +266,58 @@ function foldReef(header, replies, tipHeight) {
     moves.push({ ...p, author, contentId: r.content_id, ok, outcome });
     if (ok) updatePeaks();
   };
-  let wellFormed = 0;
+  const applyRetune = (r, tune) => {
+    const isFounder = r.author_id === header.founder;
+    if (isFounder) Object.assign(params, tune);
+    moves.push({
+      op: "tend",
+      // placeholder op for the AppliedMove shape; never renders as coral
+      x: -1,
+      y: -1,
+      author: r.author_id,
+      contentId: r.content_id,
+      ok: isFounder,
+      outcome: isFounder ? "retuned" : "rejected-not-founder"
+    });
+  };
+  let sinceTide = 0;
   for (const r of confirmed) {
+    const tune = parseRetune(r.body);
+    if (tune) {
+      curHeight = r.block_height;
+      applyRetune(r, tune);
+      continue;
+    }
     const p = parseMove(r.body);
     if (!p) continue;
     curHeight = r.block_height;
     applyOne(r, p);
-    wellFormed += 1;
-    if (wellFormed % EPOCH_MOVES === 0) tickEpoch();
+    sinceTide += 1;
+    if (sinceTide >= params.epochMoves) {
+      tickEpoch();
+      sinceTide = 0;
+    }
   }
   const confirmedEpoch = epoch;
   let tentative = 0;
   curHeight = PENDING_HEIGHT;
   for (const r of pending) {
+    const tune = parseRetune(r.body);
+    if (tune) {
+      applyRetune(r, tune);
+      continue;
+    }
     const p = parseMove(r.body);
     if (!p) continue;
     tentative += 1;
     applyOne(r, p);
+    sinceTide += 1;
+    if (sinceTide >= params.epochMoves) {
+      tickEpoch(true);
+      sinceTide = 0;
+    }
   }
+  const tideMoves = sinceTide;
   updatePeaks();
   const living = livingByOwner(cells);
   const owners = [...living.keys()];
@@ -293,6 +343,8 @@ function foldReef(header, replies, tipHeight) {
   }
   return {
     header,
+    params,
+    tideMoves,
     cells,
     moves,
     epoch,
@@ -316,7 +368,7 @@ function myBudget(state, myPubkeyHex, myAddress) {
 }
 function myTendsLeft(state, myPubkeyHex, myAddress) {
   const used = state.tendsUsed.get(myPubkeyHex) ?? state.tendsUsed.get(myAddress) ?? 0;
-  return Math.max(0, TEND_CAP - used);
+  return Math.max(0, state.params.tendCap - used);
 }
 export {
   COST_CONTEST,

@@ -208,6 +208,8 @@ export type MoveOutcome =
   | 'tie-lost'
   | 'rejected-unaffordable'
   | 'rejected-invalid'
+  | 'retuned'
+  | 'rejected-not-founder'
   | 'rejected-capped';
 
 export interface Cell {
@@ -266,8 +268,32 @@ export interface Standing {
   conquests: number; // enemy cells captured via contest
 }
 
+/**
+ * Live per-region rule parameters. Defaults are the engine constants; the
+ * region FOUNDER can adjust them mid-game with an on-chain `retune` move
+ * (`retune epochMoves=<n> tendCap=<n> #<ms>~`), which the fold applies
+ * deterministically from that point in the move sequence forward — every
+ * client and the bot derive the same values, and only that one region is
+ * affected. Values are clamped (epochMoves 2..64, tendCap 1..12) so a typo'd
+ * retune can't wedge a region. Non-founder retunes are inert
+ * (`rejected-not-founder`), so nobody else can rule-change your reef.
+ */
+export interface RegionParams {
+  epochMoves: number;
+  tendCap: number;
+}
+
 export interface ReefState {
   header: ReefHeader;
+  /** The region this state was folded FROM (set by loadRegion). Lets the UI
+   *  reject cross-region races: during a region switch, one render can pair
+   *  the OLD region's state with the NEW region's identity keys — which once
+   *  poisoned a tide-ack baseline and permanently suppressed the tide report. */
+  regionId?: string;
+  params: RegionParams; // live (possibly retuned) rules for THIS region
+  /** Confirmed well-formed moves since the last tide — the tide turns when
+   *  this reaches params.epochMoves. Drives the "tide is coming" indicator. */
+  tideMoves: number;
   cells: Map<string, Cell>;
   moves: AppliedMove[];
   epoch: number;
@@ -430,6 +456,22 @@ function parseMove(body: string | null | undefined): { op: Op; x: number; y: num
   return { op, x, y };
 }
 
+/** Founder rule-change move: `retune epochMoves=6 tendCap=4 #<ms>~`. */
+function parseRetune(body: string | null | undefined): Partial<RegionParams> | null {
+  if (!body) return null;
+  const t = body.trim().split(/\s+/);
+  if (t[0] !== 'retune') return null;
+  const out: Partial<RegionParams> = {};
+  for (const tok of t.slice(1)) {
+    const m = /^(epochMoves|tendCap)=(\d+)$/.exec(tok);
+    if (!m) continue;
+    const n = Number(m[2]);
+    if (m[1] === 'epochMoves') out.epochMoves = Math.min(64, Math.max(2, n));
+    else out.tendCap = Math.min(12, Math.max(1, n));
+  }
+  return out.epochMoves !== undefined || out.tendCap !== undefined ? out : null;
+}
+
 /**
  * The AUTHORING sequence embedded in a move body — the `#<n>~` field written at
  * submit time (`submitReefMove`). It lives in the signed, immutable body, so it
@@ -490,6 +532,9 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   const PENDING_HEIGHT = Number.MAX_SAFE_INTEGER;
   let curHeight = 0; // the effective height of the move currently being applied
   let epoch = 0;
+  // Live region rules — founder `retune` moves adjust these mid-history, applied
+  // in fold order so every observer derives identical values (see RegionParams).
+  const params: RegionParams = { epochMoves: EPOCH_MOVES, tendCap: TEND_CAP };
   let justCrowned: SeasonResult | null = null;
   let lastTide: TideSummary | null = null; // ledger of the most recent epoch tick
 
@@ -525,7 +570,13 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     for (const [o, e] of livingByOwner(cells)) peak.set(o, Math.max(peak.get(o) ?? 0, e.cells));
   };
 
-  const tickEpoch = () => {
+  // provisional=true (pending-move ticks): the world acts on mempool moves —
+  // decay, regen, fresh tends — but season CROWNS are ceremonies and only ever
+  // fire from confirmed history, so a champion can never be announced and then
+  // un-happen. The whole fold is recomputed from history every poll, so a
+  // provisional tick self-corrects the moment confirmations replace assumptions
+  // (Bitcoin-style: act on your local view, reconcile at the block).
+  const tickEpoch = (provisional = false) => {
     const before = livingByOwner(cells); // snapshot the reef the instant before the tide
     let beforeCells = 0;
     for (const l of before.values()) beforeCells += l.cells;
@@ -543,7 +594,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
     tendsUsed = new Map();
     epoch += 1;
     let crownedThisTick: SeasonResult | null = null;
-    if (epoch % SEASON_EPOCHS === 0) {
+    if (!provisional && epoch % SEASON_EPOCHS === 0) {
       let winner: string | null = null;
       let best = -1;
       for (const [owner, pts] of [...seasonPoints].sort((a, b) => a[0].localeCompare(b[0]))) {
@@ -608,7 +659,7 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
       outcome = 'rejected-invalid';
     } else if (cls.kind === 'tend') {
       const used = tendsUsed.get(author) ?? 0;
-      if (used < TEND_CAP) {
+      if (used < params.tendCap) {
         mutate(cells, author, 'tend', p.x, p.y);
         tendsUsed.set(author, used + 1);
         ok = true;
@@ -654,28 +705,72 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
   // burst of blocks elsewhere can't cull the whole board. The reef only ages when
   // the reef is played, and an idle reef doesn't decay at all. curHeight is still
   // the real block height (for same-block tie detection and the reorg frontier).
-  let wellFormed = 0;
+  // Founder rule changes: `retune` applies live params from this point in the
+  // sequence forward. Config moves never advance the tide clock; a non-founder
+  // retune is inert but still recorded so the author sees why nothing changed.
+  const applyRetune = (r: ReplyLike, tune: Partial<RegionParams>): void => {
+    const isFounder = r.author_id === header.founder;
+    if (isFounder) Object.assign(params, tune);
+    moves.push({
+      op: 'tend', // placeholder op for the AppliedMove shape; never renders as coral
+      x: -1,
+      y: -1,
+      author: r.author_id,
+      contentId: r.content_id,
+      ok: isFounder,
+      outcome: isFounder ? 'retuned' : 'rejected-not-founder',
+    });
+  };
+
+  let sinceTide = 0;
   for (const r of confirmed) {
+    const tune = parseRetune(r.body);
+    if (tune) {
+      curHeight = r.block_height!;
+      applyRetune(r, tune);
+      continue;
+    }
     const p = parseMove(r.body);
     if (!p) continue;
     curHeight = r.block_height!;
     applyOne(r, p);
-    wellFormed += 1;
-    if (wellFormed % EPOCH_MOVES === 0) tickEpoch();
+    sinceTide += 1;
+    if (sinceTide >= params.epochMoves) {
+      tickEpoch();
+      sinceTide = 0;
+    }
   }
   const confirmedEpoch = epoch;
 
   // 3) Pending (not-yet-in-a-block) moves: the tentative frontier, shown
   // optimistically. All pending claims share PENDING_HEIGHT, so two racing
   // pending grows on the same tile resolve as a tie just like a same-block race.
+  // Pending moves ACT ON THE WORLD like confirmed ones — including turning the
+  // tide provisionally (decay + regen + tend reset) — so play never waits on a
+  // block to feel real. Ceremonies (crowns, the round-over report) stay keyed
+  // to confirmedEpoch. Divergence risk is accepted Bitcoin-style: two devices
+  // may briefly disagree while their mempool views differ, and both snap to
+  // the identical confirmed world at the next block (the fold is pure, so
+  // nothing needs undoing — it simply refolds).
   let tentative = 0;
   curHeight = PENDING_HEIGHT;
   for (const r of pending) {
+    const tune = parseRetune(r.body);
+    if (tune) {
+      applyRetune(r, tune); // optimistic, like any pending move
+      continue;
+    }
     const p = parseMove(r.body);
     if (!p) continue;
     tentative += 1;
     applyOne(r, p);
+    sinceTide += 1;
+    if (sinceTide >= params.epochMoves) {
+      tickEpoch(true);
+      sinceTide = 0;
+    }
   }
+  const tideMoves = sinceTide; // moves (confirmed + pending) toward the next tide
   updatePeaks();
 
   const living = livingByOwner(cells);
@@ -708,6 +803,8 @@ export function foldReef(header: ReefHeader, replies: ReplyLike[], tipHeight?: n
 
   return {
     header,
+    params,
+    tideMoves,
     cells,
     moves,
     epoch,
@@ -745,7 +842,7 @@ export function myBudget(state: ReefState, myPubkeyHex: string, myAddress: strin
 /** How many tends I have left this tide (matching either author_id form). */
 export function myTendsLeft(state: ReefState, myPubkeyHex: string, myAddress: string): number {
   const used = state.tendsUsed.get(myPubkeyHex) ?? state.tendsUsed.get(myAddress) ?? 0;
-  return Math.max(0, TEND_CAP - used);
+  return Math.max(0, state.params.tendCap - used);
 }
 
 /**
@@ -911,7 +1008,7 @@ export async function loadRegion(rpc: SwimchainRpc, regionId: string): Promise<R
     rpc.getReplies(regionId, { limit: 100000 }),
     rpc.getInfo().then((i) => i.block_height).catch(() => undefined),
   ]);
-  return foldReef(header, replies as ReplyLike[], tipHeight);
+  return { ...foldReef(header, replies as ReplyLike[], tipHeight), regionId };
 }
 
 /**
@@ -979,7 +1076,7 @@ export function applyMoveOptimistic(
   if (cls) {
     if (cls.kind === 'tend') {
       const used = tendsUsed.get(authorPubkeyHex) ?? 0;
-      if (used < TEND_CAP) {
+      if (used < state.params.tendCap) {
         mutate(cells, authorPubkeyHex, 'tend', x, y);
         tendsUsed.set(authorPubkeyHex, used + 1);
         ok = true;

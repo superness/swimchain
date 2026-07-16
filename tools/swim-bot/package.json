@@ -1,1 +1,1 @@
-{"name":"swim-bot","private":true,"type":"module","dependencies":{"chess.js":"^1.4.0","hash-wasm":"^4"}}
+{"name":"swim-bot","private":true,"type":"module","dependencies":{"@noble/ed25519":"^3.1.0","chess.js":"^1.4.0","hash-wasm":"^4"}}

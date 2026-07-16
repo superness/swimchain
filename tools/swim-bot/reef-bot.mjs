@@ -55,6 +55,26 @@ const AUTH = 'Basic ' + Buffer.from(`__cookie__:${COOKIE}`).toString('base64');
 const authorBytes = Buffer.from(AUTHOR, 'hex');
 const authorPrefix = AUTHOR.slice(0, 10);
 
+// Local signing (SIGN_SEED_HEX): sign as an identity WITHOUT a running node —
+// used for founder one-shots (retune) when the founder's node is cold. The
+// seed is the raw 32-byte ed25519 seed (same derivation as `sw identity
+// import-seed`). Never logged.
+const SIGN_SEED = (process.env.SIGN_SEED_HEX || '').trim();
+let localSign = null;
+if (SIGN_SEED) {
+  const ed = await import('@noble/ed25519');
+  const { sha512 } = await import('@noble/hashes/sha2.js').catch(() => import('@noble/hashes/sha512.js'));
+  ed.etc.sha512Sync = (...m) => sha512(ed.etc.concatBytes(...m));
+  const seed = Buffer.from(SIGN_SEED, 'hex');
+  if (seed.length !== 32) throw new Error('SIGN_SEED_HEX must be 64 hex chars');
+  const derivedPub = Buffer.from(ed.getPublicKey(seed)).toString('hex');
+  if (derivedPub !== AUTHOR) {
+    throw new Error(`SIGN_SEED_HEX derives pubkey ${derivedPub.slice(0, 10)}… but AUTHOR_PUBKEY is ${authorPrefix}… — refusing to sign`);
+  }
+  localSign = (bytes) => Buffer.from(ed.sign(new Uint8Array(bytes), seed)).toString('hex');
+  console.log(`[${TAG}] local-sign mode as ${authorPrefix}… (no node needed)`);
+}
+
 // Game rules come EXCLUSIVELY from reefEngine.bundle.mjs (imported above).
 const ActionType = { Reply: 3 };
 const POW_CONFIG = { memoryKib: 8192, iterations: 1, parallelism: 2 };
@@ -86,10 +106,12 @@ async function rpc(method, params, timeoutMs = 30000) {
   } else {
     const ts = String(Math.floor(Date.now() / 1000));
     const preimage = `swimchain-rpc:${method}:${sha256(Buffer.from(paramsJson, 'utf-8')).toString('hex')}:${ts}`;
-    const r = await rpcBare('sign_message', { message: Buffer.from(preimage, 'utf-8').toString('hex') });
+    const sig = localSign
+      ? localSign(Buffer.from(preimage, 'utf-8'))
+      : (await rpcBare('sign_message', { message: Buffer.from(preimage, 'utf-8').toString('hex') })).signature;
     headers['x-cs-identity'] = AUTHOR;
     headers['x-cs-timestamp'] = ts;
-    headers['x-cs-signature'] = r.signature;
+    headers['x-cs-signature'] = sig;
   }
   const body = `{"jsonrpc":"2.0","id":${++rpcId},"method":${JSON.stringify(method)},"params":${paramsJson}}`;
   const res = await fetch(RPC, { method: 'POST', headers, body, signal: AbortSignal.timeout(timeoutMs) });
@@ -98,6 +120,7 @@ async function rpc(method, params, timeoutMs = 30000) {
   return j.result;
 }
 async function signBytesWithNode(buf) {
+  if (localSign) return localSign(buf);
   const call = MODE === 'cookie' ? rpc : rpcBare;
   const r = await call('sign_message', { message: Buffer.from(buf).toString('hex') });
   if (!r?.signature) throw new Error('sign_message returned no signature');
@@ -136,16 +159,18 @@ async function minePow(contentHash32) {
 
 /** Submit a reef move (grow|tend at x,y). Body carries a unique nonce so two
  *  distinct moves never dedup-collide; the fold reads only `<op> <x> <y>`. */
-async function submitMove(op, x, y) {
-  const nonce = randomBytes(8).toString('hex');
-  // `#<ms>~` is the authoring timestamp the fold orders by (matches the client's
-  // submitReefMove); the random nonce keeps distinct moves from dedup-colliding.
-  const body = `${op} ${x} ${y} ${REGION}#${Date.now()}~${authorPrefix}~${nonce}`;
+async function submitBody(body) {
   const ch = sha256(Buffer.from(body, 'utf-8'));
   const pow = await minePow(ch);
   const sig = await signBytesWithNode(actionSigPreimage(ch, pow.timestamp));
   await rpc('submit_reply', { parent_id: REGION, body, author_id: AUTHOR, ...pow, signature: sig });
   return 'sha256:' + ch.toString('hex'); // the reply's content_id (= sha256 of body)
+}
+async function submitMove(op, x, y) {
+  const nonce = randomBytes(8).toString('hex');
+  // `#<ms>~` is the authoring timestamp the fold orders by (matches the client's
+  // submitReefMove); the random nonce keeps distinct moves from dedup-colliding.
+  return submitBody(`${op} ${x} ${y} ${REGION}#${Date.now()}~${authorPrefix}~${nonce}`);
 }
 
 // ── board reading: THE PRODUCTION ENGINE, not a copy ──────────────────────────
@@ -190,7 +215,7 @@ async function readBoard() {
       else if (occ.owner !== AUTHOR) enemyAdjacent.push([nx, ny, occ.vitality]);
     }
   }
-  return { cells, budget, mine, openAdjacent, enemyAdjacent, outcomes, epoch: state.epoch };
+  return { cells, budget, mine, openAdjacent, enemyAdjacent, outcomes, epoch: state.epoch, params: state.params };
 }
 
 // ── strategy (rule-based, no AI) ──────────────────────────────────────────────
@@ -351,8 +376,19 @@ async function main() {
     const b = await readBoard();
     const owners = new Map();
     for (const c of b.cells.values()) owners.set(c.owner, (owners.get(c.owner) ?? 0) + 1);
-    console.log(`[${TAG}] epoch=${b.epoch} totalCells=${b.cells.size} mine=${b.mine.length} budget=${b.budget}`);
+    console.log(
+      `[${TAG}] epoch=${b.epoch} params=${JSON.stringify(b.params)} totalCells=${b.cells.size} mine=${b.mine.length} budget=${b.budget}`
+    );
     for (const [o, n] of [...owners].sort((a, z) => z[1] - a[1])) console.log(`  ${o.slice(0, 10)}… ${n} cells`);
+    return;
+  }
+  if (process.env.BOT_MODE === 'retune') {
+    // One-shot founder rule change: RETUNE="epochMoves=6 tendCap=4". Only the
+    // region FOUNDER's identity makes this take effect (the fold ignores others).
+    const tune = (process.env.RETUNE || '').trim();
+    if (!/^((epochMoves|tendCap)=\d+\s*)+$/.test(tune)) throw new Error('RETUNE must be like "epochMoves=6 tendCap=4"');
+    const cid = await submitBody(`retune ${tune} #${Date.now()}~${authorPrefix}`);
+    console.log(`[${TAG}] retune submitted: ${tune} · cid=${cid.slice(0, 20)}…`);
     return;
   }
   if (process.env.BOT_MODE === 'repro') { await reproMode(); return; }
