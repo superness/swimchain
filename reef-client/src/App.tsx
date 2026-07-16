@@ -399,10 +399,13 @@ export function App() {
     // fresh reef's ack at the old reef's epoch (~450), silently suppressing the
     // tide report forever. Only act on state folded FROM this region.
     if (state.regionId && state.regionId !== openId) return;
-    // CONFIRMED epoch only: the round-over ceremony must never announce a tide
-    // that could un-happen. Provisional (pending-driven) ticks move the world
-    // and the meter, but the report waits for the chain to seal the turn.
-    const epoch = state.confirmedEpoch;
+    // The report rides the VISIBLE turn (provisional epoch): the player just
+    // watched the meter roll over and the world tick — the round-over beat
+    // belongs to that moment, not a block later. Safe because season crowns
+    // can never fire from provisional ticks (engine guarantee), and a
+    // provisional tide can only evaporate if pending moves vanish outright —
+    // in which case the world visibly reverts too and the ack self-heals below.
+    const epoch = state.epoch;
     const ack = readTideAck();
     if (ack === null) {
       writeTideAck(epoch); // first visit on this device: baseline silently
