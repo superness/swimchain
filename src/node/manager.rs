@@ -384,6 +384,28 @@ impl NodeManager {
         let chain_store = ChainStore::open(&chain_path)
             .map_err(|e| NodeError::StorageOpen(chain_path.clone(), e.to_string()))?;
 
+        // 3.0.1. Seed the canonical genesis anchor on a COMPLETELY FRESH chain.
+        // Every node persists the same fixed height-0 block for its network, so
+        // all nodes share one common ancestor and height-1 blocks build on the
+        // SAME parent hash — no divergent no-shared-genesis forks on a fresh
+        // network (launch readiness B3). Gated on an EMPTY chain (zero stored
+        // blocks) so existing chains — testnet nodes that predate the anchor and
+        // have no height-0 block — are never retrofitted with a disconnected
+        // genesis; they keep their working history untouched.
+        let chain_is_empty = matches!(chain_store.root_block_count(), Ok(0))
+            && matches!(chain_store.get_latest_height(), Ok(None));
+        if chain_is_empty {
+            let genesis = crate::blocks::RootBlock::canonical_genesis();
+            match chain_store.put_root_block_with_fork_resolution(&genesis) {
+                Ok(_) => info!(
+                    "[CHAIN] Seeded canonical genesis anchor {} (ts={})",
+                    hex::encode(&genesis.hash()[..8]),
+                    genesis.timestamp
+                ),
+                Err(e) => warn!("[CHAIN] Failed to seed canonical genesis: {}", e),
+            }
+        }
+
         // 3.1. Rebuild space content index if needed (first run after upgrade)
         match chain_store.needs_index_rebuild() {
             Ok(true) => {
