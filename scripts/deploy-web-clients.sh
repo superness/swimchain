@@ -53,11 +53,19 @@ for client in "${CLIENTS[@]}"; do
     echo "   deployed to $host"
   done
 
-  # Post-deploy: the LIVE asset must carry the same markers.
+  # Post-deploy: the LIVE asset must carry the same markers. Retry: the fetch
+  # immediately after the atomic swap can race nginx's file cache (observed
+  # transient empty/404 that passes seconds later).
   live=$(curl -s "https://swimchain.io/$webroot/" | grep -o 'index-[A-Za-z0-9_-]*\.js' | head -1)
   for m in "${REQ[@]}"; do
-    curl -s "https://swimchain.io/$webroot/assets/$live" | grep -q "$m" || {
-      echo "FATAL: LIVE $client asset $live lacks '$m' — investigate immediately"; exit 1; }
+    ok=false
+    for attempt in 1 2 3; do
+      if curl -s "https://swimchain.io/$webroot/assets/$live" | grep -q "$m"; then
+        ok=true; break
+      fi
+      sleep 2
+    done
+    $ok || { echo "FATAL: LIVE $client asset $live lacks '$m' after 3 tries — investigate immediately"; exit 1; }
   done
   echo "   live $live verified"
 done
