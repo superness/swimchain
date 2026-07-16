@@ -45,7 +45,7 @@ const authorPrefix = AUTHOR.slice(0, 10);
 const GRID_W = 12, GRID_H = 12;
 const MAX_VITALITY = 6, CONTEST_DAMAGE = 2, CAPTURE_VITALITY = 1;
 const COST_GROW = 2, COST_CONTEST = 3, START_BUDGET = 8, MAX_BUDGET = 14, REGEN_BASE = 2;
-const BLOCKS_PER_EPOCH = 2; // keep in lockstep with the engine
+const EPOCH_MOVES = 8; // one tide per this-many well-formed reef moves (lockstep with the engine)
 const ActionType = { Reply: 3 };
 const POW_CONFIG = { memoryKib: 8192, iterations: 1, parallelism: 2 };
 const POW_DIFF = { 3: 8 }; // reply difficulty on testnet
@@ -179,8 +179,6 @@ function fold(reps, tip) {
     .sort((a, b) => a.block_height - b.block_height || (a.created_at ?? 0) - (b.created_at ?? 0) || seqCmp(a, b) || String(a.content_id).localeCompare(b.content_id));
   const pending = parsed.filter((r) => typeof r.block_height !== 'number')
     .sort((a, b) => seqCmp(a, b) || (a.created_at ?? 0) - (b.created_at ?? 0) || String(a.content_id).localeCompare(b.content_id));
-  const base = confirmed.length ? confirmed[0].block_height : (tip ?? 0);
-  const epochOf = (h) => Math.max(0, Math.floor((h - base) / BLOCKS_PER_EPOCH));
   const cells = new Map();
   const budgets = new Map();
   let epoch = 0;
@@ -211,8 +209,11 @@ function fold(reps, tip) {
     }
     budgets.set(me, have - cls.cost);
   };
-  for (const r of confirmed) { while (epoch < epochOf(r.block_height)) tick(); apply(r); }
-  if (typeof tip === 'number') { const te = epochOf(tip); while (epoch < te) tick(); }
+  // Tide driven by reef activity: one epoch per EPOCH_MOVES well-formed moves
+  // (mirrors reefEngine.foldReef). No global-tip advance — the reef only ages when
+  // the reef is played, so unrelated chain activity can't decay it.
+  let wellFormed = 0;
+  for (const r of confirmed) { apply(r); if (++wellFormed % EPOCH_MOVES === 0) tick(); }
   for (const r of pending) apply(r);
   return { cells, budget: budgets.get(AUTHOR) ?? START_BUDGET, outcomes, epoch };
 }
