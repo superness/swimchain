@@ -83,6 +83,8 @@ async function pollRoute() {
   try {
     const path = await invoke('poll_route');
     if (path) {
+      // Someone navigated to this app — raise our window or the user never sees it.
+      invoke('focus_self').catch(() => {});
       // Re-post a few times: on a cold start the client's NavListener may not be
       // mounted yet when the route arrives (and poll_route consumed the file).
       delivering = true;
