@@ -17002,6 +17002,21 @@ impl RpcMethods {
             }
         };
 
+        // Faucet is disabled on mainnet: auto-approve offers cannot be created
+        // there. Auto-approve roots sybils directly at genesis with no
+        // accountable human vouch — the mainnet sybil wall is manual (or
+        // space-scoped game) sponsorship. Manual offers (auto_approve = false)
+        // remain valid on any network; testnet/regtest keep auto-approve for dev.
+        if params.auto_approve
+            && crate::network::NetworkContext::mode() == crate::network::NetworkMode::Mainnet
+        {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "auto-approve sponsorship offers are disabled on mainnet; use a manual offer (auto_approve=false) or issue direct/space-scoped grants",
+                id,
+            );
+        }
+
         // Validate slots
         if params.slots < 1 || params.slots > 10 {
             return RpcResponse::error(
@@ -17621,7 +17636,13 @@ impl RpcMethods {
         // (claimant(32) || timestamp(8 BE)), so instant approval is only possible
         // when this node holds the sponsor identity (i.e. the offer was created by
         // this node's identity). Otherwise the claim stays pending as usual.
-        if offer.auto_approve {
+        //
+        // Faucet is disabled on mainnet: auto-approve does not auto-grant there;
+        // the claim stays pending for explicit manual approval (the mainnet sybil
+        // wall is human sponsorship). Testnet/regtest keep one-step onboarding.
+        let faucet_enabled =
+            crate::network::NetworkContext::mode() != crate::network::NetworkMode::Mainnet;
+        if offer.auto_approve && faucet_enabled {
             if self.node.keypair.public_key.as_bytes() == offer.sponsor.as_bytes() {
                 // Sign the exact message approve_sponsorship_claim expects the
                 // sponsor's client to sign, then run the same internal approval

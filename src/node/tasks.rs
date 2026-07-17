@@ -1063,8 +1063,17 @@ impl BackgroundTaskRunner {
                             .map(|d| d.as_secs())
                             .unwrap_or(0);
 
+                        // Faucet is disabled on mainnet: auto-approve offers do
+                        // NOT auto-grant. Claims stay pending for explicit manual
+                        // approval — the mainnet sybil wall is human sponsorship;
+                        // an auto-approve offer roots sybils directly at genesis
+                        // with no accountable vouch. Testnet/regtest keep
+                        // auto-approve for frictionless dev onboarding.
+                        let faucet_disabled = crate::network::NetworkContext::mode()
+                            == crate::network::NetworkMode::Mainnet;
+
                         for offer in own_offers {
-                            if !offer.auto_approve || offer.expires_at <= now {
+                            if !offer.auto_approve || offer.expires_at <= now || faucet_disabled {
                                 continue;
                             }
                             let claims = match offer_store.get_pending_claims(&offer.offer_id) {
