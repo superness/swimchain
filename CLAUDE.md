@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Testnet Genesis Identity
+
+The testnet's genesis sponsor identity (address, public key, and recovery seed) is documented in `GENESIS_IDENTITY.md` at the repo root. Its public key is hardcoded in `src/sponsorship/genesis_list.rs`. Import the seed with `sw --testnet --data-dir=<dir> identity import-seed <hex>` (password `testpass123`); a node holding it can `sw sponsor direct <address>` any identity. Do not lose or leak this seed — it holds sponsor privileges on the testnet.
+
 ## Build & Test Commands
 
 ```bash
