@@ -3,10 +3,11 @@
  * wiki links, tabs for Read/Edit/History/Discuss, and decay status.
  */
 
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { useWikiPage } from '../hooks/useWikiPage';
 import { useWikiNamespaces } from '../hooks/useWikiNamespaces';
+import { useNamespacePages, wikiSlug } from '../hooks/useNamespacePages';
 import { usePageEngagement } from '../hooks/usePageEngagement';
 import { useNodeIdentity } from '../hooks/useNodeIdentity';
 import { useIsSponsored } from '../hooks/useIsSponsored';
@@ -63,7 +64,9 @@ export function WikiPageView(): JSX.Element {
   const { namespaceId, pageId } = useParams<{ namespaceId: string; pageId: string }>();
   const { data: page, loading, error } = useWikiPage(pageId ?? null);
   const { data: namespaces } = useWikiNamespaces();
+  const { pages: nsPages } = useNamespacePages(namespaceId);
   const { rpc } = useRpc();
+  const navigate = useNavigate();
   const [activeTocId] = useState<string | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
 
@@ -115,8 +118,17 @@ export function WikiPageView(): JSX.Element {
     // Step 1: Render markdown to HTML
     const rawHtml = renderMarkdown(page.content);
 
-    // Step 2: Convert [[wiki links]] to anchors (no existing pages list yet)
-    const htmlWithLinks = parseWikiLinks(rawHtml, []);
+    // Step 2: Convert [[wiki links]] to anchors. Links to pages in THIS
+    // namespace resolve straight to their canonical /ns/... route (blue);
+    // anything else falls back to /wiki/<slug>, resolved cross-namespace at
+    // click time (red until it exists somewhere).
+    const bySlug = new Map(nsPages.map((p) => [wikiSlug(p.title), p.contentId]));
+    const htmlWithLinks = parseWikiLinks(rawHtml, [], (pageName) => {
+      const contentId = bySlug.get(wikiSlug(pageName));
+      return contentId && namespaceId
+        ? `/ns/${encodeURIComponent(namespaceId)}/page/${encodeURIComponent(contentId)}`
+        : null;
+    });
 
     // Step 3: Rewrite node-media images (`swim:<hash>`) so they resolve via get_media
     // once mounted, instead of the browser trying to load an unloadable ref.
@@ -126,7 +138,24 @@ export function WikiPageView(): JSX.Element {
     const tocItems = extractTableOfContents(htmlWithMedia);
 
     return { renderedHtml: htmlWithMedia, toc: tocItems };
-  }, [page?.content]);
+  }, [page?.content, nsPages, namespaceId]);
+
+  // SPA-navigate wikilinks. The rendered body is injected HTML, so its anchors
+  // bypass react-router; without this every [[wikilink]] is a full page load —
+  // fine behind a server with SPA fallback, a 404 in the desktop app-shell's
+  // static host.
+  const handleContentClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const anchor = (e.target as HTMLElement).closest('a');
+      if (!anchor) return;
+      const href = anchor.getAttribute('href');
+      if (!href || !href.startsWith('/')) return; // external / hash links keep default behavior
+      e.preventDefault();
+      navigate(href);
+    },
+    [navigate],
+  );
 
   // Resolve node-hosted images (data-swim) by fetching their bytes via get_media.
   useEffect(() => {
@@ -237,9 +266,11 @@ export function WikiPageView(): JSX.Element {
             )}
 
             {/* Rendered page content */}
+            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events */}
             <div
               ref={contentRef}
               className="wiki-page-content"
+              onClick={handleContentClick}
               dangerouslySetInnerHTML={{ __html: renderedHtml }}
             />
           </div>

@@ -8,7 +8,7 @@
  * The claim protocol mirrors the node's canonical contract (verified against
  * `claim_sponsorship_offer` in src/rpc/methods.rs), NOT chat's legacy rpc.ts
  * wrappers which send the wrong param names (`claimant_pk`/`content_id`):
- *   - PoW:  sha256(pow_nonce_space(32) || pow_nonce_le(8)) with N leading zero bytes
+ *   - PoW:  sha256(pow_nonce_space(32) || pow_nonce_le(8)) with N leading zero BITS
  *   - sig:  offer_id(16) || claimant(32) || timestamp(8 BE) || pow_hash(32)
  *
  * Signing routes through useChatIdentity().sign, so it works in BOTH node
@@ -53,10 +53,14 @@ interface ClaimResult {
 
 /**
  * Mine SHA-256 PoW: find a nonce where sha256(nonceSpace || nonce_le) has
- * `minZeroBytes` leading zero bytes. Matches the node's verification exactly.
+ * `minZeroBits` leading zero BITS. The node validates bits (see
+ * claim_sponsorship_offer in src/rpc/methods.rs); this miner previously
+ * counted zero BYTES against the same number, over-mining 8x and exhausting
+ * the attempt cap on any offer with difficulty above ~24 — claims never
+ * completed and looked like a timeout.
  */
 async function mineSha256Pow(
-  minZeroBytes: number,
+  minZeroBits: number,
   onProgress?: (attempts: number) => void,
   isCancelled?: () => boolean,
 ): Promise<{ nonce: number; nonceSpace: Uint8Array; powHash: Uint8Array }> {
@@ -78,12 +82,17 @@ async function mineSha256Pow(
     const hashBuf = await crypto.subtle.digest('SHA-256', input);
     const hash = new Uint8Array(hashBuf);
 
-    let zeros = 0;
+    // Count leading zero bits (matches node-side count_leading_zero_bits)
+    let zeroBits = 0;
     for (const byte of hash) {
-      if (byte === 0) zeros++;
-      else break;
+      if (byte === 0) {
+        zeroBits += 8;
+        continue;
+      }
+      zeroBits += Math.clz32(byte) - 24;
+      break;
     }
-    if (zeros >= minZeroBytes) return { nonce, nonceSpace, powHash: hash };
+    if (zeroBits >= minZeroBits) return { nonce, nonceSpace, powHash: hash };
 
     nonce++;
     if (nonce % 500 === 0) {

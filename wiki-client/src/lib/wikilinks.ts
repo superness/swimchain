@@ -61,8 +61,15 @@ export function extractWikiLinks(md: string): WikiLink[] {
  *
  * @param html - HTML string (output of renderMarkdown) that may still contain [[...]] syntax
  * @param existingPages - Array of known page titles (case-insensitive match)
+ * @param hrefFor - Optional resolver: return the canonical route for a page title
+ *   (e.g. `/ns/<id>/page/<contentId>`), or null to fall back to the `/wiki/<slug>`
+ *   route, which resolves the slug across namespaces at click time.
  */
-export function parseWikiLinks(html: string, existingPages: string[]): string {
+export function parseWikiLinks(
+  html: string,
+  existingPages: string[],
+  hrefFor?: (pageName: string) => string | null,
+): string {
   const existingLower = new Set(existingPages.map((p) => p.toLowerCase()));
 
   return html.replace(/\[\[([^\]]+)\]\]/g, (_match, rawInner: unknown) => {
@@ -85,8 +92,9 @@ export function parseWikiLinks(html: string, existingPages: string[]): string {
       .replace(/[^\w\s-]/g, '')
       .replace(/\s+/g, '-');
 
-    const exists = existingLower.has(pageName.toLowerCase());
-    const href = `/wiki/${encodeURIComponent(slug)}`;
+    const resolved = hrefFor?.(pageName) ?? null;
+    const exists = resolved !== null || existingLower.has(pageName.toLowerCase());
+    const href = resolved ?? `/wiki/${encodeURIComponent(slug)}`;
 
     if (exists) {
       return `<a href="${href}" class="wiki-link">${displayText}</a>`;

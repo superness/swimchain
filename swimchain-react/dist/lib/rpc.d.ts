@@ -222,7 +222,10 @@ export declare class SwimchainRpc {
         status: string;
         message: string;
     }>;
-    getReplies(contentId: string): Promise<{
+    getReplies(contentId: string, opts?: {
+        limit?: number;
+        offset?: number;
+    }): Promise<{
         parent_id: string;
         replies: ReplyResult[];
         total_count: number;

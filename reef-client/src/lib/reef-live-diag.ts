@@ -39,7 +39,7 @@ function parseHeader(body: string): ReefHeader {
 const main = async () => {
   const post = await rpc('get_content', { content_id: REGION });
   const header = parseHeader(post.body ?? '');
-  const { replies } = await rpc('get_replies', { content_id: REGION });
+  const { replies } = await rpc('get_replies', { content_id: REGION, limit: 100000 });
   const info = await rpc('get_info', {}).catch(() => ({} as any));
   const tip = typeof info.block_height === 'number' ? info.block_height : undefined;
 

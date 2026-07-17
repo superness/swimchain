@@ -9,6 +9,7 @@ import { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useRpc } from '../hooks/useRpc';
 import { useChatIdentity } from '../hooks/useChatIdentity';
+import { SpaceBrowserModal } from './SpaceBrowserModal';
 import './ServerList.css';
 
 interface Server {
@@ -23,8 +24,8 @@ interface ServerListProps {
   servers: Server[];
   currentServerId?: string;
   onServerSelect?: (serverId: string) => void;
-  /** Called after a server is hidden via right-click (refetch the list). */
-  onServerHidden?: () => void;
+  /** Called after the followed set changes (join/leave/hide) — refetch the list. */
+  onServersChanged?: () => void;
 }
 
 /**
@@ -106,12 +107,15 @@ function ServerIcon({
   );
 }
 
-export function ServerList({ servers, currentServerId, onServerSelect: _onServerSelect, onServerHidden }: ServerListProps) {
+export function ServerList({ servers, currentServerId, onServerSelect: _onServerSelect, onServersChanged }: ServerListProps) {
   const { rpc } = useRpc();
   const { identity } = useChatIdentity();
-  // Right-click → hide-a-space. Hiding is a node-side pref, so the space
-  // disappears from every client's browse surfaces, not just chat's rail.
+  const navigate = useNavigate();
+  // Right-click → leave (unfollow) or hide. Both are node-side prefs, so they
+  // apply to every client's surfaces, not just chat's rail.
   const [menu, setMenu] = useState<{ x: number; y: number; server: Server } | null>(null);
+  // "+" button → browse/join modal (Discord's "add a server").
+  const [showBrowser, setShowBrowser] = useState(false);
 
   useEffect(() => {
     if (!menu) return;
@@ -138,9 +142,23 @@ export function ServerList({ servers, currentServerId, onServerSelect: _onServer
     if (!target || !rpc || !identity?.publicKey) return;
     try {
       await rpc.call('hide_space', { user: identity.publicKey, space_id: target.id });
-      onServerHidden?.();
+      onServersChanged?.();
     } catch (e) {
       console.warn('[HideSpace] hide_space failed:', e);
+    }
+  };
+
+  const leaveServer = async () => {
+    const target = menu?.server;
+    setMenu(null);
+    if (!target || !rpc || !identity?.publicKey) return;
+    try {
+      await rpc.call('unfollow_space', { user: identity.publicKey, space_id: target.id });
+      onServersChanged?.();
+      // Don't strand the user inside a server they just left.
+      if (target.id === currentServerId) navigate('/channels/@me');
+    } catch (e) {
+      console.warn('[LeaveSpace] unfollow_space failed:', e);
     }
   };
 
@@ -175,6 +193,22 @@ export function ServerList({ servers, currentServerId, onServerSelect: _onServer
         ))}
       </div>
 
+      {/* + : browse public spaces / join a private channel */}
+      <div className="server-icon-wrapper">
+        <div className="server-pill" />
+        <button
+          type="button"
+          className="server-icon add-server"
+          title="Join a space"
+          aria-label="Join a space"
+          onClick={() => setShowBrowser(true)}
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" />
+          </svg>
+        </button>
+      </div>
+
       {menu && (
         <div
           className="server-context-menu"
@@ -182,12 +216,23 @@ export function ServerList({ servers, currentServerId, onServerSelect: _onServer
           role="menu"
           onClick={(e) => e.stopPropagation()}
         >
+          <button type="button" className="server-context-menu__item" role="menuitem" onClick={leaveServer}>
+            👋 Leave “{menu.server.name}”
+          </button>
           <button type="button" className="server-context-menu__item" role="menuitem" onClick={hideServer}>
             🚫 Hide “{menu.server.name}”
           </button>
-          <div className="server-context-menu__hint">Hidden everywhere · undo in feed Settings</div>
+          <div className="server-context-menu__hint">
+            Leave removes it from your sidebar · Hide hides it everywhere (undo in feed Settings)
+          </div>
         </div>
       )}
+
+      <SpaceBrowserModal
+        isOpen={showBrowser}
+        onClose={() => setShowBrowser(false)}
+        onChanged={onServersChanged}
+      />
     </nav>
   );
 }
