@@ -3537,6 +3537,13 @@ impl RpcMethods {
             }
         };
 
+        // SPONSORSHIP CHECK: Verify identity is sponsored before allowing the
+        // edit (consistent with submit_post/reply/engagement — Edit is
+        // consensus-gated on sponsorship like the other content actions).
+        if let Err(response) = self.check_identity_sponsored(&params.author_id, &id) {
+            return response;
+        }
+
         // Look up original content and verify authorship
         let (space_id_bytes, thread_id, original_author) = {
             let mut found_space_id: Option<[u8; 32]> = None;

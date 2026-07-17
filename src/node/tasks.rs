@@ -2642,28 +2642,35 @@ impl BackgroundTaskRunner {
                             }
                         }
 
-                        // Validate CreateSpace actions require valid sponsorship
+                        // Sponsorship gate: every action producing durable public
+                        // on-chain state (Post/Reply/Engage/Edit/CreateSpace/
+                        // RenameSpace — see ActionType::requires_sponsored_author)
+                        // must be authored by a sponsored identity. This is the
+                        // sybil wall; a self-minted identity can do nothing until a
+                        // Sponsor grant anchors it in the tree. Kept symmetric with
+                        // the block-ingest gate in the router.
                         let mut block_is_valid = true;
                         if let Some(ref ss) = sponsorship_store {
                             'validation: for content_block in &content_blocks {
                                 for action in &content_block.actions {
-                                    if action.action_type == crate::blocks::ActionType::CreateSpace {
+                                    if action.action_type.requires_sponsored_author() {
                                         let creator_bytes = action.actor;
                                         let creator_pk = crate::types::identity::PublicKey::from_bytes(creator_bytes);
 
                                         // Check if sponsored on-chain OR in this block OR a
                                         // hardcoded genesis identity (genesis is the sponsor
                                         // root and never has a sponsorship_store record, so
-                                        // without this its own CreateSpace actions would fail
-                                        // validation and reject the whole block — a bootstrap
-                                        // deadlock on a fresh chain).
+                                        // without this its own actions would fail validation
+                                        // and reject the whole block — a bootstrap deadlock
+                                        // on a fresh chain).
                                         let is_sponsored_on_chain = ss.exists(&creator_pk).unwrap_or(false);
                                         let is_sponsored_in_block = identities_sponsored_in_block.contains(&creator_bytes);
                                         let is_genesis = crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&creator_pk);
 
                                         if !is_sponsored_on_chain && !is_sponsored_in_block && !is_genesis {
                                             warn!(
-                                                "[BLOCKS] VALIDATION FAILED: Block contains CreateSpace by unsponsored identity {}. Block rejected.",
+                                                "[BLOCKS] VALIDATION FAILED: Block contains {:?} by unsponsored identity {}. Block rejected.",
+                                                action.action_type,
                                                 hex::encode(&creator_bytes[..8])
                                             );
                                             block_is_valid = false;

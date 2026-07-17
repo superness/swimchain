@@ -139,6 +139,42 @@ pub enum ActionType {
     RenameSpace = 0x0F,
 }
 
+impl ActionType {
+    /// Whether an action of this type requires its author to be sponsored to be
+    /// valid at the consensus layer — i.e. present in the sponsorship tree
+    /// (`sponsorship_store`), sponsored within the same block, or a hardcoded
+    /// genesis identity.
+    ///
+    /// This is the single source of truth for the "participation is gated on
+    /// sponsorship" rule — the sybil wall. Reputation up-chains through the
+    /// sponsorship tree, so every actor that produces durable public on-chain
+    /// state must be anchored in that tree and therefore accountable. It governs
+    /// the public content and space-metadata actions.
+    ///
+    /// It deliberately EXCLUDES:
+    /// - `Sponsor` / `GenesisRegister` — the grants themselves, authenticated
+    ///   separately in the sponsorship apply path (`Sponsor`'s actor must already
+    ///   be genesis/Active; genesis self-registers). Gating these on prior
+    ///   sponsorship would deadlock the tree's own root.
+    /// - Private-space / DM admin actions (`Invite`, `Leave`, `Kick`,
+    ///   `RevokeInvite`, `KeyRotation`, `DMRequest`, `AcceptDM`, `DeclineDM`) —
+    ///   peers do not apply these; their authorization is deferred to the
+    ///   private-space membership work, and an unsponsored identity cannot become
+    ///   a private-space admin anyway (it cannot create the space).
+    #[must_use]
+    pub fn requires_sponsored_author(&self) -> bool {
+        matches!(
+            self,
+            ActionType::CreateSpace
+                | ActionType::Post
+                | ActionType::Reply
+                | ActionType::Engage
+                | ActionType::Edit
+                | ActionType::RenameSpace
+        )
+    }
+}
+
 impl TryFrom<u8> for ActionType {
     type Error = ActionError;
 
@@ -936,7 +972,6 @@ impl Action {
         self.action_type == ActionType::RenameSpace
     }
 
-
     /// Get the target space id for a RenameSpace action
     #[must_use]
     pub fn rename_target_space_id(&self) -> Option<[u8; 32]> {
@@ -992,6 +1027,45 @@ impl Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requires_sponsored_author_gates_durable_public_actions() {
+        // The sybil wall: everything that produces durable public on-chain state
+        // must be authored by a sponsored identity.
+        for t in [
+            ActionType::CreateSpace,
+            ActionType::Post,
+            ActionType::Reply,
+            ActionType::Engage,
+            ActionType::Edit,
+            ActionType::RenameSpace,
+        ] {
+            assert!(
+                t.requires_sponsored_author(),
+                "{t:?} must be sponsorship-gated"
+            );
+        }
+        // The grants themselves are authenticated separately (gating them on
+        // prior sponsorship would deadlock the tree root); private-space/DM admin
+        // authorization is deferred and peers do not apply those actions.
+        for t in [
+            ActionType::Sponsor,
+            ActionType::GenesisRegister,
+            ActionType::Invite,
+            ActionType::Leave,
+            ActionType::Kick,
+            ActionType::RevokeInvite,
+            ActionType::KeyRotation,
+            ActionType::DMRequest,
+            ActionType::AcceptDM,
+            ActionType::DeclineDM,
+        ] {
+            assert!(
+                !t.requires_sponsored_author(),
+                "{t:?} must NOT be sponsorship-gated"
+            );
+        }
+    }
 
     fn make_test_action() -> Action {
         Action {

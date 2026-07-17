@@ -3982,7 +3982,13 @@ impl MessageRouter {
                 }
             }
 
-            // PHASE 2: VALIDATION - Check CreateSpace actions have valid sponsorship
+            // PHASE 2: VALIDATION - Every action that produces durable public
+            // on-chain state must be authored by a sponsored identity (the sybil
+            // wall — participation is gated on sponsorship, reputation up-chains
+            // through the tree). This covers Post/Reply/Engage/Edit/CreateSpace/
+            // RenameSpace via `ActionType::requires_sponsored_author`; Sponsor and
+            // GenesisRegister are authenticated separately in the apply path and
+            // are deliberately excluded.
             let block_is_valid = if let Some(ref ss) = self.sponsorship_store {
                 // Collect all Sponsor actions in this block
                 let mut identities_sponsored_in_block = std::collections::HashSet::new();
@@ -3996,15 +4002,14 @@ impl MessageRouter {
                     }
                 }
 
-                // Validate all CreateSpace actions. Hardcoded genesis
-                // identities pass without a store record (the sponsor root
-                // has none — same bootstrap deadlock handled in the builder
-                // filter, the tasks.rs formation validation, and the
+                // Hardcoded genesis identities pass without a store record (the
+                // sponsor root has none — same bootstrap deadlock handled in the
+                // builder filter, the tasks.rs formation validation, and the
                 // sponsorship apply).
                 let mut is_valid = true;
-                for content_block in &parsed_content_blocks {
+                'outer: for content_block in &parsed_content_blocks {
                     for action in &content_block.actions {
-                        if action.action_type == crate::blocks::ActionType::CreateSpace {
+                        if action.action_type.requires_sponsored_author() {
                             let creator_bytes = action.actor;
                             let creator_pk =
                                 crate::types::identity::PublicKey::from_bytes(creator_bytes);
@@ -4017,17 +4022,20 @@ impl MessageRouter {
 
                             if !is_sponsored_on_chain && !is_sponsored_in_block && !is_genesis {
                                 warn!(
-                                    "[BLOCK] VALIDATION FAILED: Block {} contains CreateSpace by unsponsored identity {}",
+                                    "[BLOCK] VALIDATION FAILED: Block {} contains {:?} by unsponsored identity {}",
                                     hex::encode(&computed_hash[..8]),
+                                    action.action_type,
                                     hex::encode(&creator_bytes[..8])
                                 );
                                 is_valid = false;
-                                break;
+                                break 'outer;
                             }
+                        }
 
-                            // Class-byte check: the space id's class byte (space_id_16[0])
-                            // must be a known SpaceClass, or the CreateSpace action is
-                            // malformed and must be rejected before it ever reaches storage.
+                        // Class-byte check: the space id's class byte (space_id_16[0])
+                        // must be a known SpaceClass, or the CreateSpace action is
+                        // malformed and must be rejected before it ever reaches storage.
+                        if action.action_type == crate::blocks::ActionType::CreateSpace {
                             if let Some(space_id_32) = action.content_hash {
                                 let mut space_id_16 = [0u8; 16];
                                 space_id_16.copy_from_slice(&space_id_32[..16]);
@@ -4038,13 +4046,10 @@ impl MessageRouter {
                                         space_id_16[0]
                                     );
                                     is_valid = false;
-                                    break;
+                                    break 'outer;
                                 }
                             }
                         }
-                    }
-                    if !is_valid {
-                        break;
                     }
                 }
                 is_valid
@@ -5778,6 +5783,37 @@ impl MessageRouter {
                 return Err(RouteError::SubsystemUnavailable("block_builder"));
             }
         };
+
+        // SPONSORSHIP GATE: participation is gated on sponsorship (the sybil
+        // wall). Keep unsponsored content/space actions out of the mempool so we
+        // never propagate or build a block a peer would reject on the consensus
+        // sponsorship gate. This mirrors that gate (see the PHASE 2 validation in
+        // `handle_blocks` and `ActionType::requires_sponsored_author`), and is
+        // lenient on the transient onboarding race: an actor with a pending
+        // Sponsor for them already in our own mempool is admitted. Skipped when
+        // no sponsorship_store is configured (e.g. bare test routers).
+        if action.action_type.requires_sponsored_author() {
+            if let Some(ref ss) = self.sponsorship_store {
+                let actor_pk = crate::types::identity::PublicKey::from_bytes(action.actor);
+                let sponsored = ss.exists(&actor_pk).unwrap_or(false)
+                    || crate::sponsorship::is_in_hardcoded_genesis_list(&actor_pk)
+                    || block_builder.read().map_or(false, |bb_read| {
+                        bb_read.get_pending_actions().iter().any(|(_, _, a)| {
+                            a.action_type == crate::blocks::ActionType::Sponsor
+                                && a.content_hash == Some(action.actor)
+                        })
+                    });
+                if !sponsored {
+                    warn!(
+                        "[MEMPOOL] Dropping {:?} from peer {} by unsponsored identity {} (sponsorship gate)",
+                        action.action_type,
+                        hex::encode(&peer_id[..8]),
+                        hex::encode(&action.actor[..8])
+                    );
+                    return Ok(None);
+                }
+            }
+        }
 
         // Compute action hash for deduplication check
         let action_hash = BlockBuilder::action_hash(&action);

@@ -954,22 +954,24 @@ impl BlockBuilder {
             }
         }
 
-        // Filter out CreateSpace actions that would fail validation
-        // A CreateSpace is valid ONLY if the creator is:
+        // Filter out actions that would fail the consensus sponsorship gate, so
+        // we never form a block a peer would reject. Every action producing
+        // durable public on-chain state (Post/Reply/Engage/Edit/CreateSpace/
+        // RenameSpace — see ActionType::requires_sponsored_author) is valid ONLY
+        // if its author is:
         // 1. Already sponsored on-chain (in sponsorship_store), OR
         // 2. Being sponsored in this block (Sponsor action in this batch), OR
         // 3. A hardcoded genesis identity (the sponsor ROOT usually has no
-        //    store record of its own — without this fallback the builder
-        //    silently dropped genesis's own CreateSpace from every block it
-        //    formed, so a genesis-created space never mined; same bootstrap
-        //    deadlock as the CreateSpace validation in tasks.rs and the
+        //    store record of its own — without this fallback the builder would
+        //    silently drop genesis's own actions from every block it formed;
+        //    same bootstrap deadlock as the validation in tasks.rs and the
         //    sponsorship apply in the router).
         let mut removed_actions = Vec::new();
         for threads in space_threads.values_mut() {
             for thread in threads {
                 let original_count = thread.actions.len();
                 thread.actions.retain(|action| {
-                    if action.action_type == crate::blocks::ActionType::CreateSpace {
+                    if action.action_type.requires_sponsored_author() {
                         let creator_bytes = action.actor;
 
                         // Check if sponsored in this batch
@@ -979,11 +981,16 @@ impl BlockBuilder {
                         let creator_pk =
                             crate::types::identity::PublicKey::from_bytes(creator_bytes);
 
-                        // Check if sponsored on-chain
+                        // Check if sponsored on-chain. With no store configured
+                        // we cannot verify and must NOT gate — keep the action,
+                        // matching the block-validation gates (tasks.rs / router),
+                        // which treat a missing store as "valid". A real node
+                        // always has a store; a store-less builder is a test/
+                        // degenerate case that must not silently drop all content.
                         let sponsored_on_chain = if let Some(store) = sponsorship_store {
                             store.exists(&creator_pk).unwrap_or(false)
                         } else {
-                            false // No store = can't verify, exclude to be safe
+                            true
                         };
 
                         // Hardcoded genesis identities are always eligible.
@@ -994,8 +1001,9 @@ impl BlockBuilder {
 
                         if !sponsored_on_chain && !sponsored_in_batch && !is_genesis {
                             log::warn!(
-                                "[BLOCK_BUILDER] Excluding CreateSpace by {} from block: \
-                                creator not sponsored on-chain and no Sponsor action in batch",
+                                "[BLOCK_BUILDER] Excluding {:?} by {} from block: \
+                                author not sponsored on-chain and no Sponsor action in batch",
+                                action.action_type,
                                 hex::encode(&creator_bytes[..8])
                             );
                             removed_actions.push(action.clone());
@@ -1463,6 +1471,90 @@ mod tests {
         assert_eq!(builder.difficulty_target(), 30);
         assert_eq!(builder.pending_action_count(), 0);
         assert_eq!(builder.pending_thread_count(), 0);
+    }
+
+    #[test]
+    fn build_root_block_filters_unsponsored_content_actions() {
+        // The sybil wall at the formation layer: a self-minted, unsponsored
+        // identity's Post is dropped before it can enter a block, while a
+        // sponsored identity's Post is kept. Mirrors the consensus block-ingest
+        // gate so we never form a block a peer would reject.
+        use crate::sponsorship::types::{SponsorshipStatus, StoredSponsorship};
+        use crate::sponsorship::SponsorshipStore;
+        use crate::types::identity::PublicKey;
+
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let store = SponsorshipStore::from_db(&db).unwrap();
+
+        let sponsored_actor = [7u8; 32];
+        let unsponsored_actor = [9u8; 32];
+
+        store
+            .put(&StoredSponsorship {
+                sponsored_identity: PublicKey::from_bytes(sponsored_actor),
+                sponsor: Some(PublicKey::from_bytes([1u8; 32])),
+                creation_timestamp: 1000,
+                status: SponsorshipStatus::Active,
+                penalty_until: None,
+                depth: 1,
+                probationary: false,
+                probation_expires: None,
+                positive_contribution_score: 0,
+                is_genesis: false,
+                orphaned_at: None,
+            })
+            .unwrap();
+        assert!(store
+            .exists(&PublicKey::from_bytes(sponsored_actor))
+            .unwrap());
+
+        let mk_post = |actor: [u8; 32], content: [u8; 32]| Action {
+            action_type: ActionType::Post,
+            actor,
+            timestamp: TEST_ACTION_COUNTER.fetch_add(1, Ordering::Relaxed),
+            content_hash: Some(content),
+            parent_id: None,
+            pow_nonce: 1,
+            pow_work: 1,
+            pow_target: [0u8; 32],
+            signature: [0u8; 64],
+            emoji: None,
+            media_refs: vec![],
+            display_name: None,
+            replaces_pending: None,
+            private: false,
+        };
+
+        let mut builder = BlockBuilder::new(1);
+        let space_id = [1u8; 32];
+        builder.add_action(
+            [1u8; 32],
+            space_id,
+            mk_post(sponsored_actor, [11u8; 32]),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [2u8; 32],
+            space_id,
+            mk_post(unsponsored_actor, [22u8; 32]),
+            BranchPath::root(),
+        );
+
+        let (_root, _spaces, content_blocks) =
+            builder.build_root_block(2000, [1u8; 32], Some(&store));
+
+        let actors: Vec<[u8; 32]> = content_blocks
+            .iter()
+            .flat_map(|cb| cb.actions.iter().map(|a| a.actor))
+            .collect();
+        assert!(
+            actors.contains(&sponsored_actor),
+            "sponsored Post must be included"
+        );
+        assert!(
+            !actors.contains(&unsponsored_actor),
+            "unsponsored Post must be filtered out by the sponsorship gate"
+        );
     }
 
     #[test]
@@ -2227,7 +2319,12 @@ mod tests {
     /// Sponsor action in batch") and the space never mined.
     #[test]
     fn test_genesis_create_space_survives_builder_filter() {
+        use crate::sponsorship::SponsorshipStore;
         use crate::types::identity::PublicKey;
+
+        // The hardcoded genesis identities are network-gated; the key below is
+        // the testnet root.
+        crate::network::NetworkContext::set_mode(crate::network::NetworkMode::Testnet);
 
         // Real hardcoded testnet genesis pubkey (genesis_list.rs).
         let genesis: [u8; 32] = [
@@ -2256,8 +2353,15 @@ mod tests {
         let mut builder = BlockBuilder::new(0);
         builder.add_action(space_id_32, space_id_32, action, BranchPath::root());
 
-        // No sponsorship store at all — previously guaranteed exclusion.
-        let (root, _spaces, contents) = builder.build_root_block(1_700_000_000, [0u8; 32], None);
+        // Real (empty) sponsorship store present: genesis has NO record of its
+        // own, yet its CreateSpace must survive the sponsorship filter via the
+        // hardcoded-genesis-list fallback — the exact bootstrap case the filter
+        // must not break. (A missing store is now lenient, so we must supply one
+        // to exercise the genesis path rather than the no-store path.)
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let store = SponsorshipStore::from_db(&db).unwrap();
+        let (root, _spaces, contents) =
+            builder.build_root_block(1_700_000_000, [0u8; 32], Some(&store));
 
         let kept: usize = contents
             .iter()
