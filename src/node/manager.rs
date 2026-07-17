@@ -983,6 +983,16 @@ impl NodeManager {
                                                     warn!("[SPONSORSHIP] Failed to rebuild sponsorship for {}: {}",
                                                         hex::encode(sponsee_bytes), e);
                                                 } else {
+                                                    // Re-record space-scope for space-limited grants
+                                                    // (absence = global) so scoped identities stay
+                                                    // confined across restarts/rebuilds.
+                                                    if let Some(scope) = action.sponsor_scope() {
+                                                        let _ = self
+                                                            .sponsorship_store
+                                                            .as_ref()
+                                                            .unwrap()
+                                                            .set_scope(&sponsee_pk, &scope);
+                                                    }
                                                     rebuilt_count += 1;
                                                 }
                                             }

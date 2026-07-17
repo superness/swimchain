@@ -938,16 +938,16 @@ impl BlockBuilder {
                 .push(thread);
         }
 
-        // DEPENDENCY CHECK: Ensure CreateSpace actions have required Sponsor actions
-        // Collect all Sponsor actions in this batch
-        let mut identities_sponsored_in_batch: std::collections::HashSet<[u8; 32]> =
-            std::collections::HashSet::new();
+        // DEPENDENCY CHECK: collect this batch's Sponsor grants keyed by sponsee
+        // -> scope (Some(space) = space-limited, None = global).
+        let mut sponsored_in_batch: std::collections::HashMap<[u8; 32], Option<[u8; 32]>> =
+            std::collections::HashMap::new();
         for threads in space_threads.values() {
             for thread in threads {
                 for action in &thread.actions {
                     if action.action_type == crate::blocks::ActionType::Sponsor {
                         if let Some(sponsee_bytes) = action.content_hash {
-                            identities_sponsored_in_batch.insert(sponsee_bytes);
+                            sponsored_in_batch.insert(sponsee_bytes, action.sponsor_scope());
                         }
                     }
                 }
@@ -958,53 +958,42 @@ impl BlockBuilder {
         // we never form a block a peer would reject. Every action producing
         // durable public on-chain state (Post/Reply/Engage/Edit/CreateSpace/
         // RenameSpace — see ActionType::requires_sponsored_author) is valid ONLY
-        // if its author is:
-        // 1. Already sponsored on-chain (in sponsorship_store), OR
-        // 2. Being sponsored in this block (Sponsor action in this batch), OR
-        // 3. A hardcoded genesis identity (the sponsor ROOT usually has no
-        //    store record of its own — without this fallback the builder would
-        //    silently drop genesis's own actions from every block it formed;
-        //    same bootstrap deadlock as the validation in tasks.rs and the
-        //    sponsorship apply in the router).
+        // if its author is authorized in that action's (thread's) space:
+        // 1. Genesis (the sponsor ROOT, no store record) — acts anywhere, OR
+        // 2. Sponsored on-chain: globally (anywhere) or scoped to this space, OR
+        // 3. Sponsored in this batch (honoring that grant's scope).
+        // With no store configured we cannot verify and must NOT gate — keep the
+        // action (matches the block-validation gates); a real node always has a
+        // store, and a store-less builder is a test/degenerate case that must not
+        // silently drop all content.
         let mut removed_actions = Vec::new();
         for threads in space_threads.values_mut() {
             for thread in threads {
+                let space = thread.space_id;
                 let original_count = thread.actions.len();
                 thread.actions.retain(|action| {
                     if action.action_type.requires_sponsored_author() {
                         let creator_bytes = action.actor;
-
-                        // Check if sponsored in this batch
-                        let sponsored_in_batch =
-                            identities_sponsored_in_batch.contains(&creator_bytes);
-
                         let creator_pk =
                             crate::types::identity::PublicKey::from_bytes(creator_bytes);
 
-                        // Check if sponsored on-chain. With no store configured
-                        // we cannot verify and must NOT gate — keep the action,
-                        // matching the block-validation gates (tasks.rs / router),
-                        // which treat a missing store as "valid". A real node
-                        // always has a store; a store-less builder is a test/
-                        // degenerate case that must not silently drop all content.
-                        let sponsored_on_chain = if let Some(store) = sponsorship_store {
-                            store.exists(&creator_pk).unwrap_or(false)
-                        } else {
-                            true
+                        let authorized_on_chain = match sponsorship_store {
+                            Some(store) => store.is_authorized_in_space(&creator_pk, &space),
+                            None => true,
+                        };
+                        let authorized_in_batch = match sponsored_in_batch.get(&creator_bytes) {
+                            Some(Some(scope)) => *scope == space,
+                            Some(None) => true,
+                            None => false,
                         };
 
-                        // Hardcoded genesis identities are always eligible.
-                        let is_genesis =
-                            crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(
-                                &creator_pk,
-                            );
-
-                        if !sponsored_on_chain && !sponsored_in_batch && !is_genesis {
+                        if !authorized_on_chain && !authorized_in_batch {
                             log::warn!(
                                 "[BLOCK_BUILDER] Excluding {:?} by {} from block: \
-                                author not sponsored on-chain and no Sponsor action in batch",
+                                author not authorized in space {}",
                                 action.action_type,
-                                hex::encode(&creator_bytes[..8])
+                                hex::encode(&creator_bytes[..8]),
+                                hex::encode(&space[..8])
                             );
                             removed_actions.push(action.clone());
                             return false; // Exclude from block
@@ -1554,6 +1543,91 @@ mod tests {
         assert!(
             !actors.contains(&unsponsored_actor),
             "unsponsored Post must be filtered out by the sponsorship gate"
+        );
+    }
+
+    #[test]
+    fn build_root_block_confines_scoped_identity_to_its_scope_space() {
+        // A space-scoped (e.g. game) identity may author in its scope space but
+        // NOT in any other space — the containment the whole scoped-sponsorship
+        // design rests on. Same actor posts into two spaces; only the in-scope
+        // one survives the builder's sponsorship gate.
+        use crate::sponsorship::types::{SponsorshipStatus, StoredSponsorship};
+        use crate::sponsorship::SponsorshipStore;
+        use crate::types::identity::PublicKey;
+
+        let db = sled::Config::new().temporary(true).open().unwrap();
+        let store = SponsorshipStore::from_db(&db).unwrap();
+
+        let scoped_actor = [7u8; 32];
+        let space_x = [0x01u8; 32]; // the scope
+        let space_y = [0x02u8; 32]; // off-scope
+
+        store
+            .put(&StoredSponsorship {
+                sponsored_identity: PublicKey::from_bytes(scoped_actor),
+                sponsor: Some(PublicKey::from_bytes([1u8; 32])),
+                creation_timestamp: 1000,
+                status: SponsorshipStatus::Active,
+                penalty_until: None,
+                depth: 1,
+                probationary: false,
+                probation_expires: None,
+                positive_contribution_score: 0,
+                is_genesis: false,
+                orphaned_at: None,
+            })
+            .unwrap();
+        store
+            .set_scope(&PublicKey::from_bytes(scoped_actor), &space_x)
+            .unwrap();
+
+        let mk_post = |content: [u8; 32]| Action {
+            action_type: ActionType::Post,
+            actor: scoped_actor,
+            timestamp: TEST_ACTION_COUNTER.fetch_add(1, Ordering::Relaxed),
+            content_hash: Some(content),
+            parent_id: None,
+            pow_nonce: 1,
+            pow_work: 1,
+            pow_target: [0u8; 32],
+            signature: [0u8; 64],
+            emoji: None,
+            media_refs: vec![],
+            display_name: None,
+            replaces_pending: None,
+            private: false,
+        };
+
+        let mut builder = BlockBuilder::new(1);
+        builder.add_action(
+            [0x11u8; 32],
+            space_x,
+            mk_post([0xAAu8; 32]),
+            BranchPath::root(),
+        );
+        builder.add_action(
+            [0x22u8; 32],
+            space_y,
+            mk_post([0xBBu8; 32]),
+            BranchPath::root(),
+        );
+
+        let (_root, _spaces, content_blocks) =
+            builder.build_root_block(2000, [1u8; 32], Some(&store));
+
+        let spaces_with_actions: Vec<[u8; 32]> = content_blocks
+            .iter()
+            .filter(|cb| cb.actions.iter().any(|a| a.actor == scoped_actor))
+            .map(|cb| cb.space_id)
+            .collect();
+        assert!(
+            spaces_with_actions.contains(&space_x),
+            "in-scope post must be kept"
+        );
+        assert!(
+            !spaces_with_actions.contains(&space_y),
+            "off-scope post must be dropped by the scope gate"
         );
     }
 

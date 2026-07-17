@@ -3990,13 +3990,15 @@ impl MessageRouter {
             // GenesisRegister are authenticated separately in the apply path and
             // are deliberately excluded.
             let block_is_valid = if let Some(ref ss) = self.sponsorship_store {
-                // Collect all Sponsor actions in this block
-                let mut identities_sponsored_in_block = std::collections::HashSet::new();
+                // Collect all Sponsor actions in this block, keyed by sponsee to
+                // their grant scope (Some(space) = space-limited, None = global).
+                let mut sponsored_in_block: std::collections::HashMap<[u8; 32], Option<[u8; 32]>> =
+                    std::collections::HashMap::new();
                 for content_block in &parsed_content_blocks {
                     for action in &content_block.actions {
                         if action.action_type == crate::blocks::ActionType::Sponsor {
                             if let Some(sponsee_bytes) = action.content_hash {
-                                identities_sponsored_in_block.insert(sponsee_bytes);
+                                sponsored_in_block.insert(sponsee_bytes, action.sponsor_scope());
                             }
                         }
                     }
@@ -4005,27 +4007,31 @@ impl MessageRouter {
                 // Hardcoded genesis identities pass without a store record (the
                 // sponsor root has none — same bootstrap deadlock handled in the
                 // builder filter, the tasks.rs formation validation, and the
-                // sponsorship apply).
+                // sponsorship apply). A space-scoped identity may only author in
+                // its scope space; global and genesis identities act anywhere.
                 let mut is_valid = true;
                 'outer: for content_block in &parsed_content_blocks {
+                    let space = content_block.space_id;
                     for action in &content_block.actions {
                         if action.action_type.requires_sponsored_author() {
                             let creator_bytes = action.actor;
                             let creator_pk =
                                 crate::types::identity::PublicKey::from_bytes(creator_bytes);
 
-                            let is_sponsored_on_chain = ss.exists(&creator_pk).unwrap_or(false);
-                            let is_sponsored_in_block =
-                                identities_sponsored_in_block.contains(&creator_bytes);
-                            let is_genesis =
-                                crate::sponsorship::is_in_hardcoded_genesis_list(&creator_pk);
+                            let authorized = ss.is_authorized_in_space(&creator_pk, &space)
+                                || match sponsored_in_block.get(&creator_bytes) {
+                                    Some(Some(scope)) => *scope == space, // in-block scoped grant
+                                    Some(None) => true,                   // in-block global grant
+                                    None => false,
+                                };
 
-                            if !is_sponsored_on_chain && !is_sponsored_in_block && !is_genesis {
+                            if !authorized {
                                 warn!(
-                                    "[BLOCK] VALIDATION FAILED: Block {} contains {:?} by unsponsored identity {}",
+                                    "[BLOCK] VALIDATION FAILED: Block {} contains {:?} by identity {} not authorized in space {}",
                                     hex::encode(&computed_hash[..8]),
                                     action.action_type,
-                                    hex::encode(&creator_bytes[..8])
+                                    hex::encode(&creator_bytes[..8]),
+                                    hex::encode(&space[..8])
                                 );
                                 is_valid = false;
                                 break 'outer;
@@ -5126,13 +5132,21 @@ impl MessageRouter {
                         let sponsor_pk =
                             crate::types::identity::PublicKey::from_bytes(sponsor_bytes);
 
-                        // Phase 0 validation: Verify sponsor signature
-                        // Signature message = sponsee_pubkey(32) || timestamp(8 BE)
+                        // Phase 0 validation: Verify sponsor signature over the
+                        // canonical preimage — sponsee || ts for a global grant,
+                        // plus the scope for a space-limited grant. Using
+                        // Action::sponsor_sig_message keeps global grants
+                        // bit-identical to the historical preimage while binding
+                        // the scope into scoped grants (it can't be stripped or
+                        // altered without invalidating the signature).
+                        let grant_scope = action.sponsor_scope();
                         {
                             use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-                            let mut sig_message = [0u8; 40];
-                            sig_message[0..32].copy_from_slice(&sponsee_bytes);
-                            sig_message[32..40].copy_from_slice(&action.timestamp.to_be_bytes());
+                            let sig_message = crate::blocks::Action::sponsor_sig_message(
+                                &sponsee_bytes,
+                                action.timestamp,
+                                grant_scope.as_ref(),
+                            );
 
                             let sig_valid = match VerifyingKey::from_bytes(&sponsor_bytes) {
                                 Ok(vk) => {
@@ -5256,11 +5270,28 @@ impl MessageRouter {
                                     );
                                     fully_applied = false;
                                 } else {
+                                    // Space-limited grant: record the scope so the
+                                    // sybil-wall gate confines this identity to its
+                                    // scope space. Absence = global grant.
+                                    if let Some(scope) = grant_scope {
+                                        if let Err(e) =
+                                            sponsorship_store.set_scope(&sponsee_pk, &scope)
+                                        {
+                                            log::warn!(
+                                                "[BLOCK] Failed to store scope for {}: {}",
+                                                hex::encode(&sponsee_bytes[..8]),
+                                                e
+                                            );
+                                        }
+                                    }
                                     log::info!(
-                                        "[BLOCK] Applied on-chain sponsorship: {} sponsored by {} (depth={})",
+                                        "[BLOCK] Applied on-chain sponsorship: {} sponsored by {} (depth={}, scope={})",
                                         hex::encode(&sponsee_bytes[..8]),
                                         hex::encode(&sponsor_bytes[..8]),
-                                        depth
+                                        depth,
+                                        grant_scope
+                                            .map(|s| hex::encode(&s[..8]))
+                                            .unwrap_or_else(|| "global".to_string()),
                                     );
                                 }
                             }
@@ -5795,20 +5826,28 @@ impl MessageRouter {
         if action.action_type.requires_sponsored_author() {
             if let Some(ref ss) = self.sponsorship_store {
                 let actor_pk = crate::types::identity::PublicKey::from_bytes(action.actor);
-                let sponsored = ss.exists(&actor_pk).unwrap_or(false)
-                    || crate::sponsorship::is_in_hardcoded_genesis_list(&actor_pk)
+                let space = announce.space_id;
+                // Authorized on-chain (genesis / global / scoped-for-this-space),
+                // or a pending Sponsor in our own mempool authorizes them here
+                // (onboarding race) — honoring that grant's scope too.
+                let authorized = ss.is_authorized_in_space(&actor_pk, &space)
                     || block_builder.read().map_or(false, |bb_read| {
                         bb_read.get_pending_actions().iter().any(|(_, _, a)| {
                             a.action_type == crate::blocks::ActionType::Sponsor
                                 && a.content_hash == Some(action.actor)
+                                && match a.sponsor_scope() {
+                                    Some(scope) => scope == space,
+                                    None => true,
+                                }
                         })
                     });
-                if !sponsored {
+                if !authorized {
                     warn!(
-                        "[MEMPOOL] Dropping {:?} from peer {} by unsponsored identity {} (sponsorship gate)",
+                        "[MEMPOOL] Dropping {:?} from peer {} by identity {} not authorized in space {} (sponsorship gate)",
                         action.action_type,
                         hex::encode(&peer_id[..8]),
-                        hex::encode(&action.actor[..8])
+                        hex::encode(&action.actor[..8]),
+                        hex::encode(&space[..8])
                     );
                     return Ok(None);
                 }

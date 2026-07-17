@@ -16288,6 +16288,29 @@ impl RpcMethods {
             }
         };
 
+        // Optional scope: space-limit the grant. Folded into the signature
+        // preimage below so it can't be stripped or altered. An all-zero scope
+        // is rejected — it is indistinguishable from a global (None) grant on
+        // the wire (parent_id zeros decode to None).
+        let scope: Option<[u8; 32]> = match params.scope.as_ref() {
+            None => None,
+            Some(s) => {
+                match hex::decode(s)
+                    .ok()
+                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                {
+                    Some(bytes) if bytes != [0u8; 32] => Some(bytes),
+                    _ => {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Invalid scope: must be a non-zero 32-byte hex space id",
+                            id,
+                        );
+                    }
+                }
+            }
+        };
+
         // Verify timestamp is within tolerance
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -16408,10 +16431,13 @@ impl RpcMethods {
             }
         }
 
-        // Verify sponsor's signature over (new_identity_pubkey || timestamp)
-        let mut message = Vec::with_capacity(40);
-        message.extend_from_slice(&new_identity_bytes);
-        message.extend_from_slice(&params.timestamp.to_be_bytes());
+        // Verify sponsor's signature over the canonical preimage:
+        // new_identity || timestamp (global), plus scope for a scoped grant.
+        let message = crate::blocks::action::Action::sponsor_sig_message(
+            &new_identity_bytes,
+            params.timestamp,
+            scope.as_ref(),
+        );
 
         // Verify signature using ed25519
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -16468,9 +16494,25 @@ impl RpcMethods {
             );
         }
 
+        // Record the space-scope for a space-limited grant (absence = global),
+        // so the sybil-wall gate confines this identity to its scope space.
+        if let Some(scope) = scope {
+            if let Err(e) = sponsorship_store.set_scope(&new_pubkey, &scope) {
+                warn!(
+                    "[SPONSORSHIP] Failed to store scope for {}: {}",
+                    params.new_identity_pubkey, e
+                );
+            }
+        }
+
         info!(
-            "[SPONSORSHIP] Registered sponsored identity: {} by {} (depth {})",
-            params.new_identity_pubkey, params.sponsor_pubkey, depth
+            "[SPONSORSHIP] Registered sponsored identity: {} by {} (depth {}, scope {})",
+            params.new_identity_pubkey,
+            params.sponsor_pubkey,
+            depth,
+            scope
+                .map(|s| hex::encode(&s[..8]))
+                .unwrap_or_else(|| "global".to_string()),
         );
 
         // SPEC_11 Phase 6: Create on-chain Sponsor action and add to block builder
@@ -16480,10 +16522,17 @@ impl RpcMethods {
             // Carry the verified PoW: pow_target is the challenge space (matches the
             // claim path), pow_work is the value the node derived above — not a
             // client-supplied number.
-            let action = Action::new_sponsor_with_pow(
+            //
+            // The action MUST carry the SIGNED timestamp (params.timestamp), not
+            // node-local current_time: peers re-verify the sponsor signature over
+            // action.timestamp in the apply path, so a mismatched timestamp would
+            // make the grant fail verification on every other node. Scope (if
+            // any) travels in parent_id and is likewise covered by the signature.
+            let action = Action::new_sponsor_scoped_with_pow(
                 sponsor_bytes,
                 new_identity_bytes,
-                current_time,
+                params.timestamp,
+                scope,
                 signature_bytes,
                 params.pow_nonce,
                 pow_work,

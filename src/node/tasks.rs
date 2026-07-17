@@ -2629,14 +2629,16 @@ impl BackgroundTaskRunner {
                             content_blocks.len()
                         );
 
-                        // VALIDATION: Before storing, validate CreateSpace actions have valid sponsorship
-                        // Collect all identities being sponsored in this block
-                        let mut identities_sponsored_in_block = std::collections::HashSet::new();
+                        // VALIDATION: Before storing, collect this block's Sponsor
+                        // grants keyed by sponsee -> scope (Some(space) = space-
+                        // limited, None = global).
+                        let mut sponsored_in_block: std::collections::HashMap<[u8; 32], Option<[u8; 32]>> =
+                            std::collections::HashMap::new();
                         for content_block in &content_blocks {
                             for action in &content_block.actions {
                                 if action.action_type == crate::blocks::ActionType::Sponsor {
                                     if let Some(sponsee_bytes) = action.content_hash {
-                                        identities_sponsored_in_block.insert(sponsee_bytes);
+                                        sponsored_in_block.insert(sponsee_bytes, action.sponsor_scope());
                                     }
                                 }
                             }
@@ -2645,33 +2647,35 @@ impl BackgroundTaskRunner {
                         // Sponsorship gate: every action producing durable public
                         // on-chain state (Post/Reply/Engage/Edit/CreateSpace/
                         // RenameSpace — see ActionType::requires_sponsored_author)
-                        // must be authored by a sponsored identity. This is the
-                        // sybil wall; a self-minted identity can do nothing until a
-                        // Sponsor grant anchors it in the tree. Kept symmetric with
-                        // the block-ingest gate in the router.
+                        // must be authored by an identity authorized in that
+                        // action's space. This is the sybil wall; a self-minted
+                        // identity can do nothing until a Sponsor grant anchors it
+                        // in the tree, and a space-scoped identity is confined to
+                        // its scope space. Kept symmetric with the block-ingest
+                        // gate in the router. (Genesis has no store record and
+                        // acts anywhere — bootstrap root.)
                         let mut block_is_valid = true;
                         if let Some(ref ss) = sponsorship_store {
                             'validation: for content_block in &content_blocks {
+                                let space = content_block.space_id;
                                 for action in &content_block.actions {
                                     if action.action_type.requires_sponsored_author() {
                                         let creator_bytes = action.actor;
                                         let creator_pk = crate::types::identity::PublicKey::from_bytes(creator_bytes);
 
-                                        // Check if sponsored on-chain OR in this block OR a
-                                        // hardcoded genesis identity (genesis is the sponsor
-                                        // root and never has a sponsorship_store record, so
-                                        // without this its own actions would fail validation
-                                        // and reject the whole block — a bootstrap deadlock
-                                        // on a fresh chain).
-                                        let is_sponsored_on_chain = ss.exists(&creator_pk).unwrap_or(false);
-                                        let is_sponsored_in_block = identities_sponsored_in_block.contains(&creator_bytes);
-                                        let is_genesis = crate::sponsorship::genesis_list::is_in_hardcoded_genesis_list(&creator_pk);
+                                        let authorized = ss.is_authorized_in_space(&creator_pk, &space)
+                                            || match sponsored_in_block.get(&creator_bytes) {
+                                                Some(Some(scope)) => *scope == space,
+                                                Some(None) => true,
+                                                None => false,
+                                            };
 
-                                        if !is_sponsored_on_chain && !is_sponsored_in_block && !is_genesis {
+                                        if !authorized {
                                             warn!(
-                                                "[BLOCKS] VALIDATION FAILED: Block contains {:?} by unsponsored identity {}. Block rejected.",
+                                                "[BLOCKS] VALIDATION FAILED: Block contains {:?} by identity {} not authorized in space {}. Block rejected.",
                                                 action.action_type,
-                                                hex::encode(&creator_bytes[..8])
+                                                hex::encode(&creator_bytes[..8]),
+                                                hex::encode(&space[..8])
                                             );
                                             block_is_valid = false;
                                             break 'validation;

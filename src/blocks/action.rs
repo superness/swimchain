@@ -589,6 +589,76 @@ impl Action {
         }
     }
 
+    /// Create a SPONSOR action scoped to a single space (space-limited / game
+    /// onboarding). `scope = None` is a global grant, identical to
+    /// `new_sponsor_with_pow`. The scope travels in `parent_id` (unused by
+    /// Sponsor otherwise) and MUST be folded into the signature via
+    /// [`Action::sponsor_sig_message`]. `scope` must be a real (non-zero) space
+    /// id — an all-zero scope is indistinguishable from `None` on the wire.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_sponsor_scoped_with_pow(
+        sponsor: [u8; 32],
+        sponsee: [u8; 32],
+        timestamp: u64,
+        scope: Option<[u8; 32]>,
+        signature: [u8; 64],
+        pow_nonce: u64,
+        pow_work: u64,
+        pow_target: [u8; 32],
+    ) -> Self {
+        Self {
+            action_type: ActionType::Sponsor,
+            actor: sponsor,
+            timestamp,
+            content_hash: Some(sponsee),
+            parent_id: scope,
+            pow_nonce,
+            pow_work,
+            pow_target,
+            signature,
+            emoji: None,
+            display_name: None,
+            media_refs: vec![],
+            replaces_pending: None,
+            private: false,
+        }
+    }
+
+    /// The space a SPONSOR grant is scoped to, or `None` for a global
+    /// (network-wide) grant. Carried in `parent_id`. Returns `None` for
+    /// non-Sponsor actions.
+    #[must_use]
+    pub fn sponsor_scope(&self) -> Option<[u8; 32]> {
+        if self.action_type == ActionType::Sponsor {
+            self.parent_id
+        } else {
+            None
+        }
+    }
+
+    /// Canonical message a SPONSOR action's signature covers.
+    ///
+    /// Global grant (`scope == None`): `sponsee(32) || timestamp(8 BE)` — the
+    /// historical preimage, so existing global sponsorships verify unchanged.
+    /// Scoped grant (`scope == Some(space)`): `sponsee(32) || timestamp(8 BE)
+    /// || scope(32)` — binds the grant to one space so the scope cannot be
+    /// stripped or altered without invalidating the signature.
+    #[must_use]
+    pub fn sponsor_sig_message(
+        sponsee: &[u8; 32],
+        timestamp: u64,
+        scope: Option<&[u8; 32]>,
+    ) -> Vec<u8> {
+        let mut m = Vec::with_capacity(if scope.is_some() { 72 } else { 40 });
+        m.extend_from_slice(sponsee);
+        m.extend_from_slice(&timestamp.to_be_bytes());
+        if let Some(s) = scope {
+            m.extend_from_slice(s);
+        }
+        m
+    }
+
     /// Create a new GENESIS_REGISTER action (on-chain genesis identity, SPEC_11 Phase 6)
     ///
     /// Records a genesis identity registration on-chain.
@@ -1065,6 +1135,43 @@ mod tests {
                 "{t:?} must NOT be sponsorship-gated"
             );
         }
+    }
+
+    #[test]
+    fn sponsor_scope_and_sig_message() {
+        let sponsee = [3u8; 32];
+        let scope = [0x01u8; 32];
+        let ts = 1234u64;
+
+        // Global preimage = sponsee || ts (40 bytes) — unchanged from history.
+        let global = Action::sponsor_sig_message(&sponsee, ts, None);
+        assert_eq!(global.len(), 40);
+        assert_eq!(&global[..32], &sponsee);
+        assert_eq!(&global[32..40], &ts.to_be_bytes());
+
+        // Scoped preimage appends the 32-byte scope and differs from global, so
+        // a scope cannot be stripped or swapped without breaking the signature.
+        let scoped = Action::sponsor_sig_message(&sponsee, ts, Some(&scope));
+        assert_eq!(scoped.len(), 72);
+        assert_eq!(&scoped[40..72], &scope);
+        assert_ne!(global, scoped);
+
+        // Scope round-trips through the Sponsor action's parent_id.
+        let a = Action::new_sponsor_scoped_with_pow(
+            [1u8; 32],
+            sponsee,
+            ts,
+            Some(scope),
+            [0u8; 64],
+            0,
+            0,
+            [0u8; 32],
+        );
+        assert_eq!(a.sponsor_scope(), Some(scope));
+
+        // A global grant carries no scope.
+        let g = Action::new_sponsor([1u8; 32], sponsee, ts, [0u8; 64]);
+        assert_eq!(g.sponsor_scope(), None);
     }
 
     fn make_test_action() -> Action {

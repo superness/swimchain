@@ -1713,6 +1713,12 @@ pub struct RegisterSponsoredIdentityParams {
     /// caller can't claim work it didn't do. Onboarding must carry real PoW.
     #[serde(default)]
     pub pow_nonce_space: Option<String>,
+    /// Optional space id (hex, 32 bytes) to SPACE-LIMIT this grant. When set,
+    /// the sponsee may only author actions in this space (game/space-limited
+    /// onboarding), and the sponsor's signature must cover
+    /// `new_identity_pubkey || timestamp || scope`. Omit for a global grant.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// get_sponsorship_info params
