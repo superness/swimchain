@@ -20,10 +20,7 @@ fn main() {
 
     let latest = store.get_latest_height().expect("latest height");
     println!("get_latest_height   : {:?}", latest);
-    println!(
-        "root_block_count    : {:?}",
-        store.root_block_count().ok()
-    );
+    println!("root_block_count    : {:?}", store.root_block_count().ok());
 
     // Height-index coverage: which heights resolve to a hash.
     let mut resolved = Vec::new();
@@ -43,7 +40,11 @@ fn main() {
     );
     if !missing.is_empty() {
         let head: Vec<_> = missing.iter().take(12).collect();
-        println!("  missing heights   : {:?}{}", head, if missing.len() > 12 { " …" } else { "" });
+        println!(
+            "  missing heights   : {:?}{}",
+            head,
+            if missing.len() > 12 { " …" } else { "" }
+        );
     }
 
     // True chain shape: every stored root block's declared height.

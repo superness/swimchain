@@ -1816,7 +1816,11 @@ mod public_offer_tests {
         };
         assert_ne!(bugged.signature_message(), signed_msg);
         assert!(
-            !verify(&bugged.sponsor, &bugged.signature_message(), &bugged.signature),
+            !verify(
+                &bugged.sponsor,
+                &bugged.signature_message(),
+                &bugged.signature
+            ),
             "offer whose created_at != signed timestamp must fail re-verification"
         );
     }
@@ -1913,7 +1917,11 @@ mod public_offer_tests {
         };
         assert_eq!(good.signature_message(), signed_msg);
         assert!(
-            verify(&good.claimant, &good.signature_message(), &good.claimant_signature),
+            verify(
+                &good.claimant,
+                &good.signature_message(),
+                &good.claimant_signature
+            ),
             "claim with claimed_at == signed timestamp must re-verify on peers"
         );
 
@@ -1922,7 +1930,11 @@ mod public_offer_tests {
             ..good.clone()
         };
         assert!(
-            !verify(&bugged.claimant, &bugged.signature_message(), &bugged.claimant_signature),
+            !verify(
+                &bugged.claimant,
+                &bugged.signature_message(),
+                &bugged.claimant_signature
+            ),
             "claim whose claimed_at != signed timestamp must fail re-verification"
         );
     }

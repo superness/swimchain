@@ -8641,9 +8641,7 @@ impl RpcMethods {
         let mut profile_posts: Vec<(String, u64)> = Vec::new();
         if let Some(ref chain_store) = self.node.chain_store {
             let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
-            if let Ok(indexed) =
-                chain_store.get_content_for_space(&profile_space_id, 500, 0)
-            {
+            if let Ok(indexed) = chain_store.get_content_for_space(&profile_space_id, 500, 0) {
                 for (content_hash, metadata) in indexed {
                     let mut text: Option<String> = None;
                     let cid = crate::types::content::ContentId::from_bytes(content_hash);

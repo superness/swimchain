@@ -59,7 +59,13 @@ pub fn evaluate_reconverge(prefix_work: u64, a: &Tip, b: &Tip) -> ReconvergeOutc
     let a_hash = crate::sha256(&a.tiebreak.to_be_bytes());
     let b_hash = crate::sha256(&b.tiebreak.to_be_bytes());
     let a_is_winner = a_wins(a_cum, &a_hash, b_cum, &b_hash);
-    let winner = if a_cum == b_cum { "tie" } else if a_is_winner { "A" } else { "B" };
+    let winner = if a_cum == b_cum {
+        "tie"
+    } else if a_is_winner {
+        "A"
+    } else {
+        "B"
+    };
     let (orphaned_blocks, reanchored_actions) = if a_is_winner {
         (b.blocks, b.actions)
     } else {
@@ -80,8 +86,18 @@ mod tests {
 
     #[test]
     fn heavier_wins_and_loser_reanchors() {
-        let a = Tip { blocks: 3, work: 500, actions: 9, tiebreak: 1 };
-        let b = Tip { blocks: 2, work: 300, actions: 5, tiebreak: 2 };
+        let a = Tip {
+            blocks: 3,
+            work: 500,
+            actions: 9,
+            tiebreak: 1,
+        };
+        let b = Tip {
+            blocks: 2,
+            work: 300,
+            actions: 5,
+            tiebreak: 2,
+        };
         let o = evaluate_reconverge(200, &a, &b);
         assert_eq!(o.winner, "A");
         assert_eq!(o.a_cum, 700);
@@ -91,12 +107,27 @@ mod tests {
 
     #[test]
     fn exact_tie_breaks_on_hash() {
-        let a = Tip { blocks: 1, work: 100, actions: 1, tiebreak: 1 };
-        let b = Tip { blocks: 1, work: 100, actions: 1, tiebreak: 2 };
+        let a = Tip {
+            blocks: 1,
+            work: 100,
+            actions: 1,
+            tiebreak: 1,
+        };
+        let b = Tip {
+            blocks: 1,
+            work: 100,
+            actions: 1,
+            tiebreak: 2,
+        };
         let o = evaluate_reconverge(0, &a, &b);
         assert_eq!(o.winner, "tie");
         // deterministic: lower hash of the tiebreak seed wins the actual selection
-        let win_a = a_wins(100, &crate::sha256(&1u32.to_be_bytes()), 100, &crate::sha256(&2u32.to_be_bytes()));
+        let win_a = a_wins(
+            100,
+            &crate::sha256(&1u32.to_be_bytes()),
+            100,
+            &crate::sha256(&2u32.to_be_bytes()),
+        );
         assert_eq!(o.orphaned_blocks, if win_a { b.blocks } else { a.blocks });
     }
 }

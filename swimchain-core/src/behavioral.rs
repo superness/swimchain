@@ -187,7 +187,10 @@ pub fn evaluate_cluster(
             "not insular enough — one of diversity/external/cohesion/age gates fails",
         )
     } else if size == SPAM_CLUSTER_SIZE {
-        ("spam", "a lone self-engager: a community of one (spam signal)")
+        (
+            "spam",
+            "a lone self-engager: a community of one (spam signal)",
+        )
     } else if !gate_size {
         ("none", "insular but below the minimum community size of 3")
     } else if !gate_minority {

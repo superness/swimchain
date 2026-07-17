@@ -269,7 +269,13 @@ fn content_aware_tie_prefers_the_fuller_block() {
     let extra = reply_action(2);
     let mut found = None;
     for tag in 0u8..255 {
-        let (full, _, _) = forge_block([0u8; 32], 0, 1, [tag; 32], vec![shared.clone(), extra.clone()]);
+        let (full, _, _) = forge_block(
+            [0u8; 32],
+            0,
+            1,
+            [tag; 32],
+            vec![shared.clone(), extra.clone()],
+        );
         let (empty, _, _) = forge_block([0u8; 32], 0, 1, [255 - tag; 32], vec![shared.clone()]);
         // We want the emptier block to have the LOWER hash (old rule picks it).
         if empty.hash() < full.hash() {

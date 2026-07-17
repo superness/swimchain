@@ -183,10 +183,7 @@ impl PrefsStore {
     }
 
     /// All identities this user follows, with the follow timestamp.
-    pub fn followed_users(
-        &self,
-        user_pk: &[u8; 32],
-    ) -> Result<Vec<([u8; 32], u64)>, StorageError> {
+    pub fn followed_users(&self, user_pk: &[u8; 32]) -> Result<Vec<([u8; 32], u64)>, StorageError> {
         let mut out = Vec::new();
         for result in self.followed_users.scan_prefix(user_pk) {
             let (key, value) = result.map_err(|e| StorageError::DatabaseError(e.to_string()))?;
@@ -239,10 +236,7 @@ impl PrefsStore {
     }
 
     /// All spaces this identity hid, with the hide timestamp.
-    pub fn hidden_spaces(
-        &self,
-        user_pk: &[u8; 32],
-    ) -> Result<Vec<([u8; 16], u64)>, StorageError> {
+    pub fn hidden_spaces(&self, user_pk: &[u8; 32]) -> Result<Vec<([u8; 16], u64)>, StorageError> {
         let mut out = Vec::new();
         for result in self.hidden_spaces.scan_prefix(user_pk) {
             let (key, value) = result.map_err(|e| StorageError::DatabaseError(e.to_string()))?;
