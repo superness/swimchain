@@ -1828,7 +1828,7 @@ mod tests {
     }
 
     #[test]
-    fn test_should_form_root_at_threshold() {
+    fn test_is_threshold_met_at_threshold() {
         let mut builder = BlockBuilder::new(30);
         builder.add_action(
             [1u8; 32],
@@ -1837,11 +1837,11 @@ mod tests {
             BranchPath::root(),
         );
 
-        assert!(builder.should_form_root());
+        assert!(builder.is_threshold_met());
     }
 
     #[test]
-    fn test_should_form_root_above_threshold() {
+    fn test_is_threshold_met_above_threshold() {
         let mut builder = BlockBuilder::new(30);
         builder.add_action(
             [1u8; 32],
@@ -1850,7 +1850,32 @@ mod tests {
             BranchPath::root(),
         );
 
-        assert!(builder.should_form_root());
+        assert!(builder.is_threshold_met());
+    }
+
+    #[test]
+    fn should_form_root_lazy_waits_before_forming() {
+        // should_form_root() does NOT form on the first threshold-met call: it
+        // starts a lazy wait for someone else's block (fork-race mitigation) and
+        // only forms after LAZY_BLOCK_WAIT_MS. Threshold detection itself is
+        // is_threshold_met(); this pins the deferral contract.
+        let mut builder = BlockBuilder::new(30);
+        builder.add_action(
+            [1u8; 32],
+            [2u8; 32],
+            make_test_action(30),
+            BranchPath::root(),
+        );
+
+        assert!(builder.is_threshold_met(), "threshold is met immediately");
+        assert!(
+            !builder.should_form_root(),
+            "first threshold-met call starts the lazy wait, does not form"
+        );
+        assert!(
+            !builder.should_form_root(),
+            "still waiting within the lazy window"
+        );
     }
 
     #[test]
