@@ -9,10 +9,13 @@
  *     the node's own Ed25519 identity and returns the signature hex. The
  *     author_id we submit is therefore the node's public key.
  *
- * Write contract (mirrors lib/publish.js + tests/e2e-write-paths wiki.test.ts):
+ * Write contract (mirrors wiki-client/src/pages/WikiPageEdit.tsx):
  *   - space  : create_space, PoW over `${name}`, sign `space:${name}:${ts}`.
- *   - page   : submit_post,  PoW over `${title}\n\n${body}`,
- *              sign `post:${space_id}:${title}:${body}:${ts}`.
+ *   - page   : submit_post,  PoW over `${title}\n\n${body}`, sign the canonical
+ *              41-byte action preimage the node verifies (validate_action_signature):
+ *              sha256(`${title}\n\n${body}`)(32) || timestamp_LE(8) || private(1)=0.
+ *              (The old `post:${space_id}:...` string contract predates the
+ *              authorship-verification fix and is now rejected.)
  *
  * Usage (run ON the droplet, RPC is localhost-bound):
  *   RPC_URL=http://127.0.0.1:19736 \
@@ -26,6 +29,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { ActionType, mineActionPow, hexToBytes } from './lib/pow.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -95,6 +99,13 @@ async function signWithNode(message) {
   return result.signature;
 }
 
+/** Sign raw bytes (Buffer/Uint8Array) with the node's identity via sign_message. */
+async function signBytesWithNode(bytes) {
+  const result = await rpc('sign_message', { message: Buffer.from(bytes).toString('hex') });
+  if (!result?.signature) throw new Error('sign_message returned no signature for raw bytes');
+  return result.signature;
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -149,7 +160,14 @@ async function publishPage(spaceId, title, body) {
   const pow = await mineActionPow(ActionType.Post, `${title}\n\n${body}`, authorBytes, NETWORK);
   console.log(`  mined in ${((Date.now() - t0) / 1000).toFixed(1)}s (difficulty ${pow.pow_difficulty})`);
 
-  const signature = await signWithNode(`post:${spaceId}:${title}:${body}:${pow.timestamp}`);
+  // Canonical action preimage (validate_action_signature, v2):
+  //   sha256(`${title}\n\n${body}`)(32) || timestamp_LE(8) || private(1)=0
+  const contentHash = createHash('sha256').update(`${title}\n\n${body}`, 'utf-8').digest();
+  const preimage = Buffer.alloc(41);
+  contentHash.copy(preimage, 0);
+  preimage.writeBigUInt64LE(BigInt(pow.timestamp), 32);
+  preimage[40] = 0;
+  const signature = await signBytesWithNode(preimage);
   const result = await rpc('submit_post', {
     space_id: spaceId,
     title,
@@ -180,6 +198,41 @@ function readPage(file) {
   return { title, body };
 }
 
+// ---- Node-hosted images ------------------------------------------------------
+// Pages reference images as `{{media:<file>}}` (file lives in CONTENT_DIR/media).
+// At publish time each referenced file is uploaded via upload_media and the
+// placeholder becomes `swim:<hash>` — the wiki-client's node-media image scheme
+// (wiki-client/src/lib/mediaImages.ts renders `![alt](swim:<hash>)` via get_media).
+const MEDIA_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+const mediaHashes = new Map(); // file name -> swim:<hash>
+
+async function uploadMediaFile(name) {
+  if (mediaHashes.has(name)) return mediaHashes.get(name);
+  const filePath = path.join(CONTENT_DIR, 'media', name);
+  const mediaType = MEDIA_TYPES[path.extname(name).toLowerCase()];
+  if (!mediaType) throw new Error(`unsupported media extension on ${name}`);
+  const data = readFileSync(filePath).toString('base64'); // throws if missing — no silent broken images
+  console.log(`Uploading media ${name} (${mediaType})...`);
+  const result = await rpc('upload_media', { media_type: mediaType, data });
+  const hash = result?.media_hash || result?.hash;
+  if (!hash) throw new Error(`upload_media returned no hash for ${name}: ${JSON.stringify(result)}`);
+  const ref = `swim:${hash}`;
+  console.log(`  ${name} -> ${ref}`);
+  mediaHashes.set(name, ref);
+  return ref;
+}
+
+/** Replace every {{media:<file>}} placeholder in a body, uploading as needed. */
+async function resolveMediaPlaceholders(body) {
+  const names = [...body.matchAll(/\{\{media:([^}]+)\}\}/g)].map((m) => m[1]);
+  let out = body;
+  for (const name of new Set(names)) {
+    const ref = await uploadMediaFile(name.trim());
+    out = out.split(`{{media:${name}}}`).join(ref);
+  }
+  return out;
+}
+
 async function main() {
   console.log(`RPC: ${RPC_URL}  network=${NETWORK}  author=${AUTHOR_PUBKEY.slice(0, 16)}...`);
   console.log(`Content dir: ${CONTENT_DIR}`);
@@ -205,11 +258,12 @@ async function main() {
 
   const published = [];
   for (const file of files) {
-    const { title, body } = readPage(file);
+    const { title, body: rawBody } = readPage(file);
     if (existingTitles.has(title)) {
       console.log(`Skipping "${title}" — already on "${SPACE_NAME}"`);
       continue;
     }
+    const body = await resolveMediaPlaceholders(rawBody);
     const contentId = await publishPage(spaceId, title, body);
     published.push({ file, title, contentId });
     // Space out write calls (write limit is 20/min); be gentle.
