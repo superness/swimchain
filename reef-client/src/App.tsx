@@ -32,6 +32,18 @@ import {
   type TideSummary,
   type Identity,
 } from './lib/reefEngine';
+import { TutorialCard } from './TutorialCard';
+import {
+  advance as tutAdvance,
+  ack as tutAck,
+  skip as tutSkip,
+  dismissStrikeTip,
+  visibleCard,
+  loadTutorial,
+  saveTutorial,
+  type TutorialState,
+  type TutorialSnapshot,
+} from './tutorial';
 
 // `cell` is the tile a move is taking root on (absent while founding a reef),
 // so the board can animate the growth in place instead of blocking the screen.
@@ -185,6 +197,16 @@ export function App() {
   const [sponsored, setSponsored] = useState(false);
   const [sponsorPhase, setSponsorPhase] = useState<string | null>(null);
   const sponsoringRef = useRef(false);
+
+  // First-run tutorial: coach-marks on the live board (see src/tutorial.ts).
+  const [tutorial, setTutorial] = useState<TutorialState>(() => loadTutorial());
+  const applyTutorial = useCallback((fn: (t: TutorialState) => TutorialState) => {
+    setTutorial((t) => {
+      const next = fn(t);
+      if (next !== t) saveTutorial(next);
+      return next;
+    });
+  }, []);
 
   // Stale-bundle guard: check on load, on tab wake (the classic stale case —
   // a background/frozen tab resuming days later), and every 5 minutes.
@@ -506,6 +528,34 @@ export function App() {
     return () => clearTimeout(t);
   }, [notice]);
 
+  // Tutorial snapshot, derived from chain state: how many cells are mine, and
+  // whether striking an enemy is currently possible (adjacency + budget).
+  const tutSnap: TutorialSnapshot = useMemo(() => {
+    if (!state || !publicKeyHex) return { myCells: 0, contestVisible: false };
+    const mine = (o: string) => o === publicKeyHex || o === address;
+    const myKeys = new Set<string>();
+    for (const [k, c] of state.cells) if (mine(c.owner)) myKeys.add(k);
+    let contestVisible = false;
+    if (myKeys.size > 0 && myBudget(state, publicKeyHex, address ?? '') >= COST_CONTEST) {
+      outer: for (const [k, c] of state.cells) {
+        if (mine(c.owner)) continue;
+        const [x, y] = k.split(',').map(Number);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          if (myKeys.has(`${x + dx},${y + dy}`)) {
+            contestVisible = true;
+            break outer;
+          }
+        }
+      }
+    }
+    return { myCells: myKeys.size, contestVisible };
+  }, [state, publicKeyHex, address]);
+
+  // Steps advance on real events (the snapshot), never timers.
+  useEffect(() => {
+    applyTutorial((t) => tutAdvance(t, tutSnap));
+  }, [tutSnap, applyTutorial]);
+
   function newIdentity() {
     const seed = new Uint8Array(32);
     crypto.getRandomValues(seed);
@@ -627,6 +677,10 @@ export function App() {
   const isMine = (o: string) => o === publicKeyHex || o === address;
   const myCareer = view?.standings.find((s) => isMine(s.owner)) ?? null;
 
+  // Which coach-mark to show. Hidden while a move is in flight or the tide
+  // report is up — a card would flicker or mislead mid-ceremony.
+  const tutCard = openId && view && !tideReport && !mining ? visibleCard(tutorial, tutSnap) : null;
+
   return (
     <div className="app">
       <header>
@@ -657,6 +711,9 @@ export function App() {
               Found a reef
             </button>
           </div>
+          {tutorial.step !== 'done' && regions.length > 0 && (
+            <p className="muted">Pick a reef below to dive in — or found your own. Everyone in a reef shares the same water.</p>
+          )}
           {regions.length === 0 && <p className="muted">No reefs yet. Found one — then seed your first coral anywhere.</p>}
           <ul className="games">
             {regions.map((r) => (
@@ -687,6 +744,13 @@ export function App() {
                 <span className="fine">({banner.points} pts) · new season begins</span>
               </div>
             )}
+            {(tutCard === 'plant' || tutCard === 'strike') && (
+              <TutorialCard
+                kind={tutCard}
+                onGotIt={() => applyTutorial(tutCard === 'strike' ? dismissStrikeTip : tutAck)}
+                onSkip={tutCard === 'plant' ? () => applyTutorial(tutSkip) : null}
+              />
+            )}
             <Reef
               state={view}
               myPubkeyHex={publicKeyHex!}
@@ -694,6 +758,7 @@ export function App() {
               canAct={!mining && !tideReport}
               growingCell={mining?.cell ?? null}
               onAct={onAct}
+              highlightSeeds={tutCard === 'plant'}
             />
             <div className="status">
               <div className="season">
@@ -728,6 +793,10 @@ export function App() {
                 <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · each tide restores {REGEN_BASE} + 1 per 2 coral you hold</span>
               </div>
 
+              {tutCard === 'grow' && (
+                <TutorialCard kind="grow" onGotIt={() => applyTutorial(tutAck)} onSkip={() => applyTutorial(tutSkip)} />
+              )}
+
               {/* Tide meter: how close the water is to turning. Fills as confirmed
                   moves accumulate toward params.epochMoves; strains when one move
                   away. Purely fold-derived — identical on every device. */}
@@ -746,6 +815,10 @@ export function App() {
                     : `🌊 tide in ${view.params.epochMoves - view.tideMoves} moves`}
                 </span>
               </div>
+
+              {tutCard === 'tide' && (
+                <TutorialCard kind="tide" onGotIt={() => applyTutorial(tutAck)} onSkip={() => applyTutorial(tutSkip)} />
+              )}
 
               <div className="board-scores">
                 {view.standings.length === 0 && <span className="fine">Open water. Seed your first coral anywhere — it's free until your energy starts to matter.</span>}
