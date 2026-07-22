@@ -1468,6 +1468,13 @@ pub struct PublicSponsorshipOffer {
     /// (invite-link onboarding). Default false.
     #[serde(default)]
     pub auto_approve: bool,
+    /// Optional space scope. When set, claimants approved through this offer are
+    /// sponsored ONLY within this space (a scoped `Sponsor` action is emitted on
+    /// approval; the post gate enforces it via `is_authorized_in_space`). `None`
+    /// = a global grant. Used for game onboarding (reef/chess) so a player is
+    /// sponsored into the game space only, not the whole network.
+    #[serde(default)]
+    pub space_scope: Option<[u8; 32]>,
 }
 
 impl PublicSponsorshipOffer {
@@ -1743,6 +1750,7 @@ mod public_offer_tests {
             requirements: SponsorshipRequirements::default(),
             signature: Signature::from_bytes([0u8; 64]),
             auto_approve: false,
+            space_scope: None,
         };
 
         let msg = offer.signature_message();
@@ -1801,6 +1809,7 @@ mod public_offer_tests {
             requirements: SponsorshipRequirements::default(),
             signature,
             auto_approve: true,
+            space_scope: None,
         };
         assert_eq!(good.signature_message(), signed_msg);
         assert!(
@@ -1837,6 +1846,7 @@ mod public_offer_tests {
             requirements: SponsorshipRequirements::default(),
             signature: Signature::from_bytes([0u8; 64]),
             auto_approve: false,
+            space_scope: None,
         };
 
         assert!(!offer.is_expired(1735689600));
@@ -2035,6 +2045,7 @@ mod public_offer_tests {
             },
             signature: Signature::from_bytes([4u8; 64]),
             auto_approve: false,
+            space_scope: None,
         };
 
         let bytes = bincode::serialize(&offer).unwrap();

@@ -114,7 +114,6 @@ export function App() {
   const [openId, setOpenId] = useUrlRoom('r');
   const [state, setState] = useState<ReefState | null>(null);
   const [copied, setCopied] = useState(false);
-  const [diagCopied, setDiagCopied] = useState(false);
   // Consecutive polls where we held optimistic state because the chain fold
   // hadn't caught up to our own moves. Bounded so a move that never seals
   // (e.g. a dedup-collided body) can't strand the grid on a phantom forever.
@@ -565,25 +564,6 @@ export function App() {
     setTimeout(() => setCopied(false), 2000);
   }
 
-  // [reef-diag] one-click copy of the diagnostic log to paste back to us.
-  // The header carries the device's receipts — WHICH bundle this tab runs and
-  // what it folded — so cross-device mismatch reports are diagnosable from the
-  // paste alone (no more guessing which code/data a device had).
-  function copyDiag() {
-    const bundle =
-      Array.from(document.querySelectorAll<HTMLScriptElement>('script[src]'))
-        .map((s) => s.src.split('/').pop())
-        .find((n) => n?.startsWith('index-')) ?? 'unknown-bundle';
-    const head =
-      `reef-diag · region=${openId} · me=${address} · at=${new Date().toISOString()}` +
-      ` · bundle=${bundle} · epoch=${state?.epoch ?? '?'} · moves=${state?.moves.length ?? '?'}` +
-      ` · myCells=${state ? [...state.cells.values()].filter((c) => c.owner === publicKeyHex || c.owner === address).length : '?'}` +
-      ` · ${diagBuffer.length} lines\n`;
-    navigator.clipboard?.writeText(head + diagBuffer.join('\n'));
-    setDiagCopied(true);
-    setTimeout(() => setDiagCopied(false), 1500);
-  }
-
   // --- render ---
 
   if (idLoading) return <div className="center muted">Loading…</div>;
@@ -692,9 +672,6 @@ export function App() {
           <section className="game">
             <div className="game-bar">
               <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← reefs</button>
-              <button className="link" onClick={copyDiag} title="copy the diagnostic log to paste back for debugging">
-                {diagCopied ? 'log copied ✓' : '🐞 copy log'}
-              </button>
               <button className="link" onClick={copyInvite}>{copied ? 'link copied ✓' : 'copy invite link'}</button>
             </div>
             {banner && (

@@ -53,7 +53,7 @@ export function ProfilePage(): JSX.Element {
   // PoW and submission hooks
   const { state: powState, minePost, cancel: cancelMining, progress, reset: resetPow, solution } = usePostPow();
   const { submitPost, submitting, error: submitRpcError } = usePostSubmit();
-  const { uploadImage, getMediaUrl } = useMediaUpload();
+  const { uploadImage, getMediaUrl, error: avatarUploadError } = useMediaUpload();
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const { isSponsored } = useSponsorship();
 
@@ -117,9 +117,10 @@ export function ProfilePage(): JSX.Element {
       return;
     }
 
-    // Validate file size (max 2MB)
-    if (file.size > 2 * 1024 * 1024) {
-      setSaveError('Image must be less than 2MB');
+    // Validate file size. The node caps media at 1 MB (MAX_MEDIA_SIZE); a larger
+    // image passes this check but is rejected at upload, so keep it in lockstep.
+    if (file.size > 1024 * 1024) {
+      setSaveError(`Image must be under 1 MB (yours is ${(file.size / 1024 / 1024).toFixed(1)} MB)`);
       return;
     }
 
@@ -175,7 +176,12 @@ export function ProfilePage(): JSX.Element {
           avatarContentId = result.result.mediaHash;
           avatarFormat = avatarFile.type.split('/')[1] || 'png';
         } else {
-          setSaveError('Failed to upload avatar image');
+          // Surface the real reason instead of a generic string — the size case,
+          // or whatever error the upload hook/node reported.
+          const detail = result.needsCompression
+            ? `Image is too large (${((result.originalSize ?? avatarFile.size) / 1024 / 1024).toFixed(1)} MB); the limit is 1 MB.`
+            : (result.error || avatarUploadError || 'Failed to upload avatar image');
+          setSaveError(detail);
           setSaveStep('idle');
           return;
         }

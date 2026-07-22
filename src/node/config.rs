@@ -477,14 +477,15 @@ impl NodeConfig {
 
     /// Check if behavioral branching (SPEC_13) is enabled.
     ///
-    /// Explicit setting wins; otherwise defaults ON for Regtest AND Testnet
-    /// (Phase 2 rollout, `docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md`:
-    /// full formation with the full UX). Mainnet stays OFF until the
-    /// operator says otherwise.
+    /// Explicit setting wins; otherwise defaults ON for all networks.
+    /// (Phase 2 rollout, `docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md`: full
+    /// formation with the full UX.) Operator enabled Mainnet on 2026-07-22 —
+    /// detection is local-only and deterministic from chain data, so nodes
+    /// running identical code converge without §7 network messages.
     pub fn behavioral_branching_enabled(&self) -> bool {
         self.behavioral_branching.unwrap_or(matches!(
             self.network_mode,
-            NetworkMode::Regtest | NetworkMode::Testnet
+            NetworkMode::Mainnet | NetworkMode::Regtest | NetworkMode::Testnet
         ))
     }
 
@@ -936,14 +937,14 @@ mod tests {
     fn test_behavioral_branching_mode_network_defaults() {
         // Phase 2 rollout (docs/handoffs/BEHAVIORAL_BRANCHING_PHASE2.md):
         // regtest AND testnet default to full formation; mainnet stays fully
-        // disabled -- all by default (None/None).
+        // Mainnet: full formation ON by default since the operator enabled it
+        // (2026-07-22); detection is local-only and deterministic from chain data.
         let mainnet = NodeConfig::with_network_defaults(NetworkMode::Mainnet);
         assert_eq!(
             mainnet.behavioral_branching_mode(),
-            BehavioralBranchingMode::Disabled
+            BehavioralBranchingMode::Full
         );
-        assert!(!mainnet.behavioral_branching_enabled());
-        assert!(!mainnet.behavioral_branching_log_only_enabled());
+        assert!(mainnet.behavioral_branching_enabled());
 
         let testnet = NodeConfig::for_testnet();
         assert_eq!(

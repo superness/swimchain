@@ -5,6 +5,7 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
+import { linkify } from '../lib/linkify';
 import './MessageItem.css';
 import { ReportButton, ReportModal, type SpamReason } from './ReportModal';
 import { BlockButton } from './BlockButton';
@@ -273,7 +274,7 @@ export function MessageItem({
         )}
 
         <div className="message-body">
-          <span className="message-text">{displayedContent}</span>
+          <span className="message-text">{linkify(displayedContent)}</span>
           {isLongContent && (
             <button
               type="button"

@@ -18,6 +18,13 @@ import { ClaimOfferModal } from '../components/ClaimOfferModal';
 import { CreateOfferModal } from '../components/CreateOfferModal';
 import { CreateInviteLinkModal } from '../components/CreateInviteLinkModal';
 import { logger } from '../lib/logger';
+
+// App-onboarding sponsors whose offers exist for in-app onboarding (e.g. the
+// reef/chess game bot) and should NOT surface in the general offer list.
+// Client display choice, not a protocol rule.
+const HIDDEN_ONBOARDING_SPONSORS = new Set<string>([
+  '0530df507ad26a2ee6d0c61ef1e37e4e08abae087c1755467d98e3435ecd2984', // reef/chess game bot (mainnet)
+]);
 import type { SponsorshipOfferSummary, SponsorshipOfferDetail } from '../lib/rpc';
 import './Sponsorship.css';
 
@@ -91,7 +98,10 @@ export function SponsorshipPage(): JSX.Element {
 
   // Filter out the current user's own offers from the public list
   const visibleOffers = useMemo(
-    () => publicOffers.filter(offer => offer.sponsor_pubkey !== identity?.publicKey),
+    () => publicOffers.filter(offer =>
+      offer.sponsor_pubkey !== identity?.publicKey &&
+      !HIDDEN_ONBOARDING_SPONSORS.has(offer.sponsor_pubkey.toLowerCase())
+    ),
     [publicOffers, identity?.publicKey]
   );
 

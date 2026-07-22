@@ -22,6 +22,13 @@ import { useChatIdentity } from '../hooks/useChatIdentity';
 import { useToast } from './Toast';
 import './GetSponsoredModal.css';
 
+// App-onboarding sponsors whose offers exist for in-app onboarding (e.g. the
+// reef/chess game bot) and should NOT surface in the general "get sponsored"
+// list. Client display choice, not a protocol rule.
+const HIDDEN_ONBOARDING_SPONSORS = new Set<string>([
+  '0530df507ad26a2ee6d0c61ef1e37e4e08abae087c1755467d98e3435ecd2984', // reef/chess game bot (mainnet)
+]);
+
 interface OfferRequirements {
   min_pow_difficulty: number;
   application_required: boolean;
@@ -154,9 +161,16 @@ export function GetSponsoredModal({ isOpen, onClose, onClaimed }: GetSponsoredMo
         offset: 0,
         limit: 20,
       });
-      // Hide the user's own offers — you can't sponsor yourself.
+      // Hide the user's own offers (can't sponsor yourself) and app-onboarding
+      // offers (the reef/chess game bot) — those are for in-app onboarding, not
+      // the general "get sponsored" flow.
       const mine = identity?.publicKey?.toLowerCase();
-      setOffers(result.offers.filter((o) => o.sponsor_pubkey.toLowerCase() !== mine));
+      setOffers(
+        result.offers.filter((o) => {
+          const s = o.sponsor_pubkey.toLowerCase();
+          return s !== mine && !HIDDEN_ONBOARDING_SPONSORS.has(s);
+        }),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load offers');
     } finally {

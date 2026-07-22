@@ -1065,12 +1065,17 @@ impl BackgroundTaskRunner {
 
                         // Faucet is disabled on mainnet: auto-approve offers do
                         // NOT auto-grant. Claims stay pending for explicit manual
-                        // approval — the mainnet sybil wall is human sponsorship;
-                        // an auto-approve offer roots sybils directly at genesis
-                        // with no accountable vouch. Testnet/regtest keep
-                        // auto-approve for frictionless dev onboarding.
+                        // approval — the mainnet sybil wall is human sponsorship.
+                        // EXCEPTION: the operator-designated game sponsor DOES
+                        // auto-grant on mainnet, so reef/chess keep one-click
+                        // onboarding (capped, rooted at the game sponsor's own
+                        // subtree, not a general genesis-rooted faucet).
+                        // Testnet/regtest keep auto-approve for dev onboarding.
                         let faucet_disabled = crate::network::NetworkContext::mode()
-                            == crate::network::NetworkMode::Mainnet;
+                            == crate::network::NetworkMode::Mainnet
+                            && !crate::sponsorship::is_mainnet_game_sponsor(&hex::encode(
+                                keypair.public_key.as_bytes(),
+                            ));
 
                         for offer in own_offers {
                             if !offer.auto_approve || offer.expires_at <= now || faucet_disabled {
@@ -1112,10 +1117,14 @@ impl BackgroundTaskRunner {
                                 }
 
                                 // Sign the exact message the on-chain Sponsor action
-                                // carries: claimant(32) || timestamp(8 BE).
-                                let mut approval_msg = Vec::with_capacity(40);
-                                approval_msg.extend_from_slice(claim.claimant.as_bytes());
-                                approval_msg.extend_from_slice(&now.to_be_bytes());
+                                // carries: sponsee(32) || timestamp(8 BE) [|| scope(32)].
+                                // Scope must match offer.space_scope used in the action.
+                                let approval_msg =
+                                    crate::blocks::action::Action::sponsor_sig_message(
+                                        claim.claimant.as_bytes(),
+                                        now,
+                                        offer.space_scope.as_ref(),
+                                    );
                                 let approval_sig =
                                     crate::identity::sign(&keypair.private_key, &approval_msg);
 

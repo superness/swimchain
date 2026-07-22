@@ -13,6 +13,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { linkify } from '../lib/linkify';
 import { useParams, useNavigate } from 'react-router-dom';
 import { hexToBytes, solutionToRpcParams, sha256 } from '@swimchain/frontend';
 import { useRpc, usePostSubmit, usePrivateContent } from '../hooks/useRpc';
@@ -282,7 +283,7 @@ export function DmConversation(): JSX.Element {
             key={m.id}
             className={`dm-conv__msg${m.mine ? ' dm-conv__msg--mine' : ''}${m.pending ? ' dm-conv__msg--pending' : ''}`}
           >
-            <div className="dm-conv__bubble">{m.text}</div>
+            <div className="dm-conv__bubble">{linkify(m.text)}</div>
           </div>
         ))}
       </div>

@@ -1812,6 +1812,10 @@ pub struct SponsorshipOfferSummary {
     /// True if claims on this offer are approved instantly (invite links)
     #[serde(default)]
     pub auto_approve: bool,
+    /// Space scope (hex space id) if this offer sponsors only within one space.
+    /// `None` = a global grant. Game offers are scoped to their game space.
+    #[serde(default)]
+    pub space_scope: Option<String>,
 }
 
 /// Requirements sub-object for offer summaries
@@ -1877,6 +1881,11 @@ pub struct CreateSponsorshipOfferParams {
     /// sponsor review (one-step invite-link onboarding). Default false.
     #[serde(default)]
     pub auto_approve: bool,
+    /// Optional space scope (hex space id). When set, claimants approved through
+    /// this offer are sponsored ONLY within that space (a scoped grant), not
+    /// globally — used for game onboarding so a player is bound to the game space.
+    #[serde(default)]
+    pub space_scope: Option<String>,
     pub signature: String,
     pub timestamp: u64,
 }
@@ -2002,6 +2011,9 @@ pub struct MySponsorshipOfferSummary {
     /// True if claims on this offer are approved instantly (invite links)
     #[serde(default)]
     pub auto_approve: bool,
+    /// Hex space id (32 bytes) if this offer only sponsors within one space
+    #[serde(default)]
+    pub space_scope: Option<String>,
 }
 
 /// list_my_sponsorship_offers result

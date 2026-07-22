@@ -36,6 +36,14 @@ export interface EnsureSponsoredOptions {
      * with a clear message instead of silently onboarding onto a dead offer.
      */
     strictPreferred?: boolean;
+    /**
+     * If set (bech32 `sp1…` space id), only claim offers that grant action IN
+     * this space — i.e. a scoped offer for this exact space, or a global
+     * (unscoped) offer. Offers scoped to a DIFFERENT space are skipped. Games
+     * pass their own space so a reef player onboards into reef, a chess player
+     * into chess, and neither can drain the other's offer.
+     */
+    requiredSpaceId?: string;
     /** Phase text callback for UI ("Finding a sponsor", "Waiting for approval"). */
     onProgress?: (phase: string) => void;
     /** How long to wait for the chain to record the sponsorship (ms). */

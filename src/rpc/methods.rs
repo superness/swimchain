@@ -16887,6 +16887,11 @@ impl RpcMethods {
                                 application_required: o.requirements.application_required,
                             },
                             auto_approve: o.auto_approve,
+                            space_scope: o.space_scope.map(|s| {
+                                let mut id16 = [0u8; 16];
+                                id16.copy_from_slice(&s[..16]);
+                                encode_space_id(&id16)
+                            }),
                         }
                     })
                     .collect();
@@ -17021,25 +17026,34 @@ impl RpcMethods {
         };
 
         // Faucet is disabled on mainnet: auto-approve offers cannot be created
-        // there. Auto-approve roots sybils directly at genesis with no
-        // accountable human vouch — the mainnet sybil wall is manual (or
-        // space-scoped game) sponsorship. Manual offers (auto_approve = false)
-        // remain valid on any network; testnet/regtest keep auto-approve for dev.
+        // there — EXCEPT for the operator-designated game sponsor(s). Auto-approve
+        // roots sybils with no accountable human vouch, so the general mainnet
+        // sybil wall stays manual. The games are a sanctioned, capped exception so
+        // reef/chess keep one-click onboarding; that path is rooted at the game
+        // sponsor's own subtree (contained by tree-poisoning), NOT a general
+        // genesis-rooted faucet. Manual offers remain valid on any network;
+        // testnet/regtest keep auto-approve for dev.
+        let is_game_sponsor =
+            crate::sponsorship::is_mainnet_game_sponsor(params.sponsor_pubkey.as_str());
         if params.auto_approve
             && crate::network::NetworkContext::mode() == crate::network::NetworkMode::Mainnet
+            && !is_game_sponsor
         {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
-                "auto-approve sponsorship offers are disabled on mainnet; use a manual offer (auto_approve=false) or issue direct/space-scoped grants",
+                "auto-approve sponsorship offers are disabled on mainnet except for the designated game sponsor; use a manual offer (auto_approve=false) or issue direct/space-scoped grants",
                 id,
             );
         }
 
-        // Validate slots
-        if params.slots < 1 || params.slots > 10 {
+        // Validate slots. Game-sponsor auto-approve offers may go up to the
+        // operator's onboarding cap (100 identities); other offers keep the
+        // conservative 10-slot limit.
+        let max_slots: u8 = if is_game_sponsor { 100 } else { 10 };
+        if params.slots < 1 || params.slots > max_slots {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
-                "slots must be between 1 and 10",
+                &format!("slots must be between 1 and {}", max_slots),
                 id,
             );
         }
@@ -17239,6 +17253,35 @@ impl RpcMethods {
             }
         }
 
+        // Optional space scope: bind claimants approved through this offer to a
+        // single space (game onboarding). Accepts a sp1q../hex space id; stored as
+        // the 32-byte form (id16 ++ zeros) so it compares equal to
+        // content_block.space_id in is_authorized_in_space.
+        let space_scope: Option<[u8; 32]> = match params.space_scope.as_deref() {
+            None => None,
+            Some(s) => match decode_space_id(s) {
+                Ok(id16) => {
+                    let mut scope = [0u8; 32];
+                    scope[..16].copy_from_slice(&id16);
+                    if scope == [0u8; 32] {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Invalid space_scope: zero space id",
+                            id,
+                        );
+                    }
+                    Some(scope)
+                }
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Invalid space_scope: {}", e),
+                        id,
+                    );
+                }
+            },
+        };
+
         // Build the offer struct now that signature is verified
         let offer = PublicSponsorshipOffer {
             sponsor: sponsor_pk,
@@ -17252,6 +17295,7 @@ impl RpcMethods {
             requirements,
             signature: Signature::from_bytes(sig_bytes),
             auto_approve: params.auto_approve,
+            space_scope,
         };
 
         // Store the offer
@@ -17662,12 +17706,14 @@ impl RpcMethods {
             crate::network::NetworkContext::mode() != crate::network::NetworkMode::Mainnet;
         if offer.auto_approve && faucet_enabled {
             if self.node.keypair.public_key.as_bytes() == offer.sponsor.as_bytes() {
-                // Sign the exact message approve_sponsorship_claim expects the
-                // sponsor's client to sign, then run the same internal approval
-                // path the approve RPC uses.
-                let mut approval_msg = Vec::with_capacity(40);
-                approval_msg.extend_from_slice(&claimant_bytes);
-                approval_msg.extend_from_slice(&current_time.to_be_bytes());
+                // Sign the exact message the on-chain Sponsor action carries:
+                // sponsee(32) || timestamp(8 BE) [|| scope(32)] — the scope must
+                // match offer.space_scope used when the action is built.
+                let approval_msg = crate::blocks::action::Action::sponsor_sig_message(
+                    &claimant_bytes,
+                    current_time,
+                    offer.space_scope.as_ref(),
+                );
                 let approval_sig =
                     crate::identity::sign(&self.node.keypair.private_key, &approval_msg);
                 let approval_sig_bytes: [u8; 64] = *approval_sig.as_bytes();
@@ -17918,10 +17964,13 @@ impl RpcMethods {
             }
         };
 
-        // Verify sponsor signature over (claimant(32) || timestamp(8 BE))
-        let mut sig_msg = Vec::with_capacity(40);
-        sig_msg.extend_from_slice(&claimant_bytes);
-        sig_msg.extend_from_slice(&params.timestamp.to_be_bytes());
+        // Verify sponsor signature over sponsee(32) || timestamp(8 BE) [|| scope(32)]
+        // — the scope must match the offer so a scoped grant's action re-verifies.
+        let sig_msg = crate::blocks::action::Action::sponsor_sig_message(
+            &claimant_bytes,
+            params.timestamp,
+            offer.space_scope.as_ref(),
+        );
         {
             use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
             let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
@@ -18426,6 +18475,11 @@ impl RpcMethods {
                             created_at: o.created_at,
                             is_expired: o.is_expired(current_time),
                             auto_approve: o.auto_approve,
+                            space_scope: o.space_scope.map(|s| {
+                                let mut id16 = [0u8; 16];
+                                id16.copy_from_slice(&s[..16]);
+                                encode_space_id(&id16)
+                            }),
                         }
                     })
                     .collect();

@@ -323,3 +323,14 @@ textarea::placeholder {
   background: rgba(33, 150, 243, 0.2);
   color: var(--color-info);
 }
+
+/* Auto-linked URLs inside post bodies (see lib/linkify.tsx). */
+.autolink {
+  color: var(--color-info, #4aa3ff);
+  text-decoration: none;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.autolink:hover {
+  text-decoration: underline;
+}

@@ -950,6 +950,7 @@ export function ensureReefSponsored(
   return ensureSponsored(rpc, id, {
     preferredSponsorHex: GAME_SPONSOR,
     strictPreferred: true,
+    requiredSpaceId: REEF_SPACE,
     onProgress,
   });
 }

@@ -1416,6 +1416,8 @@ export interface MediaUploadResponse {
   needsCompression?: boolean;
   /** Original file size in bytes */
   originalSize?: number;
+  /** Human-readable failure reason (surfaced in the UI instead of a generic string) */
+  error?: string;
 }
 
 /**
@@ -1491,13 +1493,13 @@ export function useMediaUpload() {
         };
       } else {
         setError('Upload failed');
-        return { success: false, result: null };
+        return { success: false, result: null, error: 'Upload failed' };
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Upload failed';
       setError(errorMessage);
       console.error('[Media] Upload error:', err);
-      return { success: false, result: null };
+      return { success: false, result: null, error: errorMessage };
     } finally {
       setUploading(false);
     }

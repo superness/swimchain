@@ -22,7 +22,7 @@ KEY="$HOME/.ssh/swimchain_seed_ed25519"
 # pinned game-onboarding sponsor pubkey). The sponsor marker guards against
 # ever shipping the old genesis default again (offline sponsor => onboarding
 # hangs; the 2026-07-18 "reef spun forever" bug).
-GAME_SPONSOR=2fa758fcf4e7f8cbc0949dc8e528cf2ccedbf02f163b572440bbcfb668e90844
+GAME_SPONSOR=0530df507ad26a2ee6d0c61ef1e37e4e08abae087c1755467d98e3435ecd2984
 declare -A SPEC=(
   [reef]="reef:swimchain.io/rpc,sp1qqzurjh6eeafcdf5qgpqg8mkfwlq3e6cfu,$GAME_SPONSOR"
   [chess]="chess:swimchain.io/rpc,sp1qqzc0w94g6hqlvaqxy735mjss84qrwk88e,$GAME_SPONSOR"

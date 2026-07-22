@@ -97,6 +97,7 @@ export function ensureChessSponsored(
   return ensureSponsored(rpc, id, {
     preferredSponsorHex: GAME_SPONSOR,
     strictPreferred: true,
+    requiredSpaceId: CHESS_SPACE,
     onProgress,
   });
 }
@@ -293,36 +294,49 @@ export async function listGames(rpc: SwimchainRpc, spaceId: string): Promise<Gam
 /**
  * Load a game by folding its reply chain through chess.js.
  *
- * Determinism: replies are ordered by (created_at, content_id). White's moves must
- * come from the creator; the first distinct author who plays a legal move on Black's
- * turn claims the Black seat, and thereafter Black's moves must come from that author.
- * Moves from the wrong side, or illegal in the current position, are ignored — so
- * every client derives the same board without a referee.
+ * Determinism: replies are ordered by the authoritative `#ply` index encoded in
+ * each move body, NOT by created_at. The node stamps created_at at query time for
+ * pending (mempool) replies, so a created_at sort scrambles move order and folds an
+ * illegal/short line (this is the same query-time-timestamp bug we fixed for reef).
+ * White's moves come from the creator; the first distinct author who plays a legal
+ * move on Black's turn claims the Black seat. At most one move is applied per ply
+ * (duplicate/conflicting submissions for the same ply resolve by content_id), and
+ * illegal moves are ignored — so every client derives the same board without a referee.
  */
 export async function loadGame(rpc: SwimchainRpc, gameId: string): Promise<GameState> {
   const post = await rpc.getContent(gameId);
   const header = parseGameHeader(post.body) ?? { v: 1, kind: 'chess', white: '', variant: 'standard', created: 0 };
   const { replies } = await rpc.getReplies(gameId, { limit: 100000 });
-  const sorted = replies
-    .slice()
-    .sort((a, b) => a.created_at - b.created_at || a.content_id.localeCompare(b.content_id));
+  // Parse each reply into { ply, san }. Body is "<san> <gameId>#<ply>"; the trailing
+  // "#<ply>" is the true move order. Sort by ply, then content_id as a deterministic
+  // tie-break so conflicting same-ply submissions fold identically everywhere.
+  const parsed = replies
+    .map((r) => {
+      const body = (r.body ?? '').trim();
+      const san = body.split(/\s+/)[0] ?? '';
+      const m = body.match(/#(\d+)\s*$/);
+      const ply = m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
+      return { san, ply, author: r.author_id, contentId: r.content_id };
+    })
+    .filter((x) => x.san)
+    .sort((a, b) => a.ply - b.ply || a.contentId.localeCompare(b.contentId));
 
   const chess = new Chess();
   const moves: AppliedMove[] = [];
+  const usedPly = new Set<number>();
 
-  // Fold moves by legality + turn order. The node cryptographically enforces that
+  // Fold moves by ply order + legality. The node cryptographically enforces that
   // each move is signed by its author (that's what makes a move "provably yours"),
   // so the client trusts authorship and just applies legal moves in order. We do NOT
   // strict-match author to a stored White/Black id here because the node returns
   // author_id inconsistently (bech32 address vs pubkey hex across RPCs/games).
-  for (const r of sorted) {
-    // Move body is "<san> <gameId>#<ply>"; the SAN is the first token.
-    const san = (r.body ?? '').trim().split(/\s+/)[0] ?? '';
-    if (!san) continue;
+  for (const r of parsed) {
+    if (usedPly.has(r.ply)) continue; // one move per ply — ignore duplicate/conflicting submissions
     try {
-      const mv = chess.move(san);
+      const mv = chess.move(r.san);
       if (mv) {
-        moves.push({ san: mv.san, from: mv.from, to: mv.to, author: r.author_id, contentId: r.content_id });
+        moves.push({ san: mv.san, from: mv.from, to: mv.to, author: r.author, contentId: r.contentId });
+        usedPly.add(r.ply);
       }
     } catch {
       /* illegal in this position — ignore */

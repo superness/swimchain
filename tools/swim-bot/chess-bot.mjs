@@ -128,13 +128,27 @@ function parseHeader(body) {
 // Replay the reply chain through chess.js. Legality is the real ordering gate:
 // an out-of-order/illegal SAN simply doesn't apply, so the position self-heals.
 function foldGame(replies) {
-  const sorted = replies.slice().sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0) || String(a.content_id).localeCompare(b.content_id));
+  // Order by the authoritative `#ply` tag in each move body ("<san> <gameId>#<ply>"),
+  // NOT created_at: the node stamps created_at at query time for pending replies, so a
+  // created_at sort scrambles move order and folds an illegal/short line (the same
+  // query-time-timestamp bug fixed for reef). Tie-break by content_id so duplicate/
+  // conflicting same-ply submissions fold identically on every client.
+  const parsed = replies
+    .map((r) => {
+      const body = (r.body ?? '').trim();
+      const san = body.split(/\s+/)[0];
+      const m = body.match(/#(\d+)\s*$/);
+      const ply = m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
+      return { san, ply, author: (r.author_id || '').toLowerCase(), cid: String(r.content_id) };
+    })
+    .filter((x) => x.san)
+    .sort((a, b) => a.ply - b.ply || a.cid.localeCompare(b.cid));
   const chess = new Chess();
   const applied = [];
-  for (const r of sorted) {
-    const san = (r.body ?? '').trim().split(/\s+/)[0];
-    if (!san) continue;
-    try { const mv = chess.move(san); if (mv) applied.push({ san: mv.san, author: (r.author_id || '').toLowerCase() }); } catch { /* illegal here */ }
+  const usedPly = new Set();
+  for (const r of parsed) {
+    if (usedPly.has(r.ply)) continue; // one move per ply — ignore duplicate/conflicting submissions
+    try { const mv = chess.move(r.san); if (mv) { applied.push({ san: mv.san, author: r.author }); usedPly.add(r.ply); } } catch { /* illegal here */ }
   }
   const black = applied.length >= 2 ? applied[1].author : null;
   return { chess, black, ply: applied.length };
@@ -209,19 +223,21 @@ async function tick() {
   for (const g of games) {
     try {
       const white = (g.header.white || '').toLowerCase();
-      if (white === AUTHOR) continue; // never play both sides of our own game
       const { replies } = await rpc('get_replies', { content_id: g.id, limit: 100000 });
       const { chess, black, ply } = foldGame(replies ?? []);
       if (chess.isGameOver()) continue;
-      if (chess.turn() !== 'b') continue; // only the human's move (White) unblocks us
-      if (black && black !== AUTHOR) continue; // someone else already took Black
+      // Play whichever side the bot holds (White if it created the game, else Black).
+      // The only thing we must never do is play BOTH sides of a game against ourselves.
+      const botColor = white === AUTHOR ? 'w' : 'b';
+      if (chess.turn() !== botColor) continue; // wait for the opponent to move
+      if (botColor === 'b' && black && black !== AUTHOR) continue; // someone else took Black
       const fen = chess.fen();
       if (submittedFor.get(g.id) === fen) continue; // already answered this position; awaiting it
       const san = chooseMove(chess, DEPTH);
       if (!san) continue;
       await submitMove(g.id, san, ply);
       submittedFor.set(g.id, fen);
-      console.log(`[${TAG} ${new Date().toISOString()}] ${g.id.slice(0, 14)}… played ${san} (ply ${ply})`);
+      console.log(`[${TAG} ${new Date().toISOString()}] ${g.id.slice(0, 14)}… played ${san} as ${botColor} (ply ${ply})`);
     } catch (e) {
       console.log(`[${TAG}] ${g.id.slice(0, 14)}… error: ${e.message}`);
     }

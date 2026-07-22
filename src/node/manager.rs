@@ -1997,7 +1997,11 @@ impl NodeManager {
             data_dir: self.config.data_dir.clone(),
             username: self.config.rpc_user.clone(),
             password: self.config.rpc_password.clone(),
-            max_body_size: 1024 * 1024, // 1MB
+            // Must hold a base64-encoded upload_media payload: MAX_MEDIA_SIZE (1 MB)
+            // inflates ~4/3 to ~1.4 MB, plus JSON overhead. 1 MB here rejected valid
+            // ≤1 MB images (base64 pushed the request body over the cap). Match the
+            // RpcServerConfig default headroom.
+            max_body_size: 7 * 1024 * 1024, // 7MB
             tls: Default::default(),    // TLS disabled by default for local development
         };
 

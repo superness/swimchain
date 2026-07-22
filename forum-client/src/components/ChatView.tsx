@@ -8,6 +8,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { linkify } from '../lib/linkify';
 import { useParams, Link } from 'react-router-dom';
 import { useSpaceMembers, usePostSubmit, usePrivateContent, usePrivateSpaces } from '../hooks/useRpc';
 import { usePostPow } from '../hooks/useActionPow';
@@ -308,7 +309,7 @@ export function ChatView(): JSX.Element {
                   )}
                   <div className="message-bubble">
                     <p className="message-content">
-                      {message.content}
+                      {linkify(message.content)}
                       {message.decryptionError && (
                         <span className="decryption-error" title={message.decryptionError}>
                           (decryption failed)
