@@ -65,7 +65,7 @@ function buildClaimSigMessage(offerIdHex, claimantHex, timestamp, powHash) {
  * @throws if no offer is open, signing fails, or the wait times out.
  */
 export async function ensureSponsored(rpc, id, options = {}) {
-    const { preferredSponsorHex, onProgress, timeoutMs = 180000 } = options;
+    const { preferredSponsorHex, strictPreferred, onProgress, timeoutMs = 180000 } = options;
     const isSponsored = async () => {
         try {
             const st = await rpc.call('get_sponsorship_status', { identity: id.publicKeyHex });
@@ -91,12 +91,20 @@ export async function ensureSponsored(rpc, id, options = {}) {
     // only the first claimant and drops the rest with "no slots"). Preferring the
     // largest standing offer spreads the load and avoids that thundering herd.
     const mostSlots = (candidates) => candidates.reduce((best, o) => (best && best.slots_remaining >= o.slots_remaining ? best : o), undefined);
+    // Preferred-sponsor tiers first. In strict mode we STOP here — never claim a
+    // different sponsor's offer, because that fallback is what let a player land
+    // on a stale offer from an offline sponsor and hang forever.
     const pick = mostSlots(offers.filter((o) => preferred(o) && o.auto_approve && hasRoom(o))) ??
         mostSlots(offers.filter((o) => preferred(o) && hasRoom(o))) ??
-        mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o))) ??
-        mostSlots(offers.filter(hasRoom));
-    if (!pick)
-        throw new Error('No sponsorship offers are open right now — try again shortly.');
+        (strictPreferred
+            ? undefined
+            : mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o))) ??
+                mostSlots(offers.filter(hasRoom)));
+    if (!pick) {
+        throw new Error(strictPreferred
+            ? 'Onboarding is temporarily unavailable (the game sponsor has no open slots) — try again shortly.'
+            : 'No sponsorship offers are open right now — try again shortly.');
+    }
     onProgress?.('Requesting sponsorship (proof-of-work)');
     const minDifficulty = Math.max(pick.requirements?.min_pow_difficulty ?? 0, 1);
     const { nonce, nonceSpace, powHash } = await mineClaimPow(minDifficulty);

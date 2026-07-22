@@ -18,9 +18,14 @@ GATEWAY=167.99.116.63
 KEY="$HOME/.ssh/swimchain_seed_ed25519"
 
 # client -> "web_root:required_marker1,required_marker2"
+# Markers each built bundle MUST contain (RPC endpoint, space id, and the
+# pinned game-onboarding sponsor pubkey). The sponsor marker guards against
+# ever shipping the old genesis default again (offline sponsor => onboarding
+# hangs; the 2026-07-18 "reef spun forever" bug).
+GAME_SPONSOR=2fa758fcf4e7f8cbc0949dc8e528cf2ccedbf02f163b572440bbcfb668e90844
 declare -A SPEC=(
-  [reef]="reef:swimchain.io/rpc,sp1qqqsqr9dfcyugxztn5nrpjd7r82sh9cd62"
-  [chess]="chess:swimchain.io/rpc,sp1qqqsqrsm2rq9fhtvwww9cts9n6wq536c23"
+  [reef]="reef:swimchain.io/rpc,sp1qqqsqr9dfcyugxztn5nrpjd7r82sh9cd62,$GAME_SPONSOR"
+  [chess]="chess:swimchain.io/rpc,sp1qqqsqrsm2rq9fhtvwww9cts9n6wq536c23,$GAME_SPONSOR"
 )
 
 CLIENTS=("$@")

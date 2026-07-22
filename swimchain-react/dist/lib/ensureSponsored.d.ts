@@ -27,6 +27,15 @@ export interface EnsureSponsoredOptions {
      * auto-approve offer, then any offer.
      */
     preferredSponsorHex?: string;
+    /**
+     * When true, claim ONLY offers from `preferredSponsorHex` — never fall back
+     * to some other sponsor's offer. Games (reef/chess) set this: their sponsor
+     * is a dedicated always-online node, and the fallback is exactly what let a
+     * player land on a stale offer from an offline sponsor and hang forever
+     * (observed 2026-07-18). If the pinned sponsor has no open slot we fail fast
+     * with a clear message instead of silently onboarding onto a dead offer.
+     */
+    strictPreferred?: boolean;
     /** Phase text callback for UI ("Finding a sponsor", "Waiting for approval"). */
     onProgress?: (phase: string) => void;
     /** How long to wait for the chain to record the sponsorship (ms). */
