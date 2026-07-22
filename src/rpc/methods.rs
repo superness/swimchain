@@ -9012,6 +9012,23 @@ impl RpcMethods {
             .as_secs();
         match mgr.status(&crate::identity::PublicKey(identity), now) {
             Ok(report) => {
+                // chain + mempool = reality. A Sponsor action already in our
+                // mempool is real even before a block finalizes it — and an idle
+                // network forms no blocks by design, so waiting for finalization
+                // would hang onboarding indefinitely on a quiet reef. Mirror the
+                // gate (check_identity_sponsored): honor a pending Sponsor for
+                // this identity so onboarding completes the moment the approval
+                // is mined into the mempool, not when a block happens to form.
+                let pending_sponsor = report.sponsorship.is_none()
+                    && self.node.block_builder.as_ref().is_some_and(|bb| {
+                        bb.read().is_ok_and(|b| {
+                            b.get_pending_actions().iter().any(|(_, _, a)| {
+                                a.action_type == crate::blocks::ActionType::Sponsor
+                                    && a.content_hash == Some(identity)
+                            })
+                        })
+                    });
+                let has_sponsorship = report.sponsorship.is_some() || pending_sponsor;
                 let penalties: Vec<Value> = report
                     .active_penalties
                     .iter()
@@ -9028,7 +9045,8 @@ impl RpcMethods {
                     json!({
                         "identity": hex::encode(identity),
                         "sponsorship_barred": report.sponsorship_barred,
-                        "has_sponsorship": report.sponsorship.is_some(),
+                        "has_sponsorship": has_sponsorship,
+                        "pending_sponsorship": pending_sponsor,
                         "active_penalties": penalties,
                     }),
                     id,
