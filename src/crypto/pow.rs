@@ -5,48 +5,12 @@
 //! The PoW prevents Sybil attacks by requiring computational work to create
 //! an identity. The hash is computed over: pubkey(32) || timestamp_le(8) || nonce_le(8).
 
-use crate::crypto::hash::leading_zeros;
+use crate::crypto::hash::{leading_zeros, pow_hash};
 use crate::crypto::signature::current_timestamp;
 use crate::types::error::IdentityError;
 use crate::types::identity::{IdentityCreationProof, KeyPair};
-use argon2::{Algorithm, Argon2, Params, Version};
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-/// Argon2id parameters for identity PoW. Deliberately FIXED across all networks
-/// (unlike action PoW, whose config varies) — only the DIFFICULTY varies per
-/// network (see `NetworkMode::identity_pow_difficulty`). A fixed config keeps
-/// mine and verify independent of any global network state (so they can never
-/// disagree) while staying memory-hard everywhere. 64 MiB / 3 iters / 1 lane
-/// (~90 ms/hash measured); a single verify is not a DoS vector because it runs
-/// only at the rate-limited onboarding grant point.
-const IDENTITY_POW_MEMORY_KIB: u32 = 65536;
-const IDENTITY_POW_ITERATIONS: u32 = 3;
-const IDENTITY_POW_PARALLELISM: u32 = 1;
-
-/// Memory-hard (Argon2id) identity PoW hash over the 48-byte preimage
-/// `pubkey(32) || timestamp_le(8) || nonce_le(8)`. Salt = the pubkey's first 8
-/// bytes (identity-bound + domain-separated from action PoW). Replaces the
-/// former SHA-256 `pow_hash` on the identity path — identity creation is the
-/// anti-sybil entry gate, so it must be GPU/ASIC-resistant.
-#[must_use]
-pub fn identity_pow_hash(data: &[u8; 48]) -> [u8; 32] {
-    let params = Params::new(
-        IDENTITY_POW_MEMORY_KIB,
-        IDENTITY_POW_ITERATIONS,
-        IDENTITY_POW_PARALLELISM,
-        Some(32),
-    )
-    .expect("valid argon2 params");
-    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut salt = [0u8; 8];
-    salt.copy_from_slice(&data[..8]);
-    let mut hash = [0u8; 32];
-    argon2
-        .hash_password_into(data, &salt, &mut hash)
-        .expect("argon2 identity hash");
-    hash
-}
 
 /// Default identity creation PoW difficulty (SPEC_01 §12.1)
 ///
@@ -123,7 +87,7 @@ where
         data[32..40].copy_from_slice(&timestamp.to_le_bytes());
         data[40..48].copy_from_slice(&nonce.to_le_bytes());
 
-        let hash = identity_pow_hash(&data);
+        let hash = pow_hash(&data);
         if leading_zeros(&hash) >= u32::from(difficulty) {
             return IdentityCreationProof {
                 public_key: keypair.public_key,
@@ -175,7 +139,7 @@ fn mine_identity_pow_at_time(
         data[32..40].copy_from_slice(&timestamp.to_le_bytes());
         data[40..48].copy_from_slice(&nonce.to_le_bytes());
 
-        let hash = identity_pow_hash(&data);
+        let hash = pow_hash(&data);
         if leading_zeros(&hash) >= u32::from(difficulty) {
             return IdentityCreationProof {
                 public_key: keypair.public_key,
@@ -294,7 +258,7 @@ where
                 data[32..40].copy_from_slice(&timestamp.to_le_bytes());
                 data[40..48].copy_from_slice(&nonce.to_le_bytes());
 
-                let hash = identity_pow_hash(&data);
+                let hash = pow_hash(&data);
                 if leading_zeros(&hash) >= u32::from(difficulty) {
                     // Found a solution - signal other threads to stop
                     if !found.swap(true, Ordering::SeqCst) {
@@ -354,7 +318,7 @@ fn verify_pow_hash_and_difficulty(
     data[32..40].copy_from_slice(&proof.timestamp.to_le_bytes());
     data[40..48].copy_from_slice(&proof.nonce.to_le_bytes());
 
-    let computed_hash = identity_pow_hash(&data);
+    let computed_hash = pow_hash(&data);
     if computed_hash != proof.pow_hash {
         let actual = leading_zeros(&computed_hash);
         return Err(IdentityError::PowDifficultyNotMet {
@@ -473,32 +437,32 @@ mod tests {
     #[test]
     fn test_pow_mining_difficulty_8() {
         let keypair = generate_keypair();
-        let proof = mine_identity_pow(&keypair, 4);
+        let proof = mine_identity_pow(&keypair, 8);
 
         // Verify the proof meets difficulty
-        assert!(leading_zeros(&proof.pow_hash) >= 4);
+        assert!(leading_zeros(&proof.pow_hash) >= 8);
         assert_eq!(proof.public_key.as_bytes(), keypair.public_key.as_bytes());
     }
 
     #[test]
     fn test_pow_verification_valid() {
         let keypair = generate_keypair();
-        let proof = mine_identity_pow(&keypair, 4);
+        let proof = mine_identity_pow(&keypair, 8);
         let current_time = current_timestamp();
 
-        let result = verify_identity_pow(&proof, 4, current_time);
+        let result = verify_identity_pow(&proof, 8, current_time);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_pow_verification_wrong_nonce() {
         let keypair = generate_keypair();
-        let mut proof = mine_identity_pow(&keypair, 4);
+        let mut proof = mine_identity_pow(&keypair, 8);
 
         // Corrupt the nonce
         proof.nonce = proof.nonce.wrapping_add(1);
 
-        let result = verify_identity_pow(&proof, 4, current_timestamp());
+        let result = verify_identity_pow(&proof, 8, current_timestamp());
         assert!(matches!(
             result,
             Err(IdentityError::PowDifficultyNotMet { .. })
@@ -509,7 +473,7 @@ mod tests {
     fn test_pow_verification_insufficient_difficulty() {
         let keypair = generate_keypair();
         // Mine with difficulty 8
-        let proof = mine_identity_pow(&keypair, 4);
+        let proof = mine_identity_pow(&keypair, 8);
 
         // Verify requiring difficulty 32 (likely to fail)
         let result = verify_identity_pow(&proof, 32, current_timestamp());
@@ -614,13 +578,13 @@ mod tests {
         data2[32..40].copy_from_slice(&timestamp.to_le_bytes());
         data2[40..48].copy_from_slice(&nonce.to_le_bytes());
 
-        assert_eq!(identity_pow_hash(&data1), identity_pow_hash(&data2));
+        assert_eq!(pow_hash(&data1), pow_hash(&data2));
     }
 
     #[test]
     fn test_pow_mining_produces_valid_proof() {
         let keypair = generate_keypair();
-        let proof = mine_identity_pow(&keypair, 4);
+        let proof = mine_identity_pow(&keypair, 8);
 
         // Manually verify the hash
         let mut data = [0u8; 48];
@@ -628,9 +592,9 @@ mod tests {
         data[32..40].copy_from_slice(&proof.timestamp.to_le_bytes());
         data[40..48].copy_from_slice(&proof.nonce.to_le_bytes());
 
-        let hash = identity_pow_hash(&data);
+        let hash = pow_hash(&data);
         assert_eq!(hash, proof.pow_hash);
-        assert!(leading_zeros(&hash) >= 4);
+        assert!(leading_zeros(&hash) >= 8);
     }
 
     // --- Parallel PoW Mining Tests (M-IDENTITY-1) ---
@@ -638,27 +602,27 @@ mod tests {
     #[test]
     fn test_parallel_pow_mining_difficulty_8() {
         let keypair = generate_keypair();
-        let proof = mine_identity_pow_parallel(&keypair, 4);
+        let proof = mine_identity_pow_parallel(&keypair, 8);
 
         // Verify the proof meets difficulty
-        assert!(leading_zeros(&proof.pow_hash) >= 4);
+        assert!(leading_zeros(&proof.pow_hash) >= 8);
         assert_eq!(proof.public_key.as_bytes(), keypair.public_key.as_bytes());
     }
 
     #[test]
     fn test_parallel_pow_verification_valid() {
         let keypair = generate_keypair();
-        let proof = mine_identity_pow_parallel(&keypair, 4);
+        let proof = mine_identity_pow_parallel(&keypair, 8);
         let current_time = current_timestamp();
 
-        let result = verify_identity_pow(&proof, 4, current_time);
+        let result = verify_identity_pow(&proof, 8, current_time);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_parallel_pow_produces_valid_hash() {
         let keypair = generate_keypair();
-        let proof = mine_identity_pow_parallel(&keypair, 4);
+        let proof = mine_identity_pow_parallel(&keypair, 8);
 
         // Manually verify the hash
         let mut data = [0u8; 48];
@@ -666,9 +630,9 @@ mod tests {
         data[32..40].copy_from_slice(&proof.timestamp.to_le_bytes());
         data[40..48].copy_from_slice(&proof.nonce.to_le_bytes());
 
-        let hash = identity_pow_hash(&data);
+        let hash = pow_hash(&data);
         assert_eq!(hash, proof.pow_hash);
-        assert!(leading_zeros(&hash) >= 4);
+        assert!(leading_zeros(&hash) >= 8);
     }
 
     #[test]
@@ -688,16 +652,15 @@ mod tests {
 
     #[test]
     fn test_parallel_pow_higher_difficulty() {
-        // Argon2id identity PoW is memory-hard (~90 ms/hash), so tests use a low
-        // difficulty; this still exercises the parallel miner + verify path.
+        // Test with difficulty 12 to exercise parallel mining more
         let keypair = generate_keypair();
-        let proof = mine_identity_pow_parallel(&keypair, 4);
+        let proof = mine_identity_pow_parallel(&keypair, 12);
 
         // Verify the proof meets difficulty
-        assert!(leading_zeros(&proof.pow_hash) >= 4);
+        assert!(leading_zeros(&proof.pow_hash) >= 12);
 
         // Verify using standard verification
-        let result = verify_identity_pow(&proof, 4, current_timestamp());
+        let result = verify_identity_pow(&proof, 12, current_timestamp());
         assert!(result.is_ok());
     }
 }
