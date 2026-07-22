@@ -269,6 +269,26 @@ impl NetworkMode {
     /// assert_eq!(NetworkMode::Testnet.adjusted_difficulty(22), 12);
     /// assert_eq!(NetworkMode::Regtest.adjusted_difficulty(22), 4);
     /// ```
+    /// Identity-creation PoW difficulty (leading zero bits) for this network.
+    ///
+    /// Identity creation is the anti-sybil ENTRY GATE — the single costliest
+    /// operation — and uses memory-hard Argon2id (see `crypto::pow`). Calibrated
+    /// to each network's Argon2id config (mainnet 64 MiB ≈94 ms/hash, measured):
+    /// - Mainnet: 9 bits ≈ 45 s (the entry gate)
+    /// - Testnet: 5 bits ≈ a few seconds
+    /// - Regtest: 2 bits (near-instant dev)
+    ///
+    /// Mine and verify must pass the SAME difficulty; production selects it from
+    /// this per network, so a proof mined for one network won't satisfy another.
+    #[must_use]
+    pub fn identity_pow_difficulty(&self) -> u8 {
+        match self {
+            NetworkMode::Mainnet => 9,
+            NetworkMode::Testnet => 5,
+            NetworkMode::Regtest => 2,
+        }
+    }
+
     #[must_use]
     pub fn adjusted_difficulty(&self, base_difficulty: u8) -> u8 {
         match self {
