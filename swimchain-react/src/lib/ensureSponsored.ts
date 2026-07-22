@@ -40,6 +40,15 @@ export interface EnsureSponsoredOptions {
    * auto-approve offer, then any offer.
    */
   preferredSponsorHex?: string;
+  /**
+   * When true, claim ONLY offers from `preferredSponsorHex` — never fall back
+   * to some other sponsor's offer. Games (reef/chess) set this: their sponsor
+   * is a dedicated always-online node, and the fallback is exactly what let a
+   * player land on a stale offer from an offline sponsor and hang forever
+   * (observed 2026-07-18). If the pinned sponsor has no open slot we fail fast
+   * with a clear message instead of silently onboarding onto a dead offer.
+   */
+  strictPreferred?: boolean;
   /** Phase text callback for UI ("Finding a sponsor", "Waiting for approval"). */
   onProgress?: (phase: string) => void;
   /** How long to wait for the chain to record the sponsorship (ms). */
@@ -109,7 +118,7 @@ export async function ensureSponsored(
   id: SponsorableIdentity,
   options: EnsureSponsoredOptions = {}
 ): Promise<void> {
-  const { preferredSponsorHex, onProgress, timeoutMs = 180_000 } = options;
+  const { preferredSponsorHex, strictPreferred, onProgress, timeoutMs = 180_000 } = options;
 
   const isSponsored = async (): Promise<boolean> => {
     try {
@@ -144,12 +153,23 @@ export async function ensureSponsored(
       (best, o) => (best && best.slots_remaining >= o.slots_remaining ? best : o),
       undefined
     );
+  // Preferred-sponsor tiers first. In strict mode we STOP here — never claim a
+  // different sponsor's offer, because that fallback is what let a player land
+  // on a stale offer from an offline sponsor and hang forever.
   const pick =
     mostSlots(offers.filter((o) => preferred(o) && o.auto_approve && hasRoom(o))) ??
     mostSlots(offers.filter((o) => preferred(o) && hasRoom(o))) ??
-    mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o))) ??
-    mostSlots(offers.filter(hasRoom));
-  if (!pick) throw new Error('No sponsorship offers are open right now — try again shortly.');
+    (strictPreferred
+      ? undefined
+      : mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o))) ??
+        mostSlots(offers.filter(hasRoom)));
+  if (!pick) {
+    throw new Error(
+      strictPreferred
+        ? 'Onboarding is temporarily unavailable (the game sponsor has no open slots) — try again shortly.'
+        : 'No sponsorship offers are open right now — try again shortly.'
+    );
+  }
 
   onProgress?.('Requesting sponsorship (proof-of-work)');
   const minDifficulty = Math.max(pick.requirements?.min_pow_difficulty ?? 0, 1);
