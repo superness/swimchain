@@ -24,8 +24,8 @@ KEY="$HOME/.ssh/swimchain_seed_ed25519"
 # hangs; the 2026-07-18 "reef spun forever" bug).
 GAME_SPONSOR=2fa758fcf4e7f8cbc0949dc8e528cf2ccedbf02f163b572440bbcfb668e90844
 declare -A SPEC=(
-  [reef]="reef:swimchain.io/rpc,sp1qqqsqr9dfcyugxztn5nrpjd7r82sh9cd62,$GAME_SPONSOR"
-  [chess]="chess:swimchain.io/rpc,sp1qqqsqrsm2rq9fhtvwww9cts9n6wq536c23,$GAME_SPONSOR"
+  [reef]="reef:swimchain.io/rpc,sp1qqzurjh6eeafcdf5qgpqg8mkfwlq3e6cfu,$GAME_SPONSOR"
+  [chess]="chess:swimchain.io/rpc,sp1qqzc0w94g6hqlvaqxy735mjss84qrwk88e,$GAME_SPONSOR"
 )
 
 CLIENTS=("$@")
