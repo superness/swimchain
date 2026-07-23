@@ -984,7 +984,7 @@ function TideReport({
           <div className={`tr-stat ${banked > 0 ? 'good' : 'flat'}`}>
             <span className="tr-num">+{banked}</span>
             <span className="tr-lbl">points banked</span>
-            <span className="tr-sub">vitality you kept alive this tide</span>
+            <span className="tr-sub">coral health you kept alive this tide</span>
           </div>
           <div className="tr-stat good">
             <span className="tr-num">+{regen}</span>
@@ -1014,9 +1014,9 @@ function TideReport({
             <span className="tr-lesson-mark">💡</span>
             <div>
               <strong>Your reef is your engine.</strong> Every tide restores{' '}
-              <strong>{REGEN_BASE} energy + 1 for every 2 living coral</strong> you hold. Grow
-              a bigger reef and tend it well — it rides every tide harder: more energy, more
-              growth, more points banked.
+              <strong>{REGEN_BASE} energy + 1 for every 2 living coral</strong> you hold, and
+              banks <strong>points equal to your coral's total health</strong>. Grow a bigger
+              reef and tend it well — most points after {SEASON_EPOCHS} tides wins the season.
             </div>
           </div>
         )}
@@ -1032,7 +1032,7 @@ function TideReport({
 
         <div className="tr-season fine">
           {mine ? <>Your season tally: <strong>{mine.seasonPointsAfter}</strong> pts · </> : null}
-          {tidesToReckoning} tide{tidesToReckoning === 1 ? '' : 's'} to the reckoning.
+          {tidesToReckoning} tide{tidesToReckoning === 1 ? '' : 's'} left in the season.
         </div>
 
         <button className="btn primary tr-continue" onClick={onClose} autoFocus>
