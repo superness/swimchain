@@ -174,6 +174,7 @@ export function App() {
     if (!auth || identity) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    let attempts = 0;
     const tryOnce = async () => {
       try {
         const id = await nodeIdentity(auth);
@@ -183,7 +184,19 @@ export function App() {
         }
       } catch (e) {
         if (!cancelled) {
-          setIdentityError(e instanceof Error ? e.message : 'the lantern is slow to answer…');
+          attempts += 1;
+          // After ~15s of silence the honest answer is usually "nothing is
+          // listening" — in the launcher, that means Swimchain itself isn't
+          // running its node. Say so instead of searching forever (found the
+          // hard way, 2026-07-23: a dead node showed the generic line for
+          // hours and read as a game bug).
+          setIdentityError(
+            attempts >= 4
+              ? 'The deep is quiet — no lantern answers. If you opened The Trench from the launcher, make sure Swimchain is running. Still listening…'
+              : e instanceof Error
+                ? e.message
+                : 'the lantern is slow to answer…'
+          );
           timer = setTimeout(tryOnce, 4000);
         }
       }
@@ -684,7 +697,7 @@ export function App() {
         <Abyss />
         <h1>🏮 The Trench</h1>
         <p className="muted">Finding your lantern…</p>
-        {identityError && <p className="fine">still searching — retrying…</p>}
+        {identityError && <p className="fine">{identityError}</p>}
       </div>
     );
   }
