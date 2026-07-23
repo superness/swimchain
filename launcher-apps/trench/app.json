@@ -1,0 +1,9 @@
+{
+  "id": "trench",
+  "name": "The Trench",
+  "icon": "icon.ico",
+  "exec": "trench-app.exe",
+  "version": "0.1.0",
+  "deeplink": "swim+trench",
+  "singleInstance": true
+}
