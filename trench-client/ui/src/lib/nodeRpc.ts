@@ -188,10 +188,24 @@ async function tauriConfig(): Promise<RpcAuth | null> {
  * script doesn't call this at all — it builds its own `RpcAuth` from `TRENCH_RPC` +
  * `TRENCH_COOKIE_FILE`, which is the honest thing for a script with no app-shell,
  * no Tauri, and no Vite env to resolve.
+ *
+ * The app-shell wait (step 1) is a *postMessage* handshake — nothing to receive it
+ * exists outside an iframe embedded by app-shell, so under Tauri (no parent frame,
+ * ever) that `waitForParentConfig(10_000)` call was pure dead time: every desktop
+ * launch blocked 10s before ever trying step 2, which is the one that actually
+ * resolves there. `window.__TAURI__` is synchronously present the instant this
+ * module runs inside the Tauri webview (injected before page scripts execute), so
+ * checking for it up front and jumping straight to `tauriConfig()` is safe — it's
+ * not a race, just skipping a wait that could never pay off in that context. The
+ * browser/app-shell precedence (steps 1-4, in order) is unchanged for everyone else.
  */
 export async function resolveAuth(): Promise<RpcAuth> {
-  const fromParent = await waitForParentConfig(10_000);
-  if (fromParent) return fromParent;
+  const inTauri = typeof window !== 'undefined' && Boolean((window as unknown as { __TAURI__?: unknown }).__TAURI__);
+
+  if (!inTauri) {
+    const fromParent = await waitForParentConfig(10_000);
+    if (fromParent) return fromParent;
+  }
 
   const fromTauri = await tauriConfig();
   if (fromTauri) return fromTauri;
