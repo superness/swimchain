@@ -28,6 +28,9 @@ export interface TrenchMapProps {
   previewPos?: { x: number; y: number } | null;
   previewOk?: boolean;
   onPickFoundingSpot?: (x: number, y: number) => void;
+  /** One-shot ceremony: a light blooms outward from the own pin right after
+   *  founding (reef's claim-wave pattern) — App.tsx owns the timer. */
+  justFounded?: boolean;
 }
 
 function brightnessClass(b: Brightness | null): string {
@@ -47,6 +50,7 @@ export function TrenchMap({
   previewPos = null,
   previewOk = false,
   onPickFoundingSpot,
+  justFounded = false,
 }: TrenchMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -136,6 +140,13 @@ export function TrenchMap({
               <span className="claim-dot" />
               <span className="claim-label">{c.header.name}</span>
               {isOwn && <span className="claim-ring" aria-hidden="true" />}
+              {isOwn && justFounded && (
+                <>
+                  <span className="claim-wave" aria-hidden="true" />
+                  <span className="claim-wave w2" aria-hidden="true" />
+                  <span className="claim-wave w3" aria-hidden="true" />
+                </>
+              )}
             </button>
           );
         })}

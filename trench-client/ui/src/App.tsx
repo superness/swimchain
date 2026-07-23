@@ -22,6 +22,11 @@ import { CoachCard, hasSeenCoach, markCoachSeen, type CoachKind } from './CoachC
 
 const BUILD_COSTS: Record<StructureKind, number> = { farm: COST_FARM, storehouse: COST_STOREHOUSE, beacon: COST_BEACON };
 
+/** Plain-language structure names for the ruin-ceremony toast (App-local —
+ *  Homestead.tsx's BUILD_INFO isn't exported and this is the only place
+ *  outside it that needs a label). */
+const STRUCT_LABEL: Record<StructureKind, string> = { farm: 'kelp farm', storehouse: 'storehouse', beacon: 'beacon' };
+
 const HEARTBEAT_INTERVAL_MS = 4 * 60 * 60 * 1000; // "at most once every 4 hours" (Global Constraints)
 const OWN_POLL_MS = 5_000;
 const MAP_POLL_MS = 30_000;
@@ -51,6 +56,21 @@ function targetPrefix(claimId: string): string {
 }
 
 type MoveStatus = { label: string; flavor: string } | null;
+
+/** Ambient abyss scene behind every screen: near-black depth gradient, sparse
+ *  bioluminescent motes (teal + violet), a pressure vignette. Pure CSS, fixed
+ *  and non-interactive — we're below the reef's light shafts, on the floor of
+ *  the world. Honors prefers-reduced-motion (see styles.css). */
+function Abyss() {
+  return (
+    <div className="abyss" aria-hidden="true">
+      <span className="mote teal m1" />
+      <span className="mote violet m2" />
+      <span className="mote teal m3" />
+      <span className="vignette" />
+    </div>
+  );
+}
 
 export function App() {
   // ── boot: auth → node status → identity → sponsorship ──────────────────────
@@ -83,6 +103,17 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [coachTick, setCoachTick] = useState(0);
+
+  // ── landing invitation gate (visual only — every effect above already
+  //    resolves in the background regardless; this just decides what renders) ──
+  const [landingDismissed, setLandingDismissed] = useState(false);
+
+  // ── ceremony beats (Task 3b, visual layer only): one-shot classes toggled
+  //    by existing state transitions, cleaned up on a timer matching their
+  //    CSS animation duration — reef's ghost/tide-turn pattern (Reef.tsx). ──
+  const [claimBloom, setClaimBloom] = useState(false);
+  const [ruinFlashIdx, setRuinFlashIdx] = useState<Set<number>>(new Set());
+  const [tierShift, setTierShift] = useState(false);
 
   const busyRef = useRef(false);
   const submittedCountRef = useRef(0);
@@ -385,6 +416,50 @@ export function App() {
     return () => clearTimeout(t);
   }, [notice]);
 
+  // ── ceremony: a structure ruining, and a brightness-tier change — derived
+  //    from a diff of the PREVIOUS fold against the newly-adopted one, exactly
+  //    like reef's prevEpoch/prevCells diff (Reef.tsx:36-77). No new polling —
+  //    this only reacts to `ownState` already changing via refreshOwn above. ──
+  const prevOwnCeremonyRef = useRef<ClaimState | null>(null);
+  useEffect(() => {
+    const prev = prevOwnCeremonyRef.current;
+    prevOwnCeremonyRef.current = ownState;
+    // No ceremony on first load, or when the fold switched to a different claim.
+    if (!prev || !ownState || prev.claimId !== ownState.claimId) return;
+
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    const newlyRuined: number[] = [];
+    ownState.structures.forEach((s, i) => {
+      const before = prev.structures[i];
+      if (before && !before.ruined && s.ruined) newlyRuined.push(i);
+    });
+    if (newlyRuined.length > 0) {
+      setRuinFlashIdx((cur) => {
+        const next = new Set(cur);
+        newlyRuined.forEach((i) => next.add(i));
+        return next;
+      });
+      setNotice(`the abyss takes the ${STRUCT_LABEL[ownState.structures[newlyRuined[0]].kind]}`);
+      timers.push(
+        setTimeout(() => {
+          setRuinFlashIdx((cur) => {
+            const next = new Set(cur);
+            newlyRuined.forEach((i) => next.delete(i));
+            return next;
+          });
+        }, 1200) // matches .ruin-collapsing's animation duration
+      );
+    }
+
+    if (prev.brightness !== ownState.brightness) {
+      setTierShift(true);
+      timers.push(setTimeout(() => setTierShift(false), 1600)); // matches .tier-shift's animation duration
+    }
+
+    return () => timers.forEach(clearTimeout);
+  }, [ownState]);
+
   // ── founding-flow derivations ────────────────────────────────────────────────
   const acceptedClaims = useMemo(() => mapClaims.filter((c) => c.accepted), [mapClaims]);
   const spacingOk = useMemo(() => {
@@ -494,6 +569,10 @@ export function App() {
       await foundClaim(auth, identity, foundName.trim(), foundPos.x, foundPos.y);
       await refreshMap();
       setError(null);
+      // Ceremony: a light blooms outward from the new claim (reef's claim-wave
+      // pattern) — one-shot, cleaned up on a timer matching the CSS animation.
+      setClaimBloom(true);
+      setTimeout(() => setClaimBloom(false), 2200);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'the ground would not hold — try again');
     } finally {
@@ -520,9 +599,30 @@ export function App() {
 
   // --- render ---
 
+  // The landing invitation: a lantern in the dark, one pulsing Play. Purely a
+  // visual gate — every effect above already resolves in the background
+  // regardless of what's on screen, so dismissing it never delays boot.
+  if (!landingDismissed) {
+    return (
+      <div className="center col landing">
+        <Abyss />
+        <h1>🏮 The Trench</h1>
+        <p className="muted">Homestead the lightless seafloor. Your node is your lantern.</p>
+        <button className="btn primary" onClick={() => setLandingDismissed(true)}>
+          Play
+        </button>
+        <p className="fine">
+          Your identity lives in this machine's node — its data directory, not a wallet, not a
+          cloud account. Keep this machine (and that folder) to keep your claim.
+        </p>
+      </div>
+    );
+  }
+
   if (!identity) {
     return (
       <div className="center col">
+        <Abyss />
         <h1>🏮 The Trench</h1>
         <p className="muted">Connecting to your node…</p>
         {identityError && <p className="fine">{identityError} — retrying…</p>}
@@ -533,6 +633,7 @@ export function App() {
   if (sponsorError) {
     return (
       <div className="center col">
+        <Abyss />
         <h1>🏮 The Trench</h1>
         <p className="muted">{sponsorError}</p>
         <button
@@ -551,6 +652,7 @@ export function App() {
   if (!sponsored) {
     return (
       <div className="center col">
+        <Abyss />
         <h1>🏮 The Trench</h1>
         <p className="muted">🏮 {sponsorPhase ?? 'Setting up your access…'}</p>
         <p className="fine">Getting your lantern recognized by the network. One time only.</p>
@@ -561,6 +663,7 @@ export function App() {
   if (!mapLoaded) {
     return (
       <div className="center col">
+        <Abyss />
         <h1>🏮 The Trench</h1>
         <p className="muted">Charting the trench…</p>
       </div>
@@ -570,6 +673,7 @@ export function App() {
   if (!myClaim) {
     return (
       <div className="app">
+        <Abyss />
         {header}
         {(error || netError) && (
           <div className="banner-stack" aria-live="polite">
@@ -648,6 +752,7 @@ export function App() {
   if (!ownState || !view) {
     return (
       <div className="center col">
+        <Abyss />
         {header}
         <p className="muted">Loading your homestead…</p>
       </div>
@@ -656,6 +761,7 @@ export function App() {
 
   return (
     <div className="app">
+      <Abyss />
       {header}
       {(error || netError) && (
         <div className="banner-stack" aria-live="polite">
@@ -674,6 +780,7 @@ export function App() {
                 ownClaimId={ownState.claimId}
                 selectedClaimId={selectedClaimId}
                 onSelect={onSelectClaim}
+                justFounded={claimBloom}
               />
               <div className={`move-float${moveStatus ? ' open' : ''}`} aria-live="polite">
                 {moveStatus && (
@@ -703,6 +810,8 @@ export function App() {
               viewStructures={view.structures}
               viewBrightness={view.brightness}
               lanternPulse={lanternPulse}
+              tierShift={tierShift}
+              ruinFlashIdx={ruinFlashIdx}
               busy={!!moveStatus}
               sessionStartMs={sessionStartRef.current}
               costs={BUILD_COSTS}
