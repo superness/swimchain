@@ -42,6 +42,8 @@ interface ProfileRpcResponse {
   bio?: string;
   website?: string;
   avatar_url?: string;
+  /** The node returns the avatar as a content id here (feed reads this first). */
+  avatar_content_id?: string;
   updated_at?: number;
 }
 
@@ -108,7 +110,8 @@ export function useUserProfile(userId: string | undefined) {
           displayName: result.display_name,
           bio: result.bio,
           website: result.website,
-          avatarUrl: result.avatar_url,
+          // Match feed: the node returns the avatar as avatar_content_id.
+          avatarUrl: result.avatar_content_id ?? result.avatar_url,
           updatedAt: result.updated_at,
         } : null,
         exists: result !== null,
