@@ -20,6 +20,11 @@
   --lit-tier: #ffd27a;
   --mono: ui-monospace, 'Cascadia Code', Consolas, monospace;
   --serif: 'Palatino Linotype', Georgia, serif;
+  /* One easing family for every micro-interaction added in this pass (hover/
+     active states, focus, panel mounts) — matches the curve `.move-float`/
+     `.tut-float` already used, so nothing added here reads as a different
+     "hand" than what was already on screen. */
+  --ease-snap: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
 * { box-sizing: border-box; }
@@ -42,11 +47,19 @@ code { font-family: var(--mono); font-size: 0.9em; color: var(--shallow); }
 .btn {
   font-family: var(--mono); font-size: 14px; padding: 10px 18px; border-radius: 4px;
   border: 1px solid var(--line); background: var(--surface); color: var(--foam); cursor: pointer;
+  transition: transform 140ms var(--ease-snap), box-shadow 140ms var(--ease-snap), border-color 140ms var(--ease-snap);
 }
 .btn.primary { background: var(--heat); border-color: var(--heat); color: #241205; font-weight: 700; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.link { background: none; border: none; color: var(--shallow); cursor: pointer; font-family: var(--mono); font-size: 13px; padding: 0; }
+.btn:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--shallow); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+.btn.primary:hover:not(:disabled) { border-color: var(--heat); box-shadow: 0 6px 22px rgba(255, 176, 102, 0.4); }
+.btn:active:not(:disabled) { transform: translateY(0) scale(0.97); box-shadow: none; }
+.link { background: none; border: none; color: var(--shallow); cursor: pointer; font-family: var(--mono); font-size: 13px; padding: 0; transition: color 140ms var(--ease-snap), text-shadow 140ms var(--ease-snap); }
 .link:disabled { opacity: 0.4; cursor: not-allowed; }
+.link:hover:not(:disabled) { color: var(--foam); text-shadow: 0 0 8px rgba(88, 214, 200, 0.5); }
+.btn:focus-visible, .link:focus-visible, .build-card:focus-visible, .claim-pin:focus-visible, .distant-light:focus-visible {
+  outline: 2px solid var(--shallow); outline-offset: 2px; box-shadow: 0 0 0 4px rgba(88, 214, 200, 0.22);
+}
 
 .app { max-width: 1240px; margin: 0 auto; padding: 20px 28px; }
 header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -56,6 +69,7 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .who .dot.ok { background: var(--shallow); }
 .who .dot.bad { background: var(--heat); }
 .help-link { margin-left: 4px; }
+.mute-chip { font-size: 15px; line-height: 1; }
 
 .banner { margin: 0; padding: 10px 14px; border-radius: 4px; border: 1px solid var(--line); font-size: 14px; }
 .banner.warn { border-color: var(--heat); background: rgba(255, 176, 102, 0.08); }
@@ -124,22 +138,64 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 }
 .trench-map:active { cursor: grabbing; }
 .trench-map.founding { cursor: crosshair; }
-.trench-map-field { position: absolute; inset: 0; }
+.trench-map-field { position: absolute; inset: 0; z-index: 2; }
+/* A short transition is opted into only while a wayfinding-chip click is
+   tweening the pan (`.animated`) — normal drag panning stays instant/1:1
+   with the pointer, never fighting a transition. */
+.trench-map-field.animated { transition: transform 380ms var(--ease-snap); }
 .trench-map-origin {
   position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px;
   border-radius: 50%; background: rgba(88, 214, 200, 0.25);
 }
 .trench-map-hint {
-  position: absolute; left: 10px; top: 10px; pointer-events: none;
+  position: absolute; left: 10px; top: 10px; pointer-events: none; z-index: 4;
   background: rgba(4, 16, 21, 0.55); padding: 3px 8px; border-radius: 6px;
 }
+/* Seafloor vignette + faint depth pressure — a generated overlay (no extra
+   markup needed), sitting above the pins but never blocking clicks. */
+.trench-map::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+  box-shadow: inset 0 0 9vw 2vw rgba(0, 0, 0, 0.5);
+  background: radial-gradient(120% 100% at 50% 62%, transparent 55%, rgba(0, 0, 0, 0.32) 100%);
+}
+
+/* ── map parallax: 3 cheap CSS-only "starfield" mote layers, oversized so
+   panning never reveals an edge, nudged by a fraction of the live pan offset
+   (cheap parallax) and drifting slowly on their own via background-position
+   animation. Sits behind the claim field, in front of the water gradient. ── */
+.map-parallax { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
+.mote-layer {
+  position: absolute; inset: -40%;
+  background-repeat: repeat;
+}
+.mote-layer.layer-1 {
+  background-image: radial-gradient(circle, rgba(110, 211, 194, 0.55) 1px, transparent 1.6px),
+    radial-gradient(circle, rgba(154, 123, 255, 0.4) 1px, transparent 1.6px);
+  background-size: 210px 210px, 260px 260px;
+  opacity: 0.4; animation: mote-field-drift 70s linear infinite;
+}
+.mote-layer.layer-2 {
+  background-image: radial-gradient(circle, rgba(88, 214, 200, 0.4) 1px, transparent 1.4px);
+  background-size: 150px 150px;
+  opacity: 0.3; animation: mote-field-drift 100s linear infinite reverse;
+}
+.mote-layer.layer-3 {
+  background-image: radial-gradient(circle, rgba(154, 123, 255, 0.32) 1px, transparent 1.3px);
+  background-size: 320px 320px;
+  opacity: 0.22; animation: mote-field-drift 140s linear infinite;
+}
+@keyframes mote-field-drift { from { background-position: 0 0; } to { background-position: 240px 320px; } }
 
 .claim-pin {
   position: absolute;
   transform: translate(-50%, -50%);
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   background: none; border: none; padding: 0; cursor: pointer; color: inherit;
+  transition: transform 140ms var(--ease-snap);
 }
+.claim-pin:hover { transform: translate(-50%, -50%) scale(1.1); }
+.claim-pin:active { transform: translate(-50%, -50%) scale(0.94); }
+.claim-pin:hover .claim-dot { filter: brightness(1.25); }
 /* Light as the theme: a soft radial bloom behind every pin, scaled by
    brightness — DARK gets none (a barely-there outline instead), DIM a small
    flickering halo, LIT the widest, steadiest glow. Painted before the dot
@@ -155,20 +211,24 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   background: var(--dark-tier); border: 1px solid rgba(232, 241, 239, 0.25);
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
 }
-/* DARK: barely-there — a faint outline, no fill, no glow. */
-.claim-pin.b-DARK .claim-dot { background: rgba(58, 74, 82, 0.18); border-color: rgba(232, 241, 239, 0.15); box-shadow: none; }
+/* DARK: barely-there — a faint outline, a whisper of a glow, nothing more. */
+.claim-pin.b-DARK .claim-dot { background: rgba(58, 74, 82, 0.18); border-color: rgba(232, 241, 239, 0.2); box-shadow: 0 0 2px rgba(232, 241, 239, 0.15); }
+.claim-pin.b-DARK::before {
+  width: 16px; height: 16px; opacity: 0.16;
+  background: radial-gradient(circle, rgba(232, 241, 239, 0.3), transparent 75%);
+}
 /* DIM: a small flickering halo — the lantern is guttering. */
-.claim-pin.b-DIM .claim-dot { background: var(--dim-tier); box-shadow: 0 0 8px rgba(217, 164, 65, 0.5); animation: dim-flicker 2s ease-in-out infinite; }
+.claim-pin.b-DIM .claim-dot { background: var(--dim-tier); box-shadow: 0 0 9px rgba(217, 164, 65, 0.55); animation: dim-flicker 2s ease-in-out infinite; }
 .claim-pin.b-DIM::before {
-  width: 32px; height: 32px; opacity: 0.4;
-  background: radial-gradient(circle, rgba(217, 164, 65, 0.4), transparent 70%);
+  width: 38px; height: 38px; opacity: 0.46;
+  background: radial-gradient(circle, rgba(217, 164, 65, 0.42), transparent 70%);
   animation: dim-flicker 2s ease-in-out infinite;
 }
 /* LIT: the widest, steadiest bloom — it reads from across the map. */
-.claim-pin.b-LIT .claim-dot { background: var(--lit-tier); box-shadow: 0 0 14px rgba(255, 210, 122, 0.75); }
+.claim-pin.b-LIT .claim-dot { background: var(--lit-tier); box-shadow: 0 0 16px rgba(255, 210, 122, 0.8); }
 .claim-pin.b-LIT::before {
-  width: 54px; height: 54px; opacity: 0.6;
-  background: radial-gradient(circle, rgba(255, 210, 122, 0.42), transparent 70%);
+  width: 64px; height: 64px; opacity: 0.68;
+  background: radial-gradient(circle, rgba(255, 210, 122, 0.44), transparent 70%);
   animation: lit-bloom 3.2s ease-in-out infinite;
 }
 @keyframes dim-flicker { 0%, 100% { opacity: 1; } 45% { opacity: 0.5; } 55% { opacity: 0.85; } }
@@ -210,13 +270,70 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 }
 .claim-preview.bad { border-color: var(--heat); }
 
+/* ── claim hover tooltip: a small glass card floating just above the pin,
+   absolutely positioned off the pin's own coordinates — zero reflow, never
+   nudges the map or HUD. ─────────────────────────────────────────────────── */
+.claim-tooltip {
+  position: absolute; transform: translate(-50%, calc(-100% - 18px));
+  pointer-events: none; z-index: 7; white-space: nowrap;
+  padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(88, 214, 200, 0.4);
+  background: linear-gradient(180deg, rgba(5, 22, 32, 0.92), rgba(2, 12, 17, 0.94));
+  backdrop-filter: blur(6px); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  animation: panel-in 160ms var(--ease-snap);
+}
+.claim-tooltip-name { font-size: 13px; font-weight: 600; }
+.claim-tooltip-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); text-transform: capitalize; }
+
+/* ── distant-lights wayfinding: a small pulsing glow chip on the map's edge
+   nearest each off-screen claim, pointing the way — click to pan there. ──── */
+.distant-light {
+  position: absolute; z-index: 5; transform: translate(-50%, -50%);
+  display: flex; align-items: center; gap: 5px;
+  background: rgba(4, 16, 21, 0.62); border: 1px solid rgba(255, 210, 122, 0.4);
+  border-radius: 999px; padding: 3px 8px 3px 6px; cursor: pointer; color: var(--foam);
+  transition: transform 140ms var(--ease-snap), border-color 140ms var(--ease-snap), background 140ms var(--ease-snap);
+}
+.distant-light:hover { transform: translate(-50%, -50%) scale(1.08); border-color: var(--lit-tier); background: rgba(4, 16, 21, 0.85); }
+.distant-light:active { transform: translate(-50%, -50%) scale(0.96); }
+.distant-light-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--lit-tier);
+  box-shadow: 0 0 7px rgba(255, 210, 122, 0.7); flex: none;
+  animation: distant-pulse 2.4s ease-in-out infinite;
+}
+.distant-light-label { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+@keyframes distant-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
 /* ── lantern panel: a living flame ───────────────────────────────────────── */
 .lantern-panel { display: flex; align-items: center; gap: 12px; }
 /* Baseline: the lantern always breathes, even idle — it's a living flame, not
    a static icon. Heartbeat submission (`.pulsing`) briefly intensifies it;
    the tier (b-LIT/DIM/DARK, from the HUD's own live brightness projection)
-   sets its resting color and pace. */
-.lantern-icon { font-size: 30px; line-height: 1; filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.35)); animation: flame-breathe 2.6s ease-in-out infinite; }
+   sets its resting color and pace. Built from layered divs/radial gradients
+   (no image assets) rather than an emoji glyph, per the production pass. */
+.lantern-icon {
+  position: relative; width: 36px; height: 42px; flex: none;
+  filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.35)); animation: flame-breathe 2.6s ease-in-out infinite;
+}
+.lantern-icon .lf-glow {
+  position: absolute; left: 50%; top: 58%; transform: translate(-50%, -50%);
+  width: 32px; height: 32px; border-radius: 50%; filter: blur(1px);
+  background: radial-gradient(circle, rgba(255, 210, 122, 0.55), transparent 70%);
+}
+.lantern-icon .lf-flame {
+  position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%);
+  width: 15px; height: 21px; border-radius: 50% 50% 50% 50% / 65% 65% 35% 35%;
+  background: linear-gradient(180deg, #fff3d6 0%, var(--lit-tier) 45%, var(--heat) 100%);
+  box-shadow: 0 0 10px rgba(255, 210, 122, 0.6);
+}
+.lantern-panel.b-DIM .lantern-icon .lf-glow { background: radial-gradient(circle, rgba(217, 164, 65, 0.45), transparent 70%); }
+.lantern-panel.b-DIM .lantern-icon .lf-flame {
+  background: linear-gradient(180deg, #f4dca0, var(--dim-tier) 60%, #a5732a 100%);
+  box-shadow: 0 0 8px rgba(217, 164, 65, 0.45);
+}
+.lantern-panel.b-DARK .lantern-icon .lf-glow { opacity: 0.4; background: radial-gradient(circle, rgba(150, 160, 160, 0.3), transparent 70%); }
+.lantern-panel.b-DARK .lantern-icon .lf-flame {
+  background: linear-gradient(180deg, #7c8a90, var(--dark-tier) 70%); box-shadow: none; opacity: 0.55;
+}
 @keyframes flame-breathe {
   0%, 100% { filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.32)); transform: scale(1); }
   50% { filter: drop-shadow(0 0 10px rgba(255, 210, 122, 0.55)); transform: scale(1.04); }
@@ -239,6 +356,15 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .lantern-body { display: flex; flex-direction: column; gap: 2px; }
 .lantern-tier { font-size: 16px; font-weight: 700; letter-spacing: 0.06em; }
 
+/* ── heartbeats-this-week meter: a fixed-tick segment bar, filled
+   proportionally to hbWeek/meterTarget (both computed in Homestead.tsx from
+   the engine's own DIM_MIN/LIT_MIN — never hardcoded here). ──────────────── */
+.hb-meter { display: flex; flex-direction: column; gap: 3px; margin-top: 3px; }
+.hb-meter-segments { display: flex; gap: 2px; }
+.hb-seg { flex: 1; height: 5px; border-radius: 2px; background: var(--water-2); border: 1px solid var(--line); transition: background 300ms ease, box-shadow 300ms ease; }
+.hb-seg.filled { background: var(--shallow); border-color: var(--shallow); box-shadow: 0 0 5px rgba(88, 214, 200, 0.5); }
+.hb-meter-label { white-space: nowrap; }
+
 /* ── resources ────────────────────────────────────────────────────────────── */
 .resources { display: flex; flex-direction: column; gap: 8px; }
 .resource { display: flex; align-items: center; gap: 8px; }
@@ -251,7 +377,7 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 
 /* ── structures ───────────────────────────────────────────────────────────── */
 .structures { display: flex; flex-direction: column; gap: 6px; }
-.structure-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.structure-row { display: flex; align-items: center; gap: 8px; font-size: 13px; animation: panel-in 220ms var(--ease-snap); }
 .structure-row.ruined { opacity: 0.6; }
 /* Ceremony: the abyss takes a structure — a brief collapse in place, paired
    with a toast via the existing notice system (App.tsx owns the timer). */
@@ -265,6 +391,15 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .struct-name { flex: none; }
 .integrity-bar { flex: 1; height: 8px; border-radius: 4px; background: var(--water-2); border: 1px solid var(--line); overflow: hidden; }
 .integrity-fill { height: 100%; background: linear-gradient(90deg, rgba(88, 214, 200, 0.5), var(--shallow)); transition: width 0.5s ease; }
+/* Health bands (thresholds are fractions of INTEGRITY_MAX, computed in
+   Homestead.tsx — never a raw hardcoded integrity number here): good/warn
+   read as the resource palette already does; danger switches to the same
+   heat/amber danger language as low-resource UI elsewhere and gets a slow
+   warning pulse, consistent with the game's "the abyss is close" tone. */
+.integrity-bar.band-warn .integrity-fill { background: linear-gradient(90deg, rgba(217, 164, 65, 0.55), var(--dim-tier)); }
+.integrity-bar.band-danger .integrity-fill { background: linear-gradient(90deg, rgba(255, 176, 102, 0.65), var(--heat)); }
+.integrity-bar.band-danger { animation: integrity-pulse 1.3s ease-in-out infinite; }
+@keyframes integrity-pulse { 0%, 100% { box-shadow: 0 0 0 rgba(255, 176, 102, 0); } 50% { box-shadow: 0 0 8px rgba(255, 176, 102, 0.55); } }
 .badge { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 10px; border: 1px solid var(--line); flex: 1; text-align: center; }
 .badge.ruin { border-color: var(--heat); color: var(--heat); }
 
@@ -275,15 +410,24 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   align-items: center; column-gap: 8px; row-gap: 1px;
   text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
   background: var(--water-2); color: var(--foam); cursor: pointer;
+  transition: transform 140ms var(--ease-snap), border-color 140ms var(--ease-snap), box-shadow 140ms var(--ease-snap);
 }
 .build-card:disabled { opacity: 0.5; cursor: not-allowed; }
+.build-card:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--shallow); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35), 0 0 14px rgba(88, 214, 200, 0.16); }
+.build-card:active:not(:disabled) { transform: translateY(0) scale(0.985); }
 .build-icon { grid-area: icon; font-size: 20px; }
 .build-label { grid-area: label; font-size: 14px; font-weight: 600; }
 .build-card .hp-chip { grid-area: chip; }
 .build-blurb { grid-area: blurb; }
 
+/* One shared mount transition — fade + 2px rise — for panels/sections that
+   appear/disappear conditionally (selected-claim panel, glow board, coach
+   cards get their own shimmer already). Plays once when React inserts the
+   element; re-renders of an already-mounted instance never replay it. */
+@keyframes panel-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
 /* ── glow leaderboard ─────────────────────────────────────────────────────── */
-.glow-board { display: flex; flex-direction: column; gap: 3px; }
+.glow-board { display: flex; flex-direction: column; gap: 3px; animation: panel-in 220ms var(--ease-snap); }
 .glow-board .row { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; font-size: 13px; }
 .glow-board .row.me { background: rgba(88, 214, 200, 0.1); }
 .glow-board .rank { width: 16px; color: var(--muted); font-family: var(--mono); font-size: 12px; }
@@ -292,7 +436,7 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .glow-board .pts { font-family: var(--mono); font-size: 13px; }
 
 /* ── selected-claim panel ─────────────────────────────────────────────────── */
-.selected-panel { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.selected-panel { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 6px; animation: panel-in 220ms var(--ease-snap); }
 
 /* ── founding form ────────────────────────────────────────────────────────── */
 .name-input {
@@ -420,6 +564,52 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 }
 .landing p.fine { max-width: 380px; margin: 4px auto 0; }
 
+/* ── kindling ceremony: a large CSS lantern (layered divs/radial gradients —
+   no image assets) that visibly kindles through onboarding's three phases,
+   next to a glowing vertical trail of diegetic step labels. ────────────────── */
+.kindle-screen { max-width: 420px; }
+.kindle-scene { display: flex; flex-direction: column; align-items: center; gap: 24px; margin: 8px 0 4px; }
+.lantern-ceremony { position: relative; width: 132px; height: 168px; flex: none; }
+.lantern-ceremony .lc-glow {
+  position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%);
+  width: 64px; height: 64px; border-radius: 50%; filter: blur(2px);
+  background: radial-gradient(circle, rgba(255, 210, 122, 0.55), rgba(255, 176, 102, 0.16) 55%, transparent 74%);
+  opacity: 0.16;
+  transition: opacity 900ms ease, width 900ms ease, height 900ms ease;
+}
+.lantern-ceremony .lc-body {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+  width: 58px; height: 78px; border-radius: 28px 28px 16px 16px;
+  background: linear-gradient(180deg, rgba(7, 26, 34, 0.92), rgba(2, 12, 17, 0.96));
+  border: 1px solid rgba(88, 214, 200, 0.3); box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+.lantern-ceremony .lc-flame {
+  position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%);
+  width: 10px; height: 12px; border-radius: 50% 50% 50% 50% / 65% 65% 35% 35%;
+  background: radial-gradient(circle, #fff7e0, var(--lit-tier) 55%, transparent 78%);
+  opacity: 0.22; transition: opacity 900ms ease, width 900ms ease, height 900ms ease;
+}
+.lantern-ceremony.stage-1 .lc-glow { opacity: 0.42; width: 100px; height: 100px; }
+.lantern-ceremony.stage-1 .lc-flame { opacity: 0.65; width: 16px; height: 20px; animation: flame-breathe 2s ease-in-out infinite; }
+.lantern-ceremony.stage-2 .lc-glow { opacity: 0.85; width: 156px; height: 156px; animation: lit-bloom 3.2s ease-in-out infinite; }
+.lantern-ceremony.stage-2 .lc-flame { opacity: 1; width: 22px; height: 28px; animation: flame-breathe 1.3s ease-in-out infinite; }
+.kindle-trail { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.kindle-trail li { display: flex; align-items: center; gap: 10px; opacity: 0.5; transition: opacity 300ms ease, color 300ms ease; }
+.kindle-trail li.done { opacity: 0.85; color: var(--shallow); }
+.kindle-trail li.active { opacity: 1; color: var(--foam); font-weight: 700; }
+.kindle-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dark-tier); flex: none; transition: background 300ms ease, box-shadow 300ms ease; }
+.kindle-trail li.done .kindle-dot { background: var(--shallow); box-shadow: 0 0 6px rgba(88, 214, 200, 0.6); }
+.kindle-trail li.active .kindle-dot { background: var(--lit-tier); box-shadow: 0 0 10px rgba(255, 210, 122, 0.8); animation: dim-flicker 1.6s ease-in-out infinite; }
+
+/* ── the bloom beat: one-shot, between kindling completing and the founding
+   screen mounting. Skippable by click (the whole screen is the target). ──── */
+.bloom-beat { cursor: pointer; }
+.bloom-beat .lantern-ceremony.bloom .lc-glow { opacity: 0.95; width: 230px; height: 230px; animation: bloom-flash 1.2s ease-out; }
+.bloom-beat .lantern-ceremony.bloom .lc-flame { opacity: 1; width: 30px; height: 38px; animation: bloom-flash 1.2s ease-out; }
+@keyframes bloom-flash { 0% { filter: brightness(1); } 30% { filter: brightness(1.9); } 100% { filter: brightness(1); } }
+.bloom-line { font-size: 19px; text-shadow: 0 0 26px rgba(255, 210, 122, 0.55); animation: bloom-line-in 900ms var(--ease-snap); }
+@keyframes bloom-line-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
 /* narrow screens stack; ambience steps aside on request */
 @media (max-width: 980px) {
   .game-cols { grid-template-columns: 1fr; gap: 14px; }
@@ -429,8 +619,16 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   .tut-shimmer, .spinner,
   .abyss .mote,
   .claim-pin .claim-wave,
+  .structure-row,
   .structure-row.ruin-collapsing,
-  .center.col > h1, .center.col .btn.primary {
+  .center.col > h1, .center.col .btn.primary,
+  .mote-layer,
+  .distant-light-dot,
+  .integrity-bar.band-danger,
+  .selected-panel, .glow-board, .claim-tooltip,
+  .kindle-trail li.active .kindle-dot,
+  .lantern-ceremony .lc-glow, .lantern-ceremony .lc-flame,
+  .bloom-line {
     animation: none;
   }
   /* These have brightness/pulse/tier modifier classes with higher selector
@@ -439,5 +637,15 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
      variant is actually killed, not just the unmodified base case. */
   .lantern-icon, .claim-pin::before, .claim-pin .claim-dot {
     animation: none !important;
+  }
+  /* The kindling lantern's glow/flame growth and the bloom-beat's flash are
+     driven by `transition`, not `animation` (see .lantern-ceremony .lc-glow/
+     .lc-flame above) — cut those too so a reduced-motion viewer gets an
+     instant state change between steps instead of a 900ms grow. The bloom
+     beat itself is already forced instant via JS (prefersReducedMotion() in
+     App.tsx), this just kills the residual glow/flame transition. */
+  .lantern-ceremony .lc-glow, .lantern-ceremony .lc-flame,
+  .btn, .link, .build-card, .claim-pin, .distant-light {
+    transition: none;
   }
 }

@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   HB_CAP_PER_DAY,
   TEND_COST,
   INTEGRITY_MAX,
+  LIT_MIN,
+  DIM_MIN,
   utcDay,
   type ClaimState,
   type MapClaim,
@@ -16,6 +18,21 @@ import {
 const half = (n: number): string => (n % 2 === 0 ? String(n / 2) : (n / 2).toFixed(1));
 
 const TIER_ICON: Record<Brightness, string> = { LIT: '🏮', DIM: '🕯️', DARK: '🌑' };
+
+/** Visual granularity of the heartbeats-this-week meter — a fixed number of
+ *  ticks filled proportionally to `hbWeek / meterTarget`. The THRESHOLD each
+ *  tick is proportional to (LIT_MIN/DIM_MIN, per brightness) always comes
+ *  from the engine constants below; this is purely how many ticks are drawn. */
+const METER_SEGMENTS = 10;
+
+/** Health band for an integrity bar's color + whether it earns the
+ *  low-integrity danger pulse — thresholds are fractions of INTEGRITY_MAX,
+ *  never a raw hardcoded integrity number. */
+function healthBand(pct: number): 'good' | 'warn' | 'danger' {
+  if (pct >= 0.6) return 'good';
+  if (pct >= 0.3) return 'warn';
+  return 'danger';
+}
 
 const BUILD_INFO: Record<StructureKind, { icon: string; label: string; blurb: string }> = {
   farm: { icon: '🌾', label: 'Kelp farm', blurb: 'yields biomass each day' },
@@ -129,6 +146,20 @@ export function Homestead(props: HomesteadProps) {
 
   const hbToday = ownState.heartbeatDays.get(utcDay(now)) ?? 0;
 
+  // Heartbeats-landed-over-the-trailing-7-days sum (the same window
+  // `brightnessOn` sums in the engine — see trenchEngine.ts), toward
+  // whichever tier threshold is next. Never a hardcoded number: DIM_MIN /
+  // LIT_MIN are the engine's own constants.
+  const hbWeek = useMemo(() => {
+    const day = utcDay(now);
+    let sum = 0;
+    for (let d = day - 6; d <= day; d++) sum += ownState.heartbeatDays.get(d) ?? 0;
+    return sum;
+  }, [ownState.heartbeatDays, now]);
+  const meterTarget = viewBrightness === 'DARK' ? DIM_MIN : LIT_MIN;
+  const meterNextTier = viewBrightness === 'DARK' ? 'DIM' : viewBrightness === 'DIM' ? 'LIT' : null;
+  const filledSegments = Math.max(0, Math.min(METER_SEGMENTS, Math.round((hbWeek / meterTarget) * METER_SEGMENTS)));
+
   const leaderboard = Array.from(loadedStates.values())
     .map((s) => ({ claimId: s.claimId, name: s.header.name, glow: s.glow, isOwn: s.claimId === ownState.claimId }))
     .sort((a, b) => b.glow - a.glow);
@@ -139,7 +170,8 @@ export function Homestead(props: HomesteadProps) {
         className={`lantern-panel b-${viewBrightness}${lanternPulse ? ' pulsing' : ''}${tierShift ? ' tier-shift' : ''}`}
       >
         <div className="lantern-icon" aria-hidden="true">
-          {TIER_ICON[viewBrightness]}
+          <span className="lf-glow" />
+          <span className="lf-flame" />
         </div>
         <div className="lantern-body">
           <div className="lantern-tier">{viewBrightness}</div>
@@ -154,6 +186,16 @@ export function Homestead(props: HomesteadProps) {
               {blockHeight !== null && <>depth mark {blockHeight}</>}
             </div>
           )}
+          <div className="hb-meter" title={`${hbWeek} of ${meterTarget} beats this week`}>
+            <div className="hb-meter-segments">
+              {Array.from({ length: METER_SEGMENTS }, (_, i) => (
+                <span key={i} className={`hb-seg${i < filledSegments ? ' filled' : ''}`} />
+              ))}
+            </div>
+            <span className="fine hb-meter-label">
+              {hbWeek} of {meterTarget} beats this week{meterNextTier ? ` — next: ${meterNextTier}` : ' — steady and LIT'}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -192,24 +234,28 @@ export function Homestead(props: HomesteadProps) {
         {viewStructures.length === 0 ? (
           <p className="fine muted">Nothing built yet — the palette below is a start.</p>
         ) : (
-          viewStructures.map((s, i) => (
-            <div key={i} className={`structure-row${s.ruined ? ' ruined' : ''}${ruinFlashIdx.has(i) ? ' ruin-collapsing' : ''}`}>
-              <span className="struct-icon" aria-hidden="true">
-                {BUILD_INFO[s.kind].icon}
-              </span>
-              <span className="struct-name">{BUILD_INFO[s.kind].label}</span>
-              {s.ruined ? (
-                <span className="badge ruin">ruin</span>
-              ) : (
-                <div className="integrity-bar" title={`${half(s.integrity)}/${half(INTEGRITY_MAX)} integrity`}>
-                  <div className="integrity-fill" style={{ width: `${(s.integrity / INTEGRITY_MAX) * 100}%` }} />
-                </div>
-              )}
-              <button className="link" disabled={busy || s.ruined || viewBiomass < TEND_COST} onClick={() => onTend(i)}>
-                tend {half(TEND_COST)}
-              </button>
-            </div>
-          ))
+          viewStructures.map((s, i) => {
+            const pct = s.integrity / INTEGRITY_MAX;
+            const band = healthBand(pct);
+            return (
+              <div key={i} className={`structure-row${s.ruined ? ' ruined' : ''}${ruinFlashIdx.has(i) ? ' ruin-collapsing' : ''}`}>
+                <span className="struct-icon" aria-hidden="true">
+                  {BUILD_INFO[s.kind].icon}
+                </span>
+                <span className="struct-name">{BUILD_INFO[s.kind].label}</span>
+                {s.ruined ? (
+                  <span className="badge ruin">ruin</span>
+                ) : (
+                  <div className={`integrity-bar band-${band}`} title={`${half(s.integrity)}/${half(INTEGRITY_MAX)} integrity`}>
+                    <div className="integrity-fill" style={{ width: `${pct * 100}%` }} />
+                  </div>
+                )}
+                <button className="link" disabled={busy || s.ruined || viewBiomass < TEND_COST} onClick={() => onTend(i)}>
+                  tend {half(TEND_COST)}
+                </button>
+              </div>
+            );
+          })
         )}
       </div>
 
