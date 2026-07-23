@@ -7,8 +7,14 @@ import { CLAIM_MIN_SPACING } from './lib/trenchEngine';
  * clickable underneath. Each kind is shown at most once per browser, keyed in
  * localStorage; a corrupt or absent store just means "skip, never nag" (the
  * same defensive shape as reef/chess's tutorial flags).
+ *
+ * `expedition` was retired by the Guided Descent (designer spec §6): beat 7
+ * fully replaces it with its own on-map, real-trigger sequence, so there's
+ * no longer a coach-card fallback for it — `found`/`lantern` still are, for
+ * players who skip the descent. The old `trench-coach:expedition`
+ * localStorage key is a harmless orphan now; nothing reads or writes it.
  */
-export type CoachKind = 'found' | 'lantern' | 'expedition';
+export type CoachKind = 'found' | 'lantern';
 
 const STORAGE_PREFIX = 'trench-coach:';
 
@@ -31,7 +37,6 @@ export function markCoachSeen(kind: CoachKind): void {
 const KICKER: Record<CoachKind, string> = {
   found: '🏮 Founding a homestead',
   lantern: '🏮 Your lantern',
-  expedition: '🌊 Expeditions',
 };
 
 // Plain-first, diegetic copy (spec §4's "Diegetic-first" rule — the game
@@ -47,11 +52,6 @@ const COPY: Record<CoachKind, ReactNode> = {
   lantern: (
     <>
       Your lantern burns while the game runs. Brighter lantern, faster farms.
-    </>
-  ),
-  expedition: (
-    <>
-      Visit a neighbor: gain salvage, and your light keeps theirs burning.
     </>
   ),
 };

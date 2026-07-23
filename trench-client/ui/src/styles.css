@@ -269,6 +269,39 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   border: 2px dashed var(--shallow); pointer-events: none;
 }
 .claim-preview.bad { border-color: var(--heat); }
+/* Guided-descent beat 1: the game's suggested spot pulses continuously
+   (distinct from the one-shot founding-bloom triple wave) so it reads as
+   "the game is pointing here," not just the ordinary live preview. */
+.claim-preview.suggested::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+  border: 2px solid rgba(88, 214, 200, 0.65);
+  animation: suggestion-pulse 2.2s ease-out infinite;
+}
+@keyframes suggestion-pulse { 0% { transform: scale(1); opacity: 0.75; } 100% { transform: scale(2.8); opacity: 0; } }
+
+/* Guided-descent beat 5: a single silt-puff wave on the own pin the moment
+   a directed build move is submitted — same family as `.claim-wave`
+   (justFounded's triple bloom), just one shot instead of three. */
+.claim-pin .claim-wave.silt-puff { animation: claim-wave 1.4s ease-out; }
+
+/* Guided-descent beat 4: distant pins/wayfinding chips twinkle in,
+   staggered, as the camera pulls back to reveal the abyss. `backwards` fill
+   mode holds the 0% (invisible) frame through each element's own delay,
+   then releases control back to the normal stylesheet once it completes —
+   so a later hover/select doesn't fight a frozen mid-animation transform. */
+@keyframes pin-twinkle-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.4); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+.claim-pin.twinkle-in { animation: pin-twinkle-in 480ms var(--ease-snap) backwards; }
+@keyframes chip-twinkle-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.5); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
+.distant-light.twinkle-in { animation: chip-twinkle-in 420ms var(--ease-snap) backwards; }
+
+/* Guided-descent beat 7: the expedition target pin brightens once its move
+   actually lands (the spec's own accepted v1 for the mote light-trail). */
+.claim-pin.descent-flash-pin .claim-dot { animation: descent-pin-flash 1.4s ease-out; }
+@keyframes descent-pin-flash {
+  0% { filter: brightness(1); }
+  35% { filter: brightness(2.2); box-shadow: 0 0 18px rgba(255, 210, 122, 0.9); }
+  100% { filter: brightness(1); }
+}
 
 /* ── claim hover tooltip: a small glass card floating just above the pin,
    absolutely positioned off the pin's own coordinates — zero reflow, never
@@ -415,6 +448,14 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .build-card:disabled { opacity: 0.5; cursor: not-allowed; }
 .build-card:hover:not(:disabled) { transform: translateY(-2px); border-color: var(--shallow); box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35), 0 0 14px rgba(88, 214, 200, 0.16); }
 .build-card:active:not(:disabled) { transform: translateY(0) scale(0.985); }
+/* Guided-descent beat 5: the two cards NOT being taught render as
+   non-interactive silhouettes — the palette's final shape stays honest
+   without teaching them yet — while the taught card pulses gently. */
+.build-card.ghost { opacity: 0.3; }
+@keyframes card-suggest-pulse { 0%, 100% { box-shadow: 0 0 0 rgba(255, 210, 122, 0); border-color: var(--line); } 50% { box-shadow: 0 0 18px rgba(255, 210, 122, 0.5); border-color: var(--lit-tier); } }
+.build-card.suggested { animation: card-suggest-pulse 1.8s ease-in-out infinite; }
+/* Guided-descent beat 7: pulse the "Send expedition" button itself. */
+.btn.primary.suggested { animation: lantern-call 1.8s ease-in-out infinite; }
 .build-icon { grid-area: icon; font-size: 20px; }
 .build-label { grid-area: label; font-size: 14px; font-weight: 600; }
 .build-card .hp-chip { grid-area: chip; }
@@ -425,6 +466,21 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
    cards get their own shimmer already). Plays once when React inserts the
    element; re-renders of an already-mounted instance never replay it. */
 @keyframes panel-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+/* Guided-descent beat 6: the SAME panel-in family, just with a per-panel
+   `animation-delay` (set inline by Homestead.tsx) for the 120ms stagger —
+   `backwards` so each panel stays invisible through its own delay instead
+   of flashing in at t=0 then re-animating. */
+.panel-in-stagger { animation: panel-in 280ms var(--ease-snap) backwards; }
+
+/* Guided-descent beat 6: a brief highlight pulse — the new structure's
+   integrity bar, then the biomass bar — sequenced, previewing grow/wear/
+   tend wordlessly. */
+@keyframes descent-flash { 0% { box-shadow: none; } 40% { box-shadow: 0 0 14px rgba(88, 214, 200, 0.7); } 100% { box-shadow: none; } }
+.descent-flash { animation: descent-flash 900ms ease-out; }
+
+/* Guided-descent beat 7: everything but the selected-claim panel dims —
+   visually AND functionally (`pointer-events: none`), never hidden. */
+.hud-dim { display: flex; flex-direction: column; gap: 14px; opacity: 0.35; pointer-events: none; filter: saturate(0.6); transition: opacity 300ms ease; }
 
 /* ── glow leaderboard ─────────────────────────────────────────────────────── */
 .glow-board { display: flex; flex-direction: column; gap: 3px; animation: panel-in 220ms var(--ease-snap); }
@@ -481,8 +537,19 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 @keyframes tut-shimmer { from { background-position: 220% 0; } to { background-position: -220% 0; } }
 .tut-kicker { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .tut-kicker-label { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--shallow); }
+.tut-body p { margin: 0 0 4px; }
+.tut-body p:last-child { margin-bottom: 0; }
 .tut-actions { display: flex; gap: 14px; align-items: center; margin-top: 10px; }
 .tut-actions .btn { padding: 4px 14px; font-size: 13px; }
+
+/* The Guided Descent's own skip link (spec: "a small fine link, fixed near
+   the tut-float slot, on every beat 1-6") — symmetric with the existing
+   top-left `.trench-map-hint`, placed top-right so it never collides with
+   the coach/descent card floating at the bottom. */
+.descent-skip {
+  position: absolute; right: 12px; top: 10px; z-index: 6;
+  background: rgba(4, 16, 21, 0.55); padding: 3px 9px; border-radius: 6px;
+}
 
 /* ── overlays (help panel, boot loaders) ─────────────────────────────────── */
 /* z-index 90: a modal must sit above EVERYTHING in the scene — map pins (5),
@@ -656,8 +723,25 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   .selected-panel, .glow-board, .claim-tooltip,
   .kindle-trail li.active .kindle-dot,
   .lantern-ceremony .lc-glow, .lantern-ceremony .lc-flame,
-  .bloom-line {
+  .bloom-line,
+  .claim-preview.suggested::after,
+  .claim-pin .claim-wave.silt-puff,
+  .claim-pin.twinkle-in, .distant-light.twinkle-in,
+  .claim-pin.descent-flash-pin .claim-dot,
+  .build-card.suggested, .btn.primary.suggested,
+  .panel-in-stagger, .descent-flash {
     animation: none;
+  }
+  /* The Guided Descent's own camera tweens (TrenchMap.tsx's `flyTo`) are
+     already forced to an instant cut in JS via `prefersReducedMotion()` —
+     this just kills the residual CSS transition on the field itself so a
+     stray non-flyTo pan (e.g. `panToClaim`'s wayfinding-chip click, which
+     still runs its own transition) can't reintroduce motion mid-descent. */
+  .trench-map-field.animated {
+    transition: none;
+  }
+  .hud-dim {
+    transition: none;
   }
   /* These have brightness/pulse/tier modifier classes with higher selector
      specificity than a plain override (e.g. `.lantern-panel.b-DIM .lantern-icon`
