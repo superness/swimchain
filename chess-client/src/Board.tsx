@@ -36,6 +36,20 @@ export function Board({ chess, orientation, canMove, onMove }: BoardProps) {
     return new Set(chess.moves({ square: selected, verbose: true }).map((m) => m.to));
   }, [selected, chess]);
 
+  // The checked king's square, so danger is visible ON the board, not only in
+  // the HUD text.
+  const checkSq = useMemo(() => {
+    if (!chess.inCheck()) return null;
+    for (let r = 0; r < 8; r++) {
+      for (let f = 0; f < 8; f++) {
+        const p = board[r][f];
+        if (p && p.type === 'k' && p.color === chess.turn()) return (FILES[f] + (8 - r)) as Square;
+      }
+    }
+    return null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chess]);
+
   const rowOrder = orientation === 'w' ? RANKS : [...RANKS].reverse();
   const colOrder = orientation === 'w' ? FILES : [...FILES].reverse();
 
@@ -65,9 +79,9 @@ export function Board({ chess, orientation, canMove, onMove }: BoardProps) {
 
   return (
     <div className="board">
-      {rowOrder.map((rank) => (
+      {rowOrder.map((rank, rowIdx) => (
         <div className="board-row" key={rank}>
-          {colOrder.map((file) => {
+          {colOrder.map((file, colIdx) => {
             const sq = (file + rank) as Square;
             const cell = board[8 - rank][FILES.indexOf(file)];
             const dark = (8 - rank + FILES.indexOf(file)) % 2 === 1;
@@ -75,16 +89,19 @@ export function Board({ chess, orientation, canMove, onMove }: BoardProps) {
             const isTarget = legalTargets.has(sq);
             const isLastFrom = lastMove?.from === sq;
             const isLastTo = lastMove?.to === sq;
+            const isCheck = checkSq === sq;
             return (
               <div
                 key={sq}
-                className={`sq ${dark ? 'dark' : 'light'}${isSel ? ' sel' : ''}${isTarget ? ' target' : ''}${isLastFrom ? ' last-from' : ''}${isLastTo ? ' last-to' : ''}${canMove ? ' active' : ''}`}
+                className={`sq ${dark ? 'dark' : 'light'}${isSel ? ' sel' : ''}${isTarget ? ' target' : ''}${isTarget && cell ? ' capture' : ''}${isLastFrom ? ' last-from' : ''}${isLastTo ? ' last-to' : ''}${isCheck ? ' check' : ''}${canMove ? ' active' : ''}`}
                 onClick={() => handleClick(sq)}
                 title={isLastTo ? `last move: ${lastMove?.san}` : undefined}
               >
                 {cell && <span className="piece">{GLYPH[cell.color + cell.type]}</span>}
                 {isTarget && !cell && <span className="dot" />}
                 {isLastTo && <span className="last-badge" aria-hidden="true" />}
+                {colIdx === 0 && <span className="coord rank" aria-hidden="true">{rank}</span>}
+                {rowIdx === 7 && <span className="coord file" aria-hidden="true">{file}</span>}
               </div>
             );
           })}

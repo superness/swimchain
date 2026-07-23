@@ -25,6 +25,41 @@ import { useUrlRoom, roomLink } from './lib/useUrlRoom';
 
 type Mining = { active: boolean; label: string; attempts: number } | null;
 
+/** Ambient ocean scene behind every screen — the same water as the reef:
+ *  depth gradient, drifting light shafts, rising plankton. Pure CSS, fixed,
+ *  non-interactive; honors prefers-reduced-motion. Chess is played in the
+ *  same sea, one hall deeper. */
+function Ocean() {
+  return (
+    <div className="ocean" aria-hidden="true">
+      <span className="ray r1" />
+      <span className="ray r2" />
+      <span className="ray r3" />
+      <span className="plankton p1" />
+      <span className="plankton p2" />
+      <span className="plankton p3" />
+    </div>
+  );
+}
+
+/** One-time chain-intro coach-mark flags (per browser). Chess needs no rules
+ *  tutorial; what a newcomer doesn't know is the CHAIN part: signed moves,
+ *  the sealing wait, seats. Players and spectators each get one card. */
+function introSeen(kind: 'play' | 'watch'): boolean {
+  try {
+    return localStorage.getItem(`chess-intro:${kind}`) === '1';
+  } catch {
+    return true; // storage-less: skip rather than nag every visit
+  }
+}
+function markIntroSeen(kind: 'play' | 'watch'): void {
+  try {
+    localStorage.setItem(`chess-intro:${kind}`, '1');
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 export function App() {
   const { rpc, connected, connecting, error: rpcError } = useRpc();
   const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
@@ -50,6 +85,8 @@ export function App() {
   const [sponsored, setSponsored] = useState(false);
   const [sponsorPhase, setSponsorPhase] = useState<string | null>(null);
   const sponsoringRef = useRef(false);
+  // Bumped when a one-time intro card is dismissed, to re-render past it.
+  const [, setIntroTick] = useState(0);
 
   // Authenticate RPC requests as this identity once the keypair is ready.
   const { setAuth } = useRpc();
@@ -176,7 +213,7 @@ export function App() {
         me,
         CHESS_SPACE,
         { name: gameName, vsBot, unlisted },
-        (attempts) => setMining({ active: true, label: 'Creating game (proof-of-work)', attempts })
+        (attempts) => setMining({ active: true, label: 'Setting the board on-chain', attempts })
       );
       setMining(null);
       setGameName('');
@@ -201,7 +238,7 @@ export function App() {
     setMining({ active: true, label: `Playing ${san}`, attempts: 0 });
     try {
       await submitMove(rpc, me, openId, san, state?.moves.length ?? 0, (attempts) =>
-        setMining({ active: true, label: `Playing ${san} (proof-of-work)`, attempts })
+        setMining({ active: true, label: `Playing ${san}`, attempts })
       );
       setMining(null);
       // Show my move immediately; the poll reconciles once it finalizes on-chain.
@@ -219,10 +256,14 @@ export function App() {
   if (!hasIdentity || !me) {
     return (
       <div className="center col">
+        <Ocean />
         <h1>♟ Swimchain Chess</h1>
-        <p className="muted">Every move is provably yours, written to the chain. No server, no referee.</p>
-        <button className="btn primary" onClick={newIdentity}>Create an identity</button>
-        <p className="fine">Your keypair is generated and stored locally in this browser. It never leaves your device.</p>
+        <p className="muted">
+          Chess where every move is provably yours — signed by your key, written to a chain no
+          one owns. No server, no referee.
+        </p>
+        <button className="btn primary" onClick={newIdentity}>Play</button>
+        <p className="fine">Playing creates a game key stored only in this browser — no account, no email.</p>
       </div>
     );
   }
@@ -233,6 +274,7 @@ export function App() {
   if (!sponsored) {
     return (
       <div className="center col">
+        <Ocean />
         <h1>♟ Swimchain Chess</h1>
         {sponsorPhase && !error ? (
           <>
@@ -263,9 +305,16 @@ export function App() {
 
   const mySide = state ? playableSide(state, publicKeyHex!, address!) : null;
   const iAmWhite = !!state && (state.white === publicKeyHex || state.white === address);
+  const inCheck = !!state && !state.result && state.chess.inCheck();
+  const isMe = (id: string | null | undefined) => !!id && (id === publicKeyHex || id === address);
+  // Which one-time chain-intro applies here (players vs spectators learn
+  // different things); dismissing bumps introTick to re-render past it.
+  const introKind: 'play' | 'watch' | null = state && !state.result ? (mySide ? 'play' : 'watch') : null;
+  const showIntro = !!introKind && !introSeen(introKind);
 
   return (
     <div className="app">
+      <Ocean />
       <header>
         <h1>♟ Swimchain Chess</h1>
         <div className="who">
@@ -296,6 +345,10 @@ export function App() {
               New game
             </button>
           </div>
+          <p className="muted lobby-lede">
+            Every board lives on the Swimchain. Take an open seat, watch a game in progress, or
+            start your own — against a friend, the computer, or by private invite link.
+          </p>
 
           {(() => {
             // Unlisted games never appear in the public lobby — only via invite link.
@@ -376,34 +429,124 @@ export function App() {
               </span>
               <button className="link" onClick={copyInvite}>{copied ? 'link copied ✓' : 'copy invite link'}</button>
             </div>
-            <Board
-              chess={state.chess}
-              orientation={iAmWhite ? 'w' : 'b'}
-              canMove={!!mySide && mySide === state.turn && !mining}
-              onMove={onMove}
-            />
-            <div className="status">
-              {state.result ? (
-                <strong>{state.result}</strong>
-              ) : (
-                <>
-                  <div><strong>{state.turn === 'w' ? 'White' : 'Black'} to move.</strong></div>
-                  <div className="fine">
-                    {mySide === state.turn
-                      ? 'Your move — click a piece. It’s signed by your key and mined before it hits the chain.'
-                      : 'Waiting for the opponent…'}
+            {/* Desktop: the board is the stage (left), the HUD rides beside it
+                (right, sticky); narrow screens stack. All transient chrome
+                (move status, intro card) floats OVER the board — nothing
+                beneath ever reflows or jostles. */}
+            <div className="game-cols">
+            <div className="board-col">
+            <div className="board-stage">
+              <Board
+                chess={state.chess}
+                orientation={iAmWhite ? 'w' : 'b'}
+                canMove={!!mySide && mySide === state.turn && !mining}
+                onMove={onMove}
+              />
+              {/* Non-blocking move status: the board is already locked while a
+                  move seals — no fullscreen overlay, no hash counter. */}
+              <div className={`move-float${mining?.active ? ' open' : ''}`} aria-live="polite">
+                {mining?.active && (
+                  <span className="move-float-body">
+                    <span className="spinner sm" /> {mining.label} — <em>signed by your key,
+                    sealing into the chain…</em>
+                  </span>
+                )}
+              </div>
+              {showIntro && introKind && !mining?.active && (
+                <div className="intro-float">
+                  <div className="tut-card" role="note">
+                    <span className="tut-shimmer" aria-hidden="true" />
+                    <div className="tut-kicker">
+                      <span className="tut-kicker-label">
+                        {introKind === 'play' ? '♟ Chess, on a chain' : '👁 Watching live'}
+                      </span>
+                    </div>
+                    <div className="tut-body">
+                      {introKind === 'play' ? (
+                        <>
+                          Click a piece, then a highlighted square. Your move is{' '}
+                          <strong>signed by your key</strong> and takes a few seconds to{' '}
+                          <strong>seal into the chain</strong> — that's the network agreeing on
+                          the board, not lag.
+                        </>
+                      ) : (
+                        <>
+                          Both seats are taken — you're watching this game live, folded straight
+                          from the chain. Grab an open seat in the lobby, or start your own game.
+                        </>
+                      )}
+                    </div>
+                    <div className="tut-actions">
+                      <button
+                        className="btn primary"
+                        onClick={() => {
+                          markIntroSeen(introKind);
+                          setIntroTick((t) => t + 1);
+                        }}
+                      >
+                        Got it
+                      </button>
+                    </div>
                   </div>
-                </>
+                </div>
               )}
-              <div className="players fine">
-                White <code>{state.white.slice(0, 10)}…</code> · Black{' '}
-                {state.black ? <code>{state.black.slice(0, 10)}…</code> : <em>open seat</em>}
+            </div>
+            </div>
+            <aside className="status">
+              {state.result ? (
+                <div className="turn-banner done">🏁 {state.result}</div>
+              ) : mySide && mySide === state.turn ? (
+                <div className="turn-banner you">Your move</div>
+              ) : mySide ? (
+                <div className="turn-banner them">
+                  {state.header.bot ? 'The computer is thinking…' : 'Waiting for your opponent…'}
+                </div>
+              ) : (
+                <div className="turn-banner watch">
+                  Watching · {state.turn === 'w' ? 'White' : 'Black'} to move
+                </div>
+              )}
+              {inCheck && (
+                <div className="check-line">⚠ {state.turn === 'w' ? 'White' : 'Black'} is in check</div>
+              )}
+              <div className="seats">
+                <div className={`seat${!state.result && state.turn === 'w' ? ' to-move' : ''}`}>
+                  <span className="seat-piece">♔</span> White{' '}
+                  <code title={state.white}>{state.white.slice(0, 10)}…</code>
+                  {isMe(state.white) && <span className="you-tag">you</span>}
+                </div>
+                <div className={`seat${!state.result && state.turn === 'b' ? ' to-move' : ''}`}>
+                  <span className="seat-piece">♚</span> Black{' '}
+                  {state.black ? (
+                    <>
+                      <code title={state.black}>{state.black.slice(0, 10)}…</code>
+                      {isMe(state.black) && <span className="you-tag">you</span>}
+                    </>
+                  ) : (
+                    <em className="fine">open seat — share the invite link</em>
+                  )}
+                </div>
               </div>
-              <div className="moves fine">
-                {state.moves.map((m, i) => (
-                  <span key={m.contentId}>{i % 2 === 0 ? `${i / 2 + 1}. ` : ''}{m.san} </span>
-                ))}
+              <div className="moves-panel">
+                <div className="moves-title fine">Moves</div>
+                <div className="moves fine">
+                  {state.moves.length === 0 ? (
+                    <span>None yet — White opens.</span>
+                  ) : (
+                    state.moves.map((m, i) => (
+                      <span key={m.contentId} className={`mv${i === state.moves.length - 1 ? ' latest' : ''}`}>
+                        {i % 2 === 0 ? `${i / 2 + 1}. ` : ''}
+                        {m.san}{' '}
+                      </span>
+                    ))
+                  )}
+                </div>
               </div>
+              <div className="fine chain-note">
+                This board is folded from the chain itself — every move signed by its player,
+                sealed by the network, owned by no server.
+              </div>
+            </aside>
             </div>
           </section>
         )
@@ -444,12 +587,14 @@ export function App() {
         </div>
       )}
 
-      {mining?.active && (
+      {/* Fullscreen loader only where there's no board to float over (creating
+          a game from the lobby). In-game moves use the move-float instead. */}
+      {mining?.active && !openId && (
         <div className="overlay">
           <div className="mining">
             <div className="spinner" />
             <div>{mining.label}…</div>
-            {mining.attempts > 0 && <div className="fine">{mining.attempts} attempts</div>}
+            <div className="fine">signed by your key · sealed by the network</div>
           </div>
         </div>
       )}
