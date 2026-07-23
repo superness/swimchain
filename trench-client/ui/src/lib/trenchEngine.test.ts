@@ -234,6 +234,16 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   check('tend: ruined structure -> rejected-ruined', longFold.moves[3].outcome === 'rejected-ruined', longFold.moves[3]);
   check('tend: idx0 is in fact ruined', longFold.structures[0].ruined === true, longFold.structures[0]);
   check('tend: out-of-bounds -> rejected-unknown-structure', longFold.moves[4].outcome === 'rejected-unknown-structure', longFold.moves[4]);
+
+  // (c) tend an ALIVE structure while biomass < TEND_COST: build farm at founding day
+  // D2, then tend idx0 the SAME day (no day-advance has run yet, so biomass is still
+  // its founding value of 0 < TEND_COST) -> rejected-unaffordable, and untouched
+  // (integrity stays INTEGRITY_MAX; no decay has run either, since it's still day D2).
+  const D2 = 501;
+  const poor = foldClaim('c9c', 'A', H, [r('build farm', D2 * DAY, 'f0'), r('tend 0', D2 * DAY + 1, 'tend-poor')]);
+  check('tend: biomass < TEND_COST -> rejected-unaffordable', poor.moves[1].outcome === 'rejected-unaffordable', poor.moves[1]);
+  check('tend: integrity unchanged on rejected-unaffordable', poor.structures[0].integrity === INTEGRITY_MAX, poor.structures[0]);
+  check('tend: biomass unchanged on rejected-unaffordable', poor.biomass === 0, poor.biomass);
 }
 
 // ── 10) storehouse: raises caps while alive; ruin lowers future caps ────────────────
@@ -285,6 +295,28 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   );
   check('expeditionRange helper matches (base + 1 beacon)', expeditionRange(s) === EXPEDITION_BASE_RANGE + RANGE_PER_BEACON, expeditionRange(s));
   check('aliveCount helper: 1 beacon', aliveCount(s, 'beacon') === 1, aliveCount(s, 'beacon'));
+
+  // Cap-clamp: push salvage up to just under capSalvage (40, no storehouse here) via
+  // known-roll expeditions, then one more whose 2*salvageRoll gain would overshoot the
+  // cap -- assert the fold clamps to capSalvage exactly, never to the overshot value.
+  // 'sha256:02...' -> hash part '02aaa00N' -> first byte '02' -> parseInt=2 -> 2%3=2
+  // -> roll=1+2=3 -> gain=2*3=6 for every move below (fixed first byte).
+  const bigRoll = salvageRoll('sha256:02cafefeed');
+  check('salvageRoll: gain-6 fixture cid = 3', bigRoll === 3, bigRoll);
+  const D2 = 750;
+  const clamp = foldClaim('c11b', 'A', H, [
+    r('expedition cccc000000000001 0 1', D2 * DAY, 'sha256:02aaa001'), // 20 -> 26
+    r('expedition cccc000000000002 0 2', D2 * DAY + 1, 'sha256:02aaa002'), // 26 -> 32
+    r('expedition cccc000000000003 0 3', D2 * DAY + 2, 'sha256:02aaa003'), // 32 -> 38
+    r('expedition cccc000000000004 0 4', D2 * DAY + 3, 'sha256:02aaa004'), // 38 + 6 = 44 -> clamp
+  ]);
+  check('cap-clamp: all four expeditions ok', clamp.moves.every((m) => m.outcome === 'ok'), clamp.moves);
+  check('cap-clamp: capSalvage is CAP_BASE (no storehouse)', clamp.capSalvage === CAP_BASE, clamp.capSalvage);
+  check(
+    'cap-clamp: salvage clamps exactly to capSalvage (40), not the overshot 44',
+    clamp.salvage === CAP_BASE && clamp.salvage === clamp.capSalvage,
+    clamp.salvage
+  );
 }
 
 // ── 12) determinism: shuffled pending order folds identically ───────────────────────
