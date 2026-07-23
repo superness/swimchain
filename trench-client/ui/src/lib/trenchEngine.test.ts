@@ -418,5 +418,32 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   check('project: re-fold over same replies is unchanged', refolded.biomass === 0 && refolded.lastDay === D, refolded);
 }
 
+// ── 16) expedition: self-target rejected (no free salvage), other targets unaffected ──
+// A self-expedition (target16 prefix-matches the actor's OWN claim id) is an economy
+// exploit, not a real visit — it drives no hosting, since the actor already has its own
+// claim. It must fold as `rejected-self`: no salvage, and — critically — NO
+// expeditionDays entry (so it can never "day-gate" a later, genuine attempt at whatever
+// real target happens to share that 16-hex prefix, however unlikely).
+{
+  const D = 780;
+  const selfClaimId = 'sha256:aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff';
+  const selfTarget16 = 'aaaa111122223333'; // first 16 hex chars of selfClaimId's hash part
+  const roll = salvageRoll('sha256:07deadbeef'); // same fixture as test 11 -> roll = 2
+  const s = foldClaim(selfClaimId, 'A', H, [
+    r(`expedition ${selfTarget16} 0 0`, D * DAY, 'sha256:self_exp'),
+    // A genuine other target, well within base range (dist 3 <= 6) — must still credit,
+    // proving the self-check doesn't over-reject unrelated expeditions in the same fold.
+    r('expedition bbbb444455556666 0 3', D * DAY + 1, 'sha256:07deadbeef'),
+  ]);
+  check('expedition: self-target -> rejected-self', s.moves[0].outcome === 'rejected-self', s.moves[0]);
+  check('expedition: self-target records no day-gate entry', s.expeditionDays.has(selfTarget16) === false, [...s.expeditionDays]);
+  check('expedition: a normal other-target expedition in the same fold still credits', s.moves[1].outcome === 'ok', s.moves[1]);
+  check(
+    'expedition: final salvage = START_SALVAGE + 2*roll (self-attempt contributed nothing)',
+    s.salvage === START_SALVAGE + 2 * roll,
+    s.salvage
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exitCode = failures === 0 ? 0 : 1;

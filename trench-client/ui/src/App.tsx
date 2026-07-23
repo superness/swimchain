@@ -183,7 +183,7 @@ export function App() {
         }
       } catch (e) {
         if (!cancelled) {
-          setIdentityError(e instanceof Error ? e.message : 'waiting for your node…');
+          setIdentityError(e instanceof Error ? e.message : 'the lantern is slow to answer…');
           timer = setTimeout(tryOnce, 4000);
         }
       }
@@ -424,7 +424,13 @@ export function App() {
         default:
           msg = null; // ok: no news is good news, the HUD already shows it
       }
-      if (msg) setNotice(msg);
+      // Append rather than overwrite: this effect and the ruin-ceremony
+      // effect below both react to the same `[ownState]` change and can
+      // both want to speak in the same commit (e.g. a rejected move landing
+      // in the same poll a structure ruins) — whichever runs second would
+      // otherwise silently clobber the first's message via a plain `setNotice(msg)`.
+      const finalMsg = msg;
+      if (finalMsg) setNotice((prev) => (prev ? `${prev} · ${finalMsg}` : finalMsg));
     }
   }, [ownState]);
 
@@ -458,7 +464,11 @@ export function App() {
         newlyRuined.forEach((i) => next.add(i));
         return next;
       });
-      setNotice(`the abyss takes the ${STRUCT_LABEL[ownState.structures[newlyRuined[0]].kind]}`);
+      // Append (see the outcome-notice effect above) rather than overwrite —
+      // both effects share the same `[ownState]` trigger and can legitimately
+      // both have something to say about the same poll.
+      const ruinMsg = `the abyss takes the ${STRUCT_LABEL[ownState.structures[newlyRuined[0]].kind]}`;
+      setNotice((prev) => (prev ? `${prev} · ${ruinMsg}` : ruinMsg));
       timers.push(
         setTimeout(() => {
           setRuinFlashIdx((cur) => {
@@ -511,12 +521,22 @@ export function App() {
     () => (ownState && selectedEntry ? chebyshev(ownState.header.x, ownState.header.y, selectedEntry.header.x, selectedEntry.header.y) : null),
     [ownState, selectedEntry]
   );
-  // Per the engine (trenchEngine.ts's `foldClaim` expedition branch), a
-  // same-owner or even literal self-target is legal — it just folds `ok` at
-  // distance 0 like any other in-range target. Only range and the per-target
-  // daily cap gate eligibility; no invented "can't visit yourself" rule.
+  // Literally targeting your OWN claim folds `rejected-self` in the engine
+  // (trenchEngine.ts's `foldClaim` expedition branch — free daily salvage
+  // for visiting yourself would be an economy exploit, and since the fold
+  // itself rejects it, a UI-only gate wouldn't be enough anyway: every
+  // observer would still see the attempt land as rejected). Mirror that
+  // here so the button is disabled with an honest reason instead of letting
+  // the player mine/sign/submit a move that can never do anything. A DIFFERENT
+  // claim owned by the same identity (e.g. a second homestead) is NOT a
+  // self-target — it's a real, distinct claim and genuinely drives hosting,
+  // so only the exact selected claimId is special-cased here, never "same
+  // owner" in general.
   const expedition = useMemo(() => {
     if (!ownState || !selectedEntry) return { eligible: false, reason: null as string | null };
+    if (selectedEntry.claimId === ownState.claimId) {
+      return { eligible: false, reason: 'you already hold this ground' };
+    }
     const range = expeditionRange(ownState);
     const dist = chebyshev(ownState.header.x, ownState.header.y, selectedEntry.header.x, selectedEntry.header.y);
     if (dist > range) {
