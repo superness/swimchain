@@ -14,7 +14,7 @@ const COPY: Record<TutorialCardKind, ReactNode> = {
   ),
   grow: (
     <>
-      That coral is yours — permanently. It cost <strong>{COST_GROW} energy</strong> (the bar
+      That coral is yours. It cost <strong>{COST_GROW} energy</strong> (the bar
       below). Grow by clicking squares <strong>next to</strong> your coral (−{COST_GROW} each).
     </>
   ),

@@ -9,6 +9,7 @@ import {
   MAX_BUDGET,
   SEASON_EPOCHS,
   MAX_VITALITY,
+  CAPTURE_VITALITY,
 } from './lib/reefEngine';
 
 /** The full plain-first reference — the old bottom text-wall's content, taught
@@ -42,7 +43,7 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
           </li>
           <li>
             <strong>Strike</strong> (−{COST_CONTEST} energy): click enemy coral on your border —
-            it loses {CONTEST_DAMAGE} health. Break it, then take the square.
+            it loses {CONTEST_DAMAGE} health. Break it, then take the square (captured coral starts weak, at {CAPTURE_VITALITY} health).
           </li>
         </ul>
         <h3>The tide</h3>
@@ -66,7 +67,7 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
         </ul>
         <p className="fine">
           You score the health you keep alive each tide — sprawl you can't tend just feeds the
-          current. Every coral you grow is provably, only ever yours: the reef lives on the
+          current. Every coral you grow is provably yours while it stands: the reef lives on the
           Swimchain network, not on anyone's server, and no one can take it down.
         </p>
         <button className="btn primary" onClick={onClose} autoFocus>
