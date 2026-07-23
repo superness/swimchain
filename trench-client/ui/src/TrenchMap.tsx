@@ -57,9 +57,18 @@ export function TrenchMap({
     panY: number;
     moved: boolean;
   } | null>(null);
+  // The browser's synthetic `click` event ALWAYS fires after `pointerup` —
+  // so if `endDrag` (bound to pointerup/leave/cancel) nulls `dragRef` first,
+  // every click handler that later checks `dragRef.current?.moved` sees
+  // `null` and the pan-suppression guard never fires (a drag-release always
+  // looked like a fresh, undragged click). Stash the flag here BEFORE
+  // nulling `dragRef`, so it survives past pointerup for the click handlers
+  // below to consult; the next pointerdown resets it for the new gesture.
+  const lastDragMovedRef = useRef(false);
 
   const onPointerDown = (e: React.PointerEvent) => {
     (e.target as Element).setPointerCapture?.(e.pointerId);
+    lastDragMovedRef.current = false;
     dragRef.current = { startClientX: e.clientX, startClientY: e.clientY, panX: pan.x, panY: pan.y, moved: false };
   };
   const onPointerMove = (e: React.PointerEvent) => {
@@ -71,14 +80,16 @@ export function TrenchMap({
     setPan({ x: d.panX + dx, y: d.panY + dy });
   };
   const endDrag = () => {
+    lastDragMovedRef.current = dragRef.current?.moved ?? false;
     dragRef.current = null;
   };
 
   const onStageClick = (e: React.MouseEvent) => {
     if (!foundingMode || !onPickFoundingSpot || !containerRef.current) return;
     // A pan that ends under the pointer still fires a click — ignore it so
-    // looking around never accidentally drops a claim.
-    if (dragRef.current?.moved) return;
+    // looking around never accidentally drops a claim (see lastDragMovedRef's
+    // comment above for why this can't just read dragRef here).
+    if (lastDragMovedRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const localX = e.clientX - rect.left - rect.width / 2 - pan.x;
     const localY = e.clientY - rect.top - rect.height / 2 - pan.y;
@@ -118,7 +129,7 @@ export function TrenchMap({
               title={`${c.header.name} (${c.header.x}, ${c.header.y})`}
               onClick={(e) => {
                 e.stopPropagation();
-                if (dragRef.current?.moved) return;
+                if (lastDragMovedRef.current) return;
                 onSelect(c.claimId);
               }}
             >
