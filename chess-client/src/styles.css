@@ -57,6 +57,15 @@ h2 { font-size: 18px; margin: 0; }
 .games li:hover { border-color: var(--shallow); }
 .games .title { font-size: 15px; }
 
+/* Lobby segmentation: open games funnel first, history de-emphasised. */
+.lobby-section {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); margin: 20px 0 8px; font-weight: 600;
+}
+.lobby-section:first-of-type { margin-top: 8px; }
+.games.history li { opacity: 0.62; }
+.games.history li:hover { opacity: 1; }
+
 /* New-game modal */
 .modal {
   background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
