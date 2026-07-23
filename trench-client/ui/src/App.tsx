@@ -19,6 +19,7 @@ import { TrenchMap } from './TrenchMap';
 import { Homestead } from './Homestead';
 import { HowToPlay } from './HowToPlay';
 import { CoachCard, hasSeenCoach, markCoachSeen, type CoachKind } from './CoachCard';
+import { createAbyssAudio, getStoredMutePreference, type AbyssAudioHandle } from './lib/abyssAudio';
 
 const BUILD_COSTS: Record<StructureKind, number> = { farm: COST_FARM, storehouse: COST_STOREHOUSE, beacon: COST_BEACON };
 
@@ -57,6 +58,26 @@ function targetPrefix(claimId: string): string {
 
 type MoveStatus = { label: string; flavor: string } | null;
 
+// ── kindling ceremony (onboarding wait): maps `ensureTrenchSponsored`'s own
+// onProgress phase strings (swimchain-react's ensureSponsored.ts — 'Finding a
+// sponsor' → 'Requesting sponsorship (proof-of-work)' → 'Waiting for
+// approval') onto three diegetic steps. The pre-onProgress state (App's own
+// 'Checking your access…' label, or no phase yet at all) is step 0 — the
+// player is already "reaching the deep" before the first real phase lands. ──
+const KINDLE_STEPS = ['reaching the deep', 'kindling your lantern', 'first light'] as const;
+function kindleStepIndex(phase: string | null): number {
+  if (phase === 'Waiting for approval') return 2;
+  if (phase === 'Requesting sponsorship (proof-of-work)') return 1;
+  return 0;
+}
+function prefersReducedMotion(): boolean {
+  try {
+    return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  } catch {
+    return false;
+  }
+}
+
 /** Ambient abyss scene behind every screen: near-black depth gradient, sparse
  *  bioluminescent motes (teal + violet), a pressure vignette. Pure CSS, fixed
  *  and non-interactive — we're below the reef's light shafts, on the floor of
@@ -68,6 +89,53 @@ function Abyss() {
       <span className="mote violet m2" />
       <span className="mote teal m3" />
       <span className="vignette" />
+    </div>
+  );
+}
+
+/** The kindling ceremony: a large CSS lantern (layered divs/radial gradients
+ *  — no image assets) that visibly kindles through three diegetic steps as
+ *  `ensureTrenchSponsored`'s phases advance, shown as a glowing vertical
+ *  trail. The lantern's own glow/flame grow per step via the `stage-N`
+ *  modifier class (see styles.css). */
+function KindlingCeremony({ phase }: { phase: string | null }) {
+  const step = kindleStepIndex(phase);
+  return (
+    <div className="kindle-scene">
+      <div className={`lantern-ceremony stage-${step}`} aria-hidden="true">
+        <span className="lc-glow" />
+        <span className="lc-body" />
+        <span className="lc-flame" />
+      </div>
+      <ol className="kindle-trail">
+        {KINDLE_STEPS.map((label, i) => (
+          <li key={label} className={i === step ? 'active' : i < step ? 'done' : ''}>
+            <span className="kindle-dot" aria-hidden="true" />
+            {label}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+/** One-shot bloom beat between the kindling ceremony completing and the
+ *  founding screen mounting: "Your lantern takes." — 1.2s, skippable by
+ *  click, instant under prefers-reduced-motion. */
+function BloomBeat({ onDone }: { onDone: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, prefersReducedMotion() ? 0 : 1200);
+    return () => clearTimeout(t);
+  }, [onDone]);
+  return (
+    <div className="center col bloom-beat" onClick={onDone} role="presentation">
+      <Abyss />
+      <div className="lantern-ceremony bloom" aria-hidden="true">
+        <span className="lc-glow" />
+        <span className="lc-body" />
+        <span className="lc-flame" />
+      </div>
+      <p className="bloom-line">Your lantern takes.</p>
     </div>
   );
 }
@@ -120,6 +188,40 @@ export function App() {
   const [claimBloom, setClaimBloom] = useState(false);
   const [ruinFlashIdx, setRuinFlashIdx] = useState<Set<number>>(new Set());
   const [tierShift, setTierShift] = useState(false);
+
+  // ── kindling ceremony bloom beat: shown once, only right after actually
+  //    going through the sponsor-gate ceremony (never on a return visit that
+  //    was already sponsored, which resolves `ensureTrenchSponsored` instantly
+  //    without ever calling onProgress) — see `sawPhaseRef` below. ──────────
+  const [showBloom, setShowBloom] = useState(false);
+  const sawPhaseRef = useRef(false);
+
+  // ── ambient sound ("the deep"): the AudioContext itself is only ever built
+  //    lazily inside audioRef.current.start(), from an actual user gesture
+  //    (see the Play button and the first-click fallback below) — never here. ──
+  const audioRef = useRef<AbyssAudioHandle | null>(null);
+  const [soundMuted, setSoundMuted] = useState<boolean>(() => getStoredMutePreference());
+  useEffect(() => {
+    audioRef.current = createAbyssAudio();
+    audioRef.current.setMuted(soundMuted);
+    return () => audioRef.current?.teardown();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // A first click ANYWHERE in the app satisfies the autoplay-unlock gesture
+    // — the explicit call on the Play button below covers the common path;
+    // this is the generic fallback for any other first interaction.
+    const onFirstClick = () => audioRef.current?.start();
+    document.addEventListener('click', onFirstClick, { once: true, capture: true });
+    return () => document.removeEventListener('click', onFirstClick, { capture: true });
+  }, []);
+  const toggleMuted = useCallback(() => {
+    setSoundMuted((prev) => {
+      const next = !prev;
+      audioRef.current?.setMuted(next);
+      return next;
+    });
+  }, []);
 
   const busyRef = useRef(false);
   const submittedCountRef = useRef(0);
@@ -212,12 +314,26 @@ export function App() {
   useEffect(() => {
     if (!auth || !identity || sponsored || sponsoringRef.current) return;
     sponsoringRef.current = true;
+    sawPhaseRef.current = false;
     setSponsorPhase('Checking your access…');
     setSponsorError(null);
-    ensureTrenchSponsored(auth, identity, (p) => setSponsorPhase(p))
+    ensureTrenchSponsored(auth, identity, (p) => {
+      sawPhaseRef.current = true; // onProgress fired: this was a REAL kindling wait, not an instant already-sponsored resolve
+      setSponsorPhase(p);
+    })
       .then(() => {
         setSponsored(true);
         setSponsorPhase(null);
+        // Ceremony: the bloom beat, once, only right after actually going
+        // through the sponsor gate (a returning already-sponsored player's
+        // ensureTrenchSponsored resolves before onProgress ever fires, so
+        // sawPhaseRef stays false and this is skipped). Set in the SAME
+        // batch as setSponsored so the founding/map screen never mounts
+        // for even one frame before the bloom does.
+        if (sawPhaseRef.current) {
+          setShowBloom(true);
+          audioRef.current?.chime();
+        }
       })
       .catch((e) => {
         setSponsorPhase(null);
@@ -482,6 +598,7 @@ export function App() {
       // both have something to say about the same poll.
       const ruinMsg = `the abyss takes the ${STRUCT_LABEL[ownState.structures[newlyRuined[0]].kind]}`;
       setNotice((prev) => (prev ? `${prev} · ${ruinMsg}` : ruinMsg));
+      audioRef.current?.chime();
       timers.push(
         setTimeout(() => {
           setRuinFlashIdx((cur) => {
@@ -495,6 +612,7 @@ export function App() {
 
     if (prev.brightness !== ownState.brightness) {
       setTierShift(true);
+      audioRef.current?.chime();
       timers.push(setTimeout(() => setTierShift(false), 1600)); // matches .tier-shift's animation duration
     }
 
@@ -605,14 +723,22 @@ export function App() {
   const onBuild = useCallback(
     (kind: StructureKind) => {
       const label = kind === 'farm' ? 'Building the kelp farm' : kind === 'storehouse' ? 'Building the storehouse' : 'Raising the beacon';
+      audioRef.current?.thock();
       void doMove(`build ${kind}`, label, FLAVOR.build);
     },
     [doMove]
   );
-  const onTend = useCallback((idx: number) => void doMove(`tend ${idx}`, 'Tending the structure', FLAVOR.tend), [doMove]);
+  const onTend = useCallback(
+    (idx: number) => {
+      audioRef.current?.thock();
+      void doMove(`tend ${idx}`, 'Tending the structure', FLAVOR.tend);
+    },
+    [doMove]
+  );
   const onHarvest = useCallback(() => void doMove('harvest', 'Harvest — banking your projected growth', FLAVOR.harvest), [doMove]);
   const onExpedition = useCallback(() => {
     if (!selectedEntry) return;
+    audioRef.current?.thock();
     void doMove(
       `expedition ${targetPrefix(selectedEntry.claimId)} ${selectedEntry.header.x} ${selectedEntry.header.y}`,
       'Sending an expedition',
@@ -645,6 +771,7 @@ export function App() {
       // Ceremony: a light blooms outward from the new claim (reef's claim-wave
       // pattern) — one-shot, cleaned up on a timer matching the CSS animation.
       setClaimBloom(true);
+      audioRef.current?.chime();
       setTimeout(() => setClaimBloom(false), 2200);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'the ground would not hold — try again');
@@ -661,6 +788,14 @@ export function App() {
       <div className="who">
         <span className={`dot ${connected ? 'ok' : 'bad'}`} />
         {connected ? 'connected' : 'adrift — reconnecting…'} · <code title={identity.address}>{identity.address.slice(0, 12)}…</code>
+        <button
+          className="link mute-chip"
+          onClick={toggleMuted}
+          title={soundMuted ? 'Unmute the deep' : 'Mute the deep'}
+          aria-label={soundMuted ? 'Unmute ambient sound' : 'Mute ambient sound'}
+        >
+          {soundMuted ? '🔇' : '🔊'}
+        </button>
         {!showHelp && (
           <button className="link help-link" onClick={() => setShowHelp(true)}>
             ? how to play
@@ -681,7 +816,13 @@ export function App() {
         <Abyss />
         <h1>🏮 The Trench</h1>
         <p className="muted">Homestead the lightless seafloor. While The Trench runs, your lantern burns.</p>
-        <button className="btn primary" onClick={() => setLandingDismissed(true)}>
+        <button
+          className="btn primary"
+          onClick={() => {
+            setLandingDismissed(true);
+            audioRef.current?.start();
+          }}
+        >
           Play
         </button>
         <p className="fine">
@@ -723,13 +864,17 @@ export function App() {
 
   if (!sponsored) {
     return (
-      <div className="center col">
+      <div className="center col kindle-screen">
         <Abyss />
         <h1>🏮 The Trench</h1>
-        <p className="muted">🏮 {sponsorPhase ?? 'Kindling your lantern…'}</p>
+        <KindlingCeremony phase={sponsorPhase} />
         <p className="fine">One time only.</p>
       </div>
     );
+  }
+
+  if (showBloom) {
+    return <BloomBeat onDone={() => setShowBloom(false)} />;
   }
 
   if (!mapLoaded) {
@@ -803,6 +948,9 @@ export function App() {
                   ? `(${foundPos.x}, ${foundPos.y}) — ${spacingOk ? `at least ${CLAIM_MIN_SPACING} units from every neighbor` : `too close to a neighbor (need ≥${CLAIM_MIN_SPACING})`}`
                   : 'Click the map to choose a spot.'}
               </p>
+              {acceptedClaims.length > 0 && (
+                <p className="fine muted">lights in the distance — settle near them or claim the dark</p>
+              )}
               <button
                 className="btn primary"
                 disabled={!foundPos || !spacingOk || !foundName.trim() || !!moveStatus}
