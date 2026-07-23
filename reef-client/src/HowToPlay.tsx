@@ -70,7 +70,9 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
           current. Every coral you grow is provably yours while it stands: the reef lives on the
           Swimchain network, not on anyone's server, and no one can take it down.
         </p>
-        <button className="btn primary" onClick={onClose} autoFocus>
+        {/* No autoFocus: focusing the bottom button scrolls a tall panel to its
+            end, clipping the heading off the top. Esc and click-outside close. */}
+        <button className="btn primary" onClick={onClose}>
           Back to the reef
         </button>
       </div>

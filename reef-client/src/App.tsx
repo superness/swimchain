@@ -44,6 +44,7 @@ import {
   saveTutorial,
   type TutorialState,
   type TutorialSnapshot,
+  type TutorialCardKind,
 } from './tutorial';
 
 // `cell` is the tile a move is taking root on (absent while founding a reef),
@@ -202,6 +203,9 @@ export function App() {
   // First-run tutorial: coach-marks on the live board (see src/tutorial.ts).
   const [tutorial, setTutorial] = useState<TutorialState>(() => loadTutorial());
   const [showHelp, setShowHelp] = useState(false);
+  // Last card shown in the tutorial slot — kept so the slot can animate closed
+  // over the departing card instead of snapping empty (render-derived, see below).
+  const lastTutCardRef = useRef<TutorialCardKind | null>(null);
   const applyTutorial = useCallback((fn: (t: TutorialState) => TutorialState) => {
     setTutorial((t) => {
       const next = fn(t);
@@ -682,6 +686,10 @@ export function App() {
   // Which coach-mark to show. Hidden while a move is in flight or the tide
   // report is up — a card would flicker or mislead mid-ceremony.
   const tutCard = openId && view && !tideReport && !mining ? visibleCard(tutorial, tutSnap) : null;
+  // The slot keeps showing the LAST card while it animates closed (see the
+  // tut-slot render below) — otherwise the collapse would have nothing to animate.
+  if (tutCard) lastTutCardRef.current = tutCard;
+  const slotCard = tutCard ?? lastTutCardRef.current;
 
   return (
     <div className="app">
@@ -747,13 +755,23 @@ export function App() {
                 <span className="fine">({banner.points} pts) · new season begins</span>
               </div>
             )}
-            {(tutCard === 'plant' || tutCard === 'strike') && (
-              <TutorialCard
-                kind={tutCard}
-                onGotIt={() => applyTutorial(tutCard === 'strike' ? dismissStrikeTip : tutAck)}
-                onSkip={tutCard === 'plant' ? () => applyTutorial(tutSkip) : null}
-              />
-            )}
+            {/* Every coach-mark renders in this ONE slot above the board, and the
+                slot animates open/closed (grid-rows trick) instead of unmounting.
+                Cards used to sit at three different anchors — each swap yanked the
+                layout, and dismissing the plant card dropped the viewport straight
+                into the grid. The last card stays rendered while the slot closes
+                so the collapse has content to animate over. */}
+            <div className={`tut-slot${tutCard ? ' open' : ''}`}>
+              <div className="tut-slot-inner">
+                {slotCard && (
+                  <TutorialCard
+                    kind={slotCard}
+                    onGotIt={() => applyTutorial(slotCard === 'strike' ? dismissStrikeTip : tutAck)}
+                    onSkip={slotCard !== 'strike' ? () => applyTutorial(tutSkip) : null}
+                  />
+                )}
+              </div>
+            </div>
             <Reef
               state={view}
               myPubkeyHex={publicKeyHex!}
@@ -796,10 +814,6 @@ export function App() {
                 <span className="fine costs">grow −{COST_GROW} · strike −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · the tide refills {REGEN_BASE} + 1 per 2 coral you hold</span>
               </div>
 
-              {tutCard === 'grow' && (
-                <TutorialCard kind="grow" onGotIt={() => applyTutorial(tutAck)} onSkip={() => applyTutorial(tutSkip)} />
-              )}
-
               {/* Tide meter: how close the water is to turning. Fills as confirmed
                   moves accumulate toward params.epochMoves; strains when one move
                   away. Purely fold-derived — identical on every device. */}
@@ -818,10 +832,6 @@ export function App() {
                     : `🌊 tide in ${view.params.epochMoves - view.tideMoves} moves`}
                 </span>
               </div>
-
-              {tutCard === 'tide' && (
-                <TutorialCard kind="tide" onGotIt={() => applyTutorial(tutAck)} onSkip={() => applyTutorial(tutSkip)} />
-              )}
 
               <div className="board-scores">
                 {view.standings.length === 0 && <span className="fine">Open water. Seed your first coral anywhere — it's free until your energy starts to matter.</span>}
@@ -1035,7 +1045,10 @@ function TideReport({
           {tidesToReckoning} tide{tidesToReckoning === 1 ? '' : 's'} left in the season.
         </div>
 
-        <button className="btn primary tr-continue" onClick={onClose} autoFocus>
+        {/* No autoFocus: on short viewports it scrolls the report to its bottom
+            and clips the header. Enter/Escape/Space already close via the
+            window key handler above. */}
+        <button className="btn primary tr-continue" onClick={onClose}>
           Ride the tide →
         </button>
       </div>
