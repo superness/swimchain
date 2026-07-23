@@ -46,8 +46,12 @@ function StructTile({ icon, ruined }: { icon: string; ruined?: boolean }) {
   );
 }
 
-/** The full plain-first reference — plain rules first, lore last (spec §4).
- *  Re-entry point via the "?" link in the header. */
+/** The rewritten guide (designer spec §2): a compact panel — one 10-word loop
+ *  line, then six titled cards in a 2-column grid (single column under
+ *  ~640px), reading order = play order. Each card is scannable as a
+ *  fragment, not prose — the HUD already teaches resources/brightness/build
+ *  costs via its own labels, so the guide's job is just the numbers behind
+ *  them. Re-entry point via the "?" link in the header. */
 export function HowToPlay({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -59,149 +63,123 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="overlay" onClick={onClose}>
-      <div className="help-panel" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+      <div className="help-panel hp-cards" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <h2>How to play 🏮</h2>
-        <p>
-          The Trench is a homestead game where <strong>you are the lantern</strong>. You found one
-          claim on a shared map, then tend it while your lantern burns — no server, nobody who can
-          turn the lights off but you.
-        </p>
+        <p className="hp-intro">You are the lantern. Claim ground. Build. Keep it lit.</p>
 
-        <h3>Founding</h3>
-        <p>
-          Pick a name and click open ground on the map, at least{' '}
-          <strong>{CLAIM_MIN_SPACING} units</strong> from any neighbor. You start with{' '}
-          <strong>{half(START_SALVAGE)} salvage</strong> and nothing built.
-        </p>
+        <div className="hp-grid">
+          <div className="hp-card">
+            <h3>Found</h3>
+            <p>
+              Name yourself, click open ground — <strong>{CLAIM_MIN_SPACING}+ units</strong> from any
+              neighbor.
+            </p>
+            <p>
+              You start with <strong>{half(START_SALVAGE)} salvage</strong>.
+            </p>
+          </div>
 
-        <h3>What you gather</h3>
-        <div className="hp-moves">
-          <div className="hp-move">
-            <span className="hp-diagram">
-              <StructTile icon="⚙" />
-            </span>
-            <span className="hp-what">
-              <strong>Salvage</strong>
-              <span className="hp-how">
-                Scrap raised from the deep — this is what you <strong>build</strong> with. You
-                start with {half(START_SALVAGE)}; expeditions to other claims bring back more.
+          <div className="hp-card">
+            <h3>Your lantern</h3>
+            <p>
+              Burns while the game runs — up to <strong>{HB_CAP_PER_DAY} beats a day</strong>.
+            </p>
+            <p className="fine">Beats this week set brightness:</p>
+            <div className="hp-legend hp-lanterns">
+              <span className="hp-key">
+                <LanternTile tier="LIT" />
+                <span className="fine">
+                  <strong>LIT</strong> · {LIT_MIN}+ · farms {half(YIELD_LIT)}/day · slow decay
+                </span>
               </span>
-            </span>
-          </div>
-          <div className="hp-move">
-            <span className="hp-diagram">
-              <StructTile icon="🌿" />
-            </span>
-            <span className="hp-what">
-              <strong>Biomass</strong>
-              <span className="hp-how">
-                Grown daily by your kelp farms — this is what you <strong>tend</strong> with,
-                repairing what the abyss wears down.
+              <span className="hp-key">
+                <LanternTile tier="DIM" />
+                <span className="fine">
+                  <strong>DIM</strong> · {DIM_MIN}+ · farms {half(YIELD_DIM)}/day
+                </span>
               </span>
-            </span>
+              <span className="hp-key">
+                <LanternTile tier="DARK" />
+                <span className="fine">
+                  <strong>DARK</strong> · under {DIM_MIN} · farms {half(YIELD_DARK)}/day · fast decay
+                </span>
+              </span>
+            </div>
           </div>
-        </div>
-        <p className="fine">
-          You can hold at most <strong>{half(CAP_BASE)}</strong> of each — until you build
-          storehouses.
-        </p>
 
-        <h3>Your lantern</h3>
-        <p>
-          While The Trench is running, your lantern posts a <strong>heartbeat</strong> at most once
-          every 4 hours — up to <strong>{HB_CAP_PER_DAY} a day</strong>. Your lantern's brightness
-          is how many heartbeats landed over the trailing 7 days:
-        </p>
-        <div className="hp-legend hp-lanterns">
-          <span className="hp-key">
-            <LanternTile tier="LIT" />
-            <span className="fine">
-              <strong>LIT</strong> — ≥{LIT_MIN}/week · farms yield {half(YIELD_LIT)}
-              /day · slowest decay
-            </span>
-          </span>
-          <span className="hp-key">
-            <LanternTile tier="DIM" />
-            <span className="fine">
-              <strong>DIM</strong> — ≥{DIM_MIN}/week · farms yield {half(YIELD_DIM)}/day
-            </span>
-          </span>
-          <span className="hp-key">
-            <LanternTile tier="DARK" />
-            <span className="fine">
-              <strong>DARK</strong> — below {DIM_MIN}/week · farms yield {half(YIELD_DARK)}
-              /day · fastest decay
-            </span>
-          </span>
-        </div>
-        <h3>The abyss</h3>
-        <p>
-          Everything you build wears down: a structure loses <strong>{half(DECAY_BASE)}</strong>{' '}
-          health a day — only {half(DECAY_LIT)} while your lantern is LIT, but{' '}
-          {half(DECAY_DARK)} when DARK. <strong>Tend</strong> a worn structure (
-          {half(TEND_COST)} biomass) to restore it to full. If its health reaches 0 it becomes a{' '}
-          <strong>ruin</strong> — gone for good; build anew.
-        </p>
+          <div className="hp-card">
+            <h3>The abyss</h3>
+            <p>
+              Everything wears: −{half(DECAY_BASE)} health a day ({half(DECAY_LIT)} LIT ·{' '}
+              {half(DECAY_DARK)} DARK).
+            </p>
+            <p>
+              <strong>Tend</strong> for {half(TEND_COST)} biomass — farms grow it.
+            </p>
+            <p>
+              At 0 it's a <strong>ruin</strong>. Ruins don't come back.
+            </p>
+          </div>
 
-        <h3>Building</h3>
-        <p className="fine">Each costs salvage and stands until the abyss takes it.</p>
-        <div className="hp-moves">
-          <div className="hp-move">
-            <span className="hp-diagram">
-              <StructTile icon="🌾" />
-            </span>
-            <span className="hp-what">
-              <strong>Kelp farm</strong> <span className="hp-chip">{half(COST_FARM)} salvage</span>
-              <span className="hp-how">
-                Grows biomass every day — the brighter your lantern, the bigger the harvest.
-              </span>
-            </span>
+          <div className="hp-card">
+            <h3>Build</h3>
+            <p className="fine">Spend salvage. Expeditions bring more.</p>
+            <div className="hp-moves">
+              <div className="hp-move">
+                <span className="hp-diagram">
+                  <StructTile icon="🌾" />
+                </span>
+                <span className="hp-what">
+                  <strong>Kelp farm</strong> <span className="hp-chip">{half(COST_FARM)} salvage</span>
+                  <span className="hp-how">grows biomass daily. Brighter = more.</span>
+                </span>
+              </div>
+              <div className="hp-move">
+                <span className="hp-diagram">
+                  <StructTile icon="📦" />
+                </span>
+                <span className="hp-what">
+                  <strong>Storehouse</strong>{' '}
+                  <span className="hp-chip">{half(COST_STOREHOUSE)} salvage</span>
+                  <span className="hp-how">
+                    both caps +{half(CAP_PER_STOREHOUSE)} (base {half(CAP_BASE)}).
+                  </span>
+                </span>
+              </div>
+              <div className="hp-move">
+                <span className="hp-diagram">
+                  <StructTile icon="🗼" />
+                </span>
+                <span className="hp-what">
+                  <strong>Beacon</strong> <span className="hp-chip">{half(COST_BEACON)} salvage</span>
+                  <span className="hp-how">
+                    reach +{RANGE_PER_BEACON} (base {EXPEDITION_BASE_RANGE}).
+                  </span>
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="hp-move">
-            <span className="hp-diagram">
-              <StructTile icon="📦" />
-            </span>
-            <span className="hp-what">
-              <strong>Storehouse</strong> <span className="hp-chip">{half(COST_STOREHOUSE)} salvage</span>
-              <span className="hp-how">
-                Lets you hold more: raises both the salvage and biomass caps by{' '}
-                {half(CAP_PER_STOREHOUSE)} each while it stands.
-              </span>
-            </span>
+
+          <div className="hp-card">
+            <h3>Expeditions</h3>
+            <p>Visit any lantern in reach — once each per day.</p>
+            <p>
+              Brings home <strong>1–3 salvage</strong>; your light keeps their claim burning.
+            </p>
           </div>
-          <div className="hp-move">
-            <span className="hp-diagram">
-              <StructTile icon="🗼" />
-            </span>
-            <span className="hp-what">
-              <strong>Beacon</strong> <span className="hp-chip">{half(COST_BEACON)} salvage</span>
-              <span className="hp-how">
-                Reaches farther into the dark: your expeditions can visit claims{' '}
-                {RANGE_PER_BEACON} units farther away (everyone starts at {EXPEDITION_BASE_RANGE}).
-              </span>
-            </span>
+
+          <div className="hp-card">
+            <h3>Glow</h3>
+            <p>
+              {GLOW_PER_STRUCTURE_LIT_DAY} glow per standing structure, per LIT day.
+            </p>
+            <p className="fine">Bragging rights.</p>
           </div>
         </div>
-
-        <h3>Expeditions</h3>
-        <p>
-          Send an expedition to any visible claim within range (base {EXPEDITION_BASE_RANGE} units
-          + {RANGE_PER_BEACON} per beacon you hold) — once per target per day. It gains{' '}
-          <strong>1–3 salvage</strong>, and your light reaches that claim so it stays visible for
-          everyone. Expeditions are how you keep the world alive, not just your own corner of it.
-        </p>
-
-        <h3>Glow</h3>
-        <p>
-          Every alive structure earns <strong>{GLOW_PER_STRUCTURE_LIT_DAY} glow</strong> for each
-          day your lantern is LIT — a prestige leaderboard, nothing more. It only counts claims
-          you've loaded (your own, and any you've visited).
-        </p>
 
         <p className="fine hp-lore">
-          Go dark too long and the abyss doesn't wait for anyone's permission to advance.{' '}
-          The Trench runs on the Swimchain network — no server, no company; its world is kept
-          alive by its players.
+          Go dark and the abyss advances. No server, no company — The Trench runs on the Swimchain
+          network, kept alive by its players.
         </p>
         <button className="btn primary" onClick={onClose}>
           Back to the trench

@@ -57,9 +57,6 @@ export interface HomesteadProps {
    *  this claim's expedition range (own-owner or not; see App.tsx). `null`
    *  until `ownState` first loads (map-derived, not from the status poll). */
   neighborsInReach: number | null;
-  /** Chain height, diegetic label "depth mark" — `null` until the first
-   *  status poll resolves. */
-  blockHeight: number | null;
   /** The banked ClaimState — source of truth for costs/affordability (what
    *  the node will actually apply when a move lands). */
   ownState: ClaimState;
@@ -112,7 +109,6 @@ export function Homestead(props: HomesteadProps) {
   const {
     connected,
     neighborsInReach,
-    blockHeight,
     ownState,
     viewBiomass,
     viewStructures,
@@ -175,16 +171,11 @@ export function Homestead(props: HomesteadProps) {
         </div>
         <div className="lantern-body">
           <div className="lantern-tier">{viewBrightness}</div>
-          <div className="fine">
-            <span className={`dot ${connected ? 'ok' : 'bad'}`} /> {connected ? 'connected' : 'adrift — reconnecting…'} ·{' '}
-            heartbeats {hbToday}/{HB_CAP_PER_DAY} today · burning {formatUptime(now - sessionStartMs)}
+          <div className="fine" title={`burning ${formatUptime(now - sessionStartMs)}`}>
+            beats {hbToday}/{HB_CAP_PER_DAY} today
           </div>
-          {(neighborsInReach !== null || blockHeight !== null) && (
-            <div className="fine">
-              {neighborsInReach !== null && <>{neighborsInReach} neighbors in reach</>}
-              {neighborsInReach !== null && blockHeight !== null && ' · '}
-              {blockHeight !== null && <>depth mark {blockHeight}</>}
-            </div>
+          {neighborsInReach !== null && (
+            <div className="fine">{neighborsInReach} neighbors in reach</div>
           )}
           <div className="hb-meter" title={`${hbWeek} of ${meterTarget} beats this week`}>
             <div className="hb-meter-segments">
@@ -224,15 +215,15 @@ export function Homestead(props: HomesteadProps) {
             <strong>{half(viewBiomass)}</strong>/{half(ownState.capBiomass)}
           </span>
         </div>
-        <button className="link harvest-btn" disabled={!connected || busy} onClick={onHarvest} title="Banks your projected growth right now — the one move that isn't gated by the heartbeat cap.">
-          Harvest <span className="fine">— banks your projected growth</span>
+        <button className="link harvest-btn" disabled={!connected || busy} onClick={onHarvest} title="Bank your growth now.">
+          Harvest
         </button>
       </div>
 
       <div className="structures">
         <div className="panel-title fine">Structures</div>
         {viewStructures.length === 0 ? (
-          <p className="fine muted">Nothing built yet — the palette below is a start.</p>
+          <p className="fine muted">Nothing built yet.</p>
         ) : (
           viewStructures.map((s, i) => {
             const pct = s.integrity / INTEGRITY_MAX;
@@ -290,7 +281,7 @@ export function Homestead(props: HomesteadProps) {
               <span className="pts">{row.glow}</span>
             </div>
           ))}
-          <p className="fine">Only claims you've loaded (your own, plus any you've visited) count here.</p>
+          <p className="fine">Counts claims your light has reached.</p>
         </div>
       )}
 
@@ -310,7 +301,7 @@ export function Homestead(props: HomesteadProps) {
               {selectedDist !== null && <> · {selectedDist} units away</>}
             </p>
           ) : (
-            <p className="fine muted">your lantern's light is reaching for this claim…</p>
+            <p className="fine muted">your light reaches for it…</p>
           )}
           <button className="btn primary" disabled={busy || !expeditionEligible} onClick={onExpedition}>
             🌊 Send expedition

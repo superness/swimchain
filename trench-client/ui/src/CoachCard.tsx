@@ -40,19 +40,18 @@ const KICKER: Record<CoachKind, string> = {
 const COPY: Record<CoachKind, ReactNode> = {
   found: (
     <>
-      The seafloor is one shared world. Pick dark ground at least{' '}
-      <strong>{CLAIM_MIN_SPACING} units</strong> from any neighbor.
+      One shared seafloor. Claim ground <strong>{CLAIM_MIN_SPACING}+ units</strong> from any
+      neighbor.
     </>
   ),
   lantern: (
     <>
-      Your lantern burns while The Trench runs. <strong>LIT</strong> farms grow fastest; go dark
-      and the abyss advances.
+      Your lantern burns while the game runs. Brighter lantern, faster farms.
     </>
   ),
   expedition: (
     <>
-      Explorers carry light — every visit keeps a neighbor's claim from fading into the dark.
+      Visit a neighbor: gain salvage, and your light keeps theirs burning.
     </>
   ),
 };
