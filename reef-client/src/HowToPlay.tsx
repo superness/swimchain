@@ -65,7 +65,7 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
           <li>A pulsing square dies next tide — tend it.</li>
         </ul>
         <p className="fine">
-          You score the vitality you keep alive each tide — sprawl you can't tend just feeds the
+          You score the health you keep alive each tide — sprawl you can't tend just feeds the
           current. Every coral you grow is provably, only ever yours: the reef lives on the
           Swimchain network, not on anyone's server, and no one can take it down.
         </p>
