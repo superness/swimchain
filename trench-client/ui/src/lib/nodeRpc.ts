@@ -135,7 +135,14 @@ async function tauriConfig(): Promise<RpcAuth | null> {
 
   try {
     const specifier = '@tauri-apps/api/core';
-    const mod = (await import(specifier)) as {
+    // The runtime-variable specifier (see the doc comment above) is exactly
+    // what Vite's `vite:import-analysis` plugin can't statically resolve —
+    // without this hint it logs "The above dynamic import cannot be
+    // analyzed by Vite" for every dev-server request that reaches this
+    // module. `@vite-ignore` tells Vite this is deliberate (the whole point
+    // is to dodge a build-time dependency on a package only Task 4's Tauri
+    // shell ships) and to leave the import call alone at runtime.
+    const mod = (await import(/* @vite-ignore */ specifier)) as {
       invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
     };
     const cfg = await mod.invoke<{ endpoint: string; auth: string | null }>('get_rpc_config');

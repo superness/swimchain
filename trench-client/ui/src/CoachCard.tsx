@@ -34,24 +34,25 @@ const KICKER: Record<CoachKind, string> = {
   expedition: '🌊 Expeditions',
 };
 
-// Plain-first copy, exactly as specced — every number interpolated from the
-// engine, never a literal.
+// Plain-first, diegetic copy (spec §4's "Diegetic-first" rule — the game
+// speaks for itself; no protocol vocabulary in gameplay copy). Every number
+// interpolated from the engine, never a literal.
 const COPY: Record<CoachKind, ReactNode> = {
   found: (
     <>
-      This map is a shared space on the Swimchain — pick dark ground{' '}
-      <strong>≥{CLAIM_MIN_SPACING} units</strong> from a neighbor.
+      The seafloor is one shared world. Pick dark ground at least{' '}
+      <strong>{CLAIM_MIN_SPACING} units</strong> from any neighbor.
     </>
   ),
   lantern: (
     <>
-      Your lantern is your node — while this app runs, it burns.{' '}
-      <strong>LIT</strong> farms grow fastest; go dark and the abyss advances.
+      Your lantern burns while The Trench runs. <strong>LIT</strong> farms grow fastest; go dark
+      and the abyss advances.
     </>
   ),
   expedition: (
     <>
-      Visiting a claim makes <strong>YOUR node host it</strong> — explorers keep this world alive.
+      Explorers carry light — every visit keeps a neighbor's claim from fading into the dark.
     </>
   ),
 };

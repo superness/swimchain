@@ -35,6 +35,12 @@ function formatUptime(ms: number): string {
 
 export interface HomesteadProps {
   connected: boolean;
+  /** Lantern telemetry (from the node status poll) — `null` until the first
+   *  poll resolves. Diegetic labels per spec §4: peers -> "neighbors in
+   *  reach", chain height -> "depth mark". Numbers only, never raw protocol
+   *  vocabulary. */
+  peerCount: number | null;
+  blockHeight: number | null;
   /** The banked ClaimState — source of truth for costs/affordability (what
    *  the node will actually apply when a move lands). */
   ownState: ClaimState;
@@ -82,6 +88,8 @@ export interface HomesteadProps {
 export function Homestead(props: HomesteadProps) {
   const {
     connected,
+    peerCount,
+    blockHeight,
     ownState,
     viewBiomass,
     viewStructures,
@@ -129,9 +137,16 @@ export function Homestead(props: HomesteadProps) {
         <div className="lantern-body">
           <div className="lantern-tier">{viewBrightness}</div>
           <div className="fine">
-            <span className={`dot ${connected ? 'ok' : 'bad'}`} /> {connected ? 'node connected' : 'no node'} ·{' '}
-            heartbeats {hbToday}/{HB_CAP_PER_DAY} today · up {formatUptime(now - sessionStartMs)} this session
+            <span className={`dot ${connected ? 'ok' : 'bad'}`} /> {connected ? 'connected' : 'adrift — reconnecting…'} ·{' '}
+            heartbeats {hbToday}/{HB_CAP_PER_DAY} today · burning {formatUptime(now - sessionStartMs)}
           </div>
+          {(peerCount !== null || blockHeight !== null) && (
+            <div className="fine">
+              {peerCount !== null && <>{peerCount} neighbors in reach</>}
+              {peerCount !== null && blockHeight !== null && ' · '}
+              {blockHeight !== null && <>depth mark {blockHeight}</>}
+            </div>
+          )}
         </div>
       </div>
 
@@ -160,7 +175,7 @@ export function Homestead(props: HomesteadProps) {
             <strong>{half(viewBiomass)}</strong>/{half(ownState.capBiomass)}
           </span>
         </div>
-        <button className="link harvest-btn" disabled={!connected || busy} onClick={onHarvest} title="Banks your projected growth into the chain right now — the one move that isn't gated by the heartbeat cap.">
+        <button className="link harvest-btn" disabled={!connected || busy} onClick={onHarvest} title="Banks your projected growth right now — the one move that isn't gated by the heartbeat cap.">
           Harvest <span className="fine">— banks your projected growth</span>
         </button>
       </div>
@@ -235,7 +250,7 @@ export function Homestead(props: HomesteadProps) {
               {TIER_ICON[selectedState.brightness]} {selectedState.brightness} · glow {selectedState.glow}
             </p>
           ) : (
-            <p className="fine muted">your node is fetching this claim…</p>
+            <p className="fine muted">your lantern's light is reaching for this claim…</p>
           )}
           <button className="btn primary" disabled={busy || !expeditionEligible} onClick={onExpedition}>
             🌊 Send expedition

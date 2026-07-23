@@ -340,17 +340,38 @@ export async function loadClaim(
  */
 export async function listClaims(auth: RpcAuth): Promise<MapClaim[]> {
   const result = await rpcCall<{
-    items: Array<{ content_id: string; author_id: string; body: string | null; parent_id: string | null; created_at: number }>;
+    items: Array<{
+      content_id: string;
+      author_id: string;
+      body: string | null;
+      title: string | null;
+      parent_id: string | null;
+      created_at: number;
+    }>;
   }>(auth, 'list_space_content', { space_id: effectiveTrenchSpace(), limit: 500, offset: 0, sort: 'recent' });
 
   const claims = result.items
     .filter((it) => it.parent_id === null && it.body !== null)
-    .map((it) => ({
-      claimId: it.content_id,
-      owner: it.author_id,
-      body: it.body as string,
-      created_at: it.created_at,
-    }));
+    .map((it) => {
+      // `list_space_content`'s `body` field is the RAW STORED BLOB
+      // (`${title}\n\n${body}`, the exact preimage a Post signs — see
+      // src/rpc/methods.rs list_space_content, which — unlike get_content —
+      // returns the un-split text, not the title-stripped body), not the
+      // caller's original `body` param `foundClaim()` submitted (itself
+      // `${name}\n\n${json header}`). Left unstripped, `parseClaimHeader`'s
+      // own `\n\n` split lands mid-name and every claim folds as malformed
+      // (`accepted: false`, including the player's OWN — founding never
+      // completes visibly since `myClaim` can never match). Recover the
+      // true submitted body by peeling off the known `${title}\n\n` prefix.
+      const raw = it.body as string;
+      const body = it.title && raw.startsWith(`${it.title}\n\n`) ? raw.slice(it.title.length + 2) : raw;
+      return {
+        claimId: it.content_id,
+        owner: it.author_id,
+        body,
+        created_at: it.created_at,
+      };
+    });
 
   return foldMap(claims);
 }
