@@ -57,9 +57,27 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .who .dot.bad { background: var(--heat); }
 .help-link { margin-left: 4px; }
 
-.banner { margin: 14px 0; padding: 10px 14px; border-radius: 4px; border: 1px solid var(--line); font-size: 14px; }
+.banner { margin: 0; padding: 10px 14px; border-radius: 4px; border: 1px solid var(--line); font-size: 14px; }
 .banner.warn { border-color: var(--heat); background: rgba(255, 176, 102, 0.08); }
-/* Notices float as a viewport-anchored toast — they never reflow the map. */
+/* Error/net-trouble banners float as a viewport-anchored, top-center glass
+   stack — a poll hiccup or action error must never reflow the map stage or
+   HUD rail beneath it (they used to render in-flow above .game, pushing the
+   whole shell down on every blip). Wrapped in one fixed container (rather
+   than each .banner being independently fixed) so error+netError together
+   stack via flex gap instead of overlapping at the same fixed point. */
+.banner-stack {
+  position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 60;
+  display: flex; flex-direction: column; gap: 8px; align-items: stretch;
+  width: min(92vw, 460px); pointer-events: none;
+}
+.banner-stack .banner {
+  pointer-events: auto; text-align: center; backdrop-filter: blur(6px);
+  background: var(--surface); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  animation: toast-in 240ms cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+/* Notices float as a viewport-anchored toast (bottom-center, so they never
+   collide with the top-center error/net-trouble stack above) — they never
+   reflow the map either. */
 .banner.notice {
   position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 60; margin: 0;
   max-width: min(92vw, 460px); text-align: center; border-color: var(--shallow);
@@ -167,6 +185,7 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .res-fill { height: 100%; transition: width 0.5s ease; }
 .res-fill.salvage { background: linear-gradient(90deg, rgba(217, 164, 65, 0.6), var(--dim-tier)); }
 .res-fill.biomass { background: linear-gradient(90deg, rgba(88, 214, 200, 0.5), var(--shallow)); }
+.harvest-btn { align-self: flex-start; }
 
 /* ── structures ───────────────────────────────────────────────────────────── */
 .structures { display: flex; flex-direction: column; gap: 6px; }

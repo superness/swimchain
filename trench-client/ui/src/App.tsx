@@ -37,6 +37,7 @@ const FLAVOR: Record<string, string[]> = {
   tend: ['Old timbers take a fresh seal…'],
   expedition: ["Your beacon's light finds a stranger's claim…"],
   found: ['A light blooms in the lightless deep…'],
+  harvest: ['The tally settles into the ledger…'],
 };
 const pickFlavor = (pool: string[]): string => pool[Math.floor(Math.random() * pool.length)];
 
@@ -280,41 +281,66 @@ export function App() {
   }, [auth, selectedClaimId]);
 
   // ── heartbeat scheduler: runs while the app runs, never blocks the UI ──────
+  // Hoisted to a stable callback (rather than an effect-local closure) so a
+  // SECOND effect (below) can also fire it the moment `ownState` first loads
+  // — closing the race where this effect's own "check immediately" call
+  // fires before `refreshOwn`'s first poll has resolved, so `ownStateRef` is
+  // still null and the immediate check silently no-ops (finding #6).
+  const heartbeatTick = useCallback(() => {
+    if (!auth || !identity || !myClaim) return;
+    const state = ownStateRef.current;
+    if (!state || busyRef.current) return;
+    const today = utcDay(Date.now());
+    const acceptedToday = state.heartbeatDays.get(today) ?? 0;
+    if (acceptedToday >= HB_CAP_PER_DAY) return;
+    let lastOkMs = -Infinity;
+    for (const m of state.moves) {
+      if (m.op === 'heartbeat' && m.outcome === 'ok' && m.ms > lastOkMs) lastOkMs = m.ms;
+    }
+    if (Date.now() - lastOkMs < HEARTBEAT_INTERVAL_MS) return;
+
+    busyRef.current = true;
+    setLanternPulse(true);
+    setMoveStatus({ label: 'Your lantern signals the network', flavor: pickFlavor(FLAVOR.heartbeat) });
+    submitTrenchMove(auth, identity, myClaim.claimId, 'heartbeat')
+      .then((cid) => {
+        mySubmittedRef.current.add(cid);
+        submittedCountRef.current = (ownStateRef.current?.moves.length ?? 0) + 1;
+      })
+      .catch(() => {
+        /* failures retry next tick — never surfaced as a hard error */
+      })
+      .finally(() => {
+        busyRef.current = false;
+        setLanternPulse(false);
+        setMoveStatus(null);
+      });
+  }, [auth, identity, myClaim]);
+
   useEffect(() => {
     if (!auth || !identity || !myClaim) return;
-    const tick = () => {
-      const state = ownStateRef.current;
-      if (!state || busyRef.current) return;
-      const today = utcDay(Date.now());
-      const acceptedToday = state.heartbeatDays.get(today) ?? 0;
-      if (acceptedToday >= HB_CAP_PER_DAY) return;
-      let lastOkMs = -Infinity;
-      for (const m of state.moves) {
-        if (m.op === 'heartbeat' && m.outcome === 'ok' && m.ms > lastOkMs) lastOkMs = m.ms;
-      }
-      if (Date.now() - lastOkMs < HEARTBEAT_INTERVAL_MS) return;
-
-      busyRef.current = true;
-      setLanternPulse(true);
-      setMoveStatus({ label: 'Your lantern signals the network', flavor: pickFlavor(FLAVOR.heartbeat) });
-      submitTrenchMove(auth, identity, myClaim.claimId, 'heartbeat')
-        .then((cid) => {
-          mySubmittedRef.current.add(cid);
-          submittedCountRef.current = (ownStateRef.current?.moves.length ?? 0) + 1;
-        })
-        .catch(() => {
-          /* failures retry next tick — never surfaced as a hard error */
-        })
-        .finally(() => {
-          busyRef.current = false;
-          setLanternPulse(false);
-          setMoveStatus(null);
-        });
-    };
-    tick(); // check immediately on entering play, not just after the first 10 minutes
-    const t = setInterval(tick, HEARTBEAT_CHECK_MS);
+    heartbeatTick(); // check immediately on entering play, not just after the first 10 minutes
+    const t = setInterval(heartbeatTick, HEARTBEAT_CHECK_MS);
     return () => clearInterval(t);
-  }, [auth, identity, myClaim]);
+  }, [auth, identity, myClaim, heartbeatTick]);
+
+  // Own claim state loads asynchronously AFTER `myClaim` first becomes
+  // truthy (refreshOwn's first poll), so the interval effect's own
+  // "immediate" tick above usually fires while `ownStateRef` is still null
+  // and no-ops — the first real heartbeat then waited up to
+  // HEARTBEAT_CHECK_MS. Fire exactly one extra tick the moment `ownState`
+  // transitions from null to loaded, closing that gap (finding #6).
+  const ownStateEverLoadedRef = useRef(false);
+  useEffect(() => {
+    if (ownState) {
+      if (!ownStateEverLoadedRef.current) {
+        ownStateEverLoadedRef.current = true;
+        heartbeatTick();
+      }
+    } else {
+      ownStateEverLoadedRef.current = false; // reset when leaving/switching claims
+    }
+  }, [ownState, heartbeatTick]);
 
   // ── explain the settled outcome of OUR OWN moves, once, when it's not "ok" ──
   useEffect(() => {
@@ -436,6 +462,7 @@ export function App() {
     [doMove]
   );
   const onTend = useCallback((idx: number) => void doMove(`tend ${idx}`, 'Tending the structure', FLAVOR.tend), [doMove]);
+  const onHarvest = useCallback(() => void doMove('harvest', 'Harvest — banking your projected growth', FLAVOR.harvest), [doMove]);
   const onExpedition = useCallback(() => {
     if (!selectedEntry) return;
     void doMove(
@@ -444,7 +471,18 @@ export function App() {
       FLAVOR.expedition,
       true
     );
-  }, [doMove, selectedEntry]);
+    // The hosting driver: visiting a claim makes YOUR node responsible for
+    // keeping it retrievable (design law: content-getting needs a driver).
+    // Fired alongside the move itself, not gated on it landing — a
+    // retention nudge, not a correctness gate — and the selection effect
+    // above already fires this once on select, so this is a second nudge
+    // timed to the actual expedition rather than just the click-to-view.
+    if (auth) {
+      requestClaimContent(auth, selectedEntry.claimId).catch(() => {
+        /* best-effort hosting request */
+      });
+    }
+  }, [doMove, selectedEntry, auth]);
 
   const onSelectClaim = useCallback((claimId: string) => setSelectedClaimId((prev) => (prev === claimId ? null : claimId)), []);
 
@@ -533,8 +571,12 @@ export function App() {
     return (
       <div className="app">
         {header}
-        {error && <div className="banner warn">{error}</div>}
-        {netError && <div className="banner warn fine">{netError}</div>}
+        {(error || netError) && (
+          <div className="banner-stack" aria-live="polite">
+            {error && <div className="banner warn">{error}</div>}
+            {netError && <div className="banner warn fine">{netError}</div>}
+          </div>
+        )}
         <section className="game">
           <div className="game-cols">
             <div className="board-col">
@@ -615,8 +657,12 @@ export function App() {
   return (
     <div className="app">
       {header}
-      {error && <div className="banner warn">{error}</div>}
-      {netError && <div className="banner warn fine">{netError}</div>}
+      {(error || netError) && (
+        <div className="banner-stack" aria-live="polite">
+          {error && <div className="banner warn">{error}</div>}
+          {netError && <div className="banner warn fine">{netError}</div>}
+        </div>
+      )}
       {notice && <div className="banner notice" role="status">{notice}</div>}
       <section className="game">
         <div className="game-cols">
@@ -668,6 +714,7 @@ export function App() {
               expeditionReason={expedition.reason}
               onBuild={onBuild}
               onTend={onTend}
+              onHarvest={onHarvest}
               onExpedition={onExpedition}
             />
           </aside>

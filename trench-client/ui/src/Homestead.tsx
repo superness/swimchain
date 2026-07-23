@@ -59,6 +59,14 @@ export interface HomesteadProps {
   expeditionReason: string | null;
   onBuild: (kind: StructureKind) => void;
   onTend: (idx: number) => void;
+  /** `harvest` is always `ok` on the chain — banking (yield/decay/glow) has
+   *  already run by the time any move folds, heartbeat included. Its real
+   *  purpose here is a manual "bank now" nudge: it's the one move a player
+   *  can take that ISN'T gated by the heartbeat cap, so once HB_CAP_PER_DAY
+   *  is spent for the day (or in the gap before the scheduler's next tick),
+   *  the player still has a way to settle a big pending glow/decay swing
+   *  instead of just watching the live projection and waiting. */
+  onHarvest: () => void;
   onExpedition: () => void;
 }
 
@@ -83,6 +91,7 @@ export function Homestead(props: HomesteadProps) {
     expeditionReason,
     onBuild,
     onTend,
+    onHarvest,
     onExpedition,
   } = props;
 
@@ -140,6 +149,9 @@ export function Homestead(props: HomesteadProps) {
             <strong>{half(viewBiomass)}</strong>/{half(ownState.capBiomass)}
           </span>
         </div>
+        <button className="link harvest-btn" disabled={!connected || busy} onClick={onHarvest} title="Banks your projected growth into the chain right now — the one move that isn't gated by the heartbeat cap.">
+          Harvest <span className="fine">— banks your projected growth</span>
+        </button>
       </div>
 
       <div className="structures">
@@ -156,7 +168,7 @@ export function Homestead(props: HomesteadProps) {
               {s.ruined ? (
                 <span className="badge ruin">ruin</span>
               ) : (
-                <div className="integrity-bar" title={`${s.integrity}/${INTEGRITY_MAX} integrity`}>
+                <div className="integrity-bar" title={`${half(s.integrity)}/${half(INTEGRITY_MAX)} integrity`}>
                   <div className="integrity-fill" style={{ width: `${(s.integrity / INTEGRITY_MAX) * 100}%` }} />
                 </div>
               )}
