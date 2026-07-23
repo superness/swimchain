@@ -110,6 +110,21 @@ async fn get_network(state: tauri::State<'_, AppState>) -> Result<String, String
     Ok(manager.network().to_string())
 }
 
+/// Open an external http(s) URL in the user's default browser.
+///
+/// Embedded clients run in a sandboxed iframe; a `target="_blank"` link there
+/// has nowhere to go in the Tauri webview, so the clients postMessage the URL
+/// out to the launcher, which routes it here. Restricted to http(s) so a
+/// malicious message can't invoke arbitrary schemes.
+#[tauri::command]
+fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("refusing to open non-http(s) URL".into());
+    }
+    use tauri_plugin_shell::ShellExt;
+    app.shell().open(url, None).map_err(|e| e.to_string())
+}
+
 /// Switch the node to a different network (mainnet/testnet/regtest).
 /// Stops the node first if it is running, then persists the selection.
 /// Each network has its own data dir (and therefore its own identity).
@@ -653,6 +668,7 @@ fn main() {
             take_pending_deeplink,
             launch_app,
             list_apps,
+            open_external,
         ])
         .on_window_event(|window, event| {
             // Stop node when app closes
