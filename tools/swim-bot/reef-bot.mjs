@@ -21,6 +21,7 @@
  *   BOT_MS          run duration (default Infinity)
  */
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { argon2id } from 'hash-wasm';
 // THE PRODUCTION ENGINE — the bot reads the board with the exact same fold the
 // client ships. There is deliberately NO local copy of the rules: the old
@@ -38,7 +39,10 @@ import {
 
 const RPC = process.env.RPC_URL || 'http://127.0.0.1:19736';
 const AUTHOR = (process.env.AUTHOR_PUBKEY || '').toLowerCase();
-const COOKIE = process.env.RPC_COOKIE || '';
+// Re-readable cookie: a node restart rotates the cookie, so bake the FILE path
+// and re-read it on any auth failure instead of dying silently. See reloadCookie.
+const COOKIE_FILE = process.env.RPC_COOKIE_FILE || '';
+let COOKIE = process.env.RPC_COOKIE || '';
 const MODE = process.env.AUTH_MODE || 'cookie';
 const REEF_SPACE = process.env.REEF_SPACE || '';
 let REGION = process.env.REEF_REGION || '';
@@ -49,10 +53,23 @@ const RUN_MS = Number(process.env.BOT_MS || Infinity);
 const HOME = (process.env.BOT_HOME || '').split(',').map(Number);
 const NET = 'testnet';
 if (!AUTHOR) throw new Error('AUTHOR_PUBKEY required');
-if (MODE === 'cookie' && !COOKIE && process.env.BOT_MODE !== 'status')
-  throw new Error('RPC_COOKIE required in cookie mode');
-const AUTH = 'Basic ' + Buffer.from(`__cookie__:${COOKIE}`).toString('base64');
+if (MODE === 'cookie' && !COOKIE && !COOKIE_FILE && process.env.BOT_MODE !== 'status')
+  throw new Error('RPC_COOKIE or RPC_COOKIE_FILE required in cookie mode');
+const mkAuth = (c) => 'Basic ' + Buffer.from(`__cookie__:${c}`).toString('base64');
+let AUTH = mkAuth(COOKIE);
+/** Re-read the cookie file into COOKIE/AUTH. Returns true if it changed. */
+function reloadCookie() {
+  if (!COOKIE_FILE) return false;
+  try {
+    const c = readFileSync(COOKIE_FILE, 'utf8').trim();
+    if (c && c !== COOKIE) { COOKIE = c; AUTH = mkAuth(c); return true; }
+  } catch { /* keep prior */ }
+  return false;
+}
+const isAuthErr = (m) => /invalid cookie|authentication|unauthor/i.test(String(m || ''));
+let authFailStreak = 0;
 const authorBytes = Buffer.from(AUTHOR, 'hex');
+if (COOKIE_FILE && !COOKIE) reloadCookie();
 const authorPrefix = AUTHOR.slice(0, 10);
 
 // Local signing (SIGN_SEED_HEX): sign as an identity WITHOUT a running node —
@@ -114,8 +131,27 @@ async function rpc(method, params, timeoutMs = 30000) {
     headers['x-cs-signature'] = sig;
   }
   const body = `{"jsonrpc":"2.0","id":${++rpcId},"method":${JSON.stringify(method)},"params":${paramsJson}}`;
-  const res = await fetch(RPC, { method: 'POST', headers, body, signal: AbortSignal.timeout(timeoutMs) });
-  const j = await res.json();
+  let res = await fetch(RPC, { method: 'POST', headers, body, signal: AbortSignal.timeout(timeoutMs) });
+  let j = await res.json();
+  // Self-heal a rotated cookie: re-read the file and retry once on auth error;
+  // exit for a systemd restart if it stays broken (never "running but dead").
+  if (j.error && MODE === 'cookie' && isAuthErr(j.error.message)) {
+    if (reloadCookie()) {
+      headers.Authorization = AUTH;
+      res = await fetch(RPC, { method: 'POST', headers, body, signal: AbortSignal.timeout(timeoutMs) });
+      j = await res.json();
+    }
+    if (j.error && isAuthErr(j.error.message)) {
+      if (++authFailStreak >= 5) {
+        console.log(`[${TAG}] auth unrecoverable after ${authFailStreak} tries — exiting for restart`);
+        process.exit(1);
+      }
+    } else {
+      authFailStreak = 0;
+    }
+  } else if (!j.error) {
+    authFailStreak = 0;
+  }
   if (j.error) throw new Error(`${method}: ${j.error.message || JSON.stringify(j.error)}`);
   return j.result;
 }

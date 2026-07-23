@@ -10,11 +10,15 @@
 Description=Swimchain showcase keeper (mainnet) — keeps the browse showcase space alive
 After=network.target swimchain-mainnet.service
 Wants=swimchain-mainnet.service
+# Restart with the node so a rotated cookie is always re-read (belt-and-braces
+# with the keeper's own cookie self-heal).
+PartOf=swimchain-mainnet.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/showcase-keeper
 Environment=RPC_URL=http://127.0.0.1:9736
+Environment=RPC_COOKIE_FILE=/var/lib/swimchain-mainnet/.cookie
 Environment=SPACE_ID=sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm
 Environment=AUTHOR_PUBKEY=994fd0af22ebc66fcc5da4cdc1cdb94500d18d2dcec514415edeb975a84809e3
 Environment=INTERVAL_MS=300000

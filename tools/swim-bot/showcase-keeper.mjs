@@ -26,10 +26,14 @@
  *   ENGAGE_COOLDOWN_MS  min gap between engaging the same post (default 6h)
  */
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { argon2id } from 'hash-wasm';
 
 const RPC = process.env.RPC_URL || 'http://127.0.0.1:9736';
-const COOKIE = process.env.RPC_COOKIE || '';
+// Re-readable cookie: a node restart rotates the cookie, so track the FILE and
+// re-read it on auth failure instead of running dead. See reloadCookie.
+const COOKIE_FILE = process.env.RPC_COOKIE_FILE || '';
+let COOKIE = process.env.RPC_COOKIE || '';
 const AUTHOR = (process.env.AUTHOR_PUBKEY || '').toLowerCase();
 const SPACE_ID = process.env.SPACE_ID || '';
 const INTERVAL_MS = Number(process.env.INTERVAL_MS || 300000);
@@ -37,12 +41,24 @@ const ENGAGE_FLOOR = Number(process.env.ENGAGE_FLOOR || 0.7);
 const ENGAGE_COOLDOWN_MS = Number(process.env.ENGAGE_COOLDOWN_MS || 6 * 3600 * 1000);
 const TAG = 'keeper';
 
-if (!COOKIE) throw new Error('RPC_COOKIE required');
+if (!COOKIE && !COOKIE_FILE) throw new Error('RPC_COOKIE or RPC_COOKIE_FILE required');
 if (!AUTHOR) throw new Error('AUTHOR_PUBKEY required');
 if (!SPACE_ID) throw new Error('SPACE_ID required');
 
-const AUTH = 'Basic ' + Buffer.from(`__cookie__:${COOKIE}`).toString('base64');
+const mkAuth = (c) => 'Basic ' + Buffer.from(`__cookie__:${c}`).toString('base64');
+let AUTH = mkAuth(COOKIE);
+function reloadCookie() {
+  if (!COOKIE_FILE) return false;
+  try {
+    const c = readFileSync(COOKIE_FILE, 'utf8').trim();
+    if (c && c !== COOKIE) { COOKIE = c; AUTH = mkAuth(c); return true; }
+  } catch { /* keep prior */ }
+  return false;
+}
+const isAuthErr = (m) => /invalid cookie|authentication|unauthor/i.test(String(m || ''));
+let authFailStreak = 0;
 const authorBytes = Buffer.from(AUTHOR, 'hex');
+if (COOKIE_FILE && !COOKIE) reloadCookie();
 
 // Mainnet action PoW == matched testnet: argon2id 8MiB/1iter/2par. Engage=type 4.
 const ENGAGE_TYPE = 4;
@@ -54,13 +70,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let rpcId = 0;
 async function rpc(method, params, timeoutMs = 20000) {
-  const res = await fetch(RPC, {
+  const send = () => fetch(RPC, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: AUTH },
     body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }),
     signal: AbortSignal.timeout(timeoutMs),
   });
-  const j = await res.json();
+  let j = await (await send()).json();
+  // Self-heal a rotated cookie; exit for a systemd restart if it stays broken.
+  if (j.error && isAuthErr(j.error.message)) {
+    if (reloadCookie()) j = await (await send()).json();
+    if (j.error && isAuthErr(j.error.message)) {
+      if (++authFailStreak >= 5) {
+        console.log(`[${TAG}] auth unrecoverable — exiting for restart`);
+        process.exit(1);
+      }
+    } else {
+      authFailStreak = 0;
+    }
+  } else if (!j.error) {
+    authFailStreak = 0;
+  }
   if (j.error) throw new Error(`${method}: ${j.error.message || JSON.stringify(j.error)}`);
   return j.result;
 }
