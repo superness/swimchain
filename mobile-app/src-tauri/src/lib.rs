@@ -6,8 +6,19 @@ use swimchain::network::NetworkMode;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
-/// The prototype runs testnet only (spec decision). Regtest/mainnet later.
-const NETWORK: NetworkMode = NetworkMode::Testnet;
+/// Network the bundled node joins. Mainnet for the public app.
+const NETWORK: NetworkMode = NetworkMode::Mainnet;
+
+/// Data-dir subfolder, kept network-specific so switching networks (e.g. a
+/// testnet build → this mainnet build) never reuses the other network's chain
+/// in the same directory — that mismatch is what forced a manual "clear data".
+const fn node_subdir() -> &'static str {
+    match NETWORK {
+        NetworkMode::Mainnet => "node-mainnet",
+        NetworkMode::Testnet => "node-testnet",
+        NetworkMode::Regtest => "node-regtest",
+    }
+}
 
 struct AppState {
     node: Arc<Mutex<Option<node_host::NodeHost>>>,
@@ -125,7 +136,7 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .expect("app data dir must resolve")
-                .join("node");
+                .join(node_subdir());
             app.manage(state);
 
             // Autostart the node. First launch also mines the identity PoW,
