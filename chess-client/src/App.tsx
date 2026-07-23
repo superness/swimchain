@@ -307,9 +307,20 @@ export function App() {
   const iAmWhite = !!state && (state.white === publicKeyHex || state.white === address);
   const inCheck = !!state && !state.result && state.chess.inCheck();
   const isMe = (id: string | null | undefined) => !!id && (id === publicKeyHex || id === address);
+  // My SEAT (stable identity match) — distinct from `mySide`, which is the
+  // side I may play RIGHT NOW (null off-turn) and gates canMove. Using
+  // playableSide for the banner made a seated player read "Watching" the
+  // moment they moved.
+  const mySeat: 'w' | 'b' | null = state
+    ? isMe(state.white)
+      ? 'w'
+      : isMe(state.black)
+        ? 'b'
+        : null
+    : null;
   // Which one-time chain-intro applies here (players vs spectators learn
   // different things); dismissing bumps introTick to re-render past it.
-  const introKind: 'play' | 'watch' | null = state && !state.result ? (mySide ? 'play' : 'watch') : null;
+  const introKind: 'play' | 'watch' | null = state && !state.result ? (mySeat ? 'play' : 'watch') : null;
   const showIntro = !!introKind && !introSeen(introKind);
 
   return (
@@ -495,9 +506,9 @@ export function App() {
             <aside className="status">
               {state.result ? (
                 <div className="turn-banner done">🏁 {state.result}</div>
-              ) : mySide && mySide === state.turn ? (
+              ) : mySeat === state.turn ? (
                 <div className="turn-banner you">Your move</div>
-              ) : mySide ? (
+              ) : mySeat ? (
                 <div className="turn-banner them">
                   {state.header.bot ? 'The computer is thinking…' : 'Waiting for your opponent…'}
                 </div>
