@@ -16,6 +16,7 @@ import {
   submitMove,
   applyMoveOptimistic,
   playableSide,
+  gameStatus,
   type GameState,
   type GameSummary,
   type Identity,
@@ -30,6 +31,9 @@ export function App() {
   const { keypair, publicKeyHex, address, sign } = useStoredKeypair();
 
   const [games, setGames] = useState<GameSummary[]>([]);
+  // Folded state per listed game, so the lobby can segregate open / in-progress /
+  // finished. Keyed by game id. Games not yet folded are simply absent.
+  const [gameStates, setGameStates] = useState<Map<string, GameState>>(new Map());
   // The open game lives in the URL (?g=<id>): Back/Forward return to the lobby,
   // and the URL is a shareable invite link.
   const [openId, setOpenId] = useUrlRoom('g');
@@ -98,8 +102,23 @@ export function App() {
   const refreshGames = useCallback(async () => {
     if (!rpc || !connected || !publicKeyHex || !CHESS_SPACE) return;
     try {
-      setGames(await listGames(rpc, CHESS_SPACE));
+      const list = await listGames(rpc, CHESS_SPACE);
+      setGames(list);
       setError(null);
+      // Fold each game's chain so the lobby can bucket open vs in-progress vs
+      // finished. Bounded + best-effort: a game that fails to fold just won't be
+      // classified this pass (it still lists). Cap keeps a large lobby cheap.
+      const states = new Map<string, GameState>();
+      await Promise.all(
+        list.slice(0, 60).map(async (g) => {
+          try {
+            states.set(g.id, await loadGame(rpc, g.id));
+          } catch {
+            /* skip — unclassified this pass */
+          }
+        })
+      );
+      setGameStates(states);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to list games');
     }
@@ -281,20 +300,62 @@ export function App() {
           {(() => {
             // Unlisted games never appear in the public lobby — only via invite link.
             const listed = games.filter((g) => !g.header.unlisted);
-            if (listed.length === 0)
-              return <p className="muted">No open games. Start one — you'll play White.</p>;
+            // Bucket by folded status. A game not yet folded defaults to "open"
+            // (it has no Black move we can see), so it still surfaces in the funnel.
+            const statusOf = (g: GameSummary) => {
+              const st = gameStates.get(g.id);
+              return st ? gameStatus(st) : 'open';
+            };
+            const open = listed.filter((g) => statusOf(g) === 'open');
+            const active = listed.filter((g) => statusOf(g) === 'active');
+            const finished = listed.filter((g) => statusOf(g) === 'finished');
+
+            const row = (g: GameSummary, note: string) => (
+              <li key={g.id} onClick={() => setOpenId(g.id)}>
+                <span className="title">
+                  {g.header.name || g.title}
+                  {g.header.bot && <span className="badge bot">vs computer</span>}
+                </span>
+                <span className="fine">{note}</span>
+              </li>
+            );
+            const iAmWhiteOf = (g: GameSummary) => g.header.white === publicKeyHex;
+
             return (
-              <ul className="games">
-                {listed.map((g) => (
-                  <li key={g.id} onClick={() => setOpenId(g.id)}>
-                    <span className="title">
-                      {g.header.name || g.title}
-                      {g.header.bot && <span className="badge bot">vs computer</span>}
-                    </span>
-                    <span className="fine">{g.header.white === publicKeyHex ? 'you are White' : 'join as Black'}</span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <h3 className="lobby-section">Open games</h3>
+                {open.length === 0 ? (
+                  <p className="muted">No open games. Start one — you'll play White.</p>
+                ) : (
+                  <ul className="games">
+                    {open.map((g) =>
+                      row(g, iAmWhiteOf(g) ? 'you are White · waiting for Black' : 'join as Black')
+                    )}
+                  </ul>
+                )}
+
+                {active.length > 0 && (
+                  <>
+                    <h3 className="lobby-section">In progress</h3>
+                    <ul className="games">
+                      {active.map((g) => {
+                        const st = gameStates.get(g.id);
+                        const mine = st && (iAmWhiteOf(g) || playableSide(st, publicKeyHex!, address!) === 'b');
+                        return row(g, mine ? 'your game — continue' : 'both seats filled · watch');
+                      })}
+                    </ul>
+                  </>
+                )}
+
+                {finished.length > 0 && (
+                  <>
+                    <h3 className="lobby-section">History</h3>
+                    <ul className="games history">
+                      {finished.map((g) => row(g, gameStates.get(g.id)?.result || 'finished'))}
+                    </ul>
+                  </>
+                )}
+              </>
             );
           })()}
         </section>
