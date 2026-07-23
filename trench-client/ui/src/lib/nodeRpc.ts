@@ -189,31 +189,42 @@ async function tauriConfig(): Promise<RpcAuth | null> {
  * `TRENCH_COOKIE_FILE`, which is the honest thing for a script with no app-shell,
  * no Tauri, and no Vite env to resolve.
  *
- * The app-shell wait (step 1) is a *postMessage* handshake — nothing to receive it
- * exists outside an iframe embedded by app-shell, so under Tauri (no parent frame,
- * ever) that `waitForParentConfig(10_000)` call was pure dead time: every desktop
- * launch blocked 10s before ever trying step 2, which is the one that actually
- * resolves there. `window.__TAURI__` is synchronously present the instant this
- * module runs inside the Tauri webview (injected before page scripts execute), so
- * checking for it up front and jumping straight to `tauriConfig()` is safe — it's
- * not a race, just skipping a wait that could never pay off in that context. The
- * browser/app-shell precedence (steps 1-4, in order) is unchanged for everyone else.
+ * The `__TAURI__` global is NOT proof that Tauri IPC will answer: the launcher's
+ * app-shell has `withGlobalTauri: true`, which injects `__TAURI__` into every frame
+ * of the webview — including the IFRAME this game runs in there — while its
+ * capability config denies the iframe IPC. So inside the launcher, `tauriConfig()`
+ * rejects and the *parent envelope* (step 1, posted by app-shell's embed.js) is the
+ * real channel. The 2026-07-23 "skip the parent wait under Tauri" fix assumed
+ * __TAURI__ ⇒ IPC and hung the launcher app forever on a dead fallback ("Finding
+ * your lantern…"). Order of operations that serves every context:
+ *   - __TAURI__ present → TRY IPC first (instant in the standalone exe, where it
+ *     works); if it fails/returns nothing, FALL BACK to the parent-envelope wait
+ *     (the launcher-iframe case — embed.js retries every 1s, so this resolves fast).
+ *   - no __TAURI__ → parent wait first (browser/app-shell-web), then IPC no-ops.
  */
 export async function resolveAuth(): Promise<RpcAuth> {
   const inTauri = typeof window !== 'undefined' && Boolean((window as unknown as { __TAURI__?: unknown }).__TAURI__);
 
-  if (!inTauri) {
+  if (inTauri) {
+    const fromTauri = await tauriConfig();
+    if (fromTauri) return fromTauri;
+    // __TAURI__ visible but IPC unusable: we're an iframe inside the launcher's
+    // app-shell — the envelope is the real channel.
     const fromParent = await waitForParentConfig(10_000);
     if (fromParent) return fromParent;
+  } else {
+    const fromParent = await waitForParentConfig(10_000);
+    if (fromParent) return fromParent;
+    const fromTauri = await tauriConfig();
+    if (fromTauri) return fromTauri;
   }
-
-  const fromTauri = await tauriConfig();
-  if (fromTauri) return fromTauri;
 
   const envEndpoint = (import.meta.env?.VITE_RPC_ENDPOINT as string | undefined)?.trim();
   if (envEndpoint) return { endpoint: envEndpoint, authHeader: null };
 
-  return { endpoint: 'http://127.0.0.1:9737', authHeader: null };
+  // Bare local-node fallback: mainnet's default RPC port (p2p 9735 + 1). Was 9737,
+  // which is no node's default anything — a dead end that masked resolution bugs.
+  return { endpoint: 'http://127.0.0.1:9736', authHeader: null };
 }
 
 /** The node's own identity, adopted as the player's — signing happens ON the node via

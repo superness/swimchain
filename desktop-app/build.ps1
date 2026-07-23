@@ -277,12 +277,17 @@ function Build-All {
     $shellWeb = "$ProjectRoot/launcher-apps/app-shell/web/client"
     $ShellExe = "$ProjectRoot/launcher-apps/app-shell/src-tauri/target/release/app-shell.exe"
     $ShellBuildRs = "$ProjectRoot/launcher-apps/app-shell/src-tauri/build.rs"
-    foreach ($appId in @("feed", "chat", "forum", "search", "wiki")) {
-        $clientDir = "$ProjectRoot/$appId-client"
-        if (-not (Test-Path $clientDir)) { Write-Warning "$appId-client not found, skipping"; continue }
+    foreach ($appId in @("feed", "chat", "forum", "search", "wiki", "trench")) {
+        # The Trench's web client lives at trench-client/ui (the standalone game's UI,
+        # reused as a launcher app) and needs TAURI_ENV_PLATFORM so Vite bakes the
+        # relative asset base the packaged shell requires (see trench-client/ui/vite.config.ts).
+        $clientDir = if ($appId -eq "trench") { "$ProjectRoot/trench-client/ui" } else { "$ProjectRoot/$appId-client" }
+        if (-not (Test-Path $clientDir)) { Write-Warning "$appId client dir not found, skipping"; continue }
         Write-Info "  building $appId-app..."
         # 1. client web bundle
-        Push-Location $clientDir; npm run build; Pop-Location
+        Push-Location $clientDir
+        if ($appId -eq "trench") { $env:TAURI_ENV_PLATFORM = "windows"; npm run build; Remove-Item Env:TAURI_ENV_PLATFORM -ErrorAction SilentlyContinue } else { npm run build }
+        Pop-Location
         # 2. stage THIS client into the shell's embedded web/client
         Remove-Item -Recurse -Force $shellWeb -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Force $shellWeb | Out-Null
