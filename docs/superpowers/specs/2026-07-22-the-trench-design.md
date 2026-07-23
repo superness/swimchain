@@ -45,10 +45,14 @@ DARK; `tend <structure>` repairs to full for 2 biomass. Integrity 0 → the stru
 **ruin** (stays on the map, scavengeable, not repairable — rebuild instead).
 
 **Expeditions:** one move per target claim per UTC day, target must be within beacon range.
-Deterministic salvage roll 1–3 (derived from the move's content-id hash), +2 bonus when the
-target's lantern is DARK or the target structure is a ruin ("the abyss returns what others
-lose"). The client issues `request_content` for the visited claim and its replies — expeditions
-ARE the hosting driver (design law: content-getting needs a driver).
+The expedition is a reply on the ACTOR'S OWN claim (`expedition <target-id-prefix> <x> <y>`),
+so a player's balance folds entirely from their own reply stream — deterministic for every
+observer regardless of which other claims they hold. Salvage roll 1–3 derives from the
+expedition move's own content-id hash. Range and the per-target daily cap are enforced by the
+client and folded permissively from the embedded target coords (known-permissive, like reef's
+client-enforced rules; targets' real coords are cross-checked for display). The client issues
+`request_content` for the visited claim and its replies — expeditions ARE the hosting driver
+(design law: content-getting needs a driver).
 
 **Prestige:** "glow" = cumulative lit-structure-days (a structure at integrity > 0 under a LIT
 lantern earns 1 glow/day). Leaderboard in-client. No protocol privileges attach to glow.
@@ -70,9 +74,10 @@ lantern earns 1 glow/day). Leaderboard in-client. No protocol privileges attach 
   byte-identical state. Live "projected" production/decay is display-only; state banks at the
   next move. Moves that violate rules (over-cap heartbeat, unaffordable build, out-of-range
   expedition) are folded as rejected-but-present (they still order the stream), mirroring reef.
-- Cross-claim reads: a player's expedition reply lives on the TARGET's claim; the actor's own
-  fold discovers salvage income by folding claims it has visited. The engine folds a SET of
-  claims (own + known neighbors) into one world view.
+- **Fold isolation rule:** a player's balance and claim state fold ONLY from replies on their
+  own claim post. Cross-claim data (neighbor positions, brightness, ruins) is display/driver
+  input, never balance input — this is what keeps every observer's fold byte-identical even
+  when they host different subsets of the map.
 
 ## 3. Client — TheTrench.exe
 
@@ -128,4 +133,5 @@ Per the established bar (see memory: production-value feedback; reef/chess shell
 ## Out of scope (v1)
 
 Trade/gifting, forge/parts, multi-claim empires, claim abandonment/transfer, macOS/Linux
-builds (Windows first, like the launcher), in-client chat.
+builds (Windows first, like the launcher), in-client chat, DARK-ruin scavenge bonus (needs a
+verifiable cross-claim fold — v2, likely via expedition receipts folded on the target).
