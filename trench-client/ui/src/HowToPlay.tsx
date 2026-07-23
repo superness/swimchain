@@ -74,6 +74,38 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
           <strong>{half(START_SALVAGE)} salvage</strong> and nothing built.
         </p>
 
+        <h3>What you gather</h3>
+        <div className="hp-moves">
+          <div className="hp-move">
+            <span className="hp-diagram">
+              <StructTile icon="⚙" />
+            </span>
+            <span className="hp-what">
+              <strong>Salvage</strong>
+              <span className="hp-how">
+                Scrap raised from the deep — this is what you <strong>build</strong> with. You
+                start with {half(START_SALVAGE)}; expeditions to other claims bring back more.
+              </span>
+            </span>
+          </div>
+          <div className="hp-move">
+            <span className="hp-diagram">
+              <StructTile icon="🌿" />
+            </span>
+            <span className="hp-what">
+              <strong>Biomass</strong>
+              <span className="hp-how">
+                Grown daily by your kelp farms — this is what you <strong>tend</strong> with,
+                repairing what the abyss wears down.
+              </span>
+            </span>
+          </div>
+        </div>
+        <p className="fine">
+          You can hold at most <strong>{half(CAP_BASE)}</strong> of each — until you build
+          storehouses.
+        </p>
+
         <h3>Your lantern</h3>
         <p>
           While The Trench is running, your lantern posts a <strong>heartbeat</strong> at most once
@@ -102,13 +134,17 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
             </span>
           </span>
         </div>
-        <p className="fine">
-          Structure decay per day: {half(DECAY_LIT)} when LIT · {half(DECAY_BASE)} when
-          DIM · {half(DECAY_DARK)} when DARK. Integrity reaching 0 leaves a{' '}
-          <strong>ruin</strong> — scavengeable, not repairable.
+        <h3>The abyss</h3>
+        <p>
+          Everything you build wears down: a structure loses <strong>{half(DECAY_BASE)}</strong>{' '}
+          health a day — only {half(DECAY_LIT)} while your lantern is LIT, but{' '}
+          {half(DECAY_DARK)} when DARK. <strong>Tend</strong> a worn structure (
+          {half(TEND_COST)} biomass) to restore it to full. If its health reaches 0 it becomes a{' '}
+          <strong>ruin</strong> — gone for good; build anew.
         </p>
 
         <h3>Building</h3>
+        <p className="fine">Each costs salvage and stands until the abyss takes it.</p>
         <div className="hp-moves">
           <div className="hp-move">
             <span className="hp-diagram">
@@ -116,7 +152,9 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
             </span>
             <span className="hp-what">
               <strong>Kelp farm</strong> <span className="hp-chip">{half(COST_FARM)} salvage</span>
-              <span className="hp-how">Produces biomass every day, by your lantern's brightness.</span>
+              <span className="hp-how">
+                Grows biomass every day — the brighter your lantern, the bigger the harvest.
+              </span>
             </span>
           </div>
           <div className="hp-move">
@@ -126,8 +164,8 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
             <span className="hp-what">
               <strong>Storehouse</strong> <span className="hp-chip">{half(COST_STOREHOUSE)} salvage</span>
               <span className="hp-how">
-                Raises both caps by {half(CAP_PER_STOREHOUSE)} (base cap {half(CAP_BASE)}) while it
-                stands.
+                Lets you hold more: raises both the salvage and biomass caps by{' '}
+                {half(CAP_PER_STOREHOUSE)} each while it stands.
               </span>
             </span>
           </div>
@@ -138,18 +176,9 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
             <span className="hp-what">
               <strong>Beacon</strong> <span className="hp-chip">{half(COST_BEACON)} salvage</span>
               <span className="hp-how">
-                Widens expedition range by {RANGE_PER_BEACON} units (base range{' '}
-                {EXPEDITION_BASE_RANGE}).
+                Reaches farther into the dark: your expeditions can visit claims{' '}
+                {RANGE_PER_BEACON} units farther away (everyone starts at {EXPEDITION_BASE_RANGE}).
               </span>
-            </span>
-          </div>
-          <div className="hp-move">
-            <span className="hp-diagram">
-              <StructTile icon="🌾" ruined />
-            </span>
-            <span className="hp-what">
-              <strong>Tend</strong> <span className="hp-chip">{half(TEND_COST)} biomass</span>
-              <span className="hp-how">Restores any un-ruined structure to full integrity.</span>
             </span>
           </div>
         </div>
