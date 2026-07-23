@@ -123,33 +123,55 @@ function waitForParentConfig(timeoutMs: number): Promise<RpcAuth | null> {
 
 /**
  * Reads the Tauri `get_rpc_config` command (Task 4's desktop shell), if we're running
- * inside one. The import specifier is deliberately a runtime variable (not a string
- * literal) so TypeScript treats the dynamic `import()` as `any` instead of trying to
- * resolve `@tauri-apps/api` at compile time — the browser build (Tasks 2-3) doesn't
- * depend on that package; only the Tauri shell (Task 4) ships it.
+ * inside one.
+ *
+ * Finding (Task 4 verification): a dynamic `import('@tauri-apps/api/core')` — even
+ * with `/* @vite-ignore *\/` to dodge Vite's build-time dependency on the package —
+ * still leaves the literal bare specifier `"@tauri-apps/api/core"` in the emitted
+ * bundle (verified: `grep` the built `dist/assets/index-*.js`). Bare specifiers
+ * aren't valid ES module references without an import map, so real browsers
+ * (including Tauri's WebView2/WKWebView) throw `TypeError: Failed to resolve module
+ * specifier` on that `import()` — silently, since it's inside this function's
+ * try/catch, so it read as "not in Tauri" even when it was. `@tauri-apps/api` being
+ * present in `node_modules` doesn't change this: the bare-specifier resolution
+ * failure happens in the browser's module loader at runtime, not at Vite's build
+ * time. The fix is `window.__TAURI__.core.invoke`, the global Tauri v2 injects when
+ * `app.withGlobalTauri: true` (see trench-client/src-tauri/tauri.conf.json) — no
+ * import required at all; this is what `@tauri-apps/api/core.js`'s own doc comment
+ * documents as the equivalent of importing the package. The dynamic import is kept
+ * as a first attempt (harmless if it ever does resolve, e.g. a future Tauri version
+ * ships an import map) with the global as the fallback that actually works today.
  */
 async function tauriConfig(): Promise<RpcAuth | null> {
   if (typeof window === 'undefined') return null;
-  const w = window as unknown as { __TAURI__?: unknown };
+  const w = window as unknown as {
+    __TAURI__?: { core?: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> } };
+  };
   if (!w.__TAURI__) return null;
 
-  try {
-    const specifier = '@tauri-apps/api/core';
-    // The runtime-variable specifier (see the doc comment above) is exactly
-    // what Vite's `vite:import-analysis` plugin can't statically resolve —
-    // without this hint it logs "The above dynamic import cannot be
-    // analyzed by Vite" for every dev-server request that reaches this
-    // module. `@vite-ignore` tells Vite this is deliberate (the whole point
-    // is to dodge a build-time dependency on a package only Task 4's Tauri
-    // shell ships) and to leave the import call alone at runtime.
-    const mod = (await import(/* @vite-ignore */ specifier)) as {
-      invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
-    };
-    const cfg = await mod.invoke<{ endpoint: string; auth: string | null }>('get_rpc_config');
-    if (cfg?.endpoint) return { endpoint: cfg.endpoint, authHeader: cfg.auth ?? null };
-  } catch {
-    // Not actually in Tauri, or the shell's command isn't registered yet.
-  }
+  const cfg = await (async () => {
+    try {
+      const specifier = '@tauri-apps/api/core';
+      const mod = (await import(/* @vite-ignore */ specifier)) as {
+        invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+      };
+      return await mod.invoke<{ endpoint: string; auth: string | null }>('get_rpc_config');
+    } catch {
+      // Expected in practice — see the finding above. Fall through to the global.
+    }
+    if (w.__TAURI__?.core?.invoke) {
+      try {
+        return await w.__TAURI__.core.invoke<{ endpoint: string; auth: string | null }>(
+          'get_rpc_config',
+        );
+      } catch {
+        // The shell's command isn't registered yet, or the invoke failed.
+      }
+    }
+    return null;
+  })();
+
+  if (cfg?.endpoint) return { endpoint: cfg.endpoint, authHeader: cfg.auth ?? null };
   return null;
 }
 

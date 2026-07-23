@@ -3,8 +3,18 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 
 export default defineConfig({
-  // Served under /trench/ on swimchain.io; set the base so assets resolve there.
-  base: '/trench/',
+  // The Trench ships as a downloaded desktop installer (Tauri), not a hosted page
+  // under swimchain.io/trench/ like reef/chess — this differs from the reef-client
+  // config this file was scaffolded from (Task 1). Tauri's `frontendDist` serves
+  // `dist/` from its own asset root, so an absolute `/trench/` base would 404 every
+  // script/stylesheet the instant the packaged app tried to load them (verified:
+  // `dist/index.html` baked `src="/trench/assets/..."`, which resolves against
+  // nothing inside the Tauri webview). Tauri's CLI injects `TAURI_ENV_PLATFORM`
+  // into `beforeDevCommand`/`beforeBuildCommand`'s environment (see
+  // trench-client/src-tauri/tauri.conf.json) — present only when Tauri is driving
+  // this build, so a bare `npm run build` for some future hosted deploy still gets
+  // the path-prefixed base unchanged.
+  base: process.env.TAURI_ENV_PLATFORM ? './' : '/trench/',
   // `pow.worker.ts` runs in a Web Worker (`self`, no `window`), not a page —
   // but the worker's own module graph isn't just itself. `optimizeDeps.exclude`
   // below keeps `@swimchain/react` OUT of esbuild's pre-bundle (so this
