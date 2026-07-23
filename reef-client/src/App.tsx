@@ -778,14 +778,22 @@ export function App() {
                 (right, sticky); narrow screens stack. */}
             <div className="game-cols">
             <div className="board-col">
-            {/* Every coach-mark renders in this ONE slot above the board, and the
-                slot animates open/closed (grid-rows trick) instead of unmounting.
-                Cards used to sit at three different anchors — each swap yanked the
-                layout, and dismissing the plant card dropped the viewport straight
-                into the grid. The last card stays rendered while the slot closes
-                so the collapse has content to animate over. */}
-            <div className={`tut-slot${tutCard ? ' open' : ''}`}>
-              <div className="tut-slot-inner">
+            {/* Coach-marks float OVER the board's bottom edge (a game-style
+                subtitle bar), fading in place — they take part in the scene
+                instead of the layout, so nothing ever reflows or jostles when
+                a card appears, swaps, or dismisses. The last card stays
+                rendered while the float fades out so the exit has content. */}
+            <div className="board-stage">
+              <Reef
+                state={view}
+                myPubkeyHex={publicKeyHex!}
+                myAddress={address!}
+                canAct={!mining && !tideReport}
+                growingCell={mining?.cell ?? null}
+                onAct={onAct}
+                highlightSeeds={tutCard === 'plant'}
+              />
+              <div className={`tut-float${tutCard ? ' open' : ''}`} aria-live="polite">
                 {slotCard && (
                   <TutorialCard
                     key={slotCard}
@@ -796,15 +804,6 @@ export function App() {
                 )}
               </div>
             </div>
-            <Reef
-              state={view}
-              myPubkeyHex={publicKeyHex!}
-              myAddress={address!}
-              canAct={!mining && !tideReport}
-              growingCell={mining?.cell ?? null}
-              onAct={onAct}
-              highlightSeeds={tutCard === 'plant'}
-            />
             </div>
             <aside className="status">
               <div className="season">

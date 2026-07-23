@@ -32,15 +32,15 @@ const COPY: Record<TutorialCardKind, ReactNode> = {
   ),
   grow: (
     <>
-      That coral is yours. It cost <strong>{COST_GROW} energy</strong> — the glowing bar
-      below. Grow by clicking squares <strong>next to</strong> your coral (−{COST_GROW} each).
+      That coral is yours. It cost <strong>{COST_GROW} energy</strong> — the glowing energy
+      bar. Grow by clicking squares <strong>next to</strong> your coral (−{COST_GROW} each).
     </>
   ),
   tide: (
     <>
       Every <strong>{EPOCH_MOVES} moves</strong> — counting everyone's — the{' '}
-      <strong>tide</strong> turns (the glowing meter below): all coral shrinks a little and
-      your energy refills. Click your own coral to <strong>tend</strong> it — free, restores
+      <strong>tide</strong> turns (the glowing meter): all coral shrinks a little and your
+      energy refills. Click your own coral to <strong>tend</strong> it — free, restores
       full health.
     </>
   ),
