@@ -290,10 +290,12 @@ export function Chat() {
     inputEl?.focus();
   }, []);
 
-  // Emoji-to-code mapping matching the protocol (1-8)
+  // Emoji-to-code mapping matching the protocol (1-8). MUST match the node's
+  // canonical ReactionType (src/types/content.rs) or picked emojis display as a
+  // different reaction. Node: 1❤️ 2👍 3👎 4😂 5🤔 6🤯 7🔥 8🏊.
   const EMOJI_CODES: Record<string, number> = {
-    '❤️': 1, '👍': 2, '😂': 3, '🔥': 4,
-    '🤔': 5, '🎉': 6, '😢': 7, '💯': 8,
+    '❤️': 1, '👍': 2, '👎': 3, '😂': 4,
+    '🤔': 5, '🤯': 6, '🔥': 7, '🏊': 8,
   };
 
   // Handle reaction with PoW mining and RPC submission

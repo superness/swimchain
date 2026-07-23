@@ -4109,6 +4109,134 @@ impl RpcMethods {
     // Content Query Methods
     // ========================================================================
 
+    /// Find a post/reply's `media_refs` from its Action, searching BOTH the
+    /// mempool and the chain (chain + mempool = reality).
+    ///
+    /// This exists because `media_refs` are NOT part of `content_hash` and travel
+    /// only inside the Action. A node can materialize a post's ContentItem (from
+    /// the body blob) BEFORE its Action is reachable — e.g. the Action was pending
+    /// when the item was first backfilled — and cache it with empty media_refs.
+    /// Once cached, `get_content` returns the empty item and never re-checks, so
+    /// the post's image silently vanishes even after its Action lands in a block.
+    /// This lets those refs (and thus the image) resolve. Mempool is checked first
+    /// (cheap); the chain scan only runs if the mempool doesn't have it. Returns
+    /// empty if the Action isn't found anywhere.
+    fn find_action_media_refs(
+        &self,
+        content_hash: &[u8; 32],
+    ) -> Vec<crate::blocks::action::ActionMediaRef> {
+        // Mempool first — cheap (few pending actions), covers not-yet-block-included posts.
+        if let Some(ref block_builder) = self.node.block_builder {
+            if let Ok(builder) = block_builder.read() {
+                for (_thread_id, _space_id, action) in builder.get_pending_actions() {
+                    if action.content_hash == Some(*content_hash) && !action.media_refs.is_empty() {
+                        return action.media_refs.clone();
+                    }
+                }
+            }
+        }
+        // Then the chain: the Action may have landed in a block AFTER the empty
+        // ContentItem was cached (the common stuck case).
+        if let Some(ref chain_store) = self.node.chain_store {
+            for result in chain_store.iter_content_blocks() {
+                if let Ok(content_block) = result {
+                    for action in &content_block.actions {
+                        if action.content_hash == Some(*content_hash)
+                            && !action.media_refs.is_empty()
+                        {
+                            return action.media_refs.clone();
+                        }
+                    }
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Resolve a post/reply's media_refs for an RPC response, repairing a stored
+    /// ContentItem whose media_refs were cached empty (item materialized before its
+    /// action was reachable — see `find_action_media_refs`). If stored refs exist
+    /// they win; otherwise recover them from the chain/mempool action and PERSIST
+    /// the repair so it sticks (and the feed, not just the detail view, shows the
+    /// image). Returns empty for genuinely media-less content.
+    fn resolve_media_refs(
+        &self,
+        content_hash: &[u8; 32],
+        item: &crate::types::content::ContentItem,
+    ) -> Vec<crate::rpc::types::MediaRefResult> {
+        if !item.media_refs.is_empty() {
+            return item
+                .media_refs
+                .iter()
+                .map(|mr| {
+                    let media_type = match mr.media_type {
+                        crate::types::content::MediaType::ImageJpeg => "image/jpeg",
+                        crate::types::content::MediaType::ImagePng => "image/png",
+                        crate::types::content::MediaType::ImageGif => "image/gif",
+                        crate::types::content::MediaType::ImageWebp => "image/webp",
+                    };
+                    crate::rpc::types::MediaRefResult {
+                        media_hash: hex::encode(mr.media_hash.as_bytes()),
+                        media_type: media_type.to_string(),
+                        size_bytes: mr.size_bytes,
+                    }
+                })
+                .collect();
+        }
+        let found = self.find_action_media_refs(content_hash);
+        if found.is_empty() {
+            return Vec::new();
+        }
+        if let Some(ref content_store) = self.node.content_store {
+            let mut repaired = item.clone();
+            repaired.media_refs = found
+                .iter()
+                .map(Self::action_media_ref_to_media_ref)
+                .collect();
+            let _ = content_store.put(&repaired);
+            let _ = content_store.flush();
+        }
+        found.iter().map(Self::action_media_ref_to_result).collect()
+    }
+
+    /// Convert an `ActionMediaRef` (wire) to a `MediaRefResult` (RPC response).
+    fn action_media_ref_to_result(
+        amr: &crate::blocks::action::ActionMediaRef,
+    ) -> crate::rpc::types::MediaRefResult {
+        use crate::blocks::action::ActionMediaRef;
+        let media_type = match amr.media_type {
+            ActionMediaRef::TYPE_PNG => "image/png",
+            ActionMediaRef::TYPE_GIF => "image/gif",
+            ActionMediaRef::TYPE_WEBP => "image/webp",
+            _ => "image/jpeg",
+        };
+        crate::rpc::types::MediaRefResult {
+            media_hash: hex::encode(amr.media_hash),
+            media_type: media_type.to_string(),
+            size_bytes: amr.size_bytes,
+        }
+    }
+
+    /// Convert an `ActionMediaRef` (wire) to a `MediaRef` (stored ContentItem).
+    fn action_media_ref_to_media_ref(
+        amr: &crate::blocks::action::ActionMediaRef,
+    ) -> crate::types::content::MediaRef {
+        use crate::blocks::action::ActionMediaRef;
+        use crate::types::content::{ContentHash, MediaRef, MediaType};
+        let media_type = match amr.media_type {
+            ActionMediaRef::TYPE_PNG => MediaType::ImagePng,
+            ActionMediaRef::TYPE_GIF => MediaType::ImageGif,
+            ActionMediaRef::TYPE_WEBP => MediaType::ImageWebp,
+            _ => MediaType::ImageJpeg,
+        };
+        MediaRef {
+            media_hash: ContentHash::from_bytes(amr.media_hash),
+            media_type,
+            size_bytes: amr.size_bytes,
+            inline_preview: None,
+        }
+    }
+
     async fn get_content(&self, params: Value, id: Value) -> RpcResponse {
         let params: GetContentParams = match serde_json::from_value(params) {
             Ok(p) => p,
@@ -4280,6 +4408,53 @@ impl RpcMethods {
                 (None, body_text.to_string())
             };
 
+            // Repair dropped images: a ContentItem materialized before its action
+            // was block-included was cached with empty media_refs (media_refs aren't
+            // in content_hash, so a chain-only backfill missed a mempool-only action).
+            // If the action is still pending in the mempool, adopt its refs and
+            // persist the repair so the image resolves from now on.
+            let item = if item.media_refs.is_empty() {
+                let pending = self.find_action_media_refs(&content_hash);
+                if pending.is_empty() {
+                    item
+                } else {
+                    use crate::types::content::{ContentHash, MediaRef, MediaType};
+                    let mut repaired = item.clone();
+                    repaired.media_refs = pending
+                        .iter()
+                        .map(|amr| MediaRef {
+                            media_hash: ContentHash::from_bytes(amr.media_hash),
+                            media_type: match amr.media_type {
+                                crate::blocks::action::ActionMediaRef::TYPE_PNG => {
+                                    MediaType::ImagePng
+                                }
+                                crate::blocks::action::ActionMediaRef::TYPE_GIF => {
+                                    MediaType::ImageGif
+                                }
+                                crate::blocks::action::ActionMediaRef::TYPE_WEBP => {
+                                    MediaType::ImageWebp
+                                }
+                                _ => MediaType::ImageJpeg,
+                            },
+                            size_bytes: amr.size_bytes,
+                            inline_preview: None,
+                        })
+                        .collect();
+                    if let Some(store) = &self.node.content_store {
+                        let _ = store.put(&repaired);
+                        let _ = store.flush();
+                    }
+                    info!(
+                        "[MEDIA-REPAIR] Relinked {} media_ref(s) from chain/mempool for {}",
+                        repaired.media_refs.len(),
+                        &params.content_id[..params.content_id.len().min(24)]
+                    );
+                    repaired
+                }
+            } else {
+                item
+            };
+
             // Convert media_refs to MediaRefResult
             let media_refs: Vec<MediaRefResult> = item
                 .media_refs
@@ -4431,6 +4606,14 @@ impl RpcMethods {
                             }
                         }
                     }
+                }
+
+                // Chain + mempool = reality: if the action isn't block-included yet
+                // (idle nets form no blocks by design), its media_refs live only in a
+                // pending mempool action. Without this the backfill below would cache
+                // an image-less ContentItem permanently.
+                if found_media_refs.is_empty() {
+                    found_media_refs = self.find_action_media_refs(&content_hash);
                 }
 
                 // Parse title from body (first line if formatted as "Title\n\nBody")
@@ -6733,30 +6916,9 @@ impl RpcMethods {
                                                 item.created_at
                                             });
                                     }
-                                    item.media_refs
-                                        .iter()
-                                        .map(|mr| {
-                                            let media_type_str = match mr.media_type {
-                                                crate::types::content::MediaType::ImageJpeg => {
-                                                    "image/jpeg"
-                                                }
-                                                crate::types::content::MediaType::ImagePng => {
-                                                    "image/png"
-                                                }
-                                                crate::types::content::MediaType::ImageGif => {
-                                                    "image/gif"
-                                                }
-                                                crate::types::content::MediaType::ImageWebp => {
-                                                    "image/webp"
-                                                }
-                                            };
-                                            MediaRefResult {
-                                                media_hash: hex::encode(mr.media_hash.as_bytes()),
-                                                media_type: media_type_str.to_string(),
-                                                size_bytes: mr.size_bytes,
-                                            }
-                                        })
-                                        .collect()
+                                    // Resolve + repair media_refs (recovers images on posts
+                                    // whose ContentItem was cached before its action arrived).
+                                    self.resolve_media_refs(&content_hash, &item)
                                 } else {
                                     vec![]
                                 }
@@ -7404,30 +7566,9 @@ impl RpcMethods {
                                                 item.created_at
                                             });
                                     }
-                                    item.media_refs
-                                        .iter()
-                                        .map(|mr| {
-                                            let media_type_str = match mr.media_type {
-                                                crate::types::content::MediaType::ImageJpeg => {
-                                                    "image/jpeg"
-                                                }
-                                                crate::types::content::MediaType::ImagePng => {
-                                                    "image/png"
-                                                }
-                                                crate::types::content::MediaType::ImageGif => {
-                                                    "image/gif"
-                                                }
-                                                crate::types::content::MediaType::ImageWebp => {
-                                                    "image/webp"
-                                                }
-                                            };
-                                            MediaRefResult {
-                                                media_hash: hex::encode(mr.media_hash.as_bytes()),
-                                                media_type: media_type_str.to_string(),
-                                                size_bytes: mr.size_bytes,
-                                            }
-                                        })
-                                        .collect()
+                                    // Resolve + repair media_refs (recovers images on posts
+                                    // whose ContentItem was cached before its action arrived).
+                                    self.resolve_media_refs(&content_hash, &item)
                                 } else {
                                     vec![]
                                 }
