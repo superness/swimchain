@@ -1,0 +1,16 @@
+{
+  "name": "the-trench-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Trench — Tauri desktop shell (node sidecar + game UI).",
+  "scripts": {
+    "tauri": "cd src-tauri && tauri",
+    "dev": "cd src-tauri && tauri dev",
+    "build": "cd src-tauri && tauri build",
+    "icon": "tauri icon src-tauri/icons/source.svg --output src-tauri/icons"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  },
+  "engines": { "node": ">=18.0.0" }
+}

@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0a1a20"/>
+      <stop offset="55%" stop-color="#03090c"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="46%" r="50%">
+      <stop offset="0%" stop-color="#ffb347" stop-opacity="0.95"/>
+      <stop offset="35%" stop-color="#ff7a3d" stop-opacity="0.55"/>
+      <stop offset="70%" stop-color="#ff4d2e" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#ff4d2e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffe9b0"/>
+      <stop offset="45%" stop-color="#ff9a3c"/>
+      <stop offset="100%" stop-color="#e6432a"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3a2a20"/>
+      <stop offset="100%" stop-color="#160f0c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- dark rounded square backdrop: the abyss -->
+  <rect x="0" y="0" width="1024" height="1024" rx="188" fill="url(#bg)"/>
+
+  <!-- bioluminescent glow the lantern casts into the deep -->
+  <circle cx="512" cy="470" r="420" fill="url(#glow)"/>
+
+  <!-- lantern ring / hanging loop -->
+  <path d="M 472 208 Q 512 150 552 208" fill="none" stroke="#2a211c" stroke-width="26" stroke-linecap="round"/>
+  <circle cx="512" cy="196" r="14" fill="#2a211c"/>
+
+  <!-- lantern top cap -->
+  <path d="M 402 236 L 622 236 L 588 296 L 436 296 Z" fill="url(#frame)"/>
+
+  <!-- lantern body -->
+  <rect x="392" y="296" width="240" height="420" rx="36" fill="url(#frame)"/>
+  <rect x="428" y="332" width="168" height="348" rx="20" fill="#050809"/>
+
+  <!-- corner posts -->
+  <rect x="392" y="296" width="26" height="420" rx="10" fill="#4a352a"/>
+  <rect x="606" y="296" width="26" height="420" rx="10" fill="#4a352a"/>
+
+  <!-- lantern base -->
+  <path d="M 372 716 L 652 716 L 616 776 L 408 776 Z" fill="url(#frame)"/>
+  <rect x="452" y="776" width="120" height="34" rx="10" fill="#2a211c"/>
+
+  <!-- the flame: the whole point -->
+  <path d="M 512 404
+           C 560 460 566 510 528 552
+           C 546 512 528 486 500 462
+           C 486 500 464 520 464 556
+           C 428 512 442 448 512 404 Z"
+        fill="url(#flame)"/>
+  <ellipse cx="512" cy="548" rx="34" ry="20" fill="#ffe9b0" opacity="0.85"/>
+</svg>
