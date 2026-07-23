@@ -99,6 +99,15 @@ lantern earns 1 glow/day). Leaderboard in-client. No protocol privileges attach 
 
 ## 4. Production value (binding, not optional)
 
+- **Diegetic-first (operator directive, 2026-07-23):** The Trench presents as a GAME, not a
+  protocol showcase. Protocol vocabulary — node, chain, space, post, reply, signed, RPC,
+  Swimchain — must not appear in gameplay copy (landing, HUD, coach cards, move statuses,
+  founding flow). The world speaks for itself: lantern, the deep, the abyss, claims, neighbors.
+  Exactly ONE quiet provenance line is permitted, at the end of the "?" panel's lore ("The
+  Trench runs on the Swimchain network — no server, no company; its world is kept alive by
+  its players."). Honesty is preserved without the lecture: the landing fine print still says
+  the key lives only on this machine.
+
 Per the established bar (see memory: production-value feedback; reef/chess shells):
 
 - **Immersive abyss scene**: full-viewport deep-dark gradient, sparse bioluminescent particles,
