@@ -1,0 +1,205 @@
+/**
+ * The Trench — node RPC plumbing.
+ *
+ * A thin, dependency-light JSON-RPC 2.0 client plus auth resolution, mirroring the
+ * cookie/parent-frame/Tauri conventions the rest of the Swimchain clients already use
+ * (see feed-client/src/hooks/useNodeIdentity.tsx, feed-client/src/lib/rpc.ts, and
+ * launcher-apps/app-shell/web/embed.js). Kept deliberately separate from
+ * `@swimchain/react`'s `SwimchainRpc` class: that class only accepts `{username,
+ * password}` basic-auth or its own signature-auth scheme, not an already-built
+ * `Authorization` header string — but that's exactly what both the app-shell
+ * postMessage envelope and the Tauri `get_rpc_config` command hand us. This module
+ * carries a raw header through untouched instead of decoding/re-encoding it, and is
+ * import-safe under plain `tsx` (no Vite, no DOM) so the regtest smoke script
+ * (scripts/regtest-smoke.ts) can build an `RpcAuth` by hand and call `rpcCall` /
+ * `nodeIdentity` directly, without ever touching `resolveAuth`'s browser-only paths.
+ */
+
+/** Where the node is and how to authenticate to it. `authHeader`, when present, is a
+ *  ready-to-send `Authorization` header value (e.g. `Basic base64(__cookie__:<hex>)`). */
+export interface RpcAuth {
+  endpoint: string;
+  authHeader: string | null;
+}
+
+interface JsonRpcErrorBody {
+  code: number;
+  message: string;
+  data?: unknown;
+}
+
+interface JsonRpcResponse<T> {
+  jsonrpc: '2.0';
+  result?: T;
+  error?: JsonRpcErrorBody;
+  id: number | string;
+}
+
+let requestId = 1;
+
+/** Raw JSON-RPC 2.0 POST over HTTP. Works identically in the browser and under Node
+ *  (both have a global `fetch`), which is what lets the smoke script reuse it. */
+export async function rpcCall<T>(auth: RpcAuth, method: string, params: unknown): Promise<T> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (auth.authHeader) headers.Authorization = auth.authHeader;
+
+  const res = await fetch(auth.endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ jsonrpc: '2.0', method, params: params ?? {}, id: requestId++ }),
+  });
+
+  if (!res.ok) {
+    let bodyText = '';
+    try {
+      bodyText = await res.text();
+    } catch {
+      // best-effort only
+    }
+    throw new Error(`HTTP ${res.status}: ${res.statusText}${bodyText ? ` - ${bodyText}` : ''}`);
+  }
+
+  const parsed = (await res.json()) as JsonRpcResponse<T>;
+  if (parsed.error) {
+    throw new Error(`RPC Error ${parsed.error.code}: ${parsed.error.message}`);
+  }
+  return parsed.result as T;
+}
+
+/**
+ * Waits (up to `timeoutMs`) for the app-shell's `SWIMCHAIN_RPC_CONFIG` postMessage
+ * envelope — see launcher-apps/app-shell/web/embed.js:17-61 and the receiving side
+ * (feed-client/src/hooks/useParentRpcConfig.ts) for the contract this mirrors:
+ *   { type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint, rpcAuth, nodeAddress?, nodeDisplayName? }
+ * Resolves `null` (never rejects) if nothing arrives — either we're not embedded, or
+ * the shell isn't there. A no-op (resolves `null` immediately) outside a browser.
+ */
+function waitForParentConfig(timeoutMs: number): Promise<RpcAuth | null> {
+  if (typeof window === 'undefined') return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: RpcAuth | null) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('message', onMessage);
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const onMessage = (event: MessageEvent) => {
+      const d = event.data as
+        | { type?: string; rpcEndpoint?: string; rpcAuth?: string | null }
+        | null
+        | undefined;
+      if (d && d.type === 'SWIMCHAIN_RPC_CONFIG' && typeof d.rpcEndpoint === 'string' && d.rpcEndpoint) {
+        finish({ endpoint: d.rpcEndpoint, authHeader: d.rpcAuth ?? null });
+      }
+    };
+    window.addEventListener('message', onMessage);
+    const timer = setTimeout(() => finish(null), timeoutMs);
+  });
+}
+
+/**
+ * Reads the Tauri `get_rpc_config` command (Task 4's desktop shell), if we're running
+ * inside one. The import specifier is deliberately a runtime variable (not a string
+ * literal) so TypeScript treats the dynamic `import()` as `any` instead of trying to
+ * resolve `@tauri-apps/api` at compile time — the browser build (Tasks 2-3) doesn't
+ * depend on that package; only the Tauri shell (Task 4) ships it.
+ */
+async function tauriConfig(): Promise<RpcAuth | null> {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as { __TAURI__?: unknown };
+  if (!w.__TAURI__) return null;
+
+  try {
+    const specifier = '@tauri-apps/api/core';
+    const mod = (await import(specifier)) as {
+      invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+    };
+    const cfg = await mod.invoke<{ endpoint: string; auth: string | null }>('get_rpc_config');
+    if (cfg?.endpoint) return { endpoint: cfg.endpoint, authHeader: cfg.auth ?? null };
+  } catch {
+    // Not actually in Tauri, or the shell's command isn't registered yet.
+  }
+  return null;
+}
+
+/**
+ * Resolve where/how to reach the node, in the order the game's shells offer it:
+ *   1. app-shell embed: `SWIMCHAIN_RPC_CONFIG` postMessage (10s window)
+ *   2. Tauri desktop shell: `get_rpc_config` command (Task 4)
+ *   3. `VITE_RPC_ENDPOINT` build/dev-time env (no auth — dev nodes are usually
+ *      unauthenticated, or the caller layers its own auth on top)
+ *   4. `http://127.0.0.1:9737` — bare local-node fallback
+ *
+ * Steps 1-2 are browser/Tauri-only and no-op (resolve `null`) under Node, so calling
+ * this from a plain-tsx context just falls through to steps 3-4. The regtest smoke
+ * script doesn't call this at all — it builds its own `RpcAuth` from `TRENCH_RPC` +
+ * `TRENCH_COOKIE_FILE`, which is the honest thing for a script with no app-shell,
+ * no Tauri, and no Vite env to resolve.
+ */
+export async function resolveAuth(): Promise<RpcAuth> {
+  const fromParent = await waitForParentConfig(10_000);
+  if (fromParent) return fromParent;
+
+  const fromTauri = await tauriConfig();
+  if (fromTauri) return fromTauri;
+
+  const envEndpoint = (import.meta.env?.VITE_RPC_ENDPOINT as string | undefined)?.trim();
+  if (envEndpoint) return { endpoint: envEndpoint, authHeader: null };
+
+  return { endpoint: 'http://127.0.0.1:9737', authHeader: null };
+}
+
+/** The node's own identity, adopted as the player's — signing happens ON the node via
+ *  `sign_message`, so the browser/game process never holds a private key. */
+export interface NodeIdentity {
+  publicKeyHex: string;
+  address: string;
+  sign(msg: Uint8Array): Promise<Uint8Array>;
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return out;
+}
+
+/**
+ * Adopts the connected node's own identity (`get_identity_info`) and hands back an
+ * RPC-backed signer (`sign_message`) — see
+ * feed-client/src/hooks/useNodeIdentity.tsx:132-156, the reference this mirrors.
+ */
+export async function nodeIdentity(auth: RpcAuth): Promise<NodeIdentity> {
+  const info = await rpcCall<{
+    has_identity: boolean;
+    public_key: string | null;
+    address: string | null;
+  }>(auth, 'get_identity_info', {});
+
+  if (!info.has_identity || !info.public_key || !info.address) {
+    throw new Error('Node has no identity loaded');
+  }
+  const publicKeyHex = info.public_key;
+  const address = info.address;
+
+  return {
+    publicKeyHex,
+    address,
+    async sign(msg: Uint8Array): Promise<Uint8Array> {
+      const result = await rpcCall<{ signature: string; public_key: string }>(auth, 'sign_message', {
+        message: bytesToHex(msg),
+      });
+      return hexToBytes(result.signature);
+    },
+  };
+}
