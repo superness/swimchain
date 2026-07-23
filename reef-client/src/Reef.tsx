@@ -17,6 +17,8 @@ interface Props {
   /** The tile a move is currently taking root on — animates in place. */
   growingCell: { x: number; y: number } | null;
   onAct: (x: number, y: number, intent: Intent) => void;
+  /** Pulse every plantable tile (tutorial step 1: "click any open square"). */
+  highlightSeeds: boolean;
 }
 
 /** Coral fills more of its tile the healthier it is — vitality is legible as SIZE. */
@@ -25,7 +27,7 @@ function vitalityScale(v: number): number {
   return 0.28 + 0.72 * t; // 28%..100% of the tile
 }
 
-export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct }: Props) {
+export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct, highlightSeeds }: Props) {
   const { w, h } = state.header;
   const myHue = ownerHue(myPubkeyHex);
 
@@ -124,6 +126,7 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct
         const actionable = !!intent && intent.affordable;
         let cls = 'cell';
         if (intent) cls += ` ${intent.kind}` + (actionable ? ' act' : ' broke');
+        if (highlightSeeds && intent?.kind === 'seed' && actionable) cls += ' tut-pulse';
 
         // Coral rendered as an inner tile scaled by vitality, so fading coral shrinks.
         // A live cell blooms in on first mount; a receded one leaves a ghost that

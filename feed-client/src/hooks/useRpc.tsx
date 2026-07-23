@@ -1260,6 +1260,8 @@ export interface MediaUploadResponse {
   needsCompression?: boolean;
   /** Original file size in bytes */
   originalSize?: number;
+  /** Human-readable failure reason (surfaced in the UI instead of a generic string) */
+  error?: string;
 }
 
 /**
@@ -1281,14 +1283,15 @@ export function useMediaUpload() {
   ): Promise<MediaUploadResponse> => {
     if (!rpc || !connected) {
       setError('Not connected to node');
-      return { success: false, result: null };
+      return { success: false, result: null, error: 'Not connected to node' };
     }
 
     // Validate file type
     const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     if (!validTypes.includes(file.type)) {
-      setError('Invalid file type. Supported: JPEG, PNG, GIF, WebP');
-      return { success: false, result: null };
+      const msg = `Unsupported image type "${file.type || 'unknown'}". Use JPEG, PNG, GIF, or WebP.`;
+      setError(msg);
+      return { success: false, result: null, error: msg };
     }
 
     // Check if file exceeds protocol limit - don't auto-compress, let UI prompt
@@ -1338,13 +1341,13 @@ export function useMediaUpload() {
         };
       } else {
         setError('Upload failed');
-        return { success: false, result: null };
+        return { success: false, result: null, error: 'Upload failed' };
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Upload failed';
       setError(errorMessage);
       console.error('[Media] Upload error:', err);
-      return { success: false, result: null };
+      return { success: false, result: null, error: errorMessage };
     } finally {
       setUploading(false);
     }

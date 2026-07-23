@@ -121,6 +121,15 @@ pub fn serialize_offer(offer: &PublicSponsorshipOffer) -> Result<Vec<u8>, WireEr
     buf.extend_from_slice(&requirements_bytes); // var
     buf.extend_from_slice(offer.signature.as_bytes()); // 64
     buf.push(if offer.auto_approve { 1 } else { 0 }); // 1 (trailing, optional)
+    // space_scope: presence(1) [+ 32], trailing & optional like auto_approve so
+    // legacy peers/offers (which stop after auto_approve) remain compatible.
+    match offer.space_scope {
+        Some(scope) => {
+            buf.push(1);
+            buf.extend_from_slice(&scope);
+        }
+        None => buf.push(0),
+    }
 
     Ok(buf)
 }
@@ -188,6 +197,19 @@ pub fn deserialize_offer(data: &[u8]) -> Result<PublicSponsorshipOffer, WireErro
 
     // auto_approve(1) — optional trailing byte for backwards compatibility
     let auto_approve = data.get(pos).is_some_and(|&b| b == 1);
+    if data.get(pos).is_some() {
+        pos += 1; // consume the auto_approve byte when present
+    }
+
+    // space_scope — optional trailing: presence(1) [+ 32]. Absent on legacy offers.
+    let space_scope = match data.get(pos) {
+        Some(&1) if data.len() >= pos + 1 + 32 => Some(
+            data[pos + 1..pos + 1 + 32]
+                .try_into()
+                .expect("slice is 32 bytes"),
+        ),
+        _ => None,
+    };
 
     Ok(PublicSponsorshipOffer {
         sponsor,
@@ -199,6 +221,7 @@ pub fn deserialize_offer(data: &[u8]) -> Result<PublicSponsorshipOffer, WireErro
         requirements,
         signature,
         auto_approve,
+        space_scope,
     })
 }
 
@@ -587,6 +610,7 @@ mod tests {
             },
             signature: Signature::from_bytes([4u8; 64]),
             auto_approve: false,
+            space_scope: None,
         }
     }
 

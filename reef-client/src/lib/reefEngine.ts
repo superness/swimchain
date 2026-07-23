@@ -947,7 +947,12 @@ export function ensureReefSponsored(
   id: Identity,
   onProgress?: (phase: string) => void
 ): Promise<void> {
-  return ensureSponsored(rpc, id, { preferredSponsorHex: GAME_SPONSOR, onProgress });
+  return ensureSponsored(rpc, id, {
+    preferredSponsorHex: GAME_SPONSOR,
+    strictPreferred: true,
+    requiredSpaceId: REEF_SPACE,
+    onProgress,
+  });
 }
 
 // ── Regions ──────────────────────────────────────────────────────────────────────

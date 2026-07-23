@@ -28,6 +28,11 @@ pub struct SponsorshipStore {
     genesis_slots: Tree,
     /// Orphan index: PublicKey(32) -> orphaned_at(u64 BE)
     orphans: Tree,
+    /// Space-scope index: sponsored PublicKey(32) -> scope space_id(32).
+    /// Present ONLY for space-limited grants; absence means a global
+    /// (network-wide) grant. Additive side-index so existing records need no
+    /// migration — an unscoped identity simply has no entry here.
+    scopes: Tree,
 }
 
 impl SponsorshipStore {
@@ -45,7 +50,58 @@ impl SponsorshipStore {
             by_sponsor: db.open_tree("sponsorships_by_sponsor")?,
             genesis_slots: db.open_tree("genesis_slots")?,
             orphans: db.open_tree("orphans")?,
+            scopes: db.open_tree("sponsorship_scopes")?,
         })
+    }
+
+    /// Record that a sponsorship is space-limited: the sponsee may only author
+    /// actions in `scope`. Absence of an entry means a global grant. Written by
+    /// the sponsorship apply path for scoped grants.
+    pub fn set_scope(
+        &self,
+        identity: &PublicKey,
+        scope: &[u8; 32],
+    ) -> Result<(), SponsorshipError> {
+        self.scopes.insert(identity.as_bytes(), scope.as_slice())?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    /// The space a sponsorship is limited to, or `None` for a global grant.
+    pub fn get_scope(&self, identity: &PublicKey) -> Result<Option<[u8; 32]>, SponsorshipError> {
+        match self.scopes.get(identity.as_bytes())? {
+            Some(v) if v.len() == 32 => {
+                let mut s = [0u8; 32];
+                s.copy_from_slice(&v);
+                Ok(Some(s))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Remove any scope entry (e.g. when a grant is upgraded to global).
+    pub fn remove_scope(&self, identity: &PublicKey) -> Result<(), SponsorshipError> {
+        self.scopes.remove(identity.as_bytes())?;
+        Ok(())
+    }
+
+    /// Whether `identity` is authorized to author a durable action in `space`:
+    /// a genesis identity (anywhere), a globally-sponsored identity (anywhere),
+    /// or a space-scoped identity whose scope equals `space`. This is the
+    /// on-chain half of the sybil-wall gate; in-block grants are handled by the
+    /// caller. A scope read error is treated as global (fail-open on
+    /// availability, since scoping is a containment refinement, not the wall).
+    pub fn is_authorized_in_space(&self, identity: &PublicKey, space: &[u8; 32]) -> bool {
+        if is_in_hardcoded_genesis_list(identity) {
+            return true;
+        }
+        if !self.exists(identity).unwrap_or(false) {
+            return false;
+        }
+        match self.get_scope(identity) {
+            Ok(Some(scope)) => &scope == space,
+            _ => true, // global grant (or transient read error)
+        }
     }
 
     /// Store a sponsorship (updates secondary index atomically)
@@ -645,6 +701,40 @@ mod tests {
             is_genesis: false,
             orphaned_at: None,
         }
+    }
+
+    #[test]
+    fn is_authorized_in_space_respects_scope() {
+        let (store, _dir) = create_test_store();
+        let global = PublicKey::from_bytes([7u8; 32]);
+        let scoped = PublicKey::from_bytes([8u8; 32]);
+        let unsponsored = PublicKey::from_bytes([9u8; 32]);
+        let space_x = [0x01u8; 32];
+        let space_y = [0x02u8; 32];
+
+        // A global (unscoped) sponsorship is authorized in any space.
+        store
+            .put(&make_regular_sponsorship([7u8; 32], [1u8; 32], 1))
+            .unwrap();
+        assert!(store.is_authorized_in_space(&global, &space_x));
+        assert!(store.is_authorized_in_space(&global, &space_y));
+        assert_eq!(store.get_scope(&global).unwrap(), None);
+
+        // A space-scoped sponsorship is authorized ONLY in its scope space.
+        store
+            .put(&make_regular_sponsorship([8u8; 32], [1u8; 32], 1))
+            .unwrap();
+        store.set_scope(&scoped, &space_x).unwrap();
+        assert!(store.is_authorized_in_space(&scoped, &space_x));
+        assert!(!store.is_authorized_in_space(&scoped, &space_y));
+        assert_eq!(store.get_scope(&scoped).unwrap(), Some(space_x));
+
+        // An unsponsored identity is authorized nowhere.
+        assert!(!store.is_authorized_in_space(&unsponsored, &space_x));
+
+        // Scope can be lifted (upgrade to global).
+        store.remove_scope(&scoped).unwrap();
+        assert!(store.is_authorized_in_space(&scoped, &space_y));
     }
 
     #[test]

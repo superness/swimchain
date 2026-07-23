@@ -61,7 +61,7 @@ pub mod wire;
 pub use error::*;
 pub use genesis_list::{
     get_genesis_category, get_hardcoded_genesis_list, is_in_hardcoded_genesis_list,
-    GenesisDistributionCategory,
+    is_mainnet_game_sponsor, GenesisDistributionCategory,
 };
 pub use linear_chain::LinearChainDetector;
 pub use offer_flow::{

@@ -50,6 +50,16 @@ fn request_navigate(
     std::fs::write(dir.join(".nav_request"), body).map_err(|e| e.to_string())
 }
 
+/// Bring this app's window to the front. Called by the shell page when a
+/// cross-app route arrives (someone navigated to us) — without this the target
+/// window opens/stays BEHIND the app the user clicked in and goes unseen.
+#[tauri::command]
+fn focus_self(window: tauri::WebviewWindow) {
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
 /// Return (and clear) a pending cross-app route for THIS app, dropped by the
 /// launcher into `<data_dir>/.route_<app_id>`. None if there's nothing pending.
 #[tauri::command]
@@ -102,7 +112,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_rpc_config,
             request_navigate,
-            poll_route
+            poll_route,
+            focus_self
         ])
         .run(tauri::generate_context!())
         .expect("error while running app-shell");

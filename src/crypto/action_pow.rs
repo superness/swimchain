@@ -262,10 +262,14 @@ impl ForkPoWConfig {
     /// Default production configuration per SPEC_03 §4.1
     #[must_use]
     pub fn production() -> Self {
+        // Operator decision (2026-07-22): mainnet action PoW is tuned to the same
+        // lightweight params as testnet (8 MiB / 1 iter / 2 par) for playable launch
+        // games. These are mainnet's OWN values — independently tunable here without
+        // touching testnet(). Difficulty shift lives in NetworkMode::adjusted_difficulty.
         Self {
-            memory_kib: 65536, // 64 MiB
-            iterations: 3,
-            parallelism: 4,
+            memory_kib: 8192, // 8 MiB
+            iterations: 1,
+            parallelism: 2,
         }
     }
 
@@ -861,9 +865,10 @@ mod tests {
     #[test]
     fn test_config_presets() {
         let prod = ForkPoWConfig::production();
-        assert_eq!(prod.memory_kib, 65536);
-        assert_eq!(prod.iterations, 3);
-        assert_eq!(prod.parallelism, 4);
+        // mainnet PoW tuned to testnet-equivalent params (operator decision 2026-07-22)
+        assert_eq!(prod.memory_kib, 8192);
+        assert_eq!(prod.iterations, 1);
+        assert_eq!(prod.parallelism, 2);
 
         let test = ForkPoWConfig::test();
         assert_eq!(test.memory_kib, 1024);

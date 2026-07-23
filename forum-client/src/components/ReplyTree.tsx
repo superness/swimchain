@@ -3,6 +3,7 @@
  */
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { linkify } from '../lib/linkify';
 import { Link } from 'react-router-dom';
 import type { Reply as ReplyType, EmojiCount } from '../types';
 import { AddressDisplay } from './AddressDisplay';
@@ -223,7 +224,7 @@ function ReplyNode({
               Fetching content from network...
             </p>
           ) : (
-            <p>{reply.content}</p>
+            <p>{linkify(reply.content)}</p>
           )}
         </div>
 

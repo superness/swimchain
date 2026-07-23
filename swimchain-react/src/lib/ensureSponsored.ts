@@ -29,6 +29,12 @@ interface OpenOffer {
   auto_approve?: boolean;
   slots_remaining: number;
   requirements?: { min_pow_difficulty?: number };
+  /**
+   * If set, this offer only sponsors the claimant WITHIN this space (bech32
+   * `sp1…`). Absent/null means a global grant that works everywhere. Game
+   * onboarding uses scoped offers so a reef player can't claim the chess offer.
+   */
+  space_scope?: string | null;
 }
 
 export interface EnsureSponsoredOptions {
@@ -40,6 +46,23 @@ export interface EnsureSponsoredOptions {
    * auto-approve offer, then any offer.
    */
   preferredSponsorHex?: string;
+  /**
+   * When true, claim ONLY offers from `preferredSponsorHex` — never fall back
+   * to some other sponsor's offer. Games (reef/chess) set this: their sponsor
+   * is a dedicated always-online node, and the fallback is exactly what let a
+   * player land on a stale offer from an offline sponsor and hang forever
+   * (observed 2026-07-18). If the pinned sponsor has no open slot we fail fast
+   * with a clear message instead of silently onboarding onto a dead offer.
+   */
+  strictPreferred?: boolean;
+  /**
+   * If set (bech32 `sp1…` space id), only claim offers that grant action IN
+   * this space — i.e. a scoped offer for this exact space, or a global
+   * (unscoped) offer. Offers scoped to a DIFFERENT space are skipped. Games
+   * pass their own space so a reef player onboards into reef, a chess player
+   * into chess, and neither can drain the other's offer.
+   */
+  requiredSpaceId?: string;
   /** Phase text callback for UI ("Finding a sponsor", "Waiting for approval"). */
   onProgress?: (phase: string) => void;
   /** How long to wait for the chain to record the sponsorship (ms). */
@@ -109,7 +132,8 @@ export async function ensureSponsored(
   id: SponsorableIdentity,
   options: EnsureSponsoredOptions = {}
 ): Promise<void> {
-  const { preferredSponsorHex, onProgress, timeoutMs = 180_000 } = options;
+  const { preferredSponsorHex, strictPreferred, requiredSpaceId, onProgress, timeoutMs = 180_000 } =
+    options;
 
   const isSponsored = async (): Promise<boolean> => {
     try {
@@ -134,6 +158,14 @@ export async function ensureSponsored(
   const preferred = (o: OpenOffer) =>
     !!preferredSponsorHex &&
     o.sponsor_pubkey?.toLowerCase() === preferredSponsorHex.toLowerCase();
+  // A scoped offer only grants action inside its own space. If the caller needs
+  // a specific space, accept an offer scoped to THAT space (or a global offer
+  // that works everywhere) and skip offers scoped elsewhere — otherwise a reef
+  // player could claim the chess-scoped offer and then be unable to act in reef.
+  const scopeOk = (o: OpenOffer) =>
+    !requiredSpaceId ||
+    !o.space_scope ||
+    o.space_scope.toLowerCase() === requiredSpaceId.toLowerCase();
   // Within each tier, take the offer with the MOST remaining slots. Public
   // pages have many concurrent newcomers; picking the first match kept landing
   // everyone on the same near-exhausted 1-slot invite (which then auto-approves
@@ -144,12 +176,23 @@ export async function ensureSponsored(
       (best, o) => (best && best.slots_remaining >= o.slots_remaining ? best : o),
       undefined
     );
+  // Preferred-sponsor tiers first. In strict mode we STOP here — never claim a
+  // different sponsor's offer, because that fallback is what let a player land
+  // on a stale offer from an offline sponsor and hang forever.
   const pick =
-    mostSlots(offers.filter((o) => preferred(o) && o.auto_approve && hasRoom(o))) ??
-    mostSlots(offers.filter((o) => preferred(o) && hasRoom(o))) ??
-    mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o))) ??
-    mostSlots(offers.filter(hasRoom));
-  if (!pick) throw new Error('No sponsorship offers are open right now — try again shortly.');
+    mostSlots(offers.filter((o) => preferred(o) && o.auto_approve && hasRoom(o) && scopeOk(o))) ??
+    mostSlots(offers.filter((o) => preferred(o) && hasRoom(o) && scopeOk(o))) ??
+    (strictPreferred
+      ? undefined
+      : mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o) && scopeOk(o))) ??
+        mostSlots(offers.filter((o) => hasRoom(o) && scopeOk(o))));
+  if (!pick) {
+    throw new Error(
+      strictPreferred
+        ? 'Onboarding is temporarily unavailable (the game sponsor has no open slots) — try again shortly.'
+        : 'No sponsorship offers are open right now — try again shortly.'
+    );
+  }
 
   onProgress?.('Requesting sponsorship (proof-of-work)');
   const minDifficulty = Math.max(pick.requirements?.min_pow_difficulty ?? 0, 1);

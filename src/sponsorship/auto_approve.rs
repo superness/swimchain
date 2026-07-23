@@ -141,10 +141,14 @@ pub async fn execute_claim_approval(
             pow_hash.iter().take_while(|&&b| b == 0).count() as u64
         };
 
-        let action = Action::new_sponsor_with_pow(
+        // Scoped grant when the offer is space-scoped (game onboarding), else
+        // global. offer.space_scope is folded into the sponsor signature preimage
+        // by every caller, so the action re-verifies on all nodes.
+        let action = Action::new_sponsor_scoped_with_pow(
             sponsor_bytes,
             claimant_bytes,
             timestamp, // must match the timestamp covered by sponsor_sig_bytes
+            offer.space_scope,
             sponsor_sig_bytes,
             claim.identity_pow_proof.nonce,
             pow_work,
@@ -232,6 +236,7 @@ mod tests {
             },
             signature: crate::types::identity::Signature::from_bytes([0u8; 64]),
             auto_approve,
+            space_scope: None,
         }
     }
 

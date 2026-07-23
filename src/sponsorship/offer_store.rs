@@ -117,7 +117,22 @@ impl OfferStore {
         offer_id: &[u8; 16],
     ) -> Result<Option<PublicSponsorshipOffer>, SponsorshipError> {
         match self.offers.get(offer_id)? {
-            Some(data) => Ok(Some(bincode::deserialize(&data)?)),
+            // A decode failure here means a legacy offer written by an older
+            // binary whose `PublicSponsorshipOffer` layout predates a trailing
+            // field (e.g. `space_scope`). Treat it as gone rather than erroring
+            // the whole lookup — the node self-heals and the offer is simply
+            // re-issued under the new layout. See list_active_offers.
+            Some(data) => match bincode::deserialize(&data) {
+                Ok(offer) => Ok(Some(offer)),
+                Err(e) => {
+                    log::warn!(
+                        "dropping undecodable legacy sponsorship offer {}: {}",
+                        hex::encode(offer_id),
+                        e
+                    );
+                    Ok(None)
+                }
+            },
             None => Ok(None),
         }
     }
@@ -430,8 +445,21 @@ impl OfferStore {
         let mut result = Vec::new();
 
         for item in self.offers.iter() {
-            let (_, value) = item?;
-            let offer: PublicSponsorshipOffer = bincode::deserialize(&value)?;
+            let (key, value) = item?;
+            // Skip (don't fail the whole listing on) legacy offers written by an
+            // older binary whose struct layout predates a trailing field. One
+            // undecodable row must not take down onboarding for every offer.
+            let offer: PublicSponsorshipOffer = match bincode::deserialize(&value) {
+                Ok(o) => o,
+                Err(e) => {
+                    log::warn!(
+                        "skipping undecodable legacy sponsorship offer {}: {}",
+                        hex::encode(&key),
+                        e
+                    );
+                    continue;
+                }
+            };
 
             // Check not expired
             if offer.expires_at < current_time {
@@ -549,6 +577,7 @@ mod tests {
             requirements: SponsorshipRequirements::default(),
             signature: Signature::from_bytes([0u8; 64]),
             auto_approve: false,
+            space_scope: None,
         }
     }
 

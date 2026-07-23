@@ -147,6 +147,9 @@ mod tests {
             .collect();
         let r = fracture(&items);
         assert!(r.depth >= 1);
-        assert!(r.leaves.iter().all(|l| l.bytes <= BRANCH_FRACTURE_THRESHOLD || l.item_count == 1));
+        assert!(r
+            .leaves
+            .iter()
+            .all(|l| l.bytes <= BRANCH_FRACTURE_THRESHOLD || l.item_count == 1));
     }
 }

@@ -483,7 +483,7 @@ export function Chat() {
           hasNotification: false,
         }))}
         currentServerId={serverId}
-        onServerHidden={refetchServers}
+        onServersChanged={refetchServers}
       />
 
       {/* Channel sidebar (in a server) OR the Direct Messages home sidebar (@me). */}

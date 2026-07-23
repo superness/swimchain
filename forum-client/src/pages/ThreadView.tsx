@@ -4,6 +4,7 @@
  */
 
 import { useState } from 'react';
+import { linkify } from '../lib/linkify';
 import { useParams, Link } from 'react-router-dom';
 import { useThread, usePoolContribution, useReplies, useReactions, useSpaces } from '../hooks/useRpc';
 import { useSponsorship } from '../hooks/useSponsorship';
@@ -253,7 +254,7 @@ export function ThreadView(): JSX.Element {
               }}
             />
           ) : (
-            <p>{displayContent}</p>
+            <p>{linkify(displayContent)}</p>
           )}
           {thread.mediaRefs && thread.mediaRefs.length > 0 && (
             <ImageGallery

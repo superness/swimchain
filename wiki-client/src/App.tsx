@@ -22,6 +22,7 @@ import { WikiPageEdit } from './pages/WikiPageEdit';
 import { RevisionHistory } from './pages/RevisionHistory';
 import { Discussion } from './pages/Discussion';
 import { WikiSearch } from './pages/WikiSearch';
+import { WikiLinkResolver } from './pages/WikiLinkResolver';
 
 export function App(): JSX.Element {
   return (
@@ -51,6 +52,9 @@ export function App(): JSX.Element {
 
               {/* Search */}
               <Route path="/search" element={<WikiSearch />} />
+
+              {/* [[wikilink]] target: resolve a title slug to its page across namespaces */}
+              <Route path="/wiki/:slug" element={<WikiLinkResolver />} />
 
               {/* Catch-all */}
               <Route path="*" element={<Navigate to="/" replace />} />

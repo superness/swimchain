@@ -1713,6 +1713,12 @@ pub struct RegisterSponsoredIdentityParams {
     /// caller can't claim work it didn't do. Onboarding must carry real PoW.
     #[serde(default)]
     pub pow_nonce_space: Option<String>,
+    /// Optional space id (hex, 32 bytes) to SPACE-LIMIT this grant. When set,
+    /// the sponsee may only author actions in this space (game/space-limited
+    /// onboarding), and the sponsor's signature must cover
+    /// `new_identity_pubkey || timestamp || scope`. Omit for a global grant.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// get_sponsorship_info params
@@ -1806,6 +1812,10 @@ pub struct SponsorshipOfferSummary {
     /// True if claims on this offer are approved instantly (invite links)
     #[serde(default)]
     pub auto_approve: bool,
+    /// Space scope (hex space id) if this offer sponsors only within one space.
+    /// `None` = a global grant. Game offers are scoped to their game space.
+    #[serde(default)]
+    pub space_scope: Option<String>,
 }
 
 /// Requirements sub-object for offer summaries
@@ -1871,6 +1881,11 @@ pub struct CreateSponsorshipOfferParams {
     /// sponsor review (one-step invite-link onboarding). Default false.
     #[serde(default)]
     pub auto_approve: bool,
+    /// Optional space scope (hex space id). When set, claimants approved through
+    /// this offer are sponsored ONLY within that space (a scoped grant), not
+    /// globally — used for game onboarding so a player is bound to the game space.
+    #[serde(default)]
+    pub space_scope: Option<String>,
     pub signature: String,
     pub timestamp: u64,
 }
@@ -1996,6 +2011,9 @@ pub struct MySponsorshipOfferSummary {
     /// True if claims on this offer are approved instantly (invite links)
     #[serde(default)]
     pub auto_approve: bool,
+    /// Hex space id (32 bytes) if this offer only sponsors within one space
+    #[serde(default)]
+    pub space_scope: Option<String>,
 }
 
 /// list_my_sponsorship_offers result

@@ -103,6 +103,11 @@ pub enum SponsorCmd {
         /// Hours until the invite expires (rounded up to whole days)
         #[arg(long, default_value = "168")]
         expires_hours: u32,
+
+        /// Optional space scope (sp1q.. id): claimants are sponsored ONLY within
+        /// this space, not globally. Use for game onboarding.
+        #[arg(long)]
+        space_scope: Option<String>,
     },
 
     /// List your sponsorship offers
@@ -244,7 +249,8 @@ pub fn execute(cmd: SponsorCmd, config: &CliConfig) -> Result<()> {
         SponsorCmd::Invite {
             slots,
             expires_hours,
-        } => invite(config, slots, expires_hours),
+            space_scope,
+        } => invite(config, slots, expires_hours, space_scope),
         SponsorCmd::OfferList { json } => offer_list(config, json),
         SponsorCmd::OfferView { offer_id, json } => offer_view(config, &offer_id, json),
         SponsorCmd::OfferCancel { offer_id } => offer_cancel(config, &offer_id),
@@ -484,7 +490,12 @@ fn offer_create(
 }
 
 /// Create an auto-approve invite offer and print the invite token/URL
-fn invite(config: &CliConfig, slots: u8, expires_hours: u32) -> Result<()> {
+fn invite(
+    config: &CliConfig,
+    slots: u8,
+    expires_hours: u32,
+    space_scope: Option<String>,
+) -> Result<()> {
     use base64::Engine;
 
     if expires_hours == 0 {
@@ -530,6 +541,7 @@ fn invite(config: &CliConfig, slots: u8, expires_hours: u32) -> Result<()> {
             "min_pow_difficulty": min_pow,
             "application_required": false,
             "auto_approve": true,
+            "space_scope": space_scope,
             "signature": sig_hex,
             "timestamp": now
         }),
