@@ -12,7 +12,7 @@ import { BlockButton } from './BlockButton';
 import { ImageGallery } from './ImageGallery';
 import { UserProfileModal } from './UserProfileModal';
 import { useUserProfile } from '../hooks/useUserProfile';
-import { useMediaUpload } from '../hooks/useRpc';
+import { useMediaUpload, useReactions } from '../hooks/useRpc';
 
 export interface MediaRef {
   mediaHash: string;
@@ -43,7 +43,7 @@ export interface Message {
 interface MessageItemProps {
   message: Message;
   isGrouped: boolean;
-  onReaction?: (messageId: string, emoji: string) => void;
+  onReaction?: (messageId: string, emoji: string) => void | Promise<void>;
   onReport?: (messageId: string, reason: SpamReason) => Promise<boolean>;
   onReply?: (messageId: string) => void;
   isOwnMessage?: boolean;
@@ -147,7 +147,10 @@ function getInitials(name: string): string {
 /**
  * Default emoji reactions
  */
-const DEFAULT_REACTIONS = ['❤️', '👍', '😂', '🔥', '🤔', '🎉'];
+// Only the node's 8 canonical reactions (src/types/content.rs). Offering an emoji
+// with no protocol code (e.g. 🎉) would submit the wrong code and display as a
+// different reaction.
+const DEFAULT_REACTIONS = ['❤️', '👍', '👎', '😂', '🤔', '🤯', '🔥', '🏊'];
 
 export function MessageItem({
   message,
@@ -178,6 +181,12 @@ export function MessageItem({
   // Resolve the author's profile (name + avatar) so the thread shows their chosen
   // username and picture inline — not just inside the details popup. Cached per author.
   const { profile: authorProfile } = useUserProfile(message.authorId);
+  // Reactions are NOT included in the reply RPC (message.reactions is always []),
+  // so fetch them per message via get_reactions — same as feed. Without this the
+  // reaction row never renders.
+  const { reactions: reactionData, refetch: refetchReactions } = useReactions(message.id);
+  const shownReactions = reactionData?.reactions ?? [];
+  const myReactionTypes = reactionData?.userReactions ?? [];
   const { getMediaUrl: resolveMedia } = useMediaUpload();
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const avatarContentId = authorProfile?.info?.avatarUrl;
@@ -197,9 +206,13 @@ export function MessageItem({
   const authorColor = getAuthorColor(message.authorId);
   const initials = getInitials(displayName);
 
-  const handleReaction = (emoji: string) => {
-    onReaction?.(message.id, emoji);
+  const handleReaction = async (emoji: string) => {
     setShowReactionPicker(false);
+    // Await the submit (PoW + RPC → mempool), then re-query. get_reactions
+    // merges pending mempool engagements, so the new reaction shows immediately
+    // without waiting for a block. Without this refetch the click did nothing visible.
+    await onReaction?.(message.id, emoji);
+    await refetchReactions();
   };
 
   // Show actions on hover or focus for keyboard accessibility
@@ -302,20 +315,23 @@ export function MessageItem({
         )}
 
         {/* Reactions */}
-        {message.reactions && message.reactions.length > 0 && (
+        {shownReactions.length > 0 && (
           <div className="message-reactions" role="group" aria-label="Reactions">
-            {message.reactions.map((reaction) => (
+            {shownReactions.map((reaction) => {
+              const hasReacted = myReactionTypes.includes(reaction.reactionType);
+              return (
               <button
                 key={reaction.emoji}
-                className={`reaction-badge ${reaction.hasReacted ? 'reacted' : ''}`}
+                className={`reaction-badge ${hasReacted ? 'reacted' : ''}`}
                 onClick={() => handleReaction(reaction.emoji)}
-                aria-label={`${reaction.emoji} reaction, ${reaction.count} ${reaction.count === 1 ? 'person' : 'people'}${reaction.hasReacted ? ', you reacted' : ''}`}
-                aria-pressed={reaction.hasReacted}
+                aria-label={`${reaction.emoji} reaction, ${reaction.count} ${reaction.count === 1 ? 'person' : 'people'}${hasReacted ? ', you reacted' : ''}`}
+                aria-pressed={hasReacted}
               >
                 <span className="reaction-emoji" aria-hidden="true">{reaction.emoji}</span>
                 <span className="reaction-count">{reaction.count}</span>
               </button>
-            ))}
+              );
+            })}
             <button
               className="add-reaction-btn"
               onClick={() => setShowReactionPicker(!showReactionPicker)}

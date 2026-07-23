@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Swimchain Feed",
+  "productName": "Swimchain Chat",
   "version": "0.1.0",
-  "identifier": "io.swimchain.app.feed",
+  "identifier": "io.swimchain.app.chat",
   "build": {
     "frontendDist": "../web"
   },
@@ -10,13 +10,13 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Swimchain Feed",
+        "title": "Swimchain Chat",
         "width": 1200,
         "height": 800
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:*; frame-src 'self'; worker-src 'self' blob:"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:* ws://localhost:*; frame-src 'self'; worker-src 'self' blob:"
     }
   },
   "bundle": {

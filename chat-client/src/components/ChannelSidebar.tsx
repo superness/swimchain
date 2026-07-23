@@ -5,9 +5,12 @@
  * Maps: Channel = Thread in Swimchain terminology.
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useBlocklist } from '../hooks/useBlocklist';
+import { useChatIdentity } from '../hooks/useChatIdentity';
+import { useUserProfile } from '../hooks/useUserProfile';
+import { useMediaUpload } from '../hooks/useRpc';
 import { PrivateChannelsSection } from './PrivateChannelsSection';
 import { NodePrivateChannelActions } from './NodePrivateChannelActions';
 import './ChannelSidebar.css';
@@ -216,6 +219,23 @@ export function ChannelSidebar({
   onCreateChannel,
 }: ChannelSidebarProps) {
   const navigate = useNavigate();
+
+  // Current user's own identity + profile for the bottom user area (was a
+  // hardcoded "You" with a placeholder avatar).
+  const { identity } = useChatIdentity();
+  const { profile: myProfile } = useUserProfile(identity?.publicKey ?? identity?.address ?? '');
+  const { getMediaUrl: resolveMedia } = useMediaUpload();
+  const [myAvatarUrl, setMyAvatarUrl] = useState<string | null>(null);
+  const myAvatarContentId = myProfile?.info?.avatarUrl;
+  useEffect(() => {
+    if (!myAvatarContentId) { setMyAvatarUrl(null); return; }
+    let alive = true;
+    resolveMedia(myAvatarContentId.replace(/^sha256:/, ''))
+      .then(u => { if (alive) setMyAvatarUrl(u); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [myAvatarContentId, resolveMedia]);
+  const myDisplayName = myProfile?.info?.displayName ?? identity?.displayName ?? 'You';
   const [categories, setCategories] = useState<ChannelCategory[]>(() =>
     groupChannelsByCategory(channels)
   );
@@ -254,6 +274,20 @@ export function ChannelSidebar({
           <h2 className="server-name">{server.name}</h2>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
             <path d="M7 10L12 15L17 10H7Z"/>
+          </svg>
+        </button>
+        {/* Persistent "new post" entry point. A chat channel IS a top-level post
+            in the space, so this is how you start a fresh thread — it must stay
+            reachable even once the space already has posts (previously the only
+            create button lived in the empty-state and vanished after the first post). */}
+        <button
+          className="server-header-add"
+          aria-label="New post"
+          title="New post"
+          onClick={() => onCreateChannel?.()}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M13 11V5a1 1 0 1 0-2 0v6H5a1 1 0 1 0 0 2h6v6a1 1 0 1 0 2 0v-6h6a1 1 0 1 0 0-2h-6Z"/>
           </svg>
         </button>
       </div>
@@ -296,10 +330,14 @@ export function ChannelSidebar({
       {/* User area at bottom */}
       <div className="user-area">
         <div className="user-avatar">
-          <div className="avatar-placeholder" />
+          {myAvatarUrl ? (
+            <img src={myAvatarUrl} alt={myDisplayName} className="user-avatar-img" />
+          ) : (
+            <div className="avatar-placeholder" />
+          )}
         </div>
         <div className="user-info">
-          <span className="username">You</span>
+          <span className="username">{myDisplayName}</span>
         </div>
         <div className="user-controls">
           <button

@@ -92,8 +92,16 @@ export function useMessages(
 
       const transformedMessages: Message[] = [];
 
-      // Add original post as the first message if it has content
-      if (postResult && (postResult.title || postResult.body)) {
+      console.log('[useMessages] channel=', channelId?.slice(0, 16),
+        'rootPost media_refs=', (postResult as { media_refs?: unknown[] } | null)?.media_refs?.length ?? 'no-post',
+        'rootHasText=', !!(postResult?.title || postResult?.body),
+        'replies=', repliesResult.replies.length,
+        'replyMedia=', repliesResult.replies.map(r => (r as { media_refs?: unknown[] }).media_refs?.length ?? 0));
+
+      // Add original post as the first message if it has content — text OR
+      // images. Previously gated on text only, so an image-only root post was
+      // dropped and its picture never rendered.
+      if (postResult && (postResult.title || postResult.body || postResult.media_refs?.length)) {
         // Plain text — MessageItem has no markdown renderer, so `**title**`
         // would show its literal asterisks.
         const postContent = postResult.title
