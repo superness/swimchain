@@ -469,8 +469,10 @@ export async function fetchPost(
 
   // Enforce the showcase lockdown on direct post links too: a post outside an
   // allowlisted space, or by a non-showcase author, is treated as not found so
-  // it can't be reached by guessing/sharing a /s/… URL.
-  if (!isShowcaseSpace(content.space_id) || !isShowcaseAuthor(content.author_id)) {
+  // it can't be reached by guessing/sharing a /s/… URL. get_content returns
+  // space_id as hex, so match on the bech32 form (falling back to raw).
+  const contentSpace = content.space_id_bech32 ?? content.space_id;
+  if (!isShowcaseSpace(contentSpace) || !isShowcaseAuthor(content.author_id)) {
     return { status: 'not-found' };
   }
 
