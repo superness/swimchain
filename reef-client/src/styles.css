@@ -37,7 +37,10 @@ code { font-family: var(--mono); font-size: 0.9em; color: var(--shallow); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .link { background: none; border: none; color: var(--shallow); cursor: pointer; font-family: var(--mono); font-size: 13px; padding: 0; }
 
-.app { max-width: 640px; margin: 0 auto; padding: 20px; }
+/* Wide app shell: the game gets the screen, not a document column. The lobby
+   keeps a readable width; in-game, board + HUD split the space (see .game-cols). */
+.app { max-width: 1240px; margin: 0 auto; padding: 20px 28px; }
+.lobby { max-width: 720px; margin: 0 auto; }
 header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 h1 { font-size: 24px; margin: 0 0 4px; }
 h2 { font-size: 18px; margin: 0; }
@@ -84,14 +87,18 @@ h2 { font-size: 18px; margin: 0; }
 /* ── The reef grid ─────────────────────────────────────────────────────────── */
 .reef {
   position: relative;
-  width: min(94vw, 540px);
-  margin: 16px auto;
+  /* Fill the board column, capped so the whole grid fits the viewport height —
+     the board is the stage and should be as big as the screen allows. */
+  width: min(100%, calc(100vh - 225px));
+  min-width: min(100%, 300px);
+  margin: 14px auto;
   display: grid;
   gap: 2px;
-  padding: 6px;
+  padding: 8px;
   background: var(--water);
   border: 2px solid var(--line);
-  border-radius: 6px;
+  border-radius: 10px;
+  box-shadow: 0 0 70px rgba(110, 211, 194, 0.09), 0 30px 90px rgba(0, 0, 0, 0.5);
 }
 /* While a claim is resolving the whole board charges — a breathing glow so it
    reads as the reef straining to win the spot, not one idle tile. */
@@ -536,21 +543,60 @@ h2 { font-size: 18px; margin: 0; }
 
 /* ── first-run tutorial coach-marks ─────────────────────────────────────────── */
 .tut-card {
+  position: relative;
+  overflow: hidden;
   margin: 10px 0;
-  padding: 12px 14px;
-  border-radius: 6px;
-  border: 1px solid var(--shallow);
-  background: rgba(110, 211, 194, 0.08);
+  padding: 13px 16px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(110, 211, 194, 0.5);
+  background:
+    radial-gradient(120% 150% at 0% 0%, rgba(110, 211, 194, 0.13), transparent 55%),
+    linear-gradient(180deg, rgba(10, 39, 48, 0.85), rgba(7, 42, 52, 0.65));
+  box-shadow: 0 6px 28px rgba(110, 211, 194, 0.1), inset 0 1px 0 rgba(232, 241, 239, 0.06);
   font-size: 14px;
-  line-height: 1.45;
-  animation: tut-in 0.35s ease-out;
+  line-height: 1.5;
+  animation: tut-in 0.45s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 @keyframes tut-in {
-  from { opacity: 0; transform: translateY(4px); }
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
+/* A slow light-line across the top edge — the card reads as part of the water. */
+.tut-shimmer {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--shallow), transparent);
+  background-size: 220% 100%;
+  animation: tut-shimmer 3.4s linear infinite;
+  opacity: 0.85;
+}
+@keyframes tut-shimmer {
+  from { background-position: 220% 0; }
+  to { background-position: -220% 0; }
+}
+.tut-kicker { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.tut-kicker-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--shallow);
+}
+.tut-dots { display: inline-flex; gap: 5px; }
+.tut-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(110, 211, 194, 0.22); }
+.tut-dot.done { background: rgba(110, 211, 194, 0.6); }
+.tut-dot.now { background: var(--heat); box-shadow: 0 0 7px rgba(255, 158, 94, 0.8); }
 .tut-actions { display: flex; gap: 14px; align-items: center; margin-top: 10px; }
 .tut-actions .btn { padding: 4px 14px; font-size: 13px; }
+/* The element the current card is teaching glows in sync with its copy
+   ("the glowing bar below") — a coach-mark that points, not just talks. */
+.tut-glow { border-radius: 8px; animation: tut-glow 1.8s ease-in-out infinite; }
+@keyframes tut-glow {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(110, 211, 194, 0.25), 0 0 10px rgba(110, 211, 194, 0.12); }
+  50% { box-shadow: 0 0 0 2px rgba(110, 211, 194, 0.6), 0 0 20px rgba(110, 211, 194, 0.35); }
+}
 /* The tutorial slot animates open/closed (0fr ↔ 1fr grid-rows) so cards never
    yank the layout when they appear, swap, or dismiss — dismissing the first
    card used to drop the viewport straight into the grid. */
@@ -566,16 +612,119 @@ h2 { font-size: 18px; margin: 0; }
 
 /* ── "?" how-to-play panel ──────────────────────────────────────────────────── */
 .help-panel {
-  max-width: 560px;
-  max-height: 82vh;
+  max-width: 620px;
+  max-height: 86vh;
   overflow-y: auto;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 20px 22px;
+  background: linear-gradient(180deg, rgba(10, 39, 48, 0.97), rgba(6, 30, 39, 0.97));
+  border: 1px solid rgba(110, 211, 194, 0.3);
+  border-radius: 12px;
+  padding: 22px 26px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 40px rgba(110, 211, 194, 0.08);
 }
 .help-panel h2 { margin: 0 0 6px; }
-.help-panel h3 { margin: 16px 0 4px; font-size: 15px; color: var(--shallow); }
-.help-panel p, .help-panel li { font-size: 14px; line-height: 1.5; }
-.help-panel ul { padding-left: 20px; margin: 6px 0; }
-.help-panel .btn { margin-top: 14px; }
+.help-panel h3 {
+  margin: 18px 0 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--shallow);
+}
+.help-panel p, .help-panel li { font-size: 14px; line-height: 1.55; margin: 6px 0; }
+.help-panel .btn { margin-top: 16px; }
+
+/* moves taught with the board's own visual language: mini tiles + cost chips */
+.hp-moves { display: flex; flex-direction: column; gap: 12px; margin: 10px 0 4px; }
+.hp-move { display: flex; gap: 14px; align-items: flex-start; }
+.hp-diagram { display: inline-flex; align-items: center; gap: 6px; flex: none; padding-top: 3px; }
+.hp-tile {
+  width: 28px; height: 28px; border-radius: 4px;
+  background: var(--water-2); border: 1px solid var(--line);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.hp-tile.open { background: rgba(110, 211, 194, 0.08); border-style: dashed; border-color: rgba(110, 211, 194, 0.5); }
+.hp-arrow { color: var(--muted); font-size: 13px; font-family: var(--mono); }
+.hp-coral { width: 78%; height: 78%; border-radius: 3px; background: hsl(268 70% 55%); }
+.hp-coral.mine { box-shadow: 0 0 0 2px var(--foam); }
+.hp-coral.enemy { background: hsl(322 70% 52%); }
+.hp-coral.small { width: 48%; height: 48%; }
+.hp-coral.tiny { width: 32%; height: 32%; }
+.hp-coral.dying { animation: hp-dying 0.95s ease-in-out infinite; }
+@keyframes hp-dying { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.hp-what { min-width: 0; }
+.hp-what strong { font-size: 15px; }
+.hp-how { display: block; color: var(--muted); font-size: 13px; line-height: 1.5; margin-top: 2px; }
+.hp-chip {
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  color: var(--ink); background: var(--shallow);
+  border-radius: 999px; padding: 1px 9px; margin-left: 7px; vertical-align: 2px;
+}
+.hp-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; margin: 8px 0 2px; }
+.hp-key { display: flex; align-items: center; gap: 9px; }
+.hp-lore { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+@media (max-width: 520px) { .hp-legend { grid-template-columns: 1fr; } }
+
+/* ── immersion: the ocean scene, the split game shell, the HUD ──────────────── */
+/* Ambient water behind every screen: depth gradient, drifting light shafts,
+   rising plankton. Fixed, non-interactive, CSS-only. */
+.ocean { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none;
+  background:
+    radial-gradient(90rem 42rem at 72% -12%, rgba(110, 211, 194, 0.1), transparent 60%),
+    linear-gradient(180deg, #072731 0%, var(--ink) 46%, #020c11 100%);
+}
+.ocean .ray { position: absolute; top: -22%; height: 140%; transform: rotate(14deg);
+  background: linear-gradient(180deg, rgba(110, 211, 194, 0.11), transparent 72%);
+  filter: blur(18px); animation: ray-drift 17s ease-in-out infinite;
+}
+.ocean .r1 { left: 10%; width: 16vw; }
+.ocean .r2 { left: 38%; width: 9vw; animation-delay: -6s; opacity: 0.8; }
+.ocean .r3 { left: 66%; width: 22vw; animation-delay: -12s; opacity: 0.6; }
+@keyframes ray-drift {
+  0%, 100% { transform: rotate(12deg) translateX(0); opacity: 0.5; }
+  50% { transform: rotate(16deg) translateX(3vw); opacity: 0.95; }
+}
+.ocean .plankton { position: absolute; bottom: -10px; left: 2vw; width: 4px; height: 4px; border-radius: 50%;
+  background: rgba(232, 241, 239, 0.32);
+  box-shadow:
+    11vw 9vh 0 -1px rgba(232, 241, 239, 0.2), 27vw 24vh 0 0 rgba(110, 211, 194, 0.24),
+    46vw 6vh 0 -2px rgba(232, 241, 239, 0.17), 62vw 32vh 0 -1px rgba(110, 211, 194, 0.19),
+    79vw 15vh 0 0 rgba(232, 241, 239, 0.22), 92vw 42vh 0 -2px rgba(232, 241, 239, 0.15);
+  animation: plankton-rise 28s linear infinite;
+}
+.ocean .p2 { left: 7vw; animation-duration: 38s; animation-delay: -14s; opacity: 0.75; }
+.ocean .p3 { left: -3vw; animation-duration: 48s; animation-delay: -29s; opacity: 0.55; }
+@keyframes plankton-rise { from { transform: translateY(12vh); } to { transform: translateY(-118vh); } }
+
+/* In-game split: board is the stage, HUD rides shotgun and stays in view. */
+.game-cols { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 26px; align-items: start; margin-top: 6px; }
+.board-col { min-width: 0; }
+.status {
+  margin-top: 14px;
+  padding: 16px 16px 14px;
+  border: 1px solid rgba(110, 211, 194, 0.18);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(10, 39, 48, 0.72), rgba(7, 42, 52, 0.5));
+  backdrop-filter: blur(6px);
+  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(232, 241, 239, 0.05);
+}
+@media (min-width: 981px) { .status { position: sticky; top: 14px; } }
+@media (max-width: 980px) {
+  .game-cols { grid-template-columns: 1fr; gap: 0; }
+  .reef { width: min(100%, calc(100vh - 260px)); }
+}
+
+/* The landing is an invitation, not a form. */
+.center.col > h1 { font-size: 36px; text-shadow: 0 0 34px rgba(110, 211, 194, 0.35); animation: reef-bob 5.5s ease-in-out infinite; }
+@keyframes reef-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+.center.col .btn.primary { padding: 12px 36px; font-size: 16px; border-radius: 8px; animation: play-glow 2.8s ease-in-out infinite; }
+@keyframes play-glow {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 158, 94, 0); }
+  50% { box-shadow: 0 0 28px rgba(255, 158, 94, 0.38); }
+}
+h1 { text-shadow: 0 0 22px rgba(110, 211, 194, 0.22); }
+
+/* Ambience steps aside for players who ask for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .ocean .ray, .ocean .plankton, .tut-shimmer, .center.col > h1, .center.col .btn.primary, .tut-glow { animation: none; }
+}
