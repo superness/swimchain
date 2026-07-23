@@ -13,13 +13,19 @@
 
 import { addressToHex, hexToAddress } from '@/lib/address';
 
-const DEFAULT_SPACE_IDS = 'sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm'; // Swimchain 101
+// Curated spaces: Swimchain 101, and The Daily Drift (the newspaper demo at
+// /example, whose "gateway view" links point back into /browse).
+const DEFAULT_SPACE_IDS =
+  'sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm,sp1qqqsqrdfg94sh5e3zjs3yd9p897szsthzr';
 const DEFAULT_AUTHOR_IDS =
-  'cs1qqyapas5tz23d30w39pwnxs93prnrfz6n667fgucq2k77n7trwvpxrh9sxj'; // operator
+  'cs1qqyapas5tz23d30w39pwnxs93prnrfz6n667fgucq2k77n7trwvpxrh9sxj,' + // operator (101)
+  'cs1qzknh7xvkxx3w65ed8c3atsa3aj6l5jggy9d7adu7c545u07y6j7qxn60ga'; // dispatch-bot (Daily Drift)
 // spaceId=Display Name pairs, so a curated space shows a real title even when the
 // node has never resolved its on-chain name (the name blob may not be seeded on
 // any peer). Override with SHOWCASE_SPACE_NAMES="sp1..=Name,sp1..=Name".
-const DEFAULT_SPACE_NAMES = 'sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm=Swimchain 101';
+const DEFAULT_SPACE_NAMES =
+  'sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm=Swimchain 101,' +
+  'sp1qqqsqrdfg94sh5e3zjs3yd9p897szsthzr=The Daily Drift';
 
 function parseList(value: string | undefined, fallback: string): string[] {
   return (value ?? fallback)
