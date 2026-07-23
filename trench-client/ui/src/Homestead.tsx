@@ -45,6 +45,13 @@ export interface HomesteadProps {
   viewStructures: Structure[];
   viewBrightness: Brightness;
   lanternPulse: boolean;
+  /** One-shot ceremony beat (App.tsx owns the timer): the lantern just
+   *  crossed a brightness tier. */
+  tierShift: boolean;
+  /** Structure indices mid-ruin-collapse ceremony (App.tsx owns the timer,
+   *  diffed from the folded state — see the ruin toast wired through the
+   *  existing notice system). */
+  ruinFlashIdx: Set<number>;
   busy: boolean;
   sessionStartMs: number;
   costs: Record<StructureKind, number>;
@@ -80,6 +87,8 @@ export function Homestead(props: HomesteadProps) {
     viewStructures,
     viewBrightness,
     lanternPulse,
+    tierShift,
+    ruinFlashIdx,
     busy,
     sessionStartMs,
     costs,
@@ -111,7 +120,9 @@ export function Homestead(props: HomesteadProps) {
 
   return (
     <>
-      <div className={`lantern-panel${lanternPulse ? ' pulsing' : ''}`}>
+      <div
+        className={`lantern-panel b-${viewBrightness}${lanternPulse ? ' pulsing' : ''}${tierShift ? ' tier-shift' : ''}`}
+      >
         <div className="lantern-icon" aria-hidden="true">
           {TIER_ICON[viewBrightness]}
         </div>
@@ -160,7 +171,7 @@ export function Homestead(props: HomesteadProps) {
           <p className="fine muted">Nothing built yet — the palette below is a start.</p>
         ) : (
           viewStructures.map((s, i) => (
-            <div key={i} className={`structure-row${s.ruined ? ' ruined' : ''}`}>
+            <div key={i} className={`structure-row${s.ruined ? ' ruined' : ''}${ruinFlashIdx.has(i) ? ' ruin-collapsing' : ''}`}>
               <span className="struct-icon" aria-hidden="true">
                 {BUILD_INFO[s.kind].icon}
               </span>

@@ -140,14 +140,42 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   display: flex; flex-direction: column; align-items: center; gap: 3px;
   background: none; border: none; padding: 0; cursor: pointer; color: inherit;
 }
+/* Light as the theme: a soft radial bloom behind every pin, scaled by
+   brightness — DARK gets none (a barely-there outline instead), DIM a small
+   flickering halo, LIT the widest, steadiest glow. Painted before the dot
+   (pseudo-content precedes real children), so it always sits behind it. */
+.claim-pin::before {
+  content: '';
+  position: absolute; left: 50%; top: 7px; transform: translate(-50%, -50%);
+  width: 20px; height: 20px; border-radius: 50%; pointer-events: none;
+  opacity: 0;
+}
 .claim-pin .claim-dot {
   width: 14px; height: 14px; border-radius: 50%;
   background: var(--dark-tier); border: 1px solid rgba(232, 241, 239, 0.25);
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
 }
-.claim-pin.b-DARK .claim-dot { background: var(--dark-tier); }
-.claim-pin.b-DIM .claim-dot { background: var(--dim-tier); box-shadow: 0 0 8px rgba(217, 164, 65, 0.5); }
+/* DARK: barely-there — a faint outline, no fill, no glow. */
+.claim-pin.b-DARK .claim-dot { background: rgba(58, 74, 82, 0.18); border-color: rgba(232, 241, 239, 0.15); box-shadow: none; }
+/* DIM: a small flickering halo — the lantern is guttering. */
+.claim-pin.b-DIM .claim-dot { background: var(--dim-tier); box-shadow: 0 0 8px rgba(217, 164, 65, 0.5); animation: dim-flicker 2s ease-in-out infinite; }
+.claim-pin.b-DIM::before {
+  width: 32px; height: 32px; opacity: 0.4;
+  background: radial-gradient(circle, rgba(217, 164, 65, 0.4), transparent 70%);
+  animation: dim-flicker 2s ease-in-out infinite;
+}
+/* LIT: the widest, steadiest bloom — it reads from across the map. */
 .claim-pin.b-LIT .claim-dot { background: var(--lit-tier); box-shadow: 0 0 14px rgba(255, 210, 122, 0.75); }
+.claim-pin.b-LIT::before {
+  width: 54px; height: 54px; opacity: 0.6;
+  background: radial-gradient(circle, rgba(255, 210, 122, 0.42), transparent 70%);
+  animation: lit-bloom 3.2s ease-in-out infinite;
+}
+@keyframes dim-flicker { 0%, 100% { opacity: 1; } 45% { opacity: 0.5; } 55% { opacity: 0.85; } }
+@keyframes lit-bloom {
+  0%, 100% { opacity: 0.5; transform: translate(-50%, -50%) scale(1); }
+  50% { opacity: 0.85; transform: translate(-50%, -50%) scale(1.14); }
+}
 .claim-pin.b-neutral .claim-dot { background: var(--muted); opacity: 0.5; }
 .claim-pin .claim-label {
   font-family: var(--mono); font-size: 10px; color: var(--foam);
@@ -159,6 +187,22 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--foam); pointer-events: none;
 }
 
+/* Ceremony: founding — a light blooms outward from the new claim, three
+   staggered rings (reef's claim-wave pattern; App.tsx owns the one-shot
+   timer via `justFounded`). */
+.claim-pin .claim-wave {
+  position: absolute; left: 50%; top: 7px; transform: translate(-50%, -50%) scale(0.3);
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 2px solid rgba(255, 210, 122, 0.7); pointer-events: none;
+  animation: claim-wave 2.1s ease-out infinite;
+}
+.claim-pin .claim-wave.w2 { animation-delay: 0.7s; }
+.claim-pin .claim-wave.w3 { animation-delay: 1.4s; }
+@keyframes claim-wave {
+  0% { transform: translate(-50%, -50%) scale(0.3); opacity: 0.65; }
+  100% { transform: translate(-50%, -50%) scale(7); opacity: 0; }
+}
+
 .claim-preview {
   position: absolute; transform: translate(-50%, -50%);
   width: 16px; height: 16px; border-radius: 50%;
@@ -166,13 +210,31 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 }
 .claim-preview.bad { border-color: var(--heat); }
 
-/* ── lantern panel ────────────────────────────────────────────────────────── */
+/* ── lantern panel: a living flame ───────────────────────────────────────── */
 .lantern-panel { display: flex; align-items: center; gap: 12px; }
-.lantern-icon { font-size: 30px; line-height: 1; filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.35)); }
+/* Baseline: the lantern always breathes, even idle — it's a living flame, not
+   a static icon. Heartbeat submission (`.pulsing`) briefly intensifies it;
+   the tier (b-LIT/DIM/DARK, from the HUD's own live brightness projection)
+   sets its resting color and pace. */
+.lantern-icon { font-size: 30px; line-height: 1; filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.35)); animation: flame-breathe 2.6s ease-in-out infinite; }
+@keyframes flame-breathe {
+  0%, 100% { filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.32)); transform: scale(1); }
+  50% { filter: drop-shadow(0 0 10px rgba(255, 210, 122, 0.55)); transform: scale(1.04); }
+}
+.lantern-panel.b-DIM .lantern-icon { animation-duration: 2s; filter: drop-shadow(0 0 5px rgba(217, 164, 65, 0.35)); }
+.lantern-panel.b-DARK .lantern-icon { animation-duration: 4.2s; filter: drop-shadow(0 0 3px rgba(150, 160, 160, 0.25)); }
 .lantern-panel.pulsing .lantern-icon { animation: lantern-pulse 1.1s ease-in-out infinite; }
 @keyframes lantern-pulse {
   0%, 100% { filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.35)); transform: scale(1); }
   50% { filter: drop-shadow(0 0 16px rgba(255, 210, 122, 0.8)); transform: scale(1.08); }
+}
+/* Ceremony: a brightness-tier change gets a beat — a bright flash of white
+   fading back to the tier's resting glow (App.tsx owns the one-shot timer). */
+.lantern-panel.tier-shift .lantern-icon { animation: tier-shift-flash 1.6s ease-out; }
+@keyframes tier-shift-flash {
+  0% { filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.35)); transform: scale(1); }
+  30% { filter: drop-shadow(0 0 26px rgba(232, 241, 239, 0.85)); transform: scale(1.22); }
+  100% { filter: drop-shadow(0 0 6px rgba(255, 210, 122, 0.35)); transform: scale(1); }
 }
 .lantern-body { display: flex; flex-direction: column; gap: 2px; }
 .lantern-tier { font-size: 16px; font-weight: 700; letter-spacing: 0.06em; }
@@ -191,6 +253,14 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .structures { display: flex; flex-direction: column; gap: 6px; }
 .structure-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .structure-row.ruined { opacity: 0.6; }
+/* Ceremony: the abyss takes a structure — a brief collapse in place, paired
+   with a toast via the existing notice system (App.tsx owns the timer). */
+.structure-row.ruin-collapsing { animation: ruin-collapse 1.2s ease-out; }
+@keyframes ruin-collapse {
+  0% { opacity: 1; transform: scale(1) translateY(0); filter: none; }
+  45% { opacity: 0.35; transform: scale(0.94) translateY(2px); filter: blur(0.6px); }
+  100% { opacity: 0.6; transform: scale(1) translateY(0); filter: none; }
+}
 .struct-icon { font-size: 16px; }
 .struct-name { flex: none; }
 .integrity-bar { flex: 1; height: 8px; border-radius: 4px; background: var(--water-2); border: 1px solid var(--line); overflow: hidden; }
@@ -319,9 +389,36 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .hp-key { display: flex; align-items: center; gap: 9px; }
 .hp-lore { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
 
+/* ── the abyss scene ──────────────────────────────────────────────────────── */
+/* Ambient depth behind every screen: near-black gradient (we're BELOW the
+   reef's light shafts — no rays here), sparse bioluminescent motes drifting
+   up out of the dark, a pressure vignette pressing in from the edges. Fixed,
+   non-interactive, CSS-only. */
+.abyss {
+  position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none;
+  background:
+    radial-gradient(60rem 34rem at 50% 0%, rgba(154, 123, 255, 0.05), transparent 62%),
+    linear-gradient(180deg, var(--ink) 0%, #010609 55%, #000406 100%);
+}
+.abyss .mote { position: absolute; bottom: -8vh; border-radius: 50%; filter: blur(0.5px); animation: mote-drift linear infinite; }
+.abyss .mote.teal { background: radial-gradient(circle, rgba(110, 211, 194, 0.9), transparent 70%); }
+.abyss .mote.violet { background: radial-gradient(circle, rgba(154, 123, 255, 0.85), transparent 70%); }
+.abyss .m1 { left: 14vw; width: 5px; height: 5px; opacity: 0.32; animation-duration: 34s; }
+.abyss .m2 { left: 52vw; width: 3px; height: 3px; opacity: 0.5; animation-duration: 46s; animation-delay: -18s; }
+.abyss .m3 { left: 82vw; width: 4px; height: 4px; opacity: 0.26; animation-duration: 58s; animation-delay: -9s; }
+@keyframes mote-drift { from { transform: translateY(6vh) translateX(0); } to { transform: translateY(-112vh) translateX(2vw); } }
+/* Pressure vignette: the deeper you are, the more the dark presses in. */
+.abyss .vignette { position: absolute; inset: 0; box-shadow: inset 0 0 16vw 4vw rgba(0, 0, 0, 0.7); }
+
 /* ── landing / boot screens ───────────────────────────────────────────────── */
-.center.col > h1 { font-size: 36px; text-shadow: 0 0 34px rgba(88, 214, 200, 0.3); }
-.center.col .btn.primary { padding: 12px 36px; font-size: 16px; border-radius: 8px; }
+.center.col > h1 { font-size: 36px; text-shadow: 0 0 34px rgba(88, 214, 200, 0.3); animation: lantern-bob 5.5s ease-in-out infinite; }
+@keyframes lantern-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+.center.col .btn.primary { padding: 12px 36px; font-size: 16px; border-radius: 8px; animation: lantern-call 2.8s ease-in-out infinite; }
+@keyframes lantern-call {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 210, 122, 0); }
+  50% { box-shadow: 0 0 28px rgba(255, 210, 122, 0.4); }
+}
+.landing p.fine { max-width: 380px; margin: 4px auto 0; }
 
 /* narrow screens stack; ambience steps aside on request */
 @media (max-width: 980px) {
@@ -329,5 +426,18 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   .trench-map { height: min(60vh, 480px); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .tut-shimmer, .lantern-panel.pulsing .lantern-icon, .spinner { animation: none; }
+  .tut-shimmer, .spinner,
+  .abyss .mote,
+  .claim-pin .claim-wave,
+  .structure-row.ruin-collapsing,
+  .center.col > h1, .center.col .btn.primary {
+    animation: none;
+  }
+  /* These have brightness/pulse/tier modifier classes with higher selector
+     specificity than a plain override (e.g. `.lantern-panel.b-DIM .lantern-icon`
+     beats `.lantern-panel .lantern-icon`) — !important guarantees every
+     variant is actually killed, not just the unmodified base case. */
+  .lantern-icon, .claim-pin::before, .claim-pin .claim-dot {
+    animation: none !important;
+  }
 }
