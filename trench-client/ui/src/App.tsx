@@ -76,9 +76,11 @@ export function App() {
   // ── boot: auth → node status → identity → sponsorship ──────────────────────
   const [auth, setAuth] = useState<RpcAuth | null>(null);
   const [connected, setConnected] = useState(false);
-  // Lantern telemetry, diegetic labels (spec §4): "neighbors in reach" /
-  // "depth mark" — null until the first status poll resolves.
-  const [peerCount, setPeerCount] = useState<number | null>(null);
+  // Lantern telemetry, diegetic label (spec §4): "depth mark" — null until
+  // the first status poll resolves. "neighbors in reach" (below) is NOT
+  // P2P peer count — a previous pass mis-mapped it to `get_info`'s
+  // `peer_count`; it's the count of OTHER claims on the map within
+  // `expeditionRange`, computed from `mapClaims` + `ownState` further down.
   const [blockHeight, setBlockHeight] = useState<number | null>(null);
   const [identity, setIdentity] = useState<NodeIdentity | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
@@ -150,10 +152,9 @@ export function App() {
     let cancelled = false;
     const poll = async () => {
       try {
-        const info = await rpcCall<{ peer_count?: number; block_height?: number }>(auth, 'get_info', {});
+        const info = await rpcCall<{ block_height?: number }>(auth, 'get_info', {});
         if (!cancelled) {
           setConnected(true);
-          if (typeof info.peer_count === 'number') setPeerCount(info.peer_count);
           if (typeof info.block_height === 'number') setBlockHeight(info.block_height);
         }
       } catch {
@@ -235,9 +236,18 @@ export function App() {
     return () => clearInterval(t);
   }, [auth, sponsored, refreshMap]);
 
+  // `owner` (from `list_space_content`'s `author_id`) is documented as
+  // bech32 address, but other RPC paths in this codebase (e.g. `get_replies`)
+  // return hex pubkey for the same field — reef hit this exact both-forms
+  // trap at MessageItem. Check both of this identity's own forms so a format
+  // drift in what the node returns can never silently orphan a real claim.
   const myClaim = useMemo<MapClaim | null>(() => {
     if (!identity) return null;
-    return mapClaims.find((c) => c.accepted && c.owner === identity.address) ?? null;
+    return (
+      mapClaims.find(
+        (c) => c.accepted && (c.owner === identity.address || c.owner === identity.publicKeyHex)
+      ) ?? null
+    );
   }, [mapClaims, identity]);
 
   // ── own claim: fold + reconcile, holding the last-known state until the
@@ -475,16 +485,38 @@ export function App() {
     return acceptedClaims.every((c) => chebyshev(c.header.x, c.header.y, foundPos.x, foundPos.y) >= CLAIM_MIN_SPACING);
   }, [foundPos, acceptedClaims]);
 
+  // "Neighbors in reach" (lantern telemetry, diegetic label — spec §4): every
+  // OTHER accepted claim within this claim's expedition range, regardless of
+  // who owns it — a claim owned by the same identity as you is still a real,
+  // visitable neighbor (the engine folds a same-owner expedition exactly like
+  // any other; see `expedition` below, which no longer special-cases it).
+  const neighborsInReach = useMemo(() => {
+    if (!ownState) return null;
+    const range = expeditionRange(ownState);
+    return acceptedClaims.filter(
+      (c) => c.claimId !== ownState.claimId && chebyshev(ownState.header.x, ownState.header.y, c.header.x, c.header.y) <= range
+    ).length;
+  }, [acceptedClaims, ownState]);
+
   // ── selected-claim / expedition derivations ─────────────────────────────────
+  // Any accepted claim is selectable — own or not, same owner or not; the map
+  // is a shared world and the panel below only special-cases DISPLAY (owner
+  // shown as "you"), never whether the panel/expedition flow is reachable.
   const selectedEntry = useMemo(
     () => (selectedClaimId ? mapClaims.find((c) => c.claimId === selectedClaimId) ?? null : null),
     [selectedClaimId, mapClaims]
   );
   const selectedState = selectedClaimId ? loadedStates.get(selectedClaimId) : undefined;
+  const selectedDist = useMemo(
+    () => (ownState && selectedEntry ? chebyshev(ownState.header.x, ownState.header.y, selectedEntry.header.x, selectedEntry.header.y) : null),
+    [ownState, selectedEntry]
+  );
+  // Per the engine (trenchEngine.ts's `foldClaim` expedition branch), a
+  // same-owner or even literal self-target is legal — it just folds `ok` at
+  // distance 0 like any other in-range target. Only range and the per-target
+  // daily cap gate eligibility; no invented "can't visit yourself" rule.
   const expedition = useMemo(() => {
-    if (!ownState || !selectedEntry || selectedEntry.claimId === ownState.claimId) {
-      return { eligible: false, reason: null as string | null };
-    }
+    if (!ownState || !selectedEntry) return { eligible: false, reason: null as string | null };
     const range = expeditionRange(ownState);
     const dist = chebyshev(ownState.header.x, ownState.header.y, selectedEntry.header.x, selectedEntry.header.y);
     if (dist > range) {
@@ -812,7 +844,7 @@ export function App() {
           <aside className="status">
             <Homestead
               connected={connected}
-              peerCount={peerCount}
+              neighborsInReach={neighborsInReach}
               blockHeight={blockHeight}
               ownState={ownState}
               viewBiomass={view.biomass}
@@ -828,6 +860,7 @@ export function App() {
               selectedClaimId={selectedClaimId}
               selectedEntry={selectedEntry}
               selectedState={selectedState}
+              selectedDist={selectedDist}
               expeditionEligible={expedition.eligible}
               expeditionReason={expedition.reason}
               onBuild={onBuild}

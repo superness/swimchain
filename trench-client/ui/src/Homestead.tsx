@@ -35,11 +35,13 @@ function formatUptime(ms: number): string {
 
 export interface HomesteadProps {
   connected: boolean;
-  /** Lantern telemetry (from the node status poll) — `null` until the first
-   *  poll resolves. Diegetic labels per spec §4: peers -> "neighbors in
-   *  reach", chain height -> "depth mark". Numbers only, never raw protocol
-   *  vocabulary. */
-  peerCount: number | null;
+  /** Lantern telemetry, diegetic labels per spec §4. `neighborsInReach` is
+   *  NOT P2P peer count — it's every OTHER accepted claim on the map within
+   *  this claim's expedition range (own-owner or not; see App.tsx). `null`
+   *  until `ownState` first loads (map-derived, not from the status poll). */
+  neighborsInReach: number | null;
+  /** Chain height, diegetic label "depth mark" — `null` until the first
+   *  status poll resolves. */
   blockHeight: number | null;
   /** The banked ClaimState — source of truth for costs/affordability (what
    *  the node will actually apply when a move lands). */
@@ -68,6 +70,10 @@ export interface HomesteadProps {
   selectedClaimId: string | null;
   selectedEntry: MapClaim | null;
   selectedState: ClaimState | undefined;
+  /** Chebyshev distance from your own claim to the selected one — `null`
+   *  until both headers are known. Shown even when out of range (that's the
+   *  point: the player can see exactly how far short they are). */
+  selectedDist: number | null;
   expeditionEligible: boolean;
   expeditionReason: string | null;
   onBuild: (kind: StructureKind) => void;
@@ -88,7 +94,7 @@ export interface HomesteadProps {
 export function Homestead(props: HomesteadProps) {
   const {
     connected,
-    peerCount,
+    neighborsInReach,
     blockHeight,
     ownState,
     viewBiomass,
@@ -104,6 +110,7 @@ export function Homestead(props: HomesteadProps) {
     selectedClaimId,
     selectedEntry,
     selectedState,
+    selectedDist,
     expeditionEligible,
     expeditionReason,
     onBuild,
@@ -140,10 +147,10 @@ export function Homestead(props: HomesteadProps) {
             <span className={`dot ${connected ? 'ok' : 'bad'}`} /> {connected ? 'connected' : 'adrift — reconnecting…'} ·{' '}
             heartbeats {hbToday}/{HB_CAP_PER_DAY} today · burning {formatUptime(now - sessionStartMs)}
           </div>
-          {(peerCount !== null || blockHeight !== null) && (
+          {(neighborsInReach !== null || blockHeight !== null) && (
             <div className="fine">
-              {peerCount !== null && <>{peerCount} neighbors in reach</>}
-              {peerCount !== null && blockHeight !== null && ' · '}
+              {neighborsInReach !== null && <>{neighborsInReach} neighbors in reach</>}
+              {neighborsInReach !== null && blockHeight !== null && ' · '}
               {blockHeight !== null && <>depth mark {blockHeight}</>}
             </div>
           )}
@@ -241,13 +248,20 @@ export function Homestead(props: HomesteadProps) {
         </div>
       )}
 
-      {selectedClaimId && selectedClaimId !== ownState.claimId && (
+      {selectedClaimId && (
         <div className="selected-panel">
           <div className="panel-title fine">{selectedEntry?.header.name || 'that claim'}</div>
           {selectedState ? (
             <p className="fine">
-              owner <code title={selectedState.owner}>{selectedState.owner.slice(0, 12)}…</code> · lantern{' '}
-              {TIER_ICON[selectedState.brightness]} {selectedState.brightness} · glow {selectedState.glow}
+              owner{' '}
+              {selectedClaimId === ownState.claimId ? (
+                <strong>you</strong>
+              ) : (
+                <code title={selectedState.owner}>{selectedState.owner.slice(0, 12)}…</code>
+              )}{' '}
+              · lantern {TIER_ICON[selectedState.brightness]} {selectedState.brightness} · glow{' '}
+              {selectedState.glow}
+              {selectedDist !== null && <> · {selectedDist} units away</>}
             </p>
           ) : (
             <p className="fine muted">your lantern's light is reaching for this claim…</p>
