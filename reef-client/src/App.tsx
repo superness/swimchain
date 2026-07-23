@@ -117,6 +117,22 @@ async function reloadIfStale(): Promise<void> {
   }
 }
 
+/** Ambient ocean scene behind every screen: depth gradient, drifting light
+ *  shafts, rising plankton. Pure CSS, fixed and non-interactive — the game
+ *  should feel like water, not a web page. Honors prefers-reduced-motion. */
+function Ocean() {
+  return (
+    <div className="ocean" aria-hidden="true">
+      <span className="ray r1" />
+      <span className="ray r2" />
+      <span className="ray r3" />
+      <span className="plankton p1" />
+      <span className="plankton p2" />
+      <span className="plankton p3" />
+    </div>
+  );
+}
+
 export function App() {
   const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
   const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
@@ -627,6 +643,7 @@ export function App() {
   if (!hasIdentity || !me) {
     return (
       <div className="center col">
+        <Ocean />
         <h1>🪸 The Reef</h1>
         <p className="muted">
           A territory game: grow a coral reef, keep it alive, outlast your rivals. No server
@@ -644,6 +661,7 @@ export function App() {
   if (!sponsored) {
     return (
       <div className="center col">
+        <Ocean />
         <h1>🪸 The Reef</h1>
         {sponsorPhase && !error ? (
           <>
@@ -693,6 +711,7 @@ export function App() {
 
   return (
     <div className="app">
+      <Ocean />
       <header>
         <h1>🪸 The Reef</h1>
         <div className="who">
@@ -755,16 +774,29 @@ export function App() {
                 <span className="fine">({banner.points} pts) · new season begins</span>
               </div>
             )}
-            {/* Every coach-mark renders in this ONE slot above the board, and the
-                slot animates open/closed (grid-rows trick) instead of unmounting.
-                Cards used to sit at three different anchors — each swap yanked the
-                layout, and dismissing the plant card dropped the viewport straight
-                into the grid. The last card stays rendered while the slot closes
-                so the collapse has content to animate over. */}
-            <div className={`tut-slot${tutCard ? ' open' : ''}`}>
-              <div className="tut-slot-inner">
+            {/* Desktop: the board is the stage (left), the HUD rides beside it
+                (right, sticky); narrow screens stack. */}
+            <div className="game-cols">
+            <div className="board-col">
+            {/* Coach-marks float OVER the board's bottom edge (a game-style
+                subtitle bar), fading in place — they take part in the scene
+                instead of the layout, so nothing ever reflows or jostles when
+                a card appears, swaps, or dismisses. The last card stays
+                rendered while the float fades out so the exit has content. */}
+            <div className="board-stage">
+              <Reef
+                state={view}
+                myPubkeyHex={publicKeyHex!}
+                myAddress={address!}
+                canAct={!mining && !tideReport}
+                growingCell={mining?.cell ?? null}
+                onAct={onAct}
+                highlightSeeds={tutCard === 'plant'}
+              />
+              <div className={`tut-float${tutCard ? ' open' : ''}`} aria-live="polite">
                 {slotCard && (
                   <TutorialCard
+                    key={slotCard}
                     kind={slotCard}
                     onGotIt={() => applyTutorial(slotCard === 'strike' ? dismissStrikeTip : tutAck)}
                     onSkip={slotCard !== 'strike' ? () => applyTutorial(tutSkip) : null}
@@ -772,16 +804,8 @@ export function App() {
                 )}
               </div>
             </div>
-            <Reef
-              state={view}
-              myPubkeyHex={publicKeyHex!}
-              myAddress={address!}
-              canAct={!mining && !tideReport}
-              growingCell={mining?.cell ?? null}
-              onAct={onAct}
-              highlightSeeds={tutCard === 'plant'}
-            />
-            <div className="status">
+            </div>
+            <aside className="status">
               <div className="season">
                 <strong>Season {view.season}</strong> · ends in {view.epochsLeftInSeason} tide{view.epochsLeftInSeason === 1 ? '' : 's'}
                 <span className="fine"> · tide {view.epoch}</span>
@@ -794,7 +818,7 @@ export function App() {
                 ) : null}
               </div>
 
-              <div className="budget">
+              <div className={`budget${tutCard === 'grow' ? ' tut-glow' : ''}`}>
                 <span className="fine">energy</span>
                 <span className="pips">
                   {Array.from({ length: MAX_BUDGET }, (_, i) => (
@@ -820,7 +844,7 @@ export function App() {
               {/* The tide clock counts every move — pending included (they act on
                   the world provisionally; the chain reconciles at each block). */}
               <div
-                className={`tide-meter${view.params.epochMoves - view.tideMoves === 1 ? ' imminent' : ''}`}
+                className={`tide-meter${view.params.epochMoves - view.tideMoves === 1 ? ' imminent' : ''}${tutCard === 'tide' ? ' tut-glow' : ''}`}
                 title={`the tide turns every ${view.params.epochMoves} moves — energy returns, coral fades a little`}
               >
                 <div className="tide-water" style={{ width: `${Math.round((view.tideMoves / view.params.epochMoves) * 100)}%` }}>
@@ -875,6 +899,7 @@ export function App() {
                 Coral shrinks as its health drops · your reef has the <span className="k-mine">bright ring</span> ·
                 a <span className="k-warn">pulsing</span> square dies next tide — tend it.
               </div>
+            </aside>
             </div>
           </section>
         )
