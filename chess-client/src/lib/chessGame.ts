@@ -291,6 +291,57 @@ export async function listGames(rpc: SwimchainRpc, spaceId: string): Promise<Gam
   return games;
 }
 
+// bech32m cs1 → hex, so we can compare identities that arrive in either form.
+// Anyone may reply to a game post on-chain (permissionless); the RULES are
+// enforced here, in how the client replays the chain — only the two seated
+// players' moves count, everyone else's reply is ignored on fold.
+const CS_B32 = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+function cs1ToHex(addr: string): string | null {
+  if (!addr.startsWith('cs1')) return null;
+  const data = addr.slice(addr.lastIndexOf('1') + 1);
+  const vals: number[] = [];
+  for (const c of data) {
+    const i = CS_B32.indexOf(c);
+    if (i === -1) return null;
+    vals.push(i);
+  }
+  // drop the 6-symbol checksum, convert 5-bit → 8-bit, strip version byte
+  const body = vals.slice(0, -6);
+  let acc = 0, bits = 0;
+  const out: number[] = [];
+  for (const v of body) {
+    acc = (acc << 5) | v;
+    bits += 5;
+    while (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  if (out.length !== 33 || out[0] !== 0) return null; // [version(0), 32-byte key]
+  return out.slice(1).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Canonical identity form for comparison (hex, lower-cased). */
+function toHexId(id: string | null | undefined): string {
+  if (!id) return '';
+  const lower = id.toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(lower)) return lower;
+  return cs1ToHex(lower) ?? lower;
+}
+
+/** True if two author ids are the same identity, regardless of hex/bech32 form. */
+function authorEq(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return toHexId(a) === toHexId(b);
+}
+
+/** A game's lobby status, derived from its folded state. */
+export type GameStatus = 'open' | 'active' | 'finished';
+export function gameStatus(state: GameState): GameStatus {
+  if (state.result) return 'finished';
+  return state.black ? 'active' : 'open';
+}
+
 /**
  * Load a game by folding its reply chain through chess.js.
  *
@@ -298,10 +349,15 @@ export async function listGames(rpc: SwimchainRpc, spaceId: string): Promise<Gam
  * each move body, NOT by created_at. The node stamps created_at at query time for
  * pending (mempool) replies, so a created_at sort scrambles move order and folds an
  * illegal/short line (this is the same query-time-timestamp bug we fixed for reef).
- * White's moves come from the creator; the first distinct author who plays a legal
- * move on Black's turn claims the Black seat. At most one move is applied per ply
- * (duplicate/conflicting submissions for the same ply resolve by content_id), and
- * illegal moves are ignored — so every client derives the same board without a referee.
+ *
+ * Seat enforcement (the only place rules live): White = the game's creator
+ * (`header.white`, the cryptographic post author); Black = the first non-White
+ * author to play a legal move on Black's turn, locked thereafter. A move is
+ * applied only if it comes from the seat whose turn it is — so a stray reply from
+ * any other identity (or a player moving out of turn / as the wrong colour) is
+ * ignored on fold, even though the node happily accepted the reply on-chain.
+ * At most one move per ply (conflicts resolve by content_id); illegal moves are
+ * ignored — so every client derives the same board without a referee.
  */
 export async function loadGame(rpc: SwimchainRpc, gameId: string): Promise<GameState> {
   const post = await rpc.getContent(gameId);
@@ -324,28 +380,37 @@ export async function loadGame(rpc: SwimchainRpc, gameId: string): Promise<GameS
   const chess = new Chess();
   const moves: AppliedMove[] = [];
   const usedPly = new Set<number>();
+  const whiteSeat = header.white; // creator; the cryptographic author of the game post
+  let blackSeat: string | null = null;
 
-  // Fold moves by ply order + legality. The node cryptographically enforces that
-  // each move is signed by its author (that's what makes a move "provably yours"),
-  // so the client trusts authorship and just applies legal moves in order. We do NOT
-  // strict-match author to a stored White/Black id here because the node returns
-  // author_id inconsistently (bech32 address vs pubkey hex across RPCs/games).
+  // Fold in ply order, applying a move only from the seat whose turn it is. Even
+  // plies (0,2,4…) are White's and must come from the creator; odd plies are
+  // Black's — the first non-White author to play a legal one claims the seat, and
+  // every later Black move must come from that same identity. A rejected reply
+  // does NOT consume its ply, so the real player's move at that ply still lands.
   for (const r of parsed) {
-    if (usedPly.has(r.ply)) continue; // one move per ply — ignore duplicate/conflicting submissions
+    if (usedPly.has(r.ply)) continue; // one move per ply
+    const whiteToMove = r.ply % 2 === 0;
+    if (whiteToMove) {
+      if (whiteSeat && !authorEq(r.author, whiteSeat)) continue; // not White — ignore
+    } else if (blackSeat) {
+      if (!authorEq(r.author, blackSeat)) continue; // not the claimed Black — ignore
+    } else if (whiteSeat && authorEq(r.author, whiteSeat)) {
+      continue; // White can't also play Black
+    }
     try {
       const mv = chess.move(r.san);
       if (mv) {
         moves.push({ san: mv.san, from: mv.from, to: mv.to, author: r.author, contentId: r.contentId });
         usedPly.add(r.ply);
+        if (!whiteToMove && !blackSeat) blackSeat = r.author; // first accepted Black move claims the seat
       }
     } catch {
       /* illegal in this position — ignore */
     }
   }
 
-  // Black = the author of the first Black move (ply 1), for display / seat detection.
-  const black = moves.length >= 2 ? moves[1].author : null;
-  return { chess, header, white: header.white, black, moves, turn: chess.turn(), result: gameResult(chess) };
+  return { chess, header, white: header.white, black: blackSeat, moves, turn: chess.turn(), result: gameResult(chess) };
 }
 
 /**
