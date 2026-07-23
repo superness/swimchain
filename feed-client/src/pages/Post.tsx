@@ -10,6 +10,7 @@ import { useThread, useReplies, useReplySubmit, usePrivateContent, usePrivateSpa
 import { useIdentityContext } from '../providers/IdentityProvider';
 import { useFeedIdentity } from '../hooks/useFeedIdentity';
 import { useBlocklist } from '../hooks/useBlocklist';
+import { linkify } from '../lib/linkify';
 import { useUserProfile } from '../hooks/useUserProfile';
 import { useReplyPow } from '../hooks/useActionPow';
 import { useSponsorship } from '../hooks/useSponsorship';
@@ -490,10 +491,10 @@ export function Post(): JSX.Element {
 
         <div className="post-detail__content">
           {decryptedPost
-            ? decryptedPost.body
+            ? linkify(decryptedPost.body)
             : isPrivateCiphertext(post.content)
               ? <em>🔒 Encrypted — decrypting…</em>
-              : post.content}
+              : linkify(post.content)}
         </div>
 
         {/* Attached images (the detail page previously never rendered media) */}

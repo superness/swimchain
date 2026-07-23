@@ -44,7 +44,7 @@ fn test_single_action_accumulation() {
     assert_eq!(builder.pending_action_count(), 1);
     assert_eq!(builder.pending_thread_count(), 1);
     assert_eq!(builder.total_pow(), 10);
-    assert!(!builder.should_form_root());
+    assert!(!builder.is_threshold_met());
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn test_multiple_actions_same_thread() {
     assert_eq!(builder.pending_action_count(), 3);
     assert_eq!(builder.pending_thread_count(), 1); // All in same thread
     assert_eq!(builder.total_pow(), 30);
-    assert!(builder.should_form_root()); // Threshold met
+    assert!(builder.is_threshold_met()); // Threshold met
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn test_multiple_threads_same_space() {
     assert_eq!(builder.pending_thread_count(), 2);
     assert_eq!(builder.total_pow(), 50);
     assert_eq!(builder.space_pow(&space_id), 50);
-    assert!(builder.should_form_root());
+    assert!(builder.is_threshold_met());
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn test_multiple_spaces() {
     assert_eq!(builder.space_pow(&[1u8; 32]), 50); // Space A
     assert_eq!(builder.space_pow(&[2u8; 32]), 50); // Space B
     assert_eq!(builder.total_pow(), 100);
-    assert!(builder.should_form_root());
+    assert!(builder.is_threshold_met());
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn test_root_block_formation() {
         BranchPath::root(),
     );
 
-    assert!(builder.should_form_root());
+    assert!(builder.is_threshold_met());
 
     let (root, spaces, contents) = builder.build_root_block(1002, [0u8; 32], None);
 
@@ -300,7 +300,7 @@ fn test_difficulty_target_customization() {
         make_test_action([1u8; 32], 50, 1000),
         BranchPath::root(),
     );
-    assert!(builder.should_form_root());
+    assert!(builder.is_threshold_met());
 }
 
 #[test]

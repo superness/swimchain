@@ -384,6 +384,28 @@ impl NodeManager {
         let chain_store = ChainStore::open(&chain_path)
             .map_err(|e| NodeError::StorageOpen(chain_path.clone(), e.to_string()))?;
 
+        // 3.0.1. Seed the canonical genesis anchor on a COMPLETELY FRESH chain.
+        // Every node persists the same fixed height-0 block for its network, so
+        // all nodes share one common ancestor and height-1 blocks build on the
+        // SAME parent hash — no divergent no-shared-genesis forks on a fresh
+        // network (launch readiness B3). Gated on an EMPTY chain (zero stored
+        // blocks) so existing chains — testnet nodes that predate the anchor and
+        // have no height-0 block — are never retrofitted with a disconnected
+        // genesis; they keep their working history untouched.
+        let chain_is_empty = matches!(chain_store.root_block_count(), Ok(0))
+            && matches!(chain_store.get_latest_height(), Ok(None));
+        if chain_is_empty {
+            let genesis = crate::blocks::RootBlock::canonical_genesis();
+            match chain_store.put_root_block_with_fork_resolution(&genesis) {
+                Ok(_) => info!(
+                    "[CHAIN] Seeded canonical genesis anchor {} (ts={})",
+                    hex::encode(&genesis.hash()[..8]),
+                    genesis.timestamp
+                ),
+                Err(e) => warn!("[CHAIN] Failed to seed canonical genesis: {}", e),
+            }
+        }
+
         // 3.1. Rebuild space content index if needed (first run after upgrade)
         match chain_store.needs_index_rebuild() {
             Ok(true) => {
@@ -691,7 +713,51 @@ impl NodeManager {
         std::fs::create_dir_all(&blocklist_path).ok();
         match crate::storage::open_db(&blocklist_path) {
             Ok(blocklist_db) => match BlocklistStore::open(Arc::new(blocklist_db)) {
-                Ok(blocklist) => {
+                Ok(mut blocklist) => {
+                    // Operator seed auto-load: if a hash-list file is present, import
+                    // it on every start so operators (e.g. the swimchain.io gateway)
+                    // can drop in an NCMEC/IWF/Arachnid export and have their node
+                    // refuse to store/serve matching content — the good-faith,
+                    // known-hash-only CSAM defense (THREAT_MODEL.md §4, docs/
+                    // LEGAL_POSTURE.md). Import is idempotent (already-present hashes
+                    // are skipped). Path: SWIMCHAIN_BLOCKLIST_SEED env, else
+                    // <data_dir>/blocklist-seed.txt. Missing file = silent no-op.
+                    let seed_path = std::env::var_os("SWIMCHAIN_BLOCKLIST_SEED")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| self.config.data_dir.join("blocklist-seed.txt"));
+                    if seed_path.exists() {
+                        match std::fs::read_to_string(&seed_path) {
+                            Ok(contents) => match crate::blocklist::parse_import(&contents) {
+                                Ok(records) => {
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+                                    match blocklist.import_records(&records, [0u8; 32], now) {
+                                        Ok(stats) => info!(
+                                            "[BLOCKLIST] Seeded from {}: {} sha256 added ({} skipped), {} sha1, {} md5",
+                                            seed_path.display(),
+                                            stats.sha256_added,
+                                            stats.sha256_skipped,
+                                            stats.sha1_indexed,
+                                            stats.md5_indexed
+                                        ),
+                                        Err(e) => warn!("[BLOCKLIST] Seed import failed: {}", e),
+                                    }
+                                }
+                                Err(e) => warn!(
+                                    "[BLOCKLIST] Seed file {} failed to parse: {}",
+                                    seed_path.display(),
+                                    e
+                                ),
+                            },
+                            Err(e) => warn!(
+                                "[BLOCKLIST] Could not read seed file {}: {}",
+                                seed_path.display(),
+                                e
+                            ),
+                        }
+                    }
                     self.blocklist = Some(Arc::new(RwLock::new(blocklist)));
                     info!("[BLOCKLIST] Blocklist store initialized");
                 }
@@ -917,6 +983,16 @@ impl NodeManager {
                                                     warn!("[SPONSORSHIP] Failed to rebuild sponsorship for {}: {}",
                                                         hex::encode(sponsee_bytes), e);
                                                 } else {
+                                                    // Re-record space-scope for space-limited grants
+                                                    // (absence = global) so scoped identities stay
+                                                    // confined across restarts/rebuilds.
+                                                    if let Some(scope) = action.sponsor_scope() {
+                                                        let _ = self
+                                                            .sponsorship_store
+                                                            .as_ref()
+                                                            .unwrap()
+                                                            .set_scope(&sponsee_pk, &scope);
+                                                    }
                                                     rebuilt_count += 1;
                                                 }
                                             }
@@ -1921,7 +1997,11 @@ impl NodeManager {
             data_dir: self.config.data_dir.clone(),
             username: self.config.rpc_user.clone(),
             password: self.config.rpc_password.clone(),
-            max_body_size: 1024 * 1024, // 1MB
+            // Must hold a base64-encoded upload_media payload: MAX_MEDIA_SIZE (1 MB)
+            // inflates ~4/3 to ~1.4 MB, plus JSON overhead. 1 MB here rejected valid
+            // ≤1 MB images (base64 pushed the request body over the cap). Match the
+            // RpcServerConfig default headroom.
+            max_body_size: 7 * 1024 * 1024, // 7MB
             tls: Default::default(),    // TLS disabled by default for local development
         };
 

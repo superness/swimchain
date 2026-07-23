@@ -67,3 +67,30 @@ docs/qa/package*.json
 /.daemon-pids/swim-auto.log
 /target-test/
 swimchain-wasm/pkg/
+
+# Nested build outputs (per-app Cargo/Tauri target dirs)
+**/target/
+**/target-test/
+
+# Daemon runtime files (pids + per-run logs)
+/.daemon-pids/*.log
+/.daemon-pids/*.pid
+
+# Build / run logs
+apk-build.log
+desktop-build.log
+/node-genesis.err.log
+/node-genesis.out.log
+
+# Desktop app build output & bundled binaries (regenerated)
+desktop-app/dist/
+desktop-app/src-tauri/apps/
+desktop-app/src-tauri/binaries/
+
+# Local test/QA node data dirs (identity keys, chain state)
+/qa*-testnet/
+/swim-clean-testnet/
+/valreg-regtest/
+
+# Generated wiki-import output
+tools/wiki-import/out-mc-wikipedia/

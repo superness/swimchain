@@ -3866,6 +3866,49 @@ impl ChainStore {
         hash_a < hash_b
     }
 
+    /// CONTENT-AWARE tie-break for two EQUAL-cumulative_pow blocks competing at
+    /// the same height (launch readiness B4). Returns true if block A should win.
+    ///
+    /// The block carrying MORE actions wins — orphaning it would drop more
+    /// legitimately-mined content, so a block that contains a user's action can
+    /// never lose to an emptier competitor on a blind coin flip (the old
+    /// `hash_wins`-only behavior that dropped the height-365 reef moves). Equal
+    /// action counts fall back to lowest hash, still deterministic.
+    ///
+    /// Determinism: this is only used for TIP-level ties, where both blocks'
+    /// content is present on every resolving node — the incoming block arrives
+    /// with its content in BLOCK_DATA, the existing block is the node's stored
+    /// tip, and below-tip forks are handled separately by `deep_fork_blocked`.
+    /// So every node computes the same action counts and picks the same winner.
+    pub fn content_aware_wins(
+        hash_a: &[u8; 32],
+        actions_a: usize,
+        hash_b: &[u8; 32],
+        actions_b: usize,
+    ) -> bool {
+        if actions_a != actions_b {
+            actions_a > actions_b
+        } else {
+            Self::hash_wins(hash_a, hash_b)
+        }
+    }
+
+    /// Count the actions carried by a stored root block (walks its space →
+    /// content blocks). Returns None if any referenced block is missing locally,
+    /// so callers fall back to the hash-only tiebreak rather than counting a
+    /// partial block (which would be non-deterministic across nodes).
+    pub fn block_action_count(&self, block: &RootBlock) -> Option<usize> {
+        let mut total = 0usize;
+        for sh in &block.space_block_hashes {
+            let space = self.get_space_block(sh).ok().flatten()?;
+            for ch in &space.content_block_hashes {
+                let content = self.get_content_block(ch).ok().flatten()?;
+                total += content.actions.len();
+            }
+        }
+        Some(total)
+    }
+
     /// Validate the canonical chain integrity
     ///
     /// Walks the height_index from genesis to tip, verifying:

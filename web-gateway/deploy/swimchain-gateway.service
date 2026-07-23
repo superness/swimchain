@@ -1,6 +1,7 @@
-# Swimchain Web Gateway systemd unit (deployed on the testnet seed droplet).
+# Swimchain Web Gateway systemd unit (deployed on the seed droplet).
 # Serves the Next.js standalone build from /opt/swimchain-gateway on
 # 127.0.0.1:3300, behind nginx at https://swimchain.io/browse.
+# Reads the MAINNET node (RPC 9736) so /browse reflects mainnet content.
 #
 # Build the bundle with:
 #   NEXT_PUBLIC_BASE_PATH=/browse npm run build
@@ -14,8 +15,8 @@
 
 [Unit]
 Description=Swimchain Web Gateway (read-only browse UI at /browse)
-After=network.target swimchain.service
-Wants=swimchain.service
+After=network.target swimchain-mainnet.service
+Wants=swimchain-mainnet.service
 
 [Service]
 Type=simple
@@ -23,10 +24,11 @@ WorkingDirectory=/opt/swimchain-gateway
 Environment=NODE_ENV=production
 Environment=PORT=3300
 Environment=HOSTNAME=127.0.0.1
-Environment=NODE_RPC_URL=http://127.0.0.1:19736
+Environment=NODE_RPC_URL=http://127.0.0.1:9736
+Environment=NODE_RPC_COOKIE_FILE=/var/lib/swimchain-mainnet/.cookie
 Environment="GATEWAY_NAME=Swimchain Seed Gateway"
 Environment=GATEWAY_PUBLIC_URL=https://swimchain.io/browse
-ExecStart=/bin/bash -c 'export NODE_RPC_COOKIE="$(cat /var/lib/swimchain-testnet/.cookie 2>/dev/null || true)"; exec /usr/bin/node server.js'
+ExecStart=/bin/bash -c 'export NODE_RPC_COOKIE="$(cat /var/lib/swimchain-mainnet/.cookie 2>/dev/null || true)"; exec /usr/bin/node server.js'
 Restart=always
 RestartSec=5
 MemoryMax=300M

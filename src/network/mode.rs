@@ -252,9 +252,13 @@ impl NetworkMode {
     /// Get adjusted PoW difficulty for this network mode.
     ///
     /// Reduces the base difficulty bits based on the network mode multiplier.
-    /// - Mainnet: Full difficulty (e.g., 22 bits -> 22 bits)
-    /// - Testnet: 10% difficulty (e.g., 22 bits -> 12 bits)
-    /// - Regtest: Near-instant (e.g., 22 bits -> 4 bits)
+    /// The SPEC_03 base constants encode RELATIVE cost; they are shifted down
+    /// per network to land at a usable wall-clock for that network's Argon2id
+    /// config. Operator decision (2026-07-22): mainnet runs the same 8 MiB config
+    /// and the same shift as testnet for playable launch games.
+    /// - Mainnet: base - 10 (e.g., 22 -> 12 bits, 8 MiB)
+    /// - Testnet: base - 10 (e.g., 22 -> 12 bits, 8 MiB)
+    /// - Regtest: 4 bits (near-instant)
     ///
     /// # Examples
     ///
@@ -262,14 +266,24 @@ impl NetworkMode {
     /// use swimchain::network::NetworkMode;
     ///
     /// // Space creation (22 bits base)
-    /// assert_eq!(NetworkMode::Mainnet.adjusted_difficulty(22), 22);
-    /// assert_eq!(NetworkMode::Testnet.adjusted_difficulty(22), 12); // ~10%
-    /// assert_eq!(NetworkMode::Regtest.adjusted_difficulty(22), 4);  // near-instant
+    /// assert_eq!(NetworkMode::Mainnet.adjusted_difficulty(22), 12);
+    /// assert_eq!(NetworkMode::Testnet.adjusted_difficulty(22), 12);
+    /// assert_eq!(NetworkMode::Regtest.adjusted_difficulty(22), 4);
     /// ```
     #[must_use]
     pub fn adjusted_difficulty(&self, base_difficulty: u8) -> u8 {
         match self {
-            NetworkMode::Mainnet => base_difficulty,
+            NetworkMode::Mainnet => {
+                // Operator decision (2026-07-22): mainnet PoW MATCHES testnet —
+                // same 8 MiB Argon2id params (see action_pow config selection) and
+                // the same difficulty shift. The operator preferred the testnet
+                // wall-clock feel for the launch games over the heavier 64 MiB /
+                // -13 profile. Effective bits (base − 10, floor 4):
+                //   Space 12 · Post 10 · Reply 8 · Engage 6
+                // Memory-hardness is lower than the SPEC_03 64 MiB target; this is
+                // a deliberate playability tradeoff for this network.
+                base_difficulty.saturating_sub(10).max(4)
+            }
             NetworkMode::Testnet => {
                 // Reduce by ~10 bits for testnet (1/1024 the work)
                 base_difficulty.saturating_sub(10).max(4)
@@ -356,6 +370,21 @@ mod tests {
     #[test]
     fn test_default_is_mainnet() {
         assert_eq!(NetworkMode::default(), NetworkMode::Mainnet);
+    }
+
+    #[test]
+    fn mainnet_action_difficulties_are_usable() {
+        // SPEC_03 base constants: Space 22 / Post 20 / Reply 18 / Engage 16.
+        // Operator decision (2026-07-22): mainnet matches testnet — shift down by
+        // 10 (floor 4) at the 8 MiB config: Space 12 / Post 10 / Reply 8 / Engage 6.
+        let m = NetworkMode::Mainnet;
+        assert_eq!(m.adjusted_difficulty(22), 12, "space");
+        assert_eq!(m.adjusted_difficulty(20), 10, "post");
+        assert_eq!(m.adjusted_difficulty(18), 8, "reply");
+        assert_eq!(m.adjusted_difficulty(16), 6, "engage");
+        // Never below the network floor.
+        assert_eq!(m.adjusted_difficulty(4), 4);
+        assert_eq!(m.adjusted_difficulty(0), 4);
     }
 
     #[test]

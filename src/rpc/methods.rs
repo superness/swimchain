@@ -2766,6 +2766,19 @@ impl RpcMethods {
             }
         };
 
+        // BLOCKLIST: never serve a blocklisted media hash over RPC — this is the
+        // path the swimchain.io /browse gateway reads, so a takedown applied via
+        // the blocklist must stop the gateway handing out the image immediately.
+        if let Some(ref blocklist) = self.node.blocklist {
+            if blocklist.read().unwrap().is_blocked(&hash_bytes) {
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    "media not available",
+                    id,
+                );
+            }
+        }
+
         // Retrieve from blob store
         let blob_hash = ContentBlobHash::from_bytes(hash_bytes);
         let blob_store = match BlobStore::new(&self.node.sync_blob_path) {
@@ -3524,6 +3537,13 @@ impl RpcMethods {
             }
         };
 
+        // SPONSORSHIP CHECK: Verify identity is sponsored before allowing the
+        // edit (consistent with submit_post/reply/engagement — Edit is
+        // consensus-gated on sponsorship like the other content actions).
+        if let Err(response) = self.check_identity_sponsored(&params.author_id, &id) {
+            return response;
+        }
+
         // Look up original content and verify authorship
         let (space_id_bytes, thread_id, original_author) = {
             let mut found_space_id: Option<[u8; 32]> = None;
@@ -4124,6 +4144,19 @@ impl RpcMethods {
                 id,
             );
         };
+
+        // BLOCKLIST: never serve blocklisted content over RPC — the /browse
+        // gateway reads here, so blocklisting a content id must stop it being
+        // handed out immediately (takedown at the operator's own node).
+        if let Some(ref blocklist) = self.node.blocklist {
+            if blocklist.read().unwrap().is_blocked(&content_hash) {
+                return RpcResponse::error(
+                    RpcErrorCode::ContentNotFound,
+                    "content not available",
+                    id,
+                );
+            }
+        }
 
         // Use shared content store
         let content_store = match &self.node.content_store {
@@ -8608,9 +8641,7 @@ impl RpcMethods {
         let mut profile_posts: Vec<(String, u64)> = Vec::new();
         if let Some(ref chain_store) = self.node.chain_store {
             let blob_store = BlobStore::new(&self.node.sync_blob_path).ok();
-            if let Ok(indexed) =
-                chain_store.get_content_for_space(&profile_space_id, 500, 0)
-            {
+            if let Ok(indexed) = chain_store.get_content_for_space(&profile_space_id, 500, 0) {
                 for (content_hash, metadata) in indexed {
                     let mut text: Option<String> = None;
                     let cid = crate::types::content::ContentId::from_bytes(content_hash);
@@ -8981,6 +9012,23 @@ impl RpcMethods {
             .as_secs();
         match mgr.status(&crate::identity::PublicKey(identity), now) {
             Ok(report) => {
+                // chain + mempool = reality. A Sponsor action already in our
+                // mempool is real even before a block finalizes it — and an idle
+                // network forms no blocks by design, so waiting for finalization
+                // would hang onboarding indefinitely on a quiet reef. Mirror the
+                // gate (check_identity_sponsored): honor a pending Sponsor for
+                // this identity so onboarding completes the moment the approval
+                // is mined into the mempool, not when a block happens to form.
+                let pending_sponsor = report.sponsorship.is_none()
+                    && self.node.block_builder.as_ref().is_some_and(|bb| {
+                        bb.read().is_ok_and(|b| {
+                            b.get_pending_actions().iter().any(|(_, _, a)| {
+                                a.action_type == crate::blocks::ActionType::Sponsor
+                                    && a.content_hash == Some(identity)
+                            })
+                        })
+                    });
+                let has_sponsorship = report.sponsorship.is_some() || pending_sponsor;
                 let penalties: Vec<Value> = report
                     .active_penalties
                     .iter()
@@ -8997,7 +9045,8 @@ impl RpcMethods {
                     json!({
                         "identity": hex::encode(identity),
                         "sponsorship_barred": report.sponsorship_barred,
-                        "has_sponsorship": report.sponsorship.is_some(),
+                        "has_sponsorship": has_sponsorship,
+                        "pending_sponsorship": pending_sponsor,
                         "active_penalties": penalties,
                     }),
                     id,
@@ -16257,6 +16306,29 @@ impl RpcMethods {
             }
         };
 
+        // Optional scope: space-limit the grant. Folded into the signature
+        // preimage below so it can't be stripped or altered. An all-zero scope
+        // is rejected — it is indistinguishable from a global (None) grant on
+        // the wire (parent_id zeros decode to None).
+        let scope: Option<[u8; 32]> = match params.scope.as_ref() {
+            None => None,
+            Some(s) => {
+                match hex::decode(s)
+                    .ok()
+                    .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                {
+                    Some(bytes) if bytes != [0u8; 32] => Some(bytes),
+                    _ => {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Invalid scope: must be a non-zero 32-byte hex space id",
+                            id,
+                        );
+                    }
+                }
+            }
+        };
+
         // Verify timestamp is within tolerance
         let current_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -16377,10 +16449,13 @@ impl RpcMethods {
             }
         }
 
-        // Verify sponsor's signature over (new_identity_pubkey || timestamp)
-        let mut message = Vec::with_capacity(40);
-        message.extend_from_slice(&new_identity_bytes);
-        message.extend_from_slice(&params.timestamp.to_be_bytes());
+        // Verify sponsor's signature over the canonical preimage:
+        // new_identity || timestamp (global), plus scope for a scoped grant.
+        let message = crate::blocks::action::Action::sponsor_sig_message(
+            &new_identity_bytes,
+            params.timestamp,
+            scope.as_ref(),
+        );
 
         // Verify signature using ed25519
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -16437,9 +16512,25 @@ impl RpcMethods {
             );
         }
 
+        // Record the space-scope for a space-limited grant (absence = global),
+        // so the sybil-wall gate confines this identity to its scope space.
+        if let Some(scope) = scope {
+            if let Err(e) = sponsorship_store.set_scope(&new_pubkey, &scope) {
+                warn!(
+                    "[SPONSORSHIP] Failed to store scope for {}: {}",
+                    params.new_identity_pubkey, e
+                );
+            }
+        }
+
         info!(
-            "[SPONSORSHIP] Registered sponsored identity: {} by {} (depth {})",
-            params.new_identity_pubkey, params.sponsor_pubkey, depth
+            "[SPONSORSHIP] Registered sponsored identity: {} by {} (depth {}, scope {})",
+            params.new_identity_pubkey,
+            params.sponsor_pubkey,
+            depth,
+            scope
+                .map(|s| hex::encode(&s[..8]))
+                .unwrap_or_else(|| "global".to_string()),
         );
 
         // SPEC_11 Phase 6: Create on-chain Sponsor action and add to block builder
@@ -16449,10 +16540,17 @@ impl RpcMethods {
             // Carry the verified PoW: pow_target is the challenge space (matches the
             // claim path), pow_work is the value the node derived above — not a
             // client-supplied number.
-            let action = Action::new_sponsor_with_pow(
+            //
+            // The action MUST carry the SIGNED timestamp (params.timestamp), not
+            // node-local current_time: peers re-verify the sponsor signature over
+            // action.timestamp in the apply path, so a mismatched timestamp would
+            // make the grant fail verification on every other node. Scope (if
+            // any) travels in parent_id and is likewise covered by the signature.
+            let action = Action::new_sponsor_scoped_with_pow(
                 sponsor_bytes,
                 new_identity_bytes,
-                current_time,
+                params.timestamp,
+                scope,
                 signature_bytes,
                 params.pow_nonce,
                 pow_work,
@@ -16789,6 +16887,11 @@ impl RpcMethods {
                                 application_required: o.requirements.application_required,
                             },
                             auto_approve: o.auto_approve,
+                            space_scope: o.space_scope.map(|s| {
+                                let mut id16 = [0u8; 16];
+                                id16.copy_from_slice(&s[..16]);
+                                encode_space_id(&id16)
+                            }),
                         }
                     })
                     .collect();
@@ -16922,11 +17025,35 @@ impl RpcMethods {
             }
         };
 
-        // Validate slots
-        if params.slots < 1 || params.slots > 10 {
+        // Faucet is disabled on mainnet: auto-approve offers cannot be created
+        // there — EXCEPT for the operator-designated game sponsor(s). Auto-approve
+        // roots sybils with no accountable human vouch, so the general mainnet
+        // sybil wall stays manual. The games are a sanctioned, capped exception so
+        // reef/chess keep one-click onboarding; that path is rooted at the game
+        // sponsor's own subtree (contained by tree-poisoning), NOT a general
+        // genesis-rooted faucet. Manual offers remain valid on any network;
+        // testnet/regtest keep auto-approve for dev.
+        let is_game_sponsor =
+            crate::sponsorship::is_mainnet_game_sponsor(params.sponsor_pubkey.as_str());
+        if params.auto_approve
+            && crate::network::NetworkContext::mode() == crate::network::NetworkMode::Mainnet
+            && !is_game_sponsor
+        {
             return RpcResponse::error(
                 RpcErrorCode::InvalidParams,
-                "slots must be between 1 and 10",
+                "auto-approve sponsorship offers are disabled on mainnet except for the designated game sponsor; use a manual offer (auto_approve=false) or issue direct/space-scoped grants",
+                id,
+            );
+        }
+
+        // Validate slots. Game-sponsor auto-approve offers may go up to the
+        // operator's onboarding cap (100 identities); other offers keep the
+        // conservative 10-slot limit.
+        let max_slots: u8 = if is_game_sponsor { 100 } else { 10 };
+        if params.slots < 1 || params.slots > max_slots {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                &format!("slots must be between 1 and {}", max_slots),
                 id,
             );
         }
@@ -17126,6 +17253,35 @@ impl RpcMethods {
             }
         }
 
+        // Optional space scope: bind claimants approved through this offer to a
+        // single space (game onboarding). Accepts a sp1q../hex space id; stored as
+        // the 32-byte form (id16 ++ zeros) so it compares equal to
+        // content_block.space_id in is_authorized_in_space.
+        let space_scope: Option<[u8; 32]> = match params.space_scope.as_deref() {
+            None => None,
+            Some(s) => match decode_space_id(s) {
+                Ok(id16) => {
+                    let mut scope = [0u8; 32];
+                    scope[..16].copy_from_slice(&id16);
+                    if scope == [0u8; 32] {
+                        return RpcResponse::error(
+                            RpcErrorCode::InvalidParams,
+                            "Invalid space_scope: zero space id",
+                            id,
+                        );
+                    }
+                    Some(scope)
+                }
+                Err(e) => {
+                    return RpcResponse::error(
+                        RpcErrorCode::InvalidParams,
+                        &format!("Invalid space_scope: {}", e),
+                        id,
+                    );
+                }
+            },
+        };
+
         // Build the offer struct now that signature is verified
         let offer = PublicSponsorshipOffer {
             sponsor: sponsor_pk,
@@ -17139,6 +17295,7 @@ impl RpcMethods {
             requirements,
             signature: Signature::from_bytes(sig_bytes),
             auto_approve: params.auto_approve,
+            space_scope,
         };
 
         // Store the offer
@@ -17541,14 +17698,22 @@ impl RpcMethods {
         // (claimant(32) || timestamp(8 BE)), so instant approval is only possible
         // when this node holds the sponsor identity (i.e. the offer was created by
         // this node's identity). Otherwise the claim stays pending as usual.
-        if offer.auto_approve {
+        //
+        // Faucet is disabled on mainnet: auto-approve does not auto-grant there;
+        // the claim stays pending for explicit manual approval (the mainnet sybil
+        // wall is human sponsorship). Testnet/regtest keep one-step onboarding.
+        let faucet_enabled =
+            crate::network::NetworkContext::mode() != crate::network::NetworkMode::Mainnet;
+        if offer.auto_approve && faucet_enabled {
             if self.node.keypair.public_key.as_bytes() == offer.sponsor.as_bytes() {
-                // Sign the exact message approve_sponsorship_claim expects the
-                // sponsor's client to sign, then run the same internal approval
-                // path the approve RPC uses.
-                let mut approval_msg = Vec::with_capacity(40);
-                approval_msg.extend_from_slice(&claimant_bytes);
-                approval_msg.extend_from_slice(&current_time.to_be_bytes());
+                // Sign the exact message the on-chain Sponsor action carries:
+                // sponsee(32) || timestamp(8 BE) [|| scope(32)] — the scope must
+                // match offer.space_scope used when the action is built.
+                let approval_msg = crate::blocks::action::Action::sponsor_sig_message(
+                    &claimant_bytes,
+                    current_time,
+                    offer.space_scope.as_ref(),
+                );
                 let approval_sig =
                     crate::identity::sign(&self.node.keypair.private_key, &approval_msg);
                 let approval_sig_bytes: [u8; 64] = *approval_sig.as_bytes();
@@ -17799,10 +17964,13 @@ impl RpcMethods {
             }
         };
 
-        // Verify sponsor signature over (claimant(32) || timestamp(8 BE))
-        let mut sig_msg = Vec::with_capacity(40);
-        sig_msg.extend_from_slice(&claimant_bytes);
-        sig_msg.extend_from_slice(&params.timestamp.to_be_bytes());
+        // Verify sponsor signature over sponsee(32) || timestamp(8 BE) [|| scope(32)]
+        // — the scope must match the offer so a scoped grant's action re-verifies.
+        let sig_msg = crate::blocks::action::Action::sponsor_sig_message(
+            &claimant_bytes,
+            params.timestamp,
+            offer.space_scope.as_ref(),
+        );
         {
             use ed25519_dalek::{Signature as DalekSig, Verifier, VerifyingKey};
             let vk = match VerifyingKey::from_bytes(&sponsor_bytes) {
@@ -18307,6 +18475,11 @@ impl RpcMethods {
                             created_at: o.created_at,
                             is_expired: o.is_expired(current_time),
                             auto_approve: o.auto_approve,
+                            space_scope: o.space_scope.map(|s| {
+                                let mut id16 = [0u8; 16];
+                                id16.copy_from_slice(&s[..16]);
+                                encode_space_id(&id16)
+                            }),
                         }
                     })
                     .collect();

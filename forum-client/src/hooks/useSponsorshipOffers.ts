@@ -7,6 +7,13 @@ import { useRpc } from './useRpc';
 import { logger } from '../lib/logger';
 import type { SponsorshipOfferSummary } from '../lib/rpc';
 
+// App-onboarding sponsors whose offers exist for in-app onboarding (e.g. the
+// reef/chess game bot) and should NOT surface in the general offer list.
+// Client display choice, not a protocol rule.
+const HIDDEN_ONBOARDING_SPONSORS = new Set<string>([
+  '0530df507ad26a2ee6d0c61ef1e37e4e08abae087c1755467d98e3435ecd2984', // reef/chess game bot (mainnet)
+]);
+
 interface UseSponsorshipOffersResult {
   offers: SponsorshipOfferSummary[];
   total: number;
@@ -41,12 +48,19 @@ export function useSponsorshipOffers(
         offerType,
       });
 
+      // Hide app-onboarding offers (e.g. the reef/chess game bot) from the general
+      // offer list — those exist for in-app onboarding, not general sponsorship.
+      // Client display choice, not a protocol rule.
+      const visible = result.offers.filter(
+        o => !HIDDEN_ONBOARDING_SPONSORS.has(o.sponsor_pubkey.toLowerCase())
+      );
+
       if (resetOffset) {
-        setOffers(result.offers);
-        setOffset(result.offers.length);
+        setOffers(visible);
+        setOffset(visible.length);
       } else {
-        setOffers(prev => [...prev, ...result.offers]);
-        setOffset(currentOffset + result.offers.length);
+        setOffers(prev => [...prev, ...visible]);
+        setOffset(currentOffset + visible.length);
       }
       setTotal(result.total);
       setHasMore(result.has_more);

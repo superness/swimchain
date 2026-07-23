@@ -111,9 +111,18 @@ pub fn default_dev_seeds() -> Vec<SeedEntry> {
 /// For now, returns an empty list.
 #[must_use]
 pub fn default_mainnet_seeds() -> Vec<SeedEntry> {
-    // TODO: Add real mainnet seeds before launch
-    Vec::new()
+    // Mainnet seed(s). A single operator seed is enough to BOOTSTRAP, but a
+    // resilient public launch wants >=2-3 INDEPENDENT seeds (different operators/
+    // hosts) so the network isn't one-host-down away from no bootstrap — add them
+    // here as they come online (launch readiness B2).
+    vec![
+        // Primary mainnet seed (DigitalOcean).
+        SeedEntry::tcp_v4([167, 71, 241, 252], MAINNET_PORT),
+    ]
 }
+
+/// Mainnet port.
+pub const MAINNET_PORT: u16 = 9735;
 
 /// Testnet port (different from mainnet)
 pub const TESTNET_PORT: u16 = 19735;

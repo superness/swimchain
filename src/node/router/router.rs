@@ -1116,6 +1116,25 @@ impl MessageRouter {
             hex::encode(&hash_bytes[..8])
         );
 
+        // BLOCKLIST CHECK on the SERVE path: refuse to serve content whose
+        // SHA-256 is blocklisted, even if it was stored BEFORE the hash was
+        // added. Ingest already rejects new matches (see DATA_CONTENT gate),
+        // but a gateway operator honoring a takedown needs blocklisting a hash
+        // to stop serving already-stored content immediately — otherwise
+        // /browse keeps handing it out. SHA-1/MD5 aux matching needs the bytes,
+        // so it stays on the ingest path; the content id (SHA-256) is what a
+        // takedown targets here.
+        if let Some(ref blocklist) = self.blocklist {
+            if blocklist.read().unwrap().is_blocked(&hash_bytes) {
+                warn!(
+                    "[BLOCKLIST] Refused to SERVE {} to {} — content id is blocklisted",
+                    hex::encode(&hash_bytes[..8]),
+                    hex::encode(&peer_id[..8])
+                );
+                return Ok(None);
+            }
+        }
+
         // Try to get the content
         match content_mgr.on_get(&get_payload) {
             Ok(data_payload) => {
@@ -2094,26 +2113,40 @@ impl MessageRouter {
                         );
                         false
                     } else {
-                        // Equal cumulative_pow - use lower hash as tiebreaker
-                        let hash_wins = ChainStore::hash_wins(&computed_hash, &existing_hash);
-                        if hash_wins {
-                            info!(
-                                "[REORG] Block {} beats existing {} at height {} (lower hash tiebreaker, equal pow={})",
-                                hex::encode(&computed_hash[..8]),
-                                hex::encode(&existing_hash[..8]),
-                                block_height,
-                                root_block.cumulative_pow
-                            );
-                        } else {
-                            info!(
-                                "[REORG] Keeping existing block {} over incoming {} at height {} (lower hash tiebreaker, equal pow={})",
-                                hex::encode(&existing_hash[..8]),
-                                hex::encode(&computed_hash[..8]),
-                                block_height,
-                                root_block.cumulative_pow
-                            );
-                        }
-                        hash_wins
+                        // Equal cumulative_pow — CONTENT-AWARE tiebreak (B4): the
+                        // block carrying MORE actions wins so a block holding a
+                        // user's action can't lose to an emptier one on a coin
+                        // flip; equal counts fall back to lowest hash. Both
+                        // blocks' content is present here (incoming arrives with
+                        // content, existing is our tip), so this is deterministic.
+                        let incoming_count = block_data
+                            .content_blocks
+                            .iter()
+                            .filter_map(|cb| {
+                                bincode::deserialize::<crate::blocks::ContentBlock>(cb).ok()
+                            })
+                            .map(|cb| cb.actions.len())
+                            .sum::<usize>();
+                        let existing_count = chain_store
+                            .block_action_count(existing)
+                            .unwrap_or(incoming_count);
+                        let wins = ChainStore::content_aware_wins(
+                            &computed_hash,
+                            incoming_count,
+                            &existing_hash,
+                            existing_count,
+                        );
+                        info!(
+                            "[REORG] Content-aware tie at height {} (equal pow={}): incoming {} ({} actions) vs existing {} ({} actions) → {}",
+                            block_height,
+                            root_block.cumulative_pow,
+                            hex::encode(&computed_hash[..8]),
+                            incoming_count,
+                            hex::encode(&existing_hash[..8]),
+                            existing_count,
+                            if wins { "incoming wins" } else { "keep existing" }
+                        );
+                        wins
                     }
                 } else {
                     // Can't get existing block - fall back to hash comparison
@@ -3409,26 +3442,32 @@ impl MessageRouter {
                             );
                             false
                         } else {
-                            // Equal cumulative_pow - use lower hash as tiebreaker
-                            let hash_wins = ChainStore::hash_wins(&computed_hash, &existing_hash);
-                            if hash_wins {
-                                info!(
-                                    "[REORG] Block {} beats existing {} at height {} (lower hash tiebreaker, equal pow={})",
-                                    hex::encode(&computed_hash[..8]),
-                                    hex::encode(&existing_hash[..8]),
-                                    block_height,
-                                    root_block.cumulative_pow
-                                );
-                            } else {
-                                info!(
-                                    "[REORG] Keeping existing block {} over incoming {} at height {} (lower hash tiebreaker, equal pow={})",
-                                    hex::encode(&existing_hash[..8]),
-                                    hex::encode(&computed_hash[..8]),
-                                    block_height,
-                                    root_block.cumulative_pow
-                                );
-                            }
-                            hash_wins
+                            // Equal cumulative_pow — CONTENT-AWARE tiebreak (B4):
+                            // more actions wins, else lowest hash. Count both from
+                            // the store; if EITHER block's content isn't fully
+                            // present, fall back to hash-only so the decision
+                            // stays deterministic across nodes.
+                            let counts = chain_store
+                                .block_action_count(&root_block)
+                                .zip(chain_store.block_action_count(existing));
+                            let wins = match counts {
+                                Some((inc, exist)) => ChainStore::content_aware_wins(
+                                    &computed_hash,
+                                    inc,
+                                    &existing_hash,
+                                    exist,
+                                ),
+                                None => ChainStore::hash_wins(&computed_hash, &existing_hash),
+                            };
+                            info!(
+                                "[REORG] Content-aware tie at height {} (equal pow={}): {} vs existing {} → {}",
+                                block_height,
+                                root_block.cumulative_pow,
+                                hex::encode(&computed_hash[..8]),
+                                hex::encode(&existing_hash[..8]),
+                                if wins { "incoming wins" } else { "keep existing" }
+                            );
+                            wins
                         }
                     } else {
                         // Can't get existing block - fall back to hash comparison
@@ -3943,52 +3982,66 @@ impl MessageRouter {
                 }
             }
 
-            // PHASE 2: VALIDATION - Check CreateSpace actions have valid sponsorship
+            // PHASE 2: VALIDATION - Every action that produces durable public
+            // on-chain state must be authored by a sponsored identity (the sybil
+            // wall — participation is gated on sponsorship, reputation up-chains
+            // through the tree). This covers Post/Reply/Engage/Edit/CreateSpace/
+            // RenameSpace via `ActionType::requires_sponsored_author`; Sponsor and
+            // GenesisRegister are authenticated separately in the apply path and
+            // are deliberately excluded.
             let block_is_valid = if let Some(ref ss) = self.sponsorship_store {
-                // Collect all Sponsor actions in this block
-                let mut identities_sponsored_in_block = std::collections::HashSet::new();
+                // Collect all Sponsor actions in this block, keyed by sponsee to
+                // their grant scope (Some(space) = space-limited, None = global).
+                let mut sponsored_in_block: std::collections::HashMap<[u8; 32], Option<[u8; 32]>> =
+                    std::collections::HashMap::new();
                 for content_block in &parsed_content_blocks {
                     for action in &content_block.actions {
                         if action.action_type == crate::blocks::ActionType::Sponsor {
                             if let Some(sponsee_bytes) = action.content_hash {
-                                identities_sponsored_in_block.insert(sponsee_bytes);
+                                sponsored_in_block.insert(sponsee_bytes, action.sponsor_scope());
                             }
                         }
                     }
                 }
 
-                // Validate all CreateSpace actions. Hardcoded genesis
-                // identities pass without a store record (the sponsor root
-                // has none — same bootstrap deadlock handled in the builder
-                // filter, the tasks.rs formation validation, and the
-                // sponsorship apply).
+                // Hardcoded genesis identities pass without a store record (the
+                // sponsor root has none — same bootstrap deadlock handled in the
+                // builder filter, the tasks.rs formation validation, and the
+                // sponsorship apply). A space-scoped identity may only author in
+                // its scope space; global and genesis identities act anywhere.
                 let mut is_valid = true;
-                for content_block in &parsed_content_blocks {
+                'outer: for content_block in &parsed_content_blocks {
+                    let space = content_block.space_id;
                     for action in &content_block.actions {
-                        if action.action_type == crate::blocks::ActionType::CreateSpace {
+                        if action.action_type.requires_sponsored_author() {
                             let creator_bytes = action.actor;
                             let creator_pk =
                                 crate::types::identity::PublicKey::from_bytes(creator_bytes);
 
-                            let is_sponsored_on_chain = ss.exists(&creator_pk).unwrap_or(false);
-                            let is_sponsored_in_block =
-                                identities_sponsored_in_block.contains(&creator_bytes);
-                            let is_genesis =
-                                crate::sponsorship::is_in_hardcoded_genesis_list(&creator_pk);
+                            let authorized = ss.is_authorized_in_space(&creator_pk, &space)
+                                || match sponsored_in_block.get(&creator_bytes) {
+                                    Some(Some(scope)) => *scope == space, // in-block scoped grant
+                                    Some(None) => true,                   // in-block global grant
+                                    None => false,
+                                };
 
-                            if !is_sponsored_on_chain && !is_sponsored_in_block && !is_genesis {
+                            if !authorized {
                                 warn!(
-                                    "[BLOCK] VALIDATION FAILED: Block {} contains CreateSpace by unsponsored identity {}",
+                                    "[BLOCK] VALIDATION FAILED: Block {} contains {:?} by identity {} not authorized in space {}",
                                     hex::encode(&computed_hash[..8]),
-                                    hex::encode(&creator_bytes[..8])
+                                    action.action_type,
+                                    hex::encode(&creator_bytes[..8]),
+                                    hex::encode(&space[..8])
                                 );
                                 is_valid = false;
-                                break;
+                                break 'outer;
                             }
+                        }
 
-                            // Class-byte check: the space id's class byte (space_id_16[0])
-                            // must be a known SpaceClass, or the CreateSpace action is
-                            // malformed and must be rejected before it ever reaches storage.
+                        // Class-byte check: the space id's class byte (space_id_16[0])
+                        // must be a known SpaceClass, or the CreateSpace action is
+                        // malformed and must be rejected before it ever reaches storage.
+                        if action.action_type == crate::blocks::ActionType::CreateSpace {
                             if let Some(space_id_32) = action.content_hash {
                                 let mut space_id_16 = [0u8; 16];
                                 space_id_16.copy_from_slice(&space_id_32[..16]);
@@ -3999,13 +4052,10 @@ impl MessageRouter {
                                         space_id_16[0]
                                     );
                                     is_valid = false;
-                                    break;
+                                    break 'outer;
                                 }
                             }
                         }
-                    }
-                    if !is_valid {
-                        break;
                     }
                 }
                 is_valid
@@ -5082,13 +5132,21 @@ impl MessageRouter {
                         let sponsor_pk =
                             crate::types::identity::PublicKey::from_bytes(sponsor_bytes);
 
-                        // Phase 0 validation: Verify sponsor signature
-                        // Signature message = sponsee_pubkey(32) || timestamp(8 BE)
+                        // Phase 0 validation: Verify sponsor signature over the
+                        // canonical preimage — sponsee || ts for a global grant,
+                        // plus the scope for a space-limited grant. Using
+                        // Action::sponsor_sig_message keeps global grants
+                        // bit-identical to the historical preimage while binding
+                        // the scope into scoped grants (it can't be stripped or
+                        // altered without invalidating the signature).
+                        let grant_scope = action.sponsor_scope();
                         {
                             use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-                            let mut sig_message = [0u8; 40];
-                            sig_message[0..32].copy_from_slice(&sponsee_bytes);
-                            sig_message[32..40].copy_from_slice(&action.timestamp.to_be_bytes());
+                            let sig_message = crate::blocks::Action::sponsor_sig_message(
+                                &sponsee_bytes,
+                                action.timestamp,
+                                grant_scope.as_ref(),
+                            );
 
                             let sig_valid = match VerifyingKey::from_bytes(&sponsor_bytes) {
                                 Ok(vk) => {
@@ -5212,11 +5270,28 @@ impl MessageRouter {
                                     );
                                     fully_applied = false;
                                 } else {
+                                    // Space-limited grant: record the scope so the
+                                    // sybil-wall gate confines this identity to its
+                                    // scope space. Absence = global grant.
+                                    if let Some(scope) = grant_scope {
+                                        if let Err(e) =
+                                            sponsorship_store.set_scope(&sponsee_pk, &scope)
+                                        {
+                                            log::warn!(
+                                                "[BLOCK] Failed to store scope for {}: {}",
+                                                hex::encode(&sponsee_bytes[..8]),
+                                                e
+                                            );
+                                        }
+                                    }
                                     log::info!(
-                                        "[BLOCK] Applied on-chain sponsorship: {} sponsored by {} (depth={})",
+                                        "[BLOCK] Applied on-chain sponsorship: {} sponsored by {} (depth={}, scope={})",
                                         hex::encode(&sponsee_bytes[..8]),
                                         hex::encode(&sponsor_bytes[..8]),
-                                        depth
+                                        depth,
+                                        grant_scope
+                                            .map(|s| hex::encode(&s[..8]))
+                                            .unwrap_or_else(|| "global".to_string()),
                                     );
                                 }
                             }
@@ -5739,6 +5814,45 @@ impl MessageRouter {
                 return Err(RouteError::SubsystemUnavailable("block_builder"));
             }
         };
+
+        // SPONSORSHIP GATE: participation is gated on sponsorship (the sybil
+        // wall). Keep unsponsored content/space actions out of the mempool so we
+        // never propagate or build a block a peer would reject on the consensus
+        // sponsorship gate. This mirrors that gate (see the PHASE 2 validation in
+        // `handle_blocks` and `ActionType::requires_sponsored_author`), and is
+        // lenient on the transient onboarding race: an actor with a pending
+        // Sponsor for them already in our own mempool is admitted. Skipped when
+        // no sponsorship_store is configured (e.g. bare test routers).
+        if action.action_type.requires_sponsored_author() {
+            if let Some(ref ss) = self.sponsorship_store {
+                let actor_pk = crate::types::identity::PublicKey::from_bytes(action.actor);
+                let space = announce.space_id;
+                // Authorized on-chain (genesis / global / scoped-for-this-space),
+                // or a pending Sponsor in our own mempool authorizes them here
+                // (onboarding race) — honoring that grant's scope too.
+                let authorized = ss.is_authorized_in_space(&actor_pk, &space)
+                    || block_builder.read().map_or(false, |bb_read| {
+                        bb_read.get_pending_actions().iter().any(|(_, _, a)| {
+                            a.action_type == crate::blocks::ActionType::Sponsor
+                                && a.content_hash == Some(action.actor)
+                                && match a.sponsor_scope() {
+                                    Some(scope) => scope == space,
+                                    None => true,
+                                }
+                        })
+                    });
+                if !authorized {
+                    warn!(
+                        "[MEMPOOL] Dropping {:?} from peer {} by identity {} not authorized in space {} (sponsorship gate)",
+                        action.action_type,
+                        hex::encode(&peer_id[..8]),
+                        hex::encode(&action.actor[..8]),
+                        hex::encode(&space[..8])
+                    );
+                    return Ok(None);
+                }
+            }
+        }
 
         // Compute action hash for deduplication check
         let action_hash = BlockBuilder::action_hash(&action);

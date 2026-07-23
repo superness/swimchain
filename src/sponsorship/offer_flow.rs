@@ -453,6 +453,7 @@ mod tests {
             requirements: SponsorshipRequirements::default(),
             signature: Signature::from_bytes([0u8; 64]),
             auto_approve: false,
+            space_scope: None,
         }
     }
 

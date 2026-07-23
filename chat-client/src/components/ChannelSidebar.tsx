@@ -5,11 +5,9 @@
  * Maps: Channel = Thread in Swimchain terminology.
  */
 
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useBlocklist } from '../hooks/useBlocklist';
-import { DmPanel } from './DmPanel';
-import { StartDmModal } from './StartDmModal';
 import { PrivateChannelsSection } from './PrivateChannelsSection';
 import { NodePrivateChannelActions } from './NodePrivateChannelActions';
 import './ChannelSidebar.css';
@@ -218,10 +216,6 @@ export function ChannelSidebar({
   onCreateChannel,
 }: ChannelSidebarProps) {
   const navigate = useNavigate();
-  const [showDmModal, setShowDmModal] = useState(false);
-  const handleSelectDm = useCallback((spaceId: string) => {
-    navigate('/channels/@me/' + spaceId);
-  }, [navigate]);
   const [categories, setCategories] = useState<ChannelCategory[]>(() =>
     groupChannelsByCategory(channels)
   );
@@ -288,11 +282,8 @@ export function ChannelSidebar({
           </div>
         )}
 
-        {/* Direct Messages panel. Works in both modes: node mode uses the managed
-            request/accept RPCs (the node holds the key + does the crypto/PoW), browser
-            mode uses the local seed. */}
-        <DmPanel onSelectDm={handleSelectDm} onStartDm={() => setShowDmModal(true)} />
-        {showDmModal && <StartDmModal onClose={() => setShowDmModal(false)} />}
+        {/* Direct Messages live at Home (/channels/@me) like Discord — the
+            DmPanel is NOT repeated in every server's sidebar. */}
 
         {/* Private channels: invites inbox + my private channels (browser mode) */}
         <PrivateChannelsSection />

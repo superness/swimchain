@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext .ts,.tsx",
-    "test": "tsx src/lib/reefEngine.tie.test.ts"
+    "test": "tsx src/lib/reefEngine.tie.test.ts && tsx src/tutorial.test.ts"
   },
   "dependencies": {
     "@swimchain/core": "file:../swimchain-js",

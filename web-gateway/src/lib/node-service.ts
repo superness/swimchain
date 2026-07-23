@@ -16,6 +16,12 @@ import { calculateScore } from '@/lib/search/ranking';
 import { getSearchIndexer } from '@/lib/search/indexer';
 import { addressToHex, hexToAddress } from '@/lib/address';
 import {
+  isShowcaseSpace,
+  isShowcaseAuthor,
+  isCuratedShowcaseSpace,
+  showcaseSpaceName,
+} from '@/lib/config/showcase';
+import {
   getRpc,
   NodeUnreachableError,
   type NodeContentSummary,
@@ -70,9 +76,22 @@ function isPublicSpace(space: NodeSpaceSummary): boolean {
   return true;
 }
 
-/** Drop app/DM/profile and not-yet-confirmed spaces from a public listing. */
+/**
+ * Drop app/DM/profile and not-yet-confirmed spaces from a public listing, then
+ * apply the showcase allowlist (when configured, only curated spaces survive).
+ * Every public-facing space list funnels through here — directory, search
+ * index, sitemap, and the per-user public-space set — so the lockdown is
+ * enforced in exactly one place.
+ */
 function publicSpaces(spaces: NodeSpaceSummary[]): NodeSpaceSummary[] {
-  return spaces.filter(isPublicSpace);
+  return spaces.filter(s => {
+    // Explicitly curated spaces are trusted: show them even if the node hasn't
+    // resolved the name or classified the space (inclusion is deliberate).
+    if (isCuratedShowcaseSpace(s.space_id)) return true;
+    // Otherwise apply the normal public-space rules, gated by the allowlist
+    // (which is a no-op when no allowlist is configured).
+    return isPublicSpace(s) && isShowcaseSpace(s.space_id);
+  });
 }
 
 /**
@@ -252,7 +271,7 @@ function spaceToActivitySummary(
   }
   return {
     space_id: space.space_id,
-    space_name: space.name || space.space_id,
+    space_name: showcaseSpaceName(space.space_id) || space.name || space.space_id,
     description: undefined,
     post_count: space.post_count,
     active_posts: activePosts,
@@ -329,13 +348,17 @@ export async function fetchSpaceWithPosts(spaceId: string): Promise<
       rpc.listSpaceContent(spaceId, 100),
     ]);
     const spaceInfo = spacesResult.spaces.find(s => s.space_id === spaceId);
-    if (!spaceInfo || !isPublicSpace(spaceInfo)) {
-      // Not found, or a private/DM/profile space that the public gateway hides.
+    const curated = isCuratedShowcaseSpace(spaceId);
+    if (!spaceInfo || (!curated && (!isPublicSpace(spaceInfo) || !isShowcaseSpace(spaceId)))) {
+      // Not found, a private/DM/profile space the gateway hides, or a space
+      // outside the showcase allowlist. Curated spaces are trusted through.
       return { status: 'not-found' };
     }
-    const spaceName = spaceInfo.name || spaceInfo.space_id;
+    const spaceName =
+      showcaseSpaceName(spaceId) || spaceInfo.name || spaceInfo.space_id;
     const posts = contentResult.items
       .filter(item => item.content_type !== 'Reply' && !isDecayed(item))
+      .filter(item => isShowcaseAuthor(item.author_id))
       .map(item => summaryToSearchResult(item, spaceName));
     return {
       status: 'ok',
@@ -442,6 +465,15 @@ export async function fetchPost(
     if (retrieved instanceof NodeUnreachableError) return { status: 'offline' };
     if (!retrieved) return { status: 'unavailable' };
     content = retrieved;
+  }
+
+  // Enforce the showcase lockdown on direct post links too: a post outside an
+  // allowlisted space, or by a non-showcase author, is treated as not found so
+  // it can't be reached by guessing/sharing a /s/… URL. get_content returns
+  // space_id as hex, so match on the bech32 form (falling back to raw).
+  const contentSpace = content.space_id_bech32 ?? content.space_id;
+  if (!isShowcaseSpace(contentSpace) || !isShowcaseAuthor(content.author_id)) {
+    return { status: 'not-found' };
   }
 
   const root: ContentResponse = {
@@ -650,6 +682,7 @@ export async function feedSearchIndexer(): Promise<number | null> {
       const { items } = await rpc.listSpaceContent(space.space_id, 200);
       for (const item of items) {
         if (isDecayed(item)) continue;
+        if (!isShowcaseAuthor(item.author_id)) continue;
         indexer.addDocument(
           summaryToContentResponse(item),
           space.name || space.space_id
@@ -733,6 +766,7 @@ export async function fetchSitemapEntries(baseUrl: string): Promise<SitemapEntry
       const { items } = await rpc.listSpaceContent(space.space_id, 100);
       for (const item of items) {
         if (isDecayed(item) || item.content_type === 'Reply') continue;
+        if (!isShowcaseAuthor(item.author_id)) continue;
         entries.push({
           url: `${baseUrl}/s/${encodeURIComponent(item.space_id)}/${encodeURIComponent(item.content_id)}`,
           lastmod: new Date(item.last_engagement || item.created_at).toISOString(),

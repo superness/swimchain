@@ -1,0 +1,29 @@
+# Showcase keeper (mainnet) — runs on the seed/gateway droplet next to the
+# mainnet node, keeping the curated "Swimchain 101" space and its posts alive
+# and retrievable so https://swimchain.io/browse can present them indefinitely.
+# Engages (as the node identity) only when a post is about to decay.
+#
+# Deploy: ship showcase-keeper.mjs + node_modules/hash-wasm to /opt/showcase-keeper,
+# then install this unit, daemon-reload, enable --now.
+
+[Unit]
+Description=Swimchain showcase keeper (mainnet) — keeps the browse showcase space alive
+After=network.target swimchain-mainnet.service
+Wants=swimchain-mainnet.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/showcase-keeper
+Environment=RPC_URL=http://127.0.0.1:9736
+Environment=SPACE_ID=sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm
+Environment=AUTHOR_PUBKEY=994fd0af22ebc66fcc5da4cdc1cdb94500d18d2dcec514415edeb975a84809e3
+Environment=INTERVAL_MS=300000
+Environment=ENGAGE_FLOOR=0.7
+ExecStart=/bin/bash -c 'export RPC_COOKIE="$(cat /var/lib/swimchain-mainnet/.cookie 2>/dev/null || true)"; exec /usr/bin/node showcase-keeper.mjs'
+Restart=always
+RestartSec=10
+MemoryMax=200M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

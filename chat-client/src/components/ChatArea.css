@@ -143,6 +143,8 @@
      min-height:0 it grows to fit all messages and overflows the viewport, so a long
      thread's bottom (and the composer) get clipped with no way to scroll to them. */
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 16px 0;
@@ -152,8 +154,12 @@
 .messages-list {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
-  justify-content: flex-end;
+  /* Bottom-anchor via margin-top:auto, NOT min-height:100%. The percentage
+     resolves against a fractional content height at non-integer DPI scales
+     (WebView2 at 125%/150%) and rounds up, leaving the scroller permanently
+     1-2px overflowed — a phantom scrollbar on every channel. Auto margins
+     collapse to 0 once content overflows, so long threads scroll normally. */
+  margin-top: auto;
 }
 
 .message-group {
@@ -166,7 +172,9 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  /* Fill the (now flex) scroller without a percentage height — see
+     .messages-list for why percentages are avoided here. */
+  flex: 1;
   color: var(--text-muted);
   gap: 16px;
 }

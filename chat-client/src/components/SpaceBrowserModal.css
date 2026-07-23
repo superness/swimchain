@@ -1,0 +1,217 @@
+/**
+ * SpaceBrowserModal — Discord-style "join a server" browse surface.
+ * Self-contained (own class prefix, no dependence on other modals' CSS).
+ */
+
+.space-browser__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.space-browser {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #2b2d31);
+  border-radius: 8px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.24);
+  max-width: 30rem;
+  width: 100%;
+  max-height: min(80vh, 640px);
+}
+
+.space-browser__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--bg-modifier-accent, #4e5058);
+}
+
+.space-browser__header h2 {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-normal, #dbdee1);
+}
+
+.space-browser__close {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-muted, #949ba4);
+  cursor: pointer;
+}
+
+.space-browser__close:hover {
+  background: var(--bg-modifier-hover, #3f4147);
+  color: var(--text-normal, #dbdee1);
+}
+
+.space-browser__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 1rem 1.25rem 1.25rem;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.space-browser__filter {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-tertiary, #1e1f22);
+  border: none;
+  border-radius: 4px;
+  color: var(--text-normal, #dbdee1);
+  font-size: 0.9rem;
+}
+
+.space-browser__filter:focus-visible {
+  outline: 2px solid var(--brand-primary, #5865f2);
+}
+
+.space-browser__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.space-browser__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.space-browser__space {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: default;
+  text-align: left;
+}
+
+.space-browser__space.joined {
+  cursor: pointer;
+}
+
+.space-browser__space.joined:hover {
+  background: var(--bg-modifier-hover, #3f4147);
+}
+
+.space-browser__avatar {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.space-browser__meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.space-browser__name {
+  color: var(--text-normal, #dbdee1);
+  font-size: 0.95rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.space-browser__count {
+  color: var(--text-muted, #949ba4);
+  font-size: 0.75rem;
+}
+
+.space-browser__join {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  background: var(--brand-primary, #5865f2);
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.space-browser__join:hover:not(:disabled) {
+  background: var(--brand-hover, #4752c4);
+}
+
+.space-browser__join:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.space-browser__join.leave {
+  background: transparent;
+  border: 1px solid var(--bg-modifier-accent, #4e5058);
+  color: var(--text-muted, #949ba4);
+}
+
+.space-browser__join.leave:hover:not(:disabled) {
+  background: var(--status-danger, #da373c);
+  border-color: var(--status-danger, #da373c);
+  color: #fff;
+}
+
+.space-browser__hint {
+  margin: 0;
+  color: var(--text-muted, #949ba4);
+  font-size: 0.8rem;
+}
+
+.space-browser__invite {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bg-modifier-accent, #4e5058);
+}
+
+.space-browser__invite h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-normal, #dbdee1);
+}
+
+.space-browser__invite-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg-tertiary, #1e1f22);
+  border: none;
+  border-radius: 4px;
+  color: var(--text-normal, #dbdee1);
+  font-family: monospace;
+  font-size: 0.8rem;
+  word-break: break-all;
+  resize: vertical;
+}

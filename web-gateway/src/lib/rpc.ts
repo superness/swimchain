@@ -122,7 +122,8 @@ export interface NodeContent {
   content_id: string;
   content_type: string;
   author_id: string; // cs1... bech32m
-  space_id: string; // sp1... bech32m
+  space_id: string; // NOTE: get_content returns this as 32-byte HEX, not bech32
+  space_id_bech32?: string; // sp1... bech32m form (use this for space matching)
   parent_id: string | null;
   created_at: number; // unix ms
   last_engagement: number; // unix ms

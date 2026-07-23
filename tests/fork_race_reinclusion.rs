@@ -253,3 +253,61 @@ fn eligibility_window_staggers_forgers_on_bursty_traffic() {
         [0xFF; 32]
     );
 }
+
+// B4: content-aware tie-break. A block carrying MORE actions must win an
+// equal-work tie so a block containing a user's action can never lose to an
+// emptier block on a blind coin flip — the exact mechanism that dropped the
+// height-365 reef moves. Constructed adversarially: the emptier block has the
+// LOWER hash (so the OLD hash-only rule would pick it and orphan the extra
+// action); the fix must pick the fuller block regardless.
+#[test]
+fn content_aware_tie_prefers_the_fuller_block() {
+    // Search for two forgers whose blocks tie on work but where the FULLER
+    // block (2 actions) has a HIGHER hash than the EMPTIER block (1 action) —
+    // i.e. the case the old lowest-hash rule got wrong.
+    let shared = reply_action(1);
+    let extra = reply_action(2);
+    let mut found = None;
+    for tag in 0u8..255 {
+        let (full, _, _) = forge_block(
+            [0u8; 32],
+            0,
+            1,
+            [tag; 32],
+            vec![shared.clone(), extra.clone()],
+        );
+        let (empty, _, _) = forge_block([0u8; 32], 0, 1, [255 - tag; 32], vec![shared.clone()]);
+        // We want the emptier block to have the LOWER hash (old rule picks it).
+        if empty.hash() < full.hash() {
+            found = Some((full, empty));
+            break;
+        }
+    }
+    let (full, empty) = found.expect("should find a full>empty-hash pair");
+    let full_actions = 2usize;
+    let empty_actions = 1usize;
+
+    // OLD behavior (hash-only) would pick the emptier block — the bug.
+    assert!(
+        ChainStore::hash_wins(&empty.hash(), &full.hash()),
+        "test setup: emptier block has the lower hash (old rule favors it)"
+    );
+
+    // NEW behavior: the fuller block wins the tie, so the extra action isn't
+    // orphaned by a coin flip.
+    assert!(
+        ChainStore::content_aware_wins(&full.hash(), full_actions, &empty.hash(), empty_actions),
+        "fuller block MUST win the content-aware tie"
+    );
+    assert!(
+        !ChainStore::content_aware_wins(&empty.hash(), empty_actions, &full.hash(), full_actions),
+        "emptier block MUST lose the content-aware tie"
+    );
+
+    // Equal action counts fall back to lowest hash (still deterministic).
+    assert_eq!(
+        ChainStore::content_aware_wins(&empty.hash(), 2, &full.hash(), 2),
+        ChainStore::hash_wins(&empty.hash(), &full.hash()),
+        "equal counts must match the hash-only tiebreak"
+    );
+}

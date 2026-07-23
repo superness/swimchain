@@ -454,17 +454,23 @@ async fn handle_request(
     // get_identity_info is exempt because it only returns public key/address which is public information
     // get_sponsorship_info is exempt because sponsorship status is public chain data
     // list_sponsorship_offers is exempt because offers are public for anyone to browse
-    // sign_message is exempt for localhost connections to allow browser clients to use node identity
-    //   (it only signs messages, doesn't leak private key, and localhost access is already trusted)
     // Sponsorship action methods are exempt because they contain verifiable sponsor/claimant signatures
     // in their parameters - the signature proves the caller's identity without RPC-level auth
+    //
+    // sign_message is DELIBERATELY NOT exempt: it makes the node identity sign
+    // caller-chosen bytes, so an unauthenticated exemption is a signing oracle.
+    // The old "localhost only" comment was never enforced — dispatch() has no
+    // client IP — and with CORS: * a malicious page in a node-runner's browser
+    // could reach their localhost node and coax its identity into signing. It
+    // now requires auth (cookie/signature). Legit callers are node-mode shells,
+    // which already send rpcAuth (the cookie); browser-mode game clients sign
+    // with their OWN keypair and never call sign_message. (Launch B5.)
     const AUTH_EXEMPT_METHODS: &[&str] = &[
         "get_info",
         "get_identity_info",
         "get_sync_status",
         "get_sponsorship_info",
         "list_sponsorship_offers",
-        "sign_message",
         // Read-only content methods - public data, no auth needed
         "list_spaces",
         "list_posts_for_space",

@@ -137,6 +137,24 @@ impl RootBlock {
         }
     }
 
+    /// The CANONICAL genesis block for the active network — a fixed, deterministic
+    /// height-0 anchor every node persists on a fresh chain so all nodes share one
+    /// common ancestor. Without this, nodes each forge a *different* height-1 block
+    /// off the zero hash on a fresh mainnet → divergent chains with no shared
+    /// genesis, convergence left to luck (launch readiness B3). The per-network
+    /// fixed timestamp makes the block (and thus its hash) identical for everyone.
+    #[must_use]
+    pub fn canonical_genesis() -> Self {
+        // Fixed genesis timestamps (UNIX seconds), one per network. Changing a
+        // value forks that network's genesis, so these are permanent.
+        let ts = match crate::network::NetworkContext::mode() {
+            crate::network::NetworkMode::Mainnet => 1_752_710_400, // 2025-07-17 00:00:00 UTC
+            crate::network::NetworkMode::Testnet => 1_000_000,
+            crate::network::NetworkMode::Regtest => 1_000_000,
+        };
+        Self::genesis(ts)
+    }
+
     /// Create a new root block from space blocks
     ///
     /// # Arguments
@@ -415,6 +433,23 @@ mod tests {
         assert_eq!(genesis.prev_root_hash, [0u8; 32]);
         assert_eq!(genesis.version, RootBlock::CURRENT_VERSION);
         assert_eq!(genesis.difficulty_target, INITIAL_DIFFICULTY);
+    }
+
+    // The canonical genesis anchor MUST be deterministic — every node on a
+    // network derives the identical height-0 block/hash, so they all share one
+    // ancestor and height-1 forks can't diverge from no-shared-genesis (B3).
+    #[test]
+    fn test_canonical_genesis_deterministic() {
+        let a = RootBlock::canonical_genesis();
+        let b = RootBlock::canonical_genesis();
+        assert_eq!(a.hash(), b.hash(), "canonical genesis must be reproducible");
+        assert!(a.is_genesis());
+        assert_eq!(a.height, 0);
+        assert!(a.verify_genesis().is_ok());
+        // The active network in unit tests is Mainnet (default) → the fixed
+        // mainnet genesis timestamp. Guard it so an accidental change to the
+        // constant (which would fork the network) fails loudly.
+        assert_eq!(a.timestamp, 1_752_710_400);
     }
 
     #[test]

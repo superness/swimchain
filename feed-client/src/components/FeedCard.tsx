@@ -13,6 +13,7 @@ import { PostReactions } from './PostReactions';
 import { UserProfileModal } from './UserProfileModal';
 import { ReportModal, SpamBadge } from './ReportModal';
 import { useMediaUpload } from '../hooks/useRpc';
+import { linkify } from '../lib/linkify';
 import { useUserProfile } from '../hooks/useUserProfile';
 import { getAvatarColor } from '../lib/profile';
 import { useBlocklist } from '../hooks/useBlocklist';
@@ -307,7 +308,7 @@ export function FeedCard({
       <div className="feed-card__content">
         {displayContent ? (
           <>
-            <p>{displayContent}</p>
+            <p className="feed-card__body-text">{linkify(displayContent)}</p>
             {contentTooLong && (
               <button
                 className="feed-card__expand-btn"

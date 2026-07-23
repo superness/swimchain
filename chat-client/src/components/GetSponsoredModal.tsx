@@ -8,7 +8,7 @@
  * The claim protocol mirrors the node's canonical contract (verified against
  * `claim_sponsorship_offer` in src/rpc/methods.rs), NOT chat's legacy rpc.ts
  * wrappers which send the wrong param names (`claimant_pk`/`content_id`):
- *   - PoW:  sha256(pow_nonce_space(32) || pow_nonce_le(8)) with N leading zero bytes
+ *   - PoW:  sha256(pow_nonce_space(32) || pow_nonce_le(8)) with N leading zero BITS
  *   - sig:  offer_id(16) || claimant(32) || timestamp(8 BE) || pow_hash(32)
  *
  * Signing routes through useChatIdentity().sign, so it works in BOTH node
@@ -21,6 +21,13 @@ import { useRpc } from '../hooks/useRpc';
 import { useChatIdentity } from '../hooks/useChatIdentity';
 import { useToast } from './Toast';
 import './GetSponsoredModal.css';
+
+// App-onboarding sponsors whose offers exist for in-app onboarding (e.g. the
+// reef/chess game bot) and should NOT surface in the general "get sponsored"
+// list. Client display choice, not a protocol rule.
+const HIDDEN_ONBOARDING_SPONSORS = new Set<string>([
+  '0530df507ad26a2ee6d0c61ef1e37e4e08abae087c1755467d98e3435ecd2984', // reef/chess game bot (mainnet)
+]);
 
 interface OfferRequirements {
   min_pow_difficulty: number;
@@ -53,10 +60,14 @@ interface ClaimResult {
 
 /**
  * Mine SHA-256 PoW: find a nonce where sha256(nonceSpace || nonce_le) has
- * `minZeroBytes` leading zero bytes. Matches the node's verification exactly.
+ * `minZeroBits` leading zero BITS. The node validates bits (see
+ * claim_sponsorship_offer in src/rpc/methods.rs); this miner previously
+ * counted zero BYTES against the same number, over-mining 8x and exhausting
+ * the attempt cap on any offer with difficulty above ~24 — claims never
+ * completed and looked like a timeout.
  */
 async function mineSha256Pow(
-  minZeroBytes: number,
+  minZeroBits: number,
   onProgress?: (attempts: number) => void,
   isCancelled?: () => boolean,
 ): Promise<{ nonce: number; nonceSpace: Uint8Array; powHash: Uint8Array }> {
@@ -78,12 +89,17 @@ async function mineSha256Pow(
     const hashBuf = await crypto.subtle.digest('SHA-256', input);
     const hash = new Uint8Array(hashBuf);
 
-    let zeros = 0;
+    // Count leading zero bits (matches node-side count_leading_zero_bits)
+    let zeroBits = 0;
     for (const byte of hash) {
-      if (byte === 0) zeros++;
-      else break;
+      if (byte === 0) {
+        zeroBits += 8;
+        continue;
+      }
+      zeroBits += Math.clz32(byte) - 24;
+      break;
     }
-    if (zeros >= minZeroBytes) return { nonce, nonceSpace, powHash: hash };
+    if (zeroBits >= minZeroBits) return { nonce, nonceSpace, powHash: hash };
 
     nonce++;
     if (nonce % 500 === 0) {
@@ -145,9 +161,16 @@ export function GetSponsoredModal({ isOpen, onClose, onClaimed }: GetSponsoredMo
         offset: 0,
         limit: 20,
       });
-      // Hide the user's own offers — you can't sponsor yourself.
+      // Hide the user's own offers (can't sponsor yourself) and app-onboarding
+      // offers (the reef/chess game bot) — those are for in-app onboarding, not
+      // the general "get sponsored" flow.
       const mine = identity?.publicKey?.toLowerCase();
-      setOffers(result.offers.filter((o) => o.sponsor_pubkey.toLowerCase() !== mine));
+      setOffers(
+        result.offers.filter((o) => {
+          const s = o.sponsor_pubkey.toLowerCase();
+          return s !== mine && !HIDDEN_ONBOARDING_SPONSORS.has(s);
+        }),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load offers');
     } finally {

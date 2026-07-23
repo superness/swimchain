@@ -186,8 +186,14 @@ export class SwimchainRpc {
     async requestContent(contentId) {
         return this.call('request_content', { content_id: contentId });
     }
-    async getReplies(contentId) {
-        return this.call('get_replies', { content_id: contentId });
+    async getReplies(contentId, opts) {
+        // The node defaults to limit=1000; threads longer than that silently
+        // truncate (fold-style clients like the reef MUST pass a high limit).
+        return this.call('get_replies', {
+            content_id: contentId,
+            ...(opts?.limit !== undefined ? { limit: opts.limit } : {}),
+            ...(opts?.offset !== undefined ? { offset: opts.offset } : {}),
+        });
     }
     // =========================================================================
     // Identity

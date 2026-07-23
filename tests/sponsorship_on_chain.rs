@@ -326,5 +326,8 @@ fn test_sponsor_action_serialization_size() {
     let action = Action::new_sponsor([1u8; 32], [2u8; 32], 1000, [4u8; 64]);
     let serialized = action.serialize();
     assert_eq!(serialized.len(), ACTION_SERIALIZED_SIZE);
-    assert_eq!(serialized.len(), 465);
+    // Current fixed wire size is 466 bytes (465-byte legacy + the authenticated
+    // `private` bit). ACTION_SERIALIZED_SIZE above is the source of truth; this
+    // concrete literal documents the on-wire number.
+    assert_eq!(serialized.len(), 466);
 }

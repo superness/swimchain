@@ -50,10 +50,31 @@ pub enum GenesisDistributionCategory {
 ///     GenesisDistributionCategory::TeamMember,
 /// ),
 /// ```
-const HARDCODED_GENESIS_LIST: &[(PublicKey, GenesisDistributionCategory)] = &[
-    // Primary genesis identity
+// ── MAINNET genesis ─────────────────────────────────────────────────────────
+// The mainnet sponsor root. Regenerated 2026-07-22 (the 2026-07-16 key's seed was
+// never durably saved and is unrecoverable; since mainnet had zero content it was
+// reminted). Its SEED and PASSWORD are NOT in this repo and never should be — they
+// live in the operator's secrets vault (see docs/MAINNET_LAUNCH_READINESS.md B1).
+// Only the PUBLIC key appears here. This list is network-gated so the testnet
+// genesis (whose secret is public in project files) can NEVER be a mainnet sponsor.
+// Public key: 994fd0af22ebc66fcc5da4cdc1cdb94500d18d2dcec514415edeb975a84809e3
+// Address: cs1qzv5l590yt4uvm7vtkjvmswdh9zsp5vd9h8v29zptm0tjadgfqy7xccn5ac
+const MAINNET_GENESIS_LIST: &[(PublicKey, GenesisDistributionCategory)] = &[(
+    PublicKey::from_bytes([
+        0x99, 0x4f, 0xd0, 0xaf, 0x22, 0xeb, 0xc6, 0x6f, 0xcc, 0x5d, 0xa4, 0xcd, 0xc1, 0xcd, 0xb9,
+        0x45, 0x00, 0xd1, 0x8d, 0x2d, 0xce, 0xc5, 0x14, 0x41, 0x5e, 0xde, 0xb9, 0x75, 0xa8, 0x48,
+        0x09, 0xe3,
+    ]),
+    GenesisDistributionCategory::TeamMember,
+)];
+
+// ── TESTNET / dev genesis ───────────────────────────────────────────────────
+// These identities' secrets ARE known within the project (demos, faucet). That
+// is fine for testnet and regtest and is EXACTLY why they must never be mainnet
+// sponsors — the network gate below enforces that.
+const TESTNET_GENESIS_LIST: &[(PublicKey, GenesisDistributionCategory)] = &[
+    // Primary (legacy) dev genesis identity.
     // Public key: 64f2875ac6e9b41dbdd0ff0e0add3a71c75e441a115a0853e3188bdaf16e812f
-    // Address: cs1qpj09p66cm5mg8da6rlsuzka8fcuwhjyrgg45zznuvvghkh3d6qj7qhmq6a
     (
         PublicKey::from_bytes([
             0x64, 0xf2, 0x87, 0x5a, 0xc6, 0xe9, 0xb4, 0x1d, 0xbd, 0xd0, 0xff, 0x0e, 0x0a, 0xdd,
@@ -62,11 +83,9 @@ const HARDCODED_GENESIS_LIST: &[(PublicKey, GenesisDistributionCategory)] = &[
         ]),
         GenesisDistributionCategory::TeamMember,
     ),
-    // New testnet genesis identity (created 2026-01-30)
+    // Testnet genesis identity (created 2026-01-30). Secret is documented in
+    // project files (GENESIS_IDENTITY.md); testnet-only for that reason.
     // Public key: 9ec9661d3a975ad141caa5df9f14b3c46cf725509e7fa044c19d26fe76bd0420
-    // Address: cs1qz0vjesa82t4452pe2jal8c5k0zxeae92z08lgzycxwjdlnkh5zzqed2kj7
-    // Password: testpass123
-    // Seed backed up to: ~/.claude/skills/swimchain-services/GENESIS_SEED.txt
     (
         PublicKey::from_bytes([
             0x9e, 0xc9, 0x66, 0x1d, 0x3a, 0x97, 0x5a, 0xd1, 0x41, 0xca, 0xa5, 0xdf, 0x9f, 0x14,
@@ -77,22 +96,50 @@ const HARDCODED_GENESIS_LIST: &[(PublicKey, GenesisDistributionCategory)] = &[
     ),
 ];
 
-/// Check if pubkey is in the hardcoded genesis list
+/// The genesis list for the ACTIVE network. Mainnet gets ONLY the securely-held
+/// mainnet genesis; testnet/regtest get the dev identities. This gate is what
+/// keeps a publicly-known dev key from holding sponsor root on mainnet.
+#[must_use]
+pub fn active_genesis_list() -> &'static [(PublicKey, GenesisDistributionCategory)] {
+    match crate::network::NetworkContext::mode() {
+        crate::network::NetworkMode::Mainnet => MAINNET_GENESIS_LIST,
+        _ => TESTNET_GENESIS_LIST,
+    }
+}
+
+/// Check if pubkey is a genesis identity on the ACTIVE network.
 #[must_use]
 pub fn is_in_hardcoded_genesis_list(pubkey: &PublicKey) -> bool {
-    HARDCODED_GENESIS_LIST.iter().any(|(pk, _)| pk == pubkey)
+    active_genesis_list().iter().any(|(pk, _)| pk == pubkey)
 }
 
-/// Get the full hardcoded genesis list (for testing/debugging)
+/// Operator-designated mainnet GAME sponsor identities (pubkey hex). These — and
+/// ONLY these — may run capped auto-approve onboarding offers on mainnet: the
+/// sanctioned reef/chess exception to the general faucet-off. Their onboarding
+/// path roots at the sponsor's own subtree (contained by tree-poisoning), not a
+/// general genesis-rooted faucet. Add a game sponsor's pubkey here to bless it.
+const MAINNET_GAME_SPONSORS: &[&str] = &[
+    // reef/chess game bot (mainnet node on 165.22.47.107), genesis-sponsored.
+    "0530df507ad26a2ee6d0c61ef1e37e4e08abae087c1755467d98e3435ecd2984",
+];
+
+/// True if `sponsor_pubkey_hex` is an operator-designated mainnet game sponsor
+/// allowed to run auto-approve onboarding offers on mainnet.
+#[must_use]
+pub fn is_mainnet_game_sponsor(sponsor_pubkey_hex: &str) -> bool {
+    MAINNET_GAME_SPONSORS.contains(&sponsor_pubkey_hex)
+}
+
+/// Get the genesis list for the active network (for testing/debugging).
 #[must_use]
 pub fn get_hardcoded_genesis_list() -> &'static [(PublicKey, GenesisDistributionCategory)] {
-    HARDCODED_GENESIS_LIST
+    active_genesis_list()
 }
 
-/// Get category for a genesis identity
+/// Get category for a genesis identity on the active network.
 #[must_use]
 pub fn get_genesis_category(pubkey: &PublicKey) -> Option<GenesisDistributionCategory> {
-    HARDCODED_GENESIS_LIST
+    active_genesis_list()
         .iter()
         .find(|(pk, _)| pk == pubkey)
         .map(|(_, category)| *category)

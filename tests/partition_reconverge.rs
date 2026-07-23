@@ -8,7 +8,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use swimchain::blocks::{Action, ActionType, BlockBuilder, BranchPath, ContentBlock, RootBlock, SpaceBlock};
+use swimchain::blocks::{
+    Action, ActionType, BlockBuilder, BranchPath, ContentBlock, RootBlock, SpaceBlock,
+};
 use swimchain::network::messages::BlockDataPayload;
 use swimchain::node::metrics::NodeMetrics;
 use swimchain::node::MessageRouter;
@@ -75,7 +77,9 @@ fn build_block(
     let mut payload = BlockDataPayload::new(root.hash());
     payload.root_block = bincode::serialize(&root).unwrap();
     payload.space_blocks.push(bincode::serialize(&sb).unwrap());
-    payload.content_blocks.push(bincode::serialize(&cb).unwrap());
+    payload
+        .content_blocks
+        .push(bincode::serialize(&cb).unwrap());
     (root, payload.to_bytes())
 }
 
@@ -95,15 +99,28 @@ async fn heavier_tip_wins_and_loser_actions_reanchor() {
 
     // ---- common prefix: heights 0 and 1 ----
     let (g, g_bytes) = build_block([0u8; 32], 0, 100, vec![post(0x01, 0x10)]);
-    router.route(&peer, MSG_BLOCK_DATA, &fork_id, &g_bytes).await.unwrap();
+    router
+        .route(&peer, MSG_BLOCK_DATA, &fork_id, &g_bytes)
+        .await
+        .unwrap();
     let (h1, h1_bytes) = build_block(g.hash(), 1, 200, vec![post(0x01, 0x11)]);
-    router.route(&peer, MSG_BLOCK_DATA, &fork_id, &h1_bytes).await.unwrap();
-    assert_eq!(store.get_latest_height().unwrap(), Some(1), "prefix tip is height 1");
+    router
+        .route(&peer, MSG_BLOCK_DATA, &fork_id, &h1_bytes)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_latest_height().unwrap(),
+        Some(1),
+        "prefix tip is height 1"
+    );
 
     // ---- light tip at height 2 (partition A) ----
     let light_actions = vec![post(0xA1, 0xA1), post(0xA2, 0xA2)];
     let (light, light_bytes) = build_block(h1.hash(), 2, 300, light_actions.clone());
-    router.route(&peer, MSG_BLOCK_DATA, &fork_id, &light_bytes).await.unwrap();
+    router
+        .route(&peer, MSG_BLOCK_DATA, &fork_id, &light_bytes)
+        .await
+        .unwrap();
     assert_eq!(
         store.get_root_hash_at_height(2).unwrap(),
         Some(light.hash()),
@@ -114,7 +131,10 @@ async fn heavier_tip_wins_and_loser_actions_reanchor() {
     // Disjoint actions so the loser's set isn't re-finalized by storing the winner.
     let heavy_actions = vec![post(0xB1, 0xB1), post(0xB2, 0xB2), post(0xB3, 0xB3)];
     let (heavy, heavy_bytes) = build_block(h1.hash(), 2, 500, heavy_actions.clone());
-    router.route(&peer, MSG_BLOCK_DATA, &fork_id, &heavy_bytes).await.unwrap();
+    router
+        .route(&peer, MSG_BLOCK_DATA, &fork_id, &heavy_bytes)
+        .await
+        .unwrap();
 
     // (a) tip switched to the heavier chain
     assert_eq!(

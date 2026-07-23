@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { IdentityProvider } from '@swimchain/frontend';
 import { ToastProvider } from './components/Toast';
 import { MainLayout } from './layouts/MainLayout';
@@ -28,6 +28,7 @@ export function App(): JSX.Element {
 interface RedirectToAppProps { type: 'space' | 'post' | 'user'; }
 
 function RedirectToApp({ type }: RedirectToAppProps) {
+  const navigate = useNavigate();
   useEffect(() => {
     const rawPath = window.location.pathname;
     const spaceId = new URLSearchParams(window.location.search).get('space');
@@ -55,6 +56,14 @@ function RedirectToApp({ type }: RedirectToAppProps) {
       // (/profile/<id> already matches forum; a thread with no space id falls
       //  through to forum's home.)
       window.parent.postMessage({ type: 'SWIMCHAIN_NAVIGATE', client: 'forum', path: forumPath }, '*');
+      // The forum app opens in its own window — don't strand THIS app on the
+      // "Opening…" stub. Return to the results the user clicked from (or home
+      // when this was a cold deep-link with no history to go back to).
+      const returnTimer = setTimeout(() => {
+        if (window.history.length > 1) navigate(-1);
+        else navigate('/', { replace: true });
+      }, 150);
+      return () => clearTimeout(returnTimer);
     } else {
       let path = rawPath;
       if (path.startsWith('/thread/')) path = `/post/${withSha256(rawPath.slice('/thread/'.length))}`;
@@ -62,7 +71,7 @@ function RedirectToApp({ type }: RedirectToAppProps) {
       const targetUrl = import.meta.env.VITE_DEEP_LINK_URL || 'http://localhost:5179';
       window.location.href = targetUrl + path;
     }
-  }, []);
+  }, [navigate]);
   const labels: Record<string, string> = { space: 'space', post: 'post', user: 'profile' };
   return <div style={{padding:'2rem',textAlign:'center',color:'#666'}}><p>Opening {labels[type]}...</p></div>;
 }

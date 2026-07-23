@@ -41,7 +41,7 @@ export function ProfilePage(): JSX.Element {
   const myPk = publicKey ? bytesToHex(publicKey) : undefined;
   const { identity, sign } = useNodeIdentity();
   const { submitPost, submitting } = usePostSubmit();
-  const { uploadImage, uploading } = useMediaUpload();
+  const { uploadImage, uploading, error: avatarUploadError } = useMediaUpload();
   const { state: powState, progress: powProgress, minePost, cancel: cancelPow } = usePostPow();
 
   // Determine whose profile we're viewing
@@ -97,8 +97,10 @@ export function ProfilePage(): JSX.Element {
     }
 
     // Validate file size (max 2MB)
-    if (file.size > 2 * 1024 * 1024) {
-      setSaveError('Image must be less than 2MB');
+    // The node caps media at 1 MB (MAX_MEDIA_SIZE); a larger image passes this
+    // check but is rejected at upload, so keep it in lockstep with the node.
+    if (file.size > 1024 * 1024) {
+      setSaveError(`Image must be under 1 MB (yours is ${(file.size / 1024 / 1024).toFixed(1)} MB)`);
       return;
     }
 
@@ -167,7 +169,12 @@ export function ProfilePage(): JSX.Element {
             throw new Error('Failed to save avatar');
           }
         } else {
-          setSaveError('Failed to upload avatar image');
+          // Surface the real reason instead of a generic string — the size case,
+          // or whatever error the upload hook/node reported.
+          const detail = uploadResult.needsCompression
+            ? `Image is too large (${((uploadResult.originalSize ?? avatarFile.size) / 1024 / 1024).toFixed(1)} MB); the limit is 1 MB.`
+            : (uploadResult.error || avatarUploadError || 'Failed to upload avatar image');
+          setSaveError(detail);
           return;
         }
       }
