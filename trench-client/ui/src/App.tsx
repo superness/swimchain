@@ -76,6 +76,10 @@ export function App() {
   // ── boot: auth → node status → identity → sponsorship ──────────────────────
   const [auth, setAuth] = useState<RpcAuth | null>(null);
   const [connected, setConnected] = useState(false);
+  // Lantern telemetry, diegetic labels (spec §4): "neighbors in reach" /
+  // "depth mark" — null until the first status poll resolves.
+  const [peerCount, setPeerCount] = useState<number | null>(null);
+  const [blockHeight, setBlockHeight] = useState<number | null>(null);
   const [identity, setIdentity] = useState<NodeIdentity | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [sponsored, setSponsored] = useState(false);
@@ -146,8 +150,12 @@ export function App() {
     let cancelled = false;
     const poll = async () => {
       try {
-        await rpcCall(auth, 'get_info', {});
-        if (!cancelled) setConnected(true);
+        const info = await rpcCall<{ peer_count?: number; block_height?: number }>(auth, 'get_info', {});
+        if (!cancelled) {
+          setConnected(true);
+          if (typeof info.peer_count === 'number') setPeerCount(info.peer_count);
+          if (typeof info.block_height === 'number') setBlockHeight(info.block_height);
+        }
       } catch {
         if (!cancelled) setConnected(false);
       }
@@ -332,7 +340,7 @@ export function App() {
 
     busyRef.current = true;
     setLanternPulse(true);
-    setMoveStatus({ label: 'Your lantern signals the network', flavor: pickFlavor(FLAVOR.heartbeat) });
+    setMoveStatus({ label: 'Your lantern signals into the deep', flavor: pickFlavor(FLAVOR.heartbeat) });
     submitTrenchMove(auth, identity, myClaim.claimId, 'heartbeat')
       .then((cid) => {
         mySubmittedRef.current.add(cid);
@@ -587,7 +595,7 @@ export function App() {
       <h1>🏮 The Trench</h1>
       <div className="who">
         <span className={`dot ${connected ? 'ok' : 'bad'}`} />
-        {connected ? 'node connected' : 'no node'} · <code title={identity.address}>{identity.address.slice(0, 12)}…</code>
+        {connected ? 'connected' : 'adrift — reconnecting…'} · <code title={identity.address}>{identity.address.slice(0, 12)}…</code>
         {!showHelp && (
           <button className="link help-link" onClick={() => setShowHelp(true)}>
             ? how to play
@@ -607,13 +615,12 @@ export function App() {
       <div className="center col landing">
         <Abyss />
         <h1>🏮 The Trench</h1>
-        <p className="muted">Homestead the lightless seafloor. Your node is your lantern.</p>
+        <p className="muted">Homestead the lightless seafloor. While The Trench runs, your lantern burns.</p>
         <button className="btn primary" onClick={() => setLandingDismissed(true)}>
           Play
         </button>
         <p className="fine">
-          Your identity lives in this machine's node — its data directory, not a wallet, not a
-          cloud account. Keep this machine (and that folder) to keep your claim.
+          Your homestead's key lives only on this machine — no account, no email, no cloud.
         </p>
       </div>
     );
@@ -624,8 +631,8 @@ export function App() {
       <div className="center col">
         <Abyss />
         <h1>🏮 The Trench</h1>
-        <p className="muted">Connecting to your node…</p>
-        {identityError && <p className="fine">{identityError} — retrying…</p>}
+        <p className="muted">Finding your lantern…</p>
+        {identityError && <p className="fine">still searching — retrying…</p>}
       </div>
     );
   }
@@ -635,7 +642,7 @@ export function App() {
       <div className="center col">
         <Abyss />
         <h1>🏮 The Trench</h1>
-        <p className="muted">{sponsorError}</p>
+        <p className="muted">First light is slow to catch — try again shortly.</p>
         <button
           className="btn primary"
           onClick={() => {
@@ -654,8 +661,8 @@ export function App() {
       <div className="center col">
         <Abyss />
         <h1>🏮 The Trench</h1>
-        <p className="muted">🏮 {sponsorPhase ?? 'Setting up your access…'}</p>
-        <p className="fine">Getting your lantern recognized by the network. One time only.</p>
+        <p className="muted">🏮 {sponsorPhase ?? 'Kindling your lantern…'}</p>
+        <p className="fine">One time only.</p>
       </div>
     );
   }
@@ -739,7 +746,7 @@ export function App() {
                 Found claim
               </button>
               <p className="fine chain-note">
-                Your claim is a post on the Swimchain; every move after this is a signed reply from your own node.
+                Founding takes a few moments — the deep accepts your claim, and it is yours.
               </p>
             </aside>
           </div>
@@ -805,6 +812,8 @@ export function App() {
           <aside className="status">
             <Homestead
               connected={connected}
+              peerCount={peerCount}
+              blockHeight={blockHeight}
               ownState={ownState}
               viewBiomass={view.biomass}
               viewStructures={view.structures}

@@ -62,9 +62,9 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
       <div className="help-panel" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <h2>How to play 🏮</h2>
         <p>
-          The Trench is a homestead game where <strong>your node is your lantern</strong>. You
-          found one claim on a shared map, then tend it while your node runs — no server, nobody
-          who can turn the lights off but you.
+          The Trench is a homestead game where <strong>you are the lantern</strong>. You found one
+          claim on a shared map, then tend it while your lantern burns — no server, nobody who can
+          turn the lights off but you.
         </p>
 
         <h3>Founding</h3>
@@ -76,9 +76,9 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
 
         <h3>Your lantern</h3>
         <p>
-          While this app (and your node) is running, it posts a <strong>heartbeat</strong> at
-          most once every 4 hours — up to <strong>{HB_CAP_PER_DAY} a day</strong>. Your lantern's
-          brightness is how many heartbeats landed over the trailing 7 days:
+          While The Trench is running, your lantern posts a <strong>heartbeat</strong> at most once
+          every 4 hours — up to <strong>{HB_CAP_PER_DAY} a day</strong>. Your lantern's brightness
+          is how many heartbeats landed over the trailing 7 days:
         </p>
         <div className="hp-legend hp-lanterns">
           <span className="hp-key">
@@ -158,22 +158,21 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
         <p>
           Send an expedition to any visible claim within range (base {EXPEDITION_BASE_RANGE} units
           + {RANGE_PER_BEACON} per beacon you hold) — once per target per day. It gains{' '}
-          <strong>1–3 salvage</strong>, and your node fetches that claim's content so it stays
-          hosted for everyone. Expeditions are how you keep the world alive, not just your own
-          corner of it.
+          <strong>1–3 salvage</strong>, and your light reaches that claim so it stays visible for
+          everyone. Expeditions are how you keep the world alive, not just your own corner of it.
         </p>
 
         <h3>Glow</h3>
         <p>
           Every alive structure earns <strong>{GLOW_PER_STRUCTURE_LIT_DAY} glow</strong> for each
-          day your lantern is LIT — a prestige leaderboard with no protocol privileges. It only
-          counts claims you've loaded (your own, and any you've visited).
+          day your lantern is LIT — a prestige leaderboard, nothing more. It only counts claims
+          you've loaded (your own, and any you've visited).
         </p>
 
         <p className="fine hp-lore">
-          There is no server behind any of this. Your claim is a post on the Swimchain, your
-          moves are replies, and the map is folded — by every player's own node — straight from
-          the chain. When you go dark, the abyss doesn't wait for anyone's permission to advance.
+          Go dark too long and the abyss doesn't wait for anyone's permission to advance.{' '}
+          The Trench runs on the Swimchain network — no server, no company; its world is kept
+          alive by its players.
         </p>
         <button className="btn primary" onClick={onClose}>
           Back to the trench
