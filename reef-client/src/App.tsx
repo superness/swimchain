@@ -33,6 +33,7 @@ import {
   type Identity,
 } from './lib/reefEngine';
 import { TutorialCard } from './TutorialCard';
+import { HowToPlay } from './HowToPlay';
 import {
   advance as tutAdvance,
   ack as tutAck,
@@ -43,6 +44,7 @@ import {
   saveTutorial,
   type TutorialState,
   type TutorialSnapshot,
+  type TutorialCardKind,
 } from './tutorial';
 
 // `cell` is the tile a move is taking root on (absent while founding a reef),
@@ -200,6 +202,10 @@ export function App() {
 
   // First-run tutorial: coach-marks on the live board (see src/tutorial.ts).
   const [tutorial, setTutorial] = useState<TutorialState>(() => loadTutorial());
+  const [showHelp, setShowHelp] = useState(false);
+  // Last card shown in the tutorial slot — kept so the slot can animate closed
+  // over the departing card instead of snapping empty (render-derived, see below).
+  const lastTutCardRef = useRef<TutorialCardKind | null>(null);
   const applyTutorial = useCallback((fn: (t: TutorialState) => TutorialState) => {
     setTutorial((t) => {
       const next = fn(t);
@@ -590,7 +596,7 @@ export function App() {
         : intent.kind === 'spread'
           ? 'Growing'
           : intent.kind === 'contest'
-            ? 'Contesting'
+            ? 'Striking'
             : 'Tending';
     setMining({ active: true, label: `${verb} at (${x},${y})`, flavor: pickFlavor(GROW_FLAVOR), cell: { x, y } });
     try {
@@ -623,11 +629,11 @@ export function App() {
       <div className="center col">
         <h1>🪸 The Reef</h1>
         <p className="muted">
-          A slow, shared world on Swimchain. Grow coral; tend it or it recedes. No server runs
-          it — the chain is the world, and no one can take it down.
+          A territory game: grow a coral reef, keep it alive, outlast your rivals. No server
+          runs it — the reef lives on the Swimchain network, and no one can take it down.
         </p>
-        <button className="btn primary" onClick={newIdentity}>Create an identity</button>
-        <p className="fine">Your keypair is generated and stored locally in this browser. It never leaves your device.</p>
+        <button className="btn primary" onClick={newIdentity}>Play</button>
+        <p className="fine">Playing creates a game key stored only in this browser — no account, no email.</p>
       </div>
     );
   }
@@ -680,6 +686,10 @@ export function App() {
   // Which coach-mark to show. Hidden while a move is in flight or the tide
   // report is up — a card would flicker or mislead mid-ceremony.
   const tutCard = openId && view && !tideReport && !mining ? visibleCard(tutorial, tutSnap) : null;
+  // The slot keeps showing the LAST card while it animates closed (see the
+  // tut-slot render below) — otherwise the collapse would have nothing to animate.
+  if (tutCard) lastTutCardRef.current = tutCard;
+  const slotCard = tutCard ?? lastTutCardRef.current;
 
   return (
     <div className="app">
@@ -729,6 +739,7 @@ export function App() {
           <section className="game">
             <div className="game-bar">
               <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← reefs</button>
+              <button className="link" onClick={() => setShowHelp(true)}>? how to play</button>
               <button className="link" onClick={copyInvite}>{copied ? 'link copied ✓' : 'copy invite link'}</button>
             </div>
             {banner && (
@@ -744,13 +755,23 @@ export function App() {
                 <span className="fine">({banner.points} pts) · new season begins</span>
               </div>
             )}
-            {(tutCard === 'plant' || tutCard === 'strike') && (
-              <TutorialCard
-                kind={tutCard}
-                onGotIt={() => applyTutorial(tutCard === 'strike' ? dismissStrikeTip : tutAck)}
-                onSkip={tutCard === 'plant' ? () => applyTutorial(tutSkip) : null}
-              />
-            )}
+            {/* Every coach-mark renders in this ONE slot above the board, and the
+                slot animates open/closed (grid-rows trick) instead of unmounting.
+                Cards used to sit at three different anchors — each swap yanked the
+                layout, and dismissing the plant card dropped the viewport straight
+                into the grid. The last card stays rendered while the slot closes
+                so the collapse has content to animate over. */}
+            <div className={`tut-slot${tutCard ? ' open' : ''}`}>
+              <div className="tut-slot-inner">
+                {slotCard && (
+                  <TutorialCard
+                    kind={slotCard}
+                    onGotIt={() => applyTutorial(slotCard === 'strike' ? dismissStrikeTip : tutAck)}
+                    onSkip={slotCard !== 'strike' ? () => applyTutorial(tutSkip) : null}
+                  />
+                )}
+              </div>
+            </div>
             <Reef
               state={view}
               myPubkeyHex={publicKeyHex!}
@@ -762,7 +783,7 @@ export function App() {
             />
             <div className="status">
               <div className="season">
-                <strong>Season {view.season}</strong> · {view.epochsLeftInSeason} tide{view.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
+                <strong>Season {view.season}</strong> · ends in {view.epochsLeftInSeason} tide{view.epochsLeftInSeason === 1 ? '' : 's'}
                 <span className="fine"> · tide {view.epoch}</span>
                 {mining?.cell ? (
                   <span className="fine growing-status">
@@ -790,12 +811,8 @@ export function App() {
                   </span>
                   <strong> {tendsLeft}</strong>/{view.params.tendCap}
                 </span>
-                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · each tide restores {REGEN_BASE} + 1 per 2 coral you hold</span>
+                <span className="fine costs">grow −{COST_GROW} · strike −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · the tide refills {REGEN_BASE} + 1 per 2 coral you hold</span>
               </div>
-
-              {tutCard === 'grow' && (
-                <TutorialCard kind="grow" onGotIt={() => applyTutorial(tutAck)} onSkip={() => applyTutorial(tutSkip)} />
-              )}
 
               {/* Tide meter: how close the water is to turning. Fills as confirmed
                   moves accumulate toward params.epochMoves; strains when one move
@@ -815,10 +832,6 @@ export function App() {
                     : `🌊 tide in ${view.params.epochMoves - view.tideMoves} moves`}
                 </span>
               </div>
-
-              {tutCard === 'tide' && (
-                <TutorialCard kind="tide" onGotIt={() => applyTutorial(tutAck)} onSkip={() => applyTutorial(tutSkip)} />
-              )}
 
               <div className="board-scores">
                 {view.standings.length === 0 && <span className="fine">Open water. Seed your first coral anywhere — it's free until your energy starts to matter.</span>}
@@ -855,12 +868,12 @@ export function App() {
               )}
 
               <div className="fine hint">
-                Click open water by your coral to <strong>grow</strong>, your own to <strong>tend</strong>, an enemy border to <strong>contest</strong>.
-                You score the vitality you keep alive each tide — sprawl you can't tend just feeds the current. Every coral you grow is provably, only ever yours.
+                <strong>grow</strong>: click open water beside your reef · <strong>tend</strong> (free): click your own coral ·{' '}
+                <strong>strike</strong>: click enemy coral on your border
               </div>
               <div className="fine viskey">
-                Coral <strong>shrinks as it fades</strong> · your reef has a <span className="k-mine">bright ring</span> ·
-                a <span className="k-warn">warning ring</span> means it recedes within two tides · a <span className="k-warn">pulsing</span> cell is gone next tide — tend it.
+                Coral shrinks as its health drops · your reef has the <span className="k-mine">bright ring</span> ·
+                a <span className="k-warn">pulsing</span> square dies next tide — tend it.
               </div>
             </div>
           </section>
@@ -870,6 +883,8 @@ export function App() {
       {/* Founding a reef has no board to animate on yet, so it keeps a light
           loader. In-reef moves animate on the tile itself (see growingCell) —
           no blocking overlay. */}
+      {showHelp && <HowToPlay onClose={() => setShowHelp(false)} />}
+
       {mining?.active && !mining.cell && (
         <div className="overlay">
           <div className="mining">
@@ -979,7 +994,7 @@ function TideReport({
           <div className={`tr-stat ${banked > 0 ? 'good' : 'flat'}`}>
             <span className="tr-num">+{banked}</span>
             <span className="tr-lbl">points banked</span>
-            <span className="tr-sub">vitality you kept alive this tide</span>
+            <span className="tr-sub">coral health you kept alive this tide</span>
           </div>
           <div className="tr-stat good">
             <span className="tr-num">+{regen}</span>
@@ -1009,9 +1024,9 @@ function TideReport({
             <span className="tr-lesson-mark">💡</span>
             <div>
               <strong>Your reef is your engine.</strong> Every tide restores{' '}
-              <strong>{REGEN_BASE} energy + 1 for every 2 living coral</strong> you hold. Grow
-              a bigger reef and tend it well — it rides every tide harder: more energy, more
-              growth, more points banked.
+              <strong>{REGEN_BASE} energy + 1 for every 2 living coral</strong> you hold, and
+              banks <strong>points equal to your coral's total health</strong>. Grow a bigger
+              reef and tend it well — most points after {SEASON_EPOCHS} tides wins the season.
             </div>
           </div>
         )}
@@ -1027,10 +1042,13 @@ function TideReport({
 
         <div className="tr-season fine">
           {mine ? <>Your season tally: <strong>{mine.seasonPointsAfter}</strong> pts · </> : null}
-          {tidesToReckoning} tide{tidesToReckoning === 1 ? '' : 's'} to the reckoning.
+          {tidesToReckoning} tide{tidesToReckoning === 1 ? '' : 's'} left in the season.
         </div>
 
-        <button className="btn primary tr-continue" onClick={onClose} autoFocus>
+        {/* No autoFocus: on short viewports it scrolls the report to its bottom
+            and clips the header. Enter/Escape/Space already close via the
+            window key handler above. */}
+        <button className="btn primary tr-continue" onClick={onClose}>
           Ride the tide →
         </button>
       </div>

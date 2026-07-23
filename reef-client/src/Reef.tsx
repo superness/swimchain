@@ -163,7 +163,7 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct
         const base = growing
           ? `(${x},${y}) taking root…`
           : cell
-          ? `(${x},${y}) ${isMe(cell.owner) ? 'yours' : 'coral'} · vitality ${cell.vitality}/${MAX_VITALITY}` +
+          ? `(${x},${y}) ${isMe(cell.owner) ? 'yours' : 'coral'} · health ${cell.vitality}/${MAX_VITALITY}` +
             (cell.vitality <= 1 ? ' — recedes next tide!' : '')
           : `(${x},${y}) open water`;
         let note = '';
@@ -174,7 +174,8 @@ export function Reef({ state, myPubkeyHex, myAddress, canAct, growingCell, onAct
             : intent.limit === 'capacity'
               ? ', no tending left this tide'
               : ', not enough budget';
-          note = ` — ${intent.kind} (${price}${blocked})`;
+          const kindLabel = intent.kind === 'contest' ? 'strike' : intent.kind;
+          note = ` — ${kindLabel} (${price}${blocked})`;
         }
         const title = `${base}${note}`;
 
