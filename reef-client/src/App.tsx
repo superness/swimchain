@@ -33,6 +33,7 @@ import {
   type Identity,
 } from './lib/reefEngine';
 import { TutorialCard } from './TutorialCard';
+import { HowToPlay } from './HowToPlay';
 import {
   advance as tutAdvance,
   ack as tutAck,
@@ -200,6 +201,7 @@ export function App() {
 
   // First-run tutorial: coach-marks on the live board (see src/tutorial.ts).
   const [tutorial, setTutorial] = useState<TutorialState>(() => loadTutorial());
+  const [showHelp, setShowHelp] = useState(false);
   const applyTutorial = useCallback((fn: (t: TutorialState) => TutorialState) => {
     setTutorial((t) => {
       const next = fn(t);
@@ -590,7 +592,7 @@ export function App() {
         : intent.kind === 'spread'
           ? 'Growing'
           : intent.kind === 'contest'
-            ? 'Contesting'
+            ? 'Striking'
             : 'Tending';
     setMining({ active: true, label: `${verb} at (${x},${y})`, flavor: pickFlavor(GROW_FLAVOR), cell: { x, y } });
     try {
@@ -729,6 +731,7 @@ export function App() {
           <section className="game">
             <div className="game-bar">
               <button className="link" onClick={() => { setOpenId(null); setState(null); }}>← reefs</button>
+              <button className="link" onClick={() => setShowHelp(true)}>? how to play</button>
               <button className="link" onClick={copyInvite}>{copied ? 'link copied ✓' : 'copy invite link'}</button>
             </div>
             {banner && (
@@ -855,12 +858,12 @@ export function App() {
               )}
 
               <div className="fine hint">
-                Click open water by your coral to <strong>grow</strong>, your own to <strong>tend</strong>, an enemy border to <strong>contest</strong>.
-                You score the vitality you keep alive each tide — sprawl you can't tend just feeds the current. Every coral you grow is provably, only ever yours.
+                <strong>grow</strong>: click open water beside your reef · <strong>tend</strong> (free): click your own coral ·{' '}
+                <strong>strike</strong>: click enemy coral on your border
               </div>
               <div className="fine viskey">
-                Coral <strong>shrinks as it fades</strong> · your reef has a <span className="k-mine">bright ring</span> ·
-                a <span className="k-warn">warning ring</span> means it recedes within two tides · a <span className="k-warn">pulsing</span> cell is gone next tide — tend it.
+                Coral shrinks as its health drops · your reef has the <span className="k-mine">bright ring</span> ·
+                a <span className="k-warn">pulsing</span> square dies next tide — tend it.
               </div>
             </div>
           </section>
@@ -870,6 +873,8 @@ export function App() {
       {/* Founding a reef has no board to animate on yet, so it keeps a light
           loader. In-reef moves animate on the tile itself (see growingCell) —
           no blocking overlay. */}
+      {showHelp && <HowToPlay onClose={() => setShowHelp(false)} />}
+
       {mining?.active && !mining.cell && (
         <div className="overlay">
           <div className="mining">
