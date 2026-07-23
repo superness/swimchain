@@ -496,12 +496,16 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── "?" how-to-play panel ───────────────────────────────────────────────── */
+/* `.hp-cards` widens the panel to fit the 2-column card grid (designer spec
+   §2) — still shrink-to-content, never edge-to-edge; `.help-panel` alone
+   (unused now, kept as the base) stays at the narrower single-column width. */
 .help-panel {
   max-width: 620px; max-height: 86vh; overflow-y: auto;
   background: linear-gradient(180deg, rgba(5, 22, 32, 0.97), rgba(2, 12, 17, 0.97));
   border: 1px solid rgba(88, 214, 200, 0.3); border-radius: 12px; padding: 22px 26px;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6), 0 0 40px rgba(88, 214, 200, 0.08);
 }
+.help-panel.hp-cards { max-width: 760px; }
 .help-panel h2 { margin: 0 0 6px; }
 .help-panel h3 {
   margin: 18px 0 6px; font-size: 12px; font-family: var(--mono); font-weight: 700;
@@ -509,6 +513,26 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 }
 .help-panel p, .help-panel li { font-size: 14px; line-height: 1.55; margin: 6px 0; }
 .help-panel .btn { margin-top: 16px; }
+
+/* Intro line: full width, above the card grid — the whole loop in one
+   fragment ("You are the lantern. Claim ground. Build. Keep it lit."). */
+.hp-intro { font-size: 15px; color: var(--foam); margin: 2px 0 14px; }
+
+/* Card grid: 2 columns of the existing glass-panel language (a lighter cut
+   of `.tut-card`'s surface — no shimmer, this isn't a one-shot moment),
+   single column under ~640px. Card order in the markup IS reading/play
+   order (found → lantern → abyss → build → expeditions → glow). */
+.hp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 4px 0 6px; }
+.hp-card {
+  padding: 12px 14px 13px; border-radius: 10px; border: 1px solid rgba(88, 214, 200, 0.18);
+  background: linear-gradient(180deg, rgba(7, 26, 34, 0.55), rgba(4, 16, 21, 0.4));
+}
+.hp-card h3 { margin: 0 0 6px; }
+.hp-card p { font-size: 13.5px; line-height: 1.48; margin: 4px 0; }
+.hp-card .hp-moves, .hp-card .hp-legend { margin-top: 6px; margin-bottom: 0; }
+@media (max-width: 640px) {
+  .hp-grid { grid-template-columns: 1fr; }
+}
 
 .hp-moves { display: flex; flex-direction: column; gap: 12px; margin: 10px 0 4px; }
 .hp-move { display: flex; gap: 14px; align-items: flex-start; }

@@ -43,7 +43,7 @@ const FLAVOR: Record<string, string[]> = {
   tend: ['Old timbers take a fresh seal…'],
   expedition: ["Your beacon's light finds a stranger's claim…"],
   found: ['A light blooms in the lightless deep…'],
-  harvest: ['The tally settles into the ledger…'],
+  harvest: ['The kelp gives up what it grew…'],
 };
 const pickFlavor = (pool: string[]): string => pool[Math.floor(Math.random() * pool.length)];
 
@@ -144,12 +144,12 @@ export function App() {
   // ── boot: auth → node status → identity → sponsorship ──────────────────────
   const [auth, setAuth] = useState<RpcAuth | null>(null);
   const [connected, setConnected] = useState(false);
-  // Lantern telemetry, diegetic label (spec §4): "depth mark" — null until
-  // the first status poll resolves. "neighbors in reach" (below) is NOT
-  // P2P peer count — a previous pass mis-mapped it to `get_info`'s
-  // `peer_count`; it's the count of OTHER claims on the map within
-  // `expeditionRange`, computed from `mapClaims` + `ownState` further down.
-  const [blockHeight, setBlockHeight] = useState<number | null>(null);
+  // "neighbors in reach" (below) is NOT P2P peer count — a previous pass
+  // mis-mapped it to `get_info`'s `peer_count`; it's the count of OTHER
+  // claims on the map within `expeditionRange`, computed from `mapClaims` +
+  // `ownState` further down. (The chain-height "depth mark" readout that
+  // used to live here was cut per the designer spec — telemetry cosplaying
+  // as fiction; it answered no player question.)
   const [identity, setIdentity] = useState<NodeIdentity | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [sponsored, setSponsored] = useState(false);
@@ -254,11 +254,8 @@ export function App() {
     let cancelled = false;
     const poll = async () => {
       try {
-        const info = await rpcCall<{ block_height?: number }>(auth, 'get_info', {});
-        if (!cancelled) {
-          setConnected(true);
-          if (typeof info.block_height === 'number') setBlockHeight(info.block_height);
-        }
+        await rpcCall(auth, 'get_info', {});
+        if (!cancelled) setConnected(true);
       } catch {
         if (!cancelled) setConnected(false);
       }
@@ -530,13 +527,13 @@ export function App() {
       let msg: string | null = null;
       switch (m.outcome) {
         case 'rejected-unaffordable':
-          msg = 'Not enough in your stores for that — the depths will have to wait.';
+          msg = 'Not enough in your stores.';
           break;
         case 'rejected-capped':
           msg = `Your lantern already signaled ${HB_CAP_PER_DAY} times today.`;
           break;
         case 'rejected-ruined':
-          msg = 'That structure is already a ruin — it can only be replaced, not tended.';
+          msg = "Ruins can't be tended — build anew.";
           break;
         case 'rejected-unknown-structure':
           msg = "There's no such structure to tend.";
@@ -545,7 +542,7 @@ export function App() {
           msg = "That claim lies beyond your beacon's reach.";
           break;
         case 'rejected-day-gate':
-          msg = 'You already sent an expedition there today.';
+          msg = 'Already visited today.';
           break;
         case 'rejected-malformed':
           msg = 'That signal was lost in the dark.';
@@ -671,11 +668,11 @@ export function App() {
     const range = expeditionRange(ownState);
     const dist = chebyshev(ownState.header.x, ownState.header.y, selectedEntry.header.x, selectedEntry.header.y);
     if (dist > range) {
-      return { eligible: false, reason: `out of range (${dist} > ${range}) — a beacon widens your reach` };
+      return { eligible: false, reason: `out of reach (${dist} > ${range}) — build a beacon` };
     }
     const key = targetPrefix(selectedEntry.claimId);
     if (ownState.expeditionDays.get(key) === utcDay(Date.now())) {
-      return { eligible: false, reason: 'already visited today — try again tomorrow' };
+      return { eligible: false, reason: 'visited today — return tomorrow' };
     }
     return { eligible: true, reason: null as string | null };
   }, [ownState, selectedEntry]);
@@ -735,7 +732,7 @@ export function App() {
     },
     [doMove]
   );
-  const onHarvest = useCallback(() => void doMove('harvest', 'Harvest — banking your projected growth', FLAVOR.harvest), [doMove]);
+  const onHarvest = useCallback(() => void doMove('harvest', 'Settling the harvest', FLAVOR.harvest), [doMove]);
   const onExpedition = useCallback(() => {
     if (!selectedEntry) return;
     audioRef.current?.thock();
@@ -825,9 +822,7 @@ export function App() {
         >
           Play
         </button>
-        <p className="fine">
-          Your homestead's key lives only on this machine — no account, no email, no cloud.
-        </p>
+        <p className="fine">No account, no cloud — your key lives on this machine.</p>
       </div>
     );
   }
@@ -868,7 +863,7 @@ export function App() {
         <Abyss />
         <h1>🏮 The Trench</h1>
         <KindlingCeremony phase={sponsorPhase} />
-        <p className="fine">One time only.</p>
+        <p className="fine">Kindling takes a minute — once, then never again.</p>
       </div>
     );
   }
@@ -920,8 +915,8 @@ export function App() {
                     </span>
                   )}
                 </div>
-                <div className={`tut-float${coachKind ? ' open' : ''}`} aria-live="polite">
-                  {slotCoach && !moveStatus && (
+                <div className={`tut-float${coachKind && !showHelp ? ' open' : ''}`} aria-live="polite">
+                  {slotCoach && !moveStatus && !showHelp && (
                     <CoachCard
                       kind={slotCoach}
                       onGotIt={() => {
@@ -945,11 +940,11 @@ export function App() {
               />
               <p className="fine">
                 {foundPos
-                  ? `(${foundPos.x}, ${foundPos.y}) — ${spacingOk ? `at least ${CLAIM_MIN_SPACING} units from every neighbor` : `too close to a neighbor (need ≥${CLAIM_MIN_SPACING})`}`
+                  ? `(${foundPos.x}, ${foundPos.y}) — ${spacingOk ? 'clear ground' : `too close to a neighbor (need ≥${CLAIM_MIN_SPACING})`}`
                   : 'Click the map to choose a spot.'}
               </p>
               {acceptedClaims.length > 0 && (
-                <p className="fine muted">lights in the distance — settle near them or claim the dark</p>
+                <p className="fine muted">Settle near the lights, or claim the dark.</p>
               )}
               <button
                 className="btn primary"
@@ -958,9 +953,7 @@ export function App() {
               >
                 Found claim
               </button>
-              <p className="fine chain-note">
-                Founding takes a few moments — the deep accepts your claim, and it is yours.
-              </p>
+              <p className="fine chain-note">Takes a few moments.</p>
             </aside>
           </div>
         </section>
@@ -1009,8 +1002,8 @@ export function App() {
                   </span>
                 )}
               </div>
-              <div className={`tut-float${coachKind ? ' open' : ''}`} aria-live="polite">
-                {slotCoach && !moveStatus && (
+              <div className={`tut-float${coachKind && !showHelp ? ' open' : ''}`} aria-live="polite">
+                {slotCoach && !moveStatus && !showHelp && (
                   <CoachCard
                     kind={slotCoach}
                     onGotIt={() => {
@@ -1026,7 +1019,6 @@ export function App() {
             <Homestead
               connected={connected}
               neighborsInReach={neighborsInReach}
-              blockHeight={blockHeight}
               ownState={ownState}
               viewBiomass={view.biomass}
               viewStructures={view.structures}
