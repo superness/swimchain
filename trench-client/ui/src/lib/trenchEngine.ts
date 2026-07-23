@@ -88,6 +88,21 @@ export const GLOW_PER_STRUCTURE_LIT_DAY = 1;
 /** UTC-day quantum. Not exported — utcDay() is the public surface for this math. */
 const DAY_MS = 86_400_000;
 
+/**
+ * If a reply's embedded `#<ms>~` timestamp is more than this far from its
+ * chain-assigned `created_at` — in EITHER direction — `foldClaim` ignores the
+ * embedded value and uses `created_at` instead, for both stream ordering and
+ * day math. A forged embedded ms (millions of days in the future, or the
+ * distant past) would otherwise force the day-advance loop to run that many
+ * iterations on the main thread: one crafted reply on a popular claim would
+ * freeze every viewer. The literal ask that motivated this was a far-FUTURE
+ * forgery, but a far-PAST one sorting as an early/founding move creates the
+ * identical unbounded gap for the NEXT real move to bank across — so the
+ * clamp is symmetric (`Math.abs`), not one-sided, at zero extra cost. 48
+ * hours is generously larger than any legitimate submit-to-confirm latency.
+ */
+export const MS_TOLERANCE = 48 * 60 * 60 * 1000;
+
 // ── Types ────────────────────────────────────────────────────────────────────────────
 export type StructureKind = 'farm' | 'storehouse' | 'beacon';
 export type Brightness = 'LIT' | 'DIM' | 'DARK';
@@ -100,7 +115,8 @@ export type MoveOutcome =
   | 'rejected-out-of-range'
   | 'rejected-day-gate'
   | 'rejected-malformed'
-  | 'rejected-self';
+  | 'rejected-self'
+  | 'rejected-foreign';
 
 export interface ReplyLike {
   author_id: string;
@@ -322,12 +338,23 @@ function advanceDay(
 
 /**
  * Fold ONE claim's own reply stream into its state (fold isolation rule — see file
- * header). Replies are sorted by (embeddedMs ?? created_at, content_id) so the result
- * is identical regardless of the input array's order.
+ * header). Replies are sorted by (clamped-embeddedMs ?? created_at, content_id) so the
+ * result is identical regardless of the input array's order.
+ *
+ * `ownerAddress`/`ownerPubkeyHex` are the claim owner's two identity forms — the claim
+ * POST's `author_id` (from `get_content`/`list_space_content`) is bech32 address, but
+ * REPLIES' `author_id` (from `get_replies`) is hex pubkey (task-2's report flagged this;
+ * a naive single-form string equality would reject every legitimate move). A reply
+ * authored by neither form folds `rejected-foreign` — still occupying stream order (and
+ * still driving day-advance, since elapsed time is neutral information anyone can
+ * attest to; only the move's STATE EFFECT is gated to the owner) — never mutating
+ * salvage/biomass/structures/heartbeats/expeditions. Pass `''` for `ownerPubkeyHex` if
+ * the caller genuinely doesn't have it; that just means only the address form matches.
  */
 export function foldClaim(
   claimId: string,
-  owner: string,
+  ownerAddress: string,
+  ownerPubkeyHex: string,
   header: ClaimHeader,
   replies: ReplyLike[]
 ): ClaimState {
@@ -341,7 +368,14 @@ export function foldClaim(
   const expeditionDays = new Map<string, number>();
   let brightness: Brightness = 'DARK';
 
-  const sortMs = (r: ReplyLike): number => (r.body ? embeddedMs(r.body) : undefined) ?? r.created_at;
+  // A forged embedded ms more than MS_TOLERANCE from the reply's chain-assigned
+  // created_at (either direction) is ignored in favor of created_at — see
+  // MS_TOLERANCE's doc comment for why this must be symmetric, not just future-side.
+  const sortMs = (r: ReplyLike): number => {
+    const embedded = r.body ? embeddedMs(r.body) : undefined;
+    if (embedded !== undefined && Math.abs(embedded - r.created_at) <= MS_TOLERANCE) return embedded;
+    return r.created_at;
+  };
   const sorted = [...replies].sort(
     (a, b) => sortMs(a) - sortMs(b) || a.content_id.localeCompare(b.content_id)
   );
@@ -365,11 +399,17 @@ export function foldClaim(
       lastDay = day;
     }
 
+    const isOwner = r.author_id === ownerAddress || (ownerPubkeyHex !== '' && r.author_id === ownerPubkeyHex);
     const parsed = parseMove(r.body);
     let outcome: MoveOutcome;
     let op: string;
 
-    if (!parsed) {
+    if (!isOwner) {
+      // A stranger's reply never mutates this claim's state, regardless of how
+      // well-formed it looks — checked before parsing even matters.
+      outcome = 'rejected-foreign';
+      op = parsed ? parsed.op : (r.body ?? '').trim().split(/\s+/)[0] || 'malformed';
+    } else if (!parsed) {
       outcome = 'rejected-malformed';
       op = (r.body ?? '').trim().split(/\s+/)[0] || 'malformed';
     } else {
@@ -464,7 +504,7 @@ export function foldClaim(
 
   return {
     header,
-    owner,
+    owner: ownerAddress,
     claimId,
     salvage,
     biomass,

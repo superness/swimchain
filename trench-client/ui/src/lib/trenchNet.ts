@@ -291,10 +291,107 @@ export async function submitTrenchMove(auth: RpcAuth, id: NodeIdentity, claimId:
   return submitMinedReply(auth, id, claimId, stamped);
 }
 
+// ── Bech32m address decode (pure JS, no WASM) ───────────────────────────────────────
+// `@swimchain/core`'s `decodeAddress` is WASM-backed and its loader `fetch()`es its
+// `.wasm` binary — fine in a browser/Vite context, but plain Node's `fetch()` doesn't
+// support `file:` URLs, so it throws under `tsx` (confirmed empirically: the regtest
+// smoke script hit this directly — EVERY legitimate move folded `rejected-foreign`,
+// because the caught-and-swallowed WASM failure silently degraded `ownerPubkeyHex` to
+// `''`, so the owner gate could only ever match the address form, which replies never
+// use). A pure-JS reimplementation of src/crypto/address.rs's `decode_address_to_pubkey`
+// (BIP-173/350 bech32m) sidesteps the WASM loader entirely, so it behaves IDENTICALLY
+// under plain tsx and the browser — no environment-dependent code path to drift.
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const BECH32M_CONST = 0x2bc830a3;
+
+function bech32Polymod(values: number[]): number {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >>> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) {
+      if ((top >>> i) & 1) chk ^= GEN[i];
+    }
+  }
+  return chk >>> 0;
+}
+
+function bech32HrpExpand(hrp: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < hrp.length; i++) out.push(hrp.charCodeAt(i) >>> 5);
+  out.push(0);
+  for (let i = 0; i < hrp.length; i++) out.push(hrp.charCodeAt(i) & 31);
+  return out;
+}
+
+/** Decodes a bech32m string into `{hrp, data}` (5-bit words, checksum stripped),
+ *  verifying the checksum against the bech32m constant (BIP-350). Throws on any
+ *  malformed input — callers treat that as "can't resolve this form", not a crash. */
+function bech32mDecode(bech: string): { hrp: string; data: number[] } {
+  const s = bech.toLowerCase();
+  const pos = s.lastIndexOf('1');
+  if (pos < 1 || pos + 7 > s.length || s.length > 90) throw new Error('invalid bech32 format');
+  const hrp = s.slice(0, pos);
+  const data: number[] = [];
+  for (const c of s.slice(pos + 1)) {
+    const v = BECH32_CHARSET.indexOf(c);
+    if (v === -1) throw new Error('invalid bech32 character');
+    data.push(v);
+  }
+  if (bech32Polymod(bech32HrpExpand(hrp).concat(data)) !== BECH32M_CONST) {
+    throw new Error('invalid bech32m checksum');
+  }
+  return { hrp, data: data.slice(0, -6) };
+}
+
+/** Converts an array of 5-bit words to bytes (8-bit), per BIP-173's convertbits
+ *  (`pad: false` — a well-formed 33-byte payload divides evenly, so any leftover
+ *  bits mean the input was malformed, not that padding is needed). */
+function convertBits5to8(data: number[]): number[] {
+  let acc = 0;
+  let bits = 0;
+  const out: number[] = [];
+  for (const value of data) {
+    acc = (acc << 5) | value;
+    bits += 5;
+    while (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolves a bech32 address to its 32-byte pubkey hex — the form `foldClaim`'s
+ * owner-gate needs to match against replies' `author_id` (hex pubkey, from
+ * `get_replies`), since the claim POST's `author_id` (from `get_content`) is
+ * bech32 (task-2's report flagged this exact both-forms trap; the review that
+ * hardened the fold re-flagged it). Format verified empirically against a live
+ * identity's known address+pubkey pair (version byte + 32-byte pubkey), not
+ * assumed from doc comments (the Rust source has two differently-behaved
+ * address-encoding functions and the comments on them don't agree with which
+ * one content endpoints actually call). Never throws: a malformed address
+ * resolves to `''`, which `foldClaim` treats as "no pubkey form to match" —
+ * degrading to address-only comparison rather than breaking the read path.
+ */
+function addressToPubkeyHex(address: string): string {
+  try {
+    const { data } = bech32mDecode(address);
+    const bytes = convertBits5to8(data);
+    if (bytes.length !== 33) return ''; // not a 1-version-byte + 32-byte-pubkey payload
+    return bytes.slice(1).map((b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Loads and folds one claim: `get_content` for the claim post itself (owner + header),
  * `get_replies` for its own move stream (depth_limit 1 — moves are direct replies
- * only, never threaded), then `foldClaim` per the fold-isolation rule.
+ * only, never threaded), then `foldClaim` per the fold-isolation rule — gated against
+ * BOTH the owner's address and pubkey-hex forms (see `addressToPubkeyHex`).
  */
 export async function loadClaim(
   auth: RpcAuth,
@@ -308,6 +405,7 @@ export async function loadClaim(
     throw new Error(`loadClaim: ${claimId} is not a valid trench claim (malformed or missing header)`);
   }
   const owner = post.author_id;
+  const ownerPubkeyHex = addressToPubkeyHex(owner);
 
   const repliesResult = await rpcCall<{
     replies: Array<{
@@ -327,16 +425,23 @@ export async function loadClaim(
     block_height: r.block_height ?? null,
   }));
 
-  const state = foldClaim(claimId, owner, header, replies);
+  const state = foldClaim(claimId, owner, ownerPubkeyHex, header, replies);
   return { header, owner, state };
 }
 
 /**
  * Lists every claim in `TRENCH_SPACE` (display/driver input only — never a balance
  * source, per the fold isolation rule) and folds spacing acceptance via `foldMap`.
- * `list_space_content` returns both claim posts AND their move replies mixed
- * together, so this filters to top-level posts (`parent_id === null`) first — only
- * claim posts carry a `trench-claim` header for `foldMap` to parse.
+ *
+ * Uses `list_space_posts` (src/rpc/methods.rs — same `ListSpaceContentParams` in,
+ * same `ListSpaceContentResult{items,total}` shape out as `list_space_content`, just
+ * filtered to Posts at the DB level: "get exactly `limit` posts"), NOT
+ * `list_space_content`, which mixes posts AND every move-reply together — on a claim
+ * with any real move activity, 500-most-recent-of-everything starves OLD claims off
+ * the map entirely (a veteran player's own claim stops resolving via `myClaim` and
+ * they're regressed straight back to the founding screen). `list_space_posts` is also
+ * separately aliased as `list_posts_for_space`, already in the node's auth-exempt
+ * list, so this now works even before signature/cookie auth is available.
  */
 export async function listClaims(auth: RpcAuth): Promise<MapClaim[]> {
   const result = await rpcCall<{
@@ -348,21 +453,21 @@ export async function listClaims(auth: RpcAuth): Promise<MapClaim[]> {
       parent_id: string | null;
       created_at: number;
     }>;
-  }>(auth, 'list_space_content', { space_id: effectiveTrenchSpace(), limit: 500, offset: 0, sort: 'recent' });
+  }>(auth, 'list_space_posts', { space_id: effectiveTrenchSpace(), limit: 500, offset: 0, sort: 'recent' });
 
   const claims = result.items
+    // list_space_posts only ever returns Posts (parent_id is always null server-side)
+    // — this filter is defensive, not load-bearing, should that ever not hold.
     .filter((it) => it.parent_id === null && it.body !== null)
     .map((it) => {
-      // `list_space_content`'s `body` field is the RAW STORED BLOB
-      // (`${title}\n\n${body}`, the exact preimage a Post signs — see
-      // src/rpc/methods.rs list_space_content, which — unlike get_content —
-      // returns the un-split text, not the title-stripped body), not the
-      // caller's original `body` param `foundClaim()` submitted (itself
-      // `${name}\n\n${json header}`). Left unstripped, `parseClaimHeader`'s
-      // own `\n\n` split lands mid-name and every claim folds as malformed
-      // (`accepted: false`, including the player's OWN — founding never
-      // completes visibly since `myClaim` can never match). Recover the
-      // true submitted body by peeling off the known `${title}\n\n` prefix.
+      // `list_space_posts`'s `body` field is the RAW STORED BLOB (`${title}\n\n${body}`,
+      // the exact preimage a Post signs — see src/rpc/methods.rs, which returns the
+      // un-split text, not the title-stripped body), not the caller's original `body`
+      // param `foundClaim()` submitted (itself `${name}\n\n${json header}`). Left
+      // unstripped, `parseClaimHeader`'s own `\n\n` split lands mid-name and every claim
+      // folds as malformed (`accepted: false`, including the player's OWN — founding
+      // never completes visibly since `myClaim` can never match). Recover the true
+      // submitted body by peeling off the known `${title}\n\n` prefix.
       const raw = it.body as string;
       const body = it.title && raw.startsWith(`${it.title}\n\n`) ? raw.slice(it.title.length + 2) : raw;
       return {

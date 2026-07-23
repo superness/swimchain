@@ -28,6 +28,7 @@ import {
   RANGE_PER_BEACON,
   CLAIM_MIN_SPACING,
   GLOW_PER_STRUCTURE_LIT_DAY,
+  MS_TOLERANCE,
   parseClaimHeader,
   embeddedMs,
   utcDay,
@@ -87,7 +88,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
 
 // ── 3) fold: founding day initializes with start kit ────────────────────────────────
 {
-  const s = foldClaim('c1', 'A', H, [r('harvest', 100 * DAY, 'm1')]);
+  const s = foldClaim('c1', 'A', '', H, [r('harvest', 100 * DAY, 'm1')]);
   check('found: salvage = START_SALVAGE', s.salvage === START_SALVAGE, s.salvage);
   check('found: biomass = 0', s.biomass === 0, s.biomass);
   check('found: lastDay = 100', s.lastDay === 100, s.lastDay);
@@ -102,7 +103,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
 
 // ── 4) heartbeat: cap enforced in-fold ───────────────────────────────────────────────
 {
-  const s = foldClaim('c2', 'A', H, hb(8, 100));
+  const s = foldClaim('c2', 'A', '', H, hb(8, 100));
   const ok = s.moves.filter((m) => m.outcome === 'ok').length;
   const capped = s.moves.filter((m) => m.outcome === 'rejected-capped').length;
   check('hb cap: HB_CAP_PER_DAY ok', ok === HB_CAP_PER_DAY, s.moves);
@@ -122,7 +123,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   // LIT_MIN(=25) total heartbeats spread across days D..D+4 (6+6+6+6+1), harvest at
   // D+6 banks D+5..D+6; both days' windows ([D-1,D+5] and [D,D+6]) fully contain
   // D..D+4, so both see the full LIT_MIN -> LIT.
-  const litFixed = foldClaim('c3b', 'A', H, [
+  const litFixed = foldClaim('c3b', 'A', '', H, [
     ...hb(6, D),
     ...hb(6, D + 1),
     ...hb(6, D + 2),
@@ -133,17 +134,17 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   check('brightness: LIT_MIN hb over D..D+4, harvest D+6 -> LIT', litFixed.brightness === 'LIT', litFixed.brightness);
 
   // DIM_MIN(=8) total: 6 on day D, DIM_MIN-6 on day D+1 (>= DIM_MIN, < LIT_MIN).
-  const dim = foldClaim('c4', 'A', H, [...hb(6, D), ...hb(DIM_MIN - 6, D + 1), r('harvest', (D + 6) * DAY, 'hv3')]);
+  const dim = foldClaim('c4', 'A', '', H, [...hb(6, D), ...hb(DIM_MIN - 6, D + 1), r('harvest', (D + 6) * DAY, 'hv3')]);
   check('brightness: DIM_MIN hb -> DIM at D+6', dim.brightness === 'DIM', dim.brightness);
 
   // DIM_MIN-1(=7) total: 6 on day D, DIM_MIN-1-6 on day D+1 (< DIM_MIN).
-  const dark = foldClaim('c5', 'A', H, [...hb(6, D), ...hb(DIM_MIN - 1 - 6, D + 1), r('harvest', (D + 6) * DAY, 'hv4')]);
+  const dark = foldClaim('c5', 'A', '', H, [...hb(6, D), ...hb(DIM_MIN - 1 - 6, D + 1), r('harvest', (D + 6) * DAY, 'hv4')]);
   check('brightness: DIM_MIN-1 hb -> DARK at D+6', dark.brightness === 'DARK', dark.brightness);
 }
 
 // ── 6) build: farm costs salvage; unaffordable rejected ──────────────────────────────
 {
-  const s = foldClaim('c6', 'A', H, [
+  const s = foldClaim('c6', 'A', '', H, [
     r('build farm', 100 * DAY, 'b1'),
     r('build farm', 100 * DAY + 1, 'b2'),
     r('build farm', 100 * DAY + 2, 'b3'),
@@ -172,7 +173,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
 // 4+2+2+2+1+1+2 = 14, so integrity 20-14 = 6 (never <=0 -> not ruined).
 {
   const D = 300;
-  const s = foldClaim('c7', 'A', H, [
+  const s = foldClaim('c7', 'A', '', H, [
     r('build farm', D * DAY, 'bf'),
     ...hb(6, D),
     ...hb(6, D + 1),
@@ -198,7 +199,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
 // no further decay. Harvest at D+11 just reads the fully-settled state.
 {
   const D = 400;
-  const s = foldClaim('c8', 'A', H, [r('build farm', D * DAY, 'bf'), r('harvest', (D + 11) * DAY, 'hv')]);
+  const s = foldClaim('c8', 'A', '', H, [r('build farm', D * DAY, 'bf'), r('harvest', (D + 11) * DAY, 'hv')]);
   check('ruin: farm ruined', s.structures[0].ruined === true, s.structures[0]);
   check('ruin: integrity floored at 0', s.structures[0].integrity === 0, s.structures[0]);
   check('ruin: biomass = 5 (5 alive DARK days x 1)', s.biomass === 5 * YIELD_DARK, s.biomass);
@@ -211,7 +212,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   // 3 banked days (D+1..D+3) of DARK decay/yield before the tend at D+3: biomass =
   // 2 farms x 1 (DARK yield) x 3 days = 6; each farm's integrity = 20 - 4*3 = 8.
   // Tend idx 1 costs TEND_COST=4 (affordable: 6>=4) -> biomass 6-4=2, integrity reset.
-  const shortFold = foldClaim('c9a', 'A', H, [
+  const shortFold = foldClaim('c9a', 'A', '', H, [
     r('build farm', D * DAY, 'f0'),
     r('build farm', D * DAY + 1, 'f1'),
     r('tend 1', (D + 3) * DAY, 'tend1'),
@@ -224,7 +225,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   // (b) continue to D+6: idx0 (never tended) ruins on D+5 (8 -[email protected]+4=4 -[email protected]+5=0);
   // idx1 (reset to 20 at D+3) is still alive at D+6 (20 -4*3=8). A tend attempt on the
   // now-ruined idx0 must be rejected, and an out-of-bounds idx must be rejected too.
-  const longFold = foldClaim('c9b', 'A', H, [
+  const longFold = foldClaim('c9b', 'A', '', H, [
     r('build farm', D * DAY, 'f0'),
     r('build farm', D * DAY + 1, 'f1'),
     r('tend 1', (D + 3) * DAY, 'tend1'),
@@ -240,7 +241,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   // its founding value of 0 < TEND_COST) -> rejected-unaffordable, and untouched
   // (integrity stays INTEGRITY_MAX; no decay has run either, since it's still day D2).
   const D2 = 501;
-  const poor = foldClaim('c9c', 'A', H, [r('build farm', D2 * DAY, 'f0'), r('tend 0', D2 * DAY + 1, 'tend-poor')]);
+  const poor = foldClaim('c9c', 'A', '', H, [r('build farm', D2 * DAY, 'f0'), r('tend 0', D2 * DAY + 1, 'tend-poor')]);
   check('tend: biomass < TEND_COST -> rejected-unaffordable', poor.moves[1].outcome === 'rejected-unaffordable', poor.moves[1]);
   check('tend: integrity unchanged on rejected-unaffordable', poor.structures[0].integrity === INTEGRITY_MAX, poor.structures[0]);
   check('tend: biomass unchanged on rejected-unaffordable', poor.biomass === 0, poor.biomass);
@@ -249,7 +250,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
 // ── 10) storehouse: raises caps while alive; ruin lowers future caps ────────────────
 {
   const D = 600;
-  const justBuilt = foldClaim('c10a', 'A', H, [r('build storehouse', D * DAY, 'bs')]);
+  const justBuilt = foldClaim('c10a', 'A', '', H, [r('build storehouse', D * DAY, 'bs')]);
   check('storehouse: costs COST_STOREHOUSE salvage', justBuilt.salvage === START_SALVAGE - COST_STOREHOUSE, justBuilt.salvage);
   check('storehouse: capSalvage 40->80 immediately', justBuilt.capSalvage === CAP_BASE + CAP_PER_STOREHOUSE, justBuilt.capSalvage);
   check('storehouse: capBiomass 40->80 immediately', justBuilt.capBiomass === CAP_BASE + CAP_PER_STOREHOUSE, justBuilt.capBiomass);
@@ -257,7 +258,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   // DECAY_DARK=4/day, INTEGRITY_MAX=20 -> ruins on banked day D+5. A harvest at D+7
   // forces banking through D+7, so the D+6 (and D+7) day-advance recomputes caps from
   // the now-ruined (0 alive) storehouse set.
-  const ruined = foldClaim('c10b', 'A', H, [r('build storehouse', D * DAY, 'bs'), r('harvest', (D + 7) * DAY, 'hv')]);
+  const ruined = foldClaim('c10b', 'A', '', H, [r('build storehouse', D * DAY, 'bs'), r('harvest', (D + 7) * DAY, 'hv')]);
   check('storehouse: ruined after 5 DARK days', ruined.structures[0].ruined === true, ruined.structures[0]);
   check('storehouse: caps clamp back to 40 after ruin', ruined.capSalvage === CAP_BASE && ruined.capBiomass === CAP_BASE, ruined);
 }
@@ -274,7 +275,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   check('salvageRoll: second fixed cid = 2', rollForOkMove === 2, rollForOkMove);
 
   const D = 700;
-  const s = foldClaim('c11', 'A', H, [
+  const s = foldClaim('c11', 'A', '', H, [
     // no beacon yet: range = EXPEDITION_BASE_RANGE = 6; target at chebyshev(0,0,7,0)=7 -> out of range.
     r('expedition aaaa111122223333 7 0', D * DAY, 'sha256:exp_out'),
     // build beacon: range becomes 6 + 4 = 10.
@@ -304,7 +305,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   const bigRoll = salvageRoll('sha256:02cafefeed');
   check('salvageRoll: gain-6 fixture cid = 3', bigRoll === 3, bigRoll);
   const D2 = 750;
-  const clamp = foldClaim('c11b', 'A', H, [
+  const clamp = foldClaim('c11b', 'A', '', H, [
     r('expedition cccc000000000001 0 1', D2 * DAY, 'sha256:02aaa001'), // 20 -> 26
     r('expedition cccc000000000002 0 2', D2 * DAY + 1, 'sha256:02aaa002'), // 26 -> 32
     r('expedition cccc000000000003 0 3', D2 * DAY + 2, 'sha256:02aaa003'), // 32 -> 38
@@ -337,8 +338,8 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
     r(`heartbeat #${msC}~`, 0, 'm3'),
     r(`harvest #${msD}~`, 0, 'm4'),
   ];
-  const inOrder = foldClaim('c12a', 'A', H, build);
-  const shuffled = foldClaim('c12b', 'A', H, [build[3], build[1], build[0], build[2]]);
+  const inOrder = foldClaim('c12a', 'A', '', H, build);
+  const shuffled = foldClaim('c12b', 'A', '', H, [build[3], build[1], build[0], build[2]]);
   check('determinism: salvage matches', inOrder.salvage === shuffled.salvage, [inOrder.salvage, shuffled.salvage]);
   check('determinism: biomass matches', inOrder.biomass === shuffled.biomass, [inOrder.biomass, shuffled.biomass]);
   check('determinism: glow matches', inOrder.glow === shuffled.glow, [inOrder.glow, shuffled.glow]);
@@ -364,7 +365,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
 // -> exactly 3 LIT banked days (D+5, D+6, D+7). glow = 2 structures x 3 LIT days = 6.
 {
   const D = 900;
-  const s = foldClaim('c13', 'A', H, [
+  const s = foldClaim('c13', 'A', '', H, [
     r('build farm', D * DAY, 'f0'),
     r('build farm', D * DAY + 1, 'f1'),
     ...hb(6, D),
@@ -402,7 +403,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
 {
   const D = 1000;
   const replies = [r('build farm', D * DAY, 'bf')];
-  const s = foldClaim('c15', 'A', H, replies);
+  const s = foldClaim('c15', 'A', '', H, replies);
   check('project: base biomass is 0 (founding day, no bank yet)', s.biomass === 0, s.biomass);
 
   const projected = project(s, (D + 3) * DAY);
@@ -414,7 +415,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   // reproduce the exact original numbers — proving project() never banked anything.
   check('project: original state biomass still 0', s.biomass === 0, s.biomass);
   check('project: original state structure integrity untouched', s.structures[0].integrity === INTEGRITY_MAX, s.structures[0]);
-  const refolded = foldClaim('c15', 'A', H, replies);
+  const refolded = foldClaim('c15', 'A', '', H, replies);
   check('project: re-fold over same replies is unchanged', refolded.biomass === 0 && refolded.lastDay === D, refolded);
 }
 
@@ -429,7 +430,7 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
   const selfClaimId = 'sha256:aaaa111122223333444455556666777788889999aaaabbbbccccddddeeeeffff';
   const selfTarget16 = 'aaaa111122223333'; // first 16 hex chars of selfClaimId's hash part
   const roll = salvageRoll('sha256:07deadbeef'); // same fixture as test 11 -> roll = 2
-  const s = foldClaim(selfClaimId, 'A', H, [
+  const s = foldClaim(selfClaimId, 'A', '', H, [
     r(`expedition ${selfTarget16} 0 0`, D * DAY, 'sha256:self_exp'),
     // A genuine other target, well within base range (dist 3 <= 6) — must still credit,
     // proving the self-check doesn't over-reject unrelated expeditions in the same fold.
@@ -442,6 +443,96 @@ const H: ClaimHeader = { v: 1, kind: 'trench-claim', name: 'home', x: 0, y: 0 };
     'expedition: final salvage = START_SALVAGE + 2*roll (self-attempt contributed nothing)',
     s.salvage === START_SALVAGE + 2 * roll,
     s.salvage
+  );
+}
+
+// ── 17) owner-author gate: foreign replies never mutate state ──────────────────────
+// A stranger's heartbeat/build/tend/expedition on someone ELSE's claim must fold as
+// `rejected-foreign` with ZERO state effect — even when the attempted move would
+// otherwise have been perfectly legal (affordable, in range, not day-gated) had the
+// real owner sent it. The owner's OWN moves must still fold `ok` in BOTH identity
+// forms (`ownerAddress` from get_content, `ownerPubkeyHex` from get_replies — the
+// exact both-forms trap task-2's report flagged and this review re-flagged).
+{
+  const D = 1100;
+  const ownerAddr = 'A';
+  const ownerPk = 'PUBKEY_A';
+  const s = foldClaim('c17', ownerAddr, ownerPk, H, [
+    r('build farm', D * DAY, 'own-build', ownerAddr), // founding: ok, salvage 20->10, farm integrity 20
+    // Banks D+1..D+4 (4 DARK days, no heartbeat ever accepted): biomass 0->4,
+    // integrity 20->4 (not ruined) — exactly enough biomass for a tend to be
+    // AFFORDABLE below, so the foreign-tend rejection proves the OWNER gate, not
+    // just the pre-existing affordability gate.
+    r('heartbeat', (D + 4) * DAY, 'foreign-hb', 'STRANGER'),
+    r('build farm', (D + 4) * DAY + 1, 'foreign-build', 'STRANGER'),
+    r('tend 0', (D + 4) * DAY + 2, 'foreign-tend', 'STRANGER'),
+    // dist(0,0 -> 5,0) = 5 <= EXPEDITION_BASE_RANGE(6): would be `ok` if not gated.
+    r('expedition dddd555566667777 5 0', (D + 4) * DAY + 3, 'foreign-exp', 'STRANGER'),
+    r('heartbeat', (D + 4) * DAY + 4, 'own-hb-pk', ownerPk), // owner, via the PUBKEY form
+  ]);
+
+  check('owner-gate: owner build (address form) -> ok', s.moves[0].outcome === 'ok', s.moves[0]);
+
+  check('owner-gate: foreign heartbeat -> rejected-foreign', s.moves[1].outcome === 'rejected-foreign', s.moves[1]);
+  check('owner-gate: foreign heartbeat never counted', s.heartbeatDays.get(D + 4) === 1, s.heartbeatDays); // only move[5] (owner) counts
+
+  check('owner-gate: foreign build -> rejected-foreign', s.moves[2].outcome === 'rejected-foreign', s.moves[2]);
+  check('owner-gate: foreign build added no structure', s.structures.length === 1, s.structures);
+
+  check('owner-gate: foreign tend -> rejected-foreign', s.moves[3].outcome === 'rejected-foreign', s.moves[3]);
+  check(
+    'owner-gate: foreign tend did not reset integrity (still the naturally-decayed 4, not INTEGRITY_MAX)',
+    s.structures[0].integrity === INTEGRITY_MAX - DECAY_DARK * 4,
+    s.structures[0]
+  );
+  check('owner-gate: foreign tend did not spend biomass', s.biomass === 4 * YIELD_DARK, s.biomass);
+
+  check('owner-gate: foreign expedition -> rejected-foreign', s.moves[4].outcome === 'rejected-foreign', s.moves[4]);
+  check('owner-gate: foreign expedition recorded no day-gate entry', s.expeditionDays.size === 0, [...s.expeditionDays]);
+  check('owner-gate: foreign expedition gained no salvage', s.salvage === START_SALVAGE - COST_FARM, s.salvage);
+
+  check('owner-gate: owner heartbeat (PUBKEY form) -> ok', s.moves[5].outcome === 'ok', s.moves[5]);
+}
+
+// ── 18) embedded-ms clamp: forged far-future/-past ms can't freeze the fold ────────
+// A forged `#<ms>~` millions of days from its reply's real `created_at` must be
+// IGNORED (falling back to created_at, for both ordering and day math) — otherwise
+// the day-advance loop would run that many iterations on the main thread. A
+// legitimate small skew (client-stamp vs chain-confirm latency) must still use the
+// embedded value, so ordinary pending-reply ordering is unaffected.
+{
+  const D = 1200;
+  // (a) forged far-future ms on the FOUNDING move itself — ~8 million years ahead of
+  // its real created_at (day D). If unclamped, the second move below (2 REAL days
+  // later) would need to bank a multi-billion-iteration gap; clamped, it's a normal
+  // 2-day bank.
+  const forgedFutureMs = (D + 3_000_000_000) * DAY;
+  const s = foldClaim('c18a', 'A', '', H, [
+    r(`build farm #${forgedFutureMs}~`, D * DAY + 500, 'forged-founding', 'A'),
+    r('harvest', (D + 2) * DAY + 500, 'real-harvest', 'A'),
+  ]);
+  check('ms-clamp: forged founding move day uses created_at, not the forged value', s.moves[0].day === D, s.moves[0]);
+  check('ms-clamp: forged move still folds ok (build succeeds)', s.moves[0].outcome === 'ok', s.moves[0]);
+  check('ms-clamp: the real 2-days-later move banks only that real gap', s.lastDay === D + 2, s.lastDay);
+  check('ms-clamp: banked biomass is the sane 2-day amount (not billions)', s.biomass === 2 * YIELD_DARK, s.biomass);
+
+  // (b) a legitimate SMALL skew (well within MS_TOLERANCE) straddling a UTC day
+  // boundary must still resolve via the EMBEDDED value: embeddedMs is 1s before
+  // midnight (day D), created_at is 1s after (day D+1) — if the clamp incorrectly
+  // fired here, this would fold as day D+1 instead of the correct day D.
+  const dayBoundary = (D + 1) * DAY;
+  const createdAtSmallSkew = dayBoundary + 1000;
+  const embeddedSmallSkew = dayBoundary - 1000; // 2s total skew, << MS_TOLERANCE
+  const sSkew = foldClaim('c18b', 'A', '', H, [r(`harvest #${embeddedSmallSkew}~`, createdAtSmallSkew, 'skew1', 'A')]);
+  check('ms-clamp: skew well within MS_TOLERANCE still uses the embedded value (day D)', sSkew.lastDay === D, sSkew.lastDay);
+
+  // (c) a skew just OVER MS_TOLERANCE must fall back to created_at (day D+1).
+  const embeddedJustOver = createdAtSmallSkew - MS_TOLERANCE - 1;
+  const sOver = foldClaim('c18c', 'A', '', H, [r(`harvest #${embeddedJustOver}~`, createdAtSmallSkew, 'over1', 'A')]);
+  check(
+    'ms-clamp: skew just OVER MS_TOLERANCE falls back to created_at (day D+1)',
+    sOver.lastDay === utcDay(createdAtSmallSkew),
+    sOver.lastDay
   );
 }
 
