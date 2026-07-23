@@ -108,6 +108,21 @@ export function ClientFrame({ client, rpcEndpoint, rpcAuth, nodeAddress, nodeDis
       const isTauriOrigin = event.origin.startsWith('tauri://');
       const isSameOrigin = event.origin === window.location.origin;
 
+      // External-link open: a client link inside the sandboxed iframe can't
+      // reach the system browser via target="_blank", so the client posts the
+      // URL out and we open it through the shell (http(s) only; enforced again
+      // in the Rust command).
+      if (data.type === 'SWIMCHAIN_OPEN_URL') {
+        if (!isSameOrigin && !isTauriOrigin) return;
+        const url = typeof data.url === 'string' ? data.url : '';
+        if (/^https?:\/\//i.test(url)) {
+          invoke('open_external', { url }).catch((e) =>
+            console.error('open_external failed:', e)
+          );
+        }
+        return;
+      }
+
       if (data.type === 'SWIMCHAIN_LOG') {
         // Accept logs from same-origin or tauri origins
         if (!isSameOrigin && !isTauriOrigin) {

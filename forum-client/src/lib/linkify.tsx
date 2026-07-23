@@ -6,7 +6,23 @@
  * Links open in a new tab; rel="noopener noreferrer nofollow" so target pages
  * can't touch window.opener and we don't pass link equity to arbitrary content.
  */
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
+
+/**
+ * Open an autolink. Always stop the click from bubbling to the surrounding card.
+ * When we're embedded in the desktop launcher (inside an iframe), a
+ * `target="_blank"` navigation goes nowhere in the Tauri webview, so instead we
+ * hand the URL to the launcher shell to open in the system browser. Standalone
+ * (top-level, e.g. a real browser) we let the default new-tab behaviour run.
+ */
+function openExternal(e: MouseEvent<HTMLAnchorElement>, href: string): void {
+  e.stopPropagation();
+  const embedded = typeof window !== 'undefined' && window.parent !== window.self;
+  if (embedded) {
+    e.preventDefault();
+    window.parent.postMessage({ type: 'SWIMCHAIN_OPEN_URL', url: href }, '*');
+  }
+}
 
 // http(s):// … or bare www. … up to the first whitespace or angle bracket.
 const URL_RE = /(https?:\/\/[^\s<>]+|www\.[^\s<>]+)/gi;
@@ -50,7 +66,7 @@ export function linkify(text: string | null | undefined): ReactNode[] {
         target="_blank"
         rel="noopener noreferrer nofollow"
         className="autolink"
-        onClick={(e) => e.stopPropagation()} // don't also trigger the card's click
+        onClick={(e) => openExternal(e, href)}
       >
         {url}
       </a>,
