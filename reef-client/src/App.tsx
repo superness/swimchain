@@ -623,11 +623,11 @@ export function App() {
       <div className="center col">
         <h1>🪸 The Reef</h1>
         <p className="muted">
-          A slow, shared world on Swimchain. Grow coral; tend it or it recedes. No server runs
-          it — the chain is the world, and no one can take it down.
+          A territory game: grow a coral reef, keep it alive, outlast your rivals. No server
+          runs it — the reef lives on the Swimchain network, and no one can take it down.
         </p>
-        <button className="btn primary" onClick={newIdentity}>Create an identity</button>
-        <p className="fine">Your keypair is generated and stored locally in this browser. It never leaves your device.</p>
+        <button className="btn primary" onClick={newIdentity}>Play</button>
+        <p className="fine">Playing creates a game key stored only in this browser — no account, no email.</p>
       </div>
     );
   }
@@ -762,7 +762,7 @@ export function App() {
             />
             <div className="status">
               <div className="season">
-                <strong>Season {view.season}</strong> · {view.epochsLeftInSeason} tide{view.epochsLeftInSeason === 1 ? '' : 's'} to the reckoning
+                <strong>Season {view.season}</strong> · ends in {view.epochsLeftInSeason} tide{view.epochsLeftInSeason === 1 ? '' : 's'}
                 <span className="fine"> · tide {view.epoch}</span>
                 {mining?.cell ? (
                   <span className="fine growing-status">
@@ -790,7 +790,7 @@ export function App() {
                   </span>
                   <strong> {tendsLeft}</strong>/{view.params.tendCap}
                 </span>
-                <span className="fine costs">grow −{COST_GROW} · contest −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · each tide restores {REGEN_BASE} + 1 per 2 coral you hold</span>
+                <span className="fine costs">grow −{COST_GROW} · strike −{COST_CONTEST} · tend free ({view.params.tendCap}/tide) · the tide refills {REGEN_BASE} + 1 per 2 coral you hold</span>
               </div>
 
               {tutCard === 'grow' && (
