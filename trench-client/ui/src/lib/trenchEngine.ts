@@ -99,7 +99,8 @@ export type MoveOutcome =
   | 'rejected-ruined'
   | 'rejected-out-of-range'
   | 'rejected-day-gate'
-  | 'rejected-malformed';
+  | 'rejected-malformed'
+  | 'rejected-self';
 
 export interface ReplyLike {
   author_id: string;
@@ -419,22 +420,36 @@ export function foldClaim(
           break;
         }
         case 'expedition': {
-          const lastVisit = expeditionDays.get(parsed.target);
-          if (lastVisit === day) {
-            outcome = 'rejected-day-gate';
+          // A target16 prefix matching the actor's OWN claim id is a
+          // self-expedition — free daily salvage for doing nothing (an
+          // economy exploit, not a real visit: it drives no hosting, since
+          // the actor's own node already has its own claim). Rejected
+          // before the day-gate/range checks (and independent of them) so
+          // no expeditionDays entry is ever recorded for it — a later
+          // GENUINE expedition to that same 16-hex-colliding target (vanishingly
+          // unlikely, but the day-gate is keyed on this same string) is
+          // never blocked by a self-attempt that never should have counted.
+          const selfHashPart = claimId.replace(/^sha256:/, '');
+          if (selfHashPart.startsWith(parsed.target)) {
+            outcome = 'rejected-self';
           } else {
-            let beacons = 0;
-            for (const s of structures) if (!s.ruined && s.kind === 'beacon') beacons++;
-            const range = EXPEDITION_BASE_RANGE + RANGE_PER_BEACON * beacons;
-            const dist = chebyshev(header.x, header.y, parsed.tx, parsed.ty);
-            if (dist > range) {
-              outcome = 'rejected-out-of-range';
+            const lastVisit = expeditionDays.get(parsed.target);
+            if (lastVisit === day) {
+              outcome = 'rejected-day-gate';
             } else {
-              const gain = 2 * salvageRoll(r.content_id);
-              const cap = capFor(structures);
-              salvage = Math.max(salvage, Math.min(cap, salvage + gain));
-              expeditionDays.set(parsed.target, day);
-              outcome = 'ok';
+              let beacons = 0;
+              for (const s of structures) if (!s.ruined && s.kind === 'beacon') beacons++;
+              const range = EXPEDITION_BASE_RANGE + RANGE_PER_BEACON * beacons;
+              const dist = chebyshev(header.x, header.y, parsed.tx, parsed.ty);
+              if (dist > range) {
+                outcome = 'rejected-out-of-range';
+              } else {
+                const gain = 2 * salvageRoll(r.content_id);
+                const cap = capFor(structures);
+                salvage = Math.max(salvage, Math.min(cap, salvage + gain));
+                expeditionDays.set(parsed.target, day);
+                outcome = 'ok';
+              }
             }
           }
           break;
