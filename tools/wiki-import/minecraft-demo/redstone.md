@@ -17,7 +17,7 @@ Signals begin at a **power source** — a lever, button, pressure plate, or reds
 - **Comparator** — compares signals and can read the contents of containers.
 - **Piston** — pushes blocks when powered; a sticky piston can also pull them back.
 
-Combining these lets a player build the logic gates (AND, OR, NOT, XOR) that underpin every digital circuit, which is why redstone is frequently compared to real-world [[electrical circuits]].
+Combining these lets a player build the logic gates (AND, OR, NOT, XOR) that underpin every digital circuit, which is why redstone is frequently compared to real-world electrical circuits.
 
 ## Common builds
 
