@@ -440,10 +440,10 @@ impl ChainStore {
                         block_space_id_16
                     };
 
-                // Create space content index key: space_id(16) || timestamp(8, big-endian)
-                let mut index_key = [0u8; 24];
-                index_key[..16].copy_from_slice(&space_id_16);
-                index_key[16..].copy_from_slice(&action.timestamp.to_be_bytes());
+                // Unique space content index key: space || ts || content_hash
+                // (same-second actions in one space must not overwrite each other)
+                let index_key =
+                    Self::space_index_key(&space_id_16, action.timestamp, &content_hash);
 
                 // Store content hash as value
                 self.space_content_index.insert(&index_key, &content_hash)?;
@@ -483,17 +483,16 @@ impl ChainStore {
                     .insert(&content_hash, entry_data)?;
 
                 // === Author content index for feed-style queries ===
-                // Key = author_pk(32) || timestamp(8, big-endian), Value = content_hash(32)
-                let mut author_key = [0u8; 40];
-                author_key[..32].copy_from_slice(&action.actor);
-                author_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                // Key = author_pk(32) || ts(8) || content_hash(32) — unique per action
+                let author_key =
+                    Self::author_index_key(&action.actor, action.timestamp, &content_hash);
                 self.author_content_index
                     .insert(&author_key, &content_hash)?;
 
                 // === Content-type specific indexes for O(log n) queries at scale ===
                 match action.action_type {
                     crate::blocks::ActionType::Post => {
-                        // Index post by space: Key = space_id(16) || timestamp(8) → content_hash
+                        // Index post by space (unique space||ts||hash key)
                         self.posts_by_space_index
                             .insert(&index_key, &content_hash)?;
                     }
@@ -1332,6 +1331,31 @@ impl ChainStore {
         key
     }
 
+    /// Unique key for the space-scoped content indexes: space(16) || ts(8, BE) || hash(32).
+    /// The content-hash suffix is what lets same-second entries coexist — the
+    /// legacy 24-byte (space || timestamp-seconds) key silently ERASED all but
+    /// the last post indexed in any one second (found via 6 wiki pages published
+    /// in the same second on mainnet: list_space_posts returned 17 of 23).
+    /// scan_prefix(space) readers are key-length agnostic and the suffix keeps
+    /// chronological ordering intact. repair_content_indexes() migrates old rows.
+    fn space_index_key(space_id: &[u8; 16], timestamp: u64, content_hash: &[u8; 32]) -> [u8; 56] {
+        let mut key = [0u8; 56];
+        key[..16].copy_from_slice(space_id);
+        key[16..24].copy_from_slice(&timestamp.to_be_bytes());
+        key[24..].copy_from_slice(content_hash);
+        key
+    }
+
+    /// Unique key for the author feed index: author(32) || ts(8, BE) || hash(32) —
+    /// the same collision class as above for one author acting twice in a second.
+    fn author_index_key(author: &[u8; 32], timestamp: u64, content_hash: &[u8; 32]) -> [u8; 72] {
+        let mut key = [0u8; 72];
+        key[..32].copy_from_slice(author);
+        key[32..40].copy_from_slice(&timestamp.to_be_bytes());
+        key[40..].copy_from_slice(content_hash);
+        key
+    }
+
     /// One-time repair/migration of the reply index to unique 72-byte keys.
     ///
     /// The legacy 40-byte key (parent || timestamp-seconds) collided for replies
@@ -1405,6 +1429,65 @@ impl ChainStore {
         self.replies_by_parent_index.flush()?;
         log::info!(
             "[REPLY-INDEX-REPAIR] migrated to unique keys: {} rows re-indexed from blocks, {} legacy rows dropped",
+            inserted,
+            removed
+        );
+        Ok(inserted)
+    }
+
+    /// One-time repair/migration of the space-content, posts-by-space, and
+    /// author-content indexes to unique (…|| content_hash) keys.
+    ///
+    /// The legacy keys — space(16)||ts(8) and author(32)||ts(8) — collided for
+    /// any two actions sharing a second, and the later insert silently erased
+    /// the earlier one from listings while it stayed sealed on-chain (observed
+    /// live: 6 of 23 mainnet wiki pages published in one second, list_space_posts
+    /// returned 17). Same defect class repair_reply_index() fixed for replies.
+    ///
+    /// Re-derives every row from stored blocks under unique keys, then drops the
+    /// superseded legacy rows (24-byte space keys / 40-byte author keys).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if database access fails.
+    pub fn repair_content_indexes(&self) -> Result<usize, StorageError> {
+        // 20-byte marker: longer than the 16-byte space prefix scans use, so it
+        // can never surface in a space scan_prefix.
+        const MARKER: &[u8] = b"__content_index_v2__";
+        if self.posts_by_space_index.get(MARKER)?.is_some() {
+            return Ok(0);
+        }
+
+        // Re-index everything sealed in blocks under the new unique keys.
+        let inserted = self.rebuild_space_content_index()?;
+
+        // Drop superseded legacy rows (their content was just re-inserted under
+        // unique keys; anything only in the mempool re-indexes at block seal).
+        let mut removed = 0usize;
+        for (tree, legacy_len) in [
+            (&self.space_content_index, 24usize),
+            (&self.posts_by_space_index, 24usize),
+            (&self.author_content_index, 40usize),
+        ] {
+            let mut legacy_rows = Vec::new();
+            for row in tree.iter() {
+                let (key, _) = row?;
+                if key.len() == legacy_len {
+                    legacy_rows.push(key);
+                }
+            }
+            removed += legacy_rows.len();
+            for key in legacy_rows {
+                tree.remove(&key)?;
+            }
+        }
+
+        self.posts_by_space_index.insert(MARKER, &[])?;
+        self.space_content_index.flush()?;
+        self.posts_by_space_index.flush()?;
+        self.author_content_index.flush()?;
+        log::info!(
+            "[CONTENT-INDEX-REPAIR] migrated to unique keys: {} actions re-indexed from blocks, {} legacy rows dropped",
             inserted,
             removed
         );
@@ -1727,10 +1810,9 @@ impl ChainStore {
         for (action, block_space_id_16) in posts {
             let content_hash = action.content_hash.unwrap();
 
-            // Create space content index key
-            let mut index_key = [0u8; 24];
-            index_key[..16].copy_from_slice(&block_space_id_16);
-            index_key[16..].copy_from_slice(&action.timestamp.to_be_bytes());
+            // Unique space content index key: space || ts || content_hash
+            let index_key =
+                Self::space_index_key(&block_space_id_16, action.timestamp, &content_hash);
 
             self.space_content_index.insert(&index_key, &content_hash)?;
             // Also add to posts-only index
@@ -1750,10 +1832,9 @@ impl ChainStore {
             self.content_metadata_index
                 .insert(&content_hash, entry_data)?;
 
-            // Author content index: Key = author_pk(32) || timestamp(8) → content_hash
-            let mut author_key = [0u8; 40];
-            author_key[..32].copy_from_slice(&action.actor);
-            author_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+            // Author content index (unique author||ts||hash key)
+            let author_key =
+                Self::author_index_key(&action.actor, action.timestamp, &content_hash);
             self.author_content_index
                 .insert(&author_key, &content_hash)?;
 
@@ -1782,10 +1863,9 @@ impl ChainStore {
                 block_space_id_16
             };
 
-            // Create space content index key
-            let mut index_key = [0u8; 24];
-            index_key[..16].copy_from_slice(&space_id_16);
-            index_key[16..].copy_from_slice(&action.timestamp.to_be_bytes());
+            // Unique space content index key: space || ts || content_hash
+            let index_key =
+                Self::space_index_key(&space_id_16, action.timestamp, &content_hash);
 
             self.space_content_index.insert(&index_key, &content_hash)?;
 
@@ -1796,9 +1876,10 @@ impl ChainStore {
             // reply-tree walk cycle — same guard as the other two write paths.
             if action.parent_id.is_some() {
                 if parent_hash != content_hash {
-                    let mut reply_key = [0u8; 40];
-                    reply_key[..32].copy_from_slice(&parent_hash);
-                    reply_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+                    // Unique 72-byte key — this batch path had been left on the
+                    // legacy colliding 40-byte key when the live path was fixed.
+                    let reply_key =
+                        Self::reply_index_key(&parent_hash, action.timestamp, &content_hash);
                     self.replies_by_parent_index
                         .insert(&reply_key, &content_hash)?;
                 } else {
@@ -1824,10 +1905,9 @@ impl ChainStore {
             self.content_metadata_index
                 .insert(&content_hash, entry_data)?;
 
-            // Author content index: Key = author_pk(32) || timestamp(8) → content_hash
-            let mut author_key = [0u8; 40];
-            author_key[..32].copy_from_slice(&action.actor);
-            author_key[32..].copy_from_slice(&action.timestamp.to_be_bytes());
+            // Author content index (unique author||ts||hash key)
+            let author_key =
+                Self::author_index_key(&action.actor, action.timestamp, &content_hash);
             self.author_content_index
                 .insert(&author_key, &content_hash)?;
 
@@ -4146,6 +4226,148 @@ mod tests {
             replaces_pending: None,
             private: false,
         }
+    }
+
+    fn make_post_action(
+        space_actor: [u8; 32],
+        content: [u8; 32],
+        timestamp: u64,
+    ) -> crate::blocks::Action {
+        crate::blocks::Action {
+            action_type: crate::blocks::ActionType::Post,
+            actor: space_actor,
+            timestamp,
+            content_hash: Some(content),
+            parent_id: None,
+            pow_nonce: 0,
+            pow_work: 1,
+            pow_target: [0u8; 32],
+            signature: [0u8; 64],
+            emoji: None,
+            display_name: None,
+            media_refs: vec![],
+            replaces_pending: None,
+            private: false,
+        }
+    }
+
+    // Two posts in the SAME space in the SAME second must BOTH be listed.
+    // The legacy 24-byte (space || timestamp) key collided here and the later
+    // insert erased the earlier post from list_space_posts — sealed on-chain
+    // yet invisible (2026-07-24 mainnet wiki incident: 6 pages published in one
+    // second, listing showed 17 of 23). Same author on both actions also
+    // regression-tests the author_content_index unique keys.
+    #[test]
+    fn test_same_second_posts_both_listed() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let author = [0x77u8; 32];
+        let space_id = [0xDDu8; 32];
+        let space_16: [u8; 16] = space_id[..16].try_into().unwrap();
+        let ts = 1_784_930_076; // the actual colliding second from the incident
+        let post_a = make_post_action(author, [0xA1u8; 32], ts);
+        let post_b = make_post_action(author, [0xB2u8; 32], ts);
+
+        let content = ContentBlock::new(
+            [0xCCu8; 32],
+            space_id,
+            vec![post_a, post_b],
+            None,
+            ts,
+            crate::blocks::BranchPath::root(),
+        )
+        .unwrap();
+        store.put_content_block(&content).unwrap();
+
+        let posts = store.get_posts_for_space(&space_16, 100, 0).unwrap();
+        let hashes: Vec<[u8; 32]> = posts.iter().map(|(h, _)| *h).collect();
+        assert!(hashes.contains(&[0xA1u8; 32]), "first same-second post lost");
+        assert!(
+            hashes.contains(&[0xB2u8; 32]),
+            "second same-second post lost"
+        );
+
+        let by_author = store.get_content_by_author(&author, 100, 0, None).unwrap();
+        assert_eq!(
+            by_author.len(),
+            2,
+            "author index lost a same-second action"
+        );
+    }
+
+    // repair_content_indexes must resurrect posts erased by legacy-key
+    // collisions (re-derived from stored blocks) and drop superseded rows.
+    #[test]
+    fn test_repair_content_indexes_resurrects_collision_victims() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let author = [0x88u8; 32];
+        let space_id = [0xEEu8; 32];
+        let space_16: [u8; 16] = space_id[..16].try_into().unwrap();
+        let ts = 1_784_930_076;
+        let post_a = make_post_action(author, [0xA1u8; 32], ts);
+        let post_b = make_post_action(author, [0xB2u8; 32], ts);
+
+        let content = ContentBlock::new(
+            [0xCCu8; 32],
+            space_id,
+            vec![post_a, post_b],
+            None,
+            ts,
+            crate::blocks::BranchPath::root(),
+        )
+        .unwrap();
+        let content_hash = store.put_content_block(&content).unwrap();
+        let space = SpaceBlock {
+            space_id,
+            merkle_root: [0u8; 32],
+            content_block_hashes: vec![content_hash],
+            prev_space_hash: None,
+            timestamp: ts,
+            total_pow: 2,
+            content_block_count: 1,
+        };
+        let space_hash = store.put_space_block(&space).unwrap();
+        let mut root = create_test_root_block(0, [0u8; 32]);
+        root.space_block_hashes = vec![space_hash];
+        root.space_block_count = 1;
+        store.put_root_block_with_fork_resolution(&root).unwrap();
+
+        // Simulate the legacy on-disk state: wipe the (correct) rows and leave
+        // ONE legacy 24-byte row where the collision left only post_b visible.
+        for tree in [&store.space_content_index, &store.posts_by_space_index] {
+            let keys: Vec<_> = tree
+                .scan_prefix(space_16)
+                .map(|r| r.unwrap().0)
+                .collect();
+            for k in keys {
+                tree.remove(&k).unwrap();
+            }
+        }
+        let mut legacy_key = [0u8; 24];
+        legacy_key[..16].copy_from_slice(&space_16);
+        legacy_key[16..].copy_from_slice(&ts.to_be_bytes());
+        store
+            .posts_by_space_index
+            .insert(&legacy_key, &[0xB2u8; 32])
+            .unwrap();
+        assert_eq!(store.get_posts_for_space(&space_16, 100, 0).unwrap().len(), 1);
+
+        let repaired = store.repair_content_indexes().unwrap();
+        assert!(repaired >= 2, "repair should re-index both posts");
+
+        let posts = store.get_posts_for_space(&space_16, 100, 0).unwrap();
+        let hashes: Vec<[u8; 32]> = posts.iter().map(|(h, _)| *h).collect();
+        assert!(hashes.contains(&[0xA1u8; 32]), "victim not resurrected");
+        assert!(hashes.contains(&[0xB2u8; 32]), "survivor lost in repair");
+        // Legacy row purged: only unique 56-byte keys remain for this space.
+        for row in store.posts_by_space_index.scan_prefix(space_16) {
+            assert_eq!(row.unwrap().0.len(), 56, "legacy row survived repair");
+        }
+        // Marker makes the repair a no-op afterwards.
+        assert_eq!(store.repair_content_indexes().unwrap(), 0);
     }
 
     // Two replies to the SAME parent in the SAME second must BOTH be indexed.
