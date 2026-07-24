@@ -324,18 +324,20 @@ export function FeedCard({
         )}
       </div>
 
-      {/* Media Preview - Full gallery for expanded, thumbnails for compact */}
+      {/* Media - full-bleed hero carousel for expanded, indicator for compact */}
       {item.mediaRefs && item.mediaRefs.length > 0 && (
         compact ? (
           <div className="feed-card__media-indicator">
             <ImageThumbnailIndicator count={item.mediaRefs.length} />
           </div>
         ) : (
-          <ImageGallery
-            mediaRefs={item.mediaRefs}
-            thumbnailMode={false}
-            getMediaUrl={getMediaUrl}
-          />
+          <div className="feed-card__media-bleed">
+            <ImageGallery
+              mediaRefs={item.mediaRefs}
+              heroMode
+              getMediaUrl={getMediaUrl}
+            />
+          </div>
         )
       )}
 

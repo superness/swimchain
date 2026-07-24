@@ -122,6 +122,142 @@
 }
 
 /* ========================================
+   Hero mode — full-bleed swipe carousel
+   ======================================== */
+
+.image-hero {
+  position: relative;
+  /* Spacing is owned by the bleed wrapper (feed card / post detail) */
+  margin: 0;
+}
+
+.image-hero__track {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  background: var(--bg-tertiary, #1a1a1c);
+}
+
+.image-hero__track::-webkit-scrollbar {
+  display: none;
+}
+
+.image-hero__slide {
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 100%;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: block;
+}
+
+.image-hero__slide:focus-visible {
+  outline: 2px solid var(--accent-color, #5865f2);
+  outline-offset: -2px;
+}
+
+.image-hero__img {
+  display: block;
+  width: 100%;
+}
+
+/* Single image: full width, natural ratio, tall images capped around 4:5 */
+.image-hero--single .image-hero__img {
+  height: auto;
+  max-height: min(125vw, 640px);
+  object-fit: cover;
+}
+
+/* Multi image: every slide shares a 4:5 frame so the carousel height is
+   stable while swiping */
+.image-hero--multi .image-hero__slide {
+  aspect-ratio: 4 / 5;
+  max-height: min(125vw, 640px);
+  overflow: hidden;
+}
+
+.image-hero--multi .image-hero__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Full-width placeholder (failed load / encrypted) */
+.image-hero__placeholder {
+  aspect-ratio: 16 / 10;
+  max-height: min(125vw, 640px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary, #1a1a1c);
+  color: var(--text-tertiary, #666);
+  cursor: default;
+}
+
+.image-hero__placeholder.encrypted-locked {
+  color: var(--status-warning, #f0b232);
+}
+
+/* Loading shimmer */
+.image-hero--loading .image-hero__shimmer {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  max-height: min(125vw, 640px);
+  background: var(--bg-tertiary, #1a1a1c);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* n/N counter chip */
+.image-hero__counter {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px 10px;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Dot indicators (below the image, over the card background) */
+.image-hero__dots {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 2px;
+}
+
+.image-hero__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  padding: 0;
+  border: none;
+  background: var(--text-tertiary, #666);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.2s, background-color 0.2s;
+}
+
+.image-hero__dot--active {
+  background: var(--accent-color, #5865f2);
+  opacity: 1;
+  transform: scale(1.25);
+}
+
+/* ========================================
    Lightbox Overlay
    ======================================== */
 
