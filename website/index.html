@@ -188,7 +188,9 @@
     .hero { grid-template-columns: 1fr; gap: 44px; padding: 64px 0 60px; }
     .laws { grid-template-columns: 1fr; }
     .clients { grid-template-columns: repeat(2, 1fr); }
-    .split { grid-template-columns: 1fr; }
+    /* minmax(0,…) so the .term code block's unbreakable lines can't force
+       the column past the viewport (it scrolls internally instead) */
+    .split { grid-template-columns: minmax(0, 1fr); }
     ul.spec-list { columns: 1; }
   }
   @media (max-width: 640px) {
