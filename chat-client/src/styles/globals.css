@@ -164,6 +164,12 @@ html {
   font-size: 16px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Fixed-viewport app: the DOCUMENT must never scroll. body{overflow:hidden}
+     alone doesn't do it — with html left `visible` the viewport scrollbox uses
+     html's overflow, so any layout overflow (e.g. a long channel list) made
+     the page scrollable, and the message pane's scroll-to-latest then scrolled
+     the whole app off the top of the window. */
+  overflow: hidden;
 }
 
 body {

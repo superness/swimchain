@@ -76,6 +76,11 @@
 /* Channel list */
 .channel-list {
   flex: 1;
+  /* Without this a flex child's min-height:auto default keeps it from
+     shrinking below its content — with many channels the list grew to its
+     full content height and stretched the entire layout past the viewport
+     instead of scrolling internally. */
+  min-height: 0;
   overflow-y: auto;
   padding: 0 8px;
 }
