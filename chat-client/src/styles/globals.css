@@ -170,6 +170,11 @@ html {
      the page scrollable, and the message pane's scroll-to-latest then scrolled
      the whole app off the top of the window. */
   overflow: hidden;
+  /* Match the theme so elastic overscroll never flashes white, and disable
+     the rubber-band/scroll-chaining a trackpad or touch drag can still cause
+     even on a non-scrolling document. */
+  background-color: var(--color-bg-primary);
+  overscroll-behavior: none;
 }
 
 body {

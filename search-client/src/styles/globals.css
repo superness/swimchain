@@ -85,6 +85,16 @@ html {
   font-size: 16px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Match the app theme so elastic overscroll never flashes white, and turn
+     off the rubber-band/scroll-chaining itself: without this a trackpad or
+     touch drag past the scroll limit drags the whole UI and exposes the
+     default white canvas behind it. */
+  background-color: var(--color-bg-primary);
+  overscroll-behavior: none;
+}
+
+body {
+  overscroll-behavior: none;
 }
 
 body {
