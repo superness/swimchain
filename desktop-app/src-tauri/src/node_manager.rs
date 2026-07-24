@@ -102,6 +102,24 @@ impl NodeManager {
         self.process.is_some()
     }
 
+    /// Like `is_running`, but detects a child that has already exited (crashed
+    /// node): reaps it and returns false so callers can start a fresh one
+    /// instead of treating a dead sidecar as "already running" forever.
+    pub fn is_alive(&mut self) -> bool {
+        match self.process.as_mut() {
+            None => false,
+            Some(child) => match child.try_wait() {
+                Ok(Some(_exit)) => {
+                    self.process = None;
+                    false
+                }
+                Ok(None) => true,
+                // If we can't determine, assume alive (don't double-spawn).
+                Err(_) => true,
+            },
+        }
+    }
+
     pub fn rpc_port(&self) -> u16 {
         self.rpc_port
     }
@@ -119,7 +137,9 @@ impl NodeManager {
     }
 
     pub async fn start_with_password(&mut self, password: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if self.is_running() {
+        // is_alive (not is_running) so a crashed child is reaped and respawned
+        // rather than reported as an already-running node.
+        if self.is_alive() {
             return Ok(());
         }
 
