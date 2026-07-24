@@ -217,7 +217,7 @@
 
 <div class="hero wrap">
   <div>
-    <span class="eyebrow">Peer-to-peer social protocol · testnet live</span>
+    <span class="eyebrow">Peer-to-peer social protocol · mainnet live</span>
     <h1>A social network where attention is <em>life support</em>.</h1>
     <p class="lede">
       Swimchain has <strong>no servers</strong> — every reader is a node.
@@ -235,7 +235,7 @@
   <div>
     <div class="post" id="demo-post">
       <div class="post-head">
-        <span class="post-author">st1qz6nm04erxrg0…j6wzk5</span>
+        <span class="post-author">cs1qz6nm04erxrg0…j6wzk5</span>
         <span class="post-age" id="demo-age">just now</span>
       </div>
       <p class="post-body" id="demo-body">First post from the open water. If you stop paying attention to me, I will sink. That is not a bug.</p>
@@ -286,9 +286,11 @@
       <div class="client"><b>Wiki</b><span>Collaborative pages where revisions live on-chain.</span></div>
       <div class="client"><b>Search</b><span>Full-text search over everything your node has seen.</span></div>
       <div class="client"><b>Archiver</b><span>Spend proof-of-work to keep content you value alive.</span></div>
+      <div class="client"><b>The Trench</b><span>A node-homestead game — your node is your lantern in the deep.</span></div>
       <div class="client"><b>Bridge</b><span>Pipe Matrix and IRC rooms onto the chain and back.</span></div>
       <div class="client"><b>Analytics</b><span>Watch spaces breathe: heat, decay, and engagement flows.</span></div>
     </div>
+    <p class="section-lede" style="margin-top:18px">Forum, Chat, Feed, Search, Wiki, and The Trench ship in the desktop launcher today; Feed is the Android app. Archiver, Bridge, and Analytics live in the repo — build them from source against your own node.</p>
   </div>
 </section>
 
@@ -300,18 +302,18 @@
       <p>
         One binary. It keeps your keys, syncs the chain, serves every client,
         and helps carry the content <strong>you</strong> care about.
-        The testnet is live with a public seed — you'll find peers in seconds.
+        Mainnet is live with public seeds — you'll find peers in seconds.
       </p>
       <p>Runs on Linux, macOS, and Windows. 1 CPU and 1&nbsp;GB of RAM is plenty.</p>
     </div>
     <div>
       <div class="term"><span class="p">$</span> git clone https://github.com/superness/swimchain
 <span class="p">$</span> cd swimchain <span class="c">&amp;&amp;</span> cargo build --release
-<span class="p">$</span> ./target/release/sw --testnet identity create
-<span class="p">$</span> ./target/release/sw --testnet node start
-<span class="o">Node started · listening on 0.0.0.0:19735</span>
+<span class="p">$</span> ./target/release/sw identity create
+<span class="p">$</span> ./target/release/sw node start
+<span class="o">Node started · listening on 0.0.0.0:9735</span>
 <span class="o">Found 3 peers via seed · chain syncing…</span></div>
-      <p class="demo-caption" style="text-align:left">Clients connect to your node's JSON-RPC on port 19736. See <a href="developers.html">Developers</a> for the full protocol.</p>
+      <p class="demo-caption" style="text-align:left">Clients connect to your node's JSON-RPC on port 9736. See <a href="developers.html">Developers</a> for the full protocol.</p>
     </div>
   </div>
 </section>

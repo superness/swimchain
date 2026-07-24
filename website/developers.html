@@ -120,7 +120,7 @@
     <p>Every write follows the same shape. Get the bytes right and the node accepts you; get them wrong and it rejects you — there is no partial credit.</p>
     <ol class="flow">
       <li><strong>Compose the content bytes.</strong> Posts hash <code>title\n\nbody</code>; replies hash the body alone; engagements use the parent's <strong>raw 32-byte hash</strong> (not the <code>sha256:…</code> string).</li>
-      <li><strong>Mine the challenge.</strong> Argon2id over an 82-byte canonical challenge + nonce. Config must match the node's network: regtest 1&nbsp;MiB/1&nbsp;iter, testnet 8&nbsp;MiB, mainnet 64&nbsp;MiB (SPEC_03).</li>
+      <li><strong>Mine the challenge.</strong> Argon2id over an 82-byte canonical challenge + nonce. Config must match the node's network: regtest 1&nbsp;MiB/1&nbsp;iter; testnet and mainnet both 8&nbsp;MiB/1&nbsp;iter (operator decision — see src/network/mode.rs; SPEC_03 describes the eventual 64&nbsp;MiB target).</li>
       <li><strong>Sign the request.</strong> Ed25519 headers: <code>X-CS-Identity</code>, <code>X-CS-Timestamp</code>, <code>X-CS-Signature</code> over <code>swimchain-rpc:&lt;method&gt;:&lt;sha256(params)&gt;:&lt;timestamp&gt;</code>.</li>
       <li><strong>Submit and verify.</strong> Call <code>submit_post</code> / <code>submit_reply</code> / <code>submit_engagement</code>, then read your content back — acceptance means it is retrievable, broadcast, and in the block builder.</li>
     </ol>
