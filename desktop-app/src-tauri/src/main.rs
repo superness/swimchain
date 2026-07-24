@@ -81,14 +81,19 @@ async fn start_node(state: tauri::State<'_, AppState>, password: String) -> Resu
         *cache = None;
     }
 
-    // Delete old cookie file so we don't read a stale cookie
-    // The new node will write a fresh one when it starts
-    let cookie_path = state.current_data_dir().await.join(".cookie");
-    if cookie_path.exists() {
-        let _ = std::fs::remove_file(&cookie_path);
+    let mut manager = state.node_manager.lock().await;
+
+    // Only remove a stale on-disk cookie when we are actually going to spawn a
+    // fresh node. If a node is already running, its .cookie is LIVE — deleting
+    // it here (as this used to do unconditionally) left every retry/unlock
+    // after the first one waiting forever on a cookie nobody would rewrite.
+    if !manager.is_alive() {
+        let cookie_path = manager.data_dir_with_suffix().join(".cookie");
+        if cookie_path.exists() {
+            let _ = std::fs::remove_file(&cookie_path);
+        }
     }
 
-    let mut manager = state.node_manager.lock().await;
     manager.start_with_password(&password).await.map_err(|e| e.to_string())
 }
 
@@ -226,10 +231,23 @@ async fn get_rpc_auth(state: tauri::State<'_, AppState>) -> Result<String, Strin
     // Read the .cookie file from the current network's data dir
     let cookie_path = state.current_data_dir().await.join(".cookie");
 
-    // Wait for cookie file to exist (node may still be starting)
-    // Poll for up to 10 seconds
+    // Wait for the cookie to appear. The node writes it only once its RPC
+    // server is up, which on a first start after an upgrade can take well over
+    // 30s (full search reindex of the chain: observed 2707 items = 32s). The
+    // old 10s window made every such start look like "node not running".
+    // Poll for up to 2 minutes, but bail out early if the node process itself
+    // has died — no point making the user stare at a spinner for a corpse.
     let mut attempts = 0;
-    while !cookie_path.exists() && attempts < 20 {
+    while !cookie_path.exists() && attempts < 240 {
+        if attempts % 4 == 3 {
+            let mut manager = state.node_manager.lock().await;
+            if !manager.is_alive() {
+                return Err(
+                    "The node process exited before it finished starting - check node.log"
+                        .to_string(),
+                );
+            }
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         attempts += 1;
     }
