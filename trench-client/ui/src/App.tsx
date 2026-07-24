@@ -6,7 +6,10 @@ import {
   COST_FARM,
   COST_STOREHOUSE,
   COST_BEACON,
+  START_SALVAGE,
   HB_CAP_PER_DAY,
+  YIELD_LIT,
+  YIELD_DIM,
   chebyshev,
   expeditionRange,
   utcDay,
@@ -14,14 +17,33 @@ import {
   type ClaimState,
   type MapClaim,
   type StructureKind,
+  type Brightness,
 } from './lib/trenchEngine';
-import { TrenchMap } from './TrenchMap';
-import { Homestead } from './Homestead';
+import { TrenchMap, type TrenchMapHandle } from './TrenchMap';
+import { Homestead, type DescentHudMode } from './Homestead';
 import { HowToPlay } from './HowToPlay';
 import { CoachCard, hasSeenCoach, markCoachSeen, type CoachKind } from './CoachCard';
+import { hasSeenHint, markHintSeen } from './lib/teachHints';
 import { createAbyssAudio, getStoredMutePreference, type AbyssAudioHandle } from './lib/abyssAudio';
+import { prefersReducedMotion } from './lib/reducedMotion';
+import {
+  getDescentProgress,
+  setDescentProgress,
+  resolveDescentBeat,
+  findSuggestedSpot,
+  claimsCentroid,
+  hasSeenBeat7,
+  markBeat7Seen,
+  findNearestEligibleClaim,
+  type DescentBeat,
+} from './onboarding';
 
 const BUILD_COSTS: Record<StructureKind, number> = { farm: COST_FARM, storehouse: COST_STOREHOUSE, beacon: COST_BEACON };
+
+/** On-chain quantities are integer half-units; the descent's beat-5 copy
+ *  interpolates COST_FARM/START_SALVAGE the same way Homestead.tsx/
+ *  HowToPlay.tsx already display every other engine constant. */
+const half = (n: number): string => (n % 2 === 0 ? String(n / 2) : (n / 2).toFixed(1));
 
 /** Plain-language structure names for the ruin-ceremony toast (App-local —
  *  Homestead.tsx's BUILD_INFO isn't exported and this is the only place
@@ -70,14 +92,6 @@ function kindleStepIndex(phase: string | null): number {
   if (phase === 'Requesting sponsorship (proof-of-work)') return 1;
   return 0;
 }
-function prefersReducedMotion(): boolean {
-  try {
-    return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-  } catch {
-    return false;
-  }
-}
-
 /** Ambient abyss scene behind every screen: near-black depth gradient, sparse
  *  bioluminescent motes (teal + violet), a pressure vignette. Pure CSS, fixed
  *  and non-interactive — we're below the reef's light shafts, on the floor of
@@ -140,6 +154,71 @@ function BloomBeat({ onDone }: { onDone: () => void }) {
   );
 }
 
+/** The Guided Descent's own copy card — the SAME glass-float surface
+ *  CoachCard.tsx uses (`.tut-card`, shimmer and all — "one voice, one
+ *  surface," per the designer spec), rendered in the identical `.tut-float`
+ *  slot so the two never compete for space. Takes plain copy lines rather
+ *  than a `kind` lookup table since every beat's copy is bespoke (unlike
+ *  CoachCard's small fixed set). */
+function DescentCard({
+  kicker,
+  lines,
+  primaryLabel,
+  onPrimary,
+  primaryDisabled,
+  secondaryLabel,
+  onSecondary,
+}: {
+  kicker: string;
+  lines: string[];
+  primaryLabel?: string;
+  onPrimary?: () => void;
+  primaryDisabled?: boolean;
+  secondaryLabel?: string;
+  onSecondary?: () => void;
+}) {
+  return (
+    <div className="tut-card descent-card" role="note">
+      <span className="tut-shimmer" aria-hidden="true" />
+      <div className="tut-kicker">
+        <span className="tut-kicker-label">{kicker}</span>
+      </div>
+      <div className="tut-body">
+        {lines.map((l, i) => (
+          <p key={i} className={i === 0 ? undefined : 'fine'}>
+            {l}
+          </p>
+        ))}
+      </div>
+      {(primaryLabel || secondaryLabel) && (
+        <div className="tut-actions">
+          {primaryLabel && onPrimary && (
+            <button className="btn primary" disabled={primaryDisabled} onClick={onPrimary}>
+              {primaryLabel}
+            </button>
+          )}
+          {secondaryLabel && onSecondary && (
+            <button className="link" onClick={onSecondary}>
+              {secondaryLabel}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The small `skip the guided start` link every descent beat (1-6) carries,
+ *  fixed near the tut-float slot per the spec. One click ends the descent
+ *  for good — never shown once the descent is done or was never running. */
+function DescentSkipLink({ onSkip }: { onSkip: () => void }) {
+  return (
+    <button type="button" className="link descent-skip" onClick={onSkip}>
+      skip the guided start
+    </button>
+  );
+}
+
 export function App() {
   // ── boot: auth → node status → identity → sponsorship ──────────────────────
   const [auth, setAuth] = useState<RpcAuth | null>(null);
@@ -178,6 +257,77 @@ export function App() {
   const [showHelp, setShowHelp] = useState(false);
   const [coachTick, setCoachTick] = useState(0);
 
+  // ── The Guided Descent (designer spec §6): a camera-directed onboarding
+  //    sequence layered over the existing screens. `descentBeat` is `null`
+  //    until resolved against real chain state (see the resolver effect
+  //    below), `'done'` once finished/skipped, or the active beat 1-6.
+  //    `beat7Active` is the separate, later, gated expedition beat — it can
+  //    only ever fire once `descentBeat === 'done'`. ──────────────────────
+  const [descentBeat, setDescentBeat] = useState<DescentBeat | 'done' | null>(null);
+  const [beat7Active, setBeat7Active] = useState(false);
+  const [beat7Target, setBeat7Target] = useState<MapClaim | null>(null);
+  const [beat3HeartbeatSeen, setBeat3HeartbeatSeen] = useState(false);
+  const [beat4Ready, setBeat4Ready] = useState(false); // dwell gate for beat 4's "Got it"
+  const [beat4Reveal, setBeat4Reveal] = useState(false); // staggered distant-pin twinkle-in window
+  const [beat5Puff, setBeat5Puff] = useState(false); // silt-puff wave on submit
+  const [beat6Reveal, setBeat6Reveal] = useState(false);
+  const [beat6FlashStructIdx, setBeat6FlashStructIdx] = useState<number | null>(null);
+  const [beat6FlashBiomass, setBeat6FlashBiomass] = useState(false);
+  const [beat7Flash, setBeat7Flash] = useState<string | null>(null);
+  const descentInitRef = useRef(false);
+  const descentTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const mapRef = useRef<TrenchMapHandle>(null);
+  // Async handlers (onFound's catch, fired after an `await`) need the LATEST
+  // beat, not whatever was captured when the callback was created — same
+  // "ref mirrors state for async reads" pattern as `ownStateRef` above.
+  const descentBeatRef = useRef<DescentBeat | 'done' | null>(null);
+  useEffect(() => {
+    descentBeatRef.current = descentBeat;
+  }, [descentBeat]);
+  // Beat 7: which claim we're mid-watch on after sending its expedition, so
+  // the "brighten on landing" flash (spec's accepted v1 for the mote trail)
+  // can fire once that specific move actually confirms.
+  const beat7WatchRef = useRef<{ prefix: string; claimId: string } | null>(null);
+
+  const clearDescentTimeout = useCallback(() => {
+    clearTimeout(descentTimeoutRef.current);
+  }, []);
+
+  /** Beats 2 and 5's no-spinner rule needs a failure path (spec's build-risk
+   *  note #2): if the real on-chain wait never resolves within ~20s, stop
+   *  holding the cinematic — fall back to whatever the normal error/loading
+   *  surface already shows. Deliberately does NOT persist 'done' — this is a
+   *  pause, not a skip, so a reload can still resolve correctly against
+   *  chain state if the move actually did land after all. */
+  const pauseDescent = useCallback(() => {
+    clearDescentTimeout();
+    setDescentBeat('done');
+  }, [clearDescentTimeout]);
+
+  const armDescentTimeout = useCallback(
+    (ms: number) => {
+      clearDescentTimeout();
+      descentTimeoutRef.current = setTimeout(pauseDescent, ms);
+    },
+    [clearDescentTimeout, pauseDescent]
+  );
+
+  /** Ends the descent for good (spec: "One click ends the descent, restores
+   *  full HUD/map, marks done"). Available on every beat 1-6. */
+  const skipDescent = useCallback(() => {
+    clearDescentTimeout();
+    setDescentProgress('done');
+    setDescentBeat('done');
+    if (ownState) {
+      mapRef.current?.flyTo(ownState.header.x, ownState.header.y, 1, prefersReducedMotion() ? 0 : 600);
+    }
+  }, [clearDescentTimeout, ownState]);
+
+  const completeBeat = useCallback((n: DescentBeat) => {
+    setDescentProgress(n);
+  }, []);
+
   // ── landing invitation gate (visual only — every effect above already
   //    resolves in the background regardless; this just decides what renders) ──
   const [landingDismissed, setLandingDismissed] = useState(false);
@@ -188,6 +338,13 @@ export function App() {
   const [claimBloom, setClaimBloom] = useState(false);
   const [ruinFlashIdx, setRuinFlashIdx] = useState<Set<number>>(new Set());
   const [tierShift, setTierShift] = useState(false);
+
+  // ── Teach-by-playing item 4 (beacon range ring): the own-claim expedition
+  //    range ring shows whenever a claim is selected, the beacon build-card
+  //    is hovered, a beacon just landed, or beat 7 is active — see the
+  //    `rangeRingVisible` derivation below. ────────────────────────────────
+  const [beaconHovered, setBeaconHovered] = useState(false);
+  const [beaconJustBuilt, setBeaconJustBuilt] = useState(false);
 
   // ── kindling ceremony bloom beat: shown once, only right after actually
   //    going through the sponsor-gate ceremony (never on a return visit that
@@ -611,6 +768,21 @@ export function App() {
       setTierShift(true);
       audioRef.current?.chime();
       timers.push(setTimeout(() => setTierShift(false), 1600)); // matches .tier-shift's animation duration
+
+      // Teach-by-playing item 5 (first tier-change note, persisted): the
+      // ceremony above already plays every time; the first time only, also
+      // append a diegetic notice explaining WHAT changed (brighter → faster
+      // farms; dimmer → faster decay) — connects beats → brightness → yield
+      // without the guide's table prose.
+      if (!hasSeenHint('trench-hint-tier')) {
+        markHintSeen('trench-hint-tier');
+        const tierOrder: Record<Brightness, number> = { DARK: 0, DIM: 1, LIT: 2 };
+        const brightened = tierOrder[ownState.brightness] > tierOrder[prev.brightness];
+        const tierMsg = brightened
+          ? `Brighter — farms yield ${half(ownState.brightness === 'LIT' ? YIELD_LIT : YIELD_DIM)}/day now.`
+          : 'Dimmer — the abyss wears faster.';
+        setNotice((p) => (p ? `${p} · ${tierMsg}` : tierMsg));
+      }
     }
 
     return () => timers.forEach(clearTimeout);
@@ -618,6 +790,10 @@ export function App() {
 
   // ── founding-flow derivations ────────────────────────────────────────────────
   const acceptedClaims = useMemo(() => mapClaims.filter((c) => c.accepted), [mapClaims]);
+  // Beat 4's camera target ("the midpoint of own claim and the world
+  // centroid") and beat 1's suggested-spot search both need the centroid of
+  // every accepted claim — origin for a genuinely empty map.
+  const worldCentroid = useMemo(() => claimsCentroid(acceptedClaims.map((c) => c.header)), [acceptedClaims]);
   const spacingOk = useMemo(() => {
     if (!foundPos) return false;
     return acceptedClaims.every((c) => chebyshev(c.header.x, c.header.y, foundPos.x, foundPos.y) >= CLAIM_MIN_SPACING);
@@ -680,19 +856,282 @@ export function App() {
   // ── live display projection: never banks, just keeps the HUD fresh ─────────
   const view = useMemo(() => (ownState ? project(ownState, Date.now()) : null), [ownState]);
 
+  // ── Teach-by-playing item 4 (beacon range ring) trigger ─────────────────
+  const rangeRingVisible = !!selectedClaimId || beat7Active || beaconHovered || beaconJustBuilt;
+
   // ── which coach card (if any) occupies the one floating slot ───────────────
+  // `expedition` was retired — beat 7 replaces it entirely (see CoachCard.tsx).
   const coachKind = useMemo<CoachKind | null>(() => {
     if (moveStatus) return null; // never stack the move-float and a coach card
     if (!myClaim && mapLoaded && sponsored) return hasSeenCoach('found') ? null : 'found';
-    if (myClaim && ownState) {
-      if (!hasSeenCoach('lantern')) return 'lantern';
-      if (selectedClaimId && selectedClaimId !== myClaim.claimId && !hasSeenCoach('expedition')) return 'expedition';
-    }
+    if (myClaim && ownState && !hasSeenCoach('lantern')) return 'lantern';
     return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [moveStatus, myClaim, mapLoaded, sponsored, ownState, selectedClaimId, coachTick]);
+  }, [moveStatus, myClaim, mapLoaded, sponsored, ownState, coachTick]);
   if (coachKind) lastCoachRef.current = coachKind;
   const slotCoach = coachKind ?? lastCoachRef.current;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // The Guided Descent (designer spec §6) — App drives every beat from REAL
+  // state transitions; onboarding.ts only supplies persistence + pure
+  // helpers (see that file's header). Kept as one contiguous block so the
+  // whole sequence reads beat-by-beat rather than scattered across the file.
+  // ══════════════════════════════════════════════════════════════════════
+  const inDescent = descentBeat !== null && descentBeat !== 'done';
+
+  // ── resolve the entry beat, once, against real chain state — chain state
+  //    wins over stored progress (spec's binding rule). Gated on the SAME
+  //    prerequisites the founding/main-game render branches already require,
+  //    so descentBeat is always resolved by the time either branch mounts. ──
+  useEffect(() => {
+    if (descentInitRef.current) return;
+    if (!sponsored || !mapLoaded) return;
+    if (myClaim && !ownState) return; // wait for ownState so hasStructure is accurate
+    descentInitRef.current = true;
+    const stored = getDescentProgress();
+    const hasClaim = !!myClaim;
+    const hasStructure = !!(ownState && ownState.structures.length > 0);
+    setDescentBeat(resolveDescentBeat(stored, hasClaim, hasStructure));
+  }, [sponsored, mapLoaded, myClaim, ownState]);
+
+  // ── Beat 1: the game pre-picks open ground near the claim centroid
+  //    (expanding-ring search) and seeds `foundPos` with it exactly once
+  //    per beat-1 entry — the player may still drag/click elsewhere, which
+  //    just overwrites `foundPos` normally via the existing founding flow. ──
+  const suggestedSpot = useMemo(() => {
+    if (descentBeat !== 1) return null;
+    return findSuggestedSpot(acceptedClaims.map((c) => c.header), worldCentroid.x, worldCentroid.y);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [descentBeat]);
+  const suggestedSeedRef = useRef(false);
+  useEffect(() => {
+    if (descentBeat === 1 && suggestedSpot) {
+      if (!suggestedSeedRef.current) {
+        suggestedSeedRef.current = true;
+        setFoundPos((prev) => prev ?? suggestedSpot);
+      }
+    } else {
+      suggestedSeedRef.current = false;
+    }
+  }, [descentBeat, suggestedSpot]);
+  useEffect(() => {
+    if (descentBeat === 1) nameInputRef.current?.focus();
+  }, [descentBeat]);
+
+  // ── camera per beat (spec's Camera column) — one central effect, since
+  //    each beat's tween is a one-shot reaction to descentBeat CHANGING, not
+  //    to every downstream state ripple (ownState polls every 5s and must
+  //    never re-trigger a tween mid-beat). Beats 4 and 6 additionally arm
+  //    their own timers (dwell gate, reveal window, highlight sequence). ──
+  useEffect(() => {
+    if (descentBeat === null || descentBeat === 'done') return;
+    const reduced = prefersReducedMotion();
+    const dur = (ms: number) => (reduced ? 0 : ms);
+    switch (descentBeat) {
+      case 1: {
+        const spot = foundPos ?? suggestedSpot ?? { x: 0, y: 0 };
+        mapRef.current?.flyTo(spot.x, spot.y, 1.6, dur(600));
+        return;
+      }
+      case 2: {
+        const spot = foundPos ?? { x: 0, y: 0 };
+        mapRef.current?.flyTo(spot.x, spot.y, 2.2, dur(4000)); // open-ended push, capped at 4s then holds
+        armDescentTimeout(20_000); // no-spinner failure path (spec build-risk #2)
+        return;
+      }
+      case 3: {
+        if (ownState) mapRef.current?.flyTo(ownState.header.x, ownState.header.y, 2.2, dur(200));
+        return;
+      }
+      case 4: {
+        if (ownState) {
+          const midX = (ownState.header.x + worldCentroid.x) / 2;
+          const midY = (ownState.header.y + worldCentroid.y) / 2;
+          mapRef.current?.flyTo(midX, midY, 0.6, dur(1600));
+        }
+        setBeat4Ready(false);
+        setBeat4Reveal(true);
+        const dwellMs = dur(1200);
+        const dwellTimer = setTimeout(() => setBeat4Ready(true), dwellMs);
+        const revealTimer = setTimeout(() => setBeat4Reveal(false), dur(1600) + 1200);
+        return () => {
+          clearTimeout(dwellTimer);
+          clearTimeout(revealTimer);
+        };
+      }
+      case 5: {
+        if (ownState) mapRef.current?.flyTo(ownState.header.x, ownState.header.y, 1.4, dur(600));
+        armDescentTimeout(20_000); // no-spinner failure path (spec build-risk #2)
+        return;
+      }
+      case 6: {
+        if (ownState) mapRef.current?.flyTo(ownState.header.x, ownState.header.y, 1, dur(600));
+        setBeat6Reveal(true);
+        const base = dur(600) + 600; // let the panel stagger (last panel ~480ms) settle first
+        const newestIdx = ownState && ownState.structures.length > 0 ? ownState.structures.length - 1 : null;
+        const t1 = setTimeout(() => setBeat6FlashStructIdx(newestIdx), base);
+        const t2 = setTimeout(() => setBeat6FlashStructIdx(null), base + 900);
+        const t3 = setTimeout(() => setBeat6FlashBiomass(true), base + 900);
+        const t4 = setTimeout(() => setBeat6FlashBiomass(false), base + 1800);
+        return () => {
+          clearTimeout(t1);
+          clearTimeout(t2);
+          clearTimeout(t3);
+          clearTimeout(t4);
+        };
+      }
+      default:
+        return;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [descentBeat]);
+
+  // ── Beat 1 → 2: handled inline inside onFound (the transition must
+  //    happen at CLICK time, not after the async submit resolves — beat 2
+  //    plays THROUGH the wait). ──────────────────────────────────────────
+
+  // ── Beat 2 → 3: real on-chain event, `myClaim` becoming truthy. ─────────
+  useEffect(() => {
+    if (descentBeatRef.current === 2 && myClaim) {
+      clearDescentTimeout();
+      completeBeat(2);
+      setDescentBeat(3);
+    }
+  }, [myClaim, completeBeat, clearDescentTimeout]);
+
+  // ── Beat 3: gate "Got it" on a real heartbeat actually having landed. ────
+  useEffect(() => {
+    if (descentBeat === 3 && ownState?.moves.some((m) => m.op === 'heartbeat')) {
+      setBeat3HeartbeatSeen(true);
+    }
+    if (descentBeat !== 3) setBeat3HeartbeatSeen(false);
+  }, [descentBeat, ownState]);
+  const onBeat3GotIt = useCallback(() => {
+    completeBeat(3);
+    markCoachSeen('lantern');
+    setDescentBeat(4);
+  }, [completeBeat]);
+
+  // ── Beat 4: "Got it" only after the dwell (armed by the camera effect). ──
+  const onBeat4GotIt = useCallback(() => {
+    completeBeat(4);
+    setDescentBeat(5);
+  }, [completeBeat]);
+
+  // ── Beat 5 → 6: real on-chain event, the structure appearing in the
+  //    folded own state (onBuild fires the silt-puff/flavor at submit time
+  //    — see below). ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (descentBeatRef.current === 5 && ownState && ownState.structures.length > 0) {
+      clearDescentTimeout();
+      completeBeat(5);
+      setDescentBeat(6);
+    }
+  }, [ownState, completeBeat, clearDescentTimeout]);
+
+  // ── Beat 6 → done: player's own "Got it." ────────────────────────────────
+  const onBeat6GotIt = useCallback(() => {
+    completeBeat(6);
+    setDescentBeat('done');
+    setBeat6Reveal(false);
+  }, [completeBeat]);
+
+  // ── Beat 7 (gated later sequence): fires at most once, after the main
+  //    descent is complete/skipped, on the poll where its trigger
+  //    conditions first all hold — never mid-move. ─────────────────────────
+  useEffect(() => {
+    if (descentBeat !== 'done') return;
+    if (beat7Active || hasSeenBeat7()) return;
+    if (!ownState || moveStatus) return;
+    if (neighborsInReach === null || neighborsInReach < 1) return;
+    const target = findNearestEligibleClaim(ownState, acceptedClaims);
+    if (!target) return;
+    setBeat7Target(target);
+    setBeat7Active(true);
+    setSelectedClaimId(target.claimId);
+    mapRef.current?.flyTo(target.header.x, target.header.y, 1.4, prefersReducedMotion() ? 0 : 800);
+  }, [descentBeat, beat7Active, ownState, moveStatus, neighborsInReach, acceptedClaims]);
+
+  const onBeat7NotNow = useCallback(() => {
+    markBeat7Seen();
+    setBeat7Active(false);
+    setBeat7Target(null);
+  }, []);
+
+  // "Brighten on landing" (spec's accepted v1 for the beat-7 mote trail):
+  // once the watched expedition's day-gate entry actually appears in the
+  // fold, flash that target pin briefly.
+  useEffect(() => {
+    const w = beat7WatchRef.current;
+    if (!w || !ownState) return;
+    if (ownState.expeditionDays.get(w.prefix) === utcDay(Date.now())) {
+      beat7WatchRef.current = null;
+      setBeat7Flash(w.claimId);
+      setTimeout(() => setBeat7Flash(null), 1400);
+    }
+  }, [ownState]);
+
+  // The move-float spinner is suppressed during beats 2 and 5 — the
+  // cinematic (claim-wave bloom / silt-puff) IS the feedback (spec's
+  // "on-chain waits are scenes, never spinners" rule).
+  const suppressMoveFloat = descentBeat === 2 || descentBeat === 5;
+
+  /** Copy + primary/secondary actions for the descent's own tut-card, per
+   *  beat — `null` when no beat is active (the caller only renders this
+   *  while `inDescent` anyway, but keeping it total avoids an assertion). */
+  const descentCardProps = (): {
+    kicker: string;
+    lines: string[];
+    primaryLabel?: string;
+    onPrimary?: () => void;
+    primaryDisabled?: boolean;
+  } | null => {
+    switch (descentBeat) {
+      case 1:
+        return { kicker: '🏮 The guided descent', lines: ['This ground is open. Take it — or drag to choose your own.'] };
+      case 2:
+        return { kicker: '🏮 The guided descent', lines: ['A light blooms in the lightless deep.'] };
+      case 3:
+        return {
+          kicker: '🏮 The guided descent',
+          lines: ['Your lantern pulses on its own — each pulse feeds your brightness.'],
+          primaryLabel: 'Got it',
+          onPrimary: onBeat3GotIt,
+          primaryDisabled: !beat3HeartbeatSeen,
+        };
+      case 4:
+        return {
+          kicker: '🏮 The guided descent',
+          lines: ['The abyss. Other lanterns burn out there. Yours is one now.'],
+          primaryLabel: 'Got it',
+          onPrimary: onBeat4GotIt,
+          primaryDisabled: !beat4Ready,
+        };
+      case 5:
+        return {
+          kicker: '🏮 The guided descent',
+          lines: [`Build a kelp farm — ${half(COST_FARM)} of your ${half(START_SALVAGE)} salvage.`],
+        };
+      case 6:
+        return {
+          kicker: '🏮 The guided descent',
+          lines: ["That's the game: farms grow while you're lit. Come back tomorrow."],
+          primaryLabel: 'Got it',
+          onPrimary: onBeat6GotIt,
+        };
+      default:
+        return null;
+    }
+  };
+  const dcard = inDescent ? descentCardProps() : null;
+
+  const descentMode: DescentHudMode | null = useMemo(() => {
+    if (descentBeat === 3) return { onlyLantern: true };
+    if (descentBeat === 5) return { onlyBuildFarmOf: true };
+    if (descentBeat === 6) return { revealStagger: beat6Reveal, flashStructureIdx: beat6FlashStructIdx, flashBiomass: beat6FlashBiomass };
+    if (beat7Active) return { dimExceptSelected: true, highlightExpedition: true };
+    return null;
+  }, [descentBeat, beat6Reveal, beat6FlashStructIdx, beat6FlashBiomass, beat7Active]);
 
   // ── action handlers ───────────────────────────────────────────────────────
   const doMove = useCallback(
@@ -721,6 +1160,23 @@ export function App() {
     (kind: StructureKind) => {
       const label = kind === 'farm' ? 'Building the kelp farm' : kind === 'storehouse' ? 'Building the storehouse' : 'Raising the beacon';
       audioRef.current?.thock();
+      if (kind === 'beacon') {
+        // Teach-by-playing item 4: ~3s of the range ring right as a beacon
+        // build is submitted — the range-formula prose the guide used to
+        // carry twice, replaced by geometry.
+        setBeaconJustBuilt(true);
+        setTimeout(() => setBeaconJustBuilt(false), 3000);
+      }
+      if (descentBeatRef.current === 5 && kind === 'farm') {
+        // Beat 5's directed build: a single silt-puff wave on the own pin,
+        // riding alongside the fixed "Kelp roots test the silt…" flavor
+        // line (spec's promoted copy for this beat — not a random pick from
+        // the normal FLAVOR.build pool) instead of the usual spinner.
+        setBeat5Puff(true);
+        setTimeout(() => setBeat5Puff(false), 2200);
+        void doMove(`build ${kind}`, label, ['Kelp roots test the silt…']);
+        return;
+      }
       void doMove(`build ${kind}`, label, FLAVOR.build);
     },
     [doMove]
@@ -753,13 +1209,30 @@ export function App() {
         /* best-effort hosting request */
       });
     }
-  }, [doMove, selectedEntry, auth]);
+    // Beat 7's advance is "player SENDS the expedition" — the click itself,
+    // not waiting for it to land (the target-pin brighten, watched below,
+    // happens separately once the real move actually confirms).
+    if (beat7Active && beat7Target?.claimId === selectedEntry.claimId) {
+      markBeat7Seen();
+      beat7WatchRef.current = { prefix: targetPrefix(selectedEntry.claimId), claimId: selectedEntry.claimId };
+      setBeat7Active(false);
+      setBeat7Target(null);
+    }
+  }, [doMove, selectedEntry, auth, beat7Active, beat7Target]);
 
   const onSelectClaim = useCallback((claimId: string) => setSelectedClaimId((prev) => (prev === claimId ? null : claimId)), []);
 
   const onFound = useCallback(async () => {
     if (!auth || !identity || !foundPos || !spacingOk || !foundName.trim() || busyRef.current) return;
     busyRef.current = true;
+    // Beat 1 → 2 happens HERE, at click time, not after the submit resolves
+    // — beat 2's whole job is to play THROUGH the real on-chain wait.
+    const startingBeat1 = descentBeatRef.current === 1;
+    if (startingBeat1) {
+      completeBeat(1);
+      markCoachSeen('found');
+      setDescentBeat(2);
+    }
     setMoveStatus({ label: 'Founding your homestead', flavor: pickFlavor(FLAVOR.found) });
     try {
       await foundClaim(auth, identity, foundName.trim(), foundPos.x, foundPos.y);
@@ -772,11 +1245,15 @@ export function App() {
       setTimeout(() => setClaimBloom(false), 2200);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'the ground would not hold — try again');
+      // Beat 2's no-spinner rule needs a failure path (spec build-risk #2):
+      // an error falls back to the normal error banner immediately, rather
+      // than waiting out the 20s cinematic-cap timer.
+      if (descentBeatRef.current === 2) pauseDescent();
     } finally {
       busyRef.current = false;
       setMoveStatus(null);
     }
-  }, [auth, identity, foundPos, spacingOk, foundName, refreshMap]);
+  }, [auth, identity, foundPos, spacingOk, foundName, refreshMap, completeBeat, pauseDescent]);
 
   // ── shared header ────────────────────────────────────────────────────────
   const header = identity && (
@@ -898,6 +1375,7 @@ export function App() {
             <div className="board-col">
               <div className="board-stage map-stage">
                 <TrenchMap
+                  ref={mapRef}
                   claims={mapClaims}
                   loadedStates={loadedStates}
                   ownClaimId={null}
@@ -906,17 +1384,23 @@ export function App() {
                   foundingMode
                   previewPos={foundPos}
                   previewOk={spacingOk}
+                  previewSuggested={descentBeat === 1}
                   onPickFoundingSpot={(x, y) => setFoundPos({ x, y })}
+                  panDisabled={descentBeat === 2}
+                  wayfindingHidden={inDescent}
                 />
-                <div className={`move-float${moveStatus ? ' open' : ''}`} aria-live="polite">
-                  {moveStatus && (
+                <div className={`move-float${moveStatus && !suppressMoveFloat ? ' open' : ''}`} aria-live="polite">
+                  {moveStatus && !suppressMoveFloat && (
                     <span className="move-float-body">
                       <span className="spinner sm" /> {moveStatus.label} — <em>{moveStatus.flavor}</em>
                     </span>
                   )}
                 </div>
-                <div className={`tut-float${coachKind && !showHelp ? ' open' : ''}`} aria-live="polite">
-                  {slotCoach && !moveStatus && !showHelp && (
+                <div className={`tut-float${(inDescent || (coachKind && !showHelp)) ? ' open' : ''}`} aria-live="polite">
+                  {inDescent && !showHelp && dcard && (
+                    <DescentCard kicker={dcard.kicker} lines={dcard.lines} primaryLabel={dcard.primaryLabel} onPrimary={dcard.onPrimary} primaryDisabled={dcard.primaryDisabled} />
+                  )}
+                  {!inDescent && slotCoach && !moveStatus && !showHelp && (
                     <CoachCard
                       kind={slotCoach}
                       onGotIt={() => {
@@ -926,35 +1410,40 @@ export function App() {
                     />
                   )}
                 </div>
+                {inDescent && <DescentSkipLink onSkip={skipDescent} />}
               </div>
             </div>
-            <aside className="status">
-              <div className="panel-title fine">Found your homestead</div>
-              <input
-                className="name-input"
-                type="text"
-                placeholder="Name your claim"
-                maxLength={40}
-                value={foundName}
-                onChange={(e) => setFoundName(e.target.value)}
-              />
-              <p className="fine">
-                {foundPos
-                  ? `(${foundPos.x}, ${foundPos.y}) — ${spacingOk ? 'clear ground' : `too close to a neighbor (need ≥${CLAIM_MIN_SPACING})`}`
-                  : 'Click the map to choose a spot.'}
-              </p>
-              {acceptedClaims.length > 0 && (
-                <p className="fine muted">Settle near the lights, or claim the dark.</p>
-              )}
-              <button
-                className="btn primary"
-                disabled={!foundPos || !spacingOk || !foundName.trim() || !!moveStatus}
-                onClick={onFound}
-              >
-                Found claim
-              </button>
-              <p className="fine chain-note">Takes a few moments.</p>
-            </aside>
+            {descentBeat !== 2 && (
+              <aside className="status">
+                <div className="panel-title fine">Found your homestead</div>
+                <input
+                  ref={nameInputRef}
+                  className="name-input"
+                  type="text"
+                  placeholder="Name your claim"
+                  maxLength={40}
+                  value={foundName}
+                  onChange={(e) => setFoundName(e.target.value)}
+                />
+                <p className="fine">
+                  {/* Teach-by-playing item 3: the map's spacing ring now
+                      shows the CLAIM_MIN_SPACING rule geometrically — the
+                      old "(need ≥N)" prose clause is redundant with it. */}
+                  {foundPos ? `(${foundPos.x}, ${foundPos.y}) — ${spacingOk ? 'clear ground' : 'too close'}` : 'Click the map to choose a spot.'}
+                </p>
+                {acceptedClaims.length > 0 && !inDescent && (
+                  <p className="fine muted">Settle near the lights, or claim the dark.</p>
+                )}
+                <button
+                  className="btn primary"
+                  disabled={!foundPos || !spacingOk || !foundName.trim() || !!moveStatus}
+                  onClick={onFound}
+                >
+                  Found claim
+                </button>
+                <p className="fine chain-note">Takes a few moments.</p>
+              </aside>
+            )}
           </div>
         </section>
         {showHelp && <HowToPlay onClose={() => setShowHelp(false)} />}
@@ -988,22 +1477,47 @@ export function App() {
           <div className="board-col">
             <div className="board-stage map-stage">
               <TrenchMap
+                ref={mapRef}
                 claims={mapClaims}
                 loadedStates={loadedStates}
                 ownClaimId={ownState.claimId}
                 selectedClaimId={selectedClaimId}
                 onSelect={onSelectClaim}
                 justFounded={claimBloom}
+                buildPuff={beat5Puff}
+                revealDistant={beat4Reveal}
+                flashClaimId={beat7Flash}
+                rangeRingVisible={rangeRingVisible}
+                panDisabled={descentBeat === 3 || descentBeat === 4}
+                selectionDisabled={descentBeat === 3 || descentBeat === 4 || descentBeat === 5}
+                wayfindingHidden={descentBeat === 1 || descentBeat === 2 || descentBeat === 3 || descentBeat === 5}
               />
-              <div className={`move-float${moveStatus ? ' open' : ''}`} aria-live="polite">
-                {moveStatus && (
+              <div className={`move-float${moveStatus && !suppressMoveFloat ? ' open' : ''}`} aria-live="polite">
+                {moveStatus && !suppressMoveFloat && (
                   <span className="move-float-body">
                     <span className="spinner sm" /> {moveStatus.label} — <em>{moveStatus.flavor}</em>
                   </span>
                 )}
               </div>
-              <div className={`tut-float${coachKind && !showHelp ? ' open' : ''}`} aria-live="polite">
-                {slotCoach && !moveStatus && !showHelp && (
+              <div className={`tut-float${(inDescent || beat7Active || (coachKind && !showHelp)) ? ' open' : ''}`} aria-live="polite">
+                {inDescent && !showHelp && dcard && (
+                  <DescentCard
+                    kicker={dcard.kicker}
+                    lines={dcard.lines}
+                    primaryLabel={dcard.primaryLabel}
+                    onPrimary={dcard.onPrimary}
+                    primaryDisabled={dcard.primaryDisabled}
+                  />
+                )}
+                {!inDescent && beat7Active && !showHelp && (
+                  <DescentCard
+                    kicker="🌊 The guided descent"
+                    lines={['A neighbor in reach.', 'Visit them — salvage for you, light for them.']}
+                    secondaryLabel="not now"
+                    onSecondary={onBeat7NotNow}
+                  />
+                )}
+                {!inDescent && !beat7Active && slotCoach && !moveStatus && !showHelp && (
                   <CoachCard
                     kind={slotCoach}
                     onGotIt={() => {
@@ -1013,35 +1527,40 @@ export function App() {
                   />
                 )}
               </div>
+              {inDescent && <DescentSkipLink onSkip={skipDescent} />}
             </div>
           </div>
-          <aside className="status">
-            <Homestead
-              connected={connected}
-              neighborsInReach={neighborsInReach}
-              ownState={ownState}
-              viewBiomass={view.biomass}
-              viewStructures={view.structures}
-              viewBrightness={view.brightness}
-              lanternPulse={lanternPulse}
-              tierShift={tierShift}
-              ruinFlashIdx={ruinFlashIdx}
-              busy={!!moveStatus}
-              sessionStartMs={sessionStartRef.current}
-              costs={BUILD_COSTS}
-              loadedStates={loadedStates}
-              selectedClaimId={selectedClaimId}
-              selectedEntry={selectedEntry}
-              selectedState={selectedState}
-              selectedDist={selectedDist}
-              expeditionEligible={expedition.eligible}
-              expeditionReason={expedition.reason}
-              onBuild={onBuild}
-              onTend={onTend}
-              onHarvest={onHarvest}
-              onExpedition={onExpedition}
-            />
-          </aside>
+          {descentBeat !== 4 && (
+            <aside className="status">
+              <Homestead
+                connected={connected}
+                neighborsInReach={neighborsInReach}
+                ownState={ownState}
+                viewBiomass={view.biomass}
+                viewStructures={view.structures}
+                viewBrightness={view.brightness}
+                lanternPulse={lanternPulse}
+                tierShift={tierShift}
+                ruinFlashIdx={ruinFlashIdx}
+                busy={!!moveStatus}
+                sessionStartMs={sessionStartRef.current}
+                costs={BUILD_COSTS}
+                loadedStates={loadedStates}
+                selectedClaimId={selectedClaimId}
+                selectedEntry={selectedEntry}
+                selectedState={selectedState}
+                selectedDist={selectedDist}
+                expeditionEligible={expedition.eligible}
+                expeditionReason={expedition.reason}
+                onBuild={onBuild}
+                onTend={onTend}
+                onHarvest={onHarvest}
+                onExpedition={onExpedition}
+                onBeaconHoverChange={setBeaconHovered}
+                descentMode={descentMode}
+              />
+            </aside>
+          )}
         </div>
       </section>
       {showHelp && <HowToPlay onClose={() => setShowHelp(false)} />}
