@@ -1,5 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { chebyshev, type Brightness, type ClaimState, type MapClaim } from './lib/trenchEngine';
+import { chebyshev, expeditionRange, CLAIM_MIN_SPACING, type Brightness, type ClaimState, type MapClaim } from './lib/trenchEngine';
 import { prefersReducedMotion } from './lib/reducedMotion';
 
 /** Map-units-to-pixels scale, per the brief — this is the scale AT ZOOM 1;
@@ -76,6 +76,13 @@ export interface TrenchMapProps {
   /** Guided-descent beat 7: the expedition target pin brightens once its
    *  move lands (v1 of the mote light-trail per the spec's own risk note). */
   flashClaimId?: string | null;
+  /** Teach-by-playing item 4 (designer spec §5): a faint ring, centered on
+   *  the own claim, radius `expeditionRange(ownState) * UNIT_PX` — shown
+   *  whenever a claim is selected, the beacon build-card is hovered, a
+   *  beacon just landed, or beat 7 is active, so in/out-of-range reads as
+   *  geometry instead of the range-formula prose the guide used to carry
+   *  twice. No-op until the own claim's state has actually loaded. */
+  rangeRingVisible?: boolean;
   /** Guided-descent locks (spec's Locked column, per beat): disables drag-
    *  pan, pin selection, and/or hides the wayfinding chips without touching
    *  the underlying data — a locked map still SHOWS the world, just doesn't
@@ -137,6 +144,7 @@ export const TrenchMap = forwardRef<TrenchMapHandle, TrenchMapProps>(function Tr
     buildPuff = false,
     revealDistant = false,
     flashClaimId = null,
+    rangeRingVisible = false,
     panDisabled = false,
     selectionDisabled = false,
     wayfindingHidden = false,
@@ -319,6 +327,12 @@ export const TrenchMap = forwardRef<TrenchMapHandle, TrenchMapProps>(function Tr
   }, [accepted, viewSize, pan, zoom, ownClaimId]);
 
   const ownEntry = useMemo(() => (ownClaimId ? accepted.find((c) => c.claimId === ownClaimId) ?? null : null), [accepted, ownClaimId]);
+  // Teach-by-playing item 4: own expedition range, in world (unscaled) px —
+  // rendered as a child of the transformed `.trench-map-field` below, so the
+  // ambient `scale(zoom)` transform threads it for free, exactly like every
+  // pin/preview position already is (see the component doc comment).
+  const ownRangeState = ownClaimId ? loadedStates.get(ownClaimId) : undefined;
+  const rangeRingDiameterPx = ownRangeState ? expeditionRange(ownRangeState) * 2 * UNIT_PX : 0;
   const hoveredEntry = useMemo(
     () => (hoveredClaimId ? accepted.find((c) => c.claimId === hoveredClaimId) ?? null : null),
     [accepted, hoveredClaimId]
@@ -360,6 +374,39 @@ export const TrenchMap = forwardRef<TrenchMapHandle, TrenchMapProps>(function Tr
         }}
       >
         <span className="trench-map-origin" aria-hidden="true" />
+        {/* Teach-by-playing item 3: faint CLAIM_MIN_SPACING-radius rings
+            around every EXISTING claim while founding — shows why a spot the
+            preview ring below straddles is actually invalid, not just that
+            it is. Static (no color coding, no animation) — the preview ring
+            alone carries the ok/bad signal. */}
+        {foundingMode &&
+          accepted.map((c) => (
+            <span
+              key={`spacing-ring-${c.claimId}`}
+              className="claim-preview-ring existing"
+              style={{
+                left: `calc(50% + ${c.header.x * UNIT_PX}px)`,
+                top: `calc(50% + ${c.header.y * UNIT_PX}px)`,
+                width: `${CLAIM_MIN_SPACING * 2 * UNIT_PX}px`,
+                height: `${CLAIM_MIN_SPACING * 2 * UNIT_PX}px`,
+              }}
+              aria-hidden="true"
+            />
+          ))}
+        {/* Teach-by-playing item 4: the own-claim expedition-range ring —
+            faint, scale-aware for free (child of the transformed field). */}
+        {rangeRingVisible && ownEntry && ownRangeState && (
+          <span
+            className="range-ring"
+            style={{
+              left: `calc(50% + ${ownEntry.header.x * UNIT_PX}px)`,
+              top: `calc(50% + ${ownEntry.header.y * UNIT_PX}px)`,
+              width: `${rangeRingDiameterPx}px`,
+              height: `${rangeRingDiameterPx}px`,
+            }}
+            aria-hidden="true"
+          />
+        )}
         {accepted.map((c) => {
           const st = loadedStates.get(c.claimId);
           const isOwn = c.claimId === ownClaimId;
@@ -402,14 +449,30 @@ export const TrenchMap = forwardRef<TrenchMapHandle, TrenchMapProps>(function Tr
           );
         })}
         {foundingMode && previewPos && (
-          <span
-            className={`claim-preview${previewOk ? ' ok' : ' bad'}${previewSuggested && previewOk ? ' suggested' : ''}`}
-            style={{
-              left: `calc(50% + ${previewPos.x * UNIT_PX}px)`,
-              top: `calc(50% + ${previewPos.y * UNIT_PX}px)`,
-            }}
-            aria-hidden="true"
-          />
+          <>
+            {/* Teach-by-playing item 3: the CLAIM_MIN_SPACING-radius ring
+                around the preview pin itself — red-tinted when the spot
+                violates spacing vs a known claim, teal when valid. Shows
+                *why*, no copy needed (spec §5 item 3). */}
+            <span
+              className={`claim-preview-ring${previewOk ? ' ok' : ' bad'}`}
+              style={{
+                left: `calc(50% + ${previewPos.x * UNIT_PX}px)`,
+                top: `calc(50% + ${previewPos.y * UNIT_PX}px)`,
+                width: `${CLAIM_MIN_SPACING * 2 * UNIT_PX}px`,
+                height: `${CLAIM_MIN_SPACING * 2 * UNIT_PX}px`,
+              }}
+              aria-hidden="true"
+            />
+            <span
+              className={`claim-preview${previewOk ? ' ok' : ' bad'}${previewSuggested && previewOk ? ' suggested' : ''}`}
+              style={{
+                left: `calc(50% + ${previewPos.x * UNIT_PX}px)`,
+                top: `calc(50% + ${previewPos.y * UNIT_PX}px)`,
+              }}
+              aria-hidden="true"
+            />
+          </>
         )}
         {hoveredEntry && (
           <div

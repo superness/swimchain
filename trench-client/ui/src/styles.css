@@ -269,6 +269,35 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
   border: 2px dashed var(--shallow); pointer-events: none;
 }
 .claim-preview.bad { border-color: var(--heat); }
+
+/* Teach-by-playing item 3 (founding spacing ring): a CLAIM_MIN_SPACING-radius
+   ring around the preview pin — ok/bad tinted like the pin itself, so the
+   rule reads as geometry instead of the "need ≥N units" prose it replaces.
+   Rendered as a child of the transformed `.trench-map-field`, so it's
+   scale-aware for free (see TrenchMap.tsx's doc comment). `.existing` is the
+   static, uncolored variant drawn around every already-placed claim while
+   founding, showing *why* a spot the preview ring overlaps is invalid. */
+.claim-preview-ring {
+  position: absolute; transform: translate(-50%, -50%); border-radius: 50%;
+  border: 1.5px dashed rgba(88, 214, 200, 0.55); pointer-events: none; z-index: 3;
+  transition: border-color 160ms var(--ease-snap);
+}
+.claim-preview-ring.bad { border-color: rgba(255, 176, 102, 0.65); }
+.claim-preview-ring.existing {
+  border-style: solid; border-color: rgba(232, 241, 239, 0.12); z-index: 1;
+}
+
+/* Teach-by-playing item 4 (beacon range ring): a faint circle, centered on
+   the own claim, radius = the live expedition range — shown while a claim
+   is selected, the beacon build-card is hovered, a beacon just landed, or
+   beat 7 is active, so in/out-of-range reads as geometry, not a formula. */
+.range-ring {
+  position: absolute; transform: translate(-50%, -50%); border-radius: 50%;
+  border: 1px solid rgba(88, 214, 200, 0.24);
+  background: radial-gradient(circle, transparent 62%, rgba(88, 214, 200, 0.05) 100%);
+  pointer-events: none; z-index: 1;
+  transition: opacity 220ms var(--ease-snap);
+}
 /* Guided-descent beat 1: the game's suggested spot pulses continuously
    (distinct from the one-shot founding-bloom triple wave) so it reads as
    "the game is pointing here," not just the ordinary live preview. */
@@ -400,16 +429,48 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 
 /* ── resources ────────────────────────────────────────────────────────────── */
 .resources { display: flex; flex-direction: column; gap: 8px; }
-.resource { display: flex; align-items: center; gap: 8px; }
+/* `padding-bottom` reserves a constant strip for the cap-hint float below —
+   present whether or not a hint is currently showing, so the hint fading in
+   NEVER shifts the row below it (the reserve itself never changes size). */
+.resource { display: flex; align-items: center; gap: 8px; position: relative; padding-bottom: 15px; }
 .resource .fine:first-child { width: 58px; flex: none; }
 .res-bar { flex: 1; height: 10px; border-radius: 5px; background: var(--water-2); border: 1px solid var(--line); overflow: hidden; }
 .res-fill { height: 100%; transition: width 0.5s ease; }
 .res-fill.salvage { background: linear-gradient(90deg, rgba(217, 164, 65, 0.6), var(--dim-tier)); }
 .res-fill.biomass { background: linear-gradient(90deg, rgba(88, 214, 200, 0.5), var(--shallow)); }
-.harvest-btn { align-self: flex-start; }
+.harvest-btn { align-self: flex-start; animation: panel-in 220ms var(--ease-snap); }
+
+/* Teach-by-playing item 1 (cap-hit inline hint): a small fine-print line
+   floated within the reserved strip below its resource row — absolutely
+   positioned, anchored to `.resource`'s own (already-reserved) bottom edge,
+   so it never reflows anything above or below it either way, per the
+   binding "zero layout jostle" rule. */
+.cap-hint {
+  position: absolute; left: 58px; bottom: 0; z-index: 2;
+  animation: panel-in 220ms var(--ease-snap);
+}
 
 /* ── structures ───────────────────────────────────────────────────────────── */
-.structures { display: flex; flex-direction: column; gap: 6px; }
+.structures { display: flex; flex-direction: column; gap: 6px; position: relative; }
+
+/* Teach-by-playing item 2 (first-wear tend nudge): a small glass hint
+   floating near the structures list — absolutely positioned so it never
+   pushes the structure rows down, matches the `.tut-card` surface language
+   at a lighter weight (no full-size padding/shimmer-bar glow needed for a
+   one-liner). Dismissed for good once acknowledged (`Got it`). */
+.teach-hint {
+  /* Floats ABOVE the structures panel, in the inter-panel gap — never over
+     the "Structures" title or the row it's pointing at, so the `tend` link
+     it's teaching stays fully visible and clickable underneath it. */
+  position: absolute; right: 0; top: 0; transform: translateY(calc(-100% - 6px)); z-index: 6;
+  overflow: hidden;
+  display: flex; align-items: center; gap: 10px; white-space: nowrap;
+  padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(88, 214, 200, 0.5);
+  background: linear-gradient(180deg, rgba(5, 22, 32, 0.92), rgba(2, 12, 17, 0.94));
+  backdrop-filter: blur(6px); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  font-size: 12.5px; animation: panel-in 220ms var(--ease-snap);
+}
+.teach-hint .link { font-size: 12px; }
 .structure-row { display: flex; align-items: center; gap: 8px; font-size: 13px; animation: panel-in 220ms var(--ease-snap); }
 .structure-row.ruined { opacity: 0.6; }
 /* Ceremony: the abyss takes a structure — a brief collapse in place, paired

@@ -8,6 +8,8 @@ import {
   COST_BEACON,
   START_SALVAGE,
   HB_CAP_PER_DAY,
+  YIELD_LIT,
+  YIELD_DIM,
   chebyshev,
   expeditionRange,
   utcDay,
@@ -15,11 +17,13 @@ import {
   type ClaimState,
   type MapClaim,
   type StructureKind,
+  type Brightness,
 } from './lib/trenchEngine';
 import { TrenchMap, type TrenchMapHandle } from './TrenchMap';
 import { Homestead, type DescentHudMode } from './Homestead';
 import { HowToPlay } from './HowToPlay';
 import { CoachCard, hasSeenCoach, markCoachSeen, type CoachKind } from './CoachCard';
+import { hasSeenHint, markHintSeen } from './lib/teachHints';
 import { createAbyssAudio, getStoredMutePreference, type AbyssAudioHandle } from './lib/abyssAudio';
 import { prefersReducedMotion } from './lib/reducedMotion';
 import {
@@ -334,6 +338,13 @@ export function App() {
   const [claimBloom, setClaimBloom] = useState(false);
   const [ruinFlashIdx, setRuinFlashIdx] = useState<Set<number>>(new Set());
   const [tierShift, setTierShift] = useState(false);
+
+  // ── Teach-by-playing item 4 (beacon range ring): the own-claim expedition
+  //    range ring shows whenever a claim is selected, the beacon build-card
+  //    is hovered, a beacon just landed, or beat 7 is active — see the
+  //    `rangeRingVisible` derivation below. ────────────────────────────────
+  const [beaconHovered, setBeaconHovered] = useState(false);
+  const [beaconJustBuilt, setBeaconJustBuilt] = useState(false);
 
   // ── kindling ceremony bloom beat: shown once, only right after actually
   //    going through the sponsor-gate ceremony (never on a return visit that
@@ -757,6 +768,21 @@ export function App() {
       setTierShift(true);
       audioRef.current?.chime();
       timers.push(setTimeout(() => setTierShift(false), 1600)); // matches .tier-shift's animation duration
+
+      // Teach-by-playing item 5 (first tier-change note, persisted): the
+      // ceremony above already plays every time; the first time only, also
+      // append a diegetic notice explaining WHAT changed (brighter → faster
+      // farms; dimmer → faster decay) — connects beats → brightness → yield
+      // without the guide's table prose.
+      if (!hasSeenHint('trench-hint-tier')) {
+        markHintSeen('trench-hint-tier');
+        const tierOrder: Record<Brightness, number> = { DARK: 0, DIM: 1, LIT: 2 };
+        const brightened = tierOrder[ownState.brightness] > tierOrder[prev.brightness];
+        const tierMsg = brightened
+          ? `Brighter — farms yield ${half(ownState.brightness === 'LIT' ? YIELD_LIT : YIELD_DIM)}/day now.`
+          : 'Dimmer — the abyss wears faster.';
+        setNotice((p) => (p ? `${p} · ${tierMsg}` : tierMsg));
+      }
     }
 
     return () => timers.forEach(clearTimeout);
@@ -829,6 +855,9 @@ export function App() {
 
   // ── live display projection: never banks, just keeps the HUD fresh ─────────
   const view = useMemo(() => (ownState ? project(ownState, Date.now()) : null), [ownState]);
+
+  // ── Teach-by-playing item 4 (beacon range ring) trigger ─────────────────
+  const rangeRingVisible = !!selectedClaimId || beat7Active || beaconHovered || beaconJustBuilt;
 
   // ── which coach card (if any) occupies the one floating slot ───────────────
   // `expedition` was retired — beat 7 replaces it entirely (see CoachCard.tsx).
@@ -1131,6 +1160,13 @@ export function App() {
     (kind: StructureKind) => {
       const label = kind === 'farm' ? 'Building the kelp farm' : kind === 'storehouse' ? 'Building the storehouse' : 'Raising the beacon';
       audioRef.current?.thock();
+      if (kind === 'beacon') {
+        // Teach-by-playing item 4: ~3s of the range ring right as a beacon
+        // build is submitted — the range-formula prose the guide used to
+        // carry twice, replaced by geometry.
+        setBeaconJustBuilt(true);
+        setTimeout(() => setBeaconJustBuilt(false), 3000);
+      }
       if (descentBeatRef.current === 5 && kind === 'farm') {
         // Beat 5's directed build: a single silt-puff wave on the own pin,
         // riding alongside the fixed "Kelp roots test the silt…" flavor
@@ -1390,9 +1426,10 @@ export function App() {
                   onChange={(e) => setFoundName(e.target.value)}
                 />
                 <p className="fine">
-                  {foundPos
-                    ? `(${foundPos.x}, ${foundPos.y}) — ${spacingOk ? 'clear ground' : `too close to a neighbor (need ≥${CLAIM_MIN_SPACING})`}`
-                    : 'Click the map to choose a spot.'}
+                  {/* Teach-by-playing item 3: the map's spacing ring now
+                      shows the CLAIM_MIN_SPACING rule geometrically — the
+                      old "(need ≥N)" prose clause is redundant with it. */}
+                  {foundPos ? `(${foundPos.x}, ${foundPos.y}) — ${spacingOk ? 'clear ground' : 'too close'}` : 'Click the map to choose a spot.'}
                 </p>
                 {acceptedClaims.length > 0 && !inDescent && (
                   <p className="fine muted">Settle near the lights, or claim the dark.</p>
@@ -1450,6 +1487,7 @@ export function App() {
                 buildPuff={beat5Puff}
                 revealDistant={beat4Reveal}
                 flashClaimId={beat7Flash}
+                rangeRingVisible={rangeRingVisible}
                 panDisabled={descentBeat === 3 || descentBeat === 4}
                 selectionDisabled={descentBeat === 3 || descentBeat === 4 || descentBeat === 5}
                 wayfindingHidden={descentBeat === 1 || descentBeat === 2 || descentBeat === 3 || descentBeat === 5}
@@ -1518,6 +1556,7 @@ export function App() {
                 onTend={onTend}
                 onHarvest={onHarvest}
                 onExpedition={onExpedition}
+                onBeaconHoverChange={setBeaconHovered}
                 descentMode={descentMode}
               />
             </aside>

@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   HB_CAP_PER_DAY,
   TEND_COST,
   INTEGRITY_MAX,
   LIT_MIN,
   DIM_MIN,
+  CAP_BASE,
+  CAP_PER_STOREHOUSE,
   utcDay,
   type ClaimState,
   type MapClaim,
@@ -12,6 +14,7 @@ import {
   type StructureKind,
   type Brightness,
 } from './lib/trenchEngine';
+import { hasSeenHint, markHintSeen } from './lib/teachHints';
 
 /** On-chain quantities are integer half-units; every number shown here is the
  *  WHOLE-unit display value. */
@@ -39,6 +42,22 @@ const BUILD_INFO: Record<StructureKind, { icon: string; label: string; blurb: st
   storehouse: { icon: '📦', label: 'Storehouse', blurb: 'raises both caps' },
   beacon: { icon: '🗼', label: 'Beacon', blurb: 'widens expedition range' },
 };
+
+/** Teach-by-playing item 1 (designer spec §5): "one-time per resource per
+ *  session is fine (no persistence needed)" — shows the fine-print hint
+ *  while `capped` is true, then, once it's been true and later goes false
+ *  again, never shows again for the lifetime of this component (no nagging
+ *  every time a full storehouse re-caps). Pure in-memory session state, by
+ *  design — nothing persisted to localStorage. */
+function useCapHintVisible(capped: boolean): boolean {
+  const [dismissed, setDismissed] = useState(false);
+  const wasCappedRef = useRef(false);
+  useEffect(() => {
+    if (wasCappedRef.current && !capped && !dismissed) setDismissed(true);
+    wasCappedRef.current = capped;
+  }, [capped, dismissed]);
+  return capped && !dismissed;
+}
 
 function formatUptime(ms: number): string {
   const totalSec = Math.max(0, Math.floor(ms / 1000));
@@ -125,6 +144,11 @@ export interface HomesteadProps {
    *  instead of just watching the live projection and waiting. */
   onHarvest: () => void;
   onExpedition: () => void;
+  /** Teach-by-playing item 4 (beacon range ring): notified on hover
+   *  enter/leave of the Beacon build-card specifically, so App.tsx can show
+   *  the own-claim expedition-range ring on the map while previewing what a
+   *  beacon buys. Absent is fine — the hover trigger just doesn't fire. */
+  onBeaconHoverChange?: (hovering: boolean) => void;
   /** Guided-descent HUD restriction for the current beat, if any — see
    *  `DescentHudMode`. Absent/`null` renders the HUD exactly as before. */
   descentMode?: DescentHudMode | null;
@@ -157,6 +181,7 @@ export function Homestead(props: HomesteadProps) {
     onTend,
     onHarvest,
     onExpedition,
+    onBeaconHoverChange,
     descentMode,
   } = props;
 
@@ -187,6 +212,23 @@ export function Homestead(props: HomesteadProps) {
   const leaderboard = Array.from(loadedStates.values())
     .map((s) => ({ claimId: s.claimId, name: s.header.name, glow: s.glow, isOwn: s.claimId === ownState.claimId }))
     .sort((a, b) => b.glow - a.glow);
+
+  // ── Teach-by-playing item 1 (cap-hit inline hint) ───────────────────────
+  const showSalvageCapHint = useCapHintVisible(ownState.salvage >= ownState.capSalvage);
+  const showBiomassCapHint = useCapHintVisible(viewBiomass >= ownState.capBiomass);
+  const capHintCopy = `Full — a storehouse raises this to ${half(CAP_BASE + CAP_PER_STOREHOUSE)}.`;
+
+  // ── Teach-by-playing item 2 (first-wear tend nudge, persisted) — fires the
+  //    moment ANY live structure first reads below full integrity while
+  //    biomass can actually afford a tend; a floating glass hint near the
+  //    structures list, dismissed for good (this browser) once acknowledged. ──
+  const [tendHintDismissed, setTendHintDismissed] = useState(() => hasSeenHint('trench-hint-tend'));
+  const showTendHint =
+    !tendHintDismissed && viewBiomass >= TEND_COST && viewStructures.some((s) => !s.ruined && s.integrity < INTEGRITY_MAX);
+  const dismissTendHint = () => {
+    markHintSeen('trench-hint-tend');
+    setTendHintDismissed(true);
+  };
 
   // ── Guided-descent stagger delay helper (beat 6): panel order is lantern
   //    (0) → resources (1) → structures (2) → build (3) → glow (4), 120ms
@@ -222,6 +264,13 @@ export function Homestead(props: HomesteadProps) {
     </div>
   );
 
+  // ── Teach-by-playing item 6 (demote Harvest until it matters) — the
+  //    button is the lesson: it only appears once there's real un-banked
+  //    growth to settle (the live projection has actually diverged from the
+  //    banked ClaimState), so the first days of play aren't cluttered by a
+  //    control that does nothing yet. */
+  const hasPendingHarvest = viewBiomass !== ownState.biomass;
+
   const resourcesPanel = (
     <div className={`resources${staggerClass}`} style={staggerStyle(1)}>
       <div className="resource">
@@ -232,6 +281,7 @@ export function Homestead(props: HomesteadProps) {
         <span className="fine">
           <strong>{half(ownState.salvage)}</strong>/{half(ownState.capSalvage)}
         </span>
+        {showSalvageCapHint && <span className="fine cap-hint">{capHintCopy}</span>}
       </div>
       <div className="resource">
         <span className="fine">biomass</span>
@@ -241,16 +291,31 @@ export function Homestead(props: HomesteadProps) {
         <span className="fine">
           <strong>{half(viewBiomass)}</strong>/{half(ownState.capBiomass)}
         </span>
+        {showBiomassCapHint && <span className="fine cap-hint">{capHintCopy}</span>}
       </div>
-      <button className="link harvest-btn" disabled={!connected || busy} onClick={onHarvest} title="Bank your growth now.">
-        Harvest
-      </button>
+      {hasPendingHarvest && (
+        <button className="link harvest-btn" disabled={!connected || busy} onClick={onHarvest} title="Bank your growth now.">
+          Harvest
+        </button>
+      )}
     </div>
   );
 
   const structuresPanel = (
     <div className={`structures${staggerClass}`} style={staggerStyle(2)}>
       <div className="panel-title fine">Structures</div>
+      {/* Teach-by-playing item 2: first-wear tend nudge — a small floating
+          glass hint, zero layout jostle (absolutely positioned, doesn't push
+          the structure rows below it), dismissed for good once acknowledged. */}
+      {showTendHint && (
+        <div className="teach-hint tend-hint" role="note">
+          <span className="tut-shimmer" aria-hidden="true" />
+          <span>Tend before it ruins.</span>
+          <button type="button" className="link" onClick={dismissTendHint}>
+            Got it
+          </button>
+        </div>
+      )}
       {viewStructures.length === 0 ? (
         <p className="fine muted">Nothing built yet.</p>
       ) : (
@@ -306,6 +371,8 @@ export function Homestead(props: HomesteadProps) {
               className={`build-card${ghosted ? ' ghost' : ''}${suggested ? ' suggested' : ''}`}
               disabled={busy || !affordable || ghosted}
               onClick={() => onBuild(kind)}
+              onMouseEnter={kind === 'beacon' ? () => onBeaconHoverChange?.(true) : undefined}
+              onMouseLeave={kind === 'beacon' ? () => onBeaconHoverChange?.(false) : undefined}
             >
               <span className="build-icon" aria-hidden="true">
                 {BUILD_INFO[kind].icon}
