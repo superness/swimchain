@@ -28,8 +28,15 @@
 }
 
 * { box-sizing: border-box; }
+html {
+  /* Theme background + no rubber-band: a trackpad/touch drag past the scroll
+     limit must not drag the UI and flash the default white canvas. */
+  background: var(--ink);
+  overscroll-behavior: none;
+}
 body {
   margin: 0;
+  overscroll-behavior: none;
   background:
     radial-gradient(1100px 560px at 70% -10%, rgba(88, 214, 200, 0.06), transparent 60%),
     var(--ink);

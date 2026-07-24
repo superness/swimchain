@@ -163,9 +163,16 @@ export function ChatArea({
     return filtered;
   }, [messages, isUserBlocked, isMessageBlocked, searchQuery]);
 
-  // Scroll to bottom when new messages arrive
+  // Scroll to bottom when new messages arrive. Scroll the messages container
+  // DIRECTLY — scrollIntoView walks every scrollable ancestor, and the
+  // document stays programmatically scrollable even under overflow:hidden,
+  // so it dragged the page itself and shoved the whole app off the top of
+  // the window (DmConversation already scrolls its own container).
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = containerRef.current;
+    if (container) {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    }
   }, [filteredMessages.length]);
 
   const messageGroups = groupMessages(filteredMessages);
