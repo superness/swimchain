@@ -27,6 +27,9 @@ struct AppState {
     // via `launch_app`. Deliberately left running when the launcher window
     // closes (default per spec); no kill-on-quit wiring here.
     supervisor: Arc<supervisor::Supervisor>,
+    // True while a programmatic fit-to-grid resize is in flight so the
+    // Resized handler doesn't record it as a user-chosen window size.
+    suppress_resize_save: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -43,6 +46,12 @@ impl AppState {
 struct DesktopSettings {
     #[serde(default)]
     network: Option<String>,
+    /// Last window size the USER set (logical px). None until the user resizes:
+    /// while unset, each launch auto-fits the window to the app grid.
+    #[serde(default)]
+    window_width: Option<f64>,
+    #[serde(default)]
+    window_height: Option<f64>,
 }
 
 fn load_settings(path: &PathBuf) -> DesktopSettings {
@@ -60,6 +69,40 @@ fn save_settings(path: &PathBuf, settings: &DesktopSettings) -> Result<(), Strin
     let json = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
     std::fs::write(path, json).map_err(|e| format!("Failed to write settings: {}", e))
+}
+
+/// True when the user has resized the window before (we then restore that size
+/// at startup and the frontend skips its first-run fit-to-grid).
+#[tauri::command]
+fn has_saved_window_size(state: tauri::State<'_, AppState>) -> bool {
+    let s = load_settings(&state.settings_path);
+    s.window_width.is_some() && s.window_height.is_some()
+}
+
+/// First-run compact sizing: the frontend measures the app grid and asks for
+/// this inner size (logical px). Marked suppressed so the resulting Resized
+/// event is not recorded as a user-chosen size — every launch keeps fitting
+/// to the grid until the user resizes by hand.
+#[tauri::command]
+fn fit_window_to(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    let w = width.clamp(420.0, 1600.0);
+    let h = height.clamp(320.0, 1000.0);
+    state.suppress_resize_save.store(true, Ordering::SeqCst);
+    let flag = state.suppress_resize_save.clone();
+    window
+        .set_size(tauri::LogicalSize::new(w, h))
+        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+        flag.store(false, Ordering::SeqCst);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -152,10 +195,10 @@ async fn set_network(state: tauri::State<'_, AppState>, network: String) -> Resu
         *cache = None;
     }
 
-    // Persist the selection for the next launch
-    let settings = DesktopSettings {
-        network: Some(network),
-    };
+    // Persist the selection for the next launch (load-modify-save so other
+    // remembered settings, e.g. the window size, survive a network switch)
+    let mut settings = load_settings(&state.settings_path);
+    settings.network = Some(network);
     save_settings(&state.settings_path, &settings)?;
 
     Ok(())
@@ -642,6 +685,17 @@ fn main() {
                 let _ = app.deep_link().register("swimchain");
             }
 
+            // Restore the user's last window size before first paint; while none
+            // is saved the frontend auto-fits the window to the app grid instead.
+            {
+                let saved = load_settings(&settings_path);
+                if let (Some(w), Some(h)) = (saved.window_width, saved.window_height) {
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = win.set_size(tauri::LogicalSize::new(w, h));
+                    }
+                }
+            }
+
             let state = AppState {
                 node_manager: Arc::new(Mutex::new(node_manager)),
                 binary_path,
@@ -650,6 +704,7 @@ fn main() {
                 cached_cookie: Arc::new(Mutex::new(None)), // Will be populated on first get_rpc_auth call
                 pending_deeplink,
                 supervisor: Arc::new(supervisor::Supervisor::new()),
+                suppress_resize_save: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             };
 
             app.manage(state);
@@ -687,6 +742,8 @@ fn main() {
             launch_app,
             list_apps,
             open_external,
+            has_saved_window_size,
+            fit_window_to,
         ])
         .on_window_event(|window, event| {
             // Stop node when app closes
@@ -697,6 +754,25 @@ fn main() {
                     let mut manager = manager.lock().await;
                     let _ = manager.stop().await;
                 });
+            }
+            // Remember the size the USER drags the window to (ignore the
+            // programmatic fit-to-grid resize and the 0x0 minimize event).
+            if let tauri::WindowEvent::Resized(size) = event {
+                use std::sync::atomic::Ordering;
+                let state = window.state::<AppState>();
+                if size.width > 200
+                    && size.height > 150
+                    && !state.suppress_resize_save.load(Ordering::SeqCst)
+                {
+                    let logical = size.to_logical::<f64>(window.scale_factor().unwrap_or(1.0));
+                    let path = state.settings_path.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mut s = load_settings(&path);
+                        s.window_width = Some(logical.width);
+                        s.window_height = Some(logical.height);
+                        let _ = save_settings(&path, &s);
+                    });
+                }
             }
         })
         .run(tauri::generate_context!())

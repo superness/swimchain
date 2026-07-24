@@ -357,6 +357,39 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown, true);
   }, []);
 
+  // First-run window sizing: with no user-set size remembered, shrink the
+  // launcher to snugly fit the app grid (the user's own resize takes over
+  // permanently once they drag the window).
+  useEffect(() => {
+    if (stage !== "ready") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await invoke<boolean>("has_saved_window_size");
+        if (saved || cancelled) return;
+        // Let the grid paint before measuring.
+        await new Promise((r) => setTimeout(r, 200));
+        const tiles = document.querySelectorAll<HTMLElement>(".app-tile");
+        if (cancelled || tiles.length === 0) return;
+        const tile = tiles[0]!.getBoundingClientRect();
+        const bar = document.querySelector<HTMLElement>(".status-bar");
+        const barH = bar ? bar.getBoundingClientRect().height : 0;
+        // Mirror .app-grid CSS: 32px padding, 20px gaps.
+        const GAP = 20;
+        const PAD = 32;
+        const n = tiles.length;
+        const cols = Math.ceil(Math.sqrt(n));
+        const rows = Math.ceil(n / cols);
+        const width = Math.ceil(PAD * 2 + cols * tile.width + (cols - 1) * GAP);
+        const height = Math.ceil(barH + PAD * 2 + rows * tile.height + (rows - 1) * GAP);
+        await invoke("fit_window_to", { width, height });
+      } catch (e) {
+        log("warn", "fit-to-grid sizing skipped:", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [stage]);
+
   // Poll node status when ready
   useEffect(() => {
     if (stage !== "ready") return;
