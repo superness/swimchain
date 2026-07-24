@@ -443,6 +443,15 @@ impl NodeManager {
             Err(e) => warn!("[INDEX] Reply index repair failed: {}", e),
         }
 
+        // Same migration for the space/posts/author content indexes, whose
+        // legacy keys collided for any two actions in the same second (observed
+        // live: 6 same-second wiki pages -> list_space_posts returned 17 of 23).
+        match chain_store.repair_content_indexes() {
+            Ok(0) => debug!("[INDEX] Content indexes already on unique keys"),
+            Ok(n) => info!("[INDEX] Content indexes migrated: {} rows re-indexed", n),
+            Err(e) => warn!("[INDEX] Content index repair failed: {}", e),
+        }
+
         // 3.1b. Ensure branch placement state is built (SPEC_08 §5).
         // Deterministic rebuild from canonical chain data: runs once per
         // BRANCH_STATE_VERSION (first startup after upgrade / fresh node),
