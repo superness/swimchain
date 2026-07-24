@@ -497,13 +497,15 @@ export function Post(): JSX.Element {
               : linkify(post.content)}
         </div>
 
-        {/* Attached images (the detail page previously never rendered media) */}
+        {/* Attached images — full-bleed hero carousel, same as the feed */}
         {post.mediaRefs && post.mediaRefs.length > 0 && (
-          <ImageGallery
-            mediaRefs={post.mediaRefs}
-            thumbnailMode={false}
-            getMediaUrl={getMediaUrl}
-          />
+          <div className="post-detail__media-bleed">
+            <ImageGallery
+              mediaRefs={post.mediaRefs}
+              heroMode
+              getMediaUrl={getMediaUrl}
+            />
+          </div>
         )}
 
         <footer className="post-detail__footer">

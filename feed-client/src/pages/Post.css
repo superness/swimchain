@@ -63,6 +63,11 @@
   margin-bottom: 1.5rem;
 }
 
+/* Bleed attached media past the card padding, edge to edge */
+.post-detail__media-bleed {
+  margin: 1rem -1.5rem;
+}
+
 .post-detail__header {
   margin-bottom: 1rem;
 }
@@ -384,6 +389,10 @@
 
   .post-detail {
     padding: 1rem;
+  }
+
+  .post-detail__media-bleed {
+    margin: 1rem -1rem;
   }
 
   .post-detail__title {
