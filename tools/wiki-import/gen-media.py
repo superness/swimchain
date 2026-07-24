@@ -154,3 +154,25 @@ for x in (7, 8):                                               # 2x2 grid lines
 rect(img, 5, 7, 10, 10, (120, 90, 56))                         # saw + tools panel
 px(img, 6, 8, (196, 196, 200)); px(img, 9, 9, (196, 196, 200))
 save(img, "crafting.png")
+
+# ── creeper-face.png — the iconic frown ──────────────────────────────────────
+img = canvas((88, 168, 72, 255))                               # creeper green
+textured(img, 0, 0, 15, 15, (88, 168, 72), 14, "creeper-skin")
+rect(img, 3, 4, 6, 7, (16, 24, 16))                            # left eye
+rect(img, 9, 4, 12, 7, (16, 24, 16))                           # right eye
+rect(img, 6, 8, 9, 11, (16, 24, 16))                           # nose/mouth core
+rect(img, 4, 10, 5, 13, (16, 24, 16))                          # mouth left leg
+rect(img, 10, 10, 11, 13, (16, 24, 16))                        # mouth right leg
+save(img, "creeper-face.png")
+
+# ── redstone-circuit.png — dust line, torch and a lamp ───────────────────────
+img = canvas((120, 124, 130, 255))                             # stone floor
+textured(img, 0, 0, 15, 15, (120, 124, 130), 9, "stone-floor")
+for x in range(1, 11):                                         # dust trail
+    px(img, x, 12, (190, 30, 20))
+for y in range(6, 13):
+    px(img, 10, y, (190, 30, 20))
+rect(img, 2, 9, 2, 11, (110, 70, 40)); px(img, 2, 8, (255, 90, 60))  # torch
+rect(img, 8, 2, 13, 6, (70, 46, 24))                           # lamp body
+rect(img, 9, 3, 12, 5, (255, 200, 90))                         # lamp glow
+save(img, "redstone-circuit.png")

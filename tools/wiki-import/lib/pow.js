@@ -26,6 +26,8 @@ export const ActionType = {
 export const POW_CONFIG = {
   regtest: { memoryKib: 1024, iterations: 1, parallelism: 1 },
   testnet: { memoryKib: 8192, iterations: 1, parallelism: 2 },
+  // Mainnet matches testnet by operator decision (see src/network/mode.rs).
+  mainnet: { memoryKib: 8192, iterations: 1, parallelism: 2 },
 };
 
 /** Difficulty (leading zero bits) per network per action type. */
@@ -37,6 +39,14 @@ export const POW_DIFFICULTY = {
     [ActionType.Engage]: 6,
   },
   testnet: {
+    [ActionType.SpaceCreation]: 12,
+    [ActionType.Post]: 10,
+    [ActionType.Reply]: 8,
+    [ActionType.Engage]: 6,
+  },
+  // Mainnet matches testnet by operator decision (src/network/mode.rs
+  // adjusted_difficulty: base-10, 8 MiB Argon2id): Space 12 / Post 10 / Reply 8.
+  mainnet: {
     [ActionType.SpaceCreation]: 12,
     [ActionType.Post]: 10,
     [ActionType.Reply]: 8,
