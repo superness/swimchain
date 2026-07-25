@@ -16,6 +16,22 @@ const STORE_KEY = 'chips.verified.v1';
 const memory = new Map<string, number>();
 let loaded = false;
 
+/**
+ * Count of REAL Argon2id hashes performed (i.e. cache misses), monotonic for
+ * the process lifetime.
+ *
+ * This exists because a TIMING assertion cannot prove a cache works: on fast
+ * hardware, or under Windows' coarse Date.now() tick, a completely broken
+ * cache still looks fast. Tests take deltas around a call and assert the exact
+ * number of hashes, which is deterministic and environment-independent. It is
+ * also what proves the owner filter runs BEFORE hashing rather than merely
+ * stripping foreign entries from the result.
+ */
+let hashCount = 0;
+export function verifyHashCount(): number {
+  return hashCount;
+}
+
 function load(): void {
   if (loaded) return;
   loaded = true;
@@ -61,11 +77,11 @@ export async function verifyReplies(
   let dirty = false;
 
   for (const { reply, parsed } of banks) {
-    const cacheKey = `${reply.content_id}`;
-    let bits = memory.get(cacheKey);
+    let bits = memory.get(reply.content_id);
     if (bits === undefined) {
       bits = await verifyChipBits(reply.author_id, tableId, parsed.ms, parsed.nonce);
-      memory.set(cacheKey, bits);
+      hashCount++;
+      memory.set(reply.content_id, bits);
       dirty = true;
     }
     out.set(reply.content_id, bits);
