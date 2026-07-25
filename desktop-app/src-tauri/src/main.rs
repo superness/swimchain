@@ -4,6 +4,7 @@
 mod app_manifest;
 mod nav;
 mod node_manager;
+mod proc;
 mod registry;
 mod supervisor;
 
@@ -419,6 +420,7 @@ async fn create_identity(
     };
 
     let mut cmd = Command::new(&state.binary_path);
+    proc::no_console(&mut cmd); // don't flash a console window for the CLI one-shot
     match network.as_str() {
         "testnet" => {
             cmd.arg("--testnet");

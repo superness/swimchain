@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod node_manager;
+mod proc;
 mod rpc_handoff;
 
 use base64::Engine;
@@ -98,6 +99,7 @@ async fn ensure_identity(
         .map_err(|e| format!("Failed to write {}: {e}", password_path.display()))?;
 
     let mut cmd = Command::new(binary_path);
+    proc::no_console(&mut cmd); // don't flash a console window for the CLI one-shot
     if network == "regtest" {
         cmd.arg("--regtest");
     }
