@@ -2110,11 +2110,33 @@ cd chips-client && npm run build
 ```bash
 cd chips-client
 grep -o "localhost:[0-9]*" dist/assets/*.js | sort -u          # MUST be empty
-grep -o "127\.0\.0\.1" dist/assets/*.js | sort -u              # MUST be empty
 grep -o "swimchain\.io/rpc" dist/assets/*.js | head -1         # MUST match
 grep -o "sp1[a-z0-9]\{10,\}" dist/assets/*.js | sort -u        # MUST be the real space id
+grep -o "0530df507ad2[0-9a-f]*" dist/assets/*.js | head -1      # MUST match the sponsor
+grep -c "__chips\|setFryers" dist/assets/*.js                   # MUST be 0 (no dev surface)
 ```
-If any localhost string appears, the build is not shippable. Fix the env and rebuild.
+If a `localhost:PORT` string appears, the build is not shippable. Fix the env and rebuild.
+
+**On `127.0.0.1` — deliberately NOT a gate, and the reasoning matters.** An earlier
+version of this list required it to be absent. It never can be: `swimchain-react`'s
+`LOCAL_TESTNET` constant (`rpc.ts`) is referenced by `useRpc`'s fallback expression, so
+the string is bundled by every client that imports the library. The **live production
+reef bundle contains it today** (verified by fetching
+`swimchain.io/reef/assets/index-*.js`), so gating on it would fail a build that is
+already shipping.
+
+Grepping cannot prove reachability, so the guarantee is structural instead, and chips is
+stricter than reef here:
+
+- `main.tsx` passes an explicit `{endpoint: RPC_URL}` whenever the endpoint is baked, so
+  `useRpc`'s fallback is never selected. Reef passes `undefined` and *does* fall through
+  to `LOCAL_TESTNET` when unconfigured.
+- `assertConfigured()` (`host.ts`) **throws** on an empty `VITE_CHIPS_RPC` or
+  `VITE_CHIPS_SPACE`, so a misconfigured build refuses to run rather than quietly
+  dialling a local node — which is the failure this gate exists to prevent.
+
+A gate that fails on a string every shipping client contains trains people to wave the
+gate through. Keep the `localhost:PORT` check strict and rely on the throw for the rest.
 
 - [ ] **Step 4: Read the deploy skill and deploy**
 
