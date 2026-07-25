@@ -56,13 +56,25 @@ banked_crumbs     = base_crumbs * seasoning_num / seasoning_den  # integer divis
 `GOLD_NUM/GOLD_DEN = 5/2` in v1 — the superlinear band that makes patience pay.
 
 **Why "when to bank" is a real decision.** Payout is linear in work (`2^d` attempts → `2^(d-8)`
-chips), so no banking schedule conjures free chips — reward tracks work, by construction. Three
-forces create the optimum:
+chips), so no banking schedule conjures free chips — reward tracks work, by construction. Note also
+that an unbanked chip does **not** sog: decay applies only to crumbs in the bowl. So the pressure to
+bank cannot come from decay, and it must not come from an invented fee. It comes from compounding:
 
-1. **Kitchen overhead.** Every bank is an on-chain reply requiring the node's own ~8-bit action
-   PoW — seconds of CPU that yield zero chips. Banking constantly burns the machine on overhead.
-2. **Sogginess and the rim.** Banked crumbs decay, and crumbs past `bowl_cap` are lost.
-3. **Golden chips.** Past `GOLDEN_BITS` the payout goes superlinear — one more minute at the fryer.
+1. **Compounding is the primary pressure.** A chip in the fryer earns nothing. Banked, it buys
+   Seasoning — and Seasoning multiplies *every chip you ever bank afterwards*. Sitting on an
+   ungrown pile is strictly worse than converting it into a higher rate, which is the engine of the
+   genre and costs nothing artificial. The whole strategy of the game is how early you convert
+   throughput into rate.
+2. **Golden chips pull the other way.** Past `GOLDEN_BITS` payout goes superlinear, so the fryer
+   always has a reason to keep you standing there. Compounding says bank now; gold says one more
+   minute. That opposition *is* the game.
+3. **Kitchen overhead is a tax on junk, nothing more.** Every bank is an on-chain reply needing the
+   node's mandatory ~8-bit action PoW: a flat ~256 attempts. Against an 8-bit chip that is a 100%
+   tax; against a 16-bit chip it is 0.4%. It is a progressive penalty on spam-banking trash and it
+   correctly disappears where the game wants you. It is **not** a designed cost and nothing may be
+   added on top of it.
+4. **The rim.** Crumbs past `bowl_cap` are lost, so an un-spent bowl eventually wastes income —
+   a late-game backstop, not the main pressure.
 
 **Sogginess (decay).** The bowl decays; lifetime crunch does not. Decay applies lazily, integer-only,
 iterated over whole elapsed hours between consecutive moves:
@@ -98,34 +110,66 @@ from being a mechanic: a week away costs a soft bowl and nothing permanent.
 
 **Upgrades** (bought from the bowl, so the game is spend-vs-hoard against staleness):
 
-| Key | Effect | Cost curve (crumbs) |
-|---|---|---|
-| `seasoning` I–V | `seasoning_num/den` → 3/2, 2/1, 3/1, 4/1, 6/1 | 5k, 40k, 300k, 2M, 15M |
-| `airtight` | +2 to the sog numerator (see resolution order above) | 25k |
-| `bowl` I–III | `bowl_cap` → 250k, 5M, 100M | 10k, 150k, 2M |
-| `fryer` II–IV | +1 parallel grinder worker each | 20k, 200k, 2M |
-| `detector` | `GOLDEN_BITS` 16 → 15 | 500k |
+**Reference throughput** (the basis for every constant below): ~60 Argon2id-8 MiB attempts/sec per
+worker, inferred from reef's "difficulty-8 is several seconds of CPU". Because payout is linear in
+work, income is a constant **~234 crumbs/sec ≈ 843 chips/hour** at one fryer and no Seasoning,
+regardless of what crispness you bank at. All pacing below derives from that figure; if the real
+measured rate differs materially, the whole table rescales with it.
 
-Costs are fixed constants in the fold (not a formula) so every client agrees exactly.
+| Key | Effect | Cost (crumbs) |
+|---|---|---|
+| `seasoning` I–V | `seasoning_num/den` → 3/2, 2/1, 3/1, 4/1, 6/1 | 30k, 200k, 1.2M, 8M, 50M |
+| `airtight` | +2 to the sog numerator (see resolution order above) | 70k |
+| `bowl` I–III | `bowl_cap` → 3M, 200M, 5B (starting cap 100k) | 60k, 2M, 150M |
+| `fryer` II–IV | +1 parallel grinder worker each | 400k, 12M, 100M |
+| `detector` | `GOLDEN_BITS` 16 → 15 | 3M |
+
+Costs are fixed constants in the fold (not a formula) so every client agrees exactly. The curve is
+gated so each `bowl` tier is affordable under the *previous* cap, and the first Seasoning lands
+~2 minutes in — compounding has to start early or it isn't the pressure the loop rests on.
 
 **Dip is the ladder.** Unlocked by lifetime-crunch thresholds, never bought. Each tier re-skins the
 whole scene. Most are pure spectacle; two carry a real quirk.
 
-| Tier | Unlock (lifetime crunch) | Quirk |
-|---|---|---|
-| Plain Salsa | 0 | — |
-| Guacamole | 1k | Browns: sog `96/100`, but chips pay `11/10` |
-| French Onion | 10k | — |
-| Queso | 100k | Congeals: first bank after a ≥12 h gap pays ×2 |
-| Seven-Layer | 1M | Renders one visual layer per upgrade class owned |
-| Buffalo | 10M | — |
-| Fondue | 100M | — |
-| The Abyssal Dip | 1B | Endgame skin; a wink at The Trench's seafloor |
+| Tier | Unlock (lifetime chips) | ~Time at 1 fryer | Quirk |
+|---|---|---|---|
+| Plain Salsa | 0 | — | — |
+| Guacamole | 300 | 20 min | Browns: sog `96/100`, but chips pay `11/10` |
+| French Onion | 3k | 3.5 h | — |
+| Queso | 25k | ~30 h | Congeals: first bank after a ≥12 h gap pays ×2 |
+| Seven-Layer | 150k | ~7 days | Renders one visual layer per upgrade class owned |
+| Buffalo | 500k | ~25 days | — |
+| Fondue | 1.2M | — | — |
+| The Abyssal Dip | 3M | — | Endgame skin; a wink at The Trench's seafloor |
 
 Only the current tier's quirk applies (tiers do not stack).
 
+Because lifetime crunch is deliberately un-multiplied, the dip ladder is paced by **real elapsed CPU
+time and nothing else** — Seasoning cannot buy your way up it. Only `fryer` tiers move it, by adding
+genuine parallel work, which is why the last tiers assume a fully-built kitchen (~4× throughput) and
+still read as a month-long endgame. That is the intended shape: the bowl is where you optimise, the
+dip is where you show you actually did the hours.
+
 **Explicitly cut from v1 (YAGNI):** trading, gifting, alliances, seasons/board wipes, multi-table
 play, any chip that is not banked by its own author.
+
+**Rejected alternatives** (recorded so they don't get re-proposed):
+
+- *A banking fee, or a chip that "scorches" if left in the fryer.* Both are invented costs layered
+  on top of a real one. Compounding supplies the same pressure honestly, so neither is needed.
+- *Reusing the action PoW's own overshoot as the chip, avoiding the second grind.* Impossible
+  without a node change: the winning nonce would have to be written into the body, but the body
+  feeds `contentHash`, which feeds the challenge — recording the nonce invalidates the proof of that
+  nonce. A chained scheme (each bank publishes the previous bank's nonce, verified one move late)
+  would work, but saves 0.4% on the chips that matter. Not worth the complexity. See §6 Phase 3.
+- *Normalising score by device class or self-reported hashrate.* Argon2id's memory-hardness already
+  bounds the hardware spread (§3), and a self-reported rate is precisely the number a cheater lies
+  about.
+
+**Accepted trade-off:** because the chip preimage is author-bound but has no validity window, a
+player can pre-grind nonces with a script and bank them later. The score is work, and that is work
+genuinely performed, so this is accepted rather than defended against — it costs exactly as much CPU
+either way. It does mean the client must be worth using for reasons other than being mandatory.
 
 ## 2. Protocol & determinism
 
@@ -198,6 +242,11 @@ chips-client/
   payout, dip-tier quirk boundaries (exactly-12 h queso gap).
 - A determinism test folding a fixed synthetic reply stream twice and asserting byte-identical state.
 - A round-trip test: grind a low-difficulty chip, fold it, assert the credited crumbs.
+- A **cost-curve coherence test** asserting every `bowl` tier is affordable under the preceding cap
+  and that no upgrade is priced above the cap in force when it unlocks — the gating in §1 is load-
+  bearing for pacing and silently breaks if a constant is edited in isolation.
+- A **linearity test**: banking one 14-bit chip and banking 64 eight-bit chips credit the same base
+  crumbs (before Seasoning), pinning the "reward tracks work" property against future retunes.
 
 ## 6. Build path
 
