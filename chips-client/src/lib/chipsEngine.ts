@@ -9,7 +9,12 @@
  *
  * Determinism rules, all load-bearing:
  *   - integers only, every multiplier a num/den pair with Math.floor
- *   - no wall clock; all time comes from the authoring-ms embedded in the body
+ *   - no wall clock; elapsed time is the consensus-bounded action timestamp
+ *     (created_at) of CONFIRMED replies only. The body's authoring-ms orders
+ *     moves within a block and salts the chip preimage, but NEVER measures
+ *     elapsed time — a player writes it themselves, so keying decay to it lets
+ *     them switch decay off by future-dating a single move.
+ *   - only the table owner's replies are folded; anyone can reply to a post
  *   - pure and synchronous; Argon2id verification is done by the caller and
  *     handed in as `verified`, which MUST contain an entry for every bank.
  */
