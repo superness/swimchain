@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build + VERIFY + deploy the hosted game clients (reef, chess) to the web hosts.
+# Build + VERIFY + deploy the hosted game clients (reef, chess, chips) to the web hosts.
 #
 # This script exists because of the 2026-07-16 incident: a bare `npm run build`
 # (no VITE_ env baked) shipped bundles that dialed http://127.0.0.1:19746 and had
@@ -8,7 +8,7 @@
 # each client's .env.production, and this script refuses to deploy any bundle
 # missing them.
 #
-# Usage: bash scripts/deploy-web-clients.sh [reef] [chess]   (default: both)
+# Usage: bash scripts/deploy-web-clients.sh [reef] [chess] [chips]   (default: all)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,10 +26,11 @@ GAME_SPONSOR=0530df507ad26a2ee6d0c61ef1e37e4e08abae087c1755467d98e3435ecd2984
 declare -A SPEC=(
   [reef]="reef:swimchain.io/rpc,sp1qqzurjh6eeafcdf5qgpqg8mkfwlq3e6cfu,$GAME_SPONSOR"
   [chess]="chess:swimchain.io/rpc,sp1qqzc0w94g6hqlvaqxy735mjss84qrwk88e,$GAME_SPONSOR"
+  [chips]="chips:swimchain.io/rpc,sp1qqz7zj8gawkmy3ye7vyxudvalfmqpxt7ue,$GAME_SPONSOR"
 )
 
 CLIENTS=("$@")
-[ ${#CLIENTS[@]} -eq 0 ] && CLIENTS=(reef chess)
+[ ${#CLIENTS[@]} -eq 0 ] && CLIENTS=(reef chess chips)
 
 for client in "${CLIENTS[@]}"; do
   dir="$ROOT/${client}-client"

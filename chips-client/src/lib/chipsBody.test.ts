@@ -1,0 +1,114 @@
+/**
+ * bankBody / buyBody: the move-body grammar producers, checked as the exact
+ * inverse of the fold's own parser (parseMove) at the boundaries that matter,
+ * plus the input asserts that keep a caller from silently minting an
+ * unparseable (and therefore lost-forever) move.
+ * Run: npx tsx src/lib/chipsBody.test.ts
+ * Dependency-free (chipsConst only) — no RPC/PoW/WASM in this test's import
+ * chain, unlike host.ts.
+ */
+import { bankBody, buyBody } from './chipsBody';
+import { parseMove } from './chipsEngine';
+import { BANK_MIN_BITS, MAX_BITS } from './chipsConst';
+
+let failures = 0;
+function check(name: string, cond: boolean, extra?: unknown) {
+  if (cond) console.log(`  ok  ${name}`);
+  else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
+}
+
+// 1) bits boundaries: BANK_MIN_BITS and MAX_BITS both round-trip exactly.
+for (const bits of [BANK_MIN_BITS, MAX_BITS]) {
+  const body = bankBody(bits, 0xdeadbeefn, 1_000_000);
+  const parsed = parseMove(body);
+  check(`bank bits=${bits} parses`, parsed?.kind === 'bank', body);
+  check(`bank bits=${bits} round-trips`, parsed?.kind === 'bank' && parsed.bits === bits);
+}
+
+// 2) nonce boundaries: 0n and the max representable u64 (16 hex digits) both
+// round-trip, and the max case is exactly 16 hex chars — the regex boundary.
+{
+  const zero = bankBody(8, 0n, 1);
+  const zp = parseMove(zero);
+  check('nonce 0n parses', zp?.kind === 'bank', zero);
+  check('nonce 0n round-trips', zp?.kind === 'bank' && zp.nonce === 0n);
+
+  const max = 2n ** 64n - 1n;
+  check('max u64 nonce hex is exactly 16 chars', max.toString(16).length === 16, max.toString(16));
+  const full = bankBody(8, max, 1);
+  const fp = parseMove(full);
+  check('max u64 nonce parses', fp?.kind === 'bank', full);
+  check('max u64 nonce round-trips', fp?.kind === 'bank' && fp.nonce === max);
+  check('hex nonce is lowercase', /^bank 8 [0-9a-f]+#1~$/.test(full), full);
+}
+
+// 3) buyBody round-trips a known key.
+{
+  const body = buyBody('season1', 42);
+  const parsed = parseMove(body);
+  check('buy parses', parsed?.kind === 'buy', body);
+  check('buy key round-trips', parsed?.kind === 'buy' && parsed.key === 'season1');
+  check('buy ms round-trips', parsed?.kind === 'buy' && parsed.ms === 42);
+}
+
+// 4) bankBody rejects inputs that would otherwise silently mint an
+// unparseable (and therefore permanently lost) move.
+{
+  let threw = false;
+  try { bankBody(-1, 1n, 1); } catch { threw = true; }
+  check('bankBody rejects negative bits', threw);
+
+  threw = false;
+  try { bankBody(MAX_BITS + 1, 1n, 1); } catch { threw = true; }
+  check('bankBody rejects bits over MAX_BITS', threw);
+
+  threw = false;
+  try { bankBody(1.5, 1n, 1); } catch { threw = true; }
+  check('bankBody rejects non-integer bits', threw);
+
+  threw = false;
+  try { bankBody(8, -1n, 1); } catch { threw = true; }
+  check('bankBody rejects negative nonce', threw);
+
+  threw = false;
+  try { bankBody(8, 2n ** 64n, 1); } catch { threw = true; }
+  check('bankBody rejects nonce over 64 bits', threw);
+
+  threw = false;
+  try { bankBody(8, 1n, 0); } catch { threw = true; }
+  check('bankBody rejects ms == 0', threw);
+
+  threw = false;
+  try { bankBody(8, 1n, -5); } catch { threw = true; }
+  check('bankBody rejects negative ms', threw);
+
+  threw = false;
+  try { bankBody(8, 1n, 1.5); } catch { threw = true; }
+  check('bankBody rejects non-integer ms', threw);
+}
+
+// 5) buyBody rejects inputs that would not match parseMove's key grammar.
+{
+  let threw = false;
+  try { buyBody('Season1', 1); } catch { threw = true; }
+  check('buyBody rejects uppercase key', threw);
+
+  threw = false;
+  try { buyBody('season-1', 1); } catch { threw = true; }
+  check('buyBody rejects key with a hyphen', threw);
+
+  threw = false;
+  try { buyBody('', 1); } catch { threw = true; }
+  check('buyBody rejects empty key', threw);
+
+  threw = false;
+  try { buyBody('season1', 0); } catch { threw = true; }
+  check('buyBody rejects ms == 0', threw);
+}
+
+if (failures > 0) {
+  console.log(`\n${failures} FAILURE(S)`);
+  process.exit(1);
+} else {
+  console.log('\nAll checks passed.');
+}
