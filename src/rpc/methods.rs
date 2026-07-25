@@ -17430,6 +17430,30 @@ impl RpcMethods {
             },
         };
 
+        // An auto-approving offer with NO space scope is an open door: anyone
+        // who claims it is sponsored globally, without review, and can then
+        // write anywhere on the network.
+        //
+        // Neither half is dangerous alone. Scoped auto-approve is the whole
+        // basis of game onboarding — a claimant is bound to that one space
+        // (`SponsorshipStore::is_authorized_in_space`). Unscoped is fine when a
+        // human approves each claim. It is only the COMBINATION that hands
+        // unrestricted write access to whoever asks first.
+        //
+        // Enforced here rather than in each caller because this is the single
+        // choke point every offer passes through, including clients that do not
+        // exist yet. Both `sw sponsor invite` (with --space omitted) and the
+        // activity bot's faucet could previously mint this combination.
+        if params.auto_approve && space_scope.is_none() {
+            return RpcResponse::error(
+                RpcErrorCode::InvalidParams,
+                "auto_approve requires space_scope: an auto-approving offer with no scope \
+                 grants unrestricted network write access to anyone who claims it. Either \
+                 scope the offer to a space, or drop auto_approve so claims are reviewed.",
+                id,
+            );
+        }
+
         // Build the offer struct now that signature is verified
         let offer = PublicSponsorshipOffer {
             sponsor: sponsor_pk,

@@ -37,6 +37,9 @@ fn create_test_stores() -> (OfferStore, SponsorshipStore, RightsStore, TempDir) 
     (offer_store, sponsorship_store, rights_store, temp_dir)
 }
 
+/// A space every auto-approve fixture is scoped to.
+const TEST_SPACE: [u8; 32] = [0xAB; 32];
+
 fn make_auto_approve_offer(
     sponsor: [u8; 32],
     offer_id: [u8; 16],
@@ -52,6 +55,10 @@ fn make_auto_approve_offer(
         requirements: SponsorshipRequirements::default(),
         signature: Signature::from_bytes([0u8; 64]),
         auto_approve: true,
+        // Auto-approve offers MUST carry a scope — `OfferStore::create_offer`
+        // rejects the unscoped combination outright (see the tests at the
+        // bottom of this file for why).
+        space_scope: Some(TEST_SPACE),
     }
 }
 
@@ -118,12 +125,31 @@ fn test_auto_approve_flag_wire_roundtrip_and_legacy_compat() {
     let bytes = serialize_offer(&offer).unwrap();
     let decoded = deserialize_offer(&bytes).unwrap();
     assert!(decoded.auto_approve);
+    assert_eq!(
+        decoded.space_scope,
+        Some(TEST_SPACE),
+        "scope must round-trip"
+    );
 
-    // Legacy wire format (no trailing auto_approve byte) decodes as false
-    let mut legacy = bytes.clone();
-    legacy.pop();
+    // Legacy wire format: a peer predating BOTH optional trailing fields stops
+    // after the signature. The tail is auto_approve(1) + scope_presence(1)
+    // [+ 32], so this must be built from an unscoped offer and truncated by
+    // two — popping a single byte off a scoped offer clips the scope instead
+    // and leaves auto_approve set, which is what this test used to do.
+    //
+    // The unscoped offer here is constructed in memory only and never stored;
+    // `OfferStore::create_offer` rejects the unscoped auto-approve combination.
+    let mut legacy_src = make_auto_approve_offer([1u8; 32], [2u8; 16], 3);
+    legacy_src.space_scope = None;
+    let mut legacy = serialize_offer(&legacy_src).unwrap();
+    legacy.truncate(legacy.len() - 2);
+
     let decoded = deserialize_offer(&legacy).unwrap();
-    assert!(!decoded.auto_approve);
+    assert!(
+        !decoded.auto_approve,
+        "a legacy offer must never decode as auto-approving"
+    );
+    assert_eq!(decoded.space_scope, None);
     assert_eq!(decoded.offer_id, offer.offer_id);
 }
 
@@ -226,4 +252,79 @@ fn test_second_claim_on_single_slot_invite_fails() {
 
     // Second claimant is NOT sponsored
     assert!(sponsorship_store.get(&second.claimant).unwrap().is_none());
+}
+
+// =============================================================================
+// An auto-approving offer with NO space scope is an open door: anyone who
+// claims it is sponsored globally, without review, and can then write anywhere
+// on the network. Neither half is dangerous alone — scoped auto-approve is how
+// game onboarding works, and unscoped is fine when a human approves each claim.
+//
+// The check lives in `OfferStore::create_offer` because that is the one
+// function every path converges on: local RPC creation, gossip ingest from a
+// peer, and offer-sync. A peer on an older or modified node therefore cannot
+// propagate the combination into our store.
+// =============================================================================
+
+#[test]
+fn test_unscoped_auto_approve_offer_is_rejected() {
+    let (offers, _sponsorships, _rights, _dir) = create_test_stores();
+
+    let mut wide_open = make_auto_approve_offer([1u8; 32], [2u8; 16], 100);
+    wide_open.space_scope = None;
+
+    let err = offers
+        .create_offer(&wide_open)
+        .expect_err("an unscoped auto-approve offer must never be stored");
+    assert!(
+        format!("{err}").contains("space_scope"),
+        "the error must name the missing scope, got: {err}"
+    );
+
+    // And it must genuinely not be there — a rejection that still stored the
+    // offer would be worse than no check at all.
+    assert!(
+        !offers.offer_exists(&[2u8; 16]).unwrap(),
+        "rejected offer must not be persisted"
+    );
+}
+
+#[test]
+fn test_scoped_auto_approve_and_unscoped_manual_are_both_allowed() {
+    let (offers, _sponsorships, _rights, _dir) = create_test_stores();
+
+    // Scoped + auto-approve: game onboarding. Allowed.
+    let scoped = make_auto_approve_offer([1u8; 32], [2u8; 16], 100);
+    assert!(scoped.space_scope.is_some());
+    offers
+        .create_offer(&scoped)
+        .expect("scoped auto-approve is the game-onboarding case and must be allowed");
+
+    // Unscoped + manual approval: a human vets each claim. Allowed.
+    let mut manual = make_auto_approve_offer([3u8; 32], [4u8; 16], 10);
+    manual.auto_approve = false;
+    manual.space_scope = None;
+    offers
+        .create_offer(&manual)
+        .expect("an unscoped offer is fine when claims are reviewed by a human");
+}
+
+#[test]
+fn test_peer_cannot_gossip_in_an_unscoped_auto_approve_offer() {
+    // Gossip ingest deserializes a peer's offer and calls create_offer, so the
+    // wire path is covered by the same invariant. Round-trip through the wire
+    // format to prove the flag survives serialization and is still caught.
+    let (offers, _sponsorships, _rights, _dir) = create_test_stores();
+
+    let mut hostile = make_auto_approve_offer([9u8; 32], [8u8; 16], 100);
+    hostile.space_scope = None;
+
+    let bytes = serialize_offer(&hostile).expect("serialize");
+    let decoded = deserialize_offer(&bytes).expect("deserialize");
+    assert!(decoded.auto_approve && decoded.space_scope.is_none());
+
+    assert!(
+        offers.create_offer(&decoded).is_err(),
+        "a peer must not be able to gossip an unscoped auto-approve offer into our store"
+    );
 }
