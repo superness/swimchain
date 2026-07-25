@@ -226,13 +226,15 @@ export function Chip({ chip, goldenBits }: { chip: FryerChip; goldenBits: number
 }
 
 interface BasketProps {
+  /** Position in the rack — the dip flight measures this exact basket. */
+  index: number;
   chip: FryerChip;
   goldenBits: number;
   busy: boolean;
   onBank: () => void;
 }
 
-function Basket({ chip, goldenBits, busy, onBank }: BasketProps) {
+function Basket({ chip, goldenBits, busy, onBank, index }: BasketProps) {
   const c = crispnessOf(chip, goldenBits);
   const bubbles = useMemo(() => {
     const rnd = seeded(chip.ms ^ 0x5bf03635);
@@ -251,6 +253,7 @@ function Basket({ chip, goldenBits, busy, onBank }: BasketProps) {
       onClick={onBank}
       disabled={busy}
       data-bits={chip.bits}
+      data-fryer={index}
       data-attempts={chip.attempts}
       aria-label={
         c.golden ? 'Golden chip — lift it out'
@@ -309,6 +312,7 @@ export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: Ki
         {chips.map((chip, i) => (
           <Basket
             key={chip.ms}
+            index={i}
             chip={chip}
             goldenBits={goldenBits}
             busy={busy}
@@ -324,32 +328,61 @@ export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: Ki
 
       {napkin.length > 0 && (
         <div className="napkin" aria-label="chips waiting to go in the bowl">
-          {/*
-            A chip is parked here the moment it is banked, BEFORE the network is
-            touched, so no throw path can drop a mined proof (see onBank). That
-            makes the COMMON case a chip passing through during the seconds an
-            action PoW takes — not a chip that failed.
-
-            The heading has to say which. A flat "on the napkin" told players
-            their bank had been rejected every single time they clicked, when
-            nothing had gone wrong; the napkin only means "stranded" once
-            something has actually failed.
-          */}
-          <span className="napkin-label">
-            {napkin.some((n) => n.failed) ? 'on the napkin' : 'going in…'}
-          </span>
+          {/* Failures only. A chip that is merely in flight is shown DIPPING
+              into the bowl instead — it is the same event, told in the world
+              rather than in a panel, and it costs the layout nothing. */}
+          <span className="napkin-label">on the napkin</span>
           <ul>
             {napkin.map((n) => (
-              <li key={n.ms} className={n.failed ? 'failed' : 'sending'}>
+              <li key={n.ms} className="failed">
                 <Chip chip={{ ms: n.ms, bits: n.bits, attempts: 0 }} goldenBits={goldenBits} />
-                {n.failed
-                  ? <button type="button" className="again" onClick={() => onRetry(n.ms)} disabled={busy}>try again</button>
-                  : <span className="again waiting">going in…</span>}
+                <button type="button" className="again" onClick={() => onRetry(n.ms)} disabled={busy}>try again</button>
               </li>
             ))}
           </ul>
         </div>
       )}
     </section>
+  );
+}
+
+/** A chip travelling from its fryer into the bowl. */
+export interface DipFlightState {
+  key: number;
+  ms: number;
+  bits: number;
+  x0: number; y0: number;
+  x1: number; y1: number;
+  size: number;
+}
+
+/**
+ * The banked chip, arcing out of the basket and down into the dip.
+ *
+ * Fixed-position and pointer-events:none, so it is painted over the scene and
+ * takes part in no layout — which is the point. The panel this replaced was a
+ * flow child of a centred column, so showing it shoved the fryer upward and
+ * under the hood.
+ *
+ * It is a flourish, not a progress bar: the flight is ~750ms while a bank takes
+ * seconds of action PoW, and the working pill carries the actual wait.
+ */
+export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | null; goldenBits: number }) {
+  if (!flight) return null;
+  return (
+    <div
+      key={flight.key}
+      className="dip-flight"
+      aria-hidden="true"
+      style={{
+        '--fx0': `${flight.x0}px`, '--fy0': `${flight.y0}px`,
+        '--fx1': `${flight.x1}px`, '--fy1': `${flight.y1}px`,
+        '--fmx': `${(flight.x0 + flight.x1) / 2}px`,
+        '--fmy': `${Math.min(flight.y0, flight.y1) - 70}px`,
+        '--fs': `${flight.size}px`,
+      } as React.CSSProperties}
+    >
+      <Chip chip={{ ms: flight.ms, bits: flight.bits, attempts: 0 }} goldenBits={goldenBits} />
+    </div>
   );
 }

@@ -369,6 +369,11 @@ h1, h2, h3, p { margin: 0; }
 
 /* chips pulled from the oil that have not reached the chain yet */
 .napkin {
+  /* Out of the centred column entirely. As a flow child, this appearing shoved
+     the rack upward and clipped the fryer under the hood. Failures are rare and
+     short; the counter should not rearrange itself to report one. */
+  position: absolute; left: 50%; translate: -50% 0;
+  bottom: clamp(86px, 12vh, 140px);
   background: linear-gradient(180deg, #f6efe0, #ded4c0);
   color: #3a2f22; border-radius: 3px;
   padding: 8px 14px 10px;
@@ -649,5 +654,48 @@ h1, h2, h3, p { margin: 0; }
   *, *::before, *::after {
     animation-duration: .001ms !important; animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
+  }
+}
+
+/* ── the chip going in ───────────────────────────────────────────────────── */
+
+/* The banked chip, arcing out of its basket and down into the dip.
+   Fixed and pointer-events:none: painted over the scene, part of no layout.
+   Coordinates come from the live DOM (see launchDip) because the rack reflows
+   with the fryer count and the bowl moves with the viewport. */
+.dip-flight {
+  position: fixed; z-index: 30; pointer-events: none;
+  left: 0; top: 0; width: var(--fs); height: var(--fs);
+  animation: dip-flight .78s cubic-bezier(.34, .02, .52, 1) forwards;
+  filter: drop-shadow(0 10px 18px rgba(0,0,0,.45));
+}
+.dip-flight .chip { width: 100%; height: 100%; }
+
+@keyframes dip-flight {
+  0% {
+    transform: translate(var(--fx0), var(--fy0)) scale(1) rotate(0deg);
+    opacity: 1;
+  }
+  48% {
+    /* up and over — a lifted chip, not a chip sliding across a table */
+    transform: translate(var(--fmx), var(--fmy)) scale(1.06) rotate(-14deg);
+    opacity: 1;
+  }
+  82% {
+    transform: translate(var(--fx1), var(--fy1)) scale(.82) rotate(10deg);
+    opacity: 1;
+  }
+  100% {
+    /* into the dip: sinks and goes under rather than fading in mid-air */
+    transform: translate(var(--fx1), calc(var(--fy1) + 26px)) scale(.5) rotate(16deg);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dip-flight { animation-duration: .25s; }
+  @keyframes dip-flight {
+    0%   { transform: translate(var(--fx0), var(--fy0)); opacity: 1; }
+    100% { transform: translate(var(--fx1), var(--fy1)); opacity: 0; }
   }
 }
