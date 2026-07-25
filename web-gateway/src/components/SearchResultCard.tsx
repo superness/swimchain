@@ -35,6 +35,18 @@ export function SearchResultCard({
       <a href={withBase(`/s/${encodeURIComponent(result.spaceId)}/${encodeURIComponent(result.contentId)}`)} className="result-link">
         <h3 className="result-title">{result.title}</h3>
         {result.body && <p className="result-body">{result.body}</p>}
+        {result.media
+          ?.filter(m => m.type.startsWith('image/'))
+          .map(m => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={m.hash}
+              src={withBase(`/api/media/${m.hash.toLowerCase()}`)}
+              alt={result.title}
+              loading="lazy"
+              className="result-media"
+            />
+          ))}
       </a>
 
       <div className="result-footer">
@@ -132,6 +144,14 @@ export function SearchResultCard({
           font-size: 0.9rem;
           color: var(--color-text-muted);
           line-height: 1.5;
+          margin-bottom: 0.75rem;
+        }
+
+        .result-media {
+          display: block;
+          max-width: 100%;
+          max-height: 480px;
+          border-radius: 6px;
           margin-bottom: 0.75rem;
         }
 
