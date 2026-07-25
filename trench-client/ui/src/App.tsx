@@ -1176,7 +1176,10 @@ export function App() {
       case 3:
         return {
           kicker: '🏮 The guided descent',
-          lines: ['Your lantern pulses on its own — each pulse feeds your brightness.'],
+          lines: [
+            'Your lantern pulses while The Trench is running — each pulse feeds your brightness.',
+            'Close the game, and the pulsing stops.',
+          ],
           primaryLabel: 'Got it',
           onPrimary: onBeat3GotIt,
           primaryDisabled: !beat3HeartbeatSeen,
@@ -1197,7 +1200,10 @@ export function App() {
       case 6:
         return {
           kicker: '🏮 The guided descent',
-          lines: ["That's the game: farms grow while you're lit. Come back tomorrow."],
+          lines: [
+            "That's the game: farms grow while you're lit — and your lantern burns only while The Trench runs.",
+            'Leave it running; check in tomorrow.',
+          ],
           primaryLabel: 'Got it',
           onPrimary: onBeat6GotIt,
         };

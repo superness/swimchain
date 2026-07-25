@@ -82,7 +82,8 @@ export function HowToPlay({ onClose }: { onClose: () => void }) {
           <div className="hp-card">
             <h3>Your lantern</h3>
             <p>
-              Burns while the game runs — up to <strong>{HB_CAP_PER_DAY} beats a day</strong>.
+              <strong>Only burns while the game is open.</strong> Up to{' '}
+              <strong>{HB_CAP_PER_DAY} beats a day</strong> while it runs.
             </p>
             <p className="fine">Beats this week set brightness:</p>
             <div className="hp-legend hp-lanterns">

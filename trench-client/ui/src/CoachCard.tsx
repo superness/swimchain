@@ -51,7 +51,8 @@ const COPY: Record<CoachKind, ReactNode> = {
   ),
   lantern: (
     <>
-      Your lantern burns while the game runs. Brighter lantern, faster farms.
+      Your lantern burns <strong>only while the game runs</strong>. Close it and the light goes
+      out — brighter lantern, faster farms.
     </>
   ),
 };

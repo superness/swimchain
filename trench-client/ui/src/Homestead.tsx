@@ -246,9 +246,10 @@ export function Homestead(props: HomesteadProps) {
       </div>
       <div className="lantern-body">
         <div className="lantern-tier">{viewBrightness}</div>
-        <div className="fine" title={`burning ${formatUptime(now - sessionStartMs)}`}>
+        <div className="fine">
           beats {hbToday}/{HB_CAP_PER_DAY} today
         </div>
+        <div className="fine">burning {formatUptime(now - sessionStartMs)} — dark when the game closes</div>
         {neighborsInReach !== null && <div className="fine">{neighborsInReach} neighbors in reach</div>}
         <div className="hb-meter" title={`${hbWeek} of ${meterTarget} beats this week`}>
           <div className="hb-meter-segments">
