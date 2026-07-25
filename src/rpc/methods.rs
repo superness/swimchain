@@ -17134,6 +17134,13 @@ impl RpcMethods {
                         application_required: offer.requirements.application_required,
                     },
                     auto_approve: offer.auto_approve,
+                    // Same id16-prefix decoding as list_sponsorship_offers, so a
+                    // single-offer lookup and a listing agree about the scope.
+                    space_scope: offer.space_scope.map(|s| {
+                        let mut id16 = [0u8; 16];
+                        id16.copy_from_slice(&s[..16]);
+                        encode_space_id(&id16)
+                    }),
                     pending_claims,
                 };
                 RpcResponse::success(serde_json::to_value(result).unwrap(), id)

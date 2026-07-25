@@ -1863,6 +1863,13 @@ pub struct GetSponsorshipOfferResult {
     /// True if claims on this offer are approved instantly (invite links)
     #[serde(default)]
     pub auto_approve: bool,
+    /// Space this offer's grants are scoped to (bech32 `sp1…`), or `None` for an
+    /// unrestricted grant. Reported here as well as in `list_sponsorship_offers`:
+    /// without it a client inspecting a SINGLE offer cannot tell a game-scoped
+    /// grant from a global one, and reads a scoped offer as unrestricted — the
+    /// wrong direction to be wrong in for a security-relevant field.
+    #[serde(default)]
+    pub space_scope: Option<String>,
     pub pending_claims: Vec<PendingClaimDetail>,
 }
 
