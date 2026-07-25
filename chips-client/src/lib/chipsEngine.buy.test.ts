@@ -3,12 +3,13 @@
  * Run: npx tsx src/lib/chipsEngine.buy.test.ts
  */
 import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
-import { UPGRADES, CRUMBS_PER_CHIP } from './chipsConst';
+import { UPGRADES, CRUMBS_PER_CHIP, SOG_BASE_NUM, SOG_DEN, AIRTIGHT_BONUS } from './chipsConst';
 
 const A = 'a'.repeat(64);
 const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'T', owner: A };
 const TABLE = 'sha256:table';
 const T0 = 1_000_000_000;
+const HOUR = 3_600_000;
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -91,6 +92,38 @@ const rich = () => bank(15, 'rich');
   const rs = [rich(), buy('nosuch', 'b1')];
   const s = foldChips(H, TABLE, rs, new Map([['rich', 15]]));
   check('unknown upgrade rejected', s.moves[1].outcome === 'rejected-parse', s.moves[1].outcome);
+}
+
+// 7) AIRTIGHT, ACTUALLY BOUGHT, AND ITS EFFECT ON DECAY.
+//
+// Block 3 buys airtight only to watch it be REFUSED, so until this block the
+// `airtight` flag, the AIRTIGHT_BONUS term in the fold's sog numerator, and the
+// upgrade's whole reason for existing were never once exercised in a fold.
+// Hand-computed from chipsConst.ts:
+//
+//   a1: bank 15 bits. 1000 * 2^(15-8) = 128,000; 15 < GOLDEN_BITS 16 so no
+//       golden multiplier; seasoning 1/1; bowl rim  -> 100,000
+//       lifetime 2^7 = 128, below guac's 300        -> still Plain Salsa
+//   a2: buy airtight 1s later (under an hour, so no decay):
+//       100,000 - 70,000                            = 30,000
+//   a3: exactly one hour later. numerator = SOG_BASE_NUM 97 + AIRTIGHT_BONUS 2:
+//       floor(30,000 * 99/100)                      = 29,700
+//       bank 8 at salsa, no multipliers             = 1,000
+//       total                                       = 30,700
+//
+// Without the bonus the same fixture lands on floor(30,000*97/100) + 1,000 =
+// 30,100, so this number is what the +2 is worth and nothing else.
+{
+  const t1 = nextMs();
+  const t2 = nextMs();
+  const rs = [bank(15, 'a1', t1), buy('airtight', 'a2', t2), bank(8, 'a3', t2 + HOUR)];
+  const s = foldChips(H, TABLE, rs, new Map([['a1', 15], ['a3', 8]]));
+  check('airtight bought when affordable', s.owned.has('airtight') && s.airtight === true, [...s.owned]);
+  check('airtight deducted', s.moves[1].outcome === 'bought', s.moves[1].outcome);
+  const expected = Math.floor((100_000 - UPGRADES.airtight.cost) * (SOG_BASE_NUM + AIRTIGHT_BONUS) / SOG_DEN)
+    + CRUMBS_PER_CHIP;
+  check('airtight slows decay by exactly +2/100', s.crumbs === expected && expected === 30_700,
+    { crumbs: s.crumbs, expected });
 }
 
 // NOTE: there is deliberately no clamp test here. SOG_MAX_HOURS cannot be

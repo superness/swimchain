@@ -124,6 +124,16 @@ Elapsed hours are capped at `SOG_MAX_HOURS = 720` (30 days) per gap, so an arbit
 is bounded work to fold. The soggy number ticking on screen between moves is **display-only
 projection**; state banks at the next move.
 
+**Payout resolution order is fixed in exactly the same way**, and for the same reason: `Math.floor`
+is applied at every multiplying step and integer division does not commute, so two clients that
+ordered these differently would disagree about the same table forever. The order is:
+
+1. Base — `CRUMBS_PER_CHIP * 2^(bits - BANK_MIN_BITS)`.
+2. Golden — if `bits >= goldenBits`, `floor(× GOLD_NUM / GOLD_DEN)`.
+3. Dip payout — if the tier declares one, `floor(× payNum / payDen)` (Guacamole's `11/10`).
+4. Congeal — if the tier congeals and this is the first bank after a `CONGEAL_GAP_MS` gap, `× 2`.
+5. Seasoning, **always last** — `floor(× seasoningNum / seasoningDen)`.
+
 **Two numbers, deliberately split:**
 
 | | Source | Decays | Purpose |

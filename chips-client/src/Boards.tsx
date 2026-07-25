@@ -21,13 +21,17 @@ import { verifyReplies } from './lib/chipsVerify';
 import { DIP_TIERS } from './lib/chipsConst';
 import { compact } from './lib/format';
 
+/**
+ * A folded table, CACHED ACROSS PASSES. It deliberately carries no "is this
+ * mine" flag: whose table it is depends on state that arrives later than the
+ * fold (see `Board`), and a cached row would pin the wrong answer.
+ */
 export interface BoardRow {
   tableId: string;
   name: string;
   total: number;
   crispest: number;
   dipIndex: number;
-  mine: boolean;
 }
 
 const PASS_INTERVAL_MS = 60_000;
@@ -46,7 +50,7 @@ const PASS_INTERVAL_MS = 60_000;
  */
 const TABLES_FOLDED_PER_PASS = 6;
 
-export function useBoards(host: ChipsHost | null, myTableId: string | null): {
+export function useBoards(host: ChipsHost | null): {
   rows: BoardRow[];
   hosting: boolean;
   /** Tables this browser asked for by name on the last pass. NOT `rows.length`:
@@ -56,11 +60,6 @@ export function useBoards(host: ChipsHost | null, myTableId: string | null): {
   const [rows, setRows] = useState<BoardRow[]>([]);
   const [hosting, setHosting] = useState(false);
   const [hosted, setHosted] = useState(0);
-  // Keep the newest table id available to the loop without restarting the loop
-  // (and therefore without dropping every table off this node) each time it
-  // changes.
-  const mineRef = useRef<string | null>(myTableId);
-  mineRef.current = myTableId;
   // Folded rows survive across passes, because each pass only re-folds a
   // rotating window of the board (see TABLES_FOLDED_PER_PASS). Without this the
   // boards would show six rows at a time and flicker the rest away.
@@ -107,7 +106,7 @@ export function useBoards(host: ChipsHost | null, myTableId: string | null): {
             knownRef.current.set(t.tableId, {
               tableId: t.tableId, name: t.name,
               total: s.lifetimeChips, crispest: s.crispest,
-              dipIndex: s.dipIndex, mine: t.tableId === mineRef.current,
+              dipIndex: s.dipIndex,
             });
           } catch {
             // One unreachable or malformed table must not stop us hosting the rest.
@@ -135,7 +134,7 @@ export function useBoards(host: ChipsHost | null, myTableId: string | null): {
 }
 
 function Board({
-  title, kind, note, rows, valueOf, unit,
+  title, kind, note, rows, valueOf, unit, myTableId,
 }: {
   title: string;
   kind: 'marathon' | 'sprint';
@@ -143,10 +142,16 @@ function Board({
   rows: BoardRow[];
   valueOf: (r: BoardRow) => number;
   unit: string;
+  myTableId: string | null;
 }) {
   const ranked = rows
     .filter((r) => valueOf(r) > 0)
-    .sort((a, b) => valueOf(b) - valueOf(a) || a.name.localeCompare(b.name))
+    // Code-unit compare, NOT `localeCompare`. This tiebreak decides visible
+    // rank between two equal scores, so a locale-sensitive collation would show
+    // two players in different locales a different leaderboard for the same
+    // data. Same comparison the fold uses for its content_id tiebreak
+    // (chipsEngine.ts's `orderReplies`).
+    .sort((a, b) => valueOf(b) - valueOf(a) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .slice(0, 10);
 
   return (
@@ -159,7 +164,13 @@ function Board({
       ) : (
         <ol>
           {ranked.map((r, i) => (
-            <li key={r.tableId} className={r.mine ? 'me' : undefined}>
+            // `mine` is computed HERE, at render, never stamped into the cached
+            // row. Folding happens in a rotating window of six tables per pass
+            // and the first pass runs before onboarding has resolved this
+            // browser's table id, so a row folded early would cache
+            // `mine: false` and keep showing the player as a stranger on their
+            // own board for up to ceil(N/6) passes.
+            <li key={r.tableId} className={r.tableId === myTableId ? 'me' : undefined}>
               <span className="pos">{i + 1}</span>
               <span className="who">{r.name}</span>
               {/* NOT `dip` — that class is the full-screen dip bed
@@ -176,12 +187,14 @@ function Board({
   );
 }
 
-export function Boards({ rows, hosting, hosted, open, onToggle }: {
+export function Boards({ rows, hosting, hosted, open, onToggle, myTableId }: {
   rows: BoardRow[];
   hosting: boolean;
   hosted: number;
   open: boolean;
   onToggle: () => void;
+  /** Live, from App — NOT baked into `rows`. See the `me` class below. */
+  myTableId: string | null;
 }) {
   const topCrisp = rows.reduce<BoardRow | null>((best, r) => (!best || r.crispest > best.crispest ? r : best), null);
 
@@ -207,12 +220,12 @@ export function Boards({ rows, hosting, hosted, open, onToggle }: {
             <Board
               title="TOTAL CRUNCH" kind="marathon" unit=" chips"
               note="Lifetime work, never multiplied, never lost. A machine that fries all night will out-work a browser tab — that is what this board measures, and no amount of luck closes it."
-              rows={rows} valueOf={(r) => r.total}
+              rows={rows} valueOf={(r) => r.total} myTableId={myTableId}
             />
             <Board
               title="CRISPEST CHIP" kind="sprint" unit=" bits"
               note="The single crispiest proof anyone has ever banked. One basket, one lucky run — a tab left open can take this off a machine that has been frying for a week."
-              rows={rows} valueOf={(r) => r.crispest}
+              rows={rows} valueOf={(r) => r.crispest} myTableId={myTableId}
             />
           </div>
           <p className="boards-foot">

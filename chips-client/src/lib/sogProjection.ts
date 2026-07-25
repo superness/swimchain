@@ -9,12 +9,14 @@
  *
  * Lives in `lib/` rather than inside Bowl.tsx (where the task brief drafted it)
  * for one reason: it is a mirror of `applySog`, and a mirror that silently
- * drifts from its original is a display that lies. Here it is dependency-free
- * and pinned against the REAL fold by sogProjection.test.ts. It also reuses the
- * fold's own exported `sogHoursFor`, so the clamp can never diverge at all.
+ * drifts from its original is a display that lies. Here it is pinned against
+ * the REAL fold by sogProjection.test.ts, and it reuses the fold's own exported
+ * `sogHoursFor` AND `sogNum`, so neither the clamp nor the dip-then-airtight
+ * numerator can diverge at all. Only the per-hour loop is restated, because the
+ * fold's mutates `ChipsState` in place and this must not.
  */
-import { DIP_TIERS, SOG_BASE_NUM, SOG_DEN, AIRTIGHT_BONUS } from './chipsConst';
-import { sogHoursFor, type ChipsState } from './chipsEngine';
+import { SOG_DEN } from './chipsConst';
+import { sogHoursFor, sogNum, type ChipsState } from './chipsEngine';
 
 /**
  * The bowl as it will be once the next move lands, given wall-clock `nowMs`.
@@ -30,7 +32,7 @@ export function projectedCrumbs(state: ChipsState, nowMs: number): number {
   let crumbs = state.crumbs;
   if (crumbs <= 0) return crumbs;
   const hours = sogHoursFor(state.lastConfirmedAt, nowMs);
-  const num = (DIP_TIERS[state.dipIndex].sogNum ?? SOG_BASE_NUM) + (state.airtight ? AIRTIGHT_BONUS : 0);
+  const num = sogNum(state);
   for (let i = 0; i < hours && crumbs > 0; i++) crumbs = Math.floor((crumbs * num) / SOG_DEN);
   return crumbs;
 }

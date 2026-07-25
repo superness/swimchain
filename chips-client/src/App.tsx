@@ -121,11 +121,38 @@ const trace: (msg: string) => void = import.meta.env.DEV
   ? (msg) => console.debug('[chips]', msg)
   : () => { /* no-op */ };
 
+const NAME_A = ['Night', 'Corner', 'Back', 'Second', 'Late', 'Salt', 'Oil', 'Counter'];
+const NAME_B = ['Cook', 'Fryer', 'Hand', 'Shift', 'Station', 'Rail'];
+
+/** A random suggestion for the apron field. The player sees it and can edit it
+ *  before anything is published, so randomness is fine HERE and only here. */
 function defaultName(): string {
-  const a = ['Night', 'Corner', 'Back', 'Second', 'Late', 'Salt', 'Oil', 'Counter'];
-  const b = ['Cook', 'Fryer', 'Hand', 'Shift', 'Station', 'Rail'];
   const n = Math.floor(Math.random() * 900 + 100);
-  return `${a[Math.floor(Math.random() * a.length)]} ${b[Math.floor(Math.random() * b.length)]} ${n}`;
+  return `${NAME_A[Math.floor(Math.random() * NAME_A.length)]} ${NAME_B[Math.floor(Math.random() * NAME_B.length)]} ${n}`;
+}
+
+/**
+ * The name to fall back on when we are about to create a table and have no
+ * stored one. DETERMINISTIC in the pubkey, never random.
+ *
+ * `defaultName()` draws from 8x6x900 = 43,200 combinations. Using it here means
+ * that if `localStorage` is cleared (or was never written) AND the reclaim scan
+ * misses this identity's existing table — peer views of a space are known to be
+ * partial, so `listTables` can legitimately come back short — the client mints a
+ * table under a name the player has never seen, silently abandoning their bowl
+ * and their whole lifetime crunch. Deriving from the pubkey means a repeat of
+ * that situation reproduces the SAME name and therefore the same table content,
+ * which dedupes to the same content_id and the same table rather than a fresh
+ * fork each time. (It cannot undo a fork that already happened — it stops the
+ * client manufacturing a new one on every reload.)
+ */
+function nameFromKey(pubkeyHex: string): string {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < pubkeyHex.length; i++) {
+    h ^= pubkeyHex.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return `${NAME_A[h % NAME_A.length]} ${NAME_B[(h >>> 5) % NAME_B.length]} ${100 + ((h >>> 11) % 900)}`;
 }
 
 function readName(): string {
@@ -242,7 +269,7 @@ export function App() {
           setTableId(mine.tableId);
           return;
         }
-        const name = (cookName || defaultName()).slice(0, 80);
+        const name = (cookName || nameFromKey(me.publicKeyHex)).slice(0, 80);
         trace(`table: creating "${name}" (this mines an action PoW)`);
         const id = await host.createTable(me, name);
         setCookName(name);
@@ -406,7 +433,7 @@ export function App() {
     return () => clearTimeout(t);
   }, [notice]);
 
-  const { rows, hosting, hosted } = useBoards(host, tableId);
+  const { rows, hosting, hosted } = useBoards(host);
   const seatLine = useFlavour(SEAT_LINES, Boolean(me) && !seated);
   const tableLine = useFlavour(TABLE_LINES, seated && !tableId);
   const busyLine = useFlavour(busy?.pool ?? BANK_LINES, Boolean(busy));
@@ -461,7 +488,15 @@ export function App() {
           />
         </label>
         <button className="big" onClick={openShop}>tie on the apron</button>
-        <p className="fine">Makes a key that lives only in this browser. No account, no email.</p>
+        {/* Honest about BOTH halves. The key really does stay in this browser —
+            but the same click also claims a seat and chalks this name up on a
+            table anyone on the network can read, and posts do not come back
+            down. Saying only the local half would be describing half the
+            button. */}
+        <p className="fine">
+          Makes a key that lives only in this browser — no account, no email.
+          It then chalks that name onto a table on the public network, where it stays.
+        </p>
       </Doorway>
     );
   }
@@ -543,7 +578,8 @@ export function App() {
         </aside>
       </main>
 
-      <Boards rows={rows} hosting={hosting} hosted={hosted} open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
+      <Boards rows={rows} hosting={hosting} hosted={hosted} myTableId={tableId}
+        open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
 
       {busy && (
         <div className="working" role="status">

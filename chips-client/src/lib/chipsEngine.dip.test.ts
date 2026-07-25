@@ -4,12 +4,13 @@
  * Run: npx tsx src/lib/chipsEngine.dip.test.ts
  */
 import { foldChips, dipIndexFor, type ChipsReply, type ChipsHeader } from './chipsEngine';
-import { DIP_TIERS, CONGEAL_GAP_MS, CRUMBS_PER_CHIP } from './chipsConst';
+import { DIP_TIERS, CONGEAL_GAP_MS, CRUMBS_PER_CHIP, UPGRADES, START_BOWL_CAP } from './chipsConst';
 
 const A = 'a'.repeat(64);
 const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'T', owner: A };
 const TABLE = 'sha256:table';
 const T0 = 1_000_000_000;
+const HOUR = 3_600_000;
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -28,6 +29,9 @@ let nonceSeq = 0;
 const bank = (bits: number, cid: string, ms: number): ChipsReply => ({
   author_id: A, body: `bank ${bits} ${(++nonceSeq).toString(16)}#${ms}~`,
   block_height: 1, content_id: cid, created_at: ms,
+});
+const buy = (key: string, cid: string, ms: number): ChipsReply => ({
+  author_id: A, body: `buy ${key}#${ms}~`, block_height: 1, content_id: cid, created_at: ms,
 });
 
 // 1) Tier boundaries are inclusive at the threshold.
@@ -50,9 +54,66 @@ const bank = (bits: number, cid: string, ms: number): ChipsReply => ({
 }
 
 // 3) Guacamole browns: its sog numerator is lower than the base.
+//
+// These two assert the CONSTANTS only. Blocks 4 and 5 are what prove the fold
+// actually reads them — a table of numbers nothing reaches is not coverage.
 {
   check('guac sets a faster sog', DIP_TIERS[1].sogNum === 96);
   check('guac pays more per chip', DIP_TIERS[1].payNum === 11 && DIP_TIERS[1].payDen === 10);
+}
+
+// 4) GUACAMOLE'S MODIFIERS, REACHED BY THE FOLD.
+//
+// Guac is the only tier with BOTH a payout multiplier and a sog override, and
+// it is a narrow window — lifetime [300, 3000) — so a fixture has to be aimed
+// at it deliberately. Hand-computed from chipsConst.ts:
+//
+//   g1: bank 17 bits. 1000 * 2^(17-8)        = 512,000
+//       17 >= GOLDEN_BITS 16 -> floor(*5/2)  = 1,280,000
+//       salsa has no payNum, seasoning 1/1   = 1,280,000
+//       bowl rim                             -> 100,000
+//       lifetime 2^9 = 512, in [300, 3000)   -> dipIndex 1 (guac)
+//   g2: one hour later. Decay at guac's 96 (not the base 97), airtight off:
+//       floor(100,000 * 96/100)              = 96,000
+//       bank 8: 1000 * 2^0 = 1000, below golden, guac payNum:
+//       floor(1000 * 11/10)                  = 1,100
+//       total                                = 97,100
+//
+// Both counterfactuals are excluded by that single number: a fold that ignored
+// payNum lands on 97,000, and one that decayed at the base 97 lands on 98,100.
+{
+  const rs = [bank(17, 'g1', T0), bank(8, 'g2', T0 + HOUR)];
+  const s = foldChips(H, TABLE, rs, new Map([['g1', 17], ['g2', 8]]));
+  check('guac window is actually entered', s.dipIndex === 1, { dipIndex: s.dipIndex, lifetime: s.lifetimeChips });
+  const g2 = s.moves.find((m) => m.content_id === 'g2');
+  // Asserted on the MOVE, not on `crumbs`: the bowl is at its rim here, so a
+  // payout assertion read off state alone would be swallowed by the cap.
+  check('guac payNum 11/10 reaches the payout', g2?.crumbs === 1100, g2);
+  check('guac sogNum 96 reaches the decay', s.crumbs === 97_100, s.crumbs);
+}
+
+// 5) THE SOG RESOLUTION ORDER, IN THE FOLD: dip sets the base, airtight adds.
+//
+// The docblocks on this file and on chipsEngine.sog.test.ts both claim to cover
+// this; until this block existed neither did, because `airtight` was never
+// successfully bought anywhere. Hand-computed:
+//
+//   o1: bank 17 -> bowl rim 100,000, lifetime 512 -> guac
+//   o2: buy airtight 1s later (no whole hour, so no decay):
+//       100,000 - 70,000                     = 30,000, airtight on
+//   o3: one hour later. numerator = guac's 96 + AIRTIGHT_BONUS 2 = 98
+//       floor(30,000 * 98/100)               = 29,400
+//       bank 8 under guac: floor(1000*11/10) = 1,100
+//       total                                = 30,500
+//
+// The number discriminates all three plausible orderings: dip-overrides-
+// airtight (96) gives 29,900; airtight-overrides-dip (99) gives 30,800.
+{
+  const rs = [bank(17, 'o1', T0), buy('airtight', 'o2', T0 + 1000), bank(8, 'o3', T0 + 1000 + HOUR)];
+  const s = foldChips(H, TABLE, rs, new Map([['o1', 17], ['o3', 8]]));
+  check('airtight is affordable off one big chip', START_BOWL_CAP >= UPGRADES.airtight.cost);
+  check('airtight bought', s.airtight === true && s.owned.has('airtight'), [...s.owned]);
+  check('dip base then airtight bonus (96+2)', s.crumbs === 30_500, s.crumbs);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

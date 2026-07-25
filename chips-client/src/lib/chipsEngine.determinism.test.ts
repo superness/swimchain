@@ -23,8 +23,19 @@ const replies: ChipsReply[] = [
   { author_id: A, body: `bank 10 bb#${T0 + 2000}~`, block_height: 2, content_id: 'c3', created_at: T0 + 2000 },
   { author_id: A, body: `bank 12 cc#${T0 + 9_000_000}~`, block_height: 2, content_id: 'c4', created_at: T0 + 9_000_000 },
   { author_id: A, body: `buy bowl1#${T0 + 9_001_000}~`, block_height: null, content_id: 'c5', created_at: T0 + 9_001_000 },
+  // THE TIEBREAK PAIR. Identical block_height AND identical authoring-ms, so
+  // `orderReplies` reaches its third key, content_id, and nothing else can
+  // separate them. Without that branch the sort is merely stable and these two
+  // fold in ARRAY order, which is exactly what the shuffle below varies.
+  //
+  // They are chosen so the two orders cannot agree: 'tie-a' banks a chip that
+  // fills the bowl to its rim and 'tie-b' spends 70,000 on airtight, so
+  // bank-then-buy ends at rim-minus-cost while buy-then-bank spends first and
+  // then refills to the rim. Two different bowls, deterministically.
+  { author_id: A, body: `bank 16 dd#${T0 + 9_002_000}~`, block_height: 3, content_id: 'tie-a', created_at: T0 + 9_002_000 },
+  { author_id: A, body: `buy airtight#${T0 + 9_002_000}~`, block_height: 3, content_id: 'tie-b', created_at: T0 + 9_002_000 },
 ];
-const verified = new Map([['c1', 15], ['c3', 10], ['c4', 12]]);
+const verified = new Map([['c1', 15], ['c3', 10], ['c4', 12], ['tie-a', 16]]);
 
 const snap = (s: ReturnType<typeof foldChips>) =>
   JSON.stringify({
@@ -38,9 +49,24 @@ const a = snap(foldChips(H, TABLE, replies, verified));
 const b = snap(foldChips(H, TABLE, replies, verified));
 check('same input folds identically', a === b);
 
-const shuffled = [replies[3], replies[0], replies[4], replies[2], replies[1]];
+// The tie pair is presented REVERSED here (replies[6] before replies[5]). If
+// `orderReplies` ever loses its content_id tiebreak, this line is what fails.
+const shuffled = [replies[3], replies[6], replies[0], replies[4], replies[5], replies[2], replies[1]];
 const c = snap(foldChips(H, TABLE, shuffled, verified));
 check('input order does not affect state', a === c, { a, c });
+
+// The tie pair must genuinely be order-SENSITIVE, or the assertion above is
+// satisfied by a fixture that could not have detected anything. Folding the two
+// tied replies alone, in each array order, must still agree — and must agree on
+// the order content_id dictates ('tie-a' < 'tie-b', so the bank lands first).
+{
+  const pair = [replies[5], replies[6]];
+  const fwd = snap(foldChips(H, TABLE, pair, verified));
+  const rev = snap(foldChips(H, TABLE, [replies[6], replies[5]], verified));
+  check('tied replies fold identically in either order', fwd === rev, { fwd, rev });
+  const s = foldChips(H, TABLE, pair, verified);
+  check('the tie resolves bank-before-buy, by content_id', s.owned.has('airtight'), [...s.owned]);
+}
 
 // A client missing a verification must not silently credit the chip.
 const partial = snap(foldChips(H, TABLE, replies, new Map([['c1', 15]])));

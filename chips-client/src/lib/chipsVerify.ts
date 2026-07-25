@@ -13,7 +13,13 @@ import { verifyChipBits } from './chipsPow';
 import { parseMove, type ChipsReply } from './chipsEngine';
 import type { VerifyReq, VerifyRes } from './chipsVerify.worker';
 
-const STORE_KEY = 'chips.verified.v1';
+/**
+ * v2: the cache key gained the table id and the author. See `cacheKey`. The
+ * version bump is load-bearing — v1 entries are keyed on content_id alone, and
+ * silently reading them back under the new scheme would reintroduce exactly the
+ * ambiguity the new key exists to remove.
+ */
+const STORE_KEY = 'chips.verified.v2';
 const memory = new Map<string, number>();
 let loaded = false;
 
@@ -50,6 +56,12 @@ function getHasher(): Worker | null {
       // The worker died. Fail every waiter so `verifyReplies` rejects rather
       // than hanging forever, and drop back to inline hashing from here on —
       // a frozen tab beats a game that never finishes counting its chips.
+      //
+      // TERMINATE before dropping the reference. `onerror` fires for an
+      // unhandled error inside a worker that is still ALIVE, so merely nulling
+      // `hasher` orphans a live thread (and its Argon2id 8 MiB arena) for the
+      // life of the tab, with nothing left holding a handle to stop it.
+      w.terminate();
       hasher = null;
       const waiters = [...pending.values()];
       pending.clear();
@@ -111,6 +123,27 @@ export function clearVerifyCache(): void {
 }
 
 /**
+ * The cache key must DETERMINE the cached value.
+ *
+ * The value is `verifyChipBits(author_id, tableId, ms, nonce)` — a function of
+ * four things. `content_id` is `sha256(`${title}\n\n${body}`)` and nothing else:
+ * the body carries `bits`, `nonce` and `ms`, but NOT the author and NOT the
+ * table. So content_id alone under-determines the value, and this cache is
+ * module-global, persisted to localStorage, and populated from EVERY table the
+ * boards rotate through — one process sees many (table, author) pairs.
+ *
+ * Content dedup plus the owner filter above appear to close every currently
+ * reachable collision, but "no reachable collision today" is a property of two
+ * other subsystems, not of this cache. A memo sitting directly under a
+ * consensus fold should not depend on that: key it on everything the value
+ * depends on. `ms` and `nonce` are omitted only because they are carried inside
+ * the body that content_id already commits to.
+ */
+function cacheKey(tableId: string, authorId: string, contentId: string): string {
+  return `${tableId}:${authorId}:${contentId}`;
+}
+
+/**
  * Verify every bank reply, returning content_id -> actual leading zero bits.
  * The result is complete for all bank moves, which is `foldChips`'s precondition.
  */
@@ -134,13 +167,16 @@ export async function verifyReplies(
   let dirty = false;
 
   for (const { reply, parsed } of banks) {
-    let bits = memory.get(reply.content_id);
+    const key = cacheKey(tableId, reply.author_id, reply.content_id);
+    let bits = memory.get(key);
     if (bits === undefined) {
       bits = await hashBits(reply.author_id, tableId, parsed.ms, parsed.nonce);
       hashCount++;
-      memory.set(reply.content_id, bits);
+      memory.set(key, bits);
       dirty = true;
     }
+    // The RETURNED map is still keyed on content_id alone: that is `foldChips`'s
+    // interface, and within one fold the table and owner are both fixed.
     out.set(reply.content_id, bits);
     onProgress?.(++done, banks.length);
   }

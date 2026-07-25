@@ -46,10 +46,12 @@ const vAll = (rs: ChipsReply[], bits: number) => new Map(rs.map((r) => [r.conten
 // drives any bowl under ~1e12 to zero within ~379 hours, well inside the
 // 720-hour clamp, and applySog's `crumbs > 0` loop break already bounds the
 // work. Deleting the clamp entirely would produce bit-identical output here.
-// The clamp is tested for real in chipsEngine.buy.test.ts, where `airtight`
-// (99/100) still leaves a positive remainder at 720 h that an unclamped fold
-// would grind to zero. Do not add a clamp assertion to this block — it would
-// pass under a broken clamp and give false confidence.
+// The clamp is tested for real in BLOCK 7 OF THIS FILE, arithmetically against
+// the exported `sogHoursFor`. (This comment used to point at
+// chipsEngine.buy.test.ts, which points back here and has never contained a
+// clamp test — a comment asserting coverage that does not exist is worse than
+// no comment.) Do not add a clamp assertion to this block — it would pass under
+// a broken clamp and give false confidence.
 {
   const rs = [bank(20, 'c1', T0), bank(8, 'c2', T0 + 5000 * HOUR)];
   const started = Date.now();

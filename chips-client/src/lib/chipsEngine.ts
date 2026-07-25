@@ -104,20 +104,29 @@ export function parseMove(body: string): ParsedMove | null {
   return null;
 }
 
-/** Confirmed first (by height), then authoring-ms, then content_id. Pending last. */
+/**
+ * Confirmed first (by height), then authoring-ms, then content_id. Pending last.
+ *
+ * `authoringMs` is a regex over the body, so it is computed ONCE per reply and
+ * carried alongside it rather than being called from the comparator — a
+ * comparator that re-parses would run ~2 regexes per comparison, i.e. O(N log N)
+ * regex executions on the main thread. Callers additionally filter to the
+ * table owner BEFORE calling this, so N is the owner's own move count and a
+ * stranger cannot inflate it (see `foldChips`).
+ */
 function orderReplies(replies: ChipsReply[]): ChipsReply[] {
-  return [...replies].sort((a, b) => {
-    const ah = a.block_height ?? Number.MAX_SAFE_INTEGER;
-    const bh = b.block_height ?? Number.MAX_SAFE_INTEGER;
+  // Fall back to 0, never created_at: the node stamps PENDING replies'
+  // created_at at query time, so using it here would order unparsed replies
+  // differently on every client and every refresh (the reef pending bug).
+  const keyed = replies.map((r) => ({ r, ms: authoringMs(r.body) ?? 0 }));
+  keyed.sort((a, b) => {
+    const ah = a.r.block_height ?? Number.MAX_SAFE_INTEGER;
+    const bh = b.r.block_height ?? Number.MAX_SAFE_INTEGER;
     if (ah !== bh) return ah - bh;
-    // Fall back to 0, never created_at: the node stamps PENDING replies'
-    // created_at at query time, so using it here would order unparsed replies
-    // differently on every client and every refresh (the reef pending bug).
-    const am = authoringMs(a.body) ?? 0;
-    const bm = authoringMs(b.body) ?? 0;
-    if (am !== bm) return am - bm;
-    return a.content_id < b.content_id ? -1 : a.content_id > b.content_id ? 1 : 0;
+    if (a.ms !== b.ms) return a.ms - b.ms;
+    return a.r.content_id < b.r.content_id ? -1 : a.r.content_id > b.r.content_id ? 1 : 0;
   });
+  return keyed.map((x) => x.r);
 }
 
 export function dipIndexFor(lifetimeChips: number): number {
@@ -128,8 +137,14 @@ export function dipIndexFor(lifetimeChips: number): number {
   return idx;
 }
 
-/** Sog numerator: the dip tier sets the base, `airtight` then adds. Order fixed. */
-function sogNum(state: ChipsState): number {
+/**
+ * Sog numerator: the dip tier sets the base, `airtight` then adds. Order fixed.
+ *
+ * Exported so the DISPLAY-ONLY projection (sogProjection.ts) can consume the
+ * fold's own resolution instead of hand-copying it — a second copy of this
+ * two-line rule is a display that lies the moment either half is retuned.
+ */
+export function sogNum(state: ChipsState): number {
   const tier = DIP_TIERS[state.dipIndex];
   const base = tier.sogNum ?? SOG_BASE_NUM;
   return base + (state.airtight ? AIRTIGHT_BONUS : 0);
@@ -165,7 +180,17 @@ function applySog(state: ChipsState, fromMs: number, toMs: number): void {
   }
 }
 
-/** `at` is the ACTION timestamp (created_at), never the body's authoring-ms. */
+/**
+ * `at` is the ACTION timestamp (created_at), never the body's authoring-ms.
+ *
+ * The payout resolution order is FIXED at: base -> golden -> dip `payNum` ->
+ * congeal x2 -> seasoning, with `Math.floor` at each multiplying step. It is
+ * consensus-critical, not cosmetic: integer division does not commute, so
+ * swapping any two steps changes crumbs by a few units on some inputs and every
+ * client that reordered them would disagree about the same table forever. The
+ * spec pins this same order (docs/superpowers/specs/2026-07-25-chips-and-dip-design.md).
+ * Do not reorder these lines, and do not "simplify" them into one expression.
+ */
 function payoutFor(state: ChipsState, bits: number, at: number): number {
   let crumbs = CRUMBS_PER_CHIP * 2 ** (bits - BANK_MIN_BITS);
   if (bits >= state.goldenBits) crumbs = Math.floor((crumbs * GOLD_NUM) / GOLD_DEN);
@@ -205,13 +230,26 @@ export function foldChips(
   const state = initialState();
   const seenProofs = new Set<string>();
 
-  for (const reply of orderReplies(replies)) {
-    // OWNER ENFORCEMENT. Anyone may reply to a public post, so without this a
-    // stranger drives your state for the price of one reply: floor your bowl
-    // by advancing the clock, inflate your lifetime into a faster-decaying dip
-    // tier, or spend your crumbs. Skipped BEFORE any clock advance or mutation.
-    if (reply.author_id !== header.owner) continue;
+  // OWNER ENFORCEMENT, and it runs BEFORE the sort for two separate reasons.
+  //
+  // CORRECTNESS: anyone may reply to a public post, so without this a stranger
+  // drives your state for the price of one reply: floor your bowl by advancing
+  // the clock, inflate your lifetime into a faster-decaying dip tier, or spend
+  // your crumbs. Foreign replies are dropped before any clock advance, any
+  // mutation, and before they appear in `moves`.
+  //
+  // COST: `loadTable` pulls up to 100k replies and the boards re-fold on every
+  // rotation, so sorting first would let N spam replies buy every observer an
+  // O(N log N) main-thread sort of content they are about to discard. Filtering
+  // first is what makes the fold's work proportional to the OWNER's move count,
+  // matching the identical filter verifyReplies already applies before hashing.
+  //
+  // This cannot change fold OUTPUT: the comparator is a total order over
+  // (block_height, authoring-ms, content_id), so the owner's replies come out
+  // in the same sequence whether the strangers were removed before or after.
+  const mine = replies.filter((r) => r.author_id === header.owner);
 
+  for (const reply of orderReplies(mine)) {
     const parsed = parseMove(reply.body);
     if (!parsed) {
       state.moves.push({ content_id: reply.content_id, ms: 0, outcome: 'rejected-parse' });
