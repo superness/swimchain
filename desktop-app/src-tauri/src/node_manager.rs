@@ -178,7 +178,11 @@ impl NodeManager {
         ]);
 
         // Spawn the node process with SWIMCHAIN_PASSWORD env var
-        let mut child = Command::new(&self.binary_path)
+        let mut cmd = Command::new(&self.binary_path);
+        // `sw` is a console binary; without this it pops a blank command prompt
+        // next to the app on Windows. Its output already goes to the log file.
+        crate::proc::no_console(&mut cmd);
+        let mut child = cmd
             .args(&args)
             .env("SWIMCHAIN_PASSWORD", password)
             .stdout(Stdio::piped())

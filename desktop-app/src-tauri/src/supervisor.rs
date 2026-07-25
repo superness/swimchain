@@ -51,7 +51,9 @@ impl Supervisor {
         args: &[&str],
         data_dir: &Path,
     ) -> Result<(), String> {
-        let child = Command::new(program)
+        let mut cmd = Command::new(program);
+        crate::proc::no_console_std(&mut cmd);
+        let child = cmd
             .args(args)
             .arg("--data-dir")
             .arg(data_dir)
