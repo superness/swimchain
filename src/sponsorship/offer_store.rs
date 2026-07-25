@@ -82,6 +82,29 @@ impl OfferStore {
     ///
     /// Stores the offer and adds to the by_sponsor index.
     pub fn create_offer(&self, offer: &PublicSponsorshipOffer) -> Result<(), SponsorshipError> {
+        // An auto-approving offer with NO space scope is an open door: anyone
+        // who claims it is sponsored globally, without review, and can then
+        // write anywhere on the network.
+        //
+        // Neither half is dangerous alone. Scoped auto-approve is the basis of
+        // game onboarding — a claimant is bound to that one space
+        // (`SponsorshipStore::is_authorized_in_space`). Unscoped is fine when a
+        // human approves each claim. Only the COMBINATION hands unrestricted
+        // write access to whoever asks first.
+        //
+        // Enforced HERE rather than only at the RPC boundary because this is
+        // the one function every path converges on — local creation, gossip
+        // ingest from a peer, and offer-sync all call it. A peer running an
+        // older or modified node therefore cannot propagate this combination
+        // into our store.
+        if offer.auto_approve && offer.space_scope.is_none() {
+            return Err(SponsorshipError::InvalidInvariant(
+                "auto_approve offer must carry a space_scope: an auto-approving offer with no \
+                 scope grants unrestricted network write access to anyone who claims it"
+                    .into(),
+            ));
+        }
+
         let key = &offer.offer_id;
         let value = bincode::serialize(offer)?;
 

@@ -502,6 +502,20 @@ fn invite(
         return Err(CliError::Other("--expires-hours must be at least 1".into()));
     }
 
+    // An invite link auto-approves whoever redeems it. Without a scope that is
+    // unrestricted network write access handed to anyone holding the link, so
+    // the node rejects the combination outright — fail here instead, with an
+    // explanation, rather than surfacing an RPC error after the PoW and signing
+    // work is already done.
+    if space_scope.is_none() {
+        return Err(CliError::Other(
+            "--space is required: an invite auto-approves its claimant, and an invite with no \
+             space scope would grant unrestricted network write access to anyone holding the \
+             link. Pass --space <sp1...> to bind redeemers to one space."
+                .into(),
+        ));
+    }
+
     let keypair = load_keypair(config)?;
     let pubkey = keypair.public_key;
     let pubkey_hex = hex::encode(pubkey.as_bytes());

@@ -226,6 +226,13 @@ async function doProfile() {
 const FAUCET_MIN_FREE_SLOTS = 3;   // open a new offer when fewer than this remain
 const FAUCET_OFFER_SLOTS = 10;     // slots per offer (node max is 10)
 const FAUCET_EXPIRES_DAYS = 30;
+// REQUIRED to open an offer. The faucet's offers are auto_approve, and an
+// auto_approve offer with no space scope grants unrestricted network write
+// access to anyone who claims it — the node now rejects that combination
+// outright. Set FAUCET_SPACE_SCOPE to the sp1... space claimants should be
+// bound to; with it unset the faucet still approves pending claims but will
+// not mint anything.
+const FAUCET_SPACE_SCOPE = (process.env.FAUCET_SPACE_SCOPE || '').trim();
 
 // Sign RAW bytes via the node (sign_message takes a hex payload and signs its bytes).
 async function signBytesWithNode(buf) {
@@ -284,12 +291,14 @@ async function doFaucet() {
   // 3. Keep the pool topped up.
   const freeSlots = mine.reduce((a, o) => a + (o.slots_remaining ?? 0), 0);
   let created = 0;
-  if (freeSlots < FAUCET_MIN_FREE_SLOTS) {
+  if (freeSlots < FAUCET_MIN_FREE_SLOTS && !FAUCET_SPACE_SCOPE) {
+    notes.push('want a new offer but FAUCET_SPACE_SCOPE is unset — refusing to mint an unscoped auto-approve offer');
+  } else if (freeSlots < FAUCET_MIN_FREE_SLOTS) {
     try {
       const ts = Math.floor(Date.now() / 1000);
       const msg = offerCreationSigMessage({ slots: FAUCET_OFFER_SLOTS, offerType: 0, expiresDays: FAUCET_EXPIRES_DAYS, minPow: 0, appRequired: false, timestamp: ts });
       const sig = await signBytesWithNode(msg);
-      const r = await rpc('create_sponsorship_offer', { sponsor_pubkey: AUTHOR, slots: FAUCET_OFFER_SLOTS, offer_type: 'open', expires_days: FAUCET_EXPIRES_DAYS, min_pow_difficulty: 0, application_required: false, auto_approve: true, signature: sig, timestamp: ts });
+      const r = await rpc('create_sponsorship_offer', { sponsor_pubkey: AUTHOR, slots: FAUCET_OFFER_SLOTS, offer_type: 'open', expires_days: FAUCET_EXPIRES_DAYS, min_pow_difficulty: 0, application_required: false, auto_approve: true, space_scope: FAUCET_SPACE_SCOPE, signature: sig, timestamp: ts });
       created = 1;
       notes.push(`opened ${String(r?.offer_id).slice(0, 8)}`);
     } catch (e) { notes.push(`create: ${e.message}`); }
