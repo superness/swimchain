@@ -1610,12 +1610,11 @@ export async function verifyReplies(
   let dirty = false;
 
   for (const { reply, parsed } of banks) {
-    const cacheKey = `${reply.content_id}`;
-    let bits = memory.get(cacheKey);
+    let bits = memory.get(reply.content_id);
     if (bits === undefined) {
       bits = await verifyChipBits(reply.author_id, tableId, parsed.ms, parsed.nonce);
       hashCount++;
-      memory.set(cacheKey, bits);
+      memory.set(reply.content_id, bits);
       dirty = true;
     }
     out.set(reply.content_id, bits);
@@ -1998,17 +1997,32 @@ Renders `state.fryers` baskets from `useFryers`. Each basket shows its chip cris
 
 ```tsx
 async function bankChip(index: number) {
-  const chip = take(index);
-  if (!chip) return;
+  // bank() is DESTRUCTIVE: it retires the basket and restarts that fryer
+  // immediately, so `chip` is the only remaining reference to this proof.
+  // A second click returns null until the new chip crisps.
+  const chip = bank(index);
+  if (!chip) return;                      // not yet at BANK_MIN_BITS, or already banked
   setBanking(true);
   try {
     await host.submitMove(id, tableId, bankBody(chip.bits, chip.nonce, chip.ms));
     await refresh();
+  } catch (err) {
+    // The proof stays valid indefinitely — the fold never compares the body's
+    // authoring-ms against created_at — so a failed submit (offline, sponsor
+    // rejection) must be retried with THIS SAME object, not re-mined. Dropping
+    // it here silently discards work the player already paid for in CPU.
+    setPendingRetry({ index, chip });
+    throw err;
   } finally {
     setBanking(false);
   }
 }
 ```
+
+Render `chips.map(...)` directly — never `Array.from({length: state.fryers})` indexed
+into `chips`, because effects flush after render, so for one render `chips.length`
+still reflects the previous fryer count. And do not put `bank` in a `useEffect` or
+`useCallback` dependency array: it is a fresh function identity every render.
 
 Show the golden band as an in-world cue (the chip visibly turns golden at `state.goldenBits`), never as a tooltip explaining the multiplier.
 
