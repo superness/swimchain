@@ -232,11 +232,25 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
     async createTable(id, name, onProgress) {
       assertValidTableName(name);
       const title = name;
-      // No `owner` field here: ChipsHeader.owner (chipsEngine.ts) is meant to
-      // come from the post's authenticated `author_id` (as returned by the
-      // RPC, e.g. via TableSummary.authorId or ContentResult.author_id), not
-      // from self-declared JSON a spoofed copy of this body could carry.
-      const body = JSON.stringify({ v: 1, kind: 'chips-table', name });
+      // `owner` is here to make the table's CONTENT author-dependent, and for
+      // no other reason — nothing downstream trusts it as an authority.
+      //
+      // A post's content_id is sha256(`${title}\n\n${body}`) and nothing else
+      // (swimchain-react/src/lib/signAction.ts:30-32) — the author is NOT in
+      // the preimage. Without an owner field, two cooks who pick the same name
+      // mint the byte-identical post and therefore THE SAME TABLE. `defaultName`
+      // draws from 8x6x900 = 43,200 combinations, so that starts happening in
+      // the low hundreds of players by birthday collision alone, and instantly
+      // for any two people who type the same name. The second player's
+      // `tables.find(t => t.authorId === me.publicKeyHex)` never matches, so
+      // they burn a full post Argon2id grind on EVERY page load, and the boards
+      // credit their table to the first author, so their chips never appear.
+      //
+      // Binding the pubkey into the body makes the content_id author-dependent
+      // and the collision impossible. listTables still derives `authorId` from
+      // the authenticated `author_id` the node returns, never from this field —
+      // see the spoof check there.
+      const body = JSON.stringify({ v: 1, kind: 'chips-table', name, owner: id.publicKeyHex });
       // POST content_hash / PoW challenge content is `${title}\n\n${body}` per
       // the node (src/rpc/methods.rs submit_post) and contentHashForPost's
       // doc comment — reef's submitMinedPost builds the exact same string
@@ -320,10 +334,25 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
         seen.add(c.content_id);
         try {
           const header = JSON.parse(headerJson(c.body ?? ''));
-          if (header?.kind === 'chips-table') {
-            const authorId = bytesToHex(decodeAddress(c.author_id));
-            out.push({ tableId: c.content_id, authorId, name: String(header.name ?? 'Untitled') });
-          }
+          if (header?.kind !== 'chips-table') continue;
+
+          // AUTHORITY IS THE NODE'S author_id, NOT the header. The header's
+          // `owner` exists only to make the content author-dependent (see
+          // createTable); trusting it would hand an attacker the table itself.
+          // Anyone can post a body carrying somebody else's pubkey — and App's
+          // reclaim lookup is `tables.find(t => t.authorId === me.publicKeyHex)`,
+          // so a forged header would make the victim adopt the attacker's table
+          // on their next load and abandon their own crumbs and lifetime crunch.
+          const authorId = bytesToHex(decodeAddress(c.author_id));
+
+          // Both shapes are tolerated: tables minted before `owner` existed
+          // (there are already some on mainnet) carry no owner and are listed
+          // on the strength of author_id alone. A table that DOES declare one
+          // and disagrees with its own author is a forgery, and is dropped.
+          const declared = typeof header.owner === 'string' ? header.owner.toLowerCase() : null;
+          if (declared !== null && declared !== authorId.toLowerCase()) continue;
+
+          out.push({ tableId: c.content_id, authorId, name: String(header.name ?? 'Untitled') });
         } catch { /* not a table post, or an undecodable author_id — skip */ }
       }
       return out;

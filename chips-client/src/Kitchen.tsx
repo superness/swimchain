@@ -69,13 +69,17 @@ function chipColors(crisp: number, golden: boolean) {
   // one (the first cut moved lightness only 36 points) makes a half-done chip
   // and a nearly-golden one look like the same chip under slightly different
   // light, which defeats the entire point of reading crispness off the object.
-  // Raw still tops out at pale DOUGH, not paper: past ~88% it reads as a white
-  // cut-out rather than as something that has yet to fry.
+  // Raw still tops out at pale DOUGH, not paper. The first cut said that and
+  // then set the ceiling at l 82 / light 88 anyway, which against the cream
+  // splashback read as a white cut-out pasted over the scene — exactly what
+  // this comment forbids. 74 is dough: clearly lighter than a fried chip, still
+  // plainly a solid object sitting in oil. The dark end is unchanged, so the
+  // full crisping ramp is only slightly shorter.
   const h = 46 - 20 * t;
   const s = 40 + 44 * t;
-  const l = 82 - 46 * t;
+  const l = 74 - 38 * t;
   return {
-    light: `hsl(${h} ${s}% ${Math.min(88, l + 9)}%)`,
+    light: `hsl(${h} ${s}% ${Math.min(84, l + 9)}%)`,
     mid: `hsl(${h} ${s}% ${l}%)`,
     dark: `hsl(${h - 7} ${s + 8}% ${Math.max(15, l - 23)}%)`,
     edge: `hsl(${h - 13} ${s + 12}% ${Math.max(10, l - 33)}%)`,

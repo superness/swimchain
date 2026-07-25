@@ -26,6 +26,7 @@ import { Boards, useBoards } from './Boards';
 import { compact } from './lib/format';
 
 const NAME_KEY = 'chips.cookname.v1';
+const NAPKIN_KEY = 'chips.napkin.v1';
 const POLL_MS = 15_000;
 
 /** A chip pulled from the oil that has not yet reached the chain. The `nonce`
@@ -38,6 +39,55 @@ interface NapkinChip {
   nonce: bigint;
   failed: boolean;
   why?: string;
+  /** Which table the proof is bound to. A chip's preimage includes the table
+   *  id, so a napkin chip is worthless on any other table and must never be
+   *  offered for retry against one. */
+  tableId: string;
+}
+
+/**
+ * The napkin, persisted.
+ *
+ * It used to live in React state only, which meant a reload during a failed
+ * submit destroyed the sole copy of a mined proof — the exact loss the napkin
+ * exists to prevent, and the most likely moment to reload is precisely when a
+ * submit is visibly stuck. It goes next to the verify cache, in localStorage.
+ *
+ * `nonce` is a bigint, which `JSON.stringify` throws on, so it is stored as
+ * hex. A parse failure must never take the game down with it — a lost napkin
+ * is a lost chip, an exception here would be a white page — so every path
+ * degrades to an empty napkin.
+ */
+function loadNapkin(): NapkinChip[] {
+  try {
+    const raw = localStorage.getItem(NAPKIN_KEY);
+    if (!raw) return [];
+    const rows = JSON.parse(raw) as unknown;
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((r): NapkinChip[] => {
+      const o = r as Record<string, unknown>;
+      if (typeof o?.ms !== 'number' || typeof o?.bits !== 'number'
+        || typeof o?.nonce !== 'string' || typeof o?.tableId !== 'string') return [];
+      try {
+        // Restored chips are always shown as failed: the browser went away
+        // mid-submit and cannot know whether it landed. Retrying is safe and
+        // self-healing either way — an identical bank body dedupes to the same
+        // content_id, and a duplicate proof folds as `rejected-duplicate`.
+        return [{
+          ms: o.ms, bits: o.bits, nonce: BigInt('0x' + o.nonce), tableId: o.tableId,
+          failed: true, why: 'the shop closed before this one went in',
+        }];
+      } catch { return []; }
+    });
+  } catch { return []; }
+}
+
+function saveNapkin(chips: NapkinChip[]): void {
+  try {
+    localStorage.setItem(NAPKIN_KEY, JSON.stringify(
+      chips.map((c) => ({ ms: c.ms, bits: c.bits, nonce: c.nonce.toString(16), tableId: c.tableId }))
+    ));
+  } catch { /* private mode or quota — the in-memory napkin still works */ }
 }
 
 const SEAT_LINES = [
@@ -110,7 +160,7 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [counting, setCounting] = useState<{ done: number; total: number } | null>(null);
   const [busy, setBusy] = useState<null | { pool: string[]; label: string }>(null);
-  const [napkin, setNapkin] = useState<NapkinChip[]>([]);
+  const [napkin, setNapkin] = useState<NapkinChip[]>(loadNapkin);
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [seated, setSeated] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -142,6 +192,10 @@ export function App() {
       },
     });
   }, [keypair, publicKeyHex, setAuth]);
+
+  // Every napkin change is written straight through. A mined proof is CPU the
+  // player has already spent; it must survive the tab.
+  useEffect(() => { saveNapkin(napkin); }, [napkin]);
 
   // A wall clock for the sog projection. One second is plenty — the pile is
   // meant to look like it is going soft, not to tick.
@@ -280,7 +334,7 @@ export function App() {
 
     // Park it on the napkin BEFORE the network is involved, so no throw path —
     // including a synchronous body assert — can drop it on the floor.
-    setNapkin((n) => [...n, { ms: chip.ms, bits: chip.bits, nonce: chip.nonce, failed: false }]);
+    setNapkin((n) => [...n, { ms: chip.ms, bits: chip.bits, nonce: chip.nonce, failed: false, tableId }]);
     setBusy({ pool: BANK_LINES, label: 'banking' });
     try {
       await submitBank(chip);
@@ -297,7 +351,9 @@ export function App() {
 
   async function onRetry(ms: number): Promise<void> {
     if (busy) return;
-    const chip = napkin.find((c) => c.ms === ms);
+    // A chip's preimage binds the table id, so a napkin chip restored from a
+    // different table would never verify — refuse rather than spend a PoW.
+    const chip = napkin.find((c) => c.ms === ms && c.tableId === tableId);
     if (!chip) return;
     setNapkin((n) => n.map((c) => (c.ms === ms ? { ...c, failed: false, why: undefined } : c)));
     setBusy({ pool: BANK_LINES, label: 'banking' });
@@ -350,7 +406,7 @@ export function App() {
     return () => clearTimeout(t);
   }, [notice]);
 
-  const { rows, hosting } = useBoards(host, tableId);
+  const { rows, hosting, hosted } = useBoards(host, tableId);
   const seatLine = useFlavour(SEAT_LINES, Boolean(me) && !seated);
   const tableLine = useFlavour(TABLE_LINES, seated && !tableId);
   const busyLine = useFlavour(busy?.pool ?? BANK_LINES, Boolean(busy));
@@ -458,7 +514,12 @@ export function App() {
         </div>
         <div className="hood-crunch">
           <span className="in-the-bowl">lifetime crunch</span>
-          <strong>{state ? compact(state.lifetimeChips) : '—'}</strong>
+          {/* Gated on the SAME condition as the bowl. The fold skips banks it
+              has no verification for (chipsEngine.ts's `rejected-unverified`),
+              so while chips are still being counted this figure is understated
+              by exactly as much as `crumbs` is. The bowl says so; showing a
+              confident number next to it would just make the bowl look wrong. */}
+          <strong>{state && !stillCounting ? compact(state.lifetimeChips) : '—'}</strong>
         </div>
       </header>
 
@@ -468,7 +529,7 @@ export function App() {
           goldenBits={goldenBits}
           busy={Boolean(busy)}
           onBank={(i) => void onBank(i)}
-          napkin={napkin.map((n) => ({ ms: n.ms, bits: n.bits, failed: n.failed }))}
+          napkin={napkin.filter((n) => n.tableId === tableId).map((n) => ({ ms: n.ms, bits: n.bits, failed: n.failed }))}
           onRetry={(ms) => void onRetry(ms)}
         />
 
@@ -482,7 +543,7 @@ export function App() {
         </aside>
       </main>
 
-      <Boards rows={rows} hosting={hosting} open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
+      <Boards rows={rows} hosting={hosting} hosted={hosted} open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
 
       {busy && (
         <div className="working" role="status">

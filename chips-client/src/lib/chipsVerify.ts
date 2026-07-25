@@ -11,10 +11,67 @@
  */
 import { verifyChipBits } from './chipsPow';
 import { parseMove, type ChipsReply } from './chipsEngine';
+import type { VerifyReq, VerifyRes } from './chipsVerify.worker';
 
 const STORE_KEY = 'chips.verified.v1';
 const memory = new Map<string, number>();
 let loaded = false;
+
+/* ── the hash, off the UI thread ────────────────────────────────────────── */
+
+/**
+ * One long-lived worker for all verification. See chipsVerify.worker.ts for
+ * why this must not run on the main thread at all.
+ *
+ * `null` means "no worker available, hash inline": that is the test/Node path
+ * (there is no global `Worker`) and the very-old-runtime path. Correctness is
+ * identical either way — the same `verifyChipBits`, the same cache, the same
+ * returned map — only the tab's responsiveness differs.
+ */
+let hasher: Worker | null = null;
+let hasherTried = false;
+const pending = new Map<number, { resolve: (bits: number) => void; reject: (e: Error) => void }>();
+let nextReqId = 1;
+
+function getHasher(): Worker | null {
+  if (hasherTried) return hasher;
+  hasherTried = true;
+  if (typeof Worker === 'undefined') return null;
+  try {
+    const w = new Worker(new URL('./chipsVerify.worker.ts', import.meta.url), { type: 'module' });
+    w.onmessage = (e: MessageEvent<VerifyRes>) => {
+      const waiter = pending.get(e.data.id);
+      if (!waiter) return;
+      pending.delete(e.data.id);
+      if ('error' in e.data) waiter.reject(new Error(e.data.error));
+      else waiter.resolve(e.data.bits);
+    };
+    w.onerror = () => {
+      // The worker died. Fail every waiter so `verifyReplies` rejects rather
+      // than hanging forever, and drop back to inline hashing from here on —
+      // a frozen tab beats a game that never finishes counting its chips.
+      hasher = null;
+      const waiters = [...pending.values()];
+      pending.clear();
+      for (const waiter of waiters) waiter.reject(new Error('verify worker failed'));
+    };
+    hasher = w;
+  } catch {
+    hasher = null;
+  }
+  return hasher;
+}
+
+function hashBits(authorIdHex: string, tableId: string, ms: number, nonce: bigint): Promise<number> {
+  const w = getHasher();
+  if (!w) return verifyChipBits(authorIdHex, tableId, ms, nonce);
+  const id = nextReqId++;
+  return new Promise<number>((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    const req: VerifyReq = { id, authorIdHex, tableId, ms, nonceHex: nonce.toString(16) };
+    w.postMessage(req);
+  });
+}
 
 /**
  * Count of REAL Argon2id hashes performed (i.e. cache misses), monotonic for
@@ -79,7 +136,7 @@ export async function verifyReplies(
   for (const { reply, parsed } of banks) {
     let bits = memory.get(reply.content_id);
     if (bits === undefined) {
-      bits = await verifyChipBits(reply.author_id, tableId, parsed.ms, parsed.nonce);
+      bits = await hashBits(reply.author_id, tableId, parsed.ms, parsed.nonce);
       hashCount++;
       memory.set(reply.content_id, bits);
       dirty = true;

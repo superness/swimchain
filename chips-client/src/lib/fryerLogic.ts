@@ -14,7 +14,8 @@
  *     collide in seenProofs (chipsEngine.ts), which keys on
  *     `author:ms:nonce`
  */
-import { BANK_MIN_BITS } from './chipsConst';
+import { BANK_MIN_BITS, MAX_BITS } from './chipsConst';
+import { leadingZeroBits } from './chipsPow';
 import type { CrunchRes } from './crunch.worker';
 
 export const U64_MAX = 2n ** 64n - 1n;
@@ -145,6 +146,67 @@ export function applyFryerMessage(
   const out = records.slice();
   out[index] = next;
   return out;
+}
+
+/**
+ * Everything a grind needs from its host, injected so the loop itself can be
+ * tested without a Worker, without Argon2id and without a DOM.
+ */
+export interface GrindDeps {
+  /** One Argon2id evaluation of this chip's preimage at `nonce`. */
+  hash(nonce: bigint): Promise<Uint8Array>;
+  post(msg: CrunchRes): void;
+  /** False once this grind has been superseded — see the starvation note below. */
+  isCurrent(): boolean;
+}
+
+/**
+ * One chip's grind: hash, track the best crispness so far, report it.
+ *
+ * THE SCHEDULING FACT THIS ENCODES, and the reason `bank()` terminates its
+ * worker instead of reusing it:
+ *
+ * `await deps.hash(...)` does NOT return control to the event loop. hash-wasm's
+ * argon2id is synchronous WASM behind an async signature — once its module is
+ * warm, the returned promise settles in a MICROTASK, and the microtask queue is
+ * drained to empty before the event loop ever runs again. This loop enqueues a
+ * fresh microtask every iteration, so it never empties, so the host agent's
+ * task queues are starved for as long as the grind runs.
+ *
+ * Measured in Chrome on 2026-07-25: after 30 consecutive `chipHash` calls
+ * (~1.8 s of grinding) neither a `setTimeout(…, 0)` nor a `MessageChannel`
+ * message scheduled *before* the loop started had run. In a Worker that means
+ * an incoming `message` event — including a new `start` after a bank — is NEVER
+ * DELIVERED while a grind is in flight, and `isCurrent()` can therefore never
+ * flip from outside. The old design posted a fresh `start` to the running
+ * worker and waited: the worker kept grinding the retired chip forever, every
+ * message it posted was dropped by `applyFryerMessage`'s ms guard, and the
+ * basket sat at `bits: -1` for the rest of the session. That was the whole game
+ * loop, dead after the first bank.
+ *
+ * `isCurrent()` is therefore a guard against orderings that CAN happen (a
+ * message delivered while the worker sits idle between grinds), not a stop
+ * button. The only reliable stop for a running grind is `Worker.terminate()`.
+ */
+export async function grindLoop(ms: number, deps: GrindDeps): Promise<void> {
+  let nonce: bigint | null = 0n;
+  let best = { nonce: 0n, bits: -1 };
+  let attempts = 0;
+
+  while (deps.isCurrent() && nonce !== null) {
+    const hash = await deps.hash(nonce);
+    if (!deps.isCurrent()) return; // superseded while awaiting the hash
+    attempts++;
+    const bits = Math.min(leadingZeroBits(hash), MAX_BITS);
+    if (bits > best.bits) {
+      best = { nonce, bits };
+      deps.post({ type: 'crisper', ms, bits, nonce: nonce.toString(16), attempts });
+    } else if (attempts % 16 === 0) {
+      deps.post({ type: 'progress', ms, bits: best.bits, attempts });
+    }
+    nonce = nextNonce(nonce);
+  }
+  if (nonce === null) deps.post({ type: 'exhausted', ms });
 }
 
 /**

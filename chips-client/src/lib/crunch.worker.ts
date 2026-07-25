@@ -22,9 +22,8 @@
  * (`rejected-bits`), not as a crash. Importing the one real implementation
  * means there is exactly one place that can go wrong.
  */
-import { chipPreimage, chipHash, leadingZeroBits } from './chipsPow';
-import { MAX_BITS } from './chipsConst';
-import { nextNonce } from './fryerLogic';
+import { chipPreimage, chipHash } from './chipsPow';
+import { grindLoop } from './fryerLogic';
 
 export type StartMsg = { type: 'start'; authorIdHex: string; tableId: string; ms: number };
 export type StopMsg = { type: 'stop' };
@@ -42,35 +41,25 @@ function post(msg: CrunchRes): void {
 }
 
 /**
- * One grind. `myGeneration` pins this call to the `start` message that
- * spawned it: useFryers.ts reuses one worker across a rebank (sends a new
- * `start` with a fresh ms rather than terminating+recreating), so a grind
- * that is mid-`await chipHash(...)` when a newer `start` arrives must notice
- * it has been superseded and drop its result instead of posting a message
- * stamped with the OLD ms after the fryer has already moved on to a new
- * chip — otherwise the UI (and a very literal-minded player) could see a
- * "crisper" update for a chip that's no longer in the basket.
+ * One grind. `myGeneration` pins this call to the `start` message that spawned
+ * it, so a grind that is still in flight when a newer `start` is processed
+ * drops its result instead of posting a message stamped with the OLD ms after
+ * this fryer has moved on.
+ *
+ * That guard only covers messages this worker actually RECEIVES, which — while
+ * a grind is running — is none of them. `grindLoop`'s doc comment in
+ * fryerLogic.ts has the measurement: an awaited Argon2id chain never returns to
+ * the event loop, so an in-flight grind starves this worker's message queue for
+ * as long as it runs. A worker is therefore only ever addressable while idle,
+ * and the ONLY way to stop a running fryer is `terminate()` — which is exactly
+ * what useFryers.ts's `bank()` now does.
  */
 async function grind(msg: StartMsg, myGeneration: number): Promise<void> {
-  let nonce: bigint | null = 0n;
-  let best = { nonce: 0n, bits: -1 };
-  let attempts = 0;
-
-  while (generation === myGeneration && nonce !== null) {
-    const hash = await chipHash(chipPreimage(msg.authorIdHex, msg.tableId, msg.ms, nonce));
-    if (generation !== myGeneration) return; // superseded while awaiting the hash
-
-    attempts++;
-    const bits = Math.min(leadingZeroBits(hash), MAX_BITS);
-    if (bits > best.bits) {
-      best = { nonce, bits };
-      post({ type: 'crisper', ms: msg.ms, bits, nonce: nonce.toString(16), attempts });
-    } else if (attempts % 16 === 0) {
-      post({ type: 'progress', ms: msg.ms, bits: best.bits, attempts });
-    }
-    nonce = nextNonce(nonce);
-  }
-  if (nonce === null) post({ type: 'exhausted', ms: msg.ms });
+  await grindLoop(msg.ms, {
+    hash: (nonce) => chipHash(chipPreimage(msg.authorIdHex, msg.tableId, msg.ms, nonce)),
+    post,
+    isCurrent: () => generation === myGeneration,
+  });
 }
 
 /** Bumped on every `start` (and on `stop`, so a stop with no following start
@@ -84,5 +73,10 @@ self.onmessage = (e: MessageEvent<CrunchReq>) => {
     return;
   }
   generation++;
-  void grind(e.data, generation);
+  // A rejected grind used to die silently and take this fryer with it: the
+  // basket would sit at `bits: -1` forever with nothing anywhere to look at.
+  // A worker `console.error` at least surfaces in the page console.
+  void grind(e.data, generation).catch((err) => {
+    console.error('[chips] a fryer stopped grinding', err);
+  });
 };

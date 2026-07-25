@@ -7,7 +7,7 @@
  * Run: npx tsx src/lib/fryerLogic.test.ts
  */
 import {
-  nextNonce, isBankable, createMsAllocator, applyFryerMessage, takeChip, U64_MAX,
+  nextNonce, isBankable, createMsAllocator, applyFryerMessage, takeChip, grindLoop, U64_MAX,
 } from './fryerLogic';
 import type { FryerRecord } from './fryerLogic';
 import type { CrunchRes } from './crunch.worker';
@@ -189,6 +189,82 @@ check('isBankable(-1) is false (defensive)', isBankable(-1) === false);
 
   const takenOob = takeChip(records, 9, 1);
   check('takeChip on an out-of-range index returns null rather than throwing', takenOob.taken === null);
+}
+
+// 6) grindLoop — the reporting cadence, and THE SCHEDULING FACT that decides
+// how useFryers.ts has to stop a fryer.
+{
+  // 6a) A grind never returns to the macrotask queue.
+  //
+  // This is the whole reason `bank()` terminates its worker instead of posting
+  // it a new `start`. The fake hash below resolves the way a warm hash-wasm
+  // Argon2id call does — in a microtask, with no I/O — and a microtask chain is
+  // drained to empty before the event loop runs again. So a timer scheduled
+  // BEFORE the grind started still has not fired when it ends, which in a
+  // Worker means an incoming `message` is never delivered and `isCurrent()`
+  // can never flip from outside. Reusing a running worker cannot work, and the
+  // symptom when it is tried is a basket frozen at `bits: -1` forever.
+  let macrotaskRan = false;
+  setTimeout(() => { macrotaskRan = true; }, 0);
+  let calls = 0;
+  let current = true;
+  await grindLoop(1, {
+    hash: async () => { if (++calls >= 40) current = false; return new Uint8Array([0xff]); },
+    post: () => { /* ignored here */ },
+    isCurrent: () => current,
+  });
+  check('a grind ran 40 hashes', calls === 40, calls);
+  check(
+    'a grind never yields to the macrotask queue (so a running worker cannot be messaged)',
+    macrotaskRan === false
+  );
+}
+
+{
+  // 6b) Reporting cadence: `crisper` only on a real improvement, `progress`
+  // every 16 attempts, every message stamped with THIS chip's ms.
+  const posts: CrunchRes[] = [];
+  let n = 0;
+  await grindLoop(77, {
+    // 0xff -> 0 leading zero bits; 0x0f -> 4. The one good hash lands on the
+    // 5th attempt, where nonce is 4n.
+    hash: async () => { n++; return new Uint8Array([n === 5 ? 0x0f : 0xff]); },
+    post: (m) => posts.push(m),
+    // 33, not 32: the post-hash `isCurrent()` recheck is what drops a
+    // superseded result, so the attempt that flips this to false is correctly
+    // never reported. Stopping at exactly 32 would silently swallow the second
+    // progress message this test exists to see.
+    isCurrent: () => n < 33,
+  });
+
+  const crispers = posts.filter((p) => p.type === 'crisper');
+  const progress = posts.filter((p) => p.type === 'progress');
+  check('every message carries this chip\'s ms', posts.every((p) => p.ms === 77), posts.map((p) => p.ms));
+  check('the first hash always reports (it beats the -1 sentinel)',
+    crispers[0]?.type === 'crisper' && crispers[0].bits === 0 && crispers[0].attempts === 1, crispers[0]);
+  check('an improvement reports its bits, attempt and nonce',
+    crispers[1]?.type === 'crisper' && crispers[1].bits === 4 && crispers[1].attempts === 5 && crispers[1].nonce === '4',
+    crispers[1]);
+  check('no crisper is posted for a hash that does not beat the best', crispers.length === 2, crispers.length);
+  check('progress is posted every 16 attempts, carrying the best so far',
+    progress.length === 2 && progress.every((p) => p.type === 'progress' && p.bits === 4)
+    && progress.map((p) => p.attempts).join() === '16,32',
+    progress);
+  check('a grind that is stopped does not report exhaustion', !posts.some((p) => p.type === 'exhausted'));
+}
+
+{
+  // 6c) Superseded WHILE awaiting its hash: the result is dropped, not posted.
+  // Without this a rebanked fryer would report a `crisper` for the chip that
+  // just left the basket, stamped with the retired chip's ms.
+  const posts: CrunchRes[] = [];
+  let current = true;
+  await grindLoop(9, {
+    hash: async () => { current = false; return new Uint8Array([0x00, 0x00]); },
+    post: (m) => posts.push(m),
+    isCurrent: () => current,
+  });
+  check('a grind superseded mid-hash posts nothing at all', posts.length === 0, posts);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

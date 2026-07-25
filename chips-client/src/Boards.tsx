@@ -32,17 +32,40 @@ export interface BoardRow {
 
 const PASS_INTERVAL_MS = 60_000;
 
+/**
+ * How many tables get FOLDED per pass. Every table is still `requestContent`'d
+ * every pass — that call is the hosting driver and is a cheap RPC, so it is
+ * never capped. Folding is the expensive half: a cold browser pays one real
+ * Argon2id-8MiB hash per bank per table.
+ *
+ * Those hashes no longer run on the UI thread (chipsVerify.worker.ts), so this
+ * cap is not what keeps the tab alive — it is what keeps a first load with a
+ * full board from monopolising the single verify worker for minutes while the
+ * player's OWN table waits behind it in the queue. The window rotates, so
+ * every table is still reached, just over several passes.
+ */
+const TABLES_FOLDED_PER_PASS = 6;
+
 export function useBoards(host: ChipsHost | null, myTableId: string | null): {
   rows: BoardRow[];
   hosting: boolean;
+  /** Tables this browser asked for by name on the last pass. NOT `rows.length`:
+   *  folding is windowed, hosting is not, so the honest count is this one. */
+  hosted: number;
 } {
   const [rows, setRows] = useState<BoardRow[]>([]);
   const [hosting, setHosting] = useState(false);
+  const [hosted, setHosted] = useState(0);
   // Keep the newest table id available to the loop without restarting the loop
   // (and therefore without dropping every table off this node) each time it
   // changes.
   const mineRef = useRef<string | null>(myTableId);
   mineRef.current = myTableId;
+  // Folded rows survive across passes, because each pass only re-folds a
+  // rotating window of the board (see TABLES_FOLDED_PER_PASS). Without this the
+  // boards would show six rows at a time and flicker the rest away.
+  const knownRef = useRef<Map<string, BoardRow>>(new Map());
+  const cursorRef = useRef(0);
 
   useEffect(() => {
     if (!host) return;
@@ -55,18 +78,33 @@ export function useBoards(host: ChipsHost | null, myTableId: string | null): {
       setHosting(true);
       try {
         const tables = await host.listTables();
-        const out: BoardRow[] = [];
+
+        // THE HOSTING CALLS. Every table, every pass, uncapped: this loop is
+        // the only reason anyone else's table stays on this node, and asking
+        // for content by name is cheap. Everything below is just arithmetic.
         for (const t of tables) {
           if (cancelled) return;
+          try { await host.requestContent(t.tableId); } catch { /* next pass */ }
+        }
+        if (!cancelled) setHosted(tables.length);
+
+        // Drop rows for tables that have fallen off the board entirely.
+        const live = new Set(tables.map((t) => t.tableId));
+        for (const id of [...knownRef.current.keys()]) {
+          if (!live.has(id)) knownRef.current.delete(id);
+        }
+
+        const count = Math.min(TABLES_FOLDED_PER_PASS, tables.length);
+        const start = tables.length > 0 ? cursorRef.current % tables.length : 0;
+        for (let k = 0; k < count; k++) {
+          if (cancelled) return;
+          const t = tables[(start + k) % tables.length];
           try {
-            // THE HOSTING CALL. Everything after it is just arithmetic; this is
-            // the line that keeps `t` alive on this node.
-            await host.requestContent(t.tableId);
             const replies = await host.loadTable(t.tableId);
             const verified = await verifyReplies(t.tableId, t.authorId, replies);
             const header: ChipsHeader = { v: 1, kind: 'chips-table', name: t.name, owner: t.authorId };
             const s = foldChips(header, t.tableId, replies, verified);
-            out.push({
+            knownRef.current.set(t.tableId, {
               tableId: t.tableId, name: t.name,
               total: s.lifetimeChips, crispest: s.crispest,
               dipIndex: s.dipIndex, mine: t.tableId === mineRef.current,
@@ -74,8 +112,9 @@ export function useBoards(host: ChipsHost | null, myTableId: string | null): {
           } catch {
             // One unreachable or malformed table must not stop us hosting the rest.
           }
-          if (!cancelled) setRows(out.slice());
+          if (!cancelled) setRows([...knownRef.current.values()]);
         }
+        cursorRef.current = start + count;
       } catch {
         /* the whole listing failed — try again next pass */
       } finally {
@@ -92,7 +131,7 @@ export function useBoards(host: ChipsHost | null, myTableId: string | null): {
     };
   }, [host]);
 
-  return { rows, hosting };
+  return { rows, hosting, hosted };
 }
 
 function Board({
@@ -137,9 +176,10 @@ function Board({
   );
 }
 
-export function Boards({ rows, hosting, open, onToggle }: {
+export function Boards({ rows, hosting, hosted, open, onToggle }: {
   rows: BoardRow[];
   hosting: boolean;
+  hosted: number;
   open: boolean;
   onToggle: () => void;
 }) {
@@ -156,7 +196,7 @@ export function Boards({ rows, hosting, open, onToggle }: {
             : 'nothing up yet'}
         </span>
         <span className={`hosting${hosting ? ' live' : ''}`}>
-          {hosting ? 'keeping tables warm…' : `hosting ${rows.length} ${rows.length === 1 ? 'table' : 'tables'}`}
+          {hosting ? 'keeping tables warm…' : `hosting ${hosted} ${hosted === 1 ? 'table' : 'tables'}`}
         </span>
       </button>
 

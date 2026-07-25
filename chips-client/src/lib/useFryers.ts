@@ -18,15 +18,29 @@
  *     first mount's workers no matter how fast the second mount follows.
  *     A leaked worker keeps burning a core at 8 MiB/hash forever, and two
  *     copies of `count` workers running at once would double that.
- *   - `bank(index)` does NOT terminate+recreate that fryer's worker (thread
- *     spin-up plus re-wiring onmessage on every single bank click adds up);
- *     it reuses the worker and sends a fresh `start` with a new ms. See
- *     `applyFryerMessage`'s doc in fryerLogic.ts for exactly which guard —
- *     crunch.worker.ts's own `generation` counter, or this hook's ms check
- *     — covers which stale-message interleaving. They are NOT redundant:
- *     the ms check below is the one doing the primary work for the
- *     dominant case (a grind mid-`await` for the OLD chip when the rebank's
- *     `start` is sent).
+ *   - `bank(index)` TERMINATES that fryer's worker and starts a fresh one.
+ *     It used to reuse the worker and post it a new `start`, on the theory
+ *     that thread spin-up on every bank click adds up. That never worked:
+ *     a running grind starves its own worker's message queue (the
+ *     measurement is in `grindLoop`'s doc comment in fryerLogic.ts), so the
+ *     `start` was never delivered, the fryer kept grinding the chip that
+ *     had already been banked, every message it posted was dropped by the
+ *     ms guard, and the basket sat at `bits: -1` for the rest of the
+ *     session. Observed live on 2026-07-25: 100 s after a bank, still -1.
+ *     `terminate()` is the only thing that stops a running grind, so the
+ *     replacement worker is not an optimisation choice — it is the only
+ *     correct implementation. It also costs nothing that matters: a bank
+ *     happens once every tens of seconds at best, against a grind that
+ *     hashes at ~20-60 ms per attempt.
+ *
+ *     The replacement is written into `workers.current`, which IS the array
+ *     the owning effect's cleanup closes over — so a banked-and-replaced
+ *     worker is still terminated on unmount and nothing leaks.
+ *
+ *     Both stale-message guards are kept anyway. See `applyFryerMessage`'s
+ *     doc in fryerLogic.ts: a message a worker posted just before it was
+ *     terminated can still be delivered afterwards, and the ms check is
+ *     what drops it.
  *
  * Every ms handed to a worker — a fryer's first chip AND every chip it
  * starts after a bank — comes from ONE allocator per hook instance
@@ -44,7 +58,7 @@
  * (fryerLogic.test.ts) despite this file's Worker/React plumbing being
  * untestable under this repo's plain-tsx harness.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CrunchReq, CrunchRes } from './crunch.worker';
 import {
   createMsAllocator, isBankable, applyFryerMessage, takeChip, placeholderRecord, toFryerChip,
@@ -79,6 +93,17 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
   const allocatorRef = useRef<() => number>();
   if (!allocatorRef.current) allocatorRef.current = createMsAllocator();
 
+  // Hoisted out of the effect because `bank()` wires it onto the replacement
+  // worker it creates. Stable: it touches only refs and `setChips`, both of
+  // which React guarantees are constant for the life of the hook — so having
+  // it in the effect's dependency list below cannot cause an extra restart.
+  const applyMessage = useCallback((index: number, msg: CrunchRes): void => {
+    const updated = applyFryerMessage(latest.current, index, msg);
+    if (!updated) return; // stale ms, exhausted, or an index this basket no longer tracks
+    latest.current = updated;
+    setChips(updated.map(toFryerChip));
+  }, []);
+
   useEffect(() => {
     if (!authorIdHex || !tableId || count <= 0) {
       workers.current = [];
@@ -87,13 +112,6 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
       return;
     }
     const allocate = allocatorRef.current!;
-
-    function applyMessage(index: number, msg: CrunchRes): void {
-      const updated = applyFryerMessage(latest.current, index, msg);
-      if (!updated) return; // stale ms, exhausted, or an index this basket no longer tracks
-      latest.current = updated;
-      setChips(updated.map(toFryerChip));
-    }
 
     const initial: FryerRecord[] = [];
     const made: Worker[] = [];
@@ -107,9 +125,13 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
     setChips(initial.map(toFryerChip));
 
     return () => {
+      // `made` IS `workers.current` (same array object), so a worker `bank()`
+      // swapped in mid-life is the one terminated here — while still being the
+      // array THIS effect run created, which is what keeps a StrictMode
+      // mount -> cleanup -> mount from leaking the first mount's workers.
       for (const w of made) stopWorker(w);
     };
-  }, [count, authorIdHex, tableId]);
+  }, [count, authorIdHex, tableId, applyMessage]);
 
   /**
    * Bank (take) the chip in fryer `index`. Returns `null` if there isn't
@@ -146,8 +168,13 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
     latest.current = records;
     setChips(records.map(toFryerChip));
 
-    const nextMsg: CrunchReq = { type: 'start', authorIdHex, tableId, ms: newMs };
-    worker.postMessage(nextMsg);
+    // TERMINATE, then start a replacement. Posting a `start` to the running
+    // worker instead does nothing at all: it is mid-grind, and a grind starves
+    // its own message queue (see the hook's header comment). The replacement
+    // goes into `workers.current` — the same array the owning effect's cleanup
+    // closes over — so it is still terminated on unmount.
+    stopWorker(worker);
+    workers.current[index] = startWorker(authorIdHex, tableId, newMs, (msg) => applyMessage(index, msg));
 
     return taken;
   }
