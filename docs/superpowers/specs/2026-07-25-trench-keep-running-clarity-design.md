@@ -56,7 +56,13 @@ Frontend-only interception of window close under Tauri:
 `window.__TAURI__` global (already the codebase idiom — see `nodeRpc.ts`'s
 documented gotcha about NOT importing `@tauri-apps/api`), via
 `onCloseRequested` + `preventDefault()`. The existing Rust `Destroyed` handler
-still stops the node when we `destroy()` — no Rust changes.
+still stops the node when we `destroy()` — no Rust code changes. One config
+addition: the shell currently ships NO capability file (`gen/schemas/
+capabilities.json` is `{}`), so the webview lacks the `core:event`/
+`core:window` permissions the JS close-interception APIs need — add
+`src-tauri/capabilities/default.json` granting `core:default` +
+`core:window:allow-destroy`. If the permission plumbing ever fails, the
+degradation is graceful: close proceeds uninterceped, exactly as today.
 
 - Shown only when the player has a claim; otherwise close proceeds untouched.
 - In-game overlay in the existing `.overlay`/`.help-panel` idiom:
@@ -64,12 +70,20 @@ still stops the node when we `destroy()` — no Rust changes.
   farms slow to a quarter. **[Stay lit]** [Quit anyway]".
 - Non-Tauri (dev browser): no hook; everything else works unchanged.
 
-### 4. Away recap (teaching moment #2)
+### 4. Away recap / dark-login reminder (teaching moment #2)
 
-When `ownState` loads and the newest accepted heartbeat is ≥24h old, show a
-one-shot recap card: days away, current brightness tier, any **new ruins**
-("The abyss took your kelp farm"), damaged structures' health, and the
-recovery line ("Leave The Trench running to climb back to LIT").
+When `ownState` first loads, show a one-shot recap card if EITHER trigger
+fires (operator addition 2026-07-25: "user logs in and they are dark because
+they have been offline — remind them"):
+
+- the newest accepted heartbeat is ≥24h old ("away" recap), OR
+- the projected brightness at login is **DARK** (dark-login reminder, even if
+  the absence was shorter than 24h).
+
+Card content: days away (0 for same-day), current brightness tier, trailing
+7-day beat count toward LIT, any **new ruins** ("The abyss took your kelp
+farm"), damaged structures' health, and the recovery line ("Leave The Trench
+running to climb back to LIT").
 
 - Suppressed while the Guided Descent is active.
 - Shown at most once per UTC day (localStorage stamp, `trench-recap-day`);
