@@ -649,6 +649,14 @@ h1 { font-size: 24px; margin: 0 0 4px; text-shadow: 0 0 22px rgba(88, 214, 200, 
 .help-panel p, .help-panel li { font-size: 14px; line-height: 1.55; margin: 6px 0; }
 .help-panel .btn { margin-top: 16px; }
 
+/* Away recap / dark-login reminder + quit warning (spec 2026-07-25 §3-§4) */
+.recap-panel { max-width: 460px; }
+.recap-list { margin: 8px 0; padding-left: 18px; }
+.recap-list li { font-size: 14px; line-height: 1.55; margin: 4px 0; }
+.recap-list .recap-ruin { color: var(--heat); }
+.quit-actions { display: flex; gap: 10px; margin-top: 16px; }
+.quit-actions .btn { margin-top: 0; }
+
 /* Intro line: full width, above the card grid — the whole loop in one
    fragment ("You are the lantern. Claim ground. Build. Keep it lit."). */
 .hp-intro { font-size: 15px; color: var(--foam); margin: 2px 0 14px; }

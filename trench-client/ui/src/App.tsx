@@ -20,6 +20,15 @@ import {
   type Brightness,
 } from './lib/trenchEngine';
 import { TrenchMap, type TrenchMapHandle } from './TrenchMap';
+import { RecapCard } from './RecapCard';
+import {
+  deriveAwayRecap,
+  hasSeenRecapToday,
+  markRecapSeen,
+  loadMournedRuins,
+  saveMournedRuins,
+  type RecapFacts,
+} from './lib/awayRecap';
 import { Homestead, type DescentHudMode } from './Homestead';
 import { HowToPlay } from './HowToPlay';
 import { CoachCard, hasSeenCoach, markCoachSeen, type CoachKind } from './CoachCard';
@@ -879,6 +888,35 @@ export function App() {
   // ══════════════════════════════════════════════════════════════════════
   const inDescent = descentBeat !== null && descentBeat !== 'done';
 
+  // ── Away recap / dark-login reminder (spec §4): considered exactly once
+  //    per app session, on the FIRST fold — later polls include the
+  //    heartbeat this very session just posted, which would mask the
+  //    absence. Waits for the descent machine to RESOLVE (non-null) so a
+  //    mid-descent player never gets the card over the beats; an active
+  //    descent consumes the check (a fresh claim has nothing to recap). ──
+  const [recap, setRecap] = useState<RecapFacts | null>(null);
+  const recapCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!ownState || descentBeat === null || recapCheckedRef.current) return;
+    recapCheckedRef.current = true;
+    if (descentBeat !== 'done') return;
+    const now = Date.now();
+    if (hasSeenRecapToday(now)) return;
+    const facts = deriveAwayRecap(ownState, now, loadMournedRuins());
+    if (facts) setRecap(facts);
+  }, [ownState, descentBeat]);
+
+  const dismissRecap = useCallback(() => {
+    if (!recap) return;
+    markRecapSeen(Date.now());
+    if (recap.newRuins.length > 0) {
+      const mourned = loadMournedRuins();
+      for (const ru of recap.newRuins) mourned.add(ru.idx);
+      saveMournedRuins(mourned);
+    }
+    setRecap(null);
+  }, [recap]);
+
   // ── resolve the entry beat, once, against real chain state — chain state
   //    wins over stored progress (spec's binding rule). Gated on the SAME
   //    prerequisites the founding/main-game render branches already require,
@@ -1564,6 +1602,7 @@ export function App() {
         </div>
       </section>
       {showHelp && <HowToPlay onClose={() => setShowHelp(false)} />}
+      {recap && !showHelp && <RecapCard facts={recap} onDismiss={dismissRecap} />}
     </div>
   );
 }
