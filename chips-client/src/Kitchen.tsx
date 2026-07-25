@@ -324,7 +324,20 @@ export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: Ki
 
       {napkin.length > 0 && (
         <div className="napkin" aria-label="chips waiting to go in the bowl">
-          <span className="napkin-label">on the napkin</span>
+          {/*
+            A chip is parked here the moment it is banked, BEFORE the network is
+            touched, so no throw path can drop a mined proof (see onBank). That
+            makes the COMMON case a chip passing through during the seconds an
+            action PoW takes — not a chip that failed.
+
+            The heading has to say which. A flat "on the napkin" told players
+            their bank had been rejected every single time they clicked, when
+            nothing had gone wrong; the napkin only means "stranded" once
+            something has actually failed.
+          */}
+          <span className="napkin-label">
+            {napkin.some((n) => n.failed) ? 'on the napkin' : 'going in…'}
+          </span>
           <ul>
             {napkin.map((n) => (
               <li key={n.ms} className={n.failed ? 'failed' : 'sending'}>
