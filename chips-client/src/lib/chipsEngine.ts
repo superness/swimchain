@@ -21,7 +21,7 @@
 import {
   BANK_MIN_BITS, CRUMBS_PER_CHIP, GOLDEN_BITS, GOLD_NUM, GOLD_DEN, MAX_BITS,
   SOG_BASE_NUM, SOG_DEN, AIRTIGHT_BONUS, SOG_MAX_HOURS, START_BOWL_CAP,
-  DIP_TIERS, CONGEAL_GAP_MS,
+  DIP_TIERS, CONGEAL_GAP_MS, UPGRADES, UPGRADE_CHAINS,
 } from './chipsConst';
 
 export interface ChipsHeader {
@@ -241,7 +241,47 @@ export function foldChips(
   return state;
 }
 
-/** Implemented in Task 5. */
-function applyBuy(state: ChipsState, reply: ChipsReply, parsed: { kind: 'buy'; key: string; ms: number }): void {
-  state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-parse', upgradeKey: parsed.key });
+/**
+ * Check precedence is FIXED at: unknown key -> already owned -> chain order ->
+ * affordability. Order precedes cost deliberately: "you skipped a tier" is the
+ * more fundamental error, and a player who is both broke and out of order is
+ * better told the thing that will still be true once they have the crumbs.
+ * The tests depend on this order — changing it flips expected outcomes.
+ */
+function applyBuy(
+  state: ChipsState,
+  reply: ChipsReply,
+  parsed: { kind: 'buy'; key: string; ms: number }
+): void {
+  const push = (outcome: Outcome): void => {
+    state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome, upgradeKey: parsed.key });
+  };
+
+  const upgrade = UPGRADES[parsed.key];
+  if (!upgrade) return push('rejected-parse');
+  if (state.owned.has(parsed.key)) return push('rejected-owned');
+
+  // Chained upgrades must be bought in order.
+  const chain = UPGRADE_CHAINS.find((c) => c.includes(parsed.key));
+  if (chain) {
+    const idx = chain.indexOf(parsed.key);
+    for (let i = 0; i < idx; i++) {
+      if (!state.owned.has(chain[i])) return push('rejected-order');
+    }
+  }
+
+  if (state.crumbs < upgrade.cost) return push('rejected-cost');
+
+  state.crumbs -= upgrade.cost;
+  state.owned.add(parsed.key);
+  if (upgrade.bowlCap !== undefined) state.bowlCap = upgrade.bowlCap;
+  if (upgrade.seasoningNum !== undefined && upgrade.seasoningDen !== undefined) {
+    state.seasoningNum = upgrade.seasoningNum;
+    state.seasoningDen = upgrade.seasoningDen;
+  }
+  if (upgrade.fryers !== undefined) state.fryers = upgrade.fryers;
+  if (upgrade.goldenBits !== undefined) state.goldenBits = upgrade.goldenBits;
+  if (upgrade.airtight) state.airtight = true;
+
+  push('bought');
 }
