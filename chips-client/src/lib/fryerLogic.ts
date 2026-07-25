@@ -15,6 +15,7 @@
  *     `author:ms:nonce`
  */
 import { BANK_MIN_BITS } from './chipsConst';
+import type { CrunchRes } from './crunch.worker';
 
 export const U64_MAX = 2n ** 64n - 1n;
 
@@ -51,6 +52,16 @@ export function isBankable(bits: number): boolean {
  * land in the same millisecond (React re-renders faster than 1ms apart, and
  * StrictMode intentionally double-invokes effects) — a monotonic counter
  * has no such window.
+ *
+ * NOTE for future readers: `ms` is not merely an identity/salt token — the
+ * fold's `orderReplies` (chipsEngine.ts) uses the reply body's authoring-ms
+ * as the within-block ordering tiebreak. This allocator deliberately
+ * decouples `ms` from wall-clock time, which means banks end up ordered by
+ * CHIP-START order rather than bank order. That is safe (deterministic and
+ * identical on every client, since the decay clock is `created_at`, never
+ * `ms` — see chipsEngine.ts's own comment on that) but it means `ms` here
+ * does NOT mean "when this was authored" the way it might elsewhere in this
+ * codebase. Don't "fix" this allocator to track real time.
  */
 export function createMsAllocator(seed: number = Date.now()): () => number {
   let last = Math.max(1, Math.floor(seed));
@@ -58,4 +69,106 @@ export function createMsAllocator(seed: number = Date.now()): () => number {
     last += 1;
     return last;
   };
+}
+
+/** What the UI needs to render a basket. No `nonce` — nothing renders it —
+ *  but `bank()`/`takeChip()` need it, so the full internal shape is
+ *  `FryerRecord` below. */
+export interface FryerChip {
+  ms: number;
+  bits: number;
+  attempts: number;
+}
+
+/** Internal per-fryer record: everything `FryerChip` has, plus the nonce
+ *  a bank needs. This — not any derived React state — is the source of
+ *  truth for what a fryer currently holds. */
+export interface FryerRecord extends FryerChip {
+  nonce: bigint;
+}
+
+/** A fresh, not-yet-bankable placeholder for a fryer that just started (or
+ *  just restarted after a bank) grinding `ms`. `bits: -1` is a sentinel for
+ *  "no hash found yet" — `0` is a real, valid crispness value, so it can't
+ *  double as "not started." */
+export function placeholderRecord(ms: number): FryerRecord {
+  return { ms, bits: -1, attempts: 0, nonce: 0n };
+}
+
+export function toFryerChip(r: FryerRecord): FryerChip {
+  return { ms: r.ms, bits: r.bits, attempts: r.attempts };
+}
+
+/**
+ * Apply one crunch-worker message to a fryer basket. Returns the updated
+ * array, or `null` if nothing should change: a stale `ms`, an `exhausted`
+ * notice, or an index this basket has no record for.
+ *
+ * That last case is not hypothetical: `Worker.terminate()` does not retract
+ * an already-queued message. A message posted by a worker just before it was
+ * torn down can still arrive after `count` shrank past `index`, or after
+ * `latest.current` was cleared to `[]` entirely (e.g. on logout) — `!prev`
+ * must be treated the same as a stale ms, or this would write past the end
+ * of the array and hand callers a sparse `FryerChip[]` with holes.
+ *
+ * `msg.ms !== prev.ms` is the PRIMARY guard, not a backstop. It is the only
+ * check that catches the dominant stale-message interleaving in this
+ * system: `chipHash`'s promise resolves as a microtask, which drains
+ * completely before a same-worker `postMessage({type:'start', ...})` is
+ * even dispatched as a macrotask on the worker side. So when a rebank sends
+ * a NEW `start` to a worker that is mid-`await chipHash(...)` for the OLD
+ * ms, that in-flight grind resumes, rechecks crunch.worker.ts's OWN
+ * `generation` counter (still unchanged at that instant — the new `start`
+ * hasn't been processed by the worker yet), and posts a stale `crisper` for
+ * the retired chip BEFORE the worker-side generation guard has any chance
+ * to fire. crunch.worker.ts's generation check handles later interleavings
+ * (grinds still in flight after the worker HAS processed the new `start`);
+ * this ms check is what actually stops the earlier, more common one — and
+ * it works because the allocator (`createMsAllocator`) never reuses an ms,
+ * so "same ms" reliably means "same chip," not just "close enough."
+ */
+export function applyFryerMessage(
+  records: readonly FryerRecord[],
+  index: number,
+  msg: CrunchRes
+): FryerRecord[] | null {
+  const prev = records[index];
+  if (!prev || msg.ms !== prev.ms) return null;
+  if (msg.type === 'exhausted') return null;
+
+  const next: FryerRecord = {
+    ms: msg.ms,
+    bits: msg.bits,
+    attempts: msg.attempts,
+    nonce: msg.type === 'crisper' ? BigInt('0x' + msg.nonce) : prev.nonce,
+  };
+  const out = records.slice();
+  out[index] = next;
+  return out;
+}
+
+/**
+ * Retire the chip in fryer `index` and replace it with a fresh placeholder
+ * at `newMs`, but ONLY if the current chip is bankable. Always returns a
+ * `records` array the caller can apply unconditionally (a no-op copy when
+ * `taken` is null), so callers never need an extra branch to decide whether
+ * to write back the result.
+ *
+ * DESTRUCTIVE: a successful take removes the only copy of that proof this
+ * basket holds. See useFryers.ts's `bank()` doc for the full contract this
+ * implies for callers (retry with the returned object; don't call `bank`
+ * again expecting the same chip back).
+ */
+export function takeChip(
+  records: readonly FryerRecord[],
+  index: number,
+  newMs: number
+): { taken: { nonce: bigint; bits: number; ms: number } | null; records: FryerRecord[] } {
+  const chip = records[index];
+  if (!chip || !isBankable(chip.bits)) {
+    return { taken: null, records: records.slice() };
+  }
+  const out = records.slice();
+  out[index] = placeholderRecord(newMs);
+  return { taken: { nonce: chip.nonce, bits: chip.bits, ms: chip.ms }, records: out };
 }

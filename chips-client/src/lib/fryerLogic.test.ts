@@ -1,9 +1,18 @@
 /**
- * Pure fryer-scheduling rules: the u64 nonce ceiling, the bankable gate, and
- * the ms allocator's distinctness guarantee. No Worker, no DOM, no Argon2id —
- * runs instantly. Run: npx tsx src/lib/fryerLogic.test.ts
+ * Pure fryer-scheduling rules: the u64 nonce ceiling (checked against the
+ * REAL bankBody/parseMove, not just fryerLogic's own literal), the bankable
+ * gate, the ms allocator's distinctness guarantee, and the two state
+ * transitions (`applyFryerMessage`, `takeChip`) useFryers.ts builds on. No
+ * Worker, no DOM, no Argon2id — runs instantly.
+ * Run: npx tsx src/lib/fryerLogic.test.ts
  */
-import { nextNonce, isBankable, createMsAllocator, U64_MAX } from './fryerLogic';
+import {
+  nextNonce, isBankable, createMsAllocator, applyFryerMessage, takeChip, U64_MAX,
+} from './fryerLogic';
+import type { FryerRecord } from './fryerLogic';
+import type { CrunchRes } from './crunch.worker';
+import { bankBody } from './chipsBody';
+import { parseMove } from './chipsEngine';
 import { BANK_MIN_BITS } from './chipsConst';
 
 let failures = 0;
@@ -12,10 +21,32 @@ function check(name: string, cond: boolean, extra?: unknown) {
   else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
 }
 
-// 1) nextNonce: ordinary increments, and the u64 boundary.
+// 1) nextNonce: ordinary increments, and the u64 ceiling — checked against
+// the REAL bankBody/parseMove (chipsBody.ts / chipsEngine.ts), not just
+// restated as fryerLogic's own `2n ** 64n - 1n` literal. A change to
+// bankBody's ceiling assert or parseMove's `{1,16}` hex-length regex must
+// be able to fail this test.
 check('nextNonce increments', nextNonce(0n) === 1n);
 check('nextNonce increments a large value', nextNonce(1000n) === 1001n);
-check('U64_MAX matches bankBody/parseMove\'s ceiling (2^64 - 1)', U64_MAX === 2n ** 64n - 1n);
+
+{
+  let threw = false;
+  try { bankBody(BANK_MIN_BITS, U64_MAX, 1); } catch { threw = true; }
+  check("bankBody accepts nextNonce's ceiling (U64_MAX)", !threw);
+
+  threw = false;
+  try { bankBody(BANK_MIN_BITS, U64_MAX + 1n, 1); } catch { threw = true; }
+  check("bankBody rejects one past nextNonce's ceiling", threw);
+
+  const body = bankBody(BANK_MIN_BITS, U64_MAX, 1);
+  const parsed = parseMove(body);
+  check(
+    'parseMove round-trips the exact U64_MAX nonce bankBody just accepted (pins the {1,16} hex regex too)',
+    parsed?.kind === 'bank' && parsed.nonce === U64_MAX,
+    body
+  );
+}
+
 check('nextNonce at U64_MAX - 1 still steps', nextNonce(U64_MAX - 1n) === U64_MAX);
 check('nextNonce at U64_MAX stops (returns null)', nextNonce(U64_MAX) === null);
 check('nextNonce never returns a value > U64_MAX', (() => {
@@ -73,6 +104,91 @@ check('isBankable(-1) is false (defensive)', isBankable(-1) === false);
   // being exactly one allocator per hook instance, held in a ref, not one
   // freshly seeded per fryer or per effect run.
   check('same-seeded allocators alias (documents why useFryers must use ONE allocator, not one per fryer)', overlap);
+}
+
+// 5) applyFryerMessage: the stale-drop transition useFryers.ts's onmessage
+// handler delegates to. A matching ms applies; a stale, out-of-range, or
+// 'exhausted' message is a no-op (returns null) — including the case
+// Worker.terminate() can actually produce: a message for an index the
+// basket no longer tracks.
+{
+  const records: FryerRecord[] = [
+    { ms: 100, bits: -1, attempts: 0, nonce: 0n },
+    { ms: 200, bits: 3, attempts: 5, nonce: 0x7n },
+  ];
+
+  const crisper: CrunchRes = { type: 'crisper', ms: 100, bits: 12, nonce: 'ab', attempts: 7 };
+  const applied = applyFryerMessage(records, 0, crisper);
+  check(
+    'matching-ms crisper message applies (bits/attempts/nonce updated)',
+    applied !== null && applied[0].bits === 12 && applied[0].attempts === 7 && applied[0].nonce === 0xabn,
+    applied?.[0]
+  );
+  check(
+    'applying a message to index 0 does not touch fryer 1',
+    applied !== null && applied[1].ms === 200 && applied[1].bits === 3 && applied[1].nonce === 0x7n
+  );
+
+  const stale: CrunchRes = { type: 'crisper', ms: 99, bits: 20, nonce: 'ff', attempts: 1 };
+  check(
+    "a stale ms (from a chip this fryer has already moved past) is dropped",
+    applyFryerMessage(records, 0, stale) === null
+  );
+
+  const progress: CrunchRes = { type: 'progress', ms: 200, bits: 3, attempts: 21 };
+  const afterProgress = applyFryerMessage(records, 1, progress);
+  check(
+    "a 'progress' message keeps the previous nonce (progress carries no nonce)",
+    afterProgress !== null && afterProgress[1].nonce === records[1].nonce
+  );
+  check("a 'progress' message updates attempts", afterProgress !== null && afterProgress[1].attempts === 21);
+
+  const exhausted: CrunchRes = { type: 'exhausted', ms: 100 };
+  check("an 'exhausted' message never applies, even for a matching ms", applyFryerMessage(records, 0, exhausted) === null);
+
+  // Worker.terminate() cannot retract an already-queued message: a late
+  // post can arrive for an index the basket has since shrunk past, or
+  // against an entirely empty basket (cleared on logout). Both must be
+  // no-ops, not an out-of-bounds write.
+  check('a message for an out-of-range index is dropped, not written past the array', applyFryerMessage(records, 5, crisper) === null);
+  check('a message against an empty basket is dropped', applyFryerMessage([], 0, crisper) === null);
+}
+
+// 6) takeChip: the retire-and-reallocate transition bank() delegates to.
+// Bankable -> retired and replaced with a fresh placeholder; a second take
+// on the just-emptied fryer -> null; sub-BANK_MIN_BITS or out-of-range ->
+// null and no mutation.
+{
+  const bankableRec: FryerRecord = { ms: 500, bits: 10, attempts: 40, nonce: 0xdeadbeefn };
+  const notBankableRec: FryerRecord = { ms: 501, bits: 3, attempts: 5, nonce: 0n };
+  const records: FryerRecord[] = [bankableRec, notBankableRec];
+
+  const taken1 = takeChip(records, 0, 999);
+  check(
+    'takeChip returns the chip when it is bankable',
+    taken1.taken !== null && taken1.taken.nonce === 0xdeadbeefn && taken1.taken.bits === 10 && taken1.taken.ms === 500,
+    taken1.taken
+  );
+  check(
+    'takeChip leaves a fresh, non-bankable placeholder at the new ms',
+    taken1.records[0].ms === 999 && taken1.records[0].bits === -1
+  );
+  check(
+    'takeChip does not touch the other fryer',
+    taken1.records[1].ms === 501 && taken1.records[1].bits === 3
+  );
+  check('the original records array passed in is not mutated', records[0].ms === 500 && records[0].bits === 10);
+
+  const taken2 = takeChip(taken1.records, 0, 1000);
+  check('a second takeChip on the just-taken fryer returns null (it is now a fresh placeholder)', taken2.taken === null);
+  check('a no-op takeChip still returns a records array (safe to apply unconditionally)', taken2.records[0].ms === 999 && taken2.records[0].bits === -1);
+
+  const takenLow = takeChip(records, 1, 777);
+  check('takeChip refuses a sub-BANK_MIN_BITS chip', takenLow.taken === null);
+  check('a refused takeChip leaves the original chip in place', takenLow.records[1].ms === 501 && takenLow.records[1].bits === 3);
+
+  const takenOob = takeChip(records, 9, 1);
+  check('takeChip on an out-of-range index returns null rather than throwing', takenOob.taken === null);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

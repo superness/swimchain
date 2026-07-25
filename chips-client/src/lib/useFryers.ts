@@ -20,11 +20,13 @@
  *     copies of `count` workers running at once would double that.
  *   - `bank(index)` does NOT terminate+recreate that fryer's worker (thread
  *     spin-up plus re-wiring onmessage on every single bank click adds up);
- *     it reuses the worker and sends a fresh `start` with a new ms. The
- *     worker's own `generation` counter (crunch.worker.ts) discards any
- *     result from the grind that `start` superseded, so a hash that was
- *     already in flight for the OLD chip can't post a stale update tagged
- *     with a chip that's no longer in the basket.
+ *     it reuses the worker and sends a fresh `start` with a new ms. See
+ *     `applyFryerMessage`'s doc in fryerLogic.ts for exactly which guard —
+ *     crunch.worker.ts's own `generation` counter, or this hook's ms check
+ *     — covers which stale-message interleaving. They are NOT redundant:
+ *     the ms check below is the one doing the primary work for the
+ *     dominant case (a grind mid-`await` for the OLD chip when the rebank's
+ *     `start` is sent).
  *
  * Every ms handed to a worker — a fryer's first chip AND every chip it
  * starts after a bank — comes from ONE allocator per hook instance
@@ -34,34 +36,22 @@
  * `Date.now() + index` re-seeded per effect run doesn't have that guarantee
  * (two effect runs can land in the same millisecond) and a monotonic counter
  * does.
+ *
+ * The two state transitions that actually matter here — dropping a stale
+ * worker message (`applyFryerMessage`) and retiring+reallocating a chip on
+ * bank (`takeChip`) — are pure functions over `FryerRecord[]` and live in
+ * fryerLogic.ts, not here, specifically so they have real tests
+ * (fryerLogic.test.ts) despite this file's Worker/React plumbing being
+ * untestable under this repo's plain-tsx harness.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { CrunchReq, CrunchRes } from './crunch.worker';
-import { createMsAllocator, isBankable } from './fryerLogic';
+import {
+  createMsAllocator, isBankable, applyFryerMessage, takeChip, placeholderRecord, toFryerChip,
+} from './fryerLogic';
+import type { FryerChip, FryerRecord } from './fryerLogic';
 
-/** What the UI needs to render a basket. The nonce is intentionally not
- *  part of this shape — nothing renders it — but IS tracked internally
- *  (see `latest` below) so `bank()` can hand it over when the player cashes
- *  a chip in. */
-export interface FryerChip {
-  ms: number;
-  bits: number;
-  attempts: number;
-}
-
-/** Internal per-fryer record: everything FryerChip has, plus the nonce
- *  `bank()` needs. This, not React state, is the source of truth read by
- *  `bank()` — it's updated synchronously in the same handler that calls
- *  `setChips`, so there's no risk of reading a stale nonce alongside a
- *  fresher bits/ms pair (or vice versa) the way splitting the read across
- *  state and a second ref could. */
-interface FryerRecord extends FryerChip {
-  nonce: bigint;
-}
-
-function placeholder(ms: number): FryerRecord {
-  return { ms, bits: -1, attempts: 0, nonce: 0n };
-}
+export type { FryerChip };
 
 function startWorker(
   authorIdHex: string,
@@ -99,37 +89,22 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
     const allocate = allocatorRef.current!;
 
     function applyMessage(index: number, msg: CrunchRes): void {
-      const prev = latest.current[index];
-      // A message for an ms this basket has already moved past (e.g. a
-      // 'crisper' from a grind bank() has since superseded) is stale —
-      // this is a second, hook-side line of defense on top of the
-      // worker's own `generation` guard, not a substitute for it.
-      if (prev && msg.ms !== prev.ms) return;
-      if (msg.type === 'exhausted') return;
-      const next: FryerRecord = {
-        ms: msg.ms,
-        bits: msg.bits,
-        attempts: msg.attempts,
-        nonce: msg.type === 'crisper' ? BigInt('0x' + msg.nonce) : (prev?.nonce ?? 0n),
-      };
-      latest.current[index] = next;
-      setChips((cur) => {
-        const out = cur.slice();
-        out[index] = { ms: next.ms, bits: next.bits, attempts: next.attempts };
-        return out;
-      });
+      const updated = applyFryerMessage(latest.current, index, msg);
+      if (!updated) return; // stale ms, exhausted, or an index this basket no longer tracks
+      latest.current = updated;
+      setChips(updated.map(toFryerChip));
     }
 
     const initial: FryerRecord[] = [];
     const made: Worker[] = [];
     for (let i = 0; i < count; i++) {
       const ms = allocate();
-      initial.push(placeholder(ms));
+      initial.push(placeholderRecord(ms));
       made.push(startWorker(authorIdHex, tableId, ms, (msg) => applyMessage(i, msg)));
     }
     latest.current = initial;
     workers.current = made;
-    setChips(initial.map(({ ms, bits, attempts }) => ({ ms, bits, attempts })));
+    setChips(initial.map(toFryerChip));
 
     return () => {
       for (const w of made) stopWorker(w);
@@ -137,34 +112,44 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
   }, [count, authorIdHex, tableId]);
 
   /**
-   * Bank the chip in fryer `index`: returns null if there isn't one yet or
-   * it hasn't reached BANK_MIN_BITS (the fold would reject it as
-   * `rejected-bits` anyway — see chipsEngine.ts — so there's no point
-   * spending a submit + action-PoW on it). On a successful take, that
-   * fryer's worker is handed a brand-new ms and starts grinding its next
-   * chip immediately — "one chip at a time" — while the returned nonce is
-   * the caller's to turn into a `bank` move (chipsBody.ts's `bankBody`).
+   * Bank (take) the chip in fryer `index`. Returns `null` if there isn't
+   * one yet or it hasn't reached `BANK_MIN_BITS` (the fold would reject it
+   * as `rejected-bits` anyway — see chipsEngine.ts — so there's no point
+   * spending a submit + action-PoW on it).
+   *
+   * HARD CONTRACT for callers (Task 10 and beyond): this is DESTRUCTIVE.
+   * A successful call immediately retires the chip from the basket and
+   * starts that fryer grinding its NEXT chip ("one chip at a time") — the
+   * returned `{nonce, bits, ms}` is the ONLY remaining reference to that
+   * proof; this hook keeps no second copy anywhere. If turning the result
+   * into a submitted `bank` move then fails (offline, sponsor rejection,
+   * the action-PoW step erroring, etc.), a SECOND call to `bank(index)`
+   * will NOT hand back the same chip — the basket has already moved on,
+   * so it returns `null` (nothing bankable yet) or a different, newer chip.
+   *
+   * The mined proof itself does not expire and isn't tied to being "in" a
+   * fryer — a `{nonce, bits, ms}` triple returned here is valid to submit
+   * at any later time. The correct recovery from a failed submit is to
+   * retry submission with the SAME returned object (e.g. from a
+   * pending-submit queue the caller holds), never to call `bank(index)`
+   * again expecting to "get it back."
    */
   function bank(index: number): { nonce: bigint; bits: number; ms: number } | null {
-    const chip = latest.current[index];
     const worker = workers.current[index];
-    if (!chip || !worker || !isBankable(chip.bits)) return null;
+    const chip = latest.current[index];
+    if (!worker || !chip || !isBankable(chip.bits)) return null;
 
-    const result = { nonce: chip.nonce, bits: chip.bits, ms: chip.ms };
+    const newMs = allocatorRef.current!();
+    const { taken, records } = takeChip(latest.current, index, newMs);
+    if (!taken) return null; // defensive: the isBankable check above should already guarantee this
 
-    const allocate = allocatorRef.current!;
-    const ms = allocate();
-    latest.current[index] = placeholder(ms);
-    setChips((cur) => {
-      const out = cur.slice();
-      out[index] = { ms, bits: -1, attempts: 0 };
-      return out;
-    });
+    latest.current = records;
+    setChips(records.map(toFryerChip));
 
-    const nextMsg: CrunchReq = { type: 'start', authorIdHex, tableId, ms };
+    const nextMsg: CrunchReq = { type: 'start', authorIdHex, tableId, ms: newMs };
     worker.postMessage(nextMsg);
 
-    return result;
+    return taken;
   }
 
   return { chips, bank };
