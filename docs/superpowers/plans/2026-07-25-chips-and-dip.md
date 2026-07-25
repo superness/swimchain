@@ -908,7 +908,7 @@ Create `chips-client/src/lib/chipsEngine.sog.test.ts`:
  * Run: npx tsx src/lib/chipsEngine.sog.test.ts
  */
 import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
-import { SOG_BASE_NUM, SOG_DEN, SOG_MAX_HOURS, START_BOWL_CAP, CRUMBS_PER_CHIP } from './chipsConst';
+import { SOG_BASE_NUM, SOG_DEN, START_BOWL_CAP, CRUMBS_PER_CHIP } from './chipsConst';
 
 const A = 'a'.repeat(64);
 const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'T', owner: A };
@@ -943,14 +943,25 @@ const vAll = (rs: ChipsReply[], bits: number) => new Map(rs.map((r) => [r.conten
   check('one hour decays once', s.crumbs === afterOneHour + CRUMBS_PER_CHIP, s.crumbs);
 }
 
-// 2) A very long gap is clamped to SOG_MAX_HOURS of decay, not unbounded work.
+// 2) A very long gap folds in bounded time and decays the whole bowl away.
+//
+// NOTE ON WHAT THIS DOES *NOT* TEST. At the base rate (97/100) the
+// SOG_MAX_HOURS clamp is not observable through `crumbs`: integer flooring
+// drives any bowl under ~1e12 to zero within ~379 hours, well inside the
+// 720-hour clamp, and applySog's `crumbs > 0` loop break already bounds the
+// work. Deleting the clamp entirely would produce bit-identical output here.
+// The clamp is tested for real in chipsEngine.buy.test.ts, where `airtight`
+// (99/100) still leaves a positive remainder at 720 h that an unclamped fold
+// would grind to zero. Do not add a clamp assertion to this block — it would
+// pass under a broken clamp and give false confidence.
 {
   const rs = [bank(20, 'c1', T0), bank(8, 'c2', T0 + 5000 * HOUR)];
   const started = Date.now();
   const s = foldChips(H, TABLE, rs, vAll(rs, 20));
-  check('long gap folds fast (clamped)', Date.now() - started < 500);
-  check('long gap decays to near nothing', s.crumbs < CRUMBS_PER_CHIP * 2, s.crumbs);
-  check('clamp constant is respected', SOG_MAX_HOURS === 720);
+  check('long gap folds fast', Date.now() - started < 500);
+  // Exact, not `< 2000`: the whole first bank must decay to 0, leaving only
+  // the second bank's payout. A too-slow decay would leave a remainder.
+  check('long gap decays the bowl away', s.crumbs === CRUMBS_PER_CHIP, s.crumbs);
 }
 
 // 3) The rim: crumbs past bowl_cap are lost, not carried.
@@ -961,11 +972,15 @@ const vAll = (rs: ChipsReply[], bits: number) => new Map(rs.map((r) => [r.conten
   check('lifetime is NOT capped', s.lifetimeChips === 4096, s.lifetimeChips);
 }
 
-// 4) Decay never drives crumbs negative and terminates at zero.
+// 4) Decay terminates at exactly zero rather than leaving a fractional
+// remainder or going negative. Asserting the exact total proves the first
+// bank's 1000 crumbs decayed to 0 — `>= 0` alone would pass under almost any
+// arithmetic bug, since floor(positive * positive / positive) cannot go
+// negative in the first place.
 {
   const rs = [bank(8, 'e1', T0), bank(8, 'e2', T0 + 700 * HOUR)];
   const s = foldChips(H, TABLE, rs, vAll(rs, 8));
-  check('crumbs never negative', s.crumbs >= 0, s.crumbs);
+  check('decay terminates at exactly zero', s.crumbs === CRUMBS_PER_CHIP, s.crumbs);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
@@ -1122,6 +1137,29 @@ const rich = (ms = T0) => bank(15, 'rich', ms);
   const rs = [rich(), buy('nosuch', 'b1', T0)];
   const s = foldChips(H, TABLE, rs, new Map([['rich', 15]]));
   check('unknown upgrade rejected', s.moves[1].outcome === 'rejected-parse', s.moves[1].outcome);
+}
+
+// 7) SOG_MAX_HOURS actually bounds decay.
+//
+// This is the ONLY place the clamp is observable. At the base rate (97/100)
+// integer flooring zeroes any reachable bowl within ~379 hours — well inside
+// the 720-hour clamp — so deleting the clamp changes nothing measurable there
+// (see the note in chipsEngine.sog.test.ts). Under `airtight` (99/100) a bowl
+// of ~994k takes ~1016 hourly steps to reach zero, so 720 clamped steps MUST
+// leave a remainder while an unclamped 5000-hour fold grinds it to nothing.
+{
+  const HOUR = 3_600_000;
+  const rs: ChipsReply[] = [
+    bank(15, 'k1', T0),              // 128k, clipped to the 100k starting cap
+    buy('bowl1', 'k2', T0),          // -60k -> 40k, cap now 3M
+    bank(18, 'k3', T0),              // +1,024k -> 1,064k
+    buy('airtight', 'k4', T0),       // -70k -> 994k, sog now 99/100
+    bank(8, 'k5', T0 + 5000 * HOUR), // long gap, then a 1k bank
+  ];
+  const s = foldChips(H, TABLE, rs, new Map([['k1', 15], ['k3', 18], ['k5', 8]]));
+  check('clamp leaves a remainder after 5000h under airtight',
+    s.crumbs > CRUMBS_PER_CHIP, s.crumbs);
+  check('airtight was actually owned for that decay', s.owned.has('airtight'));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
