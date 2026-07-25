@@ -329,7 +329,9 @@ export function App() {
   const { chips, bank } = useFryers(fryerCount, publicKeyHex ?? '', tableId ?? '');
 
   const chipsRef = useRef(chips);
+  const tableIdRef = useRef(tableId);
   chipsRef.current = chips;
+  tableIdRef.current = tableId;
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     (window as unknown as Record<string, unknown>).__chips = {
@@ -342,6 +344,13 @@ export function App() {
         for (let i = 0; i < c.length; i++) if (c[i] === undefined) missing.push(i);
         return { length: c.length, holes: missing, bits: c.map((x) => x?.bits ?? 'HOLE') };
       },
+      /** Show a notice without needing a failing bank — the notice is a layout
+       *  row, so this is how you check the scene shifts rather than gets covered. */
+      setNotice: (msg: string | null) => setNotice(msg),
+      /** Put a chip on the napkin in either state, to check the heading wording
+       *  ("going in…" while in flight vs "on the napkin" once stranded). */
+      setNapkin: (rows: { ms: number; bits: number; failed: boolean }[]) =>
+        setNapkin(rows.map((r) => ({ ...r, nonce: 0n, tableId: tableIdRef.current ?? '' }))),
     };
   }, []);
 
@@ -557,6 +566,13 @@ export function App() {
           <strong>{state && !stillCounting ? compact(state.lifetimeChips) : '—'}</strong>
         </div>
       </header>
+
+      {/* A real grid row, not a floating toast. As a fixed overlay this sat on
+          top of the fryer and hid it; the scene should make room for a message
+          rather than cover itself with one. The slot is always rendered so the
+          stage keeps its 1fr row when there is nothing to say. */}
+      <div className="notice-slot">
+        </div>
 
       <main className="stage">
         <Kitchen
