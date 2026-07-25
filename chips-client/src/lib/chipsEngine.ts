@@ -135,10 +135,30 @@ function sogNum(state: ChipsState): number {
   return base + (state.airtight ? AIRTIGHT_BONUS : 0);
 }
 
+/**
+ * Hours elapsed between two action timestamps, clamped to SOG_MAX_HOURS.
+ *
+ * Exported — not inlined into `applySog` — because this clamp is NOT
+ * observable through `crumbs` in any realistic fixture: at the base decay
+ * rate (97/100), integer flooring already zeroes a reachable bowl within
+ * ~379 hours, well inside the 720-hour clamp, so a fixture-based test would
+ * pass identically with the clamp deleted. Even under `airtight` (99/100),
+ * the surviving remainder at the 720-hour boundary is the same order of
+ * magnitude as the accumulated integer-floor error, so that too would be
+ * luck rather than proof (see chipsEngine.sog.test.ts block 7 and
+ * chipsEngine.buy.test.ts's note on this). The clamp is instead pinned
+ * arithmetically, directly against this function. Do not inline it back into
+ * `applySog` — that removes the only place the clamp can be tested.
+ */
+export function sogHoursFor(fromAt: number, toAt: number): number {
+  if (toAt <= fromAt) return 0;
+  return Math.min(Math.floor((toAt - fromAt) / 3_600_000), SOG_MAX_HOURS);
+}
+
 /** Decay the bowl over whole elapsed hours. Integer-only, bounded work. */
 function applySog(state: ChipsState, fromMs: number, toMs: number): void {
-  if (toMs <= fromMs || state.crumbs <= 0) return;
-  const hours = Math.min(Math.floor((toMs - fromMs) / 3_600_000), SOG_MAX_HOURS);
+  if (state.crumbs <= 0) return;
+  const hours = sogHoursFor(fromMs, toMs);
   const num = sogNum(state);
   for (let i = 0; i < hours && state.crumbs > 0; i++) {
     state.crumbs = Math.floor((state.crumbs * num) / SOG_DEN);

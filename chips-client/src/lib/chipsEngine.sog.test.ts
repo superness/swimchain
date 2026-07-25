@@ -3,8 +3,8 @@
  * fixed dip-then-airtight resolution order.
  * Run: npx tsx src/lib/chipsEngine.sog.test.ts
  */
-import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
-import { SOG_BASE_NUM, SOG_DEN, START_BOWL_CAP, CRUMBS_PER_CHIP } from './chipsConst';
+import { foldChips, sogHoursFor, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { SOG_BASE_NUM, SOG_DEN, SOG_MAX_HOURS, START_BOWL_CAP, CRUMBS_PER_CHIP } from './chipsConst';
 
 const A = 'a'.repeat(64);
 const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'T', owner: A };
@@ -104,6 +104,24 @@ const vAll = (rs: ChipsReply[], bits: number) => new Map(rs.map((r) => [r.conten
   ];
   const s = foldChips(H, TABLE, rs, vAll(rs, 14));
   check('pending reply applies no decay', s.crumbs === CRUMBS_PER_CHIP * 64 + CRUMBS_PER_CHIP, s.crumbs);
+}
+
+// 7) THE CLAMP, tested arithmetically.
+// The only real coverage of SOG_MAX_HOURS. It cannot be tested through
+// `crumbs` -- see the note on sogHoursFor in chipsEngine.ts -- so it is tested
+// where it actually lives: the hour computation itself.
+{
+  check('sub-hour gap is 0 hours', sogHoursFor(T0, T0 + HOUR - 1) === 0);
+  check('exact hour is 1', sogHoursFor(T0, T0 + HOUR) === 1);
+  check('partial hours truncate', sogHoursFor(T0, T0 + 3 * HOUR + 59 * 60_000) === 3);
+  check('backwards time is 0, never negative', sogHoursFor(T0 + 5 * HOUR, T0) === 0);
+  check('equal timestamps are 0', sogHoursFor(T0, T0) === 0);
+  check('just under the clamp is unclamped', sogHoursFor(T0, T0 + 719 * HOUR) === 719);
+  check('exactly at the clamp', sogHoursFor(T0, T0 + 720 * HOUR) === 720);
+  // The assertion that fails if the clamp is deleted:
+  check('far beyond the clamp is capped', sogHoursFor(T0, T0 + 5000 * HOUR) === SOG_MAX_HOURS,
+    sogHoursFor(T0, T0 + 5000 * HOUR));
+  check('a decade is still capped', sogHoursFor(T0, T0 + 87600 * HOUR) === SOG_MAX_HOURS);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
