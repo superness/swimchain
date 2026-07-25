@@ -51,6 +51,35 @@ Swimchain uses these core libraries (from ROADMAP Appendix B):
 | `bincode` | Binary serialization | - |
 | `clap` | CLI argument parsing | - |
 
+## Working in a git worktree
+
+`git worktree add` copies tracked files only, and three things the JS clients
+need are gitignored — so a fresh worktree cannot build any client until you
+bootstrap it:
+
+```bash
+scripts/setup-worktree.sh                 # shared libs, WASM, .claude hooks
+scripts/setup-worktree.sh reef-client     # ...and that client's own deps
+scripts/setup-worktree.sh --all-clients   # ...or every client that links them
+```
+
+What it fixes, and why each is easy to miss:
+
+| Missing | Why it bites |
+|---|---|
+| `node_modules/` in `swimchain-js`, `swimchain-react`, `swimchain-frontend` | Eleven clients link these via npm `file:`, which is a *symlink* — the linked package resolves its own imports (`@noble/curves`, `@noble/hashes`, `@noble/ciphers`) from its own directory, so an empty one breaks every client that signs anything. |
+| `swimchain-js/pkg/` | Ignored by its own generated `swimchain-js/pkg/.gitignore` containing `*`, so it is invisible in the root `.gitignore` and the directory looks tracked. `@swimchain/core`'s loader dynamically imports `../pkg/swimchain_wasm.js` from `swimchain-js/dist/`. |
+| `.claude/` | Gitignored, so repo-local hooks and settings do not follow a worktree. |
+
+The first two fail **after a clean `tsc -b`** — TypeScript resolves types through
+the symlink and never follows the dynamic WASM import, so the error surfaces only
+at bundle time and names a package nobody in the worktree declared. Verify a
+worktree with a real build, never a typecheck alone:
+
+```bash
+cd reef-client && npm install && npm run build
+```
+
 ## Building
 
 ```bash
