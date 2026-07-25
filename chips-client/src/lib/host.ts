@@ -155,6 +155,32 @@ function assertValidTableName(name: string): void {
   }
 }
 
+/**
+ * The JSON header out of a post's stored text.
+ *
+ * `list_space_posts` returns the post EXACTLY as the node stored it, which for
+ * a post is `${title}\n\n${body}` — the same string createTable hashes for PoW.
+ * It also returns the split-out `title` alongside, and it is easy to read that
+ * and assume `body` is likewise split; it is not.
+ *
+ * `JSON.parse` on the raw field therefore throws on the leading title, and
+ * `listTables`'s catch swallows it — so EVERY table is silently skipped and
+ * `listTables()` returns []. Verified against mainnet on 2026-07-25: the
+ * boards stayed permanently empty (which also means `requestContent` never
+ * runs, so nothing hosts anybody's table), and, far worse, App's
+ * "do I already have a table?" lookup found nothing on every single load and
+ * re-created one. That is only survivable because an identical post dedupes to
+ * the same content_id — rename yourself once and you fork a fresh table and
+ * lose every crumb and all your lifetime crunch.
+ *
+ * Tolerates both shapes: if there is no blank line, the field already is the
+ * body, and this returns it unchanged.
+ */
+function headerJson(stored: string): string {
+  const split = stored.indexOf('\n\n');
+  return split >= 0 ? stored.slice(split + 2) : stored;
+}
+
 /** Throws loudly at host-construction time rather than silently querying an empty space/endpoint. */
 function assertConfigured(): void {
   if (!RPC_URL) {
@@ -284,9 +310,16 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
       await initWasm();
 
       const out: TableSummary[] = [];
+      // list_space_posts can return the SAME post more than once (observed
+      // three identical rows for one content_id against mainnet on
+      // 2026-07-25). Un-deduplicated, that table appears three times on the
+      // boards and is requestContent'd three times per pass.
+      const seen = new Set<string>();
       for (const c of res.items) {
+        if (seen.has(c.content_id)) continue;
+        seen.add(c.content_id);
         try {
-          const header = JSON.parse(c.body ?? '{}');
+          const header = JSON.parse(headerJson(c.body ?? ''));
           if (header?.kind === 'chips-table') {
             const authorId = bytesToHex(decodeAddress(c.author_id));
             out.push({ tableId: c.content_id, authorId, name: String(header.name ?? 'Untitled') });

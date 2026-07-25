@@ -1,0 +1,649 @@
+/* ==========================================================================
+   Chips & Dip — the shop.
+
+   Everything here is CSS/SVG. No image files, no font downloads, no external
+   anything: the whole scene is drawn by the browser.
+
+   The rules the design is held to:
+     - full-screen. This is a room, not a page. Nothing scrolls, nothing has a
+       card border, nothing looks like a form.
+     - the DIP is the floor of the world and changes completely per tier.
+     - the CHIP tells you its crispness by how it looks. There is no bar.
+     - the BOWL tells you it is going soft before any number does.
+   ========================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  overflow: hidden;
+  background: #0d0906;
+  color: #f4e9d8;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+button:disabled { cursor: default; }
+input { font: inherit; }
+ol, ul { margin: 0; padding: 0; list-style: none; }
+h1, h2, h3, p { margin: 0; }
+
+:root {
+  --sign: 'Haettenschweiler', 'Franklin Gothic Bold', 'Arial Narrow', Impact, sans-serif;
+  --chalk: 'Segoe Script', 'Bradley Hand', 'Chalkboard SE', 'Comic Sans MS', cursive;
+  --steel: #2a2119;
+  --steel-hi: #4a3c2e;
+  --ink: #f4e9d8;
+}
+
+.boot {
+  display: grid; place-items: center; height: 100%;
+  font-family: var(--chalk); color: #c9b596; letter-spacing: .04em;
+  text-align: center; padding: 24px;
+}
+.boot.bad { color: #ff9a72; }
+
+/* ── the dip: the bed of the whole scene ─────────────────────────────────── */
+
+[data-dip="salsa"]   { --d1:#59120b; --d2:#a92c19; --d3:#e2593a; --dglow:#ff7a4a; --chunk:#ff8b5e; --chunk-o:.42; }
+[data-dip="guac"]    { --d1:#20340f; --d2:#4e7a26; --d3:#8bb352; --dglow:#a7d16b; --chunk:#d8e8a8; --chunk-o:.26; }
+[data-dip="onion"]   { --d1:#6d5f45; --d2:#c3b18b; --d3:#efe3c6; --dglow:#fff4dc; --chunk:#fffaf0; --chunk-o:.34; }
+[data-dip="queso"]   { --d1:#6d3405; --d2:#d0800f; --d3:#ffc247; --dglow:#ffd97a; --chunk:#fff0b8; --chunk-o:.3; }
+[data-dip="seven"]   { --d1:#3a2410; --d2:#8a5a24; --d3:#d8a552; --dglow:#ffd08a; --chunk:#f2dca8; --chunk-o:.22; }
+[data-dip="buffalo"] { --d1:#5c1301; --d2:#cf3606; --d3:#ff7a2b; --dglow:#ff9d3c; --chunk:#ffc98a; --chunk-o:.3; }
+[data-dip="fondue"]  { --d1:#5a3a08; --d2:#bd8c1c; --d3:#ffd97a; --dglow:#ffeeb4; --chunk:#fff3c8; --chunk-o:.34; }
+[data-dip="abyss"]   { --d1:#05030b; --d2:#1d0f31; --d3:#4a2470; --dglow:#9d6bff; --chunk:#c9a6ff; --chunk-o:.2; }
+
+.dip { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.dip-base {
+  position: absolute; inset: -12%;
+  background:
+    radial-gradient(120% 90% at 50% 118%, var(--d3) 0%, var(--d2) 38%, var(--d1) 78%, #08060a 100%);
+  filter: saturate(1.05);
+}
+/* a slow, thick surface motion — dip is heavy, it does not ripple */
+.dip-base::after {
+  content: ''; position: absolute; inset: -20%;
+  background:
+    radial-gradient(38% 28% at 22% 34%, color-mix(in srgb, var(--d3) 55%, transparent), transparent 70%),
+    radial-gradient(44% 30% at 78% 62%, color-mix(in srgb, var(--d1) 65%, transparent), transparent 72%);
+  mix-blend-mode: soft-light;
+  animation: slosh 34s ease-in-out infinite alternate;
+}
+@keyframes slosh {
+  from { transform: translate3d(-2%, -1.5%, 0) scale(1.03) rotate(-1deg); }
+  to   { transform: translate3d(2.5%, 2%, 0) scale(1.09) rotate(1.5deg); }
+}
+
+/* Seven-Layer is the only tier that is literally banded. */
+.dip-strata { position: absolute; inset: 0; opacity: 0; }
+[data-dip="seven"] .dip-strata {
+  opacity: .85;
+  background: repeating-linear-gradient(
+    -4deg,
+    rgba(120, 40, 20, .5) 0 6vmin,
+    rgba(210, 180, 90, .42) 6vmin 11vmin,
+    rgba(60, 120, 40, .38) 11vmin 15vmin,
+    rgba(240, 230, 200, .3) 15vmin 19vmin,
+    rgba(150, 60, 30, .34) 19vmin 25vmin
+  );
+  mix-blend-mode: overlay;
+}
+
+/* Queso and Fondue are molten; the Abyss is something else entirely. */
+.dip-swirl { position: absolute; inset: -20%; opacity: 0; }
+[data-dip="queso"] .dip-swirl,
+[data-dip="fondue"] .dip-swirl {
+  opacity: .55;
+  background: conic-gradient(from 0deg at 50% 55%,
+    transparent 0deg, color-mix(in srgb, var(--dglow) 70%, transparent) 60deg,
+    transparent 130deg, color-mix(in srgb, var(--d1) 80%, transparent) 210deg,
+    transparent 300deg, color-mix(in srgb, var(--dglow) 50%, transparent) 350deg, transparent 360deg);
+  filter: blur(6vmin);
+  animation: churn 46s linear infinite;
+}
+[data-dip="abyss"] .dip-swirl {
+  opacity: .7;
+  background: conic-gradient(from 200deg at 40% 60%,
+    #2b0f4d, #6b2bb8, #1a6fa8, #0b2b4d, #4a1070, #2b0f4d);
+  filter: blur(9vmin) saturate(1.6);
+  mix-blend-mode: color-dodge;
+  animation: churn 70s linear infinite reverse;
+}
+@keyframes churn { to { transform: rotate(360deg); } }
+
+/* the chunky bits — salsa has the most, guacamole the fewest */
+.dip-chunks { position: absolute; inset: 0; }
+.dip-chunks span {
+  position: absolute; display: block; border-radius: 42% 58% 61% 39% / 55% 41% 59% 45%;
+  background: color-mix(in srgb, var(--chunk) 80%, transparent);
+  opacity: var(--chunk-o);
+  filter: blur(.25vmin);
+  mix-blend-mode: soft-light;
+  animation: drift 40s ease-in-out infinite alternate;
+}
+[data-dip="onion"] .dip-chunks span,
+[data-dip="fondue"] .dip-chunks span { filter: blur(1.1vmin); }
+@keyframes drift {
+  from { translate: 0 0; }
+  to   { translate: 2.5vmin -2vmin; }
+}
+
+.dip-sheen {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(58% 44% at 50% 8%, rgba(255, 236, 190, .22), transparent 68%),
+    radial-gradient(140% 100% at 50% 130%, transparent 40%, rgba(0, 0, 0, .62) 100%);
+}
+.dip::after {  /* grain, so nothing looks like flat vector art */
+  content: ''; position: absolute; inset: 0; opacity: .16; mix-blend-mode: overlay;
+  background-image:
+    radial-gradient(rgba(255,255,255,.7) .5px, transparent .5px),
+    radial-gradient(rgba(0,0,0,.6) .5px, transparent .5px);
+  background-size: 3px 3px, 4px 4px;
+  background-position: 0 0, 2px 1px;
+}
+
+/* ── the room ────────────────────────────────────────────────────────────── */
+
+.shop {
+  position: fixed; inset: 0; z-index: 1;
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.hood {
+  position: relative; z-index: 3;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 2vw;
+  padding: clamp(10px, 1.6vh, 22px) clamp(14px, 2.4vw, 44px) clamp(10px, 1.4vh, 18px);
+  background:
+    linear-gradient(180deg, #1b1611 0%, #241d15 62%, #120e0a 100%);
+  border-bottom: 2px solid #0a0806;
+  box-shadow: 0 14px 40px rgba(0,0,0,.6), inset 0 -1px 0 rgba(255,210,150,.12);
+}
+.hood::after {  /* the strip light under the extractor hood */
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--dglow, #ffb56b) 75%, #fff) 20%, #ffe9c4 50%, color-mix(in srgb, var(--dglow, #ffb56b) 75%, #fff) 80%, transparent);
+  filter: blur(.6px); opacity: .8;
+}
+.shop-name {
+  display: block; font-family: var(--sign); letter-spacing: .06em;
+  font-size: clamp(20px, 2.6vw, 40px); line-height: .95;
+  color: #ffe6b8;
+  text-shadow: 0 0 18px rgba(255,180,90,.5), 0 2px 0 #3a2a18;
+}
+.cook { display: block; font-family: var(--chalk); font-size: clamp(11px, 1.1vw, 15px); color: #b39d7d; margin-top: 3px; }
+.hood-dip, .hood-crunch { text-align: right; }
+.hood-dip strong, .hood-crunch strong {
+  display: block; font-family: var(--sign); letter-spacing: .04em;
+  font-size: clamp(16px, 2vw, 30px); line-height: 1;
+  color: color-mix(in srgb, var(--d3, #ffcf8a) 70%, #fff5df);
+  text-shadow: 0 0 22px color-mix(in srgb, var(--dglow, #ffb56b) 60%, transparent);
+}
+.in-the-bowl {
+  display: block; font-size: clamp(8px, .72vw, 11px); letter-spacing: .22em;
+  text-transform: uppercase; color: #8d7c63; margin-bottom: 3px;
+}
+
+.stage {
+  position: relative; z-index: 2; min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, .55fr);
+  gap: clamp(10px, 2vw, 40px);
+  padding: clamp(10px, 2vh, 28px) clamp(14px, 2.4vw, 44px) clamp(12px, 2vh, 24px);
+}
+/* the tiled splashback behind the station. Fades out fast — it is scenery, and
+   the dip has to stay the bed of the scene. */
+.stage::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 46%;
+  z-index: -1; pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(240, 228, 206, .12), transparent 92%),
+    repeating-linear-gradient(90deg, rgba(255,244,224,.07) 0 1px, transparent 1px 74px),
+    repeating-linear-gradient(0deg, rgba(255,244,224,.07) 0 1px, transparent 1px 74px);
+  mask-image: linear-gradient(180deg, #000 0%, transparent 96%);
+}
+
+/* ── the fryers ──────────────────────────────────────────────────────────── */
+
+.kitchen {
+  min-width: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: clamp(8px, 1.6vh, 20px);
+  padding-bottom: clamp(86px, 12vh, 140px);   /* room for the wall board */
+}
+/* the heat lamp over the station — grounds the rack instead of leaving it
+   floating in the middle of an empty room */
+.kitchen { position: relative; }
+.kitchen::before {
+  content: ''; position: absolute; z-index: -1;
+  left: 50%; top: 8%; translate: -50% 0;
+  width: min(92%, 760px); height: 78%;
+  background: radial-gradient(58% 46% at 50% 22%, rgba(255,214,150,.2), transparent 72%);
+  filter: blur(2px); pointer-events: none;
+}
+.rack { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: center; gap: clamp(10px, 1.6vw, 30px); }
+/* Every fryer you buy has to fit in the same room. Each size carries a `vh`
+   term as well as a `vw` one, because four baskets at the one-basket size
+   overflow the stage vertically long before they run out of width. */
+.rack-2 .basket { width: min(clamp(150px, 19vw, 292px), 46vh); }
+.rack-3 .basket { width: min(clamp(122px, 14.5vw, 224px), 42vh); }
+.rack-4 .basket { width: min(clamp(112px, 13vw, 202px), 29vh); }
+.rack-4 { max-width: 470px; }
+
+.basket {
+  position: relative;
+  width: min(clamp(190px, 26vw, 380px), 52vh);
+  aspect-ratio: 1 / 1.04;
+  padding: 0;
+  border-radius: 10px 10px 26px 26px / 10px 10px 34px 34px;
+  background:
+    linear-gradient(180deg, #6a6157 0%, #4a4239 26%, #332c25 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255,235,200,.32),
+    inset 0 -20px 34px rgba(0,0,0,.6),
+    0 22px 46px rgba(0,0,0,.55);
+  transition: transform .22s cubic-bezier(.2,.8,.3,1.2), box-shadow .3s;
+  overflow: hidden;
+  isolation: isolate;
+}
+.basket:disabled { opacity: .72; }
+.basket-hook {
+  position: absolute; top: -13px; left: 50%; translate: -50% 0;
+  width: 46%; height: 15px; border-radius: 8px 8px 0 0;
+  background: linear-gradient(180deg, #8a7f70, #4a423a);
+  box-shadow: 0 2px 5px rgba(0,0,0,.6);
+}
+/* the oil */
+.oil {
+  position: absolute; inset: 16% 6% 5%;
+  border-radius: 8px 8px 22px 22px;
+  background:
+    linear-gradient(180deg, rgba(255,214,140,.6) 0%, rgba(214,140,38,.72) 26%, rgba(150,84,14,.86) 62%, rgba(74,38,4,.94) 100%);
+  box-shadow: inset 0 6px 16px rgba(255,220,150,.3), inset 0 -14px 30px rgba(0,0,0,.55);
+  overflow: hidden;
+}
+/* the surface of the oil: a bright meniscus with a slow shimmer across it */
+.oil::before {
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 12px;
+  background: linear-gradient(180deg, rgba(255,246,214,.85), rgba(255,206,124,.25) 60%, transparent);
+  filter: blur(1px);
+}
+.oil::after {
+  content: ''; position: absolute; inset: 0;
+  background:
+    repeating-linear-gradient(112deg, rgba(255,232,180,.09) 0 14px, transparent 14px 42px);
+  animation: shimmer 7s linear infinite;
+}
+@keyframes shimmer { to { transform: translateX(42px); } }
+.bubble {
+  position: absolute; bottom: 4%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 30%, rgba(255,248,220,.95), rgba(255,206,130,.28) 62%, transparent 72%);
+  animation-name: rise; animation-timing-function: ease-in; animation-iteration-count: infinite;
+}
+@keyframes rise {
+  0%   { transform: translateY(0) scale(.5); opacity: 0; }
+  12%  { opacity: .95; }
+  100% { transform: translateY(-125px) scale(1.25); opacity: 0; }
+}
+/* the wire mesh, in front of the chip */
+.mesh {
+  position: absolute; inset: 16% 6% 5%; pointer-events: none;
+  border-radius: 8px 8px 22px 22px;
+  background:
+    repeating-linear-gradient(90deg, rgba(18,14,10,.55) 0 1.6px, transparent 1.6px 15px),
+    repeating-linear-gradient(0deg, rgba(18,14,10,.45) 0 1.6px, transparent 1.6px 15px);
+  box-shadow:
+    inset 0 0 0 2.5px rgba(120,104,84,.55),
+    inset 0 0 34px rgba(0,0,0,.55);
+  opacity: .48;
+}
+.basket-chip {
+  position: absolute; left: 50%; top: 52%; translate: -50% -50%;
+  width: 74%; aspect-ratio: 1; display: block;
+  filter: drop-shadow(0 8px 12px rgba(0,0,0,.5));
+}
+.basket-chip .chip { width: 100%; height: 100%; display: block; }
+.chip-shadow { fill: rgba(0,0,0,.35); transform: translate(2.5px, 4px); }
+.chip.is-batter { animation: wobble 3.4s ease-in-out infinite; }
+@keyframes wobble {
+  0%, 100% { transform: rotate(-2.5deg) scale(1); }
+  50%      { transform: rotate(3deg) scale(1.035); }
+}
+.chip-sheen { animation: sheen 2.4s linear infinite; }
+@keyframes sheen { from { transform: translateX(0); } to { transform: translateX(250px); } }
+
+.steam { position: absolute; inset: 0; pointer-events: none; }
+.steam i {
+  position: absolute; bottom: 42%; left: 50%;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,246,226,.5), transparent 68%);
+  filter: blur(4px);
+  animation: waft 3.6s ease-out infinite;
+}
+.steam i:nth-child(2) { left: 38%; animation-delay: 1.2s; }
+.steam i:nth-child(3) { left: 62%; animation-delay: 2.4s; }
+@keyframes waft {
+  0%   { transform: translateY(0) scale(.6); opacity: 0; }
+  25%  { opacity: .6; }
+  100% { transform: translateY(-72px) scale(2.1); opacity: 0; }
+}
+
+/* DONE. The rim lights and the basket lifts a little — the affordance is the
+   basket looking ready, not a label saying "enabled". */
+.basket.ready {
+  box-shadow:
+    inset 0 2px 0 rgba(255,235,200,.4),
+    inset 0 -20px 34px rgba(0,0,0,.55),
+    0 0 0 2px rgba(255,196,110,.55),
+    0 0 34px rgba(255,168,60,.38),
+    0 24px 50px rgba(0,0,0,.55);
+}
+.basket.ready:hover:not(:disabled) { transform: translateY(-7px); }
+.basket.golden {
+  box-shadow:
+    inset 0 2px 0 rgba(255,246,214,.6),
+    inset 0 -20px 34px rgba(0,0,0,.5),
+    0 0 0 3px rgba(255,214,110,.85),
+    0 0 60px rgba(255,190,60,.7),
+    0 24px 54px rgba(0,0,0,.5);
+  animation: goldpulse 2s ease-in-out infinite;
+}
+@keyframes goldpulse {
+  50% { box-shadow:
+    inset 0 2px 0 rgba(255,246,214,.7),
+    inset 0 -20px 34px rgba(0,0,0,.5),
+    0 0 0 4px rgba(255,232,150,.95),
+    0 0 90px rgba(255,205,80,.9),
+    0 24px 54px rgba(0,0,0,.5); }
+}
+.tongs {
+  position: absolute; left: 0; right: 0; bottom: 6px;
+  font-family: var(--chalk); font-size: 13px; letter-spacing: .04em;
+  color: #ffe0a8; text-shadow: 0 1px 4px #000;
+  opacity: 0; transition: opacity .2s;
+}
+.basket.ready:hover .tongs, .basket.golden .tongs { opacity: .95; }
+
+.mutter { font-family: var(--chalk); color: #d8bf99; opacity: .9; font-size: 15px; }
+
+/* chips pulled from the oil that have not reached the chain yet */
+.napkin {
+  background: linear-gradient(180deg, #f6efe0, #ded4c0);
+  color: #3a2f22; border-radius: 3px;
+  padding: 8px 14px 10px;
+  box-shadow: 0 10px 26px rgba(0,0,0,.5);
+  clip-path: polygon(0 4%, 3% 0, 97% 2%, 100% 6%, 99% 96%, 96% 100%, 4% 98%, 1% 94%);
+  max-width: min(460px, 90%);
+}
+.napkin-label {
+  display: block; font-family: var(--chalk); font-size: 12px; color: #7b6a53;
+  letter-spacing: .06em; margin-bottom: 4px;
+}
+.napkin ul { display: flex; gap: 12px; flex-wrap: wrap; }
+.napkin li { display: flex; flex-direction: column; align-items: center; width: 66px; }
+.napkin li .chip { width: 42px; height: 42px; }
+.napkin li.sending { opacity: .75; }
+.again { font-family: var(--chalk); font-size: 12px; color: #9a3418; text-decoration: underline; }
+.again.waiting { color: #7b6a53; text-decoration: none; }
+
+/* ── the counter: bowl + shelf ───────────────────────────────────────────── */
+
+.counter {
+  min-width: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: clamp(8px, 1.6vh, 20px);
+}
+
+.bowl-wrap { width: 100%; max-width: 340px; text-align: center; }
+.bowl { width: 100%; height: auto; display: block; filter: drop-shadow(0 26px 40px rgba(0,0,0,.6)); }
+.bowl-body { stroke: rgba(40,30,20,.6); stroke-width: 1.6; }
+.bowl-rim { fill: none; stroke: #f0e4cd; stroke-width: 4.5; opacity: .95; }
+.bowl-foot { fill: rgba(255, 231, 190, .3); }
+.bowl-dip { fill: var(--d2, #a92c19); }
+.heap { filter: blur(calc(var(--soggy, 0) * 0.7px)); }
+.wet-sheen { animation: gleam 6s ease-in-out infinite alternate; }
+@keyframes gleam { to { opacity: .28; } }
+.spill path { fill: hsl(34 70% 52%); opacity: .9; }
+
+.bowl-read { margin-top: 6px; }
+.crumbs { font-family: var(--sign); letter-spacing: .04em; font-size: clamp(18px, 2.2vw, 32px); color: #ffe9c6; }
+.crumbs strong { font-weight: inherit; }
+.bowl-read .sub, .bowl-read .checking {
+  font-family: var(--chalk); font-size: clamp(11px, 1vw, 14px); color: #c2ab88; margin-top: 2px;
+}
+/* While any bank's proof is unchecked the balance is INCOMPLETE. Never show a
+   confidently wrong number — show the kitchen counting. */
+.bowl-wrap.counting .bowl { filter: drop-shadow(0 26px 40px rgba(0,0,0,.6)) saturate(.55) blur(1.1px); }
+.bowl-read .checking { color: #ffd79a; }
+.bowl-read .checking em { font-style: normal; opacity: .75; }
+
+.shelf { width: 100%; max-width: 520px; }
+.shelf .jars { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.jar {
+  position: relative; width: 92px; padding: 30px 4px 6px;
+  border-radius: 3px 3px 6px 6px;
+  background: linear-gradient(180deg, rgba(48,38,28,.86), rgba(26,20,14,.9));
+  box-shadow: inset 0 1px 0 rgba(255,220,170,.16), 0 8px 18px rgba(0,0,0,.5);
+  text-align: center; transition: transform .16s, box-shadow .22s, opacity .2s;
+}
+.jar-glass {
+  position: absolute; top: 5px; left: 50%; translate: -50% 0;
+  width: 34px; height: 24px; border-radius: 4px 4px 8px 8px;
+  background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.04));
+  box-shadow: inset 0 0 0 1px rgba(255,240,210,.24);
+  overflow: hidden;
+}
+.jar-glass i {
+  position: absolute; inset: 34% 2px 2px; border-radius: 2px 2px 6px 6px;
+  background: linear-gradient(180deg, var(--d3, #e2593a), var(--d1, #59120b));
+}
+.jar-name { display: block; font-size: 10.5px; line-height: 1.2; color: #d8c6a6; }
+.jar-cost { display: block; font-family: var(--chalk); font-size: 12px; color: #8d7c63; margin-top: 2px; }
+.jar.afford { opacity: 1; }
+.jar.afford .jar-name { color: #ffe6bb; }
+.jar.afford .jar-cost { color: color-mix(in srgb, var(--dglow, #ffb56b) 80%, #fff); }
+.jar.afford:hover { transform: translateY(-4px); box-shadow: 0 0 0 1px rgba(255,200,120,.5), 0 12px 26px rgba(0,0,0,.55); }
+.jar.dear { opacity: .42; }
+.got { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
+.got-jar {
+  font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: #8d7c63; border: 1px solid rgba(190,164,124,.28); border-radius: 999px; padding: 2px 8px;
+}
+
+/* ── the boards on the wall ──────────────────────────────────────────────── */
+
+.wallboard {
+  position: fixed; z-index: 4;
+  left: clamp(12px, 2vw, 32px); bottom: clamp(12px, 2vh, 26px);
+  width: min(300px, 34vw); padding: 12px 16px 14px; text-align: left;
+  background: linear-gradient(160deg, #1d2620 0%, #131a16 100%);
+  border-radius: 4px;
+  box-shadow: 0 0 0 6px #5a4426, 0 0 0 8px #3a2b17, 0 22px 44px rgba(0,0,0,.65);
+  transition: transform .2s;
+}
+.wallboard:hover { transform: translateY(-3px); }
+.chalk-title {
+  display: block; font-family: var(--sign); letter-spacing: .16em;
+  font-size: 17px; color: #eef3ea; opacity: .9;
+}
+.chalk-line { display: block; font-family: var(--chalk); font-size: 13px; color: #b9cbb6; margin-top: 5px; }
+.hosting { display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: #6f8570; margin-top: 7px; }
+.hosting.live { color: #a8d29e; }
+.hosting.live::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: #a8d29e; margin-right: 6px; animation: blip 1.4s ease-in-out infinite;
+}
+@keyframes blip { 50% { opacity: .25; } }
+
+.boards-panel {
+  position: fixed; inset: 0; z-index: 20;
+  display: flex; flex-direction: column; justify-content: center; gap: 18px;
+  padding: clamp(18px, 4vh, 52px) clamp(16px, 5vw, 90px);
+  background: radial-gradient(120% 100% at 50% 0%, rgba(22,28,24,.97), rgba(8,10,9,.99));
+  overflow-y: auto;
+  animation: raise .28s cubic-bezier(.2,.9,.3,1);
+}
+@keyframes raise { from { opacity: 0; transform: translateY(3%); } to { opacity: 1; transform: none; } }
+.boards-close {
+  position: absolute; top: 14px; right: 20px; font-size: 30px; line-height: 1;
+  color: #8ba086; padding: 6px 12px;
+}
+.boards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: clamp(16px, 3vw, 44px); }
+.board {
+  background: linear-gradient(160deg, #1d2620, #121815);
+  border-radius: 4px; padding: 20px 22px 24px;
+  box-shadow: 0 0 0 7px #5a4426, 0 0 0 9px #33260f, 0 22px 50px rgba(0,0,0,.6);
+}
+.board h3 { font-family: var(--sign); letter-spacing: .14em; font-size: clamp(20px, 2.2vw, 30px); color: #f0f6ec; }
+.board-kind { font-family: var(--chalk); font-size: 14px; color: #d3b06a; margin-top: 2px; }
+.board-note { font-size: 12px; line-height: 1.5; color: #8ea38a; margin: 8px 0 14px; max-width: 46ch; }
+.board-empty { font-family: var(--chalk); color: #6f8570; }
+.board ol { display: flex; flex-direction: column; gap: 5px; }
+.board li {
+  display: grid; grid-template-columns: 26px 1fr auto auto; gap: 10px; align-items: baseline;
+  padding: 5px 8px; border-radius: 3px;
+  font-size: 13px; color: #cfe0cb;
+  border-bottom: 1px dashed rgba(160,190,155,.14);
+}
+.board li.me {
+  background: linear-gradient(90deg, rgba(210,176,106,.2), rgba(210,176,106,.04));
+  border-left: 3px solid #d3b06a; color: #ffeec4;
+}
+.board .pos { font-family: var(--chalk); color: #7f9a7b; }
+.board .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board .dip-tier { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #9fb99b; }
+.board .val { font-family: var(--sign); letter-spacing: .05em; font-size: 16px; color: #f4f9f0; }
+.board .val em { font-style: normal; font-family: var(--chalk); font-size: 11px; color: #7f9a7b; margin-left: 3px; }
+.boards-foot { font-family: var(--chalk); font-size: 12px; color: #6f8570; text-align: center; }
+
+/* ── working / notices ───────────────────────────────────────────────────── */
+
+.working {
+  position: fixed; z-index: 15; left: 50%; bottom: clamp(14px, 3vh, 34px); translate: -50% 0;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 20px 10px 14px; border-radius: 999px;
+  background: rgba(18,13,9,.9); box-shadow: 0 0 0 1px rgba(255,190,110,.25), 0 16px 34px rgba(0,0,0,.6);
+  font-family: var(--chalk); color: #ffe0ac; font-size: 14px;
+  backdrop-filter: blur(6px);
+}
+.working-oil {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 32%, #ffe9b8, #d98a14 60%, #6d3405);
+  animation: fry .9s ease-in-out infinite alternate;
+}
+@keyframes fry { to { transform: scale(1.35); filter: brightness(1.4); } }
+
+.notice {
+  position: fixed; z-index: 16; left: 50%; top: clamp(72px, 12vh, 130px); translate: -50% 0;
+  padding: 9px 18px; border-radius: 999px; max-width: min(560px, 88vw); text-align: center;
+  background: rgba(20,15,10,.92); box-shadow: 0 0 0 1px rgba(255,200,130,.22), 0 14px 30px rgba(0,0,0,.55);
+  font-family: var(--chalk); font-size: 14px; color: #ffdfae;
+  animation: raise .24s ease-out;
+}
+
+/* ── the dip ladder ceremony ─────────────────────────────────────────────── */
+
+.dip-change { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; }
+.dip-change .flood {
+  position: absolute; inset: 0;
+  background: radial-gradient(120% 90% at 50% 110%, var(--d3) 0%, var(--d2) 42%, var(--d1) 76%, transparent 100%);
+  animation: flood 5.2s cubic-bezier(.16,.8,.3,1) forwards;
+  transform-origin: 50% 100%;
+}
+@keyframes flood {
+  0%   { transform: scale(.05); opacity: 0; border-radius: 50%; }
+  22%  { transform: scale(1.2); opacity: 1; border-radius: 0; }
+  76%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+.dip-change .proclaim {
+  position: relative; text-align: center;
+  animation: proclaim 5.2s cubic-bezier(.16,.8,.3,1) forwards;
+}
+.dip-change .small {
+  display: block; font-size: clamp(10px, 1vw, 13px); letter-spacing: .34em;
+  text-transform: uppercase; color: rgba(255,244,222,.72); margin-bottom: 8px;
+}
+.dip-change strong {
+  display: block; font-family: var(--sign); font-weight: 400;
+  font-size: clamp(38px, 8vw, 128px); line-height: .92; letter-spacing: .04em;
+  color: #fff6e2; text-shadow: 0 0 60px rgba(255,220,160,.6), 0 6px 0 rgba(0,0,0,.35);
+}
+@keyframes proclaim {
+  0%   { opacity: 0; transform: scale(.86); }
+  26%  { opacity: 1; transform: scale(1); }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: scale(1.05); }
+}
+
+/* ── the doorway (pre-game screens) ──────────────────────────────────────── */
+
+/* The doorway screens have no hood and no stage — one card, dead centre.
+   `.shop`'s two-row template has to be overridden or the card sits in the
+   auto-sized header row and pins itself to the top of the screen. */
+.doorway { grid-template-rows: minmax(0, 1fr); place-items: center; }
+.doorway-card {
+  position: relative; z-index: 2; text-align: center;
+  max-width: min(620px, 88vw);
+  padding: clamp(24px, 5vh, 52px) clamp(20px, 5vw, 56px);
+  background: rgba(16,11,7,.82);
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px rgba(255,200,140,.18), 0 30px 80px rgba(0,0,0,.7);
+  backdrop-filter: blur(10px);
+}
+.doorway h1 {
+  font-family: var(--sign); font-weight: 400; letter-spacing: .06em;
+  font-size: clamp(34px, 7vw, 84px); line-height: .94; color: #ffe6b8;
+  text-shadow: 0 0 40px rgba(255,180,90,.45), 0 3px 0 #3a2a18;
+}
+.doorway .lede { margin-top: 16px; font-size: clamp(14px, 1.4vw, 17px); line-height: 1.6; color: #d9c6a6; }
+.doorway .fine { margin-top: 14px; font-size: 12px; color: #8d7c63; }
+.apron-name { display: block; margin: 22px auto 0; max-width: 340px; text-align: left; }
+.apron-name span {
+  display: block; font-family: var(--chalk); font-size: 13px; color: #b39d7d; margin-bottom: 6px;
+}
+.apron-name input {
+  width: 100%; padding: 10px 12px; border-radius: 3px;
+  background: rgba(255,246,230,.94); color: #2a2119; border: 0;
+  font-family: var(--chalk); font-size: 16px;
+  box-shadow: inset 0 2px 6px rgba(0,0,0,.3);
+}
+.apron-name input:focus { outline: 2px solid color-mix(in srgb, var(--dglow, #ffb56b) 80%, #fff); }
+.doorway .big {
+  margin-top: 20px; padding: 13px 34px; border-radius: 3px;
+  font-family: var(--sign); letter-spacing: .1em; font-size: clamp(17px, 2vw, 24px);
+  color: #2a1a08;
+  background: linear-gradient(180deg, #ffd88e, #e79f30 62%, #c67d17);
+  box-shadow: 0 0 0 1px rgba(255,230,180,.6), 0 12px 30px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.7);
+  transition: transform .16s, filter .2s;
+}
+.doorway .big:hover { transform: translateY(-2px); filter: brightness(1.08); }
+
+.fry-spinner { display: inline-flex; gap: 8px; margin-top: 22px; }
+.fry-spinner i {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 32%, #ffe9b8, #d98a14 60%, #6d3405);
+  animation: fry .8s ease-in-out infinite alternate;
+}
+.fry-spinner i:nth-child(2) { animation-delay: .18s; }
+.fry-spinner i:nth-child(3) { animation-delay: .36s; }
+
+/* ── narrow / short rooms ────────────────────────────────────────────────── */
+
+@media (max-width: 940px), (max-height: 620px) {
+  .stage { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; overflow-y: auto; }
+  .kitchen { padding-bottom: 8px; }
+  .wallboard { position: static; width: 100%; max-width: 460px; margin: 0 auto 14px; }
+  .shop { grid-template-rows: auto minmax(0, 1fr); }
+  .basket { width: clamp(112px, 30vw, 170px); }
+}
+@media (max-width: 940px) {
+  .hood { flex-wrap: wrap; gap: 10px 18px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
