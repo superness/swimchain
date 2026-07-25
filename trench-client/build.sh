@@ -43,12 +43,30 @@ case "$(uname -s)" in
         ;;
 esac
 
-# Step 3: Build the game UI into ui/dist (tauri.conf.json's frontendDist).
+# Step 3: Install/build the sibling packages the UI links against
+# (@swimchain/core = swimchain-js, @swimchain/react = swimchain-react, both
+# `file:` deps). Their dist/ is committed, but that is NOT enough: Vite follows
+# the link into swimchain-react/dist and resolves its `@swimchain/core` import
+# against swimchain-react's OWN node_modules, which a fresh checkout doesn't
+# have. Skipping this fails the UI build with "Rollup failed to resolve import
+# @swimchain/core from swimchain-react/dist/hooks/usePow.js" — mirrors
+# desktop-app/build.sh steps 3-4.
+echo ""
+echo "Step 3: Building local packages (@swimchain/core, @swimchain/react)..."
+for PKG in swimchain-js swimchain-react; do
+    echo ""
+    echo "  Building $PKG..."
+    cd "$PROJECT_ROOT/$PKG"
+    npm install
+    npm run build
+done
+
+# Step 4: Build the game UI into ui/dist (tauri.conf.json's frontendDist).
 # `tauri build` runs this itself via beforeBuildCommand, but a bare
 # `cargo build`/`cargo test` in src-tauri does not — so do it explicitly here
 # and the crate compiles either way.
 echo ""
-echo "Step 3: Building game UI..."
+echo "Step 4: Building game UI..."
 cd "$SCRIPT_DIR/ui"
 if [ -f package-lock.json ]; then
     npm ci
@@ -57,9 +75,9 @@ else
 fi
 npm run build
 
-# Step 4: Install the shell's own npm deps (@tauri-apps/cli).
+# Step 5: Install the shell's own npm deps (@tauri-apps/cli).
 echo ""
-echo "Step 4: Installing shell dependencies..."
+echo "Step 5: Installing shell dependencies..."
 cd "$SCRIPT_DIR"
 if [ -f package-lock.json ]; then
     npm ci
@@ -67,9 +85,9 @@ else
     npm install
 fi
 
-# Step 5: Bundle.
+# Step 6: Bundle.
 echo ""
-echo "Step 5: Building Tauri application..."
+echo "Step 6: Building Tauri application..."
 npm run build
 
 echo ""
