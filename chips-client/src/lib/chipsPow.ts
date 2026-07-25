@@ -81,7 +81,15 @@ export function leadingZeroBits(hash: Uint8Array): number {
   return bits;
 }
 
-async function chipHash(preimage: Uint8Array): Promise<Uint8Array> {
+/**
+ * Exported so crunch.worker.ts (Task 9's off-thread grinder) can call the
+ * EXACT same Argon2id call — same params, same salt — that verification
+ * uses. A worker that re-implemented this call with its own copy of SALT/
+ * CHIP_POW would only need one of those two copies to drift for every chip
+ * it mines to silently fail verification later (rejected-bits, not a
+ * crash) — this keeps there being exactly one place that can drift.
+ */
+export async function chipHash(preimage: Uint8Array): Promise<Uint8Array> {
   const hash = await argon2id({
     password: preimage,
     salt: SALT,
