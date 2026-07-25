@@ -20,7 +20,7 @@ import { verifyReplies } from './lib/chipsVerify';
 import { useFryers } from './lib/useFryers';
 import { projectedCrumbs } from './lib/sogProjection';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
-import { Kitchen } from './Kitchen';
+import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { Bowl, Shelf, DipBed, DipChange } from './Bowl';
 import { Boards, useBoards } from './Boards';
 import { compact } from './lib/format';
@@ -185,6 +185,7 @@ export function App() {
   const [state, setState] = useState<ChipsState | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [flight, setFlight] = useState<DipFlightState | null>(null);
   const [counting, setCounting] = useState<{ done: number; total: number } | null>(null);
   const [busy, setBusy] = useState<null | { pool: string[]; label: string }>(null);
   const [napkin, setNapkin] = useState<NapkinChip[]>(loadNapkin);
@@ -360,6 +361,31 @@ export function App() {
     await host.submitMove(me, tableId, bankBody(chip.bits, chip.nonce, chip.ms));
   }, [host, me, tableId]);
 
+  /**
+   * Send the banked chip arcing into the bowl.
+   *
+   * Measured from the live DOM rather than guessed, because the rack reflows
+   * with the fryer count and the bowl moves with the viewport. Purely a
+   * flourish over the scene — it is fixed-position and takes part in no
+   * layout, which is the whole reason it replaced the in-flight panel.
+   */
+  function launchDip(index: number, chip: { ms: number; bits: number }): void {
+    const basket = document.querySelector(`.rack .basket[data-fryer="${index}"] .basket-chip`);
+    const bowl = document.querySelector('.bowl-wrap');
+    if (!basket || !bowl) return;
+    const a = basket.getBoundingClientRect();
+    const b = bowl.getBoundingClientRect();
+    const size = Math.max(30, Math.min(a.width || 56, 76));
+    setFlight({
+      key: chip.ms, ms: chip.ms, bits: chip.bits, size,
+      x0: a.left + a.width / 2 - size / 2,
+      y0: a.top + a.height / 2 - size / 2,
+      x1: b.left + b.width / 2 - size / 2,
+      y1: b.top + b.height * 0.52 - size / 2,
+    });
+    window.setTimeout(() => setFlight((f) => (f && f.key === chip.ms ? null : f)), 900);
+  }
+
   async function onBank(index: number): Promise<void> {
     if (!host || !me || !tableId || busy) return;
     // DESTRUCTIVE. After this line the basket has already moved on and started
@@ -367,6 +393,7 @@ export function App() {
     // anywhere. Calling bank(index) again does NOT give it back.
     const chip = bank(index);
     if (!chip) return;
+    launchDip(index, chip);
 
     // Park it on the napkin BEFORE the network is involved, so no throw path —
     // including a synchronous body assert — can drop it on the floor.
@@ -580,7 +607,7 @@ export function App() {
           goldenBits={goldenBits}
           busy={Boolean(busy)}
           onBank={(i) => void onBank(i)}
-          napkin={napkin.filter((n) => n.tableId === tableId).map((n) => ({ ms: n.ms, bits: n.bits, failed: n.failed }))}
+          napkin={napkin.filter((n) => n.tableId === tableId && n.failed).map((n) => ({ ms: n.ms, bits: n.bits, failed: n.failed }))}
           onRetry={(ms) => void onRetry(ms)}
         />
 
@@ -604,6 +631,7 @@ export function App() {
         </div>
       )}
       {notice && <p className="notice" role="status">{notice}</p>}
+      <DipFlight flight={flight} goldenBits={goldenBits} />
       {dipFanfare !== null && <DipChange dipIndex={dipFanfare} />}
     </div>
   );
