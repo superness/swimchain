@@ -21,11 +21,11 @@
 
 ## Rollout gate — read before write
 
-Tasks 1-5 add the ability to **read** batches. Tasks 6-8 make the client **emit** them.
+Tasks 1-3 add the ability to **read** batches. Tasks 4-6 make the client **emit** them.
 
 **These must not ship together.** A client emitting batches that another client cannot parse produces two different balances for the same history. Anyone with the page already open is running old code, so there is a real window even though the web client updates on reload.
 
-**After Task 5: merge, deploy, and confirm the live bundle parses batches. Only then start Task 6.**
+**After Task 3: merge, deploy, and confirm the live bundle parses batches. Only then start Task 4.**
 
 ---
 
@@ -163,7 +163,22 @@ git commit -m "feat(chips): proof identity and the batch cap"
 
 ---
 
-### Task 2: Parse the batch grammar
+### Task 2: The consensus change — grammar, fold, and verification
+
+> **This is ONE task with ONE commit, at the very end.** Its three parts (2a
+> grammar, 2b fold, 2c verification + fixture migration) cannot be committed
+> separately: changing `ParsedMove`'s shape breaks the fold's consumers, and the
+> fold's new proof-key lookup is what forces every fixture's `verified` map to
+> be re-keyed. Committing them apart would leave the tree red, against this
+> plan's own Global Constraints.
+>
+> Work through 2a → 2b → 2c, running each part's tests as you go, and commit
+> once at the end when `npx tsc -b`, `npm test` and `npm run build` are all
+> clean. The equivalence property — a batch credits exactly what N lone chips
+> would — is only checkable with all three in place, which is also why it is one
+> review gate.
+
+#### Task 2a: Parse the batch grammar
 
 **Files:**
 - Modify: `chips-client/src/lib/chipsEngine.ts` (`ParsedMove`, `parseMove`)
@@ -332,18 +347,14 @@ cd chips-client && npx tsx src/lib/chipsParse.test.ts
 ```
 Expected: all `ok`. `chipsEngine.ts` will not typecheck yet — the fold still reads `parsed.bits`. That is Task 3.
 
-- [ ] **Step 5: Add to the test script and commit**
+- [ ] **Step 5: Add to the test script — do NOT commit yet**
 
-Append ` && tsx src/lib/chipsParse.test.ts` to `test`.
-
-```bash
-git add chips-client/
-git commit -m "feat(chips): parse the batch grammar, v1 as a one-entry batch"
-```
+Append ` && tsx src/lib/chipsParse.test.ts` to `test`. Continue to 2b; the tree
+is intentionally red until 2c and commits once there.
 
 ---
 
-### Task 3: Fold a batch
+#### Task 2b: Fold a batch
 
 **Files:**
 - Modify: `chips-client/src/lib/chipsEngine.ts` (`Outcome`, `MoveResult`, the bank branch)
@@ -540,16 +551,12 @@ cd chips-client && npx tsx src/lib/chipsBatch.test.ts && npx tsc -b
 ```
 Expected: all `ok`. Other fold tests will fail — they build `verified` maps keyed by `content_id`. Task 4 migrates them.
 
-- [ ] **Step 5: Commit**
-
-```bash
-git add chips-client/
-git commit -m "feat(chips): fold a batch, crediting each chip as a lone chip"
-```
+- [ ] **Step 5: Do NOT commit yet** — continue to 2c, which migrates the fixtures
+and commits the whole consensus change together.
 
 ---
 
-### Task 4: Re-key verification, and migrate the existing fold tests
+#### Task 2c: Re-key verification, and migrate the existing fold tests
 
 **Files:**
 - Modify: `chips-client/src/lib/chipsVerify.ts`
@@ -620,12 +627,12 @@ Expected: all suites pass. **If a fold test fails, fix the fixture — never the
 
 ```bash
 git add chips-client/
-git commit -m "feat(chips): key verification on the proof, not the reply"
+git commit -m "feat(chips): batch banking in the fold — grammar, crediting, proof-keyed verification"
 ```
 
 ---
 
-### Task 5: Emit a batch body
+### Task 3: Emit a batch body
 
 **Files:**
 - Modify: `chips-client/src/lib/chipsBody.ts`
@@ -735,11 +742,11 @@ git commit -m "feat(chips): emit a batch body"
 
 ---
 
-## ⛔ DEPLOY GATE — do not start Task 6 until this is done
+## ⛔ DEPLOY GATE — do not start Task 4 until this is done
 
-Tasks 1-5 give every client the ability to **read** batches. Nothing emits them yet, so this is safe to ship on its own and must be shipped on its own.
+Tasks 1-3 give every client the ability to **read** batches. Nothing emits them yet, so this is safe to ship on its own and must be shipped on its own.
 
-- [ ] Open a PR for Tasks 1-5, get it merged.
+- [ ] Open a PR for Tasks 1-3, get it merged.
 - [ ] `bash scripts/deploy-web-clients.sh chips` from the repo root.
 - [ ] Confirm the live bundle parses batches — fetch `https://swimchain.io/chips/assets/index-*.js` and grep for the batch entry pattern.
 - [ ] Confirm existing tables still fold correctly in a browser: the live table at 612 lifetime crunch must still read 612.
@@ -748,7 +755,7 @@ Only then continue. **Emitting batches from a client while another client cannot
 
 ---
 
-### Task 6: The queue
+### Task 4: The queue
 
 **Files:**
 - Create: `chips-client/src/lib/chipsQueue.ts`
@@ -957,7 +964,7 @@ git commit -m "feat(chips): the pending-move queue"
 
 ---
 
-### Task 7: Wire the queue — optimistic fold and the sender loop
+### Task 5: Wire the queue — optimistic fold and the sender loop
 
 **Files:**
 - Modify: `chips-client/src/App.tsx`
@@ -1127,7 +1134,7 @@ git commit -m "feat(chips): queue moves, fold them optimistically, send in the b
 
 ---
 
-### Task 8: The chip gets eaten
+### Task 6: The chip gets eaten
 
 **Files:**
 - Modify: `chips-client/src/Kitchen.tsx` (`DipFlight`), `chips-client/src/styles.css`
@@ -1267,6 +1274,6 @@ git commit -m "feat(chips): the chip gets eaten, and the crumbs are the payoff"
 
 ## Self-review notes
 
-- **Spec coverage:** §1 grammar → Tasks 2, 5; §2 fold rules → Task 3; §3 verification → Task 4; §4 client → Tasks 6, 7; §5 animation → Task 8; §6 balance amendment → no code (a constant is deleted, not added); §7/§7.1 security → `MAX_BATCH` enforcement in Tasks 1-3 and the deploy gate; §8 testing → every listed fixture appears in Tasks 2, 3, 5, 6.
+- **Spec coverage:** §1 grammar → Tasks 2, 3; §2 fold rules → Task 2; §3 verification → Task 2; §4 client → Tasks 4, 5; §5 animation → Task 6; §6 balance amendment → no code (a constant is deleted, not added); §7/§7.1 security → `MAX_BATCH` enforcement in Tasks 1-2 and the deploy gate; §8 testing → every listed fixture appears in Tasks 2, 3, 4.
 - **Known gap, deliberate:** the spec's client-side verification work budget is *not* implemented. It is policy, not consensus, and the boards' existing 6-table rotation plus the persistent cache bound the current scale. Revisit when the space grows.
 - **Type consistency:** `ChipEntry`, `ParsedMove`, `QueuedMove`, `proofKey`, `MAX_BATCH`, `bankBatchBody`, `takeBatch`/`ack`/`enqueue` are each defined once and referenced by those exact names throughout.
