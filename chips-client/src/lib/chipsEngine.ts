@@ -16,10 +16,16 @@
 import {
   BANK_MIN_BITS, CRUMBS_PER_CHIP, GOLDEN_BITS, GOLD_NUM, GOLD_DEN, MAX_BITS,
   SOG_BASE_NUM, SOG_DEN, AIRTIGHT_BONUS, SOG_MAX_HOURS, START_BOWL_CAP,
-  UPGRADES, UPGRADE_CHAINS, DIP_TIERS, CONGEAL_GAP_MS,
+  DIP_TIERS, CONGEAL_GAP_MS,
 } from './chipsConst';
 
-export interface ChipsHeader { v: 1; kind: 'chips-table'; name: string }
+export interface ChipsHeader {
+  v: 1;
+  kind: 'chips-table';
+  name: string;
+  /** The table post's author_id. Replies from anyone else are skipped entirely. */
+  owner: string;
+}
 
 export interface ChipsReply {
   author_id: string;
@@ -54,8 +60,12 @@ export interface ChipsState {
   goldenBits: number;
   airtight: boolean;
   dipIndex: number;
-  lastMs: number;
-  lastBankMs: number;
+  /** Action timestamp of the last CONFIRMED move. The decay clock. */
+  lastConfirmedAt: number;
+  /** Action timestamp of the last confirmed bank, for the congeal quirk. */
+  lastBankAt: number;
+  /** Banks with no entry in `verified` — the UI must gate on this being 0. */
+  unverifiedBanks: number;
   moves: MoveResult[];
 }
 
@@ -95,8 +105,11 @@ function orderReplies(replies: ChipsReply[]): ChipsReply[] {
     const ah = a.block_height ?? Number.MAX_SAFE_INTEGER;
     const bh = b.block_height ?? Number.MAX_SAFE_INTEGER;
     if (ah !== bh) return ah - bh;
-    const am = authoringMs(a.body) ?? a.created_at;
-    const bm = authoringMs(b.body) ?? b.created_at;
+    // Fall back to 0, never created_at: the node stamps PENDING replies'
+    // created_at at query time, so using it here would order unparsed replies
+    // differently on every client and every refresh (the reef pending bug).
+    const am = authoringMs(a.body) ?? 0;
+    const bm = authoringMs(b.body) ?? 0;
     if (am !== bm) return am - bm;
     return a.content_id < b.content_id ? -1 : a.content_id > b.content_id ? 1 : 0;
   });
@@ -127,13 +140,14 @@ function applySog(state: ChipsState, fromMs: number, toMs: number): void {
   }
 }
 
-function payoutFor(state: ChipsState, bits: number, ms: number): number {
+/** `at` is the ACTION timestamp (created_at), never the body's authoring-ms. */
+function payoutFor(state: ChipsState, bits: number, at: number): number {
   let crumbs = CRUMBS_PER_CHIP * 2 ** (bits - BANK_MIN_BITS);
   if (bits >= state.goldenBits) crumbs = Math.floor((crumbs * GOLD_NUM) / GOLD_DEN);
 
   const tier = DIP_TIERS[state.dipIndex];
   if (tier.payNum && tier.payDen) crumbs = Math.floor((crumbs * tier.payNum) / tier.payDen);
-  if (tier.congeal && state.lastBankMs > 0 && ms - state.lastBankMs >= CONGEAL_GAP_MS) crumbs *= 2;
+  if (tier.congeal && state.lastBankAt > 0 && at - state.lastBankAt >= CONGEAL_GAP_MS) crumbs *= 2;
 
   return Math.floor((crumbs * state.seasoningNum) / state.seasoningDen);
 }
@@ -144,7 +158,8 @@ function initialState(): ChipsState {
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
     goldenBits: GOLDEN_BITS, airtight: false,
-    dipIndex: 0, lastMs: 0, lastBankMs: 0, moves: [],
+    dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
+    unverifiedBanks: 0, moves: [],
   };
 }
 
@@ -157,7 +172,7 @@ function initialState(): ChipsState {
  * (see chipsVerify.ts) or clients will disagree.
  */
 export function foldChips(
-  _header: ChipsHeader,
+  header: ChipsHeader,
   _tableId: string,
   replies: ChipsReply[],
   verified: Map<string, number>
@@ -166,36 +181,51 @@ export function foldChips(
   const seenProofs = new Set<string>();
 
   for (const reply of orderReplies(replies)) {
+    // OWNER ENFORCEMENT. Anyone may reply to a public post, so without this a
+    // stranger drives your state for the price of one reply: floor your bowl
+    // by advancing the clock, inflate your lifetime into a faster-decaying dip
+    // tier, or spend your crumbs. Skipped BEFORE any clock advance or mutation.
+    if (reply.author_id !== header.owner) continue;
+
     const parsed = parseMove(reply.body);
     if (!parsed) {
-      state.moves.push({ content_id: reply.content_id, ms: reply.created_at, outcome: 'rejected-parse' });
+      state.moves.push({ content_id: reply.content_id, ms: 0, outcome: 'rejected-parse' });
       continue;
     }
 
-    // Time only ever moves forward; decay banks against the gap.
-    const ms = Math.max(parsed.ms, state.lastMs);
-    applySog(state, state.lastMs || ms, ms);
-    state.lastMs = ms;
+    // THE DECAY CLOCK IS THE ACTION TIMESTAMP (created_at), NEVER parsed.ms.
+    // created_at is consensus-bounded — verify_pow rejects actions >60s in the
+    // future (src/crypto/action_pow.rs:554-572) — whereas the body's #<ms>~ is
+    // free text a player could pin in the future forever to switch decay off.
+    // Pending replies carry a query-time created_at, so they never advance it.
+    const confirmed = reply.block_height !== null;
+    if (confirmed) {
+      if (state.lastConfirmedAt > 0) applySog(state, state.lastConfirmedAt, reply.created_at);
+      state.lastConfirmedAt = Math.max(state.lastConfirmedAt, reply.created_at);
+    }
+    const at = confirmed ? reply.created_at : state.lastConfirmedAt;
 
     if (parsed.kind === 'bank') {
-      const proofKey = `${parsed.ms}:${parsed.nonce.toString(16)}`;
+      // Author is part of the proof preimage, so it belongs in the identity key.
+      const proofKey = `${reply.author_id}:${parsed.ms}:${parsed.nonce.toString(16)}`;
       const actual = verified.get(reply.content_id);
 
       if (actual === undefined) {
-        state.moves.push({ content_id: reply.content_id, ms, outcome: 'rejected-unverified' });
+        state.unverifiedBanks++;
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-unverified' });
       } else if (parsed.bits < BANK_MIN_BITS || actual < parsed.bits) {
-        state.moves.push({ content_id: reply.content_id, ms, outcome: 'rejected-bits', bits: parsed.bits });
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-bits', bits: parsed.bits });
       } else if (seenProofs.has(proofKey)) {
-        state.moves.push({ content_id: reply.content_id, ms, outcome: 'rejected-duplicate', bits: parsed.bits });
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-duplicate', bits: parsed.bits });
       } else {
         seenProofs.add(proofKey);
-        const crumbs = payoutFor(state, parsed.bits, ms);
+        const crumbs = payoutFor(state, parsed.bits, at);
         state.crumbs = Math.min(state.crumbs + crumbs, state.bowlCap);
         state.lifetimeChips += 2 ** (parsed.bits - BANK_MIN_BITS);
         if (parsed.bits > state.crispest) state.crispest = parsed.bits;
         state.dipIndex = dipIndexFor(state.lifetimeChips);
-        state.lastBankMs = ms;
-        state.moves.push({ content_id: reply.content_id, ms, outcome: 'banked', bits: parsed.bits, crumbs });
+        if (confirmed) state.lastBankAt = at;
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'banked', bits: parsed.bits, crumbs });
       }
       continue;
     }

@@ -6,9 +6,9 @@
 import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
 import { CRUMBS_PER_CHIP, GOLDEN_BITS, GOLD_NUM, GOLD_DEN } from './chipsConst';
 
-const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'Test Table' };
-const TABLE = 'sha256:table';
 const A = 'a'.repeat(64);
+const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'Test Table', owner: A };
+const TABLE = 'sha256:table';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -89,6 +89,21 @@ const verifiedAll = (replies: ChipsReply[], bits: number) =>
   const s = foldChips(H, TABLE, rs, new Map([['l1', 12], ['l2', 9]]));
   check('lifetime = 16 + 2 chips', s.lifetimeChips === 18, s.lifetimeChips);
   check('crispest is the max bits', s.crispest === 12, s.crispest);
+}
+
+// 7) A stranger's reply on your table is ignored entirely — no credit, no
+// clock advance, not even a move-log entry. Without this, one reply from
+// anyone floors a victim's bowl.
+{
+  const B = 'b'.repeat(64);
+  const rs: ChipsReply[] = [
+    { author_id: A, body: `bank 14 e1#${1_000_000}~`, block_height: 1, content_id: 'o1', created_at: 1_000_000 },
+    { author_id: B, body: `bank 14 e2#${1_000_000}~`, block_height: 1, content_id: 'o2', created_at: 1_000_000 },
+  ];
+  const s = foldChips(H, TABLE, rs, new Map([['o1', 14], ['o2', 14]]));
+  check('foreign reply credits nothing', s.crumbs === CRUMBS_PER_CHIP * 64, s.crumbs);
+  check('foreign reply not in move log', s.moves.length === 1, s.moves.length);
+  check('foreign reply does not raise lifetime', s.lifetimeChips === 64, s.lifetimeChips);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
