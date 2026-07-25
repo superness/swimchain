@@ -10,6 +10,9 @@ import {
   HB_CAP_PER_DAY,
   YIELD_LIT,
   YIELD_DIM,
+  YIELD_DARK,
+  DECAY_LIT,
+  DECAY_DARK,
   chebyshev,
   expeditionRange,
   utcDay,
@@ -20,10 +23,20 @@ import {
   type Brightness,
 } from './lib/trenchEngine';
 import { TrenchMap, type TrenchMapHandle } from './TrenchMap';
+import { RecapCard } from './RecapCard';
+import {
+  deriveAwayRecap,
+  hasSeenRecapToday,
+  markRecapSeen,
+  loadMournedRuins,
+  saveMournedRuins,
+  type RecapFacts,
+} from './lib/awayRecap';
 import { Homestead, type DescentHudMode } from './Homestead';
 import { HowToPlay } from './HowToPlay';
 import { CoachCard, hasSeenCoach, markCoachSeen, type CoachKind } from './CoachCard';
 import { hasSeenHint, markHintSeen } from './lib/teachHints';
+import { interceptClose, destroyWindow } from './lib/tauriWindow';
 import { createAbyssAudio, getStoredMutePreference, type AbyssAudioHandle } from './lib/abyssAudio';
 import { prefersReducedMotion } from './lib/reducedMotion';
 import {
@@ -879,6 +892,75 @@ export function App() {
   // ══════════════════════════════════════════════════════════════════════
   const inDescent = descentBeat !== null && descentBeat !== 'done';
 
+  // ── Away recap / dark-login reminder (spec §4): considered exactly once
+  //    per app session, on the FIRST fold — later polls include the
+  //    heartbeat this very session just posted, which would mask the
+  //    absence. Waits for the descent machine to RESOLVE (non-null) so a
+  //    mid-descent player never gets the card over the beats; an active
+  //    descent consumes the check (a fresh claim has nothing to recap). ──
+  const [recap, setRecap] = useState<RecapFacts | null>(null);
+  const recapCheckedRef = useRef(false);
+  useEffect(() => {
+    if (!ownState || descentBeat === null || recapCheckedRef.current) return;
+    recapCheckedRef.current = true;
+    if (descentBeat !== 'done') return;
+    const now = Date.now();
+    if (hasSeenRecapToday(now)) return;
+    const facts = deriveAwayRecap(ownState, now, loadMournedRuins());
+    if (facts) setRecap(facts);
+  }, [ownState, descentBeat]);
+
+  const dismissRecap = useCallback(() => {
+    if (!recap) return;
+    markRecapSeen(Date.now());
+    if (recap.newRuins.length > 0) {
+      const mourned = loadMournedRuins();
+      for (const ru of recap.newRuins) mourned.add(ru.idx);
+      saveMournedRuins(mourned);
+    }
+    setRecap(null);
+  }, [recap]);
+
+  // ── Quit warning (spec §3): under Tauri, closing the window with a claim
+  //    staked first shows "your lantern goes dark" — the ONE moment every
+  //    player who's about to lose value actually passes through. Registered
+  //    once; the handler reads refs so it always sees live state. In a plain
+  //    browser (or with capability plumbing missing) this is a no-op and
+  //    closing behaves exactly as before. ─────────────────────────────────
+  const [quitPrompt, setQuitPrompt] = useState(false);
+  const myClaimRef = useRef(myClaim);
+  myClaimRef.current = myClaim;
+  useEffect(() => {
+    interceptClose(
+      () => myClaimRef.current !== null, // nothing staked -> close untouched
+      () => setQuitPrompt(true)
+    );
+  }, []);
+
+  // Rendered from BOTH the loading and main branches — a player can hit the
+  // window's X during either. Ratios interpolate engine constants (diegetic
+  // rule: never a literal number in copy).
+  const quitOverlay = quitPrompt ? (
+    <div className="overlay" onClick={() => setQuitPrompt(false)}>
+      <div className="help-panel recap-panel" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <h2>Quit The Trench?</h2>
+        <p>
+          Your lantern goes dark while the game is closed — structures wear{' '}
+          <strong>{DECAY_DARK / DECAY_LIT}× faster</strong> and farms grow{' '}
+          <strong>{YIELD_LIT / YIELD_DARK}× slower</strong>.
+        </p>
+        <div className="quit-actions">
+          <button className="btn primary" onClick={() => setQuitPrompt(false)}>
+            Stay lit
+          </button>
+          <button className="btn" onClick={destroyWindow}>
+            Quit anyway
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   // ── resolve the entry beat, once, against real chain state — chain state
   //    wins over stored progress (spec's binding rule). Gated on the SAME
   //    prerequisites the founding/main-game render branches already require,
@@ -1094,7 +1176,10 @@ export function App() {
       case 3:
         return {
           kicker: '🏮 The guided descent',
-          lines: ['Your lantern pulses on its own — each pulse feeds your brightness.'],
+          lines: [
+            'Your lantern pulses while The Trench is running — each pulse feeds your brightness.',
+            'Close the game, and the pulsing stops.',
+          ],
           primaryLabel: 'Got it',
           onPrimary: onBeat3GotIt,
           primaryDisabled: !beat3HeartbeatSeen,
@@ -1115,7 +1200,10 @@ export function App() {
       case 6:
         return {
           kicker: '🏮 The guided descent',
-          lines: ["That's the game: farms grow while you're lit. Come back tomorrow."],
+          lines: [
+            "That's the game: farms grow while you're lit — and your lantern burns only while The Trench runs.",
+            'Leave it running; check in tomorrow.',
+          ],
           primaryLabel: 'Got it',
           onPrimary: onBeat6GotIt,
         };
@@ -1457,6 +1545,7 @@ export function App() {
         <Abyss />
         {header}
         <p className="muted">Loading your homestead…</p>
+        {quitOverlay}
       </div>
     );
   }
@@ -1564,6 +1653,8 @@ export function App() {
         </div>
       </section>
       {showHelp && <HowToPlay onClose={() => setShowHelp(false)} />}
+      {recap && !showHelp && <RecapCard facts={recap} onDismiss={dismissRecap} />}
+      {quitOverlay}
     </div>
   );
 }
