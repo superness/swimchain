@@ -80,11 +80,39 @@ bank cannot come from decay, and it must not come from an invented fee. It comes
    a late-game backstop, not the main pressure.
 
 **Sogginess (decay).** The bowl decays; lifetime crunch does not. Decay applies lazily, integer-only,
-iterated over whole elapsed hours between consecutive moves:
+iterated over whole elapsed hours between consecutive **confirmed** moves, measured by the action
+timestamp (`created_at`):
 
 ```
-for each whole hour elapsed:  crumbs = crumbs * SOG_NUM / SOG_DEN     # integer division
+hours = min(floor((created_at - lastConfirmedAt) / 3_600_000), SOG_MAX_HOURS)
+for each hour:  crumbs = crumbs * SOG_NUM / SOG_DEN     # integer division
 ```
+
+**The decay clock MUST be the action timestamp, never the authoring-ms.** These are different fields
+and the distinction is load-bearing:
+
+- `#<ms>~` in the body is **free text the player writes.** Keying decay to it makes decay opt-out:
+  dating your first move far in the future costs ~256 hashes and permanently pins the clock ahead of
+  every later move, so gaps are always zero and the bowl never sogs. Bounding the jump doesn't help —
+  a player controlling the timestamp can just reuse one value forever.
+- `created_at` is the **action timestamp, and consensus bounds it.** `verify_pow`
+  (`src/crypto/action_pow.rs:554-572`) rejects any action more than `CHALLENGE_FUTURE_TOLERANCE_SECS`
+  (60 s) ahead or `CHALLENGE_VALIDITY_SECS` (600 s) behind the validating node's clock, and it is
+  wired into every RPC submit path (`src/rpc/methods.rs:341,446,5983,6343`). A player cannot
+  future-date a move by more than a minute.
+
+Authoring-ms still breaks ordering ties *within* a block and still salts the chip preimage; it just
+never measures elapsed time.
+
+Block height was considered and rejected as the clock: Swimchain targets 10-minute blocks
+(`TARGET_BLOCK_INTERVAL = 600`, `src/blocks/leader.rs:16`) but forms them faster on an active
+network, so a fixed blocks-per-tick constant would make decay speed track unrelated network traffic —
+the same coupling reef deliberately moved away from.
+
+**Pending moves do not advance the clock.** A reply with `block_height === null` is in the mempool,
+where `created_at` is stamped at query time and is not consensus-stable (this is the reef pending-
+ordering bug). A pending move folds for its payout but applies no decay and does not move
+`lastConfirmedAt`. Decay for that interval banks when the move confirms.
 
 The base rate is `97/100` per hour in v1 (~23 h half-life). Two things modify it, and their
 **resolution order is fixed** so every client agrees:
@@ -202,8 +230,16 @@ buy  <upgrade-key>
   behind a diegetic progress state ("checking the chips"). Memoization is pure caching and does not
   affect fold output.
 - **Fold isolation rule:** bowl, upgrades and lifetime crunch fold ONLY from replies on the player's
-  own table post. Other tables are display input for the leaderboard, never balance input. This is
-  what keeps every observer's fold byte-identical even when they host different subsets of tables.
+  own table post **that were authored by the table's owner**. Other tables are display input for the
+  leaderboard, never balance input. This is what keeps every observer's fold byte-identical even when
+  they host different subsets of tables.
+- **Owner enforcement is mandatory, not incidental.** Anyone can reply to any post, so a fold that
+  does not check `author_id` lets a stranger drive your state for the price of one reply: advancing
+  your decay clock to floor your bowl, inflating your lifetime crunch to shove you into a
+  faster-decaying dip tier, or spending your crumbs on a `buy`. Foreign replies are **skipped
+  entirely** — before any clock advance or state mutation — and never appear in the move log.
+  `ChipsHeader` therefore carries `owner` (the table post's `author_id`), because the fold cannot
+  otherwise know whose table it is folding.
 - **Content-getting driver:** rendering the leaderboard issues `request_content` for other players'
   tables and their replies. Playing the game IS the hosting driver — per the standing design law
   that retention needs a driver, not a config flag.
