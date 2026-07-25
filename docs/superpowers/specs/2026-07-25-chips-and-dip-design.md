@@ -2,9 +2,10 @@
 
 **Date:** 2026-07-25
 **Status:** Approved
-**What:** A bespoke local PC game client (`ChipsAndDip.exe`) for an idle/clicker game on its own
-mainnet app-class space, where the score is proof-of-work actually performed and the bowl goes
-soggy if you hoard it.
+**What:** An idle/clicker game on its own mainnet app-class space, where the score is proof-of-work
+actually performed and the bowl goes soggy if you hoard it. Ships as a browser client
+(swimchain.io/chips, the reef/chess path) and as a desktop client (`ChipsAndDip.exe`, the Trench
+path) from one shared engine and UI.
 
 ## Premise
 
@@ -20,8 +21,10 @@ not a Trench reskin.
 
 ## Success criteria
 
-- A fresh Windows install reaches "playing, node running, sponsored, table set, first chip banked"
-  with one download and no terminal.
+- A first-time browser visitor reaches "sponsored, table set, first chip banked" without installing
+  anything; a fresh Windows install reaches the same state plus a running node, with one download
+  and no terminal.
+- The engine and UI are byte-for-byte the same on both targets; only `host.ts` differs.
 - Every chip on the leaderboard is independently verifiable by any other client, with no trust in
   the reporting client and no node changes.
 - Absence costs a soggy bowl and nothing permanent — the game never rewards attendance, only work.
@@ -214,25 +217,50 @@ orders of magnitude behind a desktop. Therefore: **no device classes, no self-re
 normalization, no handicap.** Everyone crunches the same chip. Decay does the rest — the bowl
 plateaus where crunching equals staling.
 
-## 4. Client architecture
+## 4. Client architecture — one core, two shells
 
-`chips-client/`, mirroring `trench-client/`:
+The engine, PoW library and entire UI are **identical on both targets**. Only the host layer differs:
+the browser relays through the gateway node (reef/chess pattern), the desktop talks to its own
+sidecar node (Trench pattern). Nothing in the game rules depends on which.
 
 ```
 chips-client/
-  src-tauri/          # node sidecar, node_manager.rs, rpc_handoff.rs (reuse Trench's wiring)
-  ui/
-    src/
-      lib/chipsEngine.ts        # pure deterministic fold
-      lib/crunch.worker.ts      # N parallel Argon2id grinders, off-thread
-      lib/chipsPow.ts           # preimage construction + verify (hash-wasm argon2id)
+  src/
+    lib/chipsEngine.ts        # pure deterministic fold — no host access, no I/O
+    lib/chipsPow.ts           # preimage construction + verify (hash-wasm argon2id)
+    lib/crunch.worker.ts      # N parallel Argon2id grinders, off-thread
+    lib/host.ts               # THE ONLY seam: submit(), read(), requestContent()
+    ...UI
+  src-tauri/                  # desktop shell only: node sidecar, node_manager.rs,
+                              # rpc_handoff.rs (reuse Trench's wiring)
 ```
 
-- Grinders are Web Workers; `fryer` upgrades raise the worker count. Grinding never runs on the
-  main thread (reef learned this the hard way — see `reef-client/src/lib/pow.worker.ts`).
-- Signing and PoW happen in-process; keys never leave the device. Submission is non-custodial via
-  the local sidecar node's RPC.
-- Ships as `ChipsAndDip.exe`.
+- `host.ts` is the seam and the only file with two implementations (gateway RPC vs. sidecar RPC).
+  If anything else needs to know its target, the boundary has leaked.
+- Grinders are Web Workers on both targets; `fryer` upgrades raise the worker count. Grinding never
+  runs on the main thread (reef learned this the hard way — `reef-client/src/lib/pow.worker.ts`).
+- Signing and PoW happen in-process on both; keys never leave the device. Submission is
+  non-custodial either way.
+- Browser build deploys via the established `deploy-web-clients` path with build-time env
+  verification — a localhost RPC fallback must never ship to production.
+
+### Platform asymmetry (accepted, and mitigated)
+
+Desktop grinds 24/7, minimized, on every core. A browser tab is throttled in the background, stops
+when closed, and on mobile will drain battery and be killed. Because lifetime crunch is literally
+CPU-seconds, **a browser player cannot compete on total work** — not because their hardware is
+worse, but because their runtime doesn't persist. This is platform discrimination arriving where
+§3 eliminated hardware discrimination, and it is not solvable by normalisation (a self-reported
+platform flag is trivially spoofed).
+
+Mitigated with **two boards**, both folded from state that already exists:
+
+| Board | Metric | Shape |
+|---|---|---|
+| **Total Crunch** | lifetime crunch (un-multiplied) | marathon — desktop grinders own it, honestly |
+| **Crispest Chip** | highest `bits` ever banked | sprint — one good session can top it, reachable from a tab |
+
+`crispest_chip` is a running max over verified banks: one integer in the fold, no new verification.
 
 ## 5. Testing
 
@@ -250,8 +278,13 @@ chips-client/
 
 ## 6. Build path
 
-- **Phase 1 (this spec).** Single-table game, `bank`/`buy`, decay, upgrades, dip ladder, in-client
-  leaderboard, `ChipsAndDip.exe`.
+- **Phase 1a (this spec).** Shared engine + UI, `bank`/`buy`, decay, upgrades, dip ladder, both
+  boards — shipped as the **browser client** at swimchain.io/chips. Web-first because it is the
+  proven path, needs no shell to iterate, and anyone can play it the day it lands.
+- **Phase 1b.** Wrap the same code in the Tauri shell as `ChipsAndDip.exe` with a node sidecar.
+  Purely additive: the only new code is `host.ts`'s sidecar implementation plus the shell. Unlike
+  The Trench — whose lantern mechanic *requires* a running node — nothing in these game rules needs
+  one, so the desktop build is an upgrade path for people who want to grind hard, not a prerequisite.
 - **Phase 2.** Batched banking (multiple nonces per reply) to amortize kitchen overhead; seasons.
 - **Phase 3 (needs a node change).** Expose the action's achieved PoW bits on the read path
   (`ReplyInfo` in `src/rpc/types.rs:660` currently carries no PoW fields). That would let a chip be
