@@ -27,10 +27,26 @@ fn check_bundled_sw() {
     let bundled_hash = match hash_file(&bundled) {
         Some(h) => h,
         None => {
-            println!(
-                "cargo:warning=Bundled sw binary not found at {} — Tauri bundle will be incomplete",
+            // This build is about to fail anyway: tauri.windows.conf.json globs
+            // `binaries/*.exe` as a bundle resource, and Tauri validates that in
+            // EVERY profile (`cargo build`, `cargo test` and `tauri dev` all
+            // die, not just `tauri build`) with "glob pattern binaries/*.exe
+            // path not found" — which reads like a config bug rather than
+            // "nobody staged the sidecar". Fail here instead, naming the fix.
+            // Only the Windows config references the sidecar, so other targets
+            // build fine without it and just get the warning.
+            let msg = format!(
+                "Bundled sw binary not found at {}.\n         \
+                 Stage it with:  cargo build --release && cp {} {}\n         \
+                 Or run trench-client/build.sh, which does the whole sequence.",
+                bundled.display(),
+                fresh.display(),
                 bundled.display()
             );
+            if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+                panic!("{msg}");
+            }
+            println!("cargo:warning={msg}");
             return;
         }
     };
@@ -77,7 +93,25 @@ fn check_bundled_sw() {
     );
 }
 
+/// `tauri build` builds the UI itself (tauri.conf.json's `beforeBuildCommand`),
+/// but a bare `cargo build`/`cargo check`/`cargo test` in this crate does not —
+/// and `generate_context!` then fails deep in a proc macro with "frontendDist ...
+/// doesn't exist", which doesn't say how to fix it. Warn with the command; left
+/// a warning rather than a hard error so `tauri dev` (which serves the UI from
+/// devUrl and never reads this directory) is unaffected.
+fn check_frontend_dist() {
+    let dist = PathBuf::from("../ui/dist");
+    println!("cargo:rerun-if-changed=../ui/dist/index.html");
+    if !dist.join("index.html").exists() {
+        println!(
+            "cargo:warning=Game UI not built at {} — run: npm --prefix ui run build (from trench-client/)",
+            dist.display()
+        );
+    }
+}
+
 fn main() {
     check_bundled_sw();
+    check_frontend_dist();
     tauri_build::build()
 }
