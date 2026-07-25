@@ -1,0 +1,58 @@
+# Game-offer keeper (mainnet) — runs on the game-sponsor droplet (165.22.47.107)
+# next to the mainnet node that holds the sponsor identity 0530df50….
+#
+# Keeps every hosted game's onboarding offer alive. Each game onboards new
+# players through ONE auto-approve, space-scoped offer; those were minted by
+# hand and nothing renewed them, so each game sat on a silent fuse — when an
+# offer lapses or runs out of slots, first-run onboarding stops with no error
+# and the client simply hangs. An audit on 2026-07-25 found trench and chips
+# 28-30 days from that, while reef and chess had ~362, purely because each was
+# minted by hand with a different expiry.
+#
+# NOT the same thing as swim-faucet.service on this host: that one points at
+# /var/lib/swimchain-testnet and is testnet tooling. There is deliberately no
+# mainnet faucet — mainnet game offers are auto_approve and need no approver,
+# only a keeper that ensures a healthy one exists.
+#
+# Deploy:
+#   scp tools/swim-bot/game-offer-keeper.mjs root@165.22.47.107:/opt/swim-bot/
+#   scp tools/swim-bot/deploy/game-offer-keeper-mainnet.service \
+#       root@165.22.47.107:/etc/systemd/system/
+#   ssh root@165.22.47.107 'systemctl daemon-reload && systemctl enable --now game-offer-keeper-mainnet'
+#
+# Dry run before enabling:
+#   ssh root@165.22.47.107 'cd /opt/swim-bot && ONCE=1 GAME_SPACES=<ids> node game-offer-keeper.mjs'
+
+[Unit]
+Description=Swimchain game-offer keeper (mainnet) — keeps every game's onboarding offer alive
+After=network.target swimchain-mainnet.service
+Wants=swimchain-mainnet.service
+# Restart with the node so a rotated cookie is always re-read (belt-and-braces
+# with the keeper's own per-call cookie re-read).
+PartOf=swimchain-mainnet.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/swim-bot
+Environment=RPC_URL=http://127.0.0.1:9736
+Environment=RPC_COOKIE_FILE=/var/lib/swimchain-mainnet/.cookie
+# reef, chess, trench, chips. Add a space id here when a new game ships —
+# this list is the whole registration step.
+Environment=GAME_SPACES=sp1qqzurjh6eeafcdf5qgpqg8mkfwlq3e6cfu,sp1qqzc0w94g6hqlvaqxy735mjss84qrwk88e,sp1qqzl4j83mewf64l7yrhunn2t55aq3a3zl6,sp1qqz7zj8gawkmy3ye7vyxudvalfmqpxt7ue
+# Mint a replacement while there is still two months of runway, and well before
+# the last slots go. Both axes matter: an offer is fine at 99/100 and dead at
+# 100/100, with no symptom but new players failing to start.
+Environment=MIN_DAYS=60
+Environment=MIN_FREE_SLOTS=25
+Environment=NEW_OFFER_DAYS=365
+Environment=NEW_OFFER_SLOTS=100
+Environment=MIN_POW=8
+Environment=INTERVAL_MS=3600000
+ExecStart=/usr/bin/node /opt/swim-bot/game-offer-keeper.mjs
+Restart=always
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
