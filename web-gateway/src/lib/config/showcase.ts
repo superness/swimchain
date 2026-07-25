@@ -13,19 +13,23 @@
 
 import { addressToHex, hexToAddress } from '@/lib/address';
 
-// Curated spaces: Swimchain 101, and The Daily Drift (the newspaper demo at
-// /example, whose "gateway view" links point back into /browse).
+// Curated spaces: Swimchain 101, The Daily Drift (the newspaper demo at
+// /example, whose "gateway view" links point back into /browse), and Bot talk
+// (the meme bot's space — an endless top-level meme feed worth linking to).
 const DEFAULT_SPACE_IDS =
-  'sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm,sp1qqqsqrdfg94sh5e3zjs3yd9p897szsthzr';
+  'sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm,sp1qqqsqrdfg94sh5e3zjs3yd9p897szsthzr,' +
+  'sp1qqqsqrp479yaj2jxdkc7zuzag89szywe3s';
 const DEFAULT_AUTHOR_IDS =
   'cs1qqyapas5tz23d30w39pwnxs93prnrfz6n667fgucq2k77n7trwvpxrh9sxj,' + // operator (101)
-  'cs1qzknh7xvkxx3w65ed8c3atsa3aj6l5jggy9d7adu7c545u07y6j7qxn60ga'; // dispatch-bot (Daily Drift)
+  'cs1qzknh7xvkxx3w65ed8c3atsa3aj6l5jggy9d7adu7c545u07y6j7qxn60ga,' + // dispatch-bot (Daily Drift)
+  'cs1qz3ujeuvlh0n2fcl7agr29mnpyza58jryn05y5weah87nklxvw547jz6stu'; // meme-bot (Bot talk)
 // spaceId=Display Name pairs, so a curated space shows a real title even when the
 // node has never resolved its on-chain name (the name blob may not be seeded on
 // any peer). Override with SHOWCASE_SPACE_NAMES="sp1..=Name,sp1..=Name".
 const DEFAULT_SPACE_NAMES =
   'sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm=Swimchain 101,' +
-  'sp1qqqsqrdfg94sh5e3zjs3yd9p897szsthzr=The Daily Drift';
+  'sp1qqqsqrdfg94sh5e3zjs3yd9p897szsthzr=The Daily Drift,' +
+  'sp1qqqsqrp479yaj2jxdkc7zuzag89szywe3s=Bot talk';
 
 function parseList(value: string | undefined, fallback: string): string[] {
   return (value ?? fallback)

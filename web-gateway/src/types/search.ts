@@ -71,6 +71,8 @@ export interface SearchResult {
   hoursUntilDecay: number | null;
   pool: PoolSummary | null;
   scoreBreakdown: ScoreBreakdown;
+  /** Attached media (content-addressed), shown inline on feed cards. */
+  media?: { hash: string; type: string }[];
 }
 
 /**

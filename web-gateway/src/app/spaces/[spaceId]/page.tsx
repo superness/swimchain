@@ -61,9 +61,11 @@ export default async function SpacePage({ params }: PageProps) {
 
   const { space, posts } = result.data;
 
-  // Sort by heat
+  // Sort by heat; break ties (e.g. a fully-protected bot feed) newest-first so
+  // the page reads as a scrollable feed.
   const sortedPosts = [...posts].sort(
-    (a, b) => b.survivalProbability - a.survivalProbability
+    (a, b) =>
+      b.survivalProbability - a.survivalProbability || b.createdAt - a.createdAt
   );
 
   return (

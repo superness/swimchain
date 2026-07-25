@@ -1,10 +1,10 @@
 /**
- * Showcase keeper — operates a node to keep one curated space (and its posts)
- * alive and retrievable over time, so the read-only browse gateway can present
- * it indefinitely even though the network fetches on demand and content decays
- * without engagement.
+ * Showcase keeper — operates a node to keep the curated spaces (and their
+ * posts) alive and retrievable over time, so the read-only browse gateway can
+ * present them indefinitely even though the network fetches on demand and
+ * content decays without engagement.
  *
- * Each cycle, for the configured space:
+ * Each cycle, for every configured space:
  *   1. resolve_space_name   — best-effort, keeps the space name populated
  *   2. list_space_content   — enumerate the space's posts (+ decay state)
  *   3. request_content(id)  — pull/re-seed each post body so it stays servable
@@ -20,7 +20,7 @@
  *   RPC_URL         node RPC (default http://127.0.0.1:9736 = mainnet)
  *   RPC_COOKIE      node cookie (required)
  *   AUTHOR_PUBKEY   node identity 32-byte hex (required; used to sign engagement)
- *   SPACE_ID        bech32 sp1… space to keep alive (required)
+ *   SPACE_ID        comma-separated bech32 sp1… space(s) to keep alive (required)
  *   INTERVAL_MS     cycle period (default 300000 = 5 min)
  *   ENGAGE_FLOOR    engage a post when survival_probability < this (default 0.7)
  *   ENGAGE_COOLDOWN_MS  min gap between engaging the same post (default 6h)
@@ -35,7 +35,8 @@ const RPC = process.env.RPC_URL || 'http://127.0.0.1:9736';
 const COOKIE_FILE = process.env.RPC_COOKIE_FILE || '';
 let COOKIE = process.env.RPC_COOKIE || '';
 const AUTHOR = (process.env.AUTHOR_PUBKEY || '').toLowerCase();
-const SPACE_ID = process.env.SPACE_ID || '';
+const SPACE_IDS = (process.env.SPACE_ID || '')
+  .split(',').map((s) => s.trim()).filter(Boolean);
 const INTERVAL_MS = Number(process.env.INTERVAL_MS || 300000);
 const ENGAGE_FLOOR = Number(process.env.ENGAGE_FLOOR || 0.7);
 const ENGAGE_COOLDOWN_MS = Number(process.env.ENGAGE_COOLDOWN_MS || 6 * 3600 * 1000);
@@ -43,7 +44,7 @@ const TAG = 'keeper';
 
 if (!COOKIE && !COOKIE_FILE) throw new Error('RPC_COOKIE or RPC_COOKIE_FILE required');
 if (!AUTHOR) throw new Error('AUTHOR_PUBKEY required');
-if (!SPACE_ID) throw new Error('SPACE_ID required');
+if (SPACE_IDS.length === 0) throw new Error('SPACE_ID required');
 
 const mkAuth = (c) => 'Basic ' + Buffer.from(`__cookie__:${c}`).toString('base64');
 let AUTH = mkAuth(COOKIE);
@@ -142,17 +143,17 @@ async function engage(contentId) {
   return true;
 }
 
-async function cycle() {
+async function cycle(spaceId) {
   // 1. Keep the name resolved (best-effort; ignore "not local" responses).
-  try { await rpc('resolve_space_name', { space_id: SPACE_ID }); } catch (e) { /* non-fatal */ }
+  try { await rpc('resolve_space_name', { space_id: spaceId }); } catch (e) { /* non-fatal */ }
 
   // 2. Enumerate posts.
   let items = [];
   try {
-    const r = await rpc('list_space_content', { space_id: SPACE_ID, limit: 200, sort: 'recent' });
+    const r = await rpc('list_space_content', { space_id: spaceId, limit: 200, sort: 'recent' });
     items = r?.items || [];
   } catch (e) {
-    console.log(`[${TAG}] list_space_content failed: ${e.message}`);
+    console.log(`[${TAG}] list_space_content failed for ${spaceId.slice(0, 14)}…: ${e.message}`);
     return;
   }
 
@@ -171,13 +172,15 @@ async function cycle() {
       catch (e) { console.log(`[${TAG}] engage ${id.slice(0, 18)}… failed: ${e.message}`); }
     }
   }
-  console.log(`[${TAG}] cycle: ${items.length} posts, retrieved ${retrieved}, at-risk ${atRisk}, engaged ${engaged}`);
+  console.log(`[${TAG}] cycle ${spaceId.slice(0, 14)}…: ${items.length} posts, retrieved ${retrieved}, at-risk ${atRisk}, engaged ${engaged}`);
 }
 
 async function main() {
-  console.log(`[${TAG}] keeping ${SPACE_ID} alive via ${RPC} as ${AUTHOR.slice(0, 10)}… every ${INTERVAL_MS}ms (engage floor ${ENGAGE_FLOOR})`);
+  console.log(`[${TAG}] keeping ${SPACE_IDS.join(', ')} alive via ${RPC} as ${AUTHOR.slice(0, 10)}… every ${INTERVAL_MS}ms (engage floor ${ENGAGE_FLOOR})`);
   for (;;) {
-    try { await cycle(); } catch (e) { console.log(`[${TAG}] cycle error: ${e.message}`); }
+    for (const spaceId of SPACE_IDS) {
+      try { await cycle(spaceId); } catch (e) { console.log(`[${TAG}] cycle error (${spaceId.slice(0, 14)}…): ${e.message}`); }
+    }
     await sleep(INTERVAL_MS);
   }
 }

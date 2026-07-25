@@ -250,6 +250,7 @@ export function summaryToSearchResult(
     hoursUntilDecay: hoursUntilDecay(item),
     pool: contentResponse.pool,
     scoreBreakdown: calculateScore(0, contentResponse, Date.now()),
+    media: mapMedia(item.media_refs),
   };
 }
 
