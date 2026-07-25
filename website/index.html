@@ -154,6 +154,16 @@
   .client b { display: block; font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--foam); margin-bottom: 6px; }
   .client span { font-size: 14.5px; color: var(--muted); line-height: 1.45; display: block; }
 
+  /* play-now cards (anchor variants of .client) */
+  .plays { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  a.play {
+    border: 1px solid var(--line); border-radius: 6px; padding: 18px;
+    background: transparent; text-decoration: none; display: block;
+  }
+  a.play:hover { border-color: var(--shallow); background: var(--surface); }
+  a.play b { display: block; font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--shallow); margin-bottom: 6px; }
+  a.play span { font-size: 14.5px; color: var(--muted); line-height: 1.45; display: block; }
+
   /* terminal */
   .term {
     background: #04141A; border: 1px solid var(--line); border-radius: 6px;
@@ -188,7 +198,10 @@
     .hero { grid-template-columns: 1fr; gap: 44px; padding: 64px 0 60px; }
     .laws { grid-template-columns: 1fr; }
     .clients { grid-template-columns: repeat(2, 1fr); }
-    .split { grid-template-columns: 1fr; }
+    .plays { grid-template-columns: repeat(2, 1fr); }
+    /* minmax(0,…) so the .term code block's unbreakable lines can't force
+       the column past the viewport (it scrolls internally instead) */
+    .split { grid-template-columns: minmax(0, 1fr); }
     ul.spec-list { columns: 1; }
   }
   @media (max-width: 640px) {
@@ -209,15 +222,17 @@
     <a href="/protocol">Protocol</a>
     <a href="/about">About</a>
     <a href="/getting-started">Get Started</a>
+    <a href="#play">Play</a>
     <a href="#clients">Clients</a>
     <a href="#node">Run a node</a>
+    <a href="/browse">Browse</a>
     <a href="developers.html">Developers</a>
   </nav>
 </header>
 
 <div class="hero wrap">
   <div>
-    <span class="eyebrow">Peer-to-peer social protocol · testnet live</span>
+    <span class="eyebrow">Peer-to-peer social protocol · mainnet live</span>
     <h1>A social network where attention is <em>life support</em>.</h1>
     <p class="lede">
       Swimchain has <strong>no servers</strong> — every reader is a node.
@@ -227,15 +242,15 @@
     </p>
     <div class="cta-row">
       <a class="btn primary" href="/download?p=1">Get Swimchain</a>
+      <a class="btn" href="#play">Play in your browser</a>
       <a class="btn" href="#node">Run a node</a>
-      <a class="btn" href="developers.html">Read the protocol</a>
     </div>
   </div>
 
   <div>
     <div class="post" id="demo-post">
       <div class="post-head">
-        <span class="post-author">st1qz6nm04erxrg0…j6wzk5</span>
+        <span class="post-author">cs1qz6nm04erxrg0…j6wzk5</span>
         <span class="post-age" id="demo-age">just now</span>
       </div>
       <p class="post-body" id="demo-body">First post from the open water. If you stop paying attention to me, I will sink. That is not a bug.</p>
@@ -248,6 +263,20 @@
     <p class="demo-caption" id="demo-caption">Live demo — this post decays like the real thing. Engagement resets the clock. See a real site built on it: <a href="/example/">The Daily Drift</a>.</p>
   </div>
 </div>
+
+<section id="play">
+  <div class="wrap">
+    <span class="eyebrow">No install required</span>
+    <h2>Try it in your browser, right now.</h2>
+    <p class="section-lede">These run against the live mainnet — real chain, real proof-of-work, no account and nothing to download.</p>
+    <div class="plays">
+      <a class="play" href="/reef/"><b>Reef</b><span>Grow a coral reef on the chain. Every tile you place is a post; every reef breathes with engagement.</span></a>
+      <a class="play" href="/chess/"><b>Chess</b><span>Play chess where the games live on-chain — challenge the bot or another swimmer.</span></a>
+      <a class="play" href="/browse"><b>Browse the network</b><span>A read-only window onto live mainnet spaces — see what's swimming before you dive in.</span></a>
+      <a class="play" href="/example/"><b>The Daily Drift</b><span>A serverless newspaper published straight from the chain — pages that survive only while read.</span></a>
+    </div>
+  </div>
+</section>
 
 <section id="protocol">
   <div class="wrap">
@@ -286,9 +315,11 @@
       <div class="client"><b>Wiki</b><span>Collaborative pages where revisions live on-chain.</span></div>
       <div class="client"><b>Search</b><span>Full-text search over everything your node has seen.</span></div>
       <div class="client"><b>Archiver</b><span>Spend proof-of-work to keep content you value alive.</span></div>
+      <div class="client"><b>The Trench</b><span>A node-homestead game — your node is your lantern in the deep.</span></div>
       <div class="client"><b>Bridge</b><span>Pipe Matrix and IRC rooms onto the chain and back.</span></div>
       <div class="client"><b>Analytics</b><span>Watch spaces breathe: heat, decay, and engagement flows.</span></div>
     </div>
+    <p class="section-lede" style="margin-top:18px">Forum, Chat, Feed, Search, Wiki, and The Trench ship in the desktop launcher today; Feed is the Android app. Archiver, Bridge, and Analytics live in the repo — build them from source against your own node.</p>
   </div>
 </section>
 
@@ -300,18 +331,18 @@
       <p>
         One binary. It keeps your keys, syncs the chain, serves every client,
         and helps carry the content <strong>you</strong> care about.
-        The testnet is live with a public seed — you'll find peers in seconds.
+        Mainnet is live with public seeds — you'll find peers in seconds.
       </p>
       <p>Runs on Linux, macOS, and Windows. 1 CPU and 1&nbsp;GB of RAM is plenty.</p>
     </div>
     <div>
       <div class="term"><span class="p">$</span> git clone https://github.com/superness/swimchain
 <span class="p">$</span> cd swimchain <span class="c">&amp;&amp;</span> cargo build --release
-<span class="p">$</span> ./target/release/sw --testnet identity create
-<span class="p">$</span> ./target/release/sw --testnet node start
-<span class="o">Node started · listening on 0.0.0.0:19735</span>
+<span class="p">$</span> ./target/release/sw identity create
+<span class="p">$</span> ./target/release/sw node start
+<span class="o">Node started · listening on 0.0.0.0:9735</span>
 <span class="o">Found 3 peers via seed · chain syncing…</span></div>
-      <p class="demo-caption" style="text-align:left">Clients connect to your node's JSON-RPC on port 19736. See <a href="developers.html">Developers</a> for the full protocol.</p>
+      <p class="demo-caption" style="text-align:left">Clients connect to your node's JSON-RPC on port 9736. See <a href="developers.html">Developers</a> for the full protocol.</p>
     </div>
   </div>
 </section>
