@@ -1306,8 +1306,17 @@ function check(name: string, cond: boolean, extra?: unknown) {
   else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
 }
 
+/**
+ * The nonce must be PURE HEX. parseMove's nonce pattern is [0-9a-fA-F]{1,16},
+ * so interpolating a content_id like 'q1' produces "ffq1", which fails to
+ * parse — every such reply folds as rejected-parse, lifetime never moves, and
+ * the tier under test is never reached. A sequence counter keeps it hex and
+ * distinct (a repeated (ms, nonce) pair would fold as a duplicate).
+ */
+let nonceSeq = 0;
 const bank = (bits: number, cid: string, ms: number): ChipsReply => ({
-  author_id: A, body: `bank ${bits} ff${cid}#${ms}~`, block_height: 1, content_id: cid, created_at: ms,
+  author_id: A, body: `bank ${bits} ${(++nonceSeq).toString(16)}#${ms}~`,
+  block_height: 1, content_id: cid, created_at: ms,
 });
 
 // 1) Tier boundaries are inclusive at the threshold.
