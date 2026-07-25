@@ -21,6 +21,15 @@ async function main() {
   check('preimage differs on table', !eq(base, chipPreimage(AUTHOR, 'sha256:other', 1000, 7n)));
   check('preimage differs on author', !eq(base, chipPreimage('b'.repeat(64), TABLE, 1000, 7n)));
 
+  // Length-prefixed encoding prevents delimiter collision: different field boundaries
+  // don't produce identical bytes even if one field ends with a pipe or contains a delimiter.
+  // Test case: (author="a|b", table="c", ms=5) vs (author="a", table="b|c", ms=5)
+  // With old delimiter encoding: "chips-v1|a|b|c|5|" — could collide if the pipe moves.
+  // With length prefixes: impossible to shift across length-prefixed boundaries.
+  const collision1 = chipPreimage('a|b', 'c', 5, 0n);
+  const collision2 = chipPreimage('a', 'b|c', 5, 0n);
+  check('length-prefixed encoding prevents delimiter collision', !eq(collision1, collision2));
+
   // Verification is deterministic: same input, same bits, every time.
   const b1 = await verifyChipBits(AUTHOR, TABLE, 1000, 7n);
   const b2 = await verifyChipBits(AUTHOR, TABLE, 1000, 7n);
@@ -28,14 +37,14 @@ async function main() {
   check('bits is a non-negative integer', Number.isInteger(b1) && b1 >= 0, b1);
 
   // Mining to a low target returns a nonce that verifies to at least that target.
-  const mined = await mineChip(AUTHOR, TABLE, 2000, { targetBits: 6 });
+  const mined = await mineChip(AUTHOR, TABLE, 2000, { targetBits: 10 });
   const actual = await verifyChipBits(AUTHOR, TABLE, 2000, mined.nonce);
-  check('mined nonce meets its target', actual >= 6, { actual });
+  check('mined nonce meets its target', actual >= 10, { actual });
   check('mined bits match verification', mined.bits === actual, { mined: mined.bits, actual });
 
   // A chip mined for one author must NOT verify for another — non-transferable.
   const other = await verifyChipBits('b'.repeat(64), TABLE, 2000, mined.nonce);
-  check('chip is author-bound', other < 6 || other !== actual, { other, actual });
+  check('chip is author-bound', other < 10, { other, actual });
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

@@ -24,12 +24,49 @@ export function chipPreimage(
   ms: number,
   nonce: bigint
 ): Uint8Array {
-  const head = new TextEncoder().encode(`${DOMAIN}|${authorIdHex}|${tableId}|${ms}|`);
-  const tail = new Uint8Array(8);
-  new DataView(tail.buffer).setBigUint64(0, BigInt.asUintN(64, nonce), true); // little-endian
-  const out = new Uint8Array(head.length + 8);
-  out.set(head, 0);
-  out.set(tail, head.length);
+  // Length-prefixed binary encoding prevents collision from delimiter ambiguity.
+  // Delimiter-joined encoding (e.g., `chips-v1|a|b|c|5|`) fails when field values
+  // contain delimiters or pipes; different tuples can shift field boundaries.
+  // Length prefixes make every byte unambiguous: authorIdHex|tableId can't shift
+  // across their length-prefixed boundary no matter what they contain.
+  const domainBytes = new TextEncoder().encode(DOMAIN);
+  const authorBytes = new TextEncoder().encode(authorIdHex);
+  const tableBytes = new TextEncoder().encode(tableId);
+
+  const out = new Uint8Array(
+    domainBytes.length +
+    4 + authorBytes.length +
+    4 + tableBytes.length +
+    8 + // ms as u64
+    8   // nonce as u64
+  );
+
+  let offset = 0;
+
+  // Domain (8 bytes of "chips-v1")
+  out.set(domainBytes, offset);
+  offset += domainBytes.length;
+
+  // u32 LE: length of authorIdHex
+  new DataView(out.buffer).setUint32(offset, authorBytes.length, true);
+  offset += 4;
+  out.set(authorBytes, offset);
+  offset += authorBytes.length;
+
+  // u32 LE: length of tableId
+  new DataView(out.buffer).setUint32(offset, tableBytes.length, true);
+  offset += 4;
+  out.set(tableBytes, offset);
+  offset += tableBytes.length;
+
+  // u64 LE: ms
+  new DataView(out.buffer).setBigUint64(offset, BigInt(ms), true);
+  offset += 8;
+
+  // u64 LE: nonce
+  new DataView(out.buffer).setBigUint64(offset, BigInt.asUintN(64, nonce), true);
+  offset += 8;
+
   return out;
 }
 
