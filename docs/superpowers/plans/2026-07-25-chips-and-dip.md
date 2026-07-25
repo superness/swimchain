@@ -759,10 +759,26 @@ function sogNum(state: ChipsState): number {
   return base + (state.airtight ? AIRTIGHT_BONUS : 0);
 }
 
+/**
+ * Whole elapsed hours of decay between two action timestamps, clamped to
+ * SOG_MAX_HOURS.
+ *
+ * Exported ONLY so the clamp is directly testable. It cannot be observed
+ * through `crumbs` in any realistic fixture: at the base rate (97/100) integer
+ * flooring zeroes a reachable bowl in ~379 hours, well inside the 720-hour
+ * clamp, and even under `airtight` (99/100) the ~95-crumb survivor is the same
+ * order as the accumulated floor error. The clamp is an arithmetic property,
+ * so it gets an arithmetic test rather than a fixture that passes by luck.
+ */
+export function sogHoursFor(fromAt: number, toAt: number): number {
+  if (toAt <= fromAt) return 0;
+  return Math.min(Math.floor((toAt - fromAt) / 3_600_000), SOG_MAX_HOURS);
+}
+
 /** Decay the bowl over whole elapsed hours. Integer-only, bounded work. */
 function applySog(state: ChipsState, fromMs: number, toMs: number): void {
   if (toMs <= fromMs || state.crumbs <= 0) return;
-  const hours = Math.min(Math.floor((toMs - fromMs) / 3_600_000), SOG_MAX_HOURS);
+  const hours = sogHoursFor(fromMs, toMs);
   const num = sogNum(state);
   for (let i = 0; i < hours && state.crumbs > 0; i++) {
     state.crumbs = Math.floor((state.crumbs * num) / SOG_DEN);
@@ -907,8 +923,8 @@ Create `chips-client/src/lib/chipsEngine.sog.test.ts`:
  * fixed dip-then-airtight resolution order.
  * Run: npx tsx src/lib/chipsEngine.sog.test.ts
  */
-import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
-import { SOG_BASE_NUM, SOG_DEN, START_BOWL_CAP, CRUMBS_PER_CHIP } from './chipsConst';
+import { foldChips, sogHoursFor, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { SOG_BASE_NUM, SOG_DEN, SOG_MAX_HOURS, START_BOWL_CAP, CRUMBS_PER_CHIP } from './chipsConst';
 
 const A = 'a'.repeat(64);
 const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'T', owner: A };
@@ -981,6 +997,24 @@ const vAll = (rs: ChipsReply[], bits: number) => new Map(rs.map((r) => [r.conten
   const rs = [bank(8, 'e1', T0), bank(8, 'e2', T0 + 700 * HOUR)];
   const s = foldChips(H, TABLE, rs, vAll(rs, 8));
   check('decay terminates at exactly zero', s.crumbs === CRUMBS_PER_CHIP, s.crumbs);
+}
+
+// 7) THE CLAMP, tested arithmetically.
+// The only real coverage of SOG_MAX_HOURS. It cannot be tested through
+// `crumbs` -- see the note on sogHoursFor in chipsEngine.ts -- so it is tested
+// where it actually lives: the hour computation itself.
+{
+  check('sub-hour gap is 0 hours', sogHoursFor(T0, T0 + HOUR - 1) === 0);
+  check('exact hour is 1', sogHoursFor(T0, T0 + HOUR) === 1);
+  check('partial hours truncate', sogHoursFor(T0, T0 + 3 * HOUR + 59 * 60_000) === 3);
+  check('backwards time is 0, never negative', sogHoursFor(T0 + 5 * HOUR, T0) === 0);
+  check('equal timestamps are 0', sogHoursFor(T0, T0) === 0);
+  check('just under the clamp is unclamped', sogHoursFor(T0, T0 + 719 * HOUR) === 719);
+  check('exactly at the clamp', sogHoursFor(T0, T0 + 720 * HOUR) === 720);
+  // The assertion that fails if the clamp is deleted:
+  check('far beyond the clamp is capped', sogHoursFor(T0, T0 + 5000 * HOUR) === SOG_MAX_HOURS,
+    sogHoursFor(T0, T0 + 5000 * HOUR));
+  check('a decade is still capped', sogHoursFor(T0, T0 + 87600 * HOUR) === SOG_MAX_HOURS);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
