@@ -148,7 +148,7 @@ h1, h2, h3, p { margin: 0; }
 
 .shop {
   position: fixed; inset: 0; z-index: 1;
-  display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+  display: grid; grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -458,8 +458,7 @@ h1, h2, h3, p { margin: 0; }
 /* ── the boards on the wall ──────────────────────────────────────────────── */
 
 .wallboard {
-  position: fixed; z-index: 4;
-  left: clamp(12px, 2vw, 32px); bottom: clamp(12px, 2vh, 26px);
+  position: relative; z-index: 4;   /* laid out by .corner now */
   width: min(300px, 34vw); padding: 12px 16px 14px; text-align: left;
   background: linear-gradient(160deg, #1d2620 0%, #131a16 100%);
   border-radius: 4px;
@@ -538,12 +537,17 @@ h1, h2, h3, p { margin: 0; }
 }
 @keyframes fry { to { transform: scale(1.35); filter: brightness(1.4); } }
 
-/* Empty slot collapses to 0, so the stage is unaffected until there is a
-   message — then the whole scene shifts down instead of being covered. */
-.notice-slot { display: grid; place-items: center; }
+/* Boards + transient messages share one bottom-anchored column, so a message
+   rises above the wallboard rather than covering the fryer or shifting the
+   scene. No z-index here on purpose — see the comment in App.tsx. */
+.corner {
+  position: fixed;
+  left: clamp(12px, 2vw, 32px); bottom: clamp(12px, 2vh, 26px);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 10px;
+}
 
 .notice {
-  z-index: 16; margin: clamp(6px, 1vh, 12px) 0 0;
+  z-index: 16; margin: 0; text-align: left;
   padding: 9px 18px; border-radius: 999px; max-width: min(560px, 88vw); text-align: center;
   background: rgba(20,15,10,.92); box-shadow: 0 0 0 1px rgba(255,200,130,.22), 0 14px 30px rgba(0,0,0,.55);
   font-family: var(--chalk); font-size: 14px; color: #ffdfae;

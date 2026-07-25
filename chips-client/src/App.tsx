@@ -594,12 +594,6 @@ export function App() {
         </div>
       </header>
 
-      {/* A real grid row, not a floating toast. As a fixed overlay this sat on
-          top of the fryer and hid it; the scene should make room for a message
-          rather than cover itself with one. The slot is always rendered so the
-          stage keeps its 1fr row when there is nothing to say. */}
-      <div className="notice-slot">
-        </div>
 
       <main className="stage">
         <Kitchen
@@ -621,8 +615,24 @@ export function App() {
         </aside>
       </main>
 
-      <Boards rows={rows} hosting={hosting} hosted={hosted} myTableId={tableId}
-        open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
+      {/*
+        The shop-chatter corner. Both of these are asides, so they share one
+        bottom-anchored column: the boards sit on the floor, a message rises
+        above them.
+
+        A column rather than a hardcoded offset, because the wallboard's height
+        changes with its text and any fixed `bottom` would eventually overlap it.
+
+        Deliberately NO z-index on the wrapper: `position: fixed` with
+        `z-index: auto` creates no stacking context, so the expanded boards
+        panel inside keeps its own z-20 against the page instead of being
+        trapped beneath this container.
+      */}
+      <div className="corner">
+        {notice && <p className="notice" role="status">{notice}</p>}
+        <Boards rows={rows} hosting={hosting} hosted={hosted} myTableId={tableId}
+          open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
+      </div>
 
       {busy && (
         <div className="working" role="status">
@@ -630,7 +640,6 @@ export function App() {
           <span>{busyLine}</span>
         </div>
       )}
-      {notice && <p className="notice" role="status">{notice}</p>}
       <DipFlight flight={flight} goldenBits={goldenBits} />
       {dipFanfare !== null && <DipChange dipIndex={dipFanfare} />}
     </div>
