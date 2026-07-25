@@ -1438,7 +1438,7 @@ git commit -m "test(chips): dip tier quirks and fold determinism under reorderin
 
 **Interfaces:**
 - Consumes: `verifyChipBits` from `chipsPow.ts`, `parseMove` from `chipsEngine.ts`.
-- Produces: `verifyReplies(tableId: string, owner: string, replies: ChipsReply[], onProgress?: (done: number, total: number) => void): Promise<Map<string, number>>` and `clearVerifyCache(): void`.
+- Produces: `verifyReplies(tableId: string, owner: string, replies: ChipsReply[], onProgress?: (done: number, total: number) => void): Promise<Map<string, number>>`, `clearVerifyCache(): void`, and `verifyHashCount(): number`.
 
 **`owner` is a security parameter, not a convenience.** The fold skips non-owner replies, but the verifier runs *before* the fold — so without the same filter here, a stranger posting spam `bank` replies to your table forces your browser to burn one Argon2id-8 MiB hash per spam reply. This is the second half of the owner-enforcement fix; the two must agree.
 
@@ -1452,7 +1452,7 @@ Create `chips-client/src/lib/chipsVerify.test.ts`:
  * memoization and must never change what the fold produces.
  * Run: npx tsx src/lib/chipsVerify.test.ts
  */
-import { verifyReplies, clearVerifyCache } from './chipsVerify';
+import { verifyReplies, clearVerifyCache, verifyHashCount } from './chipsVerify';
 import type { ChipsReply } from './chipsEngine';
 
 const TABLE = 'sha256:table';
@@ -1473,19 +1473,23 @@ const replies: ChipsReply[] = [
 async function main() {
   clearVerifyCache();
 
-  const t1 = Date.now();
+  // Hash-count deltas, NOT elapsed time. A timing assertion cannot prove a
+  // cache works — on fast hardware, or under Windows' ~15ms Date.now() tick, a
+  // broken cache that re-hashes every call still measures as "fast".
+  const before = verifyHashCount();
   const m1 = await verifyReplies(TABLE, A, replies);
-  const cold = Date.now() - t1;
+  const coldHashes = verifyHashCount() - before;
 
   check('only bank moves are verified', m1.size === 1 && m1.has('v1'), [...m1.keys()]);
   check('bits are an integer', Number.isInteger(m1.get('v1')));
+  check('cold pass hashes exactly the one bank', coldHashes === 1, coldHashes);
 
-  const t2 = Date.now();
+  const beforeWarm = verifyHashCount();
   const m2 = await verifyReplies(TABLE, A, replies);
-  const warm = Date.now() - t2;
+  const warmHashes = verifyHashCount() - beforeWarm;
 
   check('second pass returns the same bits', m2.get('v1') === m1.get('v1'));
-  check('second pass is cached (much faster)', warm < Math.max(cold / 4, 5), { cold, warm });
+  check('second pass performs NO hashes at all', warmHashes === 0, warmHashes);
 
   let seen = 0;
   await verifyReplies(TABLE, A, replies, (done) => { seen = Math.max(seen, done); });
@@ -1499,9 +1503,16 @@ async function main() {
     ...replies,
     { author_id: 'b'.repeat(64), body: `bank 8 02#${T0}~`, block_height: 1, content_id: 'spam1', created_at: T0 },
   ];
+  const beforeSpam = verifyHashCount();
   const m3 = await verifyReplies(TABLE, A, spam);
+  const spamHashes = verifyHashCount() - beforeSpam;
   check('foreign bank is not verified', !m3.has('spam1'), [...m3.keys()]);
   check('owner bank still verified', m3.has('v1'));
+  // The DoS property: the filter must run BEFORE hashing. Asserting only on
+  // the returned map would also pass an implementation that hashed everything
+  // and stripped foreign entries afterwards — which costs the victim exactly
+  // the CPU the filter exists to save.
+  check('foreign bank is never hashed (filtered before hashing)', spamHashes === 1, spamHashes);
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
@@ -1537,6 +1548,22 @@ import { parseMove, type ChipsReply } from './chipsEngine';
 const STORE_KEY = 'chips.verified.v1';
 const memory = new Map<string, number>();
 let loaded = false;
+
+/**
+ * Count of REAL Argon2id hashes performed (i.e. cache misses), monotonic for
+ * the process lifetime.
+ *
+ * This exists because a TIMING assertion cannot prove a cache works: on fast
+ * hardware, or under Windows' coarse Date.now() tick, a completely broken
+ * cache still looks fast. Tests take deltas around a call and assert the exact
+ * number of hashes, which is deterministic and environment-independent. It is
+ * also what proves the owner filter runs BEFORE hashing rather than merely
+ * stripping foreign entries from the result.
+ */
+let hashCount = 0;
+export function verifyHashCount(): number {
+  return hashCount;
+}
 
 function load(): void {
   if (loaded) return;
@@ -1587,6 +1614,7 @@ export async function verifyReplies(
     let bits = memory.get(cacheKey);
     if (bits === undefined) {
       bits = await verifyChipBits(reply.author_id, tableId, parsed.ms, parsed.nonce);
+      hashCount++;
       memory.set(cacheKey, bits);
       dirty = true;
     }
