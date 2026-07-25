@@ -223,6 +223,40 @@ costs a fresh viewer one Argon2id-8MiB per chip. v1 already has this (10,000 sin
 `MAX_BATCH` bounds the per-reply blast radius; the boards' 6-table rotation and the persistent verify
 cache bound the rest. Watch it as the space grows.
 
+### 7.1 The fold is the enforcement layer
+
+The node cannot judge chips semantics — it validates PoW and signatures, not game rules — so a
+hostile reply *will* land on chain. That is fine and expected: **the fold decides what a reply
+means, and simply does not credit one that breaks the rules.**
+
+This does not depend on everyone running our client. A modified client can show its owner any number
+it likes; it cannot make *other* clients credit it, because they run the fold. The guarantee survives
+client diversity, which is a stronger property than client uniformity would give.
+
+**Structural violations are free to reject.** `MAX_BATCH` is checked by counting entries, before any
+hashing, so an oversized reply costs a viewer a string parse. 24 is a practical number, not a derived
+one: it is the 1 KB inline threshold (~29 entries) rounded down for headroom.
+
+**Fold constants are effectively permanent.** Raising `MAX_BATCH` later would newly credit replies
+that were previously rejected; lowering it would un-credit chips already counted. Either direction
+retroactively re-scores every table, and clients that disagree compute different balances for the
+same history. Treat these numbers as set once, not tuned later.
+
+**The residual cost is well-sized garbage.** 24 junk entries still cost each viewer 24 real Argon2id
+hashes to discover they are junk. The arithmetic bounds it:
+
+| | |
+|---|---|
+| attacker cost per reply | ~5.4 s — the node's action PoW, doing real rate-limiting work |
+| viewer cost per reply | ~0.51 s (24 hashes at 47/s) |
+| amplification, one viewer | **0.09×** — the attacker pays ~10× what they inflict |
+| amplification, V viewers | 0.09 × V, net above ~11 concurrent viewers |
+
+The persistent verify cache means each viewer pays once ever, and the boards' 6-table rotation
+already bounds work per pass. No new machinery is warranted; if the space grows enough to need more,
+the lever is a client-side verification budget per pass — a policy choice, not a fold rule, so it can
+change freely without re-scoring history.
+
 ## 8. Testing
 
 Consensus rules need fold-level fixtures, hand-computed, each falsifiable against the specific bug it
