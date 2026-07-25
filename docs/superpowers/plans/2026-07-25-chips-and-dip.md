@@ -633,7 +633,12 @@ Create `chips-client/src/lib/chipsEngine.ts`:
  *
  * Determinism rules, all load-bearing:
  *   - integers only, every multiplier a num/den pair with Math.floor
- *   - no wall clock; all time comes from the authoring-ms embedded in the body
+ *   - no wall clock; elapsed time is the consensus-bounded action timestamp
+ *     (created_at) of CONFIRMED replies only. The body's authoring-ms orders
+ *     moves within a block and salts the chip preimage, but NEVER measures
+ *     elapsed time — a player writes it themselves, so keying decay to it lets
+ *     them switch decay off by future-dating a single move.
+ *   - only the table owner's replies are folded; anyone can reply to a post
  *   - pure and synchronous; Argon2id verification is done by the caller and
  *     handed in as `verified`, which MUST contain an entry for every bank.
  */
@@ -1345,7 +1350,9 @@ git commit -m "test(chips): dip tier quirks and fold determinism under reorderin
 
 **Interfaces:**
 - Consumes: `verifyChipBits` from `chipsPow.ts`, `parseMove` from `chipsEngine.ts`.
-- Produces: `verifyReplies(tableId: string, replies: ChipsReply[], onProgress?: (done: number, total: number) => void): Promise<Map<string, number>>` and `clearVerifyCache(): void`.
+- Produces: `verifyReplies(tableId: string, owner: string, replies: ChipsReply[], onProgress?: (done: number, total: number) => void): Promise<Map<string, number>>` and `clearVerifyCache(): void`.
+
+**`owner` is a security parameter, not a convenience.** The fold skips non-owner replies, but the verifier runs *before* the fold — so without the same filter here, a stranger posting spam `bank` replies to your table forces your browser to burn one Argon2id-8 MiB hash per spam reply. This is the second half of the owner-enforcement fix; the two must agree.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1379,22 +1386,34 @@ async function main() {
   clearVerifyCache();
 
   const t1 = Date.now();
-  const m1 = await verifyReplies(TABLE, replies);
+  const m1 = await verifyReplies(TABLE, A, replies);
   const cold = Date.now() - t1;
 
   check('only bank moves are verified', m1.size === 1 && m1.has('v1'), [...m1.keys()]);
   check('bits are an integer', Number.isInteger(m1.get('v1')));
 
   const t2 = Date.now();
-  const m2 = await verifyReplies(TABLE, replies);
+  const m2 = await verifyReplies(TABLE, A, replies);
   const warm = Date.now() - t2;
 
   check('second pass returns the same bits', m2.get('v1') === m1.get('v1'));
   check('second pass is cached (much faster)', warm < Math.max(cold / 4, 5), { cold, warm });
 
   let seen = 0;
-  await verifyReplies(TABLE, replies, (done) => { seen = Math.max(seen, done); });
+  await verifyReplies(TABLE, A, replies, (done) => { seen = Math.max(seen, done); });
   check('progress is reported', seen >= 1, seen);
+
+  // A stranger's bank reply must never be hashed. The fold skips non-owner
+  // replies, but this runs BEFORE the fold — without the same filter here,
+  // spam replies cost the victim one Argon2id-8MiB hash each.
+  clearVerifyCache();
+  const spam: ChipsReply[] = [
+    ...replies,
+    { author_id: 'b'.repeat(64), body: `bank 8 02#${T0}~`, block_height: 1, content_id: 'spam1', created_at: T0 },
+  ];
+  const m3 = await verifyReplies(TABLE, A, spam);
+  check('foreign bank is not verified', !m3.has('spam1'), [...m3.keys()]);
+  check('owner bank still verified', m3.has('v1'));
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
@@ -1458,11 +1477,15 @@ export function clearVerifyCache(): void {
  */
 export async function verifyReplies(
   tableId: string,
+  owner: string,
   replies: ChipsReply[],
   onProgress?: (done: number, total: number) => void
 ): Promise<Map<string, number>> {
   load();
   const banks = replies
+    // Same owner filter the fold applies. Without it a stranger's spam replies
+    // cost this browser one Argon2id-8MiB hash each — a free DoS on a victim.
+    .filter((r) => r.author_id === owner)
     .map((r) => ({ reply: r, parsed: parseMove(r.body) }))
     .filter((x): x is { reply: ChipsReply; parsed: Extract<ReturnType<typeof parseMove>, { kind: 'bank' }> } =>
       x.parsed?.kind === 'bank');
@@ -1900,7 +1923,7 @@ Two boards, from folding every table returned by `host.listTables()`:
 for (const t of tables) {
   await host.requestContent(t.tableId);
   const replies = await host.loadTable(t.tableId);
-  const verified = await verifyReplies(t.tableId, replies);
+  const verified = await verifyReplies(t.tableId, t.authorId, replies);
   const s = foldChips(header, t.tableId, replies, verified);
   rows.push({ name: t.name, total: s.lifetimeChips, crispest: s.crispest });
 }
