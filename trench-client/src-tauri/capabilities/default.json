@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core window/event access for the quit warning (close interception + destroy).",
+  "windows": ["*"],
+  "permissions": ["core:default", "core:window:allow-destroy"]
+}

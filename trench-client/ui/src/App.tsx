@@ -10,6 +10,9 @@ import {
   HB_CAP_PER_DAY,
   YIELD_LIT,
   YIELD_DIM,
+  YIELD_DARK,
+  DECAY_LIT,
+  DECAY_DARK,
   chebyshev,
   expeditionRange,
   utcDay,
@@ -33,6 +36,7 @@ import { Homestead, type DescentHudMode } from './Homestead';
 import { HowToPlay } from './HowToPlay';
 import { CoachCard, hasSeenCoach, markCoachSeen, type CoachKind } from './CoachCard';
 import { hasSeenHint, markHintSeen } from './lib/teachHints';
+import { interceptClose, destroyWindow } from './lib/tauriWindow';
 import { createAbyssAudio, getStoredMutePreference, type AbyssAudioHandle } from './lib/abyssAudio';
 import { prefersReducedMotion } from './lib/reducedMotion';
 import {
@@ -917,6 +921,46 @@ export function App() {
     setRecap(null);
   }, [recap]);
 
+  // ── Quit warning (spec §3): under Tauri, closing the window with a claim
+  //    staked first shows "your lantern goes dark" — the ONE moment every
+  //    player who's about to lose value actually passes through. Registered
+  //    once; the handler reads refs so it always sees live state. In a plain
+  //    browser (or with capability plumbing missing) this is a no-op and
+  //    closing behaves exactly as before. ─────────────────────────────────
+  const [quitPrompt, setQuitPrompt] = useState(false);
+  const myClaimRef = useRef(myClaim);
+  myClaimRef.current = myClaim;
+  useEffect(() => {
+    interceptClose(
+      () => myClaimRef.current !== null, // nothing staked -> close untouched
+      () => setQuitPrompt(true)
+    );
+  }, []);
+
+  // Rendered from BOTH the loading and main branches — a player can hit the
+  // window's X during either. Ratios interpolate engine constants (diegetic
+  // rule: never a literal number in copy).
+  const quitOverlay = quitPrompt ? (
+    <div className="overlay" onClick={() => setQuitPrompt(false)}>
+      <div className="help-panel recap-panel" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <h2>Quit The Trench?</h2>
+        <p>
+          Your lantern goes dark while the game is closed — structures wear{' '}
+          <strong>{DECAY_DARK / DECAY_LIT}× faster</strong> and farms grow{' '}
+          <strong>{YIELD_LIT / YIELD_DARK}× slower</strong>.
+        </p>
+        <div className="quit-actions">
+          <button className="btn primary" onClick={() => setQuitPrompt(false)}>
+            Stay lit
+          </button>
+          <button className="btn" onClick={destroyWindow}>
+            Quit anyway
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   // ── resolve the entry beat, once, against real chain state — chain state
   //    wins over stored progress (spec's binding rule). Gated on the SAME
   //    prerequisites the founding/main-game render branches already require,
@@ -1495,6 +1539,7 @@ export function App() {
         <Abyss />
         {header}
         <p className="muted">Loading your homestead…</p>
+        {quitOverlay}
       </div>
     );
   }
@@ -1603,6 +1648,7 @@ export function App() {
       </section>
       {showHelp && <HowToPlay onClose={() => setShowHelp(false)} />}
       {recap && !showHelp && <RecapCard facts={recap} onDismiss={dismissRecap} />}
+      {quitOverlay}
     </div>
   );
 }
