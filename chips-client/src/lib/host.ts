@@ -18,11 +18,13 @@
  */
 import {
   ActionType, createChallenge, computePow, getConfig, getDifficulty,
-  solutionToRpcParams, hexToBytes, ensureSponsored, signAction,
+  solutionToRpcParams, hexToBytes, bytesToHex, ensureSponsored, signAction,
   contentHashForPost, contentHashForReply,
-  type SwimchainRpc, type SignFn,
+  type SwimchainRpc, type SignFn, type PoWChallenge, type PoWConfig,
+  type PoWSolution, type ProgressCallback,
 } from '@swimchain/react';
-import { MAX_BITS } from './chipsConst';
+import { initWasm, decodeAddress } from '@swimchain/core';
+import { bankBody, buyBody } from './chipsBody';
 import type { ChipsReply } from './chipsEngine';
 
 /**
@@ -54,6 +56,22 @@ const POW_TESTNET_PARAMS = true;
 
 export interface TableSummary {
   tableId: string;
+  /**
+   * HEX public key (same format as `ChipsReply.author_id`, NOT bech32).
+   *
+   * `list_space_posts` returns `author_id` bech32m-encoded
+   * (src/rpc/methods.rs:7396 -> src/crypto/address.rs:24-30), while
+   * `get_replies` returns it as hex (src/rpc/methods.rs:9446). `foldChips`
+   * (chipsEngine.ts:213) and `verifyReplies` (chipsVerify.ts:70) both compare
+   * `author_id` by exact string equality against `ChipsHeader.owner` /
+   * the `owner` parameter — so a `ChipsHeader.owner` built from this field
+   * MUST already be hex, or it silently matches zero replies (every table
+   * would render with no banks, no chips, no upgrades). This is normalized
+   * here, at the seam, rather than left for every caller to remember —
+   * unlike reef, which tolerates both forms at the point of comparison
+   * instead (reefEngine.ts:859); comparing two differently-encoded strings
+   * for the SAME key is exactly the class of bug that produces this file.
+   */
   authorId: string;
   name: string;
 }
@@ -62,47 +80,93 @@ export interface ChipsHost {
   rpc: SwimchainRpc;
   spaceId: string;
   sponsor(id: Identity): Promise<void>;
-  createTable(id: Identity, name: string): Promise<string>;
-  submitMove(id: Identity, tableId: string, body: string): Promise<string>;
+  createTable(id: Identity, name: string, onProgress?: ProgressCallback): Promise<string>;
+  submitMove(id: Identity, tableId: string, body: string, onProgress?: ProgressCallback): Promise<string>;
   loadTable(tableId: string): Promise<ChipsReply[]>;
   listTables(): Promise<TableSummary[]>;
   requestContent(contentId: string): Promise<void>;
 }
 
+// Re-exported for callers that only import the seam; the implementations
+// themselves live in chipsBody.ts, dependency-free (no RPC/PoW/WASM), so
+// their round-trip test (chipsBody.test.ts) doesn't drag this whole module's
+// import chain along.
+export { bankBody, buyBody };
+
 /**
- * Build a `bank` move body. The fold (`parseMove` in chipsEngine.ts) requires
- * `bank <bits> <nonce_hex>#<ms>~` with the nonce matching `[0-9a-fA-F]{1,16}`
- * exactly — a malformed body doesn't error, it silently becomes an unparseable
- * reply and the move is lost forever. These asserts catch that before the PoW
- * grind + broadcast, not after.
+ * Mine an action PoW off the main thread. A difficulty ~8-10 Argon2id search
+ * is several seconds of CPU; on the main thread it freezes the tab (and any
+ * progress UI can't paint) — reef hit exactly this and fixed it with an
+ * identical worker (reef-client/src/lib/pow.worker.ts / reefEngine.ts:66-104).
+ * Falls back to on-thread mining only if the worker can't be constructed
+ * (very old runtime).
  */
-export function bankBody(bits: number, nonce: bigint, ms: number): string {
-  if (!Number.isInteger(bits) || bits < 0 || bits > MAX_BITS) {
-    throw new Error(`bankBody: bits must be an integer in [0, ${MAX_BITS}], got ${bits}`);
+function minePow(
+  challenge: PoWChallenge,
+  config: PoWConfig,
+  onProgress?: ProgressCallback
+): Promise<PoWSolution> {
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL('./actionPow.worker.ts', import.meta.url), { type: 'module' });
+  } catch {
+    return computePow(challenge, config, onProgress);
   }
-  if (nonce < 0n || nonce > 0xffffffffffffffffn) {
-    throw new Error(`bankBody: nonce must fit in an unsigned 64-bit int, got ${nonce}`);
-  }
-  if (!Number.isSafeInteger(ms) || ms <= 0) {
-    throw new Error(`bankBody: ms must be a positive safe integer, got ${ms}`);
-  }
-  // BigInt#toString(16) is always lowercase, satisfying parseMove's regex.
-  return `bank ${bits} ${nonce.toString(16)}#${ms}~`;
+  return new Promise<PoWSolution>((resolve, reject) => {
+    worker.onmessage = (e: MessageEvent) => {
+      const m = e.data;
+      if (m?.type === 'progress') {
+        onProgress?.(m.attempts, m.elapsedMs, m.hashRate);
+      } else if (m?.type === 'solution') {
+        resolve(m.solution as PoWSolution);
+        worker.terminate();
+      } else if (m?.type === 'error') {
+        reject(new Error(m.message));
+        worker.terminate();
+      }
+    };
+    worker.onerror = (err) => {
+      reject(new Error(err.message || 'pow worker error'));
+      worker.terminate();
+    };
+    worker.postMessage({ challenge, config });
+  });
 }
 
-/** Build a `buy` move body: `buy <upgrade-key>#<ms>~`. */
-export function buyBody(key: string, ms: number): string {
-  if (!/^[a-z0-9]+$/.test(key)) {
-    throw new Error(`buyBody: key must match /^[a-z0-9]+$/, got ${JSON.stringify(key)}`);
+/**
+ * A table name becomes the post `title`, and the stored body is
+ * `${title}\n\n${json}` (the node's own post encoding — see the comment in
+ * createTable below). The node splits on the FIRST `\n\n`
+ * (src/rpc/methods.rs:7403-7411), so a name containing a blank line shifts
+ * that split: `c.body` comes back as `<rest of name>\n\n{json}`, `JSON.parse`
+ * throws, and `listTables`'s catch silently skips it — the table exists
+ * on-chain (a full Argon2id grind spent), but can never be listed again.
+ * Reject that up front instead of losing it after the fact.
+ */
+function assertValidTableName(name: string): void {
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw new Error('createTable: name must be a non-empty string');
   }
-  if (!Number.isSafeInteger(ms) || ms <= 0) {
-    throw new Error(`buyBody: ms must be a positive safe integer, got ${ms}`);
+  if (name.length > 80) {
+    throw new Error(`createTable: name must be at most 80 characters, got ${name.length}`);
   }
-  return `buy ${key}#${ms}~`;
+  if (/[\r\n]/.test(name)) {
+    throw new Error('createTable: name must not contain newlines (a blank line shifts the title/body split and makes the table unparseable)');
+  }
+}
+
+/** Throws loudly at host-construction time rather than silently querying an empty space/endpoint. */
+function assertConfigured(): void {
+  if (!RPC_URL) {
+    throw new Error('VITE_CHIPS_RPC is not set — refusing to run with no RPC endpoint configured.');
+  }
+  if (!CHIPS_SPACE) {
+    throw new Error('VITE_CHIPS_SPACE is not set — refusing to run with no space id configured.');
+  }
 }
 
 async function submitMinedReply(
-  rpc: SwimchainRpc, id: Identity, parentId: string, body: string
+  rpc: SwimchainRpc, id: Identity, parentId: string, body: string, onProgress?: ProgressCallback
 ): Promise<string> {
   // Reef passes the RAW body to createChallenge for a reply, not
   // `parentId:body` — matches contentHashForReply(body) = sha256(body).
@@ -112,7 +176,7 @@ async function submitMinedReply(
     hexToBytes(id.publicKeyHex),
     getDifficulty(ActionType.Reply, POW_TESTNET_PARAMS)
   );
-  const solution = await computePow(challenge, getConfig(POW_TESTNET_PARAMS));
+  const solution = await minePow(challenge, getConfig(POW_TESTNET_PARAMS), onProgress);
   const p = solutionToRpcParams(solution);
   const contentHash = await contentHashForReply(body);
   const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
@@ -126,6 +190,8 @@ async function submitMinedReply(
 }
 
 export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
+  assertConfigured();
+
   return {
     rpc,
     spaceId: CHIPS_SPACE,
@@ -137,7 +203,8 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
         requiredSpaceId: CHIPS_SPACE,
       }),
 
-    async createTable(id, name) {
+    async createTable(id, name, onProgress) {
+      assertValidTableName(name);
       const title = name;
       // No `owner` field here: ChipsHeader.owner (chipsEngine.ts) is meant to
       // come from the post's authenticated `author_id` (as returned by the
@@ -158,7 +225,7 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
         hexToBytes(id.publicKeyHex),
         getDifficulty(ActionType.Post, POW_TESTNET_PARAMS)
       );
-      const solution = await computePow(challenge, getConfig(POW_TESTNET_PARAMS));
+      const solution = await minePow(challenge, getConfig(POW_TESTNET_PARAMS), onProgress);
       const p = solutionToRpcParams(solution);
       const contentHash = await contentHashForPost(title, body);
       const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
@@ -171,21 +238,32 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
       return res.content_id;
     },
 
-    submitMove: (id, tableId, body) => submitMinedReply(rpc, id, tableId, body),
+    submitMove: (id, tableId, body, onProgress) => submitMinedReply(rpc, id, tableId, body, onProgress),
 
     async loadTable(tableId) {
       // get_replies takes the content id positionally, not as a params
-      // object, and has no `depthLimit` param (SwimchainRpc.getReplies in
-      // swimchain-react/src/lib/rpc.ts:394-409). The node defaults to
-      // limit=1000; a long-lived table's move history outgrows that within
-      // days (the same "board wipe" truncation reef hit — see
-      // reefEngine.ts:1013's comment), so pass a high explicit limit.
+      // object (SwimchainRpc.getReplies, swimchain-react/src/lib/rpc.ts:394-
+      // 409). The TS wrapper has no `depthLimit` parameter, but the
+      // underlying RPC does (src/rpc/types.rs:653-655) and DEFAULTS TO 5
+      // server-side (src/rpc/methods.rs:9363) — so this returns the whole
+      // nested subtree under the table post, not just direct replies. The
+      // fold's only author guard is `author_id === owner`; a nested reply
+      // BY THE OWNER (answering a stranger's comment, or a deliberate replay
+      // planted deeper) would otherwise fold as a real move. Filter to
+      // direct children of the table post explicitly.
+      //
+      // The node defaults `limit` to 1000; a long-lived table's move history
+      // outgrows that within days (the same "board wipe" truncation reef
+      // hit — see reefEngine.ts:1013's comment), so pass a high explicit
+      // limit regardless of depth.
       const res = await rpc.getReplies(tableId, { limit: 100_000 });
-      return res.replies.map((r) => ({
-        author_id: r.author_id, body: r.body,
-        block_height: r.block_height ?? null,
-        content_id: r.content_id, created_at: r.created_at,
-      }));
+      return res.replies
+        .filter((r) => r.parent_id === tableId)
+        .map((r) => ({
+          author_id: r.author_id, body: r.body,
+          block_height: r.block_height ?? null,
+          content_id: r.content_id, created_at: r.created_at,
+        }));
     },
 
     async listTables() {
@@ -197,14 +275,23 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
       // reason: `rpc.listSpacePosts(spaceId, { limit })`, positional, not an
       // object with a `spaceId` field.
       const res = await rpc.listSpacePosts(CHIPS_SPACE, { limit: 1000 });
+
+      // list_space_posts bech32m-encodes author_id; get_replies (used by
+      // loadTable/verifyReplies/foldChips) hex-encodes it. Normalize to hex
+      // HERE, once, at the seam — see TableSummary.authorId's doc comment
+      // for why leaving this mismatch to the caller is the actual bug this
+      // review flagged.
+      await initWasm();
+
       const out: TableSummary[] = [];
       for (const c of res.items) {
         try {
           const header = JSON.parse(c.body ?? '{}');
           if (header?.kind === 'chips-table') {
-            out.push({ tableId: c.content_id, authorId: c.author_id, name: String(header.name ?? 'Untitled') });
+            const authorId = bytesToHex(decodeAddress(c.author_id));
+            out.push({ tableId: c.content_id, authorId, name: String(header.name ?? 'Untitled') });
           }
-        } catch { /* not a table post — skip */ }
+        } catch { /* not a table post, or an undecodable author_id — skip */ }
       }
       return out;
     },
