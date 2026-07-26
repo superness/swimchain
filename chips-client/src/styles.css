@@ -173,7 +173,7 @@ h1, h2, h3, p { margin: 0; }
   color: #f2e3c8;
   text-shadow: 0 2px 0 rgba(0, 0, 0, .4);
 }
-.cook { display: block; font-family: var(--chalk); font-size: clamp(10px, 1vw, 13px); color: #a08c6f; margin-top: 4px; }
+.cook { display: block; font-family: var(--chalk); font-size: clamp(10px, 1vw, 13px); color: #c4ae8c; margin-top: 4px; }
 .hood-dip, .hood-crunch { text-align: right; }
 .hood-dip strong, .hood-crunch strong {
   display: block; font-family: var(--sign); letter-spacing: .04em;
@@ -182,7 +182,7 @@ h1, h2, h3, p { margin: 0; }
 }
 .in-the-bowl {
   display: block; font-size: clamp(8px, .72vw, 11px); letter-spacing: .22em;
-  text-transform: uppercase; color: #7d6e58; margin-bottom: 3px;
+  text-transform: uppercase; color: #b6a385; margin-bottom: 3px;
 }
 
 .stage {
@@ -419,20 +419,20 @@ h1, h2, h3, p { margin: 0; }
    player is deciding against, not a figure worth calculating twice. Its own
    line rather than trailing the number, so it never wraps unpredictably at
    the narrowest basket width. */
-.worth-next { display: block; font-size: .82em; color: #8d7c63; opacity: .85; }
+.worth-next { display: block; font-size: .82em; color: #b3a081; }
 /* The bowl cap, not the chip, is why this figure is small — echo the bowl's
    own "at the rim" wording rather than let a modest number beside an
    almost-golden chip read as a bug. */
 .worth-capped strong { color: #b7a384; }
 .worth-golden strong { color: #ffe28a; text-shadow: 0 0 10px rgba(255,205,90,.5); }
-.worth-pale { color: #6f6152; opacity: .85; }
+.worth-pale { color: #a4917a; }
 /* The raw work meter — see WorthTag. Ticks ~4x/s and never stalls, which is
    its entire job: crispness is honestly bounded below the next bit, so on an
    unlucky chip it slows to a crawl, and THIS line is what shows the fryer
    still chewing through the drought. Tabular digits so the ticking number
    doesn't wobble the line. */
 .tosses {
-  display: block; font-style: normal; font-size: .78em; color: #7d6e58;
+  display: block; font-style: normal; font-size: .78em; color: #a89678;
   font-variant-numeric: tabular-nums;
 }
 
@@ -581,6 +581,13 @@ h1, h2, h3, p { margin: 0; }
 }
 .crumbs { font-family: var(--sign); letter-spacing: .04em; font-size: clamp(18px, 2.2vw, 32px); color: #ffe9c6; text-shadow: 0 2px 10px rgba(0,0,0,.6); }
 .crumbs strong { font-weight: inherit; }
+/* The bowl's actual capacity, stated plainly under the balance — it used to
+   be invisible until the moment you slammed into it. */
+.cap-line {
+  display: block; font-family: var(--chalk);
+  font-size: clamp(10px, .85vw, 13px); letter-spacing: .06em;
+  color: #bda989; margin-top: 2px; text-shadow: 0 1px 6px rgba(0,0,0,.6);
+}
 .tunnel-read .sub, .tunnel-read .checking {
   font-family: var(--chalk); font-size: clamp(11px, 1vw, 14px); color: #d5c1a0; margin-top: 2px;
   text-shadow: 0 1px 6px rgba(0,0,0,.6);
@@ -611,17 +618,22 @@ h1, h2, h3, p { margin: 0; }
   position: absolute; inset: 34% 2px 2px; border-radius: 2px 2px 6px 6px;
   background: linear-gradient(180deg, var(--d3, #e2593a), var(--d1, #59120b));
 }
-.jar-name { display: block; font-size: 10.5px; line-height: 1.2; color: #d8c6a6; }
-.jar-cost { display: block; font-family: var(--chalk); font-size: 12px; color: #8d7c63; margin-top: 2px; }
+.jar-name { display: block; font-size: 10.5px; line-height: 1.2; color: #ecdcbc; }
+.jar-cost { display: block; font-family: var(--chalk); font-size: 12px; color: #c9b28c; margin-top: 2px; }
+/* What a bowl jar actually grants — visible on the card, since touch has no
+   hover for the title text. */
+.jar-fx { display: block; font-size: 9px; letter-spacing: .06em; color: #a6997e; margin-top: 1px; }
 .jar.afford { opacity: 1; border-color: rgba(255, 226, 180, .32); }
 .jar.afford .jar-name { color: #f4e6c8; }
 .jar.afford .jar-cost { color: #e8cfa0; }
 .jar.afford:hover { transform: translateY(-3px); border-color: rgba(255, 226, 180, .55); box-shadow: 0 12px 24px rgba(0,0,0,.5); }
-.jar.dear { opacity: .42; }
+/* Unaffordable stays visibly distinct but must remain READABLE — .42
+   made the whole card an illegible grey smudge. */
+.jar.dear { opacity: .68; filter: saturate(.75); }
 .got { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
 .got-jar {
-  font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase;
-  color: #8d7c63; border: 1px solid rgba(190,164,124,.28); border-radius: 999px; padding: 2px 8px;
+  font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: #b7a486; border: 1px solid rgba(210,184,144,.4); border-radius: 999px; padding: 2px 8px;
 }
 
 /* ── the boards on the wall ──────────────────────────────────────────────── */
@@ -640,7 +652,7 @@ h1, h2, h3, p { margin: 0; }
   font-size: 17px; color: #eef3ea; opacity: .9;
 }
 .chalk-line { display: block; font-family: var(--chalk); font-size: 13px; color: #b9cbb6; margin-top: 5px; }
-.hosting { display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: #6f8570; margin-top: 7px; }
+.hosting { display: block; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: #93ac93; margin-top: 7px; }
 .hosting.live { color: #a8d29e; }
 .hosting.live::before {
   content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
@@ -669,8 +681,8 @@ h1, h2, h3, p { margin: 0; }
 }
 .board h3 { font-family: var(--sign); letter-spacing: .14em; font-size: clamp(20px, 2.2vw, 30px); color: #f0f6ec; }
 .board-kind { font-family: var(--chalk); font-size: 14px; color: #d3b06a; margin-top: 2px; }
-.board-note { font-size: 12px; line-height: 1.5; color: #8ea38a; margin: 8px 0 14px; max-width: 46ch; }
-.board-empty { font-family: var(--chalk); color: #6f8570; }
+.board-note { font-size: 12px; line-height: 1.5; color: #a9bfa4; margin: 8px 0 14px; max-width: 46ch; }
+.board-empty { font-family: var(--chalk); color: #92aa92; }
 .board ol { display: flex; flex-direction: column; gap: 5px; }
 .board li {
   display: grid; grid-template-columns: 26px 1fr auto auto; gap: 10px; align-items: baseline;
@@ -682,12 +694,12 @@ h1, h2, h3, p { margin: 0; }
   background: linear-gradient(90deg, rgba(210,176,106,.2), rgba(210,176,106,.04));
   border-left: 3px solid #d3b06a; color: #ffeec4;
 }
-.board .pos { font-family: var(--chalk); color: #7f9a7b; }
+.board .pos { font-family: var(--chalk); color: #9cb797; }
 .board .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board .dip-tier { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #9fb99b; }
 .board .val { font-family: var(--sign); letter-spacing: .05em; font-size: 16px; color: #f4f9f0; }
-.board .val em { font-style: normal; font-family: var(--chalk); font-size: 11px; color: #7f9a7b; margin-left: 3px; }
-.boards-foot { font-family: var(--chalk); font-size: 12px; color: #6f8570; text-align: center; }
+.board .val em { font-style: normal; font-family: var(--chalk); font-size: 11px; color: #9cb797; margin-left: 3px; }
+.boards-foot { font-family: var(--chalk); font-size: 12px; color: #92aa92; text-align: center; }
 
 /* ── working / notices ───────────────────────────────────────────────────── */
 
@@ -779,10 +791,10 @@ h1, h2, h3, p { margin: 0; }
   text-shadow: 0 3px 0 rgba(0,0,0,.35);
 }
 .doorway .lede { margin-top: 16px; font-size: clamp(14px, 1.4vw, 17px); line-height: 1.6; color: #d9c6a6; }
-.doorway .fine { margin-top: 14px; font-size: 12px; color: #8d7c63; }
+.doorway .fine { margin-top: 14px; font-size: 12px; color: #ab987b; }
 .apron-name { display: block; margin: 22px auto 0; max-width: 340px; text-align: left; }
 .apron-name span {
-  display: block; font-family: var(--chalk); font-size: 13px; color: #b39d7d; margin-bottom: 6px;
+  display: block; font-family: var(--chalk); font-size: 13px; color: #cbb593; margin-bottom: 6px;
 }
 .apron-name input {
   width: 100%; padding: 10px 12px; border-radius: 6px;
@@ -895,6 +907,24 @@ h1, h2, h3, p { margin: 0; }
   .tunnel-front { right: auto; left: 50%; translate: -50% -100%; width: min(210px, 42vw); z-index: 1; }
   .t-wall { width: clamp(10px, 3vw, 26px); }
   .t-name { left: 10vw; }
+
+  /* ONE SCREEN, NO SCROLLING (portrait). The stacked column previously ran
+     ~100px past a phone viewport, so play meant bouncing up and down between
+     the fryer and the jars. Every line here buys height back: the counter's
+     desktop top-padding (its column is top-anchored on desktop for the dig
+     floor's sake — pure waste when stacked), the roomy paddings, the caption
+     and jar type sizes. `.stage`'s own scroll (above) survives as the safety
+     net for landscape phones, where one screen genuinely cannot hold a
+     fryer, a counter and a board. */
+  .counter { padding-top: 0; gap: 6px; }
+  .stage { gap: 6px; padding-top: 8px; padding-bottom: 4px; }
+  .tunnel-read { padding: 2px 14px 4px; }
+  .worth { font-size: 10px; }
+  .jar { width: 82px; padding: 25px 4px 5px; }
+  .jar-glass { top: 4px; width: 28px; height: 19px; }
+  .got { margin-top: 4px; }
+  .wallboard { margin: 0 auto 6px; padding: 8px 14px 10px; }
+  .corner { padding-bottom: 6px; gap: 6px; }
 }
 @media (max-width: 940px) {
   .hood { flex-wrap: wrap; gap: 10px 18px; }

@@ -342,7 +342,13 @@ export function TunnelRead({ state, nowMs, counting, countProgress }: TunnelRead
         ) : (
           <>
             <p className="depth-line">{layer + 1} {layer === 0 ? 'layer' : 'layers'} down</p>
-            <p className="crumbs tunnel-crumbs"><strong>{compact(crumbs)}</strong> crumbs</p>
+            <p className="crumbs tunnel-crumbs">
+              <strong>{compact(crumbs)}</strong> crumbs
+              {/* The cap was previously invisible until you hit it ("packed
+                  to the walls") — the player had no way to know how big
+                  their bowl even was, or what a Bigger Bowl would change. */}
+              <span className="cap-line">bowl holds {compact(state.bowlCap)}</span>
+            </p>
             <p className="sub">
               {atRim
                 ? 'packed to the walls — anything more goes on the floor'
@@ -475,11 +481,16 @@ export function Shelf({ state, crumbsNow, committed, onBuy }: ShelfProps) {
                 className={`jar${afford ? ' afford' : ' dear'}`}
                 disabled={!afford}
                 onClick={() => onBuy(u.key)}
-                title={FLAVOUR[u.key] ?? u.label}
+                // A bowl jar states its actual capacity — "Bigger Bowl II"
+                // was otherwise a 2M purchase with an unstated effect.
+                title={(FLAVOUR[u.key] ?? u.label) + (u.bowlCap ? ` — holds ${compact(u.bowlCap)}` : '')}
               >
                 <span className="jar-glass" aria-hidden="true"><i /></span>
                 <span className="jar-name">{u.label}</span>
                 <span className="jar-cost">{compact(u.cost)}</span>
+                {/* Visible, not title-only: touch screens have no hover, and
+                    a bowl's whole point is its capacity. */}
+                {u.bowlCap !== undefined && <span className="jar-fx">holds {compact(u.bowlCap)}</span>}
               </button>
             </li>
           );
