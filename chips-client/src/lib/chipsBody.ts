@@ -9,6 +9,11 @@
  * `host.ts` re-exports both for callers that only import the seam.
  */
 import { BANK_MIN_BITS, MAX_BITS, MAX_BATCH } from './chipsConst';
+// `import type` only — erased at compile time, so the dependency-free property
+// above still holds at runtime while `bankBatchBody`'s parameter stays pinned to
+// the same shape the fold parses into, rather than a structural copy that can
+// drift away from it.
+import type { ChipEntry } from './chipsEngine';
 
 /**
  * Build a `bank` move body. The fold's parser (`parseMove` in chipsEngine.ts)
@@ -49,10 +54,7 @@ export function buyBody(key: string, ms: number): string {
  * Asserts rather than trusts: a body the fold would reject whole is a silently
  * lost pile of mined proofs, and the caller has already spent the CPU.
  */
-export function bankBatchBody(
-  chips: { ms: number; bits: number; nonce: bigint }[],
-  authoringMs: number
-): string {
+export function bankBatchBody(chips: ChipEntry[], authoringMs: number): string {
   if (chips.length === 0) throw new Error('bankBatchBody: empty batch');
   if (chips.length > MAX_BATCH) throw new Error(`bankBatchBody: ${chips.length} chips exceeds MAX_BATCH ${MAX_BATCH}`);
   if (!Number.isSafeInteger(authoringMs) || authoringMs <= 0) throw new Error('bankBatchBody: bad authoring ms');
