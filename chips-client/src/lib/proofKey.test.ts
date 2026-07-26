@@ -22,9 +22,13 @@ check('nonce matters', proofKey(T, A, 5, 7n) !== proofKey(T, A, 5, 8n));
 // Author casing must not split one identity into two cache entries.
 check('author case-insensitive', proofKey(T, A.toUpperCase(), 5, 7n) === proofKey(T, A, 5, 7n));
 
-// The separator must not let one field impersonate another.
-check('no field-boundary collision',
-  proofKey(T, A, 5, 7n) !== proofKey(T, `${A}:5`, 0, 7n));
+// The separator must not let one field impersonate another, whatever the
+// fields contain. Inject the REAL delimiter into both variable-length fields —
+// a test that injects some other character proves nothing about this one.
+check('table cannot borrow the author boundary',
+  proofKey('X|y', 'z', 5, 7n) !== proofKey('X', 'y|z', 5, 7n));
+check('author cannot borrow the ms boundary',
+  proofKey(T, `${A}|5`, 0, 7n) !== proofKey(T, A, 5, 7n));
 
 check('MAX_BATCH is 24', MAX_BATCH === 24);
 
