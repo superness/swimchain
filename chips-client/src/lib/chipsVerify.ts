@@ -136,23 +136,33 @@ export async function verifyReplies(
   onProgress?: (done: number, total: number) => void
 ): Promise<Map<string, number>> {
   load();
-  const wanted: { reply: ChipsReply; chip: ChipEntry }[] = [];
+  // Lower-case the author ONCE per reply and use that SAME string for both the
+  // Argon2id preimage and the proofKey lookup. `proofKey` already case-folds
+  // internally, but `chipPreimage` (chipsPow.ts) encodes authorIdHex verbatim —
+  // if this cache ever fed it the original casing while keying itself on the
+  // lower-cased form, an upper-case author id would split one Argon2id input
+  // across two cache identities and this module-global, localStorage-persisted
+  // cache would read back the WRONG bits for the next table that reuses the
+  // key. Every author id in play today is already lower-case (host.ts
+  // normalizes at the seam), so this changes no existing hash.
+  const wanted: { author: string; chip: ChipEntry }[] = [];
   for (const r of replies) {
     if (r.author_id !== owner) continue;          // DoS control, still before any hashing
     const parsed = parseMove(r.body);
     if (parsed?.kind !== 'bank') continue;         // 'oversize' verifies nothing, by design
-    for (const chip of parsed.chips) wanted.push({ reply: r, chip });
+    const author = r.author_id.toLowerCase();
+    for (const chip of parsed.chips) wanted.push({ author, chip });
   }
 
   const out = new Map<string, number>();
   let done = 0;
   let dirty = false;
 
-  for (const { reply, chip } of wanted) {
-    const key = proofKey(tableId, reply.author_id, chip.ms, chip.nonce);
+  for (const { author, chip } of wanted) {
+    const key = proofKey(tableId, author, chip.ms, chip.nonce);
     let bits = memory.get(key);
     if (bits === undefined) {
-      bits = await hashBits(reply.author_id, tableId, chip.ms, chip.nonce);
+      bits = await hashBits(author, tableId, chip.ms, chip.nonce);
       hashCount++;
       memory.set(key, bits);
       dirty = true;

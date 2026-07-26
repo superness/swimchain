@@ -5,7 +5,7 @@
  */
 import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
 import { proofKey } from './proofKey';
-import { MAX_BATCH, CRUMBS_PER_CHIP } from './chipsConst';
+import { MAX_BATCH, CRUMBS_PER_CHIP, DIP_TIERS } from './chipsConst';
 
 const A = 'a'.repeat(64);
 const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'T', owner: A };
@@ -113,6 +113,117 @@ const verifyAll = (chips: { ms: number; bits: number; nonce: bigint }[]) =>
   ], v);
 
   check('decay identical either way', batched.crumbs === singles.crumbs, { batched: batched.crumbs, singles: singles.crumbs });
+}
+
+// 7) INTRA-BATCH ORDER IS CONSENSUS-RELEVANT: chips fold in DECLARATION order,
+// never resorted by ms. Declared order here is [small, big], but big's
+// declared ms is EARLIER than small's — so a fold that ever normalized a
+// batch by sorting entries by ms would silently swap them.
+//
+// `big` alone crosses the guac tier (lifetime >= 300), but dipIndex updates
+// only AFTER a chip's own payout is computed — so in true declaration order
+// BOTH chips are credited while still salsa: small pays the plain rate (no
+// payNum bonus), and big's own crossing helps nobody in this reply. A fold
+// that sorted the batch by ms would run big FIRST, cross into guac before
+// small is credited, and hand small guac's 11/10 bonus it never earned.
+//
+// Hand-computed from chipsConst.ts (BANK_MIN_BITS 8, GOLDEN_BITS 16,
+// GOLD_NUM/DEN 5/2, guac payNum/payDen 11/10):
+//   small: bits 9  -> 1000*2^1 = 2,000. No golden (9<16). Salsa: no payNum.
+//   big:   bits 17 -> 1000*2^9 = 512,000 -> golden (17>=16): floor(*5/2)
+//          = 1,280,000. Still salsa when IT is credited (small's own +2
+//          lifetime can't reach 300 on its own): no payNum either.
+//   DECLARATION-order total: 2,000 + 1,280,000 = 1,282,000
+//   sort-by-ms total (WRONG): big first (1,280,000, still salsa) crosses
+//     lifetime to 512 (guac); small second now wrongly pays guac's 11/10:
+//     floor(2,000*11/10) = 2,200 -> total 1,282,200
+{
+  const small = { ms: T0 + 20, bits: 9, nonce: 0x111n };   // declared FIRST
+  const big = { ms: T0 + 10, bits: 17, nonce: 0x112n };    // declared SECOND, but an EARLIER ms
+  const v = verifyAll([small, big]);
+  const body = `bank ${small.ms}:${small.bits}:${small.nonce.toString(16)},${big.ms}:${big.bits}:${big.nonce.toString(16)}#${T0}~`;
+  const s = foldChips(H, TABLE, [reply(body, 'order1', T0)], v);
+
+  const smallMove = s.moves.find((m) => m.ms === small.ms);
+  const bigMove = s.moves.find((m) => m.ms === big.ms);
+  check("small chip pays the plain rate, not guac's bonus (order preserved)", smallMove?.crumbs === 2_000, smallMove);
+  check('big chip still pays the plain rate itself', bigMove?.crumbs === 1_280_000, bigMove);
+  const total = s.moves.reduce((sum, m) => sum + (m.crumbs ?? 0), 0);
+  check('exact batch total under DECLARATION order, not ms order', total === 1_282_000, total);
+  check('the batch still crosses into guac by its end', s.dipIndex === 1, s.dipIndex);
+}
+
+// 8) A CHIP'S DECLARED ms MUST STAY INERT WITH RESPECT TO THE DECAY/CONGEAL
+// CLOCK. It exists only to bind the Argon2id preimage and the proof key. Two
+// entries in ONE reply (one instant, one `created_at`) declared 13 HOURS
+// apart — comfortably over CONGEAL_GAP_MS (12h) — must not let the second
+// entry congeal-double, because no real time has elapsed between them.
+{
+  const HOUR = 3_600_000;
+  const boot = { ms: T0, bits: 23, nonce: 0x201n };            // -> lifetime 32,768: queso (the congeal tier)
+  const e1 = { ms: T0 + 1_000, bits: 8, nonce: 0x202n };
+  const e2 = { ms: e1.ms + 13 * HOUR, bits: 8, nonce: 0x203n }; // declared 13h after e1's ms
+
+  const v = verifyAll([boot, e1, e2]);
+  const replies: ChipsReply[] = [
+    reply(`bank ${boot.bits} ${boot.nonce.toString(16)}#${boot.ms}~`, 'boot', boot.ms),
+    // ONE reply carrying both entries: ONE created_at, so NO real time passes
+    // between e1 and e2 no matter how far apart their declared ms values are.
+    reply(
+      `bank ${e1.ms}:${e1.bits}:${e1.nonce.toString(16)},${e2.ms}:${e2.bits}:${e2.nonce.toString(16)}#${T0 + 1_000}~`,
+      'batch', T0 + 1_000
+    ),
+  ];
+  const s = foldChips(H, TABLE, replies, v);
+
+  const qi = DIP_TIERS.findIndex((t) => t.congeal);
+  check('queso (the congeal tier) is reached before the batch', s.dipIndex === qi, s.dipIndex);
+  const e1Move = s.moves.find((m) => m.ms === e1.ms);
+  const e2Move = s.moves.find((m) => m.ms === e2.ms);
+  check('first entry banks at the plain rate', e1Move?.crumbs === CRUMBS_PER_CHIP, e1Move);
+  check(
+    'second entry is NOT congeal-doubled despite a 13h gap in DECLARED ms (no real time elapsed)',
+    e2Move?.crumbs === CRUMBS_PER_CHIP, e2Move
+  );
+}
+
+// 9) DEDUPE WITHIN a single batch: the same proof declared twice in ONE reply
+// still earns once — the second occurrence is rejected-duplicate.
+{
+  const c = { ms: T0 + 500, bits: 10, nonce: 0x301n };
+  const v = verifyAll([c]);
+  const body = `bank ${c.ms}:${c.bits}:${c.nonce.toString(16)},${c.ms}:${c.bits}:${c.nonce.toString(16)}#${T0}~`;
+  const s = foldChips(H, TABLE, [reply(body, 'dupe-in-batch', T0)], v);
+  check('one entry banked, one rejected', s.moves.length === 2, s.moves.length);
+  check('first occurrence banks', s.moves[0].outcome === 'banked', s.moves[0].outcome);
+  check('second occurrence in the SAME batch is rejected-duplicate', s.moves[1].outcome === 'rejected-duplicate', s.moves[1].outcome);
+  check('credited exactly once', s.crumbs === CRUMBS_PER_CHIP * 2 ** (10 - 8), s.crumbs);
+}
+
+// 10) DEDUPE ACROSS FORMATS: a chip banked as a v1 reply, then replayed as an
+// entry inside a LATER batch reply, is still rejected-duplicate — v1 and
+// batch entries share one proof-identity space (both key on ms+nonce).
+{
+  const c = { ms: T0, bits: 10, nonce: 0x401n };
+  const other = { ms: T0 + 1, bits: 9, nonce: 0x402n };
+  const v = verifyAll([c, other]);
+  const replies: ChipsReply[] = [
+    reply(`bank ${c.bits} ${c.nonce.toString(16)}#${c.ms}~`, 'v1-first', T0),
+    reply(
+      `bank ${c.ms}:${c.bits}:${c.nonce.toString(16)},${other.ms}:${other.bits}:${other.nonce.toString(16)}#${T0 + 2}~`,
+      'batch-replay', T0 + 2
+    ),
+  ];
+  const s = foldChips(H, TABLE, replies, v);
+  check('three moves total', s.moves.length === 3, s.moves.length);
+  check('v1 original banks', s.moves[0].outcome === 'banked', s.moves[0].outcome);
+  check('replayed entry inside the later batch is rejected-duplicate', s.moves[1].outcome === 'rejected-duplicate', s.moves[1].outcome);
+  check('the distinct second entry in that batch still banks', s.moves[2].outcome === 'banked', s.moves[2].outcome);
+  check(
+    'credited only for the v1 original and the distinct entry',
+    s.crumbs === CRUMBS_PER_CHIP * 2 ** (10 - 8) + CRUMBS_PER_CHIP * 2 ** (9 - 8),
+    s.crumbs
+  );
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
