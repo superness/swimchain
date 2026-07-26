@@ -253,7 +253,11 @@ interface BasketProps {
  */
 function WorthTag({ chip, goldenBits, state, nowMs }: { chip: FryerChip; goldenBits: number; state: ChipsState | null; nowMs: number }) {
   const live = state ? worthIfBankedNow(state, chip.bits, nowMs) : null;
-  if (!state) return null;
+  // Before the first fold lands there is nothing truthful to say — but the
+  // SLOT must still hold its height. Returning null here (the old behaviour)
+  // meant the caption materialised a beat after page load and recentred the
+  // whole kitchen column: measured 7px of basket shift on load.
+  if (!state) return <p className="worth" aria-hidden="true">&nbsp;</p>;
   // The raw work meter — the one figure that NEVER stalls. Crispness is
   // bounded below the next bit by honesty (it may only jump when a real bit
   // lands), so on an unlucky chip every bounded visual eventually slows to a
@@ -308,11 +312,11 @@ function Basket({ chip, goldenBits, onBank, index, state, nowMs }: BasketProps) 
         data-fryer={index}
         data-attempts={chip.attempts}
         aria-label={
-          c.golden ? 'Golden chip — lift it out'
-            : c.bankable ? 'This chip is done — lift it out'
+          c.golden ? 'Golden chip — dip it'
+            : c.bankable ? 'This chip is done — dip it'
               : 'Still frying'
         }
-        title={c.bankable ? 'lift it out' : 'still pale'}
+        title={c.bankable ? 'dip it' : 'still pale'}
       >
         <span className="basket-hook" aria-hidden="true" />
         <span className="oil" aria-hidden="true">
@@ -330,7 +334,7 @@ function Basket({ chip, goldenBits, onBank, index, state, nowMs }: BasketProps) 
         <span className="basket-chip" aria-hidden="true"><Chip chip={chip} goldenBits={goldenBits} /></span>
         <span className="mesh" aria-hidden="true" />
         {c.bankable && <span className="steam" aria-hidden="true"><i /><i /><i /></span>}
-        <span className="tongs" aria-hidden="true">lift it out</span>
+        <span className="tongs" aria-hidden="true">dip it</span>
       </button>
       <WorthTag chip={chip} goldenBits={goldenBits} state={state} nowMs={nowMs} />
     </div>
