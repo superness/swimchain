@@ -3,7 +3,8 @@
  * and the fixed dip-then-airtight sog resolution order.
  * Run: npx tsx src/lib/chipsEngine.dip.test.ts
  */
-import { foldChips, dipIndexFor, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { foldChips, parseMove, dipIndexFor, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { proofKey } from './proofKey';
 import { DIP_TIERS, CONGEAL_GAP_MS, CRUMBS_PER_CHIP, UPGRADES, START_BOWL_CAP } from './chipsConst';
 
 const A = 'a'.repeat(64);
@@ -33,6 +34,12 @@ const bank = (bits: number, cid: string, ms: number): ChipsReply => ({
 const buy = (key: string, cid: string, ms: number): ChipsReply => ({
   author_id: A, body: `buy ${key}#${ms}~`, block_height: 1, content_id: cid, created_at: ms,
 });
+/** proofKey for a single-chip (v1) fixture reply, derived from its own body. */
+const keyFor = (r: ChipsReply): string => {
+  const p = parseMove(r.body);
+  if (p?.kind !== 'bank') throw new Error('keyFor: not a bank reply: ' + r.body);
+  return proofKey(TABLE, r.author_id, p.chips[0].ms, p.chips[0].nonce);
+};
 
 // 1) Tier boundaries are inclusive at the threshold.
 {
@@ -48,7 +55,7 @@ const buy = (key: string, cid: string, ms: number): ChipsReply => ({
   // Reach the queso tier with one big chip, then bank after a long gap.
   const bits = Math.ceil(Math.log2(need)) + 8;
   const rs = [bank(bits, 'q1', T0), bank(8, 'q2', T0 + CONGEAL_GAP_MS)];
-  const s = foldChips(H, TABLE, rs, new Map([['q1', bits], ['q2', 8]]));
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), bits], [keyFor(rs[1]), 8]]));
   const banked = s.moves.find((m) => m.content_id === 'q2');
   check('congeal doubles the returning chip', (banked?.crumbs ?? 0) >= CRUMBS_PER_CHIP * 2, banked);
 }
@@ -83,7 +90,7 @@ const buy = (key: string, cid: string, ms: number): ChipsReply => ({
 // payNum lands on 97,000, and one that decayed at the base 97 lands on 98,100.
 {
   const rs = [bank(17, 'g1', T0), bank(8, 'g2', T0 + HOUR)];
-  const s = foldChips(H, TABLE, rs, new Map([['g1', 17], ['g2', 8]]));
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 17], [keyFor(rs[1]), 8]]));
   check('guac window is actually entered', s.dipIndex === 1, { dipIndex: s.dipIndex, lifetime: s.lifetimeChips });
   const g2 = s.moves.find((m) => m.content_id === 'g2');
   // Asserted on the MOVE, not on `crumbs`: the bowl is at its rim here, so a
@@ -110,7 +117,7 @@ const buy = (key: string, cid: string, ms: number): ChipsReply => ({
 // airtight (96) gives 29,900; airtight-overrides-dip (99) gives 30,800.
 {
   const rs = [bank(17, 'o1', T0), buy('airtight', 'o2', T0 + 1000), bank(8, 'o3', T0 + 1000 + HOUR)];
-  const s = foldChips(H, TABLE, rs, new Map([['o1', 17], ['o3', 8]]));
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 17], [keyFor(rs[2]), 8]]));
   check('airtight is affordable off one big chip', START_BOWL_CAP >= UPGRADES.airtight.cost);
   check('airtight bought', s.airtight === true && s.owned.has('airtight'), [...s.owned]);
   check('dip base then airtight bonus (96+2)', s.crumbs === 30_500, s.crumbs);

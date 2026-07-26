@@ -5,6 +5,7 @@
  * Run: npx tsx src/lib/chipsEngine.determinism.test.ts
  */
 import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { proofKey } from './proofKey';
 
 const A = 'a'.repeat(64);
 const H: ChipsHeader = { v: 1, kind: 'chips-table', name: 'T', owner: A };
@@ -35,7 +36,12 @@ const replies: ChipsReply[] = [
   { author_id: A, body: `bank 16 dd#${T0 + 9_002_000}~`, block_height: 3, content_id: 'tie-a', created_at: T0 + 9_002_000 },
   { author_id: A, body: `buy airtight#${T0 + 9_002_000}~`, block_height: 3, content_id: 'tie-b', created_at: T0 + 9_002_000 },
 ];
-const verified = new Map([['c1', 15], ['c3', 10], ['c4', 12], ['tie-a', 16]]);
+const verified = new Map([
+  [proofKey(TABLE, A, T0, 0xaan), 15],
+  [proofKey(TABLE, A, T0 + 2000, 0xbbn), 10],
+  [proofKey(TABLE, A, T0 + 9_000_000, 0xccn), 12],
+  [proofKey(TABLE, A, T0 + 9_002_000, 0xddn), 16],
+]);
 
 const snap = (s: ReturnType<typeof foldChips>) =>
   JSON.stringify({
@@ -69,7 +75,7 @@ check('input order does not affect state', a === c, { a, c });
 }
 
 // A client missing a verification must not silently credit the chip.
-const partial = snap(foldChips(H, TABLE, replies, new Map([['c1', 15]])));
+const partial = snap(foldChips(H, TABLE, replies, new Map([[proofKey(TABLE, A, T0, 0xaan), 15]])));
 check('unverified banks do not credit', partial !== a);
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

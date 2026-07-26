@@ -5,10 +5,12 @@
  */
 import { verifyReplies, clearVerifyCache, verifyHashCount } from './chipsVerify';
 import type { ChipsReply } from './chipsEngine';
+import { proofKey } from './proofKey';
 
 const TABLE = 'sha256:table';
 const A = 'a'.repeat(64);
 const T0 = 1_000_000_000;
+const KEY_V1 = proofKey(TABLE, A, T0, 0x01n);
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -31,15 +33,15 @@ async function main() {
   const m1 = await verifyReplies(TABLE, A, replies);
   const coldHashes = verifyHashCount() - before;
 
-  check('only bank moves are verified', m1.size === 1 && m1.has('v1'), [...m1.keys()]);
-  check('bits are an integer', Number.isInteger(m1.get('v1')));
+  check('only bank moves are verified', m1.size === 1 && m1.has(KEY_V1), [...m1.keys()]);
+  check('bits are an integer', Number.isInteger(m1.get(KEY_V1)));
   check('cold pass hashes exactly the one bank', coldHashes === 1, coldHashes);
 
   const beforeWarm = verifyHashCount();
   const m2 = await verifyReplies(TABLE, A, replies);
   const warmHashes = verifyHashCount() - beforeWarm;
 
-  check('second pass returns the same bits', m2.get('v1') === m1.get('v1'));
+  check('second pass returns the same bits', m2.get(KEY_V1) === m1.get(KEY_V1));
   check('second pass performs NO hashes at all', warmHashes === 0, warmHashes);
 
   let seen = 0;
@@ -57,8 +59,9 @@ async function main() {
   const beforeSpam = verifyHashCount();
   const m3 = await verifyReplies(TABLE, A, spam);
   const spamHashes = verifyHashCount() - beforeSpam;
-  check('foreign bank is not verified', !m3.has('spam1'), [...m3.keys()]);
-  check('owner bank still verified', m3.has('v1'));
+  const spamKey = proofKey(TABLE, 'b'.repeat(64), T0, 0x02n);
+  check('foreign bank is not verified', !m3.has(spamKey), [...m3.keys()]);
+  check('owner bank still verified', m3.has(KEY_V1));
   // The DoS property: the filter must run BEFORE hashing. Asserting only on
   // the returned map would also pass an implementation that hashed everything
   // and stripped foreign entries afterwards — which costs the victim exactly

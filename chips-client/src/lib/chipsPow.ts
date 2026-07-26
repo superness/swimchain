@@ -29,8 +29,17 @@ export function chipPreimage(
   // contain delimiters or pipes; different tuples can shift field boundaries.
   // Length prefixes make every byte unambiguous: authorIdHex|tableId can't shift
   // across their length-prefixed boundary no matter what they contain.
+  //
+  // Case-fold the author HERE, not at each caller: this is the one place the
+  // miner (crunch.worker.ts, via chipHash) and the verifier (chipsVerify.ts,
+  // via verifyChipBits) are GUARANTEED to agree, since both funnel through
+  // this exact function. `proofKey` case-folds independently for the same
+  // reason (it hashes nothing, so it can't rely on this). Every author id in
+  // play today is already lower-case hex (bytesToHex only emits lower-case),
+  // so this changes no existing hash.
+  const author = authorIdHex.toLowerCase();
   const domainBytes = new TextEncoder().encode(DOMAIN);
-  const authorBytes = new TextEncoder().encode(authorIdHex);
+  const authorBytes = new TextEncoder().encode(author);
   const tableBytes = new TextEncoder().encode(tableId);
 
   const out = new Uint8Array(

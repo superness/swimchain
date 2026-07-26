@@ -9,8 +9,9 @@
  *
  * Run: npx tsx src/lib/sogProjection.test.ts
  */
-import { foldChips, type ChipsReply, type ChipsHeader, type ChipsState } from './chipsEngine';
+import { foldChips, parseMove, type ChipsReply, type ChipsHeader, type ChipsState } from './chipsEngine';
 import { projectedCrumbs, soggyLook } from './sogProjection';
+import { proofKey } from './proofKey';
 import { SOG_MAX_HOURS, DIP_TIERS, START_BOWL_CAP } from './chipsConst';
 
 const A = 'a'.repeat(64);
@@ -41,8 +42,14 @@ const clockOnly = (cid: string, at: number): ChipsReply => ({
   author_id: A, body: `buy season5#${at}~`,
   block_height: 2, content_id: cid, created_at: at,
 });
+/** proofKey for a single-chip (v1) fixture reply, derived from its own body. */
+const keyFor = (r: ChipsReply): string => {
+  const p = parseMove(r.body);
+  if (p?.kind !== 'bank') throw new Error('keyFor: not a bank reply: ' + r.body);
+  return proofKey(TABLE, r.author_id, p.chips[0].ms, p.chips[0].nonce);
+};
 const vAll = (rs: ChipsReply[], bits: number) =>
-  new Map(rs.filter((r) => r.body.startsWith('bank')).map((r) => [r.content_id, bits]));
+  new Map(rs.filter((r) => r.body.startsWith('bank')).map((r) => [keyFor(r), bits]));
 
 // 1) THE LINKAGE TEST: project a gap, fold the same gap, demand the same integer.
 for (const gapHours of [1, 5, 50, 200]) {
@@ -74,7 +81,7 @@ for (const gapHours of [1, 5, 50, 200]) {
     author_id: A, body: `bank 14 abc#${T0}~`,
     block_height: null, content_id: 'p1', created_at: T0,
   };
-  const s = foldChips(H, TABLE, [pending], new Map([['p1', 14]]));
+  const s = foldChips(H, TABLE, [pending], new Map([[keyFor(pending), 14]]));
   check('pending-only bank leaves the clock at 0', s.lastConfirmedAt === 0, s.lastConfirmedAt);
   check('pending-only bank has crumbs', s.crumbs > 0, s.crumbs);
   check(

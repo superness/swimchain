@@ -61,11 +61,12 @@ export interface TableSummary {
    *
    * `list_space_posts` returns `author_id` bech32m-encoded
    * (src/rpc/methods.rs:7396 -> src/crypto/address.rs:24-30), while
-   * `get_replies` returns it as hex (src/rpc/methods.rs:9446). `foldChips`
-   * (chipsEngine.ts:213) and `verifyReplies` (chipsVerify.ts:70) both compare
-   * `author_id` by exact string equality against `ChipsHeader.owner` /
-   * the `owner` parameter — so a `ChipsHeader.owner` built from this field
-   * MUST already be hex, or it silently matches zero replies (every table
+   * `get_replies` returns it as hex (src/rpc/methods.rs:9446). The owner
+   * filters in `foldChips` (chipsEngine.ts) and `verifyReplies`
+   * (chipsVerify.ts) both compare `author_id` by exact string equality
+   * against `ChipsHeader.owner` / the `owner` parameter — so a
+   * `ChipsHeader.owner` built from this field MUST already be hex, or it
+   * silently matches zero replies (every table
    * would render with no banks, no chips, no upgrades). This is normalized
    * here, at the seam, rather than left for every caller to remember —
    * unlike reef, which tolerates both forms at the point of comparison

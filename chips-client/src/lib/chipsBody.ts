@@ -6,9 +6,17 @@
  * whole RPC/PoW import chain onto their test path for no reason — which is
  * exactly what made an earlier version of their test unrunnable in a worktree
  * where the workspace's other packages hadn't been `npm install`ed yet.
- * `host.ts` re-exports both for callers that only import the seam.
+ * There are three builders below; `host.ts` re-exports `bankBody` and
+ * `buyBody` for callers that only import the seam. `bankBatchBody` is NOT
+ * re-exported there yet — it is deliberately unreachable from the seam until
+ * the emitter half of the batching plan lands.
  */
-import { MAX_BITS } from './chipsConst';
+import { BANK_MIN_BITS, MAX_BITS, MAX_BATCH } from './chipsConst';
+// `import type` only — erased at compile time, so the dependency-free property
+// above still holds at runtime while `bankBatchBody`'s parameter stays pinned to
+// the same shape the fold parses into, rather than a structural copy that can
+// drift away from it.
+import type { ChipEntry } from './chipsEngine';
 
 /**
  * Build a `bank` move body. The fold's parser (`parseMove` in chipsEngine.ts)
@@ -41,4 +49,27 @@ export function buyBody(key: string, ms: number): string {
     throw new Error(`buyBody: ms must be a positive safe integer, got ${ms}`);
   }
   return `buy ${key}#${ms}~`;
+}
+
+/**
+ * The inverse of `parseMove`'s batch form.
+ *
+ * Asserts rather than trusts: a body the fold would reject whole is a silently
+ * lost pile of mined proofs, and the caller has already spent the CPU.
+ */
+export function bankBatchBody(chips: ChipEntry[], authoringMs: number): string {
+  if (chips.length === 0) throw new Error('bankBatchBody: empty batch');
+  if (chips.length > MAX_BATCH) throw new Error(`bankBatchBody: ${chips.length} chips exceeds MAX_BATCH ${MAX_BATCH}`);
+  if (!Number.isSafeInteger(authoringMs) || authoringMs <= 0) throw new Error('bankBatchBody: bad authoring ms');
+
+  const parts = chips.map((c) => {
+    if (!Number.isInteger(c.bits) || c.bits < BANK_MIN_BITS || c.bits > MAX_BITS) {
+      throw new Error(`bankBatchBody: bits ${c.bits} outside [${BANK_MIN_BITS}, ${MAX_BITS}]`);
+    }
+    if (c.nonce < 0n || c.nonce > 0xffffffffffffffffn) throw new Error('bankBatchBody: nonce outside u64');
+    if (!Number.isSafeInteger(c.ms) || c.ms <= 0) throw new Error('bankBatchBody: bad chip ms');
+    return `${c.ms}:${c.bits}:${c.nonce.toString(16)}`;
+  });
+
+  return `bank ${parts.join(',')}#${authoringMs}~`;
 }
