@@ -211,7 +211,7 @@ export function Bowl({ state, nowMs, counting, countProgress }: BowlProps) {
           </p>
         ) : (
           <>
-            <p className="crumbs"><strong>{compact(crumbs)}</strong> crumbs</p>
+            <p className="crumbs bowl-crumbs"><strong>{compact(crumbs)}</strong> crumbs</p>
             <p className="sub">
               {atRim
                 ? 'at the rim — anything more goes on the floor'

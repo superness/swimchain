@@ -377,8 +377,11 @@ function crumbJitter(seed: number, i: number): { dx: number; dy: number } {
  * flow child of a centred column, so showing it shoved the fryer upward and
  * under the hood.
  *
- * It is a flourish, not a progress bar: the flight is ~750ms while a bank takes
- * seconds of action PoW, and the working pill carries the actual wait.
+ * It is a flourish, not a progress bar: the credit already landed in the queue
+ * the instant the chip was banked (see `onBank` in App.tsx), before this
+ * component ever mounts. The flight runs 1.25s (DOM lifetime 1.4s so the
+ * crumb burst isn't cut off mid-crunch) purely to *pace the displayed
+ * counter* — nothing here gates, delays, or reflects a real state change.
  */
 export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | null; goldenBits: number }) {
   if (!flight) return null;
@@ -399,7 +402,7 @@ export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | nul
         <Chip chip={{ ms: flight.ms, bits: flight.bits, attempts: 0 }} goldenBits={goldenBits} />
       </div>
 
-      <div className="dip-ripple" aria-hidden="true" style={{
+      <div key={`${flight.key}-ripple`} className="dip-ripple" aria-hidden="true" style={{
         '--fx1': `${flight.x1}px`, '--fy1': `${flight.y1}px`, '--fs': `${flight.size}px`,
       } as React.CSSProperties} />
 
@@ -407,7 +410,7 @@ export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | nul
         const j = crumbJitter(flight.ms, i);
         return (
           <div
-            key={i}
+            key={`${flight.key}-${i}`}
             className="dip-crumb"
             aria-hidden="true"
             style={{
@@ -420,6 +423,22 @@ export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | nul
           />
         );
       })}
+
+      {/* Pure presentation: a brief warm pulse on the crumb counter itself,
+       * timed to land alongside the crumb burst, so the crumbs read as
+       * arriving somewhere rather than just dissolving in transit. Keyed
+       * off flight.key for the same reason the ripple and crumbs are — a
+       * fresh mount per bank, so overlapping banks each get their own pulse
+       * instead of reusing (and failing to retrigger) a stuck node. It has
+       * no handler of any kind and touches no state; the credit already
+       * landed before this ever renders. Hidden under reduced-motion
+       * alongside .dip-ripple/.dip-crumb (styles.css). */}
+      <div
+        key={`${flight.key}-land`}
+        className="crumb-land"
+        aria-hidden="true"
+        style={{ '--lx': `${flight.cx1}px`, '--ly': `${flight.cy1}px` } as React.CSSProperties}
+      />
     </>
   );
 }

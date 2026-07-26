@@ -718,7 +718,26 @@ h1, h2, h3, p { margin: 0; }
   100% { transform: translate(var(--cx1), var(--cy1)) scale(.3); opacity: 0; }
 }
 
+/* A brief warm pulse on the crumb counter itself, timed to when the crumb
+   burst lands, so the crumbs read as arriving somewhere rather than just
+   dissolving on the way. Pure presentation — no state, no handlers. */
+.crumb-land {
+  position: fixed; z-index: 30; pointer-events: none;
+  left: 0; top: 0; width: 46px; height: 46px;
+  transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px));
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,214,140,.55), rgba(255,214,140,0) 70%);
+  opacity: 0;
+  animation: crumb-land .4s ease-out forwards;
+  animation-delay: .95s;
+}
+@keyframes crumb-land {
+  0%   { opacity: 0;  transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px)) scale(.4); }
+  40%  { opacity: .9; transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px)) scale(1.15); }
+  100% { opacity: 0;  transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px)) scale(1.5); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dip-flight { animation-duration: .3s; }
-  .dip-ripple, .dip-crumb { display: none; }
+  .dip-ripple, .dip-crumb, .crumb-land { display: none; }
 }
