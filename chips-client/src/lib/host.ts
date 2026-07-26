@@ -24,7 +24,7 @@ import {
   type PoWSolution, type ProgressCallback,
 } from '@swimchain/react';
 import { initWasm, decodeAddress } from '@swimchain/core';
-import { bankBody, buyBody } from './chipsBody';
+import { bankBody, buyBody, bankBatchBody } from './chipsBody';
 import type { ChipsReply } from './chipsEngine';
 
 /**
@@ -92,7 +92,12 @@ export interface ChipsHost {
 // themselves live in chipsBody.ts, dependency-free (no RPC/PoW/WASM), so
 // their round-trip test (chipsBody.test.ts) doesn't drag this whole module's
 // import chain along.
-export { bankBody, buyBody };
+//
+// `bankBatchBody` joins the re-export list here now that the emitter half of
+// batching (Task 5) needs it reachable from the seam: App.tsx builds every
+// bank body — the synthetic pending one AND the one actually submitted —
+// through this module, never by importing chipsBody.ts directly.
+export { bankBody, buyBody, bankBatchBody };
 
 /**
  * Mine an action PoW off the main thread. A difficulty ~8-10 Argon2id search

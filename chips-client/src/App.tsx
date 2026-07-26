@@ -14,81 +14,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Keypair } from '@swimchain/core';
 import { useRpc, useStoredIdentity, useStoredKeypair, createNewIdentity } from '@swimchain/react';
-import { createBrowserHost, bankBody, buyBody, type ChipsHost, type Identity } from './lib/host';
-import { foldChips, type ChipsHeader, type ChipsState } from './lib/chipsEngine';
+import { createBrowserHost, bankBatchBody, buyBody, type ChipsHost, type Identity } from './lib/host';
+import { foldChips, type ChipsHeader, type ChipsState, type ChipsReply, type ChipEntry } from './lib/chipsEngine';
 import { verifyReplies } from './lib/chipsVerify';
+import { proofKey } from './lib/proofKey';
+import { enqueue, ack, takeBatch, loadQueue, saveQueue, type QueuedMove } from './lib/chipsQueue';
 import { useFryers } from './lib/useFryers';
 import { projectedCrumbs } from './lib/sogProjection';
-import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
+import { DIP_TIERS } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { Bowl, Shelf, DipBed, DipChange } from './Bowl';
 import { Boards, useBoards } from './Boards';
 import { compact } from './lib/format';
 
 const NAME_KEY = 'chips.cookname.v1';
-const NAPKIN_KEY = 'chips.napkin.v1';
 const POLL_MS = 15_000;
 
-/** A chip pulled from the oil that has not yet reached the chain. The `nonce`
- *  here is the ONLY surviving copy of that proof — `bank()` is destructive and
- *  will never hand it back. Losing this object throws away CPU the player
- *  already spent, so it is held until the submit genuinely lands. */
-interface NapkinChip {
-  ms: number;
-  bits: number;
-  nonce: bigint;
-  failed: boolean;
-  why?: string;
-  /** Which table the proof is bound to. A chip's preimage includes the table
-   *  id, so a napkin chip is worthless on any other table and must never be
-   *  offered for retry against one. */
-  tableId: string;
-}
-
-/**
- * The napkin, persisted.
- *
- * It used to live in React state only, which meant a reload during a failed
- * submit destroyed the sole copy of a mined proof — the exact loss the napkin
- * exists to prevent, and the most likely moment to reload is precisely when a
- * submit is visibly stuck. It goes next to the verify cache, in localStorage.
- *
- * `nonce` is a bigint, which `JSON.stringify` throws on, so it is stored as
- * hex. A parse failure must never take the game down with it — a lost napkin
- * is a lost chip, an exception here would be a white page — so every path
- * degrades to an empty napkin.
- */
-function loadNapkin(): NapkinChip[] {
-  try {
-    const raw = localStorage.getItem(NAPKIN_KEY);
-    if (!raw) return [];
-    const rows = JSON.parse(raw) as unknown;
-    if (!Array.isArray(rows)) return [];
-    return rows.flatMap((r): NapkinChip[] => {
-      const o = r as Record<string, unknown>;
-      if (typeof o?.ms !== 'number' || typeof o?.bits !== 'number'
-        || typeof o?.nonce !== 'string' || typeof o?.tableId !== 'string') return [];
-      try {
-        // Restored chips are always shown as failed: the browser went away
-        // mid-submit and cannot know whether it landed. Retrying is safe and
-        // self-healing either way — an identical bank body dedupes to the same
-        // content_id, and a duplicate proof folds as `rejected-duplicate`.
-        return [{
-          ms: o.ms, bits: o.bits, nonce: BigInt('0x' + o.nonce), tableId: o.tableId,
-          failed: true, why: 'the shop closed before this one went in',
-        }];
-      } catch { return []; }
-    });
-  } catch { return []; }
-}
-
-function saveNapkin(chips: NapkinChip[]): void {
-  try {
-    localStorage.setItem(NAPKIN_KEY, JSON.stringify(
-      chips.map((c) => ({ ms: c.ms, bits: c.bits, nonce: c.nonce.toString(16), tableId: c.tableId }))
-    ));
-  } catch { /* private mode or quota — the in-memory napkin still works */ }
-}
+/** Kitchen still takes a napkin/onRetry pair (out of scope for this task to
+ *  change), but there is nothing left to put in it: every mined chip goes
+ *  straight into the persisted queue below, which is retried automatically in
+ *  the background — there is no more per-chip "stuck, click to retry" state
+ *  for a player to act on. Module-scope constants so the props are
+ *  referentially stable across renders. */
+const EMPTY_NAPKIN: { ms: number; bits: number; failed: boolean }[] = [];
+function noRetry(): void { /* the sender loop below retries on its own */ }
 
 const SEAT_LINES = [
   'getting you a seat at the table…',
@@ -100,17 +49,6 @@ const TABLE_LINES = [
   'chalking your name on a basket…',
   'claiming you a fryer…',
   'clearing you a stretch of counter…',
-];
-const BANK_LINES = [
-  'tipping it into the bowl…',
-  'the chip goes over the rail…',
-  'salt, then bowl…',
-  'shaking off the oil…',
-];
-const BUY_LINES = [
-  'reaching up to the shelf…',
-  'the jar comes down…',
-  'signing for it on the pad…',
 ];
 const pick = (pool: string[]) => pool[Math.floor(Math.random() * pool.length)];
 
@@ -173,6 +111,46 @@ function useFlavour(pool: string[], active: boolean): string {
   return line;
 }
 
+/**
+ * Queued moves as synthetic PENDING replies.
+ *
+ * `block_height: null` is what makes this correct rather than a hack: the
+ * fold already credits pending replies without advancing the decay clock, so
+ * a queued chip reads exactly as it will once it lands. Because the same fold
+ * produces both, there is no second accounting path to drift and nothing to
+ * reconcile when the batch confirms — the synthetic entry drops out and the
+ * real one arrives.
+ *
+ * Bits are known locally (we mined them), so the verification map is seeded
+ * directly; on confirmation the same proof is re-verified from the chain by
+ * the normal path.
+ */
+function withPending(
+  confirmed: ChipsReply[],
+  verified: Map<string, number>,
+  queue: QueuedMove[],
+  me: string,
+  table: string
+): { replies: ChipsReply[]; verified: Map<string, number> } {
+  if (queue.length === 0) return { replies: confirmed, verified };
+  const v = new Map(verified);
+  const extra: ChipsReply[] = [];
+  let seq = 0;
+
+  for (const m of queue) {
+    // Synthetic ids never collide with a chain content_id (`sha256:…`).
+    const cid = `pending:${m.id}`;
+    const at = Date.now();
+    if (m.kind === 'bank') {
+      v.set(proofKey(table, me, m.chip.ms, m.chip.nonce), m.chip.bits);
+      extra.push({ author_id: me, body: bankBatchBody([m.chip], at + seq++), block_height: null, content_id: cid, created_at: at });
+    } else {
+      extra.push({ author_id: me, body: buyBody(m.key, at + seq++), block_height: null, content_id: cid, created_at: at });
+    }
+  }
+  return { replies: [...confirmed, ...extra], verified: v };
+}
+
 export function App() {
   const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
   const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
@@ -187,8 +165,6 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [flight, setFlight] = useState<DipFlightState | null>(null);
   const [counting, setCounting] = useState<{ done: number; total: number } | null>(null);
-  const [busy, setBusy] = useState<null | { pool: string[]; label: string }>(null);
-  const [napkin, setNapkin] = useState<NapkinChip[]>(loadNapkin);
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [seated, setSeated] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -221,9 +197,25 @@ export function App() {
     });
   }, [keypair, publicKeyHex, setAuth]);
 
-  // Every napkin change is written straight through. A mined proof is CPU the
-  // player has already spent; it must survive the tab.
-  useEffect(() => { saveNapkin(napkin); }, [napkin]);
+  // The pending-move queue. `loadQueue()` is the lazy useState initializer, so
+  // it runs once, synchronously, before the first render — a chip mined and
+  // queued in a previous tab session is on screen (via `withPending` below)
+  // from the very first frame, not after some later effect catches up.
+  const [queue, setQueue] = useState<QueuedMove[]>(loadQueue);
+  const [queueTick, setQueueTick] = useState(0);
+  // Ids only need to be unique within the CURRENT queue — `ack` drops entries
+  // by id, so two live entries sharing one id would have one `ack()` call
+  // delete BOTH, and one of them is a mined proof (a bank's CPU spend) that
+  // never actually landed. Seeding at 1 every mount would do exactly that:
+  // the queue survives a reload (that's the whole point — see below), so a
+  // restored queue can already contain ids up to N, and this session's first
+  // `nextId.current++` would mint a fresh 1 that collides with a still-queued
+  // restored entry. Seed above the highest id already on the queue instead.
+  const nextId = useRef(queue.reduce((max, m) => Math.max(max, m.id), 0) + 1);
+
+  // Every queue change is written straight through: each queued bank is a
+  // mined proof, i.e. CPU the player has already spent and cannot get back.
+  useEffect(() => { saveQueue(queue); }, [queue]);
 
   // A wall clock for the sog projection. One second is plenty — the pile is
   // meant to look like it is going soft, not to tick.
@@ -293,15 +285,16 @@ export function App() {
   /* ── the fold ─────────────────────────────────────────────────────────── */
   const refresh = useCallback(async (): Promise<void> => {
     if (!host || !tableId || !me) return;
-    const replies = await host.loadTable(tableId);
+    const confirmed = await host.loadTable(tableId);
     const verified = await verifyReplies(
-      tableId, me.publicKeyHex, replies,
+      tableId, me.publicKeyHex, confirmed,
       (done, total) => setCounting(total > 0 && done < total ? { done, total } : null)
     );
+    const merged = withPending(confirmed, verified, queue, me.publicKeyHex, tableId);
     const header: ChipsHeader = { v: 1, kind: 'chips-table', name: cookName, owner: me.publicKeyHex };
-    setState(foldChips(header, tableId, replies, verified));
+    setState(foldChips(header, tableId, merged.replies, merged.verified));
     setCounting(null);
-  }, [host, tableId, me, cookName]);
+  }, [host, tableId, me, cookName, queue]);
 
   useEffect(() => {
     if (!host || !tableId || !me) return;
@@ -318,6 +311,54 @@ export function App() {
     return () => { cancelled = true; clearInterval(iv); };
   }, [host, tableId, me, refresh]);
 
+  /**
+   * One flight at a time, strict FIFO, take whatever is queued.
+   *
+   * Batch size self-clocks: an idle player's chip goes out alone; a busy
+   * kitchen accumulates during each ~5.4s action PoW and the next batch grows
+   * to match. No timing constants to pick or retune.
+   *
+   * A failing head BLOCKS the queue on purpose — it must not be overtaken.
+   */
+  const sending = useRef(false);
+  const backoff = useRef(0);
+
+  useEffect(() => {
+    if (sending.current || !host || !me || !tableId || queue.length === 0) return;
+    let cancelled = false;
+
+    (async () => {
+      sending.current = true;
+      const take = takeBatch(queue);
+      if (!take) { sending.current = false; return; }
+      try {
+        const at = Date.now();
+        const body = take.kind === 'bank'
+          ? bankBatchBody(take.moves.map((m) => (m as { chip: ChipEntry }).chip), at)
+          : buyBody((take.moves[0] as { key: string }).key, at);
+        await host.submitMove(me, tableId, body);
+        if (cancelled) return;
+        backoff.current = 0;
+        setQueue((q) => ack(q, take.moves));
+        await refresh();
+      } catch {
+        // Keep it queued and try again. Capped so a long offline spell does not
+        // decay into one attempt an hour.
+        backoff.current = Math.min(backoff.current === 0 ? 2000 : backoff.current * 2, 60_000);
+        setTimeout(() => { if (!cancelled) setQueueTick((t) => t + 1); }, backoff.current);
+      } finally {
+        sending.current = false;
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // `refresh` is intentionally not a dep: it is recreated whenever `queue`
+    // changes (queue is one of ITS deps), which is already in this list, so
+    // adding it would not change when this effect reruns — only churn the
+    // lint suppression needed to justify omitting `cookName`/`me` transitively.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue, queueTick, host, me, tableId]);
+
   /* ── the fryers ───────────────────────────────────────────────────────── */
   // DEV-only override so the worker lifecycle (teardown on a fryer-count
   // change, and on unmount) can actually be exercised in a browser without
@@ -330,9 +371,7 @@ export function App() {
   const { chips, bank } = useFryers(fryerCount, publicKeyHex ?? '', tableId ?? '');
 
   const chipsRef = useRef(chips);
-  const tableIdRef = useRef(tableId);
   chipsRef.current = chips;
-  tableIdRef.current = tableId;
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     (window as unknown as Record<string, unknown>).__chips = {
@@ -348,19 +387,12 @@ export function App() {
       /** Show a notice without needing a failing bank — the notice is a layout
        *  row, so this is how you check the scene shifts rather than gets covered. */
       setNotice: (msg: string | null) => setNotice(msg),
-      /** Put a chip on the napkin in either state, to check the heading wording
-       *  ("going in…" while in flight vs "on the napkin" once stranded). */
-      setNapkin: (rows: { ms: number; bits: number; failed: boolean }[]) =>
-        setNapkin(rows.map((r) => ({ ...r, nonce: 0n, tableId: tableIdRef.current ?? '' }))),
+      /** Inspect the pending-move queue without needing to bank for real. */
+      queue: () => queue,
     };
-  }, []);
+  }, [queue]);
 
   /* ── moves ────────────────────────────────────────────────────────────── */
-  const submitBank = useCallback(async (chip: { ms: number; bits: number; nonce: bigint }): Promise<void> => {
-    if (!host || !me || !tableId) throw new Error('not open yet');
-    await host.submitMove(me, tableId, bankBody(chip.bits, chip.nonce, chip.ms));
-  }, [host, me, tableId]);
-
   /**
    * Send the banked chip arcing into the bowl.
    *
@@ -386,66 +418,32 @@ export function App() {
     window.setTimeout(() => setFlight((f) => (f && f.key === chip.ms ? null : f)), 900);
   }
 
-  async function onBank(index: number): Promise<void> {
-    if (!host || !me || !tableId || busy) return;
+  function onBank(index: number): void {
+    if (!host || !me || !tableId) return;
     // DESTRUCTIVE. After this line the basket has already moved on and started
     // a new chip; `chip` is the only reference to this proof that exists
     // anywhere. Calling bank(index) again does NOT give it back.
-    const chip = bank(index);
+    const chip = bank(index);        // still destructive; still the only reference
     if (!chip) return;
-    launchDip(index, chip);
-
-    // Park it on the napkin BEFORE the network is involved, so no throw path —
-    // including a synchronous body assert — can drop it on the floor.
-    setNapkin((n) => [...n, { ms: chip.ms, bits: chip.bits, nonce: chip.nonce, failed: false, tableId }]);
-    setBusy({ pool: BANK_LINES, label: 'banking' });
-    try {
-      await submitBank(chip);
-      setNapkin((n) => n.filter((c) => c.ms !== chip.ms));
-      await refresh();
-    } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      setNapkin((n) => n.map((c) => (c.ms === chip.ms ? { ...c, failed: true, why } : c)));
-      setNotice('that one did not make it to the bowl — it is on the napkin, still good');
-    } finally {
-      setBusy(null);
-    }
+    launchDip(index, chip);          // the animation is the feedback now
+    // NOT an inline literal in the `enqueue` call: `enqueue`'s second parameter
+    // is typed `Omit<QueuedMove, 'id'>`, and `Omit` over a union type does not
+    // distribute — it collapses to `{ kind: 'bank' | 'buy' }` (the only keys
+    // common to both arms), losing `chip`/`key` from the checked shape
+    // entirely. An object literal passed straight into the call is checked for
+    // EXCESS properties against that collapsed type and `chip` fails as
+    // unknown; a same-shaped value bound to a variable first is checked only
+    // for assignability, which passes. Runtime behaviour is identical either
+    // way — this is a type-checking artifact of chipsQueue.ts's signature, not
+    // a bug in what gets queued (see task-5-report.md).
+    const move = { kind: 'bank' as const, chip: { ms: chip.ms, bits: chip.bits, nonce: chip.nonce } };
+    setQueue((q) => enqueue(q, move, nextId.current++));
   }
 
-  async function onRetry(ms: number): Promise<void> {
-    if (busy) return;
-    // A chip's preimage binds the table id, so a napkin chip restored from a
-    // different table would never verify — refuse rather than spend a PoW.
-    const chip = napkin.find((c) => c.ms === ms && c.tableId === tableId);
-    if (!chip) return;
-    setNapkin((n) => n.map((c) => (c.ms === ms ? { ...c, failed: false, why: undefined } : c)));
-    setBusy({ pool: BANK_LINES, label: 'banking' });
-    try {
-      // The SAME proof, never re-mined: a mined chip does not expire, and the
-      // fold never compares the body's authoring-ms against created_at.
-      await submitBank(chip);
-      setNapkin((n) => n.filter((c) => c.ms !== ms));
-      await refresh();
-    } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      setNapkin((n) => n.map((c) => (c.ms === ms ? { ...c, failed: true, why } : c)));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function onBuy(key: string): Promise<void> {
-    if (!host || !me || !tableId || busy) return;
-    setBusy({ pool: BUY_LINES, label: 'buying' });
-    try {
-      await host.submitMove(me, tableId, buyBody(key, Date.now()));
-      await refresh();
-      setNotice(`${UPGRADES[key]?.label ?? key} — down off the shelf`);
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'the shelf would not give it up');
-    } finally {
-      setBusy(null);
-    }
+  function onBuy(key: string): void {
+    if (!host || !me || !tableId) return;
+    const move = { kind: 'buy' as const, key };
+    setQueue((q) => enqueue(q, move, nextId.current++));
   }
 
   /* ── the dip ladder ceremony ──────────────────────────────────────────── */
@@ -472,7 +470,6 @@ export function App() {
   const { rows, hosting, hosted } = useBoards(host);
   const seatLine = useFlavour(SEAT_LINES, Boolean(me) && !seated);
   const tableLine = useFlavour(TABLE_LINES, seated && !tableId);
-  const busyLine = useFlavour(busy?.pool ?? BANK_LINES, Boolean(busy));
 
   /* ── screens ──────────────────────────────────────────────────────────── */
 
@@ -599,10 +596,10 @@ export function App() {
         <Kitchen
           chips={chips}
           goldenBits={goldenBits}
-          busy={Boolean(busy)}
-          onBank={(i) => void onBank(i)}
-          napkin={napkin.filter((n) => n.tableId === tableId && n.failed).map((n) => ({ ms: n.ms, bits: n.bits, failed: n.failed }))}
-          onRetry={(ms) => void onRetry(ms)}
+          busy={false}
+          onBank={onBank}
+          napkin={EMPTY_NAPKIN}
+          onRetry={noRetry}
         />
 
         <aside className="counter">
@@ -610,7 +607,7 @@ export function App() {
             <Bowl state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
           )}
           {state && (
-            <Shelf state={state} crumbsNow={crumbsNow} busy={Boolean(busy)} onBuy={(k) => void onBuy(k)} />
+            <Shelf state={state} crumbsNow={crumbsNow} busy={false} onBuy={onBuy} />
           )}
         </aside>
       </main>
@@ -634,12 +631,6 @@ export function App() {
           open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
       </div>
 
-      {busy && (
-        <div className="working" role="status">
-          <span className="working-oil" aria-hidden="true" />
-          <span>{busyLine}</span>
-        </div>
-      )}
       <DipFlight flight={flight} goldenBits={goldenBits} />
       {dipFanfare !== null && <DipChange dipIndex={dipFanfare} />}
     </div>
