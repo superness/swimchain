@@ -1,7 +1,7 @@
 {
   "name": "@swimchain/chips-client",
   "version": "0.1.0",
-  "description": "Chips & Dip — an idle game where a chip is a verifiable Argon2id proof and the bowl goes soggy if you hoard it.",
+  "description": "Dippin' Chips — an idle game where a chip is a verifiable Argon2id proof and the bowl goes soggy if you hoard it.",
   "private": true,
   "type": "module",
   "scripts": {
