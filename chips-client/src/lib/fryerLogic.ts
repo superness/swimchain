@@ -149,6 +149,117 @@ export function applyFryerMessage(
 }
 
 /**
+ * Put fryer `index` back on a FRESH chip at `newMs`, or `null` if this basket
+ * has no such fryer (it shrank, or was cleared).
+ *
+ * Used when a fryer's worker dies and has to be replaced (useFryers.ts's
+ * `onerror` path). The replacement MUST get a new ms and a fresh placeholder
+ * rather than resume the dead worker's ms: a restarted grind walks nonces from
+ * 0 again and its first message would be a `crisper` at ~0 bits, which
+ * `applyFryerMessage` writes in unconditionally — silently DOWNGRADING a basket
+ * that may already hold a good chip. A new ms means the dead chip's record is
+ * replaced outright and every message the dead worker may still have in flight
+ * is dropped by the ms guard.
+ *
+ * The cost is honest and unavoidable: whatever that fryer had ground is lost,
+ * because a chip's proof is bound to its ms (see chipsPow's preimage). In the
+ * failure this exists for — a worker whose module script never loaded — there
+ * is nothing to lose: it never produced an attempt.
+ */
+export function restartRecord(
+  records: readonly FryerRecord[],
+  index: number,
+  newMs: number
+): FryerRecord[] | null {
+  if (!records[index]) return null;
+  const out = records.slice();
+  out[index] = placeholderRecord(newMs);
+  return out;
+}
+
+/** One fryer to start: which basket slot, and the ms its chip is bound to. */
+export interface StartedFryer {
+  index: number;
+  ms: number;
+}
+
+/**
+ * Move a basket of `records` to `count` fryers with the LEAST possible churn:
+ * which slots to stop, which to start, and the records that result.
+ *
+ * This exists because rebuilding the whole basket on a count change is not a
+ * tidiness question — it CONFISCATES WORK. A fryer's chip is Argon2id seconds
+ * the player has already spent, and terminating its worker throws them away
+ * (`terminate()` being the only thing that can stop a running grind — see
+ * `grindLoop` below). Measured live 2026-07-26: a count change destroyed
+ * 12-bit / 4352-attempt chips in every basket that already existed, and buying
+ * a fryer upgrade did it three times over (the fold briefly forgets and
+ * re-remembers the upgrade around its confirmation). Buying a fryer is a
+ * REWARD; it must not quietly cost the player every other basket.
+ *
+ * So:
+ *   - growing keeps every existing record BY IDENTITY (same object: same ms,
+ *     bits, attempts and nonce) and appends placeholders for the new slots
+ *     only. The workers behind slots 0..n-1 are never told anything, so their
+ *     grinds continue uninterrupted.
+ *   - shrinking drops ONLY the removed tail and reports exactly those indices
+ *     as `stopped`. Surviving slots keep their records by identity.
+ *   - an unchanged count is a true no-op: nothing stopped, nothing started,
+ *     and — load-bearing — NO ms drawn from the allocator.
+ *
+ * Only the tail ever moves, never an interior slot: `applyFryerMessage` routes
+ * a worker's messages by INDEX, so shuffling a live record to a different index
+ * would hand it another worker's messages.
+ *
+ * What this does NOT cover is an identity or table change. Those bind into
+ * every chip's Argon2id preimage (chipsPow.ts's `chipPreimage`), so a chip
+ * ground for one table can never fold on another and the basket really must be
+ * rebuilt. useFryers.ts does that by clearing its records to `[]` before
+ * calling this — from `[]` every slot is new, which is exactly right, and is
+ * the case the `planResize([], n)` tests cover.
+ */
+export function planResize(
+  records: readonly FryerRecord[],
+  count: number,
+  allocate: () => number
+): { records: FryerRecord[]; started: StartedFryer[]; stopped: number[] } {
+  const target = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  const started: StartedFryer[] = [];
+  const stopped: number[] = [];
+
+  if (target === records.length) return { records: records.slice(), started, stopped };
+
+  if (target < records.length) {
+    for (let i = target; i < records.length; i++) stopped.push(i);
+    return { records: records.slice(0, target), started, stopped };
+  }
+
+  const out = records.slice();
+  for (let i = records.length; i < target; i++) {
+    const ms = allocate();
+    out.push(placeholderRecord(ms));
+    started.push({ index: i, ms });
+  }
+  return { records: out, started, stopped };
+}
+
+/**
+ * How long to wait before respawning a fryer whose worker died: 1s, then
+ * doubling to a 30s ceiling.
+ *
+ * A dead fryer must keep trying — the dominant cause is a transient failure to
+ * fetch the worker's module script (an offline moment, a dev-server hiccup, a
+ * chunk that 404s against a tab left open across a redeploy), and those heal on
+ * their own. But it must not hammer: a permanently broken build would otherwise
+ * spawn a worker per frame. The ceiling keeps a long outage at two attempts a
+ * minute, and the game resumes by itself the moment the fetch succeeds.
+ */
+export function nextRetryDelay(prev: number): number {
+  if (!Number.isFinite(prev) || prev <= 0) return 1000;
+  return Math.min(prev * 2, 30_000);
+}
+
+/**
  * Everything a grind needs from its host, injected so the loop itself can be
  * tested without a Worker, without Argon2id and without a DOM.
  */

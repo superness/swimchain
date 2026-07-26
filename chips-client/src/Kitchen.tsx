@@ -230,11 +230,10 @@ interface BasketProps {
   index: number;
   chip: FryerChip;
   goldenBits: number;
-  busy: boolean;
   onBank: () => void;
 }
 
-function Basket({ chip, goldenBits, busy, onBank, index }: BasketProps) {
+function Basket({ chip, goldenBits, onBank, index }: BasketProps) {
   const c = crispnessOf(chip, goldenBits);
   const bubbles = useMemo(() => {
     const rnd = seeded(chip.ms ^ 0x5bf03635);
@@ -251,7 +250,6 @@ function Basket({ chip, goldenBits, busy, onBank, index }: BasketProps) {
       type="button"
       className={`basket${c.bankable ? ' ready' : ''}${c.golden ? ' golden' : ''}`}
       onClick={onBank}
-      disabled={busy}
       data-bits={chip.bits}
       data-fryer={index}
       data-attempts={chip.attempts}
@@ -286,14 +284,10 @@ function Basket({ chip, goldenBits, busy, onBank, index }: BasketProps) {
 export interface KitchenProps {
   chips: FryerChip[];
   goldenBits: number;
-  busy: boolean;
   onBank: (index: number) => void;
-  /** Chips already pulled from the oil and waiting to reach the chain. */
-  napkin: { ms: number; bits: number; failed: boolean }[];
-  onRetry: (ms: number) => void;
 }
 
-export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: KitchenProps) {
+export function Kitchen({ chips, goldenBits, onBank }: KitchenProps) {
   // Nudge text when a player grabs at a chip that is still pale. Diegetic, and
   // it clears itself — this is a cook muttering, not an error dialog.
   const [nudge, setNudge] = useState<string | null>(null);
@@ -315,7 +309,6 @@ export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: Ki
             index={i}
             chip={chip}
             goldenBits={goldenBits}
-            busy={busy}
             onBank={() => {
               if (crispnessOf(chip, goldenBits).bankable) onBank(i);
               else setNudge('still pale — give it a minute');
@@ -325,23 +318,6 @@ export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: Ki
       </div>
 
       {nudge && <p className="mutter" role="status">{nudge}</p>}
-
-      {napkin.length > 0 && (
-        <div className="napkin" aria-label="chips waiting to go in the bowl">
-          {/* Failures only. A chip that is merely in flight is shown DIPPING
-              into the bowl instead — it is the same event, told in the world
-              rather than in a panel, and it costs the layout nothing. */}
-          <span className="napkin-label">on the napkin</span>
-          <ul>
-            {napkin.map((n) => (
-              <li key={n.ms} className="failed">
-                <Chip chip={{ ms: n.ms, bits: n.bits, attempts: 0 }} goldenBits={goldenBits} />
-                <button type="button" className="again" onClick={() => onRetry(n.ms)} disabled={busy}>try again</button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </section>
   );
 }
@@ -353,7 +329,20 @@ export interface DipFlightState {
   bits: number;
   x0: number; y0: number;
   x1: number; y1: number;
+  /** The crumb counter's centre — where the crumb burst travels to. */
+  cx1: number; cy1: number;
   size: number;
+}
+
+const CRUMBS = 7;
+
+// Deterministic scatter: keyed on the chip's ms so a re-render cannot reshuffle
+// crumbs mid-flight. Same reason the chip's own silhouette is seeded.
+function crumbJitter(seed: number, i: number): { dx: number; dy: number } {
+  const n = Math.sin(seed * 0.0001 + i * 12.9898) * 43758.5453;
+  const f = n - Math.floor(n);
+  const a = f * Math.PI * 2;
+  return { dx: Math.cos(a) * 26, dy: Math.sin(a) * 18 };
 }
 
 /**
@@ -364,25 +353,68 @@ export interface DipFlightState {
  * flow child of a centred column, so showing it shoved the fryer upward and
  * under the hood.
  *
- * It is a flourish, not a progress bar: the flight is ~750ms while a bank takes
- * seconds of action PoW, and the working pill carries the actual wait.
+ * It is a flourish, not a progress bar: the credit already landed in the queue
+ * the instant the chip was banked (see `onBank` in App.tsx), before this
+ * component ever mounts. The flight runs 1.25s (DOM lifetime 1.4s so the
+ * crumb burst isn't cut off mid-crunch) purely to *pace the displayed
+ * counter* — nothing here gates, delays, or reflects a real state change.
  */
 export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | null; goldenBits: number }) {
   if (!flight) return null;
   return (
-    <div
-      key={flight.key}
-      className="dip-flight"
-      aria-hidden="true"
-      style={{
-        '--fx0': `${flight.x0}px`, '--fy0': `${flight.y0}px`,
-        '--fx1': `${flight.x1}px`, '--fy1': `${flight.y1}px`,
-        '--fmx': `${(flight.x0 + flight.x1) / 2}px`,
-        '--fmy': `${Math.min(flight.y0, flight.y1) - 70}px`,
-        '--fs': `${flight.size}px`,
-      } as React.CSSProperties}
-    >
-      <Chip chip={{ ms: flight.ms, bits: flight.bits, attempts: 0 }} goldenBits={goldenBits} />
-    </div>
+    <>
+      <div
+        key={flight.key}
+        className="dip-flight"
+        aria-hidden="true"
+        style={{
+          '--fx0': `${flight.x0}px`, '--fy0': `${flight.y0}px`,
+          '--fx1': `${flight.x1}px`, '--fy1': `${flight.y1}px`,
+          '--fmx': `${(flight.x0 + flight.x1) / 2}px`,
+          '--fmy': `${Math.min(flight.y0, flight.y1) - 70}px`,
+          '--fs': `${flight.size}px`,
+        } as React.CSSProperties}
+      >
+        <Chip chip={{ ms: flight.ms, bits: flight.bits, attempts: 0 }} goldenBits={goldenBits} />
+      </div>
+
+      <div key={`${flight.key}-ripple`} className="dip-ripple" aria-hidden="true" style={{
+        '--fx1': `${flight.x1}px`, '--fy1': `${flight.y1}px`, '--fs': `${flight.size}px`,
+      } as React.CSSProperties} />
+
+      {Array.from({ length: CRUMBS }, (_, i) => {
+        const j = crumbJitter(flight.ms, i);
+        return (
+          <div
+            key={`${flight.key}-${i}`}
+            className="dip-crumb"
+            aria-hidden="true"
+            style={{
+              '--cx0': `${flight.x1 + flight.size / 2}px`,
+              '--cy0': `${flight.y1 - 46 + flight.size / 2}px`,
+              '--cx1': `${flight.cx1 + j.dx}px`,
+              '--cy1': `${flight.cy1 + j.dy}px`,
+              animationDelay: `${0.78 + i * 0.012}s`,
+            } as React.CSSProperties}
+          />
+        );
+      })}
+
+      {/* Pure presentation: a brief warm pulse on the crumb counter itself,
+       * timed to land alongside the crumb burst, so the crumbs read as
+       * arriving somewhere rather than just dissolving in transit. Keyed
+       * off flight.key for the same reason the ripple and crumbs are — a
+       * fresh mount per bank, so overlapping banks each get their own pulse
+       * instead of reusing (and failing to retrigger) a stuck node. It has
+       * no handler of any kind and touches no state; the credit already
+       * landed before this ever renders. Hidden under reduced-motion
+       * alongside .dip-ripple/.dip-crumb (styles.css). */}
+      <div
+        key={`${flight.key}-land`}
+        className="crumb-land"
+        aria-hidden="true"
+        style={{ '--lx': `${flight.cx1}px`, '--ly': `${flight.cy1}px` } as React.CSSProperties}
+      />
+    </>
   );
 }

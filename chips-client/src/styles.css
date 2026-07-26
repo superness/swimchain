@@ -367,31 +367,6 @@ h1, h2, h3, p { margin: 0; }
 
 .mutter { font-family: var(--chalk); color: #d8bf99; opacity: .9; font-size: 15px; }
 
-/* chips pulled from the oil that have not reached the chain yet */
-.napkin {
-  /* Out of the centred column entirely. As a flow child, this appearing shoved
-     the rack upward and clipped the fryer under the hood. Failures are rare and
-     short; the counter should not rearrange itself to report one. */
-  position: absolute; left: 50%; translate: -50% 0;
-  bottom: clamp(86px, 12vh, 140px);
-  background: linear-gradient(180deg, #f6efe0, #ded4c0);
-  color: #3a2f22; border-radius: 3px;
-  padding: 8px 14px 10px;
-  box-shadow: 0 10px 26px rgba(0,0,0,.5);
-  clip-path: polygon(0 4%, 3% 0, 97% 2%, 100% 6%, 99% 96%, 96% 100%, 4% 98%, 1% 94%);
-  max-width: min(460px, 90%);
-}
-.napkin-label {
-  display: block; font-family: var(--chalk); font-size: 12px; color: #7b6a53;
-  letter-spacing: .06em; margin-bottom: 4px;
-}
-.napkin ul { display: flex; gap: 12px; flex-wrap: wrap; }
-.napkin li { display: flex; flex-direction: column; align-items: center; width: 66px; }
-.napkin li .chip { width: 42px; height: 42px; }
-.napkin li.sending { opacity: .75; }
-.again { font-family: var(--chalk); font-size: 12px; color: #9a3418; text-decoration: underline; }
-.again.waiting { color: #7b6a53; text-decoration: none; }
-
 /* ── the counter: bowl + shelf ───────────────────────────────────────────── */
 
 .counter {
@@ -670,34 +645,82 @@ h1, h2, h3, p { margin: 0; }
 .dip-flight {
   position: fixed; z-index: 30; pointer-events: none;
   left: 0; top: 0; width: var(--fs); height: var(--fs);
-  animation: dip-flight .78s cubic-bezier(.34, .02, .52, 1) forwards;
   filter: drop-shadow(0 10px 18px rgba(0,0,0,.45));
 }
 .dip-flight .chip { width: 100%; height: 100%; }
 
+/* fryer -> dip -> up -> eaten -> crumbs. ~1.25s, and deliberately decoupled
+   from the ~5.4s action PoW: this is feedback, not a progress bar. */
+.dip-flight { animation: dip-flight 1.25s cubic-bezier(.34,.02,.52,1) forwards; }
+
 @keyframes dip-flight {
-  0% {
-    transform: translate(var(--fx0), var(--fy0)) scale(1) rotate(0deg);
-    opacity: 1;
-  }
-  48% {
-    /* up and over — a lifted chip, not a chip sliding across a table */
-    transform: translate(var(--fmx), var(--fmy)) scale(1.06) rotate(-14deg);
-    opacity: 1;
-  }
-  82% {
-    transform: translate(var(--fx1), var(--fy1)) scale(.82) rotate(10deg);
-    opacity: 1;
-  }
-  100% {
-    /* into the dip: sinks and goes under rather than fading in mid-air */
-    transform: translate(var(--fx1), calc(var(--fy1) + 26px)) scale(.5) rotate(16deg);
-    opacity: 0;
-  }
+  0%   { transform: translate(var(--fx0), var(--fy0)) scale(1) rotate(0deg); opacity: 1; }
+  22%  { transform: translate(var(--fmx), var(--fmy)) scale(1.06) rotate(-14deg); opacity: 1; }   /* lift */
+  42%  { transform: translate(var(--fx1), calc(var(--fy1) + 18px)) scale(.86) rotate(6deg); opacity: 1; }  /* in the dip */
+  61%  { transform: translate(var(--fx1), calc(var(--fy1) - 30px)) scale(1.12) rotate(-4deg); opacity: 1; } /* out, loaded */
+  76%  { transform: translate(var(--fx1), calc(var(--fy1) - 46px)) scale(1.3) rotate(2deg); opacity: 1; }   /* toward the eater */
+  80%  { transform: translate(var(--fx1), calc(var(--fy1) - 46px)) scale(1.34); opacity: 1; }               /* crunch */
+  100% { transform: translate(var(--fx1), calc(var(--fy1) - 40px)) scale(.2); opacity: 0; }
+}
+
+/* The dip surface reacting as the chip goes in. */
+.dip-ripple {
+  position: fixed; z-index: 29; pointer-events: none;
+  left: 0; top: 0; width: var(--fs); height: var(--fs);
+  transform: translate(var(--fx1), var(--fy1));
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(255,220,160,.5);
+  animation: dip-ripple 1.25s ease-out forwards;
+}
+@keyframes dip-ripple {
+  0%, 33% { box-shadow: 0 0 0 0 rgba(255,220,160,0); }
+  46%     { box-shadow: 0 0 0 14px rgba(255,220,160,.28); }
+  70%     { box-shadow: 0 0 0 30px rgba(255,220,160,0); }
+  100%    { box-shadow: 0 0 0 30px rgba(255,220,160,0); }
+}
+
+/* Crumbs, thrown from the crunch toward the counter. */
+.dip-crumb {
+  position: fixed; z-index: 31; pointer-events: none;
+  width: 5px; height: 5px; border-radius: 40% 60% 55% 45%;
+  background: hsl(34 70% 52%);
+  animation: dip-crumb .5s cubic-bezier(.2,.6,.4,1) forwards;
+  animation-delay: .78s;
+  opacity: 0;
+}
+@keyframes dip-crumb {
+  0%   { transform: translate(var(--cx0), var(--cy0)) scale(1); opacity: 1; }
+  100% { transform: translate(var(--cx1), var(--cy1)) scale(.3); opacity: 0; }
+}
+
+/* A brief warm pulse on the crumb counter itself, timed to when the crumb
+   burst lands, so the crumbs read as arriving somewhere rather than just
+   dissolving on the way. Pure presentation — no state, no handlers. */
+.crumb-land {
+  position: fixed; z-index: 30; pointer-events: none;
+  left: 0; top: 0; width: 46px; height: 46px;
+  transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px));
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,214,140,.55), rgba(255,214,140,0) 70%);
+  opacity: 0;
+  animation: crumb-land .4s ease-out forwards;
+  animation-delay: .95s;
+}
+@keyframes crumb-land {
+  0%   { opacity: 0;  transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px)) scale(.4); }
+  40%  { opacity: .9; transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px)) scale(1.15); }
+  100% { opacity: 0;  transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px)) scale(1.5); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dip-flight { animation-duration: .25s; }
+  .dip-flight { animation-duration: .3s; }
+  .dip-ripple, .dip-crumb, .crumb-land { display: none; }
+  /* Shortening the duration alone still plays the full arc — the lift, the
+     rotation, the scale-to-1.34 crunch — just faster, which is not what this
+     media query promises. A `@keyframes` rule of the same name declared later
+     in the cascade replaces the earlier one wholesale (this is not a
+     specificity/!important question — keyframe rules don't merge), so this
+     swaps in a straight two-stop move with no flourish whenever it's active. */
   @keyframes dip-flight {
     0%   { transform: translate(var(--fx0), var(--fy0)); opacity: 1; }
     100% { transform: translate(var(--fx1), var(--fy1)); opacity: 0; }

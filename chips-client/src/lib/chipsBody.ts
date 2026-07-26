@@ -6,10 +6,11 @@
  * whole RPC/PoW import chain onto their test path for no reason — which is
  * exactly what made an earlier version of their test unrunnable in a worktree
  * where the workspace's other packages hadn't been `npm install`ed yet.
- * There are three builders below; `host.ts` re-exports `bankBody` and
- * `buyBody` for callers that only import the seam. `bankBatchBody` is NOT
- * re-exported there yet — it is deliberately unreachable from the seam until
- * the emitter half of the batching plan lands.
+ * There are three builders below; `host.ts` re-exports all three —
+ * `bankBody`, `buyBody` and `bankBatchBody` — for callers that only import
+ * the seam. The emitter half of the batching plan (the queue, the sender
+ * loop) is what actually calls `bankBatchBody` now; this file's own grammar
+ * is unchanged and stays consensus-frozen.
  */
 import { BANK_MIN_BITS, MAX_BITS, MAX_BATCH } from './chipsConst';
 // `import type` only — erased at compile time, so the dependency-free property

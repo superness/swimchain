@@ -5,19 +5,29 @@
  * chipsConst.ts/chipsEngine.ts) — buying a fryer really does add a grinder.
  *
  * Lifecycle, all load-bearing:
- *   - workers are (re)created in an effect keyed on [count, authorIdHex,
- *     tableId] — any of those changing means every existing grind's
- *     preimage is stale, so the whole basket restarts. `chips` is reset to
- *     `count` fresh placeholders at the SAME time, so a `count` decrease
- *     can't leave a phantom fryer's stale chip in the returned array (its
- *     entry would otherwise just sit there, never overwritten, since no
- *     worker at that index exists anymore to correct it).
- *   - the cleanup returned from that effect stops and terminates every
- *     worker IT created — not whatever's currently in the ref — so a
- *     StrictMode double-invoke (mount -> cleanup -> mount) can't leak the
- *     first mount's workers no matter how fast the second mount follows.
- *     A leaked worker keeps burning a core at 8 MiB/hash forever, and two
- *     copies of `count` workers running at once would double that.
+ *   - the whole basket is built by an OWNING effect keyed on [authorIdHex,
+ *     tableId]. Both bind into every chip's Argon2id preimage, so either
+ *     changing really does make every existing grind worthless and the
+ *     basket restarts from scratch.
+ *   - `count` is NOT in that effect's deps, and that is the point. It used
+ *     to be, and buying a fryer therefore CONFISCATED every other basket's
+ *     chip: a dep change runs the cleanup, the cleanup terminates every
+ *     worker, and terminating is the only thing that CAN stop a grind, so
+ *     each partly-ground chip died with its worker (measured live: 12-bit /
+ *     4352-attempt chips destroyed, three times per purchase). A separate
+ *     resize effect now reconciles the delta — fryerLogic.ts's `planResize`
+ *     — so growing starts only the new slots and shrinking stops only the
+ *     removed tail. `chips` is rewritten from the plan's records at the same
+ *     time, so a decrease can't leave a phantom fryer's stale chip in the
+ *     returned array (its entry would otherwise just sit there, never
+ *     overwritten, since no worker at that index exists anymore).
+ *   - the cleanup returned from the OWNING effect stops and terminates every
+ *     worker in the array IT created — an array the resize effect and
+ *     `bank()` mutate IN PLACE and never replace, precisely so that one
+ *     cleanup still sees every live worker. A StrictMode double-invoke
+ *     (mount -> cleanup -> mount) therefore can't leak the first mount's
+ *     workers no matter how fast the second mount follows. A leaked worker
+ *     keeps burning a core at 8 MiB/hash forever.
  *   - `bank(index)` TERMINATES that fryer's worker and starts a fresh one.
  *     It used to reuse the worker and post it a new `start`, on the theory
  *     that thread spin-up on every bank click adds up. That never worked:
@@ -42,6 +52,19 @@
  *     terminated can still be delivered afterwards, and the ms check is
  *     what drops it.
  *
+ *   - a worker that NEVER STARTS is respawned, with a backoff. This is not
+ *     defensive tidiness: `new Worker(new URL(...))` fetches a module script,
+ *     and a fetch that fails (offline, a dev-server hiccup, a hashed chunk
+ *     that 404s for a tab left open across a redeploy) yields a Worker object
+ *     that swallows `postMessage` and posts nothing back, for ever. Before
+ *     this hook handled `onerror` that was completely invisible — the basket
+ *     read `bits: -1, attempts: 0` until the player reloaded the page, i.e.
+ *     the game's entire production loop was dead behind a screen that looked
+ *     fine. It bites hardest right after buying a fryer upgrade, because a
+ *     `count` change is when EVERY worker is torn down and replaced at once,
+ *     so one bad moment takes every basket rather than one. See
+ *     `startWorker`'s doc for the reproduction.
+ *
  * Every ms handed to a worker — a fryer's first chip AND every chip it
  * starts after a bank — comes from ONE allocator per hook instance
  * (fryerLogic.ts's createMsAllocator), held in a ref so it survives effect
@@ -61,23 +84,53 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CrunchReq, CrunchRes } from './crunch.worker';
 import {
-  createMsAllocator, isBankable, applyFryerMessage, takeChip, placeholderRecord, toFryerChip,
+  createMsAllocator, isBankable, applyFryerMessage, takeChip, toFryerChip,
+  restartRecord, nextRetryDelay, planResize,
 } from './fryerLogic';
 import type { FryerChip, FryerRecord } from './fryerLogic';
 
 export type { FryerChip };
 
+/**
+ * `onFail` is not optional plumbing — it is the difference between a fryer that
+ * stops and a game that stops. A Worker whose module script never loads (an
+ * offline moment, a dev-server hiccup, a hashed chunk that 404s for a tab left
+ * open across a redeploy) fires ONE `error` event and then does nothing, for
+ * ever: it accepts `postMessage` silently and posts nothing back. With no
+ * handler that is completely invisible — the basket sits at `bits: -1,
+ * attempts: 0` until the player reloads the page, i.e. the whole game loop is
+ * dead with no error, no notice and nothing on screen that looks broken.
+ *
+ * Reproduced 2026-07-26 (chips-client, live tab): with the module server
+ * stopped, a fryer-count change spawned three workers, every basket went to
+ * `-1/0`, and they stayed there — including after the server came back — until
+ * a reload. That matches the live report of both fryers frozen at `-1/0` for
+ * 90+ seconds immediately after buying an upgrade, which is exactly the moment
+ * this hook tears every worker down and builds new ones.
+ */
 function startWorker(
   authorIdHex: string,
   tableId: string,
   ms: number,
-  onMessage: (msg: CrunchRes) => void
+  onMessage: (msg: CrunchRes) => void,
+  onFail: (w: Worker) => void
 ): Worker {
   const w = new Worker(new URL('./crunch.worker.ts', import.meta.url), { type: 'module' });
   w.onmessage = (e: MessageEvent<CrunchRes>) => onMessage(e.data);
+  w.onerror = (e: ErrorEvent) => {
+    // A load failure reports an empty message on most engines; log whatever
+    // there is, because a silent fryer is the thing being fixed here.
+    console.error('[chips] a fryer never started', e.message || '(no message — the worker script failed to load)');
+    onFail(w);
+  };
   const start: CrunchReq = { type: 'start', authorIdHex, tableId, ms };
   w.postMessage(start);
   return w;
+}
+
+function clearTimers(timers: Set<number>): void {
+  for (const t of timers) window.clearTimeout(t);
+  timers.clear();
 }
 
 function stopWorker(w: Worker): void {
@@ -100,38 +153,167 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
   const applyMessage = useCallback((index: number, msg: CrunchRes): void => {
     const updated = applyFryerMessage(latest.current, index, msg);
     if (!updated) return; // stale ms, exhausted, or an index this basket no longer tracks
+    // This fryer is demonstrably alive, so its respawn backoff starts over.
+    backoff.current[index] = 0;
     latest.current = updated;
     setChips(updated.map(toFryerChip));
   }, []);
 
-  useEffect(() => {
-    if (!authorIdHex || !tableId || count <= 0) {
-      workers.current = [];
-      latest.current = [];
-      setChips([]);
-      return;
-    }
-    const allocate = allocatorRef.current!;
+  /**
+   * Respawn a fryer whose worker died. See `startWorker`'s doc for what dying
+   * looks like (one `error` event, then silence for ever).
+   *
+   * Three things keep this from resurrecting a fryer that should stay dead:
+   *
+   *   - `epoch`, bumped by the owning effect on every run AND by its cleanup.
+   *     A pending retry from a previous basket (or from an unmounted hook)
+   *     no-ops. Cleanup ALSO clears the timers outright — the epoch check alone
+   *     would not stop a timer that fires between unmount and page teardown
+   *     from allocating a Worker nobody holds a handle to.
+   *   - `workers.current[index] === w`: the worker that failed must still be
+   *     the one this basket is using. A bank, or a rebuild, already replaced it
+   *     otherwise, and that replacement is alive.
+   *   - a per-fryer backoff (fryerLogic.ts's `nextRetryDelay`), so a build
+   *     that is genuinely broken retries twice a minute rather than per frame.
+   *
+   * Written as a ref rather than a `useCallback` because `startWorker` calls in
+   * BOTH the effect and `bank()` install it as a worker's `onerror`, and those
+   * callbacks outlive the render that created them: reading through a ref means
+   * a retry always uses the CURRENT identity/table, never the pair that was in
+   * scope when the dead worker was born.
+   */
+  const epoch = useRef(0);
+  const timers = useRef<Set<number>>(new Set());
+  const backoff = useRef<number[]>([]);
+  const restartRef = useRef<(index: number, w: Worker) => void>(() => { /* set below */ });
+  restartRef.current = (index: number, w: Worker): void => {
+    const myEpoch = epoch.current;
+    if (workers.current[index] !== w) return; // already replaced — nothing to do
+    w.terminate();
+    const wait = nextRetryDelay(backoff.current[index] ?? 0);
+    backoff.current[index] = wait;
+    const t = window.setTimeout(() => {
+      timers.current.delete(t);
+      if (epoch.current !== myEpoch) return;   // a rebuild (or unmount) happened
+      if (workers.current[index] !== w) return; // superseded by a bank
+      const ms = allocatorRef.current!();
+      const records = restartRecord(latest.current, index, ms);
+      if (!records) return;                     // this basket no longer has that fryer
+      latest.current = records;
+      setChips(records.map(toFryerChip));
+      workers.current[index] = startWorker(
+        authorIdHex, tableId, ms,
+        (msg) => applyMessage(index, msg),
+        (bad) => restartRef.current(index, bad)
+      );
+    }, wait);
+    timers.current.add(t);
+  };
 
-    const initial: FryerRecord[] = [];
-    const made: Worker[] = [];
-    for (let i = 0; i < count; i++) {
-      const ms = allocate();
-      initial.push(placeholderRecord(ms));
-      made.push(startWorker(authorIdHex, tableId, ms, (msg) => applyMessage(i, msg)));
+  /**
+   * Bring the basket to `want` fryers, touching as little as possible
+   * (fryerLogic.ts's `planResize` decides what "as little as possible" is).
+   *
+   * MUTATES `workers.current` IN PLACE — `length =` to shrink, index assignment
+   * to grow — and never replaces the array object. That is not a style choice:
+   * the owning effect's cleanup closes over the array it created, and swapping
+   * in a different one here would leave that cleanup terminating a stale list
+   * while the live workers ran on unowned, i.e. a leaked core per fryer.
+   *
+   * A ref rather than a `useCallback` for the same reason `restartRef` is: it
+   * is called from an effect whose deps deliberately exclude the things it
+   * reads, so it must always be the CURRENT closure over identity/table.
+   */
+  const syncRef = useRef<(want: number) => void>(() => { /* set below */ });
+  syncRef.current = (want: number): void => {
+    // No identity or no table means no valid preimage, so no fryers at all.
+    const target = !authorIdHex || !tableId ? 0 : want;
+    const plan = planResize(latest.current, target, allocatorRef.current!);
+    if (plan.started.length === 0 && plan.stopped.length === 0) return;
+
+    for (const i of plan.stopped) {
+      const w = workers.current[i];
+      if (w) stopWorker(w);
     }
-    latest.current = initial;
-    workers.current = made;
-    setChips(initial.map(toFryerChip));
+    if (plan.stopped.length > 0) {
+      workers.current.length = plan.records.length;
+      backoff.current.length = plan.records.length;
+    }
+    latest.current = plan.records;
+    for (const { index, ms } of plan.started) {
+      backoff.current[index] = 0;
+      workers.current[index] = startWorker(
+        authorIdHex, tableId, ms,
+        (msg) => applyMessage(index, msg),
+        (bad) => restartRef.current(index, bad)
+      );
+    }
+    setChips(plan.records.map(toFryerChip));
+  };
+
+  /**
+   * The OWNING effect: one basket per identity+table, and the only thing that
+   * terminates workers on teardown.
+   *
+   * `count` is deliberately NOT a dependency. It used to be, and that is what
+   * made buying a fryer confiscate every other basket's chip: a dep change runs
+   * the cleanup, the cleanup terminates every worker, and `terminate()` is the
+   * only thing that CAN stop a grind, so every partly-ground chip died with it.
+   * Resizing is now the separate effect below, which reconciles the delta
+   * instead. The `count` read here is still the current one — an effect closes
+   * over the render it was scheduled for — it simply does not re-run for it.
+   *
+   * An identity or table change DOES rebuild everything, and must: both bind
+   * into every chip's Argon2id preimage, so a chip ground for the old pair is
+   * worthless for the new one. `latest.current = []` is what makes the sync
+   * below treat every slot as new.
+   */
+  useEffect(() => {
+    // A new basket is a new generation: any respawn still pending from the last
+    // one must not fire into it.
+    epoch.current++;
+    clearTimers(timers.current);
+    backoff.current = [];
+    // A fresh array, owned by THIS run's cleanup. The previous run's workers
+    // were already terminated by the previous run's cleanup, which React ran
+    // before this body.
+    const owned: Worker[] = [];
+    workers.current = owned;
+    latest.current = [];
+    setChips([]);
+    syncRef.current(count);
 
     return () => {
-      // `made` IS `workers.current` (same array object), so a worker `bank()`
-      // swapped in mid-life is the one terminated here — while still being the
-      // array THIS effect run created, which is what keeps a StrictMode
-      // mount -> cleanup -> mount from leaking the first mount's workers.
-      for (const w of made) stopWorker(w);
+      // Bump again, and drop the timers: a respawn scheduled by THIS run must
+      // not outlive it. Without the clear, a hook unmounted between a worker's
+      // `error` and its retry would spawn a Worker with nothing left holding a
+      // handle to terminate it — a leaked core at 8 MiB a hash, the exact thing
+      // the rest of this cleanup exists to prevent.
+      epoch.current++;
+      clearTimers(timers.current);
+      // `owned` IS `workers.current` (same array object, mutated in place by
+      // `syncRef`/`bank`), so a worker swapped or appended mid-life is the one
+      // terminated here — while still being the array THIS effect run created,
+      // which is what keeps a StrictMode mount -> cleanup -> mount from leaking
+      // the first mount's workers.
+      for (const w of owned) stopWorker(w);
     };
-  }, [count, authorIdHex, tableId, applyMessage]);
+    // `count` is read, not tracked — see the doc above. Declared BEFORE the
+    // resize effect so that in a commit where identity/table AND count both
+    // change, this rebuild runs first and the resize below finds nothing to do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authorIdHex, tableId, applyMessage]);
+
+  /**
+   * The RESIZE effect: buying (or somehow losing) a fryer adds or removes
+   * grinders without disturbing the ones already frying.
+   *
+   * It owns no workers and has no cleanup — it only ever mutates the array the
+   * effect above created, so unmount teardown stays in exactly one place.
+   */
+  useEffect(() => {
+    syncRef.current(count);
+  }, [count]);
 
   /**
    * Bank (take) the chip in fryer `index`. Returns `null` if there isn't
@@ -174,7 +356,12 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
     // goes into `workers.current` — the same array the owning effect's cleanup
     // closes over — so it is still terminated on unmount.
     stopWorker(worker);
-    workers.current[index] = startWorker(authorIdHex, tableId, newMs, (msg) => applyMessage(index, msg));
+    backoff.current[index] = 0;
+    workers.current[index] = startWorker(
+      authorIdHex, tableId, newMs,
+      (msg) => applyMessage(index, msg),
+      (bad) => restartRef.current(index, bad)
+    );
 
     return taken;
   }
