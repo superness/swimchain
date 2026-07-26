@@ -353,7 +353,20 @@ export interface DipFlightState {
   bits: number;
   x0: number; y0: number;
   x1: number; y1: number;
+  /** The crumb counter's centre — where the crumb burst travels to. */
+  cx1: number; cy1: number;
   size: number;
+}
+
+const CRUMBS = 7;
+
+// Deterministic scatter: keyed on the chip's ms so a re-render cannot reshuffle
+// crumbs mid-flight. Same reason the chip's own silhouette is seeded.
+function crumbJitter(seed: number, i: number): { dx: number; dy: number } {
+  const n = Math.sin(seed * 0.0001 + i * 12.9898) * 43758.5453;
+  const f = n - Math.floor(n);
+  const a = f * Math.PI * 2;
+  return { dx: Math.cos(a) * 26, dy: Math.sin(a) * 18 };
 }
 
 /**
@@ -370,19 +383,43 @@ export interface DipFlightState {
 export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | null; goldenBits: number }) {
   if (!flight) return null;
   return (
-    <div
-      key={flight.key}
-      className="dip-flight"
-      aria-hidden="true"
-      style={{
-        '--fx0': `${flight.x0}px`, '--fy0': `${flight.y0}px`,
-        '--fx1': `${flight.x1}px`, '--fy1': `${flight.y1}px`,
-        '--fmx': `${(flight.x0 + flight.x1) / 2}px`,
-        '--fmy': `${Math.min(flight.y0, flight.y1) - 70}px`,
-        '--fs': `${flight.size}px`,
-      } as React.CSSProperties}
-    >
-      <Chip chip={{ ms: flight.ms, bits: flight.bits, attempts: 0 }} goldenBits={goldenBits} />
-    </div>
+    <>
+      <div
+        key={flight.key}
+        className="dip-flight"
+        aria-hidden="true"
+        style={{
+          '--fx0': `${flight.x0}px`, '--fy0': `${flight.y0}px`,
+          '--fx1': `${flight.x1}px`, '--fy1': `${flight.y1}px`,
+          '--fmx': `${(flight.x0 + flight.x1) / 2}px`,
+          '--fmy': `${Math.min(flight.y0, flight.y1) - 70}px`,
+          '--fs': `${flight.size}px`,
+        } as React.CSSProperties}
+      >
+        <Chip chip={{ ms: flight.ms, bits: flight.bits, attempts: 0 }} goldenBits={goldenBits} />
+      </div>
+
+      <div className="dip-ripple" aria-hidden="true" style={{
+        '--fx1': `${flight.x1}px`, '--fy1': `${flight.y1}px`, '--fs': `${flight.size}px`,
+      } as React.CSSProperties} />
+
+      {Array.from({ length: CRUMBS }, (_, i) => {
+        const j = crumbJitter(flight.ms, i);
+        return (
+          <div
+            key={i}
+            className="dip-crumb"
+            aria-hidden="true"
+            style={{
+              '--cx0': `${flight.x1 + flight.size / 2}px`,
+              '--cy0': `${flight.y1 - 46 + flight.size / 2}px`,
+              '--cx1': `${flight.cx1 + j.dx}px`,
+              '--cy1': `${flight.cy1 + j.dy}px`,
+              animationDelay: `${0.78 + i * 0.012}s`,
+            } as React.CSSProperties}
+          />
+        );
+      })}
+    </>
   );
 }

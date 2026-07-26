@@ -455,14 +455,25 @@ export function App() {
     const a = basket.getBoundingClientRect();
     const b = bowl.getBoundingClientRect();
     const size = Math.max(30, Math.min(a.width || 56, 76));
+    // The crumb burst's destination: the crumb counter itself if the DOM has
+    // one, else the bowl it sits over — either way, somewhere on the counter,
+    // not into empty space.
+    const counter = document.querySelector('.bowl-crumbs') ?? bowl;
+    const cRect = counter.getBoundingClientRect();
     setFlight({
       key: chip.ms, ms: chip.ms, bits: chip.bits, size,
       x0: a.left + a.width / 2 - size / 2,
       y0: a.top + a.height / 2 - size / 2,
       x1: b.left + b.width / 2 - size / 2,
       y1: b.top + b.height * 0.52 - size / 2,
+      cx1: cRect.left + cRect.width / 2,
+      cy1: cRect.top + cRect.height / 2,
     });
-    window.setTimeout(() => setFlight((f) => (f && f.key === chip.ms ? null : f)), 900);
+    // 1400ms, not the ~1.25s the CSS animation runs: the crumb burst's last
+    // piece fires at animation-delay .78s + 6*.012s and takes .5s itself, so
+    // the flight must outlive ~1.35s of animation or the last few crumbs are
+    // yanked from the DOM mid-flight.
+    window.setTimeout(() => setFlight((f) => (f && f.key === chip.ms ? null : f)), 1400);
   }
 
   function onBank(index: number): void {
