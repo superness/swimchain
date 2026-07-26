@@ -27,7 +27,7 @@ import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
-import { Tunnel, Shelf, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
+import { TunnelBed, TunnelRead, DigFront, Shelf, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
 import { compact } from './lib/format';
 
@@ -865,7 +865,7 @@ export function App() {
 
   return (
     <div className="shop" data-dip={tier.key}>
-      <DipBed dipIndex={dipIndex} />
+      <TunnelBed state={state} />
 
       <header className="hood">
         <div className="hood-plate">
@@ -899,13 +899,17 @@ export function App() {
 
         <aside className="counter">
           {state && (
-            <Tunnel state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
+            <TunnelRead state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
           )}
           {state && (
             <Shelf state={state} crumbsNow={crumbsNow} committed={pendingCommitted} onBuy={onBuy} />
           )}
         </aside>
       </main>
+
+      {/* The pile on the dig floor — fixed at the bed's own 76vh floor line,
+          outside the stage's flow entirely (the flight measures it). */}
+      {state && <DigFront state={state} nowMs={nowMs} counting={stillCounting} />}
 
       {/*
         The shop-chatter corner. Both of these are asides, so they share one

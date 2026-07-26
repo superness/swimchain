@@ -418,22 +418,28 @@ h1, h2, h3, p { margin: 0; }
 
 .counter {
   min-width: 0; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: clamp(8px, 1.6vh, 20px);
+  align-items: center; justify-content: flex-start;
+  gap: clamp(8px, 1.6vh, 20px);
+  /* Top-anchored, not centred: the dig-floor zone at the bottom of this
+     column belongs to the pile (`.tunnel-front`, fixed at `--floor`), and a
+     centred column drifts down into it as the shelf grows. */
+  padding-top: clamp(16px, 5vh, 56px);
 }
 
-.tunnel-wrap { width: 100%; max-width: 340px; text-align: center; }
+/* THE ROOM IS INSIDE THE TUNNEL. `.t-bed` is the full-bleed strata face
+   behind everything; `.t-walls` are the cut walls framing the viewport in
+   front of everything (pointer-events: none). `--bh` is one layer's drawn
+   height — most of a screen, because you are IN the layer, not looking at a
+   diagram of it. `--floor` is where the dig floor sits: the boundary between
+   the hollow above (dug, darkened) and the solid dip below, and the line the
+   pile rests on. The scroll position is an inline `top` on `.t-stack` (see
+   Tunnel.tsx for why it is not a CSS var) — digging reads as the WORLD
+   moving, which is what makes an endless tunnel feel endless. */
+.shop { --bh: 92vh; --floor: 76vh; }
 
-/* The cut-away. `--bh` is one layer's drawn height; the scroll position is an
-   inline `top` on `.t-stack` (see Tunnel.tsx for why it is not a CSS var).
-   The dig front is pinned at 42% of the window and the strata slide up behind
-   it — digging reads as the WORLD moving, which is what makes an endless
-   tunnel feel endless. */
-.tunnel {
-  --bh: clamp(96px, 16vh, 148px);
-  position: relative; height: clamp(240px, 46vh, 520px);
-  border-radius: 14px; overflow: hidden;
-  box-shadow: 0 26px 40px rgba(0,0,0,.6);
-  background: #17100a;
+.t-bed {
+  position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+  background: #0d0906;
 }
 
 /* the open air above the salsa — visible only near the surface */
@@ -446,7 +452,7 @@ h1, h2, h3, p { margin: 0; }
 
 /* a zero-height anchor the bands hang off; its inline `top` IS the scroll */
 .t-stack {
-  position: absolute; left: 0; right: 0; top: 42%; height: 0;
+  position: absolute; left: 0; right: 0; top: var(--floor); height: 0;
   /* the dig: the strata glide, they do not teleport */
   transition: top .9s cubic-bezier(.25,.7,.25,1);
 }
@@ -458,13 +464,13 @@ h1, h2, h3, p { margin: 0; }
 }
 /* the seam where one layer was poured over the next */
 .t-band::before {
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; z-index: 2;
-  background: rgba(0,0,0,.38);
-  box-shadow: 0 1px 0 rgba(255,244,220,.1);
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 6px; z-index: 2;
+  background: rgba(0,0,0,.42);
+  box-shadow: 0 2px 0 rgba(255,244,220,.08), 0 -8px 18px rgba(0,0,0,.35);
 }
 .t-fill {
   position: absolute; inset: 0;
-  background: linear-gradient(180deg, var(--d3, #e2593a) 0%, var(--d2, #a92c19) 46%, var(--d1, #59120b) 100%);
+  background: radial-gradient(130% 90% at 50% 42%, var(--d3, #e2593a) 0%, var(--d2, #a92c19) 54%, var(--d1, #59120b) 100%);
 }
 .t-chunks { position: absolute; inset: 0; }
 .t-chunks span {
@@ -472,70 +478,90 @@ h1, h2, h3, p { margin: 0; }
   border-radius: 42% 58% 61% 39% / 55% 41% 59% 45%;
   background: color-mix(in srgb, var(--chunk, #ff8b5e) 80%, transparent);
   opacity: var(--chunk-o, .3);
+  filter: blur(.3vmin);
   mix-blend-mode: soft-light;
   animation: drift 40s ease-in-out infinite alternate;
 }
+/* the layer names itself just under its seam — big, faint, chalked on the
+   face. The NEXT layer's name is what you see coming up under the floor. */
 .t-name {
-  position: absolute; left: 10px; bottom: 7px; z-index: 3;
-  font-family: var(--chalk); font-size: clamp(10px, 1vw, 13px);
-  color: rgba(255,248,232,.78); text-shadow: 0 1px 3px rgba(0,0,0,.65);
+  position: absolute; left: 7vw; top: clamp(18px, 4vh, 46px); z-index: 3;
+  font-family: var(--chalk); font-size: clamp(20px, 3.2vw, 44px);
+  color: rgba(255,248,232,.34); text-shadow: 0 2px 8px rgba(0,0,0,.5);
 }
 /* past the ladder the chalk trails off — still dip, just no promises */
-.t-band.beyond .t-name { opacity: .55; font-style: italic; }
+.t-band.beyond .t-name { opacity: .6; font-style: italic; }
 
-/* The dug part of a band: the shaft column, and the chips wedged in its
-   walls. Height is set inline (1 for passed layers, the front's frac for the
-   current one), so the hole and the strata always agree on where the dig is. */
-.t-dug { position: absolute; top: 0; left: 0; right: 0; overflow: hidden; z-index: 1; }
-.t-dug::before {
-  content: ''; position: absolute; top: -4px; bottom: 0; left: 26%; right: 26%;
-  background: linear-gradient(180deg, rgba(8,5,3,.82), rgba(14,9,5,.68));
-  box-shadow:
-    inset 0 0 18px rgba(0,0,0,.6),
-    inset 6px 0 8px -4px rgba(0,0,0,.7),
-    inset -6px 0 8px -4px rgba(0,0,0,.7);
+/* The hollowed part of a band — everything the dig has already eaten. Height
+   is set inline (1 for passed layers, the front's frac for the current one),
+   so the hollow and the strata always agree on where the floor is. Its bottom
+   edge IS the dig floor; the inset shadow there grounds it. */
+.t-dug {
+  position: absolute; top: 0; left: 0; right: 0; overflow: hidden; z-index: 1;
+  background: linear-gradient(180deg, rgba(5,3,2,.8) 0%, rgba(8,5,3,.62) 70%, rgba(10,6,4,.72) 100%);
+  box-shadow: inset 0 -22px 34px -14px rgba(0,0,0,.85);
 }
 .t-chip {
   position: absolute; display: block;
   clip-path: polygon(50% 0, 100% 82%, 0 82%);
   background: hsl(38 68% calc(44% + var(--shade, .5) * 20%));
   box-shadow: inset 0 -2px 2px rgba(0,0,0,.3);
-  opacity: .92;
+  opacity: .55;
 }
 
-/* the dig front: pinned where the strata scroll puts the current depth */
-.tunnel-front {
-  position: absolute; left: 50%; top: 42%; translate: -50% -100%;
-  width: 54%; pointer-events: none; z-index: 2;
+/* film grain over the whole face, so nothing reads as flat vector art */
+.t-grain {
+  position: absolute; inset: 0; opacity: .16; mix-blend-mode: overlay;
+  background-image:
+    radial-gradient(rgba(255,255,255,.7) .5px, transparent .5px),
+    radial-gradient(rgba(0,0,0,.6) .5px, transparent .5px);
+  background-size: 3px 3px, 4px 4px;
+  background-position: 0 0, 2px 1px;
 }
-.t-pile { width: 100%; height: auto; display: block; }
+
+/* the foreground: the cut walls of the shaft, framing the whole viewport */
+.t-walls { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
+.t-walls::before {  /* the dark of the tunnel mouth, far above */
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 11vh;
+  background: linear-gradient(180deg, rgba(0,0,0,.55), transparent);
+}
+.t-wall { position: absolute; top: 0; bottom: 0; width: clamp(26px, 4.5vw, 64px); overflow: hidden; }
+.t-wall-l { left: 0; background: linear-gradient(90deg, rgba(6,4,2,.95) 0%, rgba(8,5,3,.5) 55%, transparent 100%); }
+.t-wall-r { right: 0; background: linear-gradient(270deg, rgba(6,4,2,.95) 0%, rgba(8,5,3,.5) 55%, transparent 100%); }
+.t-wall .t-chip { opacity: .4; filter: brightness(.55); }
+
+/* the dig front: the pile on the floor, pinned at the bed's own floor line */
+.tunnel-front {
+  position: fixed; z-index: 4; top: var(--floor); right: 6vw;
+  translate: 0 -100%;
+  width: min(300px, 26vw); pointer-events: none;
+}
+.tunnel-front.counting { filter: saturate(.55) blur(1.1px); }
+.t-pile { width: 100%; height: auto; display: block; filter: drop-shadow(0 12px 18px rgba(0,0,0,.45)); }
 .heap { filter: blur(calc(var(--soggy, 0) * 0.7px)); }
 .wet-sheen { animation: gleam 6s ease-in-out infinite alternate; }
 @keyframes gleam { to { opacity: .28; } }
 .spill path { fill: hsl(34 70% 52%); opacity: .9; }
 
-/* the glass of the core sample: rim, side shading, vignette */
-.tunnel-glass {
-  position: absolute; inset: 0; z-index: 4; pointer-events: none;
-  border-radius: inherit;
-  box-shadow:
-    inset 0 0 0 3px rgba(240,228,205,.8),
-    inset 0 0 0 5px rgba(58,42,24,.85),
-    inset 0 0 46px rgba(0,0,0,.55);
-  background:
-    linear-gradient(90deg, rgba(0,0,0,.32), transparent 13%, transparent 87%, rgba(0,0,0,.32)),
-    radial-gradient(130% 26% at 50% 0%, rgba(255,236,190,.08), transparent 62%);
+/* the counter read — floats over whatever layer is behind it, so it carries
+   its own soft dark backing instead of trusting the strata to stay dark */
+.tunnel-wrap { width: 100%; max-width: 340px; text-align: center; }
+.tunnel-read {
+  padding: 10px 20px 12px; border-radius: 14px;
+  background: radial-gradient(ellipse at 50% 50%, rgba(10,7,4,.6), rgba(10,7,4,0) 78%);
 }
-
-.tunnel-read { margin-top: 6px; }
-.crumbs { font-family: var(--sign); letter-spacing: .04em; font-size: clamp(18px, 2.2vw, 32px); color: #ffe9c6; }
+.depth-line {
+  font-family: var(--chalk); font-size: clamp(10px, .9vw, 13px);
+  letter-spacing: .18em; text-transform: uppercase; color: #d9c6a6; opacity: .85;
+}
+.crumbs { font-family: var(--sign); letter-spacing: .04em; font-size: clamp(18px, 2.2vw, 32px); color: #ffe9c6; text-shadow: 0 2px 10px rgba(0,0,0,.6); }
 .crumbs strong { font-weight: inherit; }
 .tunnel-read .sub, .tunnel-read .checking {
-  font-family: var(--chalk); font-size: clamp(11px, 1vw, 14px); color: #c2ab88; margin-top: 2px;
+  font-family: var(--chalk); font-size: clamp(11px, 1vw, 14px); color: #d5c1a0; margin-top: 2px;
+  text-shadow: 0 1px 6px rgba(0,0,0,.6);
 }
 /* While any bank's proof is unchecked the balance is INCOMPLETE. Never show a
    confidently wrong number — show the kitchen counting. */
-.tunnel-wrap.counting .tunnel { filter: saturate(.55) blur(1.1px); }
 .tunnel-read .checking { color: #ffd79a; }
 .tunnel-read .checking em { font-style: normal; opacity: .75; }
 
@@ -828,11 +854,17 @@ h1, h2, h3, p { margin: 0; }
     width: min(clamp(112px, 30vw, 170px), 22vh);
   }
 
-  /* The tunnel was sized for a two-column room where the counter owns its own
-     column's full height. Stacked under the rack it shares the viewport with
-     the fryers, the shelf and the boards — same reasoning as the basket cap
-     above: cut the vh terms down so the whole counter still fits a phone. */
-  .tunnel { height: min(30vh, 280px); --bh: clamp(76px, 11vh, 104px); }
+  /* Inside-the-tunnel adjustments for a phone: the floor drops lower so the
+     pile hangs under most of the scrolling content, the pile centres (there
+     is no right-hand counter column any more at this width), and the cut
+     walls thin out so they frame rather than eat a narrow screen. */
+  .shop { --floor: 86vh; }
+  /* On a phone the stage scrolls UNDER the fixed pile, so the pile drops
+     behind the stage (z below its 2) and becomes scenery: jars and boards
+     always paint over it, the floor fiction stays. */
+  .tunnel-front { right: auto; left: 50%; translate: -50% -100%; width: min(210px, 42vw); z-index: 1; }
+  .t-wall { width: clamp(10px, 3vw, 26px); }
+  .t-name { left: 10vw; }
 }
 @media (max-width: 940px) {
   .hood { flex-wrap: wrap; gap: 10px 18px; }

@@ -1,18 +1,23 @@
 /**
- * The dip tunnel, the dip it is cut through, and the shelf above it.
+ * The dip tunnel — the whole room is inside it — plus the shelf.
  *
- * The tunnel replaced the bowl: the dip ladder is now VERTICAL. Every tier is
- * a stratum in an endless seven-layer dip (it keeps going and going — see
- * lib/tunnelDepth.ts), the player digs DOWN through it chip by chip, and the
- * crumbs pile up at the dig front. Three rules this file exists to obey:
+ * The dip ladder is VERTICAL and the viewport is IN the shaft. The strata are
+ * the full-width background (`TunnelBed`): every tier is a layer of an endless
+ * seven-layer dip (it keeps going and going — see lib/tunnelDepth.ts), the
+ * already-dug hollow is darkened above, the undug dip is solid below, and the
+ * floor between them is pinned at 76vh so the world scrolls up as you dig.
+ * Dark cut walls frame the viewport as foreground sidebars; the fryers, the
+ * counter and the boards float in the shaft between the two.
+ *
+ * Three rules this file exists to obey:
  *   1. DEPTH IS THE REWARD LADDER MADE PHYSICAL. The layer you are in is the
- *      band the dig front sits in; the layers still coming are literally
- *      visible below you, and the shaft above is the history you dug through.
+ *      one filling the screen; the next one is literally visible under the
+ *      floor as you approach it, and the hollow above is the history you dug.
  *   2. THE FOLD DECIDES THE LAYER. `state.dipIndex` places the front;
  *      tunnelDepth only draws it (see its header for why it never re-derives).
- *   3. SOGGINESS IS VISIBLE BEFORE IT IS LEGIBLE. The pile at the front
- *      slumps, dulls and wet-sheens exactly as the bowl's heap did — that
- *      language survives the vessel change untouched.
+ *   3. SOGGINESS IS VISIBLE BEFORE IT IS LEGIBLE. The pile at the dig floor
+ *      (`DigFront`) slumps, dulls and wet-sheens exactly as the bowl's heap
+ *      did — that language survives the vessel change untouched.
  */
 import { useMemo } from 'react';
 import type { ChipsState } from './lib/chipsEngine';
@@ -32,14 +37,12 @@ function seeded(seed: number): () => number {
   };
 }
 
-/* ── the dip ─────────────────────────────────────────────────────────────── */
+/* ── the dip (doorway screens only) ──────────────────────────────────────── */
 
 /**
- * Full-bleed dip. Every tier is a different SURFACE, not a different accent
- * colour: salsa is chunky and matte, guacamole is dense and flecked, queso
- * simmers, seven-layer is banded strata, buffalo glows, fondue swirls, and the
- * abyss is barely food any more. The look is carried by CSS keyed on
- * `data-dip`; these spans are the material it needs to work with.
+ * Full-bleed dip, used by the pre-game doorway screens — outside the shop you
+ * are still at the surface, looking at the dip itself rather than standing in
+ * the shaft. In the shop the bed of the scene is `TunnelBed` below.
  */
 export function DipBed({ dipIndex }: { dipIndex: number }) {
   const tier = DIP_TIERS[Math.max(0, Math.min(DIP_TIERS.length - 1, dipIndex))];
@@ -88,7 +91,141 @@ export function DipChange({ dipIndex }: { dipIndex: number }) {
   );
 }
 
-/* ── the tunnel ──────────────────────────────────────────────────────────── */
+/* ── the tunnel bed: the strata the whole room lives in ──────────────────── */
+
+/**
+ * One stratum, full viewport width. `dug` is how much of its height the dig
+ * has hollowed: 1 for layers already passed, the front's own frac for the
+ * current one, 0 below. The hollow overlay (and the chips wedged in the cut
+ * face) lives INSIDE the band, so it scrolls with the strata and clips itself
+ * for free — nothing else needs to know where the floor is.
+ */
+function Stratum({ band, dug }: { band: TunnelBand; dug: number }) {
+  const chunks = useMemo(() => {
+    const rnd = seeded(0x517cc1 ^ Math.imul(band.ordinal, 2654435761));
+    return Array.from({ length: 14 }, () => ({
+      x: rnd() * 100, y: 6 + rnd() * 88,
+      w: 1.2 + rnd() * 3.4, r: rnd() * 360, d: rnd() * 14,
+    }));
+  }, [band.ordinal]);
+
+  // The chips piling up in the tunnel: every hollowed band keeps a scatter of
+  // them wedged in the cut face — the history of the dig, all around you.
+  const wallChips = useMemo(() => {
+    const rnd = seeded(0x2ab7de ^ Math.imul(band.ordinal, 40503));
+    return Array.from({ length: 12 }, () => ({
+      x: 3 + rnd() * 92,
+      y: 4 + rnd() * 90,
+      s: 10 + rnd() * 14, r: rnd() * 360, shade: rnd(),
+    }));
+  }, [band.ordinal]);
+
+  return (
+    <div
+      className={`t-band${band.beyond ? ' beyond' : ''}`}
+      data-dip={band.key}
+      style={{ ['--ord' as string]: band.ordinal }}
+    >
+      <div className="t-fill" />
+      <div className="t-chunks">
+        {chunks.map((c, i) => (
+          <span key={i} style={{
+            left: `${c.x}%`, top: `${c.y}%`,
+            width: `${c.w}vmin`, height: `${c.w * 0.72}vmin`,
+            transform: `rotate(${c.r}deg)`, animationDelay: `${c.d}s`,
+          }} />
+        ))}
+      </div>
+      <span className="t-name">{band.label}</span>
+      {dug > 0 && (
+        <div className="t-dug" style={{ height: `${(dug * 100).toFixed(2)}%` }}>
+          {wallChips.map((c, i) => (
+            <i key={i} className="t-chip" style={{
+              left: `${c.x}%`, top: `${c.y}%`,
+              width: `${c.s}px`, height: `${c.s}px`,
+              transform: `rotate(${c.r}deg)`,
+              ['--shade' as string]: c.shade.toFixed(2),
+            }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Debris wedged into the foreground cut walls — seeded once, never moves. */
+function wallDebris(seed: number): { y: number; x: number; s: number; r: number }[] {
+  const rnd = seeded(seed);
+  return Array.from({ length: 9 }, () => ({
+    y: 3 + rnd() * 92, x: rnd() * 60, s: 8 + rnd() * 12, r: rnd() * 360,
+  }));
+}
+
+/**
+ * The full-viewport bed of the shop: strata behind everything, cut walls in
+ * front of everything (pointer-events: none, so they frame without blocking).
+ * `state` is null for the handful of frames before the first fold — that
+ * renders the surface (depth 0), which is also the truth.
+ */
+export function TunnelBed({ state }: { state: ChipsState | null }) {
+  const { layer, frac, depth } = tunnelDepth(state?.dipIndex ?? 0, state?.lifetimeChips ?? 0);
+  const bands = bandsAround(depth, 2, 3);
+  const left = useMemo(() => wallDebris(0x77aa11), []);
+  const right = useMemo(() => wallDebris(0x33cc55), []);
+
+  return (
+    <>
+      <div className="t-bed" aria-hidden="true">
+        <div className="t-sky" />
+        {/* The scroll position is an inline `top` on the STACK, not a CSS var
+            the bands each consume: a change to a custom property does not
+            reliably retrigger/interpolate a transition on a property that
+            reads it through calc() (measured: the bands snapped late instead
+            of gliding), while a direct inline `top` change transitions every
+            time. `--floor`/`--bh` are static per viewport (media queries set
+            them), so they never change mid-transition — only the depth number
+            React writes here does. */}
+        <div
+          className="t-stack"
+          style={{ top: `calc(var(--floor) - ${depth.toFixed(4)} * var(--bh))` }}
+        >
+          {bands.map((b) => (
+            <Stratum
+              key={b.ordinal}
+              band={b}
+              dug={b.ordinal < layer ? 1 : b.ordinal === layer ? frac : 0}
+            />
+          ))}
+        </div>
+        <div className="t-grain" />
+      </div>
+      {/* The cut walls are SIBLINGS of the bed, not children: the bed is a
+          z-0 stacking context behind the whole room, and a child can never
+          escape it to paint in front of the stage. These frame the viewport
+          as foreground, pointer-events: none so they never block a click. */}
+      <div className="t-walls" aria-hidden="true">
+        <div className="t-wall t-wall-l">
+          {left.map((c, i) => (
+            <i key={i} className="t-chip" style={{
+              left: `${c.x}%`, top: `${c.y}%`, width: `${c.s}px`, height: `${c.s}px`,
+              transform: `rotate(${c.r}deg)`, ['--shade' as string]: '0.2',
+            }} />
+          ))}
+        </div>
+        <div className="t-wall t-wall-r">
+          {right.map((c, i) => (
+            <i key={i} className="t-chip" style={{
+              right: `${c.x}%`, top: `${c.y}%`, width: `${c.s}px`, height: `${c.s}px`,
+              transform: `rotate(${c.r}deg)`, ['--shade' as string]: '0.2',
+            }} />
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ── the dig front: the pile on the floor ────────────────────────────────── */
 
 interface Crumb { x: number; y: number; s: number; rot: number; shade: number }
 
@@ -106,78 +243,12 @@ function pileOf(count: number, height: number, seed: number): Crumb[] {
 }
 
 /**
- * One stratum. `dug` is how much of its height the shaft has eaten: 1 for
- * layers already passed, the front's own frac for the current one, 0 below.
- * The dug overlay (and the chips stuck in its walls) lives INSIDE the band,
- * so it scrolls with the strata and clips itself for free — the shaft never
- * needs to know where the front is, only each band does.
+ * The crumb pile, resting on the dig floor — fixed at the same 76vh line the
+ * bed scrolls the strata against, so the pile always sits exactly on the
+ * boundary between hollow and dip. The flight (App.tsx's launchDip) measures
+ * this element, so it must exist even when the pile itself is empty.
  */
-function Stratum({ band, dug }: { band: TunnelBand; dug: number }) {
-  const chunks = useMemo(() => {
-    const rnd = seeded(0x517cc1 ^ Math.imul(band.ordinal, 2654435761));
-    return Array.from({ length: 10 }, () => ({
-      x: rnd() * 100, y: 8 + rnd() * 84,
-      w: 4 + rnd() * 9, r: rnd() * 360, d: rnd() * 12,
-    }));
-  }, [band.ordinal]);
-
-  // The chips piling up in the tunnel: every dug band keeps a scatter of them
-  // wedged along the shaft walls — the history of the dig, visible above you.
-  const wallChips = useMemo(() => {
-    const rnd = seeded(0x2ab7de ^ Math.imul(band.ordinal, 40503));
-    return Array.from({ length: 7 }, () => {
-      const leftWall = rnd() < 0.5;
-      return {
-        x: leftWall ? 26 + rnd() * 9 : 65 + rnd() * 9,
-        y: 4 + rnd() * 88,
-        s: 7 + rnd() * 7, r: rnd() * 360, shade: rnd(),
-      };
-    });
-  }, [band.ordinal]);
-
-  return (
-    <div
-      className={`t-band${band.beyond ? ' beyond' : ''}`}
-      data-dip={band.key}
-      style={{ ['--ord' as string]: band.ordinal }}
-    >
-      <div className="t-fill" />
-      <div className="t-chunks" aria-hidden="true">
-        {chunks.map((c, i) => (
-          <span key={i} style={{
-            left: `${c.x}%`, top: `${c.y}%`,
-            width: `${c.w}px`, height: `${c.w * 0.7}px`,
-            transform: `rotate(${c.r}deg)`, animationDelay: `${c.d}s`,
-          }} />
-        ))}
-      </div>
-      <span className="t-name">{band.label}</span>
-      {dug > 0 && (
-        <div className="t-dug" style={{ height: `${(dug * 100).toFixed(2)}%` }} aria-hidden="true">
-          {wallChips.map((c, i) => (
-            <i key={i} className="t-chip" style={{
-              left: `${c.x}%`, top: `${c.y}%`,
-              width: `${c.s}px`, height: `${c.s}px`,
-              transform: `rotate(${c.r}deg)`,
-              ['--shade' as string]: c.shade.toFixed(2),
-            }} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export interface TunnelProps {
-  state: ChipsState;
-  nowMs: number;
-  /** True while some bank's Argon2id proof is still unchecked — the number
-   *  below is INCOMPLETE and must not be shown as if it were the truth. */
-  counting: boolean;
-  countProgress: { done: number; total: number } | null;
-}
-
-export function Tunnel({ state, nowMs, counting, countProgress }: TunnelProps) {
+export function DigFront({ state, nowMs, counting }: { state: ChipsState; nowMs: number; counting: boolean }) {
   const crumbs = projectedCrumbs(state, nowMs);
   const soggy = soggyLook(state, nowMs);
   const fill = state.bowlCap > 0 ? Math.max(0, Math.min(1, crumbs / state.bowlCap)) : 0;
@@ -189,94 +260,77 @@ export function Tunnel({ state, nowMs, counting, countProgress }: TunnelProps) {
   const count = crumbs <= 0 ? 0 : Math.max(5, Math.round(fill ** 0.5 * 84));
   const pile = useMemo(() => pileOf(count, height, 0x9e37 ^ count), [count, height]);
 
-  const { layer, frac, depth } = tunnelDepth(state.dipIndex, state.lifetimeChips);
-  const bands = bandsAround(depth);
-
   const sat = 78 - 46 * soggy;
   const lum = 56 - 14 * soggy;
   const hue = 38 - 8 * soggy;
 
   return (
-    <section className={`tunnel-wrap${counting ? ' counting' : ''}`} aria-label="the dip tunnel">
-      <div
-        className="tunnel"
-        role="img"
-        aria-label={counting
-          ? 'counting the crumbs'
-          : `${compact(crumbs)} crumbs piled up, ${layer + 1} ${layer === 0 ? 'layer' : 'layers'} deep in the dip`}
-      >
-        {/* the open air above the surface — only ever visible while the dig
-            front is still in the first band or two */}
-        <div className="t-sky" aria-hidden="true" />
-
-        {/* The scroll position is an inline `top` on the STACK, not a CSS var
-            the bands each consume: a change to a custom property does not
-            reliably retrigger/interpolate a transition on a property that
-            reads it through calc() (measured: the bands snapped late instead
-            of gliding), while a direct inline `top` change transitions every
-            time. One animated element instead of nine, too. */}
-        <div
-          className="t-stack"
-          aria-hidden="true"
-          style={{ top: `calc(42% - ${depth.toFixed(4)} * var(--bh))` }}
-        >
-          {bands.map((b) => (
-            <Stratum
-              key={b.ordinal}
-              band={b}
-              dug={b.ordinal < layer ? 1 : b.ordinal === layer ? frac : 0}
-            />
-          ))}
-        </div>
-
-        {/* The dig front: the crumb pile, resting on the undug dip below. It
-            never moves — the strata scroll behind it — which is exactly what
-            makes the dig read as GOING somewhere. The flight (App.tsx's
-            launchDip) measures this element, so it must exist even when the
-            pile itself is empty. */}
-        <div className="tunnel-front" aria-hidden="true">
-          <svg className="t-pile" viewBox="0 0 120 64">
-            <defs>
-              <radialGradient id="t-wet" cx="50%" cy="40%" r="60%">
-                <stop offset="0%" stopColor="#ffffff" stopOpacity="0.5" />
-                <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-              </radialGradient>
-            </defs>
-            <g className="heap" style={{ ['--soggy' as string]: soggy.toFixed(3) }}>
-              {pile.map((c, i) => (
-                <g key={i} transform={`translate(${60 + c.x * 44} ${58 - c.y * 50}) rotate(${c.rot}) scale(${c.s})`}>
-                  <path
-                    d="M0 -6.4 L5.7 4 L-5.7 4 Z"
-                    fill={`hsl(${hue + c.shade * 8} ${sat}% ${lum + c.shade * 12}%)`}
-                    // Sog rounds the corners off: a soft crumb has no edges left.
-                    // A round-joined stroke that fattens with `soggy` does exactly
-                    // that to a triangle — sharp points swell into soft lobes.
-                    stroke={`hsl(${hue - 4} ${sat}% ${Math.max(16, lum - 12 + soggy * 10)}%)`}
-                    strokeWidth={0.7 + soggy * 3.1}
-                    strokeLinejoin="round"
-                  />
-                </g>
-              ))}
+    <div className={`tunnel-front${counting ? ' counting' : ''}`} aria-hidden="true">
+      <svg className="t-pile" viewBox="0 0 120 64">
+        <defs>
+          <radialGradient id="t-wet" cx="50%" cy="40%" r="60%">
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.5" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+        <g className="heap" style={{ ['--soggy' as string]: soggy.toFixed(3) }}>
+          {pile.map((c, i) => (
+            <g key={i} transform={`translate(${60 + c.x * 44} ${58 - c.y * 50}) rotate(${c.rot}) scale(${c.s})`}>
+              <path
+                d="M0 -6.4 L5.7 4 L-5.7 4 Z"
+                fill={`hsl(${hue + c.shade * 8} ${sat}% ${lum + c.shade * 12}%)`}
+                // Sog rounds the corners off: a soft crumb has no edges left.
+                // A round-joined stroke that fattens with `soggy` does exactly
+                // that to a triangle — sharp points swell into soft lobes.
+                stroke={`hsl(${hue - 4} ${sat}% ${Math.max(16, lum - 12 + soggy * 10)}%)`}
+                strokeWidth={0.7 + soggy * 3.1}
+                strokeLinejoin="round"
+              />
             </g>
-            {/* the sheen of a pile that has been sitting out */}
-            {soggy > 0.02 && (
-              <ellipse className="wet-sheen" cx="60" cy={58 - height * 50 + 8}
-                rx={42} ry={13} fill="url(#t-wet)" opacity={Math.min(0.85, soggy)} />
-            )}
-            {atRim && (
-              <g className="spill" aria-hidden="true">
-                <path d="M104 50 L110 60 L98 60 Z" />
-                <path d="M12 46 L18 56 L6 56 Z" />
-              </g>
-            )}
-          </svg>
-        </div>
+          ))}
+        </g>
+        {/* the sheen of a pile that has been sitting out */}
+        {soggy > 0.02 && (
+          <ellipse className="wet-sheen" cx="60" cy={58 - height * 50 + 8}
+            rx={42} ry={13} fill="url(#t-wet)" opacity={Math.min(0.85, soggy)} />
+        )}
+        {atRim && (
+          <g className="spill" aria-hidden="true">
+            <path d="M104 50 L110 60 L98 60 Z" />
+            <path d="M12 46 L18 56 L6 56 Z" />
+          </g>
+        )}
+      </svg>
+    </div>
+  );
+}
 
-        {/* the cut-away's glass: vignette and side walls, so the strata read
-            as a core sample out of the dip, not a striped rectangle */}
-        <div className="tunnel-glass" aria-hidden="true" />
-      </div>
+/* ── the counter read ────────────────────────────────────────────────────── */
 
+export interface TunnelReadProps {
+  state: ChipsState;
+  nowMs: number;
+  /** True while some bank's Argon2id proof is still unchecked — the number
+   *  below is INCOMPLETE and must not be shown as if it were the truth. */
+  counting: boolean;
+  countProgress: { done: number; total: number } | null;
+}
+
+/** The crumb count and its condition — the accessible source of truth for
+ *  everything the bed and the pile only show. */
+export function TunnelRead({ state, nowMs, counting, countProgress }: TunnelReadProps) {
+  const crumbs = projectedCrumbs(state, nowMs);
+  const soggy = soggyLook(state, nowMs);
+  const atRim = crumbs >= state.bowlCap && crumbs > 0;
+  const { layer } = tunnelDepth(state.dipIndex, state.lifetimeChips);
+
+  return (
+    <section
+      className="tunnel-wrap"
+      aria-label={counting
+        ? 'counting the crumbs'
+        : `${compact(crumbs)} crumbs piled up, ${layer + 1} ${layer === 0 ? 'layer' : 'layers'} deep in the dip`}
+    >
       <div className="tunnel-read">
         {counting ? (
           <p className="checking">
@@ -287,6 +341,7 @@ export function Tunnel({ state, nowMs, counting, countProgress }: TunnelProps) {
           </p>
         ) : (
           <>
+            <p className="depth-line">{layer + 1} {layer === 0 ? 'layer' : 'layers'} down</p>
             <p className="crumbs tunnel-crumbs"><strong>{compact(crumbs)}</strong> crumbs</p>
             <p className="sub">
               {atRim
@@ -309,7 +364,7 @@ export function Tunnel({ state, nowMs, counting, countProgress }: TunnelProps) {
 /**
  * One newly-banked chip's actual credit, ready to float up from the counter.
  * `App.tsx` builds these from `chipsPayoutDisplay.ts`'s `actualGains` — never
- * from the raw payout — so a full tunnel announces "+0" rather than a number
+ * from the raw payout — so a full pile announces "+0" rather than a number
  * the counter did not move for.
  */
 export interface GainFloat {
@@ -331,9 +386,9 @@ export interface GainFloat {
  * the other half of the crumb burst that already flies there (Kitchen.tsx's
  * `DipFlight`): that answers "what did the chip become", this answers "what
  * did I get". `aria-hidden` throughout, same as the crumb burst it accompanies
- * — the tunnel's own crumb count (announced via its `aria-label`) is the
- * accessible source of truth; this is a flourish layered on top of it, never
- * a substitute for it.
+ * — the counter's own crumb count (announced via `TunnelRead`'s `aria-label`)
+ * is the accessible source of truth; this is a flourish layered on top of it,
+ * never a substitute for it.
  */
 export function GainFloats({ floats }: { floats: GainFloat[] }) {
   return (
