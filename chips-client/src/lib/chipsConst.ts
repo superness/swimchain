@@ -88,3 +88,18 @@ export const DIP_TIERS: DipTier[] = [
 
 /** Congeal gap threshold, in ms. */
 export const CONGEAL_GAP_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Most chips one reply may bank.
+ *
+ * A SECURITY BOUND, checked by counting entries before any hashing: without it
+ * a single hostile reply declaring 10,000 entries would force every observer
+ * into 10,000 Argon2id-8MiB hashes to fold that table — and the boards fold
+ * other people's tables.
+ *
+ * Arbitrary-but-practical: the 1 KB inline-storage threshold fits ~29 entries,
+ * rounded down for headroom. NOT an optimised value — and not safe to re-tune,
+ * because raising it would newly credit previously-rejected replies and
+ * lowering it would un-credit counted chips, re-scoring every table.
+ */
+export const MAX_BATCH = 24;
