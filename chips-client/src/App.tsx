@@ -335,9 +335,19 @@ export function App() {
 
     (async () => {
       sending.current = true;
-      const plan = planSend(queue, tableId, me.publicKeyHex, Date.now());
-      if (!plan) { sending.current = false; return; }
       try {
+        // `planSend` calls the THROWING `bankBatchBody`/`buyBody` (it filters
+        // most bad rows out itself, but stays inside this `try` regardless —
+        // a call that can throw must never sit between `sending.current =
+        // true` and the `try`, or an exception here escapes as an unhandled
+        // rejection and stalls the single-flight lock at `true` PERMANENTLY:
+        // `finally` never runs, so no notice, no backoff, no further
+        // submission for the rest of the session, and a reload just restores
+        // the same row and re-bricks it. (This happened: `loadQueue` range-checks
+        // neither `bits` nor `nonce`, so a corrupt/hand-edited row can survive
+        // persistence and reach here.)
+        const plan = planSend(queue, tableId, me.publicKeyHex, Date.now());
+        if (!plan) { return; }
         await host.submitMove(me, tableId, plan.body);
         backoff.current = 0;
         // The ack is UNCONDITIONAL — `cancelled` (a newer attempt superseded
@@ -347,12 +357,18 @@ export function App() {
         // queue forever resubmitting itself: harmless to the fold (it
         // dedupes by proofKey, so nothing is credited twice) but a real
         // action PoW and a chain write wasted on every single retry.
-        let shouldRefresh = false;
-        setQueue((q) => {
-          const outcome = afterSubmit(q, plan.moves, cancelled);
-          shouldRefresh = outcome.shouldRefresh;
-          return outcome.queue;
-        });
+        //
+        // `shouldRefresh` is just `!cancelled` — computed HERE, not read back
+        // out of the `setQueue` updater below. React only runs a functional
+        // updater synchronously on the "eager state" fast path (no pending
+        // lanes on this fiber); this component has near-continuous pending
+        // lanes (the 1s clock tick, `foldNow`'s own `setState`, `queueTick`,
+        // flight timers), so that path is not reliably taken here, and a
+        // value assigned as a side effect INSIDE the updater can still be
+        // read back as its old default on the very next line. Updaters must
+        // be pure and their assignments must never be relied on outside them.
+        const shouldRefresh = !cancelled;
+        setQueue((q) => afterSubmit(q, plan.moves, cancelled).queue);
         if (shouldRefresh) await refresh();
         // Re-arm explicitly. The ack above already changes `queue`'s
         // reference (a fresh array from `.filter`, even when its contents
@@ -380,10 +396,13 @@ export function App() {
     })();
 
     return () => { cancelled = true; };
-    // `refresh` is intentionally not a dep: it is recreated whenever `queue`
-    // changes (queue is one of ITS deps), which is already in this list, so
-    // adding it would not change when this effect reruns — only churn the
-    // lint suppression needed to justify omitting `cookName`/`me` transitively.
+    // `refresh` is not listed as a dep of ITS OWN accord: every one of
+    // `refresh`'s deps (`host`, `tableId`, `me`) is already in this effect's
+    // dep list below, so `refresh`'s identity can only change when something
+    // already tracked here changes — adding it would not change when this
+    // effect reruns, only churn the lint suppression needed to justify
+    // omitting it syntactically (eslint's exhaustive-deps rule can't infer
+    // "already covered transitively" on its own).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue, queueTick, host, me, tableId]);
 
@@ -466,20 +485,31 @@ export function App() {
 
   function onBuy(key: string): void {
     if (!host || !me || !tableId) return;
-    // The fold this click's crumbs are checked against (`state`) already
-    // reflects every earlier queued-but-unconfirmed move (via `withPending`),
-    // and re-folds synchronously on every queue change (`foldNow`) — so this
-    // check is current as of the LAST render, not stale. It still can't see a
-    // move enqueued in the same tick as this one (e.g. a double-click before
-    // React re-renders), which is exactly why the exact-duplicate check below
-    // does not rely on it: two clicks on the SAME jar, back to back, must not
-    // both reach the queue.
+    // Cheap pre-bail against the LAST rendered fold — already-owned doesn't
+    // need same-tick precision (nobody buys the same upgrade from two racing
+    // code paths in a way this misses).
     if (state?.owned.has(key)) return;
-    const already = activeFor(queue, tableId, me.publicKeyHex).some((m) => m.kind === 'buy' && m.key === key);
-    if (already) return;
-    const cost = UPGRADES[key]?.cost;
-    if (cost !== undefined && crumbsNow < cost) return;
-    setQueue((q) => enqueue(q, { tableId, author: me.publicKeyHex, kind: 'buy', key }, nextId.current++));
+    const table = tableId;
+    const author = me.publicKeyHex;
+    // Everything that DOES need same-tick precision lives inside the
+    // functional updater, not out here. `crumbsNow` is a snapshot from the
+    // last render — fine for ONE buy, but two DIFFERENT jars clicked in the
+    // same tick (before any re-render) would each check it independently and
+    // both could pass, even though only one is actually affordable once the
+    // other's cost is committed. React guarantees a functional updater sees
+    // the result of every earlier update already applied in this same batch,
+    // so computing "what's already committed" from `q` HERE — not from the
+    // outer `queue` closure — is what makes the second click in a same-tick
+    // pair correctly see the first's cost already spoken for.
+    setQueue((q) => {
+      const activeBuys = activeFor(q, table, author).filter((m): m is Extract<QueuedMove, { kind: 'buy' }> => m.kind === 'buy');
+      if (activeBuys.some((m) => m.key === key)) return q; // exact duplicate — already queued
+      const cost = UPGRADES[key]?.cost;
+      if (cost === undefined) return q;
+      const committed = activeBuys.reduce((sum, m) => sum + (UPGRADES[m.key]?.cost ?? 0), 0);
+      if (crumbsNow - committed < cost) return q; // not affordable once earlier queued buys are accounted for
+      return enqueue(q, { tableId: table, author, kind: 'buy', key }, nextId.current++);
+    });
   }
 
   /* ── the dip ladder ceremony ──────────────────────────────────────────── */

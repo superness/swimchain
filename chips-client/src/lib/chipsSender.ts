@@ -19,6 +19,28 @@ export interface PlannedSend {
 }
 
 /**
+ * Whether a single queued entry can ever build a valid body — i.e. whether
+ * `withPending` would also accept it (see chipsPending.ts's own per-entry
+ * try/catch). `loadQueue` range-checks neither `bits` nor `nonce`, so a
+ * corrupt or hand-edited row (`bits: 3`, a nonce with too many hex digits)
+ * can survive persistence and reach here; `bankBatchBody`/`buyBody` assert
+ * and throw on exactly that. Checked ONE ENTRY AT A TIME, by attempting to
+ * build its body alone — `bankBatchBody` validates every chip in whatever
+ * array it's given, so this is the same validation the real batch call below
+ * will apply, just run early enough to exclude the bad entry instead of
+ * failing the whole batch.
+ */
+function submittable(m: QueuedMove, at: number): boolean {
+  try {
+    if (m.kind === 'bank') bankBatchBody([m.chip], at);
+    else buyBody(m.key, at);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * What to submit next, or `null` if there is nothing eligible.
  *
  * Filters to `activeFor(queue, tableId, author)` BEFORE calling `takeBatch` —
@@ -28,12 +50,23 @@ export interface PlannedSend {
  * real action PoW only to land as `rejected-bits`, and the caller's `ack`
  * would then destroy the mined proof for nothing.
  *
+ * ALSO filters out entries `submittable` rejects, for the same reason
+ * `withPending` skips them from the optimistic display: a corrupt entry the
+ * fold could never credit is not worth a real action PoW, and — the more
+ * urgent reason — `bankBatchBody`/`buyBody` THROW on one, and letting that
+ * throw reach the caller un-filtered previously stranded the whole sender
+ * (see the caller's comment). Excluded either way, such an entry is
+ * permanently inert: never submitted, never credited, same treatment as a
+ * provenance mismatch. It is not pruned from the persisted queue (this
+ * function only reads); nothing here can fix a corrupt row, so there is
+ * nothing productive to do with it except leave it alone.
+ *
  * `at` is supplied by the caller (rather than read here via `Date.now()`) so
  * this stays a pure, deterministic function — the real caller passes the
  * current time, and a test can pass whatever it needs to.
  */
 export function planSend(queue: QueuedMove[], tableId: string, author: string, at: number): PlannedSend | null {
-  const active = activeFor(queue, tableId, author);
+  const active = activeFor(queue, tableId, author).filter((m) => submittable(m, at));
   const take = takeBatch(active);
   if (!take) return null;
   const body = take.kind === 'bank'

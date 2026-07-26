@@ -4,8 +4,10 @@
  * Run: npx tsx src/lib/chipsSender.test.ts
  */
 import { planSend, afterSubmit } from './chipsSender';
-import { enqueue, type QueuedMove } from './chipsQueue';
-import { MAX_BATCH } from './chipsConst';
+import { enqueue, activeFor, takeBatch, type QueuedMove } from './chipsQueue';
+import { bankBatchBody } from './chipsBody';
+import { MAX_BATCH, MAX_BITS } from './chipsConst';
+import type { ChipEntry } from './chipsEngine';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -100,6 +102,71 @@ const buyMove = (tableId: string, author: string, key: string) => ({ tableId, au
     !normalResult.queue.some((m) => m.id === taken[0].id), normalResult.queue.map((m) => m.id));
   check('an uncancelled successful submit requests a refresh',
     normalResult.shouldRefresh === true, normalResult.shouldRefresh);
+}
+
+// 5) A corrupt persisted row that survives `loadQueue`'s validation must not
+//    be able to strand the sender. `loadQueue` range-checks neither `bits`
+//    nor `nonce`, so a hand-edited or corrupted row (`bits` above `MAX_BITS`,
+//    say) can reach here looking well-formed. `bankBatchBody` — which
+//    `planSend` calls to build the real submission body — asserts and
+//    throws on exactly that. Before this fix, `planSend` was called OUTSIDE
+//    the sender effect's `try`/`finally` in App.tsx, so that throw escaped as
+//    an unhandled rejection and stranded the single-flight lock at `true`
+//    PERMANENTLY: no notice, no backoff, no further submission for the rest
+//    of the session, reproducing on every reload. `planSend` itself must
+//    never throw — it filters an unsubmittable entry out instead, the same
+//    treatment `withPending` (chipsPending.ts) already gives one.
+//    Mutation check: this is proven below by constructing `planSend` WITHOUT
+//    its per-entry `submittable` filter (i.e. calling `takeBatch` on the raw
+//    `activeFor` result, unfiltered — exactly what `planSend` did before this
+//    fix) and confirming it actually throws where the real, fixed `planSend`
+//    does not.
+{
+  const corruptMove = bankMove(TABLE, ME);
+  corruptMove.chip.bits = MAX_BITS + 5; // out of range — bankBatchBody rejects this
+  const corruptId = nextId++;
+  let q: QueuedMove[] = [];
+  q = enqueue(q, corruptMove, corruptId);
+
+  let threw = false;
+  let plan: ReturnType<typeof planSend> = null;
+  try {
+    plan = planSend(q, TABLE, ME, 1_700_000_000_000);
+  } catch {
+    threw = true;
+  }
+  check('planSend never throws on a corrupt-but-well-formed-looking row', !threw);
+  check('a queue containing ONLY a corrupt row plans nothing (not a crash)', plan === null, plan);
+
+  // The unfiltered shape of the bug this replaced: taking straight from
+  // `activeFor` (skipping `planSend`'s per-entry `submittable` filter) DOES
+  // throw on the same input — proving the filter is load-bearing, not
+  // incidental, and reproducing exactly what escaped as an unhandled
+  // rejection when `planSend`'s call sat outside App.tsx's `try`.
+  let unfilteredThrew = false;
+  try {
+    const take = takeBatch(activeFor(q, TABLE, ME));
+    if (take?.kind === 'bank') bankBatchBody(take.moves.map((m) => (m as { chip: ChipEntry }).chip), 1_700_000_000_000);
+  } catch {
+    unfilteredThrew = true;
+  }
+  check('...confirmed: the UNFILTERED path (pre-fix shape) does throw on the same corrupt row', unfilteredThrew);
+
+  // A corrupt row sitting next to a GOOD one must not take the good one down
+  // with it — the good one still plans and submits normally.
+  let q2: QueuedMove[] = [];
+  q2 = enqueue(q2, corruptMove, corruptId);
+  const goodId = nextId++;
+  q2 = enqueue(q2, bankMove(TABLE, ME), goodId);
+  let plan2: ReturnType<typeof planSend> = null;
+  let threw2 = false;
+  try {
+    plan2 = planSend(q2, TABLE, ME, 1_700_000_000_000);
+  } catch {
+    threw2 = true;
+  }
+  check('a good row next to a corrupt one still plans, without throwing', !threw2 && plan2 !== null && plan2.moves.length === 1);
+  check('the corrupt row itself is excluded from that plan', plan2 !== null && plan2.moves[0].id === goodId, plan2?.moves.map((m) => m.id));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
