@@ -85,9 +85,13 @@ check('nonce matters', proofKey(T, A, 5, 7n) !== proofKey(T, A, 5, 8n));
 // Author casing must not split one identity into two cache entries.
 check('author case-insensitive', proofKey(T, A.toUpperCase(), 5, 7n) === proofKey(T, A, 5, 7n));
 
-// The separator must not let one field impersonate another.
-check('no field-boundary collision',
-  proofKey(T, A, 5, 7n) !== proofKey(T, `${A}:5`, 0, 7n));
+// The separator must not let one field impersonate another, whatever the
+// fields contain. Inject the REAL delimiter into both variable-length fields —
+// a test that injects some other character proves nothing about this one.
+check('table cannot borrow the author boundary',
+  proofKey('X|y', 'z', 5, 7n) !== proofKey('X', 'y|z', 5, 7n));
+check('author cannot borrow the ms boundary',
+  proofKey(T, `${A}|5`, 0, 7n) !== proofKey(T, A, 5, 7n));
 
 check('MAX_BATCH is 24', MAX_BATCH === 24);
 
@@ -116,13 +120,18 @@ Expected: FAIL — `Cannot find module './proofKey'`.
  * own dependency-free file: `chipsEngine.ts` must be able to import it without
  * dragging hash-wasm into the fold's import graph.
  *
- * Fields are fixed-shape (hex author, decimal ms, hex nonce) and none can
- * contain the separator, so plain joining is unambiguous here — unlike the
- * chip preimage itself, which length-prefixes because it takes free-form
- * strings.
+ * The two variable-length fields are length-prefixed, for the same reason
+ * `chipPreimage` length-prefixes: a `|` inside `tableId` or `authorId` would
+ * otherwise shift the field boundary, and two genuinely different chips would
+ * produce one key — crediting one chip as another, or silently suppressing a
+ * real one through false dedupe. `tableId` is caller-supplied and this file
+ * constrains its shape not at all, so the encoding must be unambiguous on its
+ * own rather than resting on what today's callers happen to pass. `ms` and
+ * `nonce` are numeric and cannot contain the separator.
  */
 export function proofKey(tableId: string, authorId: string, ms: number, nonce: bigint): string {
-  return `${tableId}|${authorId.toLowerCase()}|${ms}|${nonce.toString(16)}`;
+  const author = authorId.toLowerCase();
+  return `${tableId.length}:${tableId}|${author.length}:${author}|${ms}|${nonce.toString(16)}`;
 }
 ```
 
