@@ -1,17 +1,23 @@
 /**
- * The bowl, the dip it sits in, and the shelf above it.
+ * The dip tunnel, the dip it is cut through, and the shelf above it.
  *
- * Two rules this file exists to obey:
- *   1. THE DIP IS THE BED OF THE SCENE. It is not a badge or a label — it is
- *      the surface everything else rests on, full-bleed, and it changes
- *      completely when the tier does. That is the reward ladder made physical.
- *   2. SOGGINESS IS VISIBLE BEFORE IT IS LEGIBLE. The pile slumps, the crumbs
- *      round off and go dull, a wet sheen creeps over them, and the whole heap
- *      loses its edges — all of that before you read a single number.
+ * The tunnel replaced the bowl: the dip ladder is now VERTICAL. Every tier is
+ * a stratum in an endless seven-layer dip (it keeps going and going — see
+ * lib/tunnelDepth.ts), the player digs DOWN through it chip by chip, and the
+ * crumbs pile up at the dig front. Three rules this file exists to obey:
+ *   1. DEPTH IS THE REWARD LADDER MADE PHYSICAL. The layer you are in is the
+ *      band the dig front sits in; the layers still coming are literally
+ *      visible below you, and the shaft above is the history you dug through.
+ *   2. THE FOLD DECIDES THE LAYER. `state.dipIndex` places the front;
+ *      tunnelDepth only draws it (see its header for why it never re-derives).
+ *   3. SOGGINESS IS VISIBLE BEFORE IT IS LEGIBLE. The pile at the front
+ *      slumps, dulls and wet-sheens exactly as the bowl's heap did — that
+ *      language survives the vessel change untouched.
  */
 import { useMemo } from 'react';
 import type { ChipsState } from './lib/chipsEngine';
 import { projectedCrumbs, soggyLook } from './lib/sogProjection';
+import { tunnelDepth, bandsAround, type TunnelBand } from './lib/tunnelDepth';
 import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, type Upgrade } from './lib/chipsConst';
 import { compact, sinceLabel } from './lib/format';
 import { canAffordBuy } from './lib/chipsAfford';
@@ -68,21 +74,21 @@ export function DipBed({ dipIndex }: { dipIndex: number }) {
   );
 }
 
-/** The tier-up ceremony: the new dip floods the screen and names itself. */
+/** The tier-up ceremony: the new layer floods the screen and names itself. */
 export function DipChange({ dipIndex }: { dipIndex: number }) {
   const tier = DIP_TIERS[Math.max(0, Math.min(DIP_TIERS.length - 1, dipIndex))];
   return (
     <div className="dip-change" data-dip={tier.key} role="status">
       <div className="flood" />
       <div className="proclaim">
-        <span className="small">the bowl is filled with</span>
+        <span className="small">you break through into</span>
         <strong>{tier.label}</strong>
       </div>
     </div>
   );
 }
 
-/* ── the bowl ────────────────────────────────────────────────────────────── */
+/* ── the tunnel ──────────────────────────────────────────────────────────── */
 
 interface Crumb { x: number; y: number; s: number; rot: number; shade: number }
 
@@ -99,7 +105,70 @@ function pileOf(count: number, height: number, seed: number): Crumb[] {
   return out.sort((a, b) => b.y - a.y);
 }
 
-export interface BowlProps {
+/**
+ * One stratum. `dug` is how much of its height the shaft has eaten: 1 for
+ * layers already passed, the front's own frac for the current one, 0 below.
+ * The dug overlay (and the chips stuck in its walls) lives INSIDE the band,
+ * so it scrolls with the strata and clips itself for free — the shaft never
+ * needs to know where the front is, only each band does.
+ */
+function Stratum({ band, dug }: { band: TunnelBand; dug: number }) {
+  const chunks = useMemo(() => {
+    const rnd = seeded(0x517cc1 ^ Math.imul(band.ordinal, 2654435761));
+    return Array.from({ length: 10 }, () => ({
+      x: rnd() * 100, y: 8 + rnd() * 84,
+      w: 4 + rnd() * 9, r: rnd() * 360, d: rnd() * 12,
+    }));
+  }, [band.ordinal]);
+
+  // The chips piling up in the tunnel: every dug band keeps a scatter of them
+  // wedged along the shaft walls — the history of the dig, visible above you.
+  const wallChips = useMemo(() => {
+    const rnd = seeded(0x2ab7de ^ Math.imul(band.ordinal, 40503));
+    return Array.from({ length: 7 }, () => {
+      const leftWall = rnd() < 0.5;
+      return {
+        x: leftWall ? 26 + rnd() * 9 : 65 + rnd() * 9,
+        y: 4 + rnd() * 88,
+        s: 7 + rnd() * 7, r: rnd() * 360, shade: rnd(),
+      };
+    });
+  }, [band.ordinal]);
+
+  return (
+    <div
+      className={`t-band${band.beyond ? ' beyond' : ''}`}
+      data-dip={band.key}
+      style={{ ['--ord' as string]: band.ordinal }}
+    >
+      <div className="t-fill" />
+      <div className="t-chunks" aria-hidden="true">
+        {chunks.map((c, i) => (
+          <span key={i} style={{
+            left: `${c.x}%`, top: `${c.y}%`,
+            width: `${c.w}px`, height: `${c.w * 0.7}px`,
+            transform: `rotate(${c.r}deg)`, animationDelay: `${c.d}s`,
+          }} />
+        ))}
+      </div>
+      <span className="t-name">{band.label}</span>
+      {dug > 0 && (
+        <div className="t-dug" style={{ height: `${(dug * 100).toFixed(2)}%` }} aria-hidden="true">
+          {wallChips.map((c, i) => (
+            <i key={i} className="t-chip" style={{
+              left: `${c.x}%`, top: `${c.y}%`,
+              width: `${c.s}px`, height: `${c.s}px`,
+              transform: `rotate(${c.r}deg)`,
+              ['--shade' as string]: c.shade.toFixed(2),
+            }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export interface TunnelProps {
   state: ChipsState;
   nowMs: number;
   /** True while some bank's Argon2id proof is still unchecked — the number
@@ -108,7 +177,7 @@ export interface BowlProps {
   countProgress: { done: number; total: number } | null;
 }
 
-export function Bowl({ state, nowMs, counting, countProgress }: BowlProps) {
+export function Tunnel({ state, nowMs, counting, countProgress }: TunnelProps) {
   const crumbs = projectedCrumbs(state, nowMs);
   const soggy = soggyLook(state, nowMs);
   const fill = state.bowlCap > 0 ? Math.max(0, Math.min(1, crumbs / state.bowlCap)) : 0;
@@ -120,89 +189,95 @@ export function Bowl({ state, nowMs, counting, countProgress }: BowlProps) {
   const count = crumbs <= 0 ? 0 : Math.max(5, Math.round(fill ** 0.5 * 84));
   const pile = useMemo(() => pileOf(count, height, 0x9e37 ^ count), [count, height]);
 
-  const tier = DIP_TIERS[Math.max(0, Math.min(DIP_TIERS.length - 1, state.dipIndex))];
+  const { layer, frac, depth } = tunnelDepth(state.dipIndex, state.lifetimeChips);
+  const bands = bandsAround(depth);
+
   const sat = 78 - 46 * soggy;
   const lum = 56 - 14 * soggy;
   const hue = 38 - 8 * soggy;
 
   return (
-    <section className={`bowl-wrap${counting ? ' counting' : ''}`} aria-label="your bowl">
-      <svg className="bowl" viewBox="0 0 220 150" role="img"
-        aria-label={counting ? 'counting the crumbs' : `${compact(crumbs)} crumbs in the bowl`}>
-        <defs>
-          {/* the cavity. Opaque and warm, not a black wash: you are looking
-              INTO a bowl under a hood light, and a translucent overlay just
-              greys the stoneware out and makes the whole thing read as glass. */}
-          <radialGradient id="bowl-inner" cx="50%" cy="6%" r="98%">
-            <stop offset="0%" stopColor="#241a11" />
-            <stop offset="58%" stopColor="#3a2a1a" />
-            <stop offset="100%" stopColor="#63492b" />
-          </radialGradient>
-          {/* warm stoneware, not glass — a snack bowl on a counter under a
-              hood light, lit from above and falling into shadow at the foot */}
-          <linearGradient id="bowl-glaze" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f2e6cf" />
-            <stop offset="34%" stopColor="#cbb695" />
-            <stop offset="72%" stopColor="#7d6949" />
-            <stop offset="100%" stopColor="#3b2f20" />
-          </linearGradient>
-          <clipPath id="bowl-clip">
-            <path d="M23 44 Q23 122 110 128 Q197 122 197 44 Z" />
-          </clipPath>
-          <radialGradient id="wet" cx="50%" cy="40%" r="60%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.5" />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-          </radialGradient>
-        </defs>
+    <section className={`tunnel-wrap${counting ? ' counting' : ''}`} aria-label="the dip tunnel">
+      <div
+        className="tunnel"
+        role="img"
+        aria-label={counting
+          ? 'counting the crumbs'
+          : `${compact(crumbs)} crumbs piled up, ${layer + 1} ${layer === 0 ? 'layer' : 'layers'} deep in the dip`}
+      >
+        {/* the open air above the surface — only ever visible while the dig
+            front is still in the first band or two */}
+        <div className="t-sky" aria-hidden="true" />
 
-        {/* the vessel */}
-        <path className="bowl-body" d="M14 40 Q14 134 110 142 Q206 134 206 40 Z" fill="url(#bowl-glaze)" />
-        <path d="M23 44 Q23 122 110 128 Q197 122 197 44 Z" fill="url(#bowl-inner)" />
+        {/* The scroll position is an inline `top` on the STACK, not a CSS var
+            the bands each consume: a change to a custom property does not
+            reliably retrigger/interpolate a transition on a property that
+            reads it through calc() (measured: the bands snapped late instead
+            of gliding), while a direct inline `top` change transitions every
+            time. One animated element instead of nine, too. */}
+        <div
+          className="t-stack"
+          aria-hidden="true"
+          style={{ top: `calc(42% - ${depth.toFixed(4)} * var(--bh))` }}
+        >
+          {bands.map((b) => (
+            <Stratum
+              key={b.ordinal}
+              band={b}
+              dug={b.ordinal < layer ? 1 : b.ordinal === layer ? frac : 0}
+            />
+          ))}
+        </div>
 
-        <g clipPath="url(#bowl-clip)">
-          {/* the dip pooled in the bottom — same tier as the bed it sits on */}
-          <ellipse className={`bowl-dip dip-${tier.key}`} cx="110" cy="140" rx="94" ry="34" />
-
-          {/* the heap */}
-          <g className="heap" style={{ ['--soggy' as string]: soggy.toFixed(3) }}>
-            {pile.map((c, i) => (
-              <g key={i} transform={`translate(${110 + c.x * 82} ${126 - c.y * 96}) rotate(${c.rot}) scale(${c.s})`}>
-                <path
-                  d="M0 -6.4 L5.7 4 L-5.7 4 Z"
-                  fill={`hsl(${hue + c.shade * 8} ${sat}% ${lum + c.shade * 12}%)`}
-                  // Sog rounds the corners off: a soft crumb has no edges left.
-                  // A round-joined stroke that fattens with `soggy` does exactly
-                  // that to a triangle — sharp points swell into soft lobes.
-                  stroke={`hsl(${hue - 4} ${sat}% ${Math.max(16, lum - 12 + soggy * 10)}%)`}
-                  strokeWidth={0.7 + soggy * 3.1}
-                  strokeLinejoin="round"
-                />
+        {/* The dig front: the crumb pile, resting on the undug dip below. It
+            never moves — the strata scroll behind it — which is exactly what
+            makes the dig read as GOING somewhere. The flight (App.tsx's
+            launchDip) measures this element, so it must exist even when the
+            pile itself is empty. */}
+        <div className="tunnel-front" aria-hidden="true">
+          <svg className="t-pile" viewBox="0 0 120 64">
+            <defs>
+              <radialGradient id="t-wet" cx="50%" cy="40%" r="60%">
+                <stop offset="0%" stopColor="#ffffff" stopOpacity="0.5" />
+                <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+              </radialGradient>
+            </defs>
+            <g className="heap" style={{ ['--soggy' as string]: soggy.toFixed(3) }}>
+              {pile.map((c, i) => (
+                <g key={i} transform={`translate(${60 + c.x * 44} ${58 - c.y * 50}) rotate(${c.rot}) scale(${c.s})`}>
+                  <path
+                    d="M0 -6.4 L5.7 4 L-5.7 4 Z"
+                    fill={`hsl(${hue + c.shade * 8} ${sat}% ${lum + c.shade * 12}%)`}
+                    // Sog rounds the corners off: a soft crumb has no edges left.
+                    // A round-joined stroke that fattens with `soggy` does exactly
+                    // that to a triangle — sharp points swell into soft lobes.
+                    stroke={`hsl(${hue - 4} ${sat}% ${Math.max(16, lum - 12 + soggy * 10)}%)`}
+                    strokeWidth={0.7 + soggy * 3.1}
+                    strokeLinejoin="round"
+                  />
+                </g>
+              ))}
+            </g>
+            {/* the sheen of a pile that has been sitting out */}
+            {soggy > 0.02 && (
+              <ellipse className="wet-sheen" cx="60" cy={58 - height * 50 + 8}
+                rx={42} ry={13} fill="url(#t-wet)" opacity={Math.min(0.85, soggy)} />
+            )}
+            {atRim && (
+              <g className="spill" aria-hidden="true">
+                <path d="M104 50 L110 60 L98 60 Z" />
+                <path d="M12 46 L18 56 L6 56 Z" />
               </g>
-            ))}
-          </g>
+            )}
+          </svg>
+        </div>
 
-          {/* the sheen of a bowl that has been sitting out */}
-          {soggy > 0.02 && (
-            <ellipse className="wet-sheen" cx="110" cy={126 - height * 96 + 12}
-              rx={78} ry={26} fill="url(#wet)" opacity={Math.min(0.85, soggy)} />
-          )}
-        </g>
+        {/* the cut-away's glass: vignette and side walls, so the strata read
+            as a core sample out of the dip, not a striped rectangle */}
+        <div className="tunnel-glass" aria-hidden="true" />
+      </div>
 
-        {/* the lit foot of the vessel — without it the cavity swallows the
-            whole silhouette and the bowl reads as a glass fishbowl */}
-        <path className="bowl-foot" d="M14 92 Q30 138 110 142 Q190 138 206 92 Q190 128 110 132 Q30 128 14 92 Z" />
-
-        {/* rim last, so crumbs sit inside it */}
-        <ellipse className="bowl-rim" cx="110" cy="40" rx="96" ry="20" />
-        {atRim && (
-          <g className="spill" aria-hidden="true">
-            <path d="M186 34 L192 44 L180 44 Z" />
-            <path d="M40 30 L46 40 L34 40 Z" />
-          </g>
-        )}
-      </svg>
-
-      <div className="bowl-read">
+      <div className="tunnel-read">
         {counting ? (
           <p className="checking">
             still counting the crumbs
@@ -212,15 +287,15 @@ export function Bowl({ state, nowMs, counting, countProgress }: BowlProps) {
           </p>
         ) : (
           <>
-            <p className="crumbs bowl-crumbs"><strong>{compact(crumbs)}</strong> crumbs</p>
+            <p className="crumbs tunnel-crumbs"><strong>{compact(crumbs)}</strong> crumbs</p>
             <p className="sub">
               {atRim
-                ? 'at the rim — anything more goes on the floor'
+                ? 'packed to the walls — anything more goes on the floor'
                 : soggy > 0.66
                   ? `gone soft — last touched ${sinceLabel(nowMs - state.lastConfirmedAt)}`
                   : soggy > 0.25
                     ? 'starting to go soft'
-                    : state.lastConfirmedAt > 0 ? 'still crisp' : 'a fresh bowl'}
+                    : state.lastConfirmedAt > 0 ? 'still crisp' : 'a fresh dig'}
             </p>
           </>
         )}
@@ -234,7 +309,7 @@ export function Bowl({ state, nowMs, counting, countProgress }: BowlProps) {
 /**
  * One newly-banked chip's actual credit, ready to float up from the counter.
  * `App.tsx` builds these from `chipsPayoutDisplay.ts`'s `actualGains` — never
- * from the raw payout — so a full bowl announces "+0" rather than a number
+ * from the raw payout — so a full tunnel announces "+0" rather than a number
  * the counter did not move for.
  */
 export interface GainFloat {
@@ -243,7 +318,7 @@ export interface GainFloat {
   key: number;
   text: string;
   golden: boolean;
-  /** The bowl was already at the rim: this chip's crispness earned nothing.
+  /** The pile was already at the cap: this chip's crispness earned nothing.
    *  Styled distinctly so "+0" reads as the honest truth, not a stall. */
   empty: boolean;
   x: number; y: number;
@@ -256,7 +331,7 @@ export interface GainFloat {
  * the other half of the crumb burst that already flies there (Kitchen.tsx's
  * `DipFlight`): that answers "what did the chip become", this answers "what
  * did I get". `aria-hidden` throughout, same as the crumb burst it accompanies
- * — the bowl's own crumb count (announced via its `aria-label`) is the
+ * — the tunnel's own crumb count (announced via its `aria-label`) is the
  * accessible source of truth; this is a flourish layered on top of it, never
  * a substitute for it.
  */

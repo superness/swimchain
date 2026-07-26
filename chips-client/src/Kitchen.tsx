@@ -366,7 +366,7 @@ export function Kitchen({ chips, goldenBits, onBank, state, nowMs }: KitchenProp
   );
 }
 
-/** A chip travelling from its fryer into the bowl. */
+/** A chip travelling from its fryer down into the dip tunnel. */
 export interface DipFlightState {
   key: number;
   ms: number;
@@ -390,7 +390,9 @@ function crumbJitter(seed: number, i: number): { dx: number; dy: number } {
 }
 
 /**
- * The banked chip, arcing out of the basket and down into the dip.
+ * The banked chip, arcing out of the basket and plunging into the dig front —
+ * one more chip dipped into the current layer, one scratch deeper down the
+ * tunnel. The crumb burst is the splash it makes going under.
  *
  * Fixed-position and pointer-events:none, so it is painted over the scene and
  * takes part in no layout — which is the point. The panel this replaced was a
@@ -400,7 +402,7 @@ function crumbJitter(seed: number, i: number): { dx: number; dy: number } {
  * It is a flourish, not a progress bar: the credit already landed in the queue
  * the instant the chip was banked (see `onBank` in App.tsx), before this
  * component ever mounts. The flight runs 1.25s (DOM lifetime 1.4s so the
- * crumb burst isn't cut off mid-crunch) purely to *pace the displayed
+ * crumb burst isn't cut off mid-splash) purely to *pace the displayed
  * counter* — nothing here gates, delays, or reflects a real state change.
  */
 export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | null; goldenBits: number }) {
@@ -434,8 +436,11 @@ export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | nul
             className="dip-crumb"
             aria-hidden="true"
             style={{
+              // The splash starts where the chip went UNDER — the entry point
+              // itself, not the old "eaten" spot 46px above it: the chip is no
+              // longer eaten, it dips in and keeps going down.
               '--cx0': `${flight.x1 + flight.size / 2}px`,
-              '--cy0': `${flight.y1 - 46 + flight.size / 2}px`,
+              '--cy0': `${flight.y1 + flight.size / 2}px`,
               '--cx1': `${flight.cx1 + j.dx}px`,
               '--cy1': `${flight.cy1 + j.dy}px`,
               animationDelay: `${0.78 + i * 0.012}s`,
