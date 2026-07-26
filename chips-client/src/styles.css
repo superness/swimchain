@@ -619,14 +619,85 @@ h1, h2, h3, p { margin: 0; }
 /* ── narrow / short rooms ────────────────────────────────────────────────── */
 
 @media (max-width: 940px), (max-height: 620px) {
-  .stage { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; overflow-y: auto; }
+  /* The kitchen row's minimum used to be `0` (`minmax(0, 1fr)`), which lets
+     the TRACK shrink arbitrarily far — but the rack inside it does not
+     shrink to match: a basket's size comes from its own clamp()/vh rule, not
+     from the space this row happens to be given, so a track squeezed below
+     the rack's real height doesn't shrink the rack, it just makes the rack
+     OVERFLOW the track. Grid doesn't push row 2 down to make room for an
+     overflowing row 1, so the counter row started exactly where the (tiny)
+     track ended while the rack visually kept going past it — confirmed at
+     812x375: the rack's box and the bowl's box overlapping by ~47px. A
+     `min-content` floor means this row can still grow via its `1fr` to fill
+     spare height on a roomy screen, but can never be sized smaller than the
+     rack it actually contains, so `.stage`'s own scroll (below) is what
+     absorbs a short viewport instead of an overlap. */
+  .stage { grid-template-columns: 1fr; grid-template-rows: minmax(min-content, 1fr) auto; overflow-y: auto; }
   .kitchen { padding-bottom: 8px; }
+
+  /* `.wallboard`'s own `position: static` a few lines down only works if its
+     PARENT stops being `position: fixed` too — a static child of a fixed
+     ancestor is still pulled out of flow right along with it (the stale
+     comment on `.wallboard` above, "laid out by `.corner` now", is what this
+     was missing: `.corner` was never un-fixed to match). Left as it was,
+     `.corner` keeps floating bottom-left over whatever the single-column
+     stage puts at the bottom — confirmed covering the "Golden Chip Detector"
+     jar at 360px wide and "Bigger Bowl I" / "Airtight Bowl" at 616px.
+     Un-fixing it here turns it into a normal flow block, stacked after
+     `.stage`, which is what finally lets `.wallboard`'s own `static` do
+     something.
+
+     `.notice` has no `position` of its own — it rode along on `.corner`'s
+     fixed positioning entirely — so at this size it becomes a normal flow
+     banner above the board instead of a floating toast. A small layout
+     nudge when it appears or clears is a fair trade for never sitting on
+     top of the scene on a screen this size.
+
+     `overflow-y: auto` on `.shop` below is the safety net for the extreme
+     end of this range: a landscape phone short enough that the hood plus
+     this column don't both fit even with `.stage` squeezed to nothing lets
+     the whole room scroll rather than clip the board out of reach. */
+  .corner {
+    position: static;
+    width: 100%;
+    align-items: center;
+    padding: 0 clamp(14px, 2.4vw, 44px) clamp(10px, 2vh, 20px);
+  }
   .wallboard { position: static; width: 100%; max-width: 460px; margin: 0 auto 14px; }
-  .shop { grid-template-rows: auto minmax(0, 1fr); }
-  .basket { width: clamp(112px, 30vw, 170px); }
+  .shop { overflow-y: auto; }
+
+  /* `.rack-2 .basket` / `.rack-3 .basket` / `.rack-4 .basket` above (two
+     classes) are MORE SPECIFIC than a bare `.basket` — a media query does
+     not add specificity, so a plain `.basket { width: ... }` here can never
+     win against them regardless of viewport size. It was dead weight for
+     anyone with more than one fryer (i.e. almost immediately): measured at
+     812x375 with three fryers, the basket rendered at the DESKTOP
+     `.rack-3 .basket` size (`min(clamp(122px, 14.5vw, 224px), 42vh)` = 122px)
+     with the mobile line here having no effect at all. That 42vh cap was
+     sized for the desktop two-column room, where the kitchen owns the whole
+     stage height — on the single-column stacked layout the fryers and the
+     counter now share that height, so the same cap let the rack run
+     straight into the bowl (confirmed: the rack's box and the bowl's box
+     overlapping by ~47px at 812x375). Repeating the rack selectors here
+     matches specificity and lets this line actually win, and the vh term is
+     cut down to fit a rack that now has to leave room for a whole counter
+     underneath it, not the rest of the stage to itself. */
+  .rack-2 .basket, .rack-3 .basket, .rack-4 .basket, .basket {
+    width: min(clamp(112px, 30vw, 170px), 22vh);
+  }
 }
 @media (max-width: 940px) {
   .hood { flex-wrap: wrap; gap: 10px 18px; }
+  /* Whether "LIFETIME CRUNCH" wraps depends on how long the cook's name and
+     the dip label are, not on a fixed width — so the break point moves from
+     player to player. Worse, an orphaned last item under this row's own
+     `justify-content: space-between` lands flush left instead of reading as
+     its own row (observed live: the stat sat under the left edge of the
+     header instead of on the right where its `text-align: right` promises).
+     Force the break to land in the SAME place every time instead of leaving
+     it to chance: the name plate takes the whole first row, and the two
+     stats — always short, always fit together — share a second row under it. */
+  .hood-plate { flex-basis: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
