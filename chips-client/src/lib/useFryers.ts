@@ -42,6 +42,19 @@
  *     terminated can still be delivered afterwards, and the ms check is
  *     what drops it.
  *
+ *   - a worker that NEVER STARTS is respawned, with a backoff. This is not
+ *     defensive tidiness: `new Worker(new URL(...))` fetches a module script,
+ *     and a fetch that fails (offline, a dev-server hiccup, a hashed chunk
+ *     that 404s for a tab left open across a redeploy) yields a Worker object
+ *     that swallows `postMessage` and posts nothing back, for ever. Before
+ *     this hook handled `onerror` that was completely invisible — the basket
+ *     read `bits: -1, attempts: 0` until the player reloaded the page, i.e.
+ *     the game's entire production loop was dead behind a screen that looked
+ *     fine. It bites hardest right after buying a fryer upgrade, because a
+ *     `count` change is when EVERY worker is torn down and replaced at once,
+ *     so one bad moment takes every basket rather than one. See
+ *     `startWorker`'s doc for the reproduction.
+ *
  * Every ms handed to a worker — a fryer's first chip AND every chip it
  * starts after a bank — comes from ONE allocator per hook instance
  * (fryerLogic.ts's createMsAllocator), held in a ref so it survives effect
@@ -62,22 +75,52 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CrunchReq, CrunchRes } from './crunch.worker';
 import {
   createMsAllocator, isBankable, applyFryerMessage, takeChip, placeholderRecord, toFryerChip,
+  restartRecord, nextRetryDelay,
 } from './fryerLogic';
 import type { FryerChip, FryerRecord } from './fryerLogic';
 
 export type { FryerChip };
 
+/**
+ * `onFail` is not optional plumbing — it is the difference between a fryer that
+ * stops and a game that stops. A Worker whose module script never loads (an
+ * offline moment, a dev-server hiccup, a hashed chunk that 404s for a tab left
+ * open across a redeploy) fires ONE `error` event and then does nothing, for
+ * ever: it accepts `postMessage` silently and posts nothing back. With no
+ * handler that is completely invisible — the basket sits at `bits: -1,
+ * attempts: 0` until the player reloads the page, i.e. the whole game loop is
+ * dead with no error, no notice and nothing on screen that looks broken.
+ *
+ * Reproduced 2026-07-26 (chips-client, live tab): with the module server
+ * stopped, a fryer-count change spawned three workers, every basket went to
+ * `-1/0`, and they stayed there — including after the server came back — until
+ * a reload. That matches the live report of both fryers frozen at `-1/0` for
+ * 90+ seconds immediately after buying an upgrade, which is exactly the moment
+ * this hook tears every worker down and builds new ones.
+ */
 function startWorker(
   authorIdHex: string,
   tableId: string,
   ms: number,
-  onMessage: (msg: CrunchRes) => void
+  onMessage: (msg: CrunchRes) => void,
+  onFail: (w: Worker) => void
 ): Worker {
   const w = new Worker(new URL('./crunch.worker.ts', import.meta.url), { type: 'module' });
   w.onmessage = (e: MessageEvent<CrunchRes>) => onMessage(e.data);
+  w.onerror = (e: ErrorEvent) => {
+    // A load failure reports an empty message on most engines; log whatever
+    // there is, because a silent fryer is the thing being fixed here.
+    console.error('[chips] a fryer never started', e.message || '(no message — the worker script failed to load)');
+    onFail(w);
+  };
   const start: CrunchReq = { type: 'start', authorIdHex, tableId, ms };
   w.postMessage(start);
   return w;
+}
+
+function clearTimers(timers: Set<number>): void {
+  for (const t of timers) window.clearTimeout(t);
+  timers.clear();
 }
 
 function stopWorker(w: Worker): void {
@@ -100,11 +143,69 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
   const applyMessage = useCallback((index: number, msg: CrunchRes): void => {
     const updated = applyFryerMessage(latest.current, index, msg);
     if (!updated) return; // stale ms, exhausted, or an index this basket no longer tracks
+    // This fryer is demonstrably alive, so its respawn backoff starts over.
+    backoff.current[index] = 0;
     latest.current = updated;
     setChips(updated.map(toFryerChip));
   }, []);
 
+  /**
+   * Respawn a fryer whose worker died. See `startWorker`'s doc for what dying
+   * looks like (one `error` event, then silence for ever).
+   *
+   * Three things keep this from resurrecting a fryer that should stay dead:
+   *
+   *   - `epoch`, bumped by the owning effect on every run AND by its cleanup.
+   *     A pending retry from a previous basket (or from an unmounted hook)
+   *     no-ops. Cleanup ALSO clears the timers outright — the epoch check alone
+   *     would not stop a timer that fires between unmount and page teardown
+   *     from allocating a Worker nobody holds a handle to.
+   *   - `workers.current[index] === w`: the worker that failed must still be
+   *     the one this basket is using. A bank, or a rebuild, already replaced it
+   *     otherwise, and that replacement is alive.
+   *   - a per-fryer backoff (fryerLogic.ts's `nextRetryDelay`), so a build
+   *     that is genuinely broken retries twice a minute rather than per frame.
+   *
+   * Written as a ref rather than a `useCallback` because `startWorker` calls in
+   * BOTH the effect and `bank()` install it as a worker's `onerror`, and those
+   * callbacks outlive the render that created them: reading through a ref means
+   * a retry always uses the CURRENT identity/table, never the pair that was in
+   * scope when the dead worker was born.
+   */
+  const epoch = useRef(0);
+  const timers = useRef<Set<number>>(new Set());
+  const backoff = useRef<number[]>([]);
+  const restartRef = useRef<(index: number, w: Worker) => void>(() => { /* set below */ });
+  restartRef.current = (index: number, w: Worker): void => {
+    const myEpoch = epoch.current;
+    if (workers.current[index] !== w) return; // already replaced — nothing to do
+    w.terminate();
+    const wait = nextRetryDelay(backoff.current[index] ?? 0);
+    backoff.current[index] = wait;
+    const t = window.setTimeout(() => {
+      timers.current.delete(t);
+      if (epoch.current !== myEpoch) return;   // a rebuild (or unmount) happened
+      if (workers.current[index] !== w) return; // superseded by a bank
+      const ms = allocatorRef.current!();
+      const records = restartRecord(latest.current, index, ms);
+      if (!records) return;                     // this basket no longer has that fryer
+      latest.current = records;
+      setChips(records.map(toFryerChip));
+      workers.current[index] = startWorker(
+        authorIdHex, tableId, ms,
+        (msg) => applyMessage(index, msg),
+        (bad) => restartRef.current(index, bad)
+      );
+    }, wait);
+    timers.current.add(t);
+  };
+
   useEffect(() => {
+    // Every basket this run is about to build is a new generation: any respawn
+    // still pending from the last one must not fire into it.
+    epoch.current++;
+    clearTimers(timers.current);
+    backoff.current = [];
     if (!authorIdHex || !tableId || count <= 0) {
       workers.current = [];
       latest.current = [];
@@ -118,13 +219,24 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
     for (let i = 0; i < count; i++) {
       const ms = allocate();
       initial.push(placeholderRecord(ms));
-      made.push(startWorker(authorIdHex, tableId, ms, (msg) => applyMessage(i, msg)));
+      made.push(startWorker(
+        authorIdHex, tableId, ms,
+        (msg) => applyMessage(i, msg),
+        (bad) => restartRef.current(i, bad)
+      ));
     }
     latest.current = initial;
     workers.current = made;
     setChips(initial.map(toFryerChip));
 
     return () => {
+      // Bump again, and drop the timers: a respawn scheduled by THIS run must
+      // not outlive it. Without the clear, a hook unmounted between a worker's
+      // `error` and its retry would spawn a Worker with nothing left holding a
+      // handle to terminate it — a leaked core at 8 MiB a hash, the exact thing
+      // the rest of this cleanup exists to prevent.
+      epoch.current++;
+      clearTimers(timers.current);
       // `made` IS `workers.current` (same array object), so a worker `bank()`
       // swapped in mid-life is the one terminated here — while still being the
       // array THIS effect run created, which is what keeps a StrictMode
@@ -174,7 +286,12 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
     // goes into `workers.current` — the same array the owning effect's cleanup
     // closes over — so it is still terminated on unmount.
     stopWorker(worker);
-    workers.current[index] = startWorker(authorIdHex, tableId, newMs, (msg) => applyMessage(index, msg));
+    backoff.current[index] = 0;
+    workers.current[index] = startWorker(
+      authorIdHex, tableId, newMs,
+      (msg) => applyMessage(index, msg),
+      (bad) => restartRef.current(index, bad)
+    );
 
     return taken;
   }

@@ -8,6 +8,7 @@
  */
 import {
   nextNonce, isBankable, createMsAllocator, applyFryerMessage, takeChip, grindLoop, U64_MAX,
+  restartRecord, nextRetryDelay,
 } from './fryerLogic';
 import type { FryerRecord } from './fryerLogic';
 import type { CrunchRes } from './crunch.worker';
@@ -265,6 +266,60 @@ check('isBankable(-1) is false (defensive)', isBankable(-1) === false);
     isCurrent: () => current,
   });
   check('a grind superseded mid-hash posts nothing at all', posts.length === 0, posts);
+}
+
+/* ── respawning a fryer whose worker died ──────────────────────────────────
+ *
+ * HONEST SCOPE. The bug these back — a Worker whose module script never loads
+ * fires one `error` and then goes silent for ever, leaving the basket at
+ * `bits: -1, attempts: 0` until the page is reloaded — is NOT reproducible
+ * here. It needs a real Worker and a real failed fetch; it was reproduced and
+ * the fix verified in a live browser instead (see
+ * .superpowers/sdd/2026-07-25-chips-batched-banking/fryer-freeze-report.md).
+ * What IS pure logic, and is tested below, is the two decisions the respawn
+ * path makes: which record the replacement fryer gets, and how long to wait.
+ */
+{
+  // 7) restartRecord: a fresh placeholder at a NEW ms, nothing else touched.
+  const records: FryerRecord[] = [
+    { ms: 10, bits: 11, attempts: 900, nonce: 5n },
+    { ms: 20, bits: 4, attempts: 30, nonce: 7n },
+  ];
+  const out = restartRecord(records, 1, 99);
+  check('restartRecord replaces the named fryer with a placeholder at the new ms',
+    out !== null && out[1].ms === 99 && out[1].bits === -1 && out[1].attempts === 0 && out[1].nonce === 0n, out?.[1]);
+  check('restartRecord leaves every other fryer alone',
+    out !== null && out[0].ms === 10 && out[0].bits === 11 && out[0].attempts === 900, out?.[0]);
+  check('restartRecord does not mutate the input',
+    records[1].ms === 20 && records[1].bits === 4, records[1]);
+  // The ms MUST change. Reusing the dead worker's ms would let the replacement
+  // — which walks nonces from 0 again — post a `crisper` at ~0 bits that
+  // applyFryerMessage writes straight in, silently downgrading a good chip.
+  const reused = restartRecord(records, 0, 10);
+  const downgraded = reused && applyFryerMessage(reused, 0, { type: 'crisper', ms: 10, bits: 0, nonce: '0', attempts: 1 });
+  check('reusing the dead chip\'s ms is exactly what would downgrade the basket',
+    downgraded !== null && downgraded !== undefined && downgraded[0].bits === 0, downgraded?.[0]);
+  const fresh = restartRecord(records, 0, 11);
+  const ignored = fresh && applyFryerMessage(fresh, 0, { type: 'crisper', ms: 10, bits: 0, nonce: '0', attempts: 1 });
+  check('a new ms makes the dead worker\'s in-flight messages inert', ignored === null, ignored);
+  check('restartRecord returns null for a fryer this basket no longer has',
+    restartRecord(records, 5, 99) === null);
+  check('restartRecord returns null on an emptied basket', restartRecord([], 0, 99) === null);
+}
+
+{
+  // 8) nextRetryDelay: 1s, doubling, capped — never 0 (a 0 would respawn a
+  // failing worker on the next tick, i.e. a Worker per frame against a build
+  // that is genuinely broken).
+  check('the first retry waits a second', nextRetryDelay(0) === 1000);
+  check('retries double', nextRetryDelay(1000) === 2000 && nextRetryDelay(2000) === 4000);
+  check('retries cap at 30s', nextRetryDelay(16_000) === 30_000 && nextRetryDelay(30_000) === 30_000);
+  check('a nonsense previous delay still yields a real wait',
+    nextRetryDelay(-5) === 1000 && nextRetryDelay(NaN) === 1000);
+  let d = 0;
+  for (let i = 0; i < 50; i++) { d = nextRetryDelay(d); check_ge(d); }
+  function check_ge(v: number) { if (v < 1000 || v > 30_000) { failures++; console.log(`FAIL  retry delay out of range ${v}`); } }
+  check('50 consecutive failures stay inside [1s, 30s]', d === 30_000, d);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
