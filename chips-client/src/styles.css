@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Chips & Dip — the shop.
+   Dippin' Chips — the shop.
 
    Everything here is CSS/SVG. No image files, no font downloads, no external
    anything: the whole scene is drawn by the browser.
@@ -30,7 +30,10 @@ h1, h2, h3, p { margin: 0; }
 
 :root {
   --sign: 'Haettenschweiler', 'Franklin Gothic Bold', 'Arial Narrow', Impact, sans-serif;
-  --chalk: 'Segoe Script', 'Bradley Hand', 'Chalkboard SE', 'Comic Sans MS', cursive;
+  /* The secondary voice. Was a cursive "chalk" stack — it read as a joke
+     font, not a chip shop. A mono ticket-printer stack keeps the diegesis
+     (order tickets, till receipts) and stays crisp at small sizes. */
+  --chalk: ui-monospace, 'Cascadia Code', 'Segoe UI Mono', Consolas, 'Roboto Mono', monospace;
   --steel: #2a2119;
   --steel-hi: #4a3c2e;
   --ink: #f4e9d8;
@@ -152,37 +155,34 @@ h1, h2, h3, p { margin: 0; }
   overflow: hidden;
 }
 
+/* The hood: flat, quiet, structural. It used to glow — gradient background,
+   a blurred neon strip light, halo text-shadows on every figure — and read as
+   chrome demanding attention. A fixture holds the room up; it does not
+   perform. One flat surface, one hairline, no halos. */
 .hood {
   position: relative; z-index: 3;
   display: flex; align-items: flex-end; justify-content: space-between; gap: 2vw;
   padding: clamp(10px, 1.6vh, 22px) clamp(14px, 2.4vw, 44px) clamp(10px, 1.4vh, 18px);
-  background:
-    linear-gradient(180deg, #1b1611 0%, #241d15 62%, #120e0a 100%);
-  border-bottom: 2px solid #0a0806;
-  box-shadow: 0 14px 40px rgba(0,0,0,.6), inset 0 -1px 0 rgba(255,210,150,.12);
-}
-.hood::after {  /* the strip light under the extractor hood */
-  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--dglow, #ffb56b) 75%, #fff) 20%, #ffe9c4 50%, color-mix(in srgb, var(--dglow, #ffb56b) 75%, #fff) 80%, transparent);
-  filter: blur(.6px); opacity: .8;
+  background: rgba(17, 13, 9, .96);
+  border-bottom: 1px solid rgba(255, 226, 180, .14);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
 }
 .shop-name {
   display: block; font-family: var(--sign); letter-spacing: .06em;
   font-size: clamp(20px, 2.6vw, 40px); line-height: .95;
-  color: #ffe6b8;
-  text-shadow: 0 0 18px rgba(255,180,90,.5), 0 2px 0 #3a2a18;
+  color: #f2e3c8;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, .4);
 }
-.cook { display: block; font-family: var(--chalk); font-size: clamp(11px, 1.1vw, 15px); color: #b39d7d; margin-top: 3px; }
+.cook { display: block; font-family: var(--chalk); font-size: clamp(10px, 1vw, 13px); color: #a08c6f; margin-top: 4px; }
 .hood-dip, .hood-crunch { text-align: right; }
 .hood-dip strong, .hood-crunch strong {
   display: block; font-family: var(--sign); letter-spacing: .04em;
   font-size: clamp(16px, 2vw, 30px); line-height: 1;
-  color: color-mix(in srgb, var(--d3, #ffcf8a) 70%, #fff5df);
-  text-shadow: 0 0 22px color-mix(in srgb, var(--dglow, #ffb56b) 60%, transparent);
+  color: #efe0c4;
 }
 .in-the-bowl {
   display: block; font-size: clamp(8px, .72vw, 11px); letter-spacing: .22em;
-  text-transform: uppercase; color: #8d7c63; margin-bottom: 3px;
+  text-transform: uppercase; color: #7d6e58; margin-bottom: 3px;
 }
 
 .stage {
@@ -486,11 +486,14 @@ h1, h2, h3, p { margin: 0; }
    face. The NEXT layer's name is what you see coming up under the floor. */
 .t-name {
   position: absolute; left: 7vw; top: clamp(18px, 4vh, 46px); z-index: 3;
-  font-family: var(--chalk); font-size: clamp(20px, 3.2vw, 44px);
-  color: rgba(255,248,232,.34); text-shadow: 0 2px 8px rgba(0,0,0,.5);
+  /* Painted signage on the strata face, not handwriting: the display font,
+     big, faint, tracked out. */
+  font-family: var(--sign); font-size: clamp(22px, 3.6vw, 52px);
+  letter-spacing: .14em; text-transform: uppercase;
+  color: rgba(255,248,232,.26); text-shadow: 0 2px 8px rgba(0,0,0,.45);
 }
-/* past the ladder the chalk trails off — still dip, just no promises */
-.t-band.beyond .t-name { opacity: .6; font-style: italic; }
+/* past the ladder the paint fades — still dip, just no promises */
+.t-band.beyond .t-name { opacity: .55; font-size: clamp(16px, 2.4vw, 34px); }
 
 /* The hollowed part of a band — everything the dig has already eaten. Height
    is set inline (1 for passed layers, the front's frac for the current one),
@@ -569,10 +572,11 @@ h1, h2, h3, p { margin: 0; }
 .shelf .jars { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
 .jar {
   position: relative; width: 92px; padding: 30px 4px 6px;
-  border-radius: 3px 3px 6px 6px;
-  background: linear-gradient(180deg, rgba(48,38,28,.86), rgba(26,20,14,.9));
-  box-shadow: inset 0 1px 0 rgba(255,220,170,.16), 0 8px 18px rgba(0,0,0,.5);
-  text-align: center; transition: transform .16s, box-shadow .22s, opacity .2s;
+  border-radius: 6px;
+  background: rgba(23, 17, 11, .88);
+  border: 1px solid rgba(255, 226, 180, .1);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .4);
+  text-align: center; transition: transform .16s, box-shadow .22s, opacity .2s, border-color .2s;
 }
 .jar-glass {
   position: absolute; top: 5px; left: 50%; translate: -50% 0;
@@ -587,10 +591,10 @@ h1, h2, h3, p { margin: 0; }
 }
 .jar-name { display: block; font-size: 10.5px; line-height: 1.2; color: #d8c6a6; }
 .jar-cost { display: block; font-family: var(--chalk); font-size: 12px; color: #8d7c63; margin-top: 2px; }
-.jar.afford { opacity: 1; }
-.jar.afford .jar-name { color: #ffe6bb; }
-.jar.afford .jar-cost { color: color-mix(in srgb, var(--dglow, #ffb56b) 80%, #fff); }
-.jar.afford:hover { transform: translateY(-4px); box-shadow: 0 0 0 1px rgba(255,200,120,.5), 0 12px 26px rgba(0,0,0,.55); }
+.jar.afford { opacity: 1; border-color: rgba(255, 226, 180, .32); }
+.jar.afford .jar-name { color: #f4e6c8; }
+.jar.afford .jar-cost { color: #e8cfa0; }
+.jar.afford:hover { transform: translateY(-3px); border-color: rgba(255, 226, 180, .55); box-shadow: 0 12px 24px rgba(0,0,0,.5); }
 .jar.dear { opacity: .42; }
 .got { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
 .got-jar {
@@ -750,7 +754,7 @@ h1, h2, h3, p { margin: 0; }
 .doorway h1 {
   font-family: var(--sign); font-weight: 400; letter-spacing: .06em;
   font-size: clamp(34px, 7vw, 84px); line-height: .94; color: #ffe6b8;
-  text-shadow: 0 0 40px rgba(255,180,90,.45), 0 3px 0 #3a2a18;
+  text-shadow: 0 3px 0 rgba(0,0,0,.35);
 }
 .doorway .lede { margin-top: 16px; font-size: clamp(14px, 1.4vw, 17px); line-height: 1.6; color: #d9c6a6; }
 .doorway .fine { margin-top: 14px; font-size: 12px; color: #8d7c63; }
@@ -759,21 +763,25 @@ h1, h2, h3, p { margin: 0; }
   display: block; font-family: var(--chalk); font-size: 13px; color: #b39d7d; margin-bottom: 6px;
 }
 .apron-name input {
-  width: 100%; padding: 10px 12px; border-radius: 3px;
+  width: 100%; padding: 10px 12px; border-radius: 6px;
   background: rgba(255,246,230,.94); color: #2a2119; border: 0;
   font-family: var(--chalk); font-size: 16px;
   box-shadow: inset 0 2px 6px rgba(0,0,0,.3);
 }
 .apron-name input:focus { outline: 2px solid color-mix(in srgb, var(--dglow, #ffb56b) 80%, #fff); }
+/* One clean cream button. The old one was a three-stop golden-gloss gradient
+   with a rim light — it looked like melting butter. Flat surface, dark ink,
+   an honest shadow. */
 .doorway .big {
-  margin-top: 20px; padding: 13px 34px; border-radius: 3px;
+  margin-top: 20px; padding: 12px 32px; border-radius: 6px;
   font-family: var(--sign); letter-spacing: .1em; font-size: clamp(17px, 2vw, 24px);
-  color: #2a1a08;
-  background: linear-gradient(180deg, #ffd88e, #e79f30 62%, #c67d17);
-  box-shadow: 0 0 0 1px rgba(255,230,180,.6), 0 12px 30px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.7);
-  transition: transform .16s, filter .2s;
+  color: #1d1206;
+  background: #f2e6cf;
+  border: 1px solid rgba(30, 20, 10, .55);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .4);
+  transition: transform .14s, background .2s, box-shadow .2s;
 }
-.doorway .big:hover { transform: translateY(-2px); filter: brightness(1.08); }
+.doorway .big:hover { transform: translateY(-1px); background: #fdf4e0; box-shadow: 0 10px 24px rgba(0,0,0,.45); }
 
 .fry-spinner { display: inline-flex; gap: 8px; margin-top: 22px; }
 .fry-spinner i {
