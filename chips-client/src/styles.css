@@ -373,7 +373,16 @@ h1, h2, h3, p { margin: 0; }
 }
 .basket.ready:hover .tongs, .basket.golden .tongs { opacity: .95; }
 
-.mutter { font-family: var(--chalk); color: #d8bf99; opacity: .9; font-size: 15px; }
+/* Out of flow ON PURPOSE: the kitchen column is vertically centred, so a
+   flow child appearing under the rack recentres the column and visibly
+   shifts every basket for the 2.2s the nudge is on screen. Absolute against
+   the kitchen (already position: relative) floats it over the wallboard
+   padding instead. */
+.mutter {
+  position: absolute; left: 50%; bottom: clamp(34px, 6vh, 76px); translate: -50% 0;
+  margin: 0; white-space: nowrap;
+  font-family: var(--chalk); color: #d8bf99; opacity: .9; font-size: 15px;
+}
 
 /* the chalked price under each basket — see Kitchen.tsx's `WorthTag`. The
    one deliberate exception to this file's own "CRISPNESS IS A LOOK, NOT A
@@ -384,11 +393,14 @@ h1, h2, h3, p { margin: 0; }
    bolted onto the fryer. */
 .basket-slot { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .worth {
-  /* Fixed regardless of content (the pale line vs a live figure plus the
-     doubling tag — both now end with the tosses ticker) — see the `.rack`
-     comment above on why a jumping caption height would misalign the
-     baskets. */
-  min-height: 3.6em;
+  /* Must cover the TALLEST state with room to spare, not approximately: the
+     kitchen column is vertically centred, so if the live state (big worth
+     figure + doubling tag + ticker) renders taller than this floor while
+     the pale state sits exactly at it, the whole rack shifts the moment a
+     chip becomes bankable. 4.4em > the live stack's real height (the worth
+     line alone is 1.25em type on a 1.25 line-height), so every state rests
+     on the same floor and the baskets never move. */
+  min-height: 4.4em;
   font-family: var(--chalk); font-size: clamp(10px, 1.5vw, 13px);
   color: #d8c6a6; text-align: center; line-height: 1.25;
   /* Smooths a congeal-triggered jump (chipsPayoutDisplay.ts's `worthIfBankedNow`
