@@ -350,26 +350,51 @@ export function App() {
         if (!plan) { return; }
         await host.submitMove(me, tableId, plan.body);
         backoff.current = 0;
-        // The ack is UNCONDITIONAL — `cancelled` (a newer attempt superseded
-        // this one while it was in flight, e.g. the player dipped again)
-        // suppresses only the follow-up refresh below, never the ack.
-        // Skipping the ack here would leave an already-landed batch in the
-        // queue forever resubmitting itself: harmless to the fold (it
-        // dedupes by proofKey, so nothing is credited twice) but a real
-        // action PoW and a chain write wasted on every single retry.
+        // REFRESH FIRST, THEN ACK. The order is load-bearing and this is the
+        // only place it can be got right.
         //
-        // `shouldRefresh` is just `!cancelled` — computed HERE, not read back
-        // out of the `setQueue` updater below. React only runs a functional
-        // updater synchronously on the "eager state" fast path (no pending
-        // lanes on this fiber); this component has near-continuous pending
-        // lanes (the 1s clock tick, `foldNow`'s own `setState`, `queueTick`,
-        // flight timers), so that path is not reliably taken here, and a
-        // value assigned as a side effect INSIDE the updater can still be
-        // read back as its old default on the very next line. Updaters must
-        // be pure and their assignments must never be relied on outside them.
-        const shouldRefresh = !cancelled;
+        // The ack drops these moves from the queue, which is what stops
+        // `withPending` synthesising them. If it ran first, the fold would see
+        // a window with NEITHER the optimistic entry NOR its confirmed twin,
+        // and would render the pre-move state: crumbs jump back up, a
+        // just-bought upgrade un-owns itself. Traced live 2026-07-26 — a real
+        // `buy:season2` lost `owned` for 38 ms between the ack and the
+        // refresh. That used to be cosmetic. It is not any more: `fryers`
+        // feeds `useFryers`' count, and since that hook stopped rebuilding on
+        // every count change it now STOPS AND RESTARTS a fryer per step, so
+        // an N -> N-1 -> N flicker destroys a real chip.
+        //
+        // Loading the confirmed replies first makes the overlap the safe
+        // direction instead. Both copies are briefly present, and the fold is
+        // built for exactly that: `orderReplies` puts the confirmed one first
+        // (a lower block height, and a lower authoring-ms even while both are
+        // pending), so the synthetic twin folds as `rejected-duplicate` for a
+        // bank (chipsEngine's `seenProofs`) or `rejected-owned` for a buy.
+        // Nothing is credited or charged twice.
+        //
+        // The ack itself stays UNCONDITIONAL on a successful submit:
+        //   - `cancelled` (a newer attempt superseded this one in flight, e.g.
+        //     the player dipped again) suppresses only the refresh, never the
+        //     ack;
+        //   - a FAILING refresh is swallowed. The batch landed; the queue must
+        //     be told so. Leaving it acked-never would have it resubmit itself
+        //     for ever — harmless to the fold, which dedupes, but a real action
+        //     PoW and a chain write wasted on every retry. The cost of
+        //     swallowing is that this one case still shows the old flicker
+        //     (no confirmed twin was loaded), which is strictly better than a
+        //     queue that cannot drain.
+        //
+        // Nothing here is assigned inside a `setQueue` updater and read back
+        // outside it. React only runs a functional updater synchronously on
+        // the "eager state" fast path (no pending lanes on this fiber); this
+        // component has near-continuous pending lanes (the 1s clock tick,
+        // `foldNow`'s own `setState`, `queueTick`, flight timers), so that
+        // path is not reliably taken here and such a value can read back as
+        // its old default on the very next line. Updaters stay pure.
+        if (!cancelled) {
+          try { await refresh(); } catch { /* the batch landed; ack anyway and let the poll catch up */ }
+        }
         setQueue((q) => afterSubmit(q, plan.moves, cancelled).queue);
-        if (shouldRefresh) await refresh();
         // Re-arm explicitly. The ack above already changes `queue`'s
         // reference (a fresh array from `.filter`, even when its contents
         // end up identical), which alone re-triggers this effect in the

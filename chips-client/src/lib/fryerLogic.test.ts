@@ -8,7 +8,7 @@
  */
 import {
   nextNonce, isBankable, createMsAllocator, applyFryerMessage, takeChip, grindLoop, U64_MAX,
-  restartRecord, nextRetryDelay,
+  restartRecord, nextRetryDelay, planResize,
 } from './fryerLogic';
 import type { FryerRecord } from './fryerLogic';
 import type { CrunchRes } from './crunch.worker';
@@ -19,7 +19,11 @@ import { BANK_MIN_BITS } from './chipsConst';
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
   if (cond) console.log(`  ok  ${name}`);
-  else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
+  // BigInt-safe: a FryerRecord carries a bigint nonce, and a bare
+  // JSON.stringify THROWS on it — so a genuine failure used to crash the run
+  // with "Do not know how to serialize a BigInt" instead of printing which
+  // assertion failed and why. Hit while mutation-testing planResize.
+  else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v)) : ''}`); }
 }
 
 // 1) nextNonce: ordinary increments, and the u64 ceiling — checked against
@@ -320,6 +324,99 @@ check('isBankable(-1) is false (defensive)', isBankable(-1) === false);
   for (let i = 0; i < 50; i++) { d = nextRetryDelay(d); check_ge(d); }
   function check_ge(v: number) { if (v < 1000 || v > 30_000) { failures++; console.log(`FAIL  retry delay out of range ${v}`); } }
   check('50 consecutive failures stay inside [1s, 30s]', d === 30_000, d);
+}
+
+/* ── planResize: a count change must not confiscate the player's work ────── */
+{
+  // A basket mid-grind. `mid` and `deep` are the chips a fryer purchase used to
+  // destroy: real Argon2id seconds, unrecoverable once their worker is
+  // terminated.
+  const deep: FryerRecord = { ms: 101, bits: 12, attempts: 4352, nonce: 0xabcn };
+  const mid: FryerRecord = { ms: 102, bits: 9, attempts: 480, nonce: 0x7n };
+  const basket: FryerRecord[] = [deep, mid];
+  const alloc = (start: number) => { let n = start; return () => ++n; };
+
+  // 9a) GROWING preserves what is already frying, by identity.
+  {
+    let draws = 0;
+    const a = alloc(900);
+    const grown = planResize(basket, 3, () => { draws++; return a(); });
+    check('growing keeps every existing fryer\'s record BY IDENTITY (not a copy)',
+      grown.records[0] === deep && grown.records[1] === mid,
+      grown.records.slice(0, 2));
+    check('growing stops nothing at all', grown.stopped.length === 0, grown.stopped);
+    check('growing starts only the new slot', grown.started.length === 1 && grown.started[0].index === 2, grown.started);
+    check('the new slot is a fresh placeholder at the allocated ms',
+      grown.records[2].bits === -1 && grown.records[2].attempts === 0 && grown.records[2].ms === grown.started[0].ms,
+      grown.records[2]);
+    check('growing by one draws exactly one ms', draws === 1, draws);
+    check('growing does not mutate the input',
+      basket.length === 2 && basket[0] === deep && basket[1] === mid);
+  }
+
+  // 9b) SHRINKING drops only the removed tail.
+  {
+    let draws = 0;
+    const shrunk = planResize(basket, 1, () => { draws++; return 0; });
+    check('shrinking keeps the surviving fryer\'s record BY IDENTITY', shrunk.records[0] === deep, shrunk.records[0]);
+    check('shrinking drops exactly the removed tail', shrunk.records.length === 1, shrunk.records.length);
+    check('shrinking reports exactly the removed indices', shrunk.stopped.join() === '1', shrunk.stopped);
+    check('shrinking starts nothing and draws no ms', shrunk.started.length === 0 && draws === 0);
+  }
+
+  // 9c) An UNCHANGED count is a true no-op. Load-bearing: the resize effect runs
+  // on StrictMode's double-invoke and on every identity/table rebuild, so a
+  // "same size" call that drew an ms or restarted a slot would still confiscate
+  // the very chips this function exists to protect.
+  {
+    let draws = 0;
+    const same = planResize(basket, 2, () => { draws++; return 0; });
+    check('an unchanged count starts nothing, stops nothing, draws no ms',
+      same.started.length === 0 && same.stopped.length === 0 && draws === 0);
+    check('an unchanged count leaves every record identical',
+      same.records[0] === deep && same.records[1] === mid);
+  }
+
+  // 9d) A rebuild (identity/table change) — useFryers clears its records first,
+  // so every slot is new. This is how "a different table restarts everything"
+  // reaches this function.
+  {
+    const a = alloc(500);
+    const fresh = planResize([], 3, a);
+    check('from an emptied basket every fryer is started', fresh.started.map((s) => s.index).join() === '0,1,2', fresh.started);
+    check('from an emptied basket nothing is stopped (the cleanup already did)', fresh.stopped.length === 0);
+    check('a rebuilt basket carries no record from the old game',
+      fresh.records.length === 3 && fresh.records.every((r) => r.bits === -1 && r.attempts === 0 && r.nonce === 0n),
+      fresh.records);
+    check('every rebuilt slot gets its own distinct ms',
+      new Set(fresh.records.map((r) => r.ms)).size === 3, fresh.records.map((r) => r.ms));
+  }
+
+  // 9e) Teardown and nonsense counts.
+  {
+    const gone = planResize(basket, 0, () => 0);
+    check('a count of zero stops every fryer', gone.stopped.join() === '0,1' && gone.records.length === 0, gone);
+    const neg = planResize(basket, -3, () => 0);
+    check('a negative count is treated as zero, not as a crash', neg.stopped.join() === '0,1' && neg.records.length === 0, neg);
+    const nan = planResize(basket, NaN, () => 0);
+    check('a NaN count is treated as zero', nan.records.length === 0 && nan.stopped.join() === '0,1', nan);
+  }
+
+  // 9f) The property that actually matters, stated end-to-end: a fryer purchase
+  // (grow), then the fold's ack/refresh flicker (shrink then grow again), must
+  // leave basket 0's deep chip untouched throughout.
+  {
+    const a = alloc(700);
+    const afterBuy = planResize(basket, 3, a);
+    const afterBlipDown = planResize(afterBuy.records, 2, a);
+    const afterBlipUp = planResize(afterBlipDown.records, 3, a);
+    check('a buy plus a fold flicker never touches the chip already frying',
+      afterBuy.records[0] === deep && afterBlipDown.records[0] === deep && afterBlipUp.records[0] === deep);
+    check('...nor the second basket, which the flicker does not reach',
+      afterBlipUp.records[1] === mid, afterBlipUp.records[1]);
+    check('...and only the slot the flicker actually removed is ever stopped',
+      afterBuy.stopped.length === 0 && afterBlipDown.stopped.join() === '2' && afterBlipUp.stopped.length === 0);
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

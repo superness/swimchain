@@ -177,6 +177,72 @@ export function restartRecord(
   return out;
 }
 
+/** One fryer to start: which basket slot, and the ms its chip is bound to. */
+export interface StartedFryer {
+  index: number;
+  ms: number;
+}
+
+/**
+ * Move a basket of `records` to `count` fryers with the LEAST possible churn:
+ * which slots to stop, which to start, and the records that result.
+ *
+ * This exists because rebuilding the whole basket on a count change is not a
+ * tidiness question — it CONFISCATES WORK. A fryer's chip is Argon2id seconds
+ * the player has already spent, and terminating its worker throws them away
+ * (`terminate()` being the only thing that can stop a running grind — see
+ * `grindLoop` below). Measured live 2026-07-26: a count change destroyed
+ * 12-bit / 4352-attempt chips in every basket that already existed, and buying
+ * a fryer upgrade did it three times over (the fold briefly forgets and
+ * re-remembers the upgrade around its confirmation). Buying a fryer is a
+ * REWARD; it must not quietly cost the player every other basket.
+ *
+ * So:
+ *   - growing keeps every existing record BY IDENTITY (same object: same ms,
+ *     bits, attempts and nonce) and appends placeholders for the new slots
+ *     only. The workers behind slots 0..n-1 are never told anything, so their
+ *     grinds continue uninterrupted.
+ *   - shrinking drops ONLY the removed tail and reports exactly those indices
+ *     as `stopped`. Surviving slots keep their records by identity.
+ *   - an unchanged count is a true no-op: nothing stopped, nothing started,
+ *     and — load-bearing — NO ms drawn from the allocator.
+ *
+ * Only the tail ever moves, never an interior slot: `applyFryerMessage` routes
+ * a worker's messages by INDEX, so shuffling a live record to a different index
+ * would hand it another worker's messages.
+ *
+ * What this does NOT cover is an identity or table change. Those bind into
+ * every chip's Argon2id preimage (chipsPow.ts's `chipPreimage`), so a chip
+ * ground for one table can never fold on another and the basket really must be
+ * rebuilt. useFryers.ts does that by clearing its records to `[]` before
+ * calling this — from `[]` every slot is new, which is exactly right, and is
+ * the case the `planResize([], n)` tests cover.
+ */
+export function planResize(
+  records: readonly FryerRecord[],
+  count: number,
+  allocate: () => number
+): { records: FryerRecord[]; started: StartedFryer[]; stopped: number[] } {
+  const target = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  const started: StartedFryer[] = [];
+  const stopped: number[] = [];
+
+  if (target === records.length) return { records: records.slice(), started, stopped };
+
+  if (target < records.length) {
+    for (let i = target; i < records.length; i++) stopped.push(i);
+    return { records: records.slice(0, target), started, stopped };
+  }
+
+  const out = records.slice();
+  for (let i = records.length; i < target; i++) {
+    const ms = allocate();
+    out.push(placeholderRecord(ms));
+    started.push({ index: i, ms });
+  }
+  return { records: out, started, stopped };
+}
+
 /**
  * How long to wait before respawning a fryer whose worker died: 1s, then
  * doubling to a 30s ceiling.
