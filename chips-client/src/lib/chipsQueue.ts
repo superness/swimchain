@@ -37,13 +37,32 @@ import type { ChipEntry } from './chipsEngine';
  *  form distributes, so each arm keeps its own required fields. */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
+/**
+ * `sentAt` is what makes an entry SETTLING rather than QUEUED: the wall clock
+ * at which its submission succeeded.
+ *
+ * A move used to be deleted the moment it was acked, which meant the fold lost
+ * it before the chain could supply the confirmed twin — the player's purchase
+ * appeared, vanished, and reappeared a poll later. Keeping it, marked, closes
+ * that: `withPending` still folds it (so the credit holds steady) while
+ * `planSend` skips it (so it is never resubmitted, which is the whole reason
+ * the ack exists). chipsSettling.ts retires it when the twin actually shows up,
+ * or when it has waited longer than the chain could plausibly take.
+ *
+ * `undefined` — not `0`, not `null` — is "never sent". `saveQueue` omits the
+ * field entirely in that case, and `loadQueue` DROPS a row whose `sentAt` is
+ * present but unusable rather than reading it back as unsent: silently
+ * downgrading a settling row to a queued one would resubmit an already-landed
+ * batch, i.e. exactly the bug the ack prevents.
+ */
 export type QueuedMove =
-  | { id: number; tableId: string; author: string; kind: 'bank'; chip: ChipEntry }
-  | { id: number; tableId: string; author: string; kind: 'buy'; key: string };
+  | { id: number; tableId: string; author: string; kind: 'bank'; chip: ChipEntry; sentAt?: number }
+  | { id: number; tableId: string; author: string; kind: 'buy'; key: string; sentAt?: number };
 
 /** What a caller supplies to `enqueue` — everything but the id, which the
- *  queue itself assigns. */
-export type NewMove = DistributiveOmit<QueuedMove, 'id'>;
+ *  queue itself assigns, and `sentAt`, which only a successful submission may
+ *  ever set (`markSent`). */
+export type NewMove = DistributiveOmit<QueuedMove, 'id' | 'sentAt'>;
 
 const STORE_KEY = 'chips.queue.v1';
 
@@ -89,10 +108,50 @@ export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' 
   return { moves, kind: 'bank' };
 }
 
-/** Drop exactly the moves that landed, by id. */
+/** Drop exactly the moves that landed, by id. Retained for
+ *  chipsSettling.ts's retirement path; the SUBMIT path uses `markSent`. */
 export function ack(q: QueuedMove[], taken: QueuedMove[]): QueuedMove[] {
   const gone = new Set(taken.map((m) => m.id));
   return q.filter((m) => !gone.has(m.id));
+}
+
+/**
+ * Entries still awaiting submission. Everything the sender does — batching,
+ * ordering, submitting — must go through this first: a settling entry has
+ * ALREADY landed on the chain, and resubmitting it burns a real action PoW and
+ * a chain write to be folded as `rejected-duplicate`.
+ *
+ * Order is preserved, which is what keeps the queue's FIFO contract intact: a
+ * settling entry is always a prefix of the queue (one submission in flight,
+ * strict FIFO), so removing settling entries leaves the unsent ones in exactly
+ * their original relative order.
+ */
+export function unsent(q: QueuedMove[]): QueuedMove[] {
+  return q.filter((m) => m.sentAt === undefined);
+}
+
+/**
+ * Mark exactly the moves that landed as SETTLING, stamped `at`. Replaces the
+ * old "delete on ack": the entry stays in the queue, and therefore stays in the
+ * optimistic fold, until its confirmed twin arrives or it expires.
+ *
+ * Returns `q` UNCHANGED (same reference) when there is nothing to mark, so a
+ * caller can pass this straight to `setQueue` without forcing a re-render or a
+ * needless `saveQueue` write.
+ *
+ * Already-settling entries keep their ORIGINAL `sentAt`: re-stamping one would
+ * restart its expiry clock, and an entry that keeps being re-marked would never
+ * expire at all.
+ */
+export function markSent(q: QueuedMove[], taken: QueuedMove[], at: number): QueuedMove[] {
+  const landed = new Set(taken.map((m) => m.id));
+  let changed = false;
+  const out = q.map((m) => {
+    if (!landed.has(m.id) || m.sentAt !== undefined) return m;
+    changed = true;
+    return { ...m, sentAt: at };
+  });
+  return changed ? out : q;
 }
 
 /**
@@ -124,7 +183,7 @@ export function loadQueue(): QueuedMove[] {
     const raw = globalThis.localStorage?.getItem(STORE_KEY);
     if (!raw) return [];
     const rows = JSON.parse(raw) as {
-      id: unknown; tableId: unknown; author: unknown; kind: unknown;
+      id: unknown; tableId: unknown; author: unknown; kind: unknown; sentAt?: unknown;
       key?: unknown; chip?: { ms: unknown; bits: unknown; nonce: unknown };
     }[];
     if (!Array.isArray(rows)) return [];
@@ -136,8 +195,25 @@ export function loadQueue(): QueuedMove[] {
       // (the provenance this file exists to enforce) is worse than useless,
       // it's a landmine for the very safety checks it's supposed to carry.
       if (!isSafeId(r.id) || !isNonEmptyString(r.tableId) || !isNonEmptyString(r.author)) continue;
+      // SETTLING rows are persisted (see the file header on `sentAt`), so this
+      // has to read the mark back. A row carrying a `sentAt` that is present
+      // but not a finite number is DROPPED WHOLE, never downgraded to unsent:
+      // an unsent row gets submitted, and this row has already landed, so the
+      // downgrade would spend a real action PoW re-sending it. Dropping costs
+      // the player nothing — the move is on the chain; only the local
+      // optimistic echo of it is lost, and the next poll supplies the truth.
+      // `undefined` — and ONLY undefined — means "the key was absent", i.e.
+      // never sent. A stored `null` must NOT be read as that: `JSON.stringify`
+      // turns a `NaN` (or an `Infinity`) `sentAt` into exactly `null`, so
+      // treating null as absent would silently downgrade a corrupted settling
+      // row into a submittable one and resubmit a batch that already landed.
+      // JSON can never produce an `undefined` value, so this test really does
+      // separate "absent" from "present but broken".
+      const hasMark = r.sentAt !== undefined;
+      if (hasMark && !(typeof r.sentAt === 'number' && Number.isFinite(r.sentAt))) continue;
+      const sentAt = hasMark ? { sentAt: r.sentAt as number } : {};
       if (r.kind === 'buy' && typeof r.key === 'string') {
-        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'buy', key: r.key });
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'buy', key: r.key, ...sentAt });
       } else if (
         r.kind === 'bank' && r.chip
         && typeof r.chip.ms === 'number' && Number.isSafeInteger(r.chip.ms)
@@ -147,6 +223,7 @@ export function loadQueue(): QueuedMove[] {
         out.push({
           id: r.id, tableId: r.tableId, author: r.author, kind: 'bank',
           chip: { ms: r.chip.ms, bits: r.chip.bits, nonce: BigInt('0x' + r.chip.nonce) },
+          ...sentAt,
         });
       }
       // else: unrecognized/malformed row — dropped, not thrown.
@@ -160,10 +237,15 @@ export function loadQueue(): QueuedMove[] {
 
 export function saveQueue(q: QueuedMove[]): void {
   try {
-    globalThis.localStorage?.setItem(STORE_KEY, JSON.stringify(q.map((m) =>
-      m.kind === 'bank'
-        ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'bank', chip: { ...m.chip, nonce: m.chip.nonce.toString(16) } }
-        : m)));
+    globalThis.localStorage?.setItem(STORE_KEY, JSON.stringify(q.map((m) => {
+      // Spread `sentAt` conditionally so a never-sent row serialises with no
+      // `sentAt` key at all, rather than an explicit `undefined`/`null` that
+      // `loadQueue` would then have to disambiguate from a corrupt mark.
+      const mark = m.sentAt === undefined ? {} : { sentAt: m.sentAt };
+      return m.kind === 'bank'
+        ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'bank', chip: { ...m.chip, nonce: m.chip.nonce.toString(16) }, ...mark }
+        : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };
+    })));
   } catch { /* quota or private mode — the in-memory queue still works */ }
 }
 

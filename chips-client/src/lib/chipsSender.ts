@@ -8,7 +8,7 @@
  * submitted; a successful submission is never left unacknowledged) are
  * pinned by a unit test rather than only by reading the effect.
  */
-import { activeFor, takeBatch, ack, type QueuedMove } from './chipsQueue';
+import { activeFor, takeBatch, unsent, markSent, type QueuedMove } from './chipsQueue';
 import { bankBatchBody, buyBody } from './chipsBody';
 import type { ChipEntry } from './chipsEngine';
 
@@ -66,7 +66,13 @@ function submittable(m: QueuedMove, at: number): boolean {
  * current time, and a test can pass whatever it needs to.
  */
 export function planSend(queue: QueuedMove[], tableId: string, author: string, at: number): PlannedSend | null {
-  const active = activeFor(queue, tableId, author).filter((m) => submittable(m, at));
+  // `unsent` FIRST, and it is not optional: a settling entry has already landed
+  // on the chain (chipsSettling.ts). It stays in the queue only so the
+  // optimistic fold keeps crediting it until the confirmed twin arrives — it is
+  // NOT a submission. Resubmitting one spends a real action PoW and a chain
+  // write to be folded `rejected-duplicate`, which is precisely the waste the
+  // ack was introduced to stop.
+  const active = unsent(activeFor(queue, tableId, author)).filter((m) => submittable(m, at));
   const take = takeBatch(active);
   if (!take) return null;
   const body = take.kind === 'bank'
@@ -81,16 +87,25 @@ export function planSend(queue: QueuedMove[], tableId: string, author: string, a
  *
  * The ack is unconditional — `cancelled` (a newer attempt superseded this one
  * while it was in flight) suppresses only the refresh, never the ack.
- * Skipping the ack here would leave an already-landed batch sitting in the
- * queue; the next sender attempt would then resubmit it. The fold dedupes
- * that (`proofKey` makes the synthetic and confirmed copies the same key, so
- * the second folds `rejected-duplicate`) — nothing is credited twice — but it
- * burns a real action PoW and a chain write every single time, forever,
- * under ordinary continuous play (dip while a submit is in flight -> that
- * submit's cleanup sets `cancelled` -> without this, its ack never runs).
+ * Skipping the ack here would leave an already-landed batch submittable; the
+ * next sender attempt would then resubmit it. The fold dedupes that (`proofKey`
+ * makes the synthetic and confirmed copies the same key, so the second folds
+ * `rejected-duplicate`) — nothing is credited twice — but it burns a real
+ * action PoW and a chain write every single time, forever, under ordinary
+ * continuous play (dip while a submit is in flight -> that submit's cleanup
+ * sets `cancelled` -> without this, its ack never runs).
+ *
+ * The ack now MARKS rather than deletes. That is what the ack has always meant
+ * operationally — "stop submitting this" — and marking says exactly that,
+ * whereas deleting also said "stop crediting this", which was never intended
+ * and is what made a purchase flicker. chipsSettling.ts owns the deletion, once
+ * the chain has actually supplied the move (or long since failed to).
+ *
+ * `at` is supplied by the caller rather than read here, for the same reason
+ * `planSend` takes it: this stays pure and deterministic.
  */
 export function afterSubmit(
-  queue: QueuedMove[], taken: QueuedMove[], cancelled: boolean
+  queue: QueuedMove[], taken: QueuedMove[], cancelled: boolean, at: number
 ): { queue: QueuedMove[]; shouldRefresh: boolean } {
-  return { queue: ack(queue, taken), shouldRefresh: !cancelled };
+  return { queue: markSent(queue, taken, at), shouldRefresh: !cancelled };
 }

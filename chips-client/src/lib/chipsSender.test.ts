@@ -74,34 +74,48 @@ const buyMove = (tableId: string, author: string, key: string) => ({ tableId, au
 }
 
 // 4) `afterSubmit`: THE pinned property from the fix — a submission that
-//    resolves while `cancelled` is true still acks. Before this fix, the
+//    resolves while `cancelled` is true still acks. Before that fix, the
 //    effect's own `if (cancelled) return` sat BEFORE the ack, so a move
 //    enqueued while a submit was in flight would suppress the ack of the
 //    batch that had ALREADY landed — the sender would then resubmit an
 //    already-confirmed batch on its next run, forever, under continuous play.
-//    Mutation check: gating the ack itself on `!cancelled` (`return cancelled
-//    ? { queue, shouldRefresh: false } : { queue: ack(queue, taken), ... }`)
-//    makes this FAIL — confirmed by making exactly that edit, observing the
-//    failure below, and reverting.
+//
+//    The ack now MARKS rather than deletes (settling moves — chipsSettling.ts),
+//    so "acked" is asserted as what it has always MEANT operationally: the
+//    entry is no longer submittable. Asserting mere absence would have quietly
+//    stopped testing that once the representation changed.
 {
   let q: QueuedMove[] = [];
   q = enqueue(q, bankMove(TABLE, ME), nextId++);
   q = enqueue(q, bankMove(TABLE, ME), nextId++);
   const taken = [q[0]];
+  const AT = 1_700_000_000_000;
 
-  const cancelledResult = afterSubmit(q, taken, true);
-  check('a successful submit acks EVEN when cancelled is true',
-    !cancelledResult.queue.some((m) => m.id === taken[0].id), cancelledResult.queue.map((m) => m.id));
+  const cancelledResult = afterSubmit(q, taken, true, AT);
+  const ackedC = cancelledResult.queue.find((m) => m.id === taken[0].id);
+  check('a successful submit acks EVEN when cancelled is true (the entry is marked sent)',
+    ackedC !== undefined && ackedC.sentAt === AT, ackedC && { id: ackedC.id, sentAt: ackedC.sentAt });
+  check('an acked entry is no longer submittable — the sender plans the NEXT one instead',
+    planSend(cancelledResult.queue, TABLE, ME, AT)?.moves.map((m) => m.id).join() === String(q[1].id),
+    planSend(cancelledResult.queue, TABLE, ME, AT)?.moves.map((m) => m.id));
   check('cancelled suppresses ONLY the refresh, not the ack',
     cancelledResult.shouldRefresh === false, cancelledResult.shouldRefresh);
-  check('the untaken entry survives either way',
-    cancelledResult.queue.some((m) => m.id === q[1].id), cancelledResult.queue.map((m) => m.id));
+  check('the untaken entry survives, still unsent',
+    cancelledResult.queue.find((m) => m.id === q[1].id)?.sentAt === undefined,
+    cancelledResult.queue.map((m) => ({ id: m.id, sentAt: m.sentAt })));
 
-  const normalResult = afterSubmit(q, taken, false);
+  const normalResult = afterSubmit(q, taken, false, AT);
   check('an uncancelled successful submit also acks',
-    !normalResult.queue.some((m) => m.id === taken[0].id), normalResult.queue.map((m) => m.id));
+    normalResult.queue.find((m) => m.id === taken[0].id)?.sentAt === AT,
+    normalResult.queue.map((m) => ({ id: m.id, sentAt: m.sentAt })));
   check('an uncancelled successful submit requests a refresh',
     normalResult.shouldRefresh === true, normalResult.shouldRefresh);
+
+  // A whole batch of acked entries plans nothing at all — the "resubmits
+  // forever" regression in its most direct form.
+  const allAcked = afterSubmit(q, [q[0], q[1]], false, AT).queue;
+  check('a queue of ONLY settling entries plans nothing', planSend(allAcked, TABLE, ME, AT) === null,
+    planSend(allAcked, TABLE, ME, AT)?.moves.map((m) => m.id));
 }
 
 // 5) A corrupt persisted row that survives `loadQueue`'s validation must not

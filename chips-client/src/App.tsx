@@ -20,6 +20,7 @@ import { verifyReplies } from './lib/chipsVerify';
 import { withPending } from './lib/chipsPending';
 import { planSend, afterSubmit } from './lib/chipsSender';
 import { enqueue, loadQueue, saveQueue, clearQueue, nextIdAfter, activeFor, type QueuedMove } from './lib/chipsQueue';
+import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { useFryers } from './lib/useFryers';
 import { projectedCrumbs } from './lib/sogProjection';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
@@ -29,6 +30,9 @@ import { Boards, useBoards } from './Boards';
 import { compact } from './lib/format';
 
 const NAME_KEY = 'chips.cookname.v1';
+/** Module-scope so the expiry tick below passes a referentially stable empty
+ *  set rather than allocating one every second. */
+const NO_CONFIRMED: ReadonlySet<string> = new Set<string>();
 const POLL_MS = 15_000;
 
 /** Kitchen still takes a napkin/onRetry pair (out of scope for this task to
@@ -217,8 +221,23 @@ export function App() {
 
   // A wall clock for the sog projection. One second is plenty — the pile is
   // meant to look like it is going soft, not to tick.
+  //
+  // It also drives EXPIRY for settling moves (chipsSettling.ts). Retirement on
+  // the confirmed twin's arrival happens in `refresh` below and is the normal
+  // path; expiry needs its own clock because it must fire when the twin never
+  // comes — which is exactly the case where no refresh ever brings news. An
+  // empty key set here means this tick only ever expires, never retires-as-
+  // confirmed: parsing every confirmed reply once a second would be waste.
+  //
+  // `retireSettled` returns the SAME array when nothing is retired, and React
+  // skips a re-render when a setState produces the identical value, so this
+  // costs one array scan a second and nothing else — no refold, no
+  // `saveQueue` write.
   useEffect(() => {
-    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    const t = setInterval(() => {
+      setNowMs(Date.now());
+      setQueue((q) => retireSettled(q, NO_CONFIRMED, Date.now()));
+    }, 1000);
     return () => clearInterval(t);
   }, []);
 
@@ -297,6 +316,19 @@ export function App() {
       (done, total) => setCounting(total > 0 && done < total ? { done, total } : null)
     );
     confirmedRef.current = { replies: confirmed, verified };
+    // Retire settling moves the chain has now supplied — the NORMAL end of a
+    // settling move's life, and the common one; expiry (on the clock tick
+    // above) is the failure path. Done here, against the freshly loaded
+    // CONFIRMED replies only, never the merged optimistic set: a move that
+    // could see its own synthetic copy would retire itself instantly, which is
+    // the delete-on-ack flicker with extra steps.
+    //
+    // The functional-updater form is what keeps `refresh` independent of
+    // `queue` — this callback's identity must stay stable across a queue
+    // change or the polling effect fires an extra network round trip per dip.
+    // Nothing is assigned inside the updater and read outside it; the updater
+    // is pure and its result is used only by React.
+    setQueue((q) => retireSettled(q, confirmedMoveKeys(confirmed, tableId, me.publicKeyHex), Date.now()));
     foldNowRef.current();
     setCounting(null);
   }, [host, tableId, me]);
@@ -350,51 +382,41 @@ export function App() {
         if (!plan) { return; }
         await host.submitMove(me, tableId, plan.body);
         backoff.current = 0;
-        // REFRESH FIRST, THEN ACK. The order is load-bearing and this is the
-        // only place it can be got right.
+        // The ack MARKS these moves as settling; it no longer deletes them
+        // (chipsSettling.ts). Deleting was what made a purchase flicker: the
+        // optimistic entry vanished the instant the submit was acknowledged,
+        // while the confirmed twin that replaces it is not available until the
+        // node serves it — a poll or more later. Traced live 2026-07-26, a real
+        // `buy:season2` lost `owned` for 38 ms across that gap, and it is far
+        // longer whenever the reply takes a moment to become visible. Marked
+        // instead, the move keeps crediting until its twin actually arrives
+        // (retired in `refresh`) or it expires; `planSend` skips it either way,
+        // so it is never resubmitted.
         //
-        // The ack drops these moves from the queue, which is what stops
-        // `withPending` synthesising them. If it ran first, the fold would see
-        // a window with NEITHER the optimistic entry NOR its confirmed twin,
-        // and would render the pre-move state: crumbs jump back up, a
-        // just-bought upgrade un-owns itself. Traced live 2026-07-26 — a real
-        // `buy:season2` lost `owned` for 38 ms between the ack and the
-        // refresh. That used to be cosmetic. It is not any more: `fryers`
-        // feeds `useFryers`' count, and since that hook stopped rebuilding on
-        // every count change it now STOPS AND RESTARTS a fryer per step, so
-        // an N -> N-1 -> N flicker destroys a real chip.
+        // Refresh still runs FIRST. It is no longer load-bearing for the
+        // flicker — the mark holds the credit regardless of ordering — but it
+        // is the fastest way to retire the move by its twin, so the common case
+        // settles in one round trip instead of waiting for the next poll.
         //
-        // Loading the confirmed replies first makes the overlap the safe
-        // direction instead. Both copies are briefly present, and the fold is
-        // built for exactly that: `orderReplies` puts the confirmed one first
-        // (a lower block height, and a lower authoring-ms even while both are
-        // pending), so the synthetic twin folds as `rejected-duplicate` for a
-        // bank (chipsEngine's `seenProofs`) or `rejected-owned` for a buy.
-        // Nothing is credited or charged twice.
-        //
-        // The ack itself stays UNCONDITIONAL on a successful submit:
+        // The ack stays UNCONDITIONAL on a successful submit:
         //   - `cancelled` (a newer attempt superseded this one in flight, e.g.
         //     the player dipped again) suppresses only the refresh, never the
-        //     ack;
+        //     mark;
         //   - a FAILING refresh is swallowed. The batch landed; the queue must
-        //     be told so. Leaving it acked-never would have it resubmit itself
-        //     for ever — harmless to the fold, which dedupes, but a real action
-        //     PoW and a chain write wasted on every retry. The cost of
-        //     swallowing is that this one case still shows the old flicker
-        //     (no confirmed twin was loaded), which is strictly better than a
-        //     queue that cannot drain.
+        //     be told so. Leaving it unmarked would have it resubmit itself for
+        //     ever — harmless to the fold, which dedupes, but a real action PoW
+        //     and a chain write wasted on every retry.
         //
-        // Nothing here is assigned inside a `setQueue` updater and read back
-        // outside it. React only runs a functional updater synchronously on
-        // the "eager state" fast path (no pending lanes on this fiber); this
-        // component has near-continuous pending lanes (the 1s clock tick,
-        // `foldNow`'s own `setState`, `queueTick`, flight timers), so that
-        // path is not reliably taken here and such a value can read back as
-        // its old default on the very next line. Updaters stay pure.
+        // `sentAt` is read HERE, not inside the updater: nothing may be
+        // assigned inside a React updater and read outside it, and an updater
+        // must be pure — React can (and under StrictMode does) invoke it more
+        // than once, so a `Date.now()` in there would stamp a different expiry
+        // clock on each invocation.
         if (!cancelled) {
-          try { await refresh(); } catch { /* the batch landed; ack anyway and let the poll catch up */ }
+          try { await refresh(); } catch { /* the batch landed; mark it anyway and let the poll catch up */ }
         }
-        setQueue((q) => afterSubmit(q, plan.moves, cancelled).queue);
+        const sentAt = Date.now();
+        setQueue((q) => afterSubmit(q, plan.moves, cancelled, sentAt).queue);
         // Re-arm explicitly. The ack above already changes `queue`'s
         // reference (a fresh array from `.filter`, even when its contents
         // end up identical), which alone re-triggers this effect in the
