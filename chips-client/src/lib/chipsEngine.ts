@@ -16,7 +16,9 @@
  *     them switch decay off by future-dating a single move.
  *   - only the table owner's replies are folded; anyone can reply to a post
  *   - pure and synchronous; Argon2id verification is done by the caller and
- *     handed in as `verified`, which MUST contain an entry for every bank.
+ *     handed in as `verified`, which MUST contain an entry for every CHIP of
+ *     every bank reply (a batch reply carries more than one) — see
+ *     `foldChips`'s own docstring below for the precondition in full.
  */
 import {
   BANK_MIN_BITS, CRUMBS_PER_CHIP, GOLDEN_BITS, GOLD_NUM, GOLD_DEN, MAX_BITS,
@@ -71,7 +73,7 @@ export interface ChipsState {
   lastConfirmedAt: number;
   /** Action timestamp of the last confirmed bank, for the congeal quirk. */
   lastBankAt: number;
-  /** Banks with no entry in `verified` — the UI must gate on this being 0. */
+  /** Chips with no entry in `verified` — the UI must gate on this being 0. */
   unverifiedBanks: number;
   moves: MoveResult[];
 }
@@ -124,9 +126,20 @@ export function parseMove(body: string): ParsedMove | null {
       return { kind: 'bank', chips: [{ ms, bits, nonce: BigInt('0x' + v1[2]) }], ms };
     }
 
-    // Batch. Count FIRST: an over-cap reply must cost a split and nothing more.
+    // Batch. Count commas FIRST, without splitting: an over-cap reply must
+    // cost a comma-counting loop and nothing more. `split(',')` always yields
+    // exactly `commaCount + 1` parts, so this produces the identical cutoff
+    // and the identical reported `count` for every input — but a hostile
+    // multi-megabyte comma-heavy body (there is no enforced reply-body size
+    // limit on the node) no longer forces an allocation of millions of
+    // throwaway strings just to be told the reply is oversize. This fold runs
+    // for every viewer of a table, twice per fold pass (`verifyReplies` and
+    // `foldChips` each call `parseMove`), on every board rotation.
+    let commaCount = 0;
+    for (let i = 0; i < arg.length; i++) if (arg.charCodeAt(i) === 44 /* ',' */) commaCount++;
+    if (commaCount + 1 > MAX_BATCH) return { kind: 'oversize', count: commaCount + 1, ms };
+
     const parts = arg.split(',');
-    if (parts.length > MAX_BATCH) return { kind: 'oversize', count: parts.length, ms };
 
     const chips: ChipEntry[] = [];
     for (const part of parts) {
@@ -138,7 +151,6 @@ export function parseMove(body: string): ParsedMove | null {
       if (!Number.isInteger(bits) || bits < 0 || bits > MAX_BITS) return null;
       chips.push({ ms: entryMs, bits, nonce: BigInt('0x' + m[3]) });
     }
-    if (chips.length === 0) return null;
     return { kind: 'bank', chips, ms };
   }
 

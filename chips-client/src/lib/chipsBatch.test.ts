@@ -93,26 +93,38 @@ const verifyAll = (chips: { ms: number; bits: number; nonce: bigint }[]) =>
   check('second is rejected-duplicate', s.moves[1].outcome === 'rejected-duplicate', s.moves[1].outcome);
 }
 
-// 6) DECAY is unchanged by grouping: one 2-chip reply an hour later decays the
-// same as two single replies at that same instant.
+// 6) DECAY is unchanged by grouping, AND a chip's declared ms must stay INERT
+// with respect to the decay clock even WITHIN a batch. Two entries in ONE
+// reply (one instant, one created_at) declare ms values 20 HOURS apart --
+// comfortably enough for `sogHoursFor` to register nonzero decay if anything
+// ever ran the decay clock BETWEEN entries using their declared ms instead of
+// the reply's created_at. (With only a 1ms gap, as this block used to have
+// it, `sogHoursFor` returns 0 and such a bug is invisible here — the exact
+// fixture-timestamp trap this codebase has hit before.)
+//
+// Hand-computed (SOG_BASE_NUM/DEN 97/100, CRUMBS_PER_CHIP 1000, both entries
+// bits 8 -> 1000 crumbs each, salsa tier, no golden/congeal/seasoning bonus):
+//   correct (chip ms never touches decay): 1,000 + 1,000 = 2,000
+//   wrong (decay applied BETWEEN the two entries using their declared ms, 20h
+//     apart): first entry banks 1,000; that pool decays over 20 simulated
+//     hours to floor(1000 * 0.97^20) = 536; + the second entry's 1,000 = 1,536
 {
   const HOUR = 3_600_000;
-  const first = { ms: T0, bits: 14, nonce: 9n };
-  const later = [{ ms: T0 + HOUR, bits: 8, nonce: 10n }, { ms: T0 + HOUR + 1, bits: 8, nonce: 11n }];
-  const v = verifyAll([first, ...later]);
+  const e1 = { ms: T0, bits: 8, nonce: 0x501n };
+  const e2 = { ms: T0 + 20 * HOUR, bits: 8, nonce: 0x502n };
+  const v = verifyAll([e1, e2]);
 
   const batched = foldChips(H, TABLE, [
-    reply(`bank 14 9#${T0}~`, 'x0', T0),
-    reply(`bank ${later.map((c) => `${c.ms}:8:${c.nonce.toString(16)}`).join(',')}#${T0 + HOUR}~`, 'x1', T0 + HOUR),
+    reply(`bank ${e1.ms}:${e1.bits}:${e1.nonce.toString(16)},${e2.ms}:${e2.bits}:${e2.nonce.toString(16)}#${T0}~`, 'x1', T0),
   ], v);
 
   const singles = foldChips(H, TABLE, [
-    reply(`bank 14 9#${T0}~`, 'y0', T0),
-    reply(`bank 8 a#${T0 + HOUR}~`, 'y1', T0 + HOUR),
-    reply(`bank 8 b#${T0 + HOUR + 1}~`, 'y2', T0 + HOUR),
+    reply(`bank 8 ${e1.nonce.toString(16)}#${e1.ms}~`, 'y1', T0),
+    reply(`bank 8 ${e2.nonce.toString(16)}#${e2.ms}~`, 'y2', T0),
   ], v);
 
   check('decay identical either way', batched.crumbs === singles.crumbs, { batched: batched.crumbs, singles: singles.crumbs });
+  check('exact expected crumbs: chip ms 20h apart is inert w.r.t. decay', batched.crumbs === 2_000, batched.crumbs);
 }
 
 // 7) INTRA-BATCH ORDER IS CONSENSUS-RELEVANT: chips fold in DECLARATION order,

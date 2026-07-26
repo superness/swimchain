@@ -110,6 +110,12 @@ function load(): void {
     const raw = globalThis.localStorage?.getItem(STORE_KEY);
     if (raw) for (const [k, v] of Object.entries(JSON.parse(raw) as Record<string, number>)) memory.set(k, v);
   } catch { /* no storage (node/test) — memory cache only */ }
+  // v2 is dead: every existing player still carries a v2 blob under the same
+  // origin quota that v3 now needs more of (one entry per CHIP, not per reply
+  // — up to MAX_BATCH x more). Nothing ever reads v2 back, so it's pure waste
+  // sitting against the same quota that `persist()` silently degrades to
+  // memory-only on when it overflows. Clear it out once per load.
+  try { globalThis.localStorage?.removeItem('chips.verified.v2'); } catch { /* no storage */ }
 }
 
 function persist(): void {
@@ -136,22 +142,16 @@ export async function verifyReplies(
   onProgress?: (done: number, total: number) => void
 ): Promise<Map<string, number>> {
   load();
-  // Lower-case the author ONCE per reply and use that SAME string for both the
-  // Argon2id preimage and the proofKey lookup. `proofKey` already case-folds
-  // internally, but `chipPreimage` (chipsPow.ts) encodes authorIdHex verbatim —
-  // if this cache ever fed it the original casing while keying itself on the
-  // lower-cased form, an upper-case author id would split one Argon2id input
-  // across two cache identities and this module-global, localStorage-persisted
-  // cache would read back the WRONG bits for the next table that reuses the
-  // key. Every author id in play today is already lower-case (host.ts
-  // normalizes at the seam), so this changes no existing hash.
+  // Both `hashBits` (-> chipPreimage) and `proofKey` case-fold the author
+  // internally, so the raw `author_id` is passed straight through to each —
+  // they are independently guaranteed to agree, so there is no need (and no
+  // safe way to be more correct than) folding it a third time here.
   const wanted: { author: string; chip: ChipEntry }[] = [];
   for (const r of replies) {
     if (r.author_id !== owner) continue;          // DoS control, still before any hashing
     const parsed = parseMove(r.body);
     if (parsed?.kind !== 'bank') continue;         // 'oversize' verifies nothing, by design
-    const author = r.author_id.toLowerCase();
-    for (const chip of parsed.chips) wanted.push({ author, chip });
+    for (const chip of parsed.chips) wanted.push({ author: r.author_id, chip });
   }
 
   const out = new Map<string, number>();
