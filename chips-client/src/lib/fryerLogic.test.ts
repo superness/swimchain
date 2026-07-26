@@ -42,7 +42,7 @@ check('nextNonce increments a large value', nextNonce(1000n) === 1001n);
   const parsed = parseMove(body);
   check(
     'parseMove round-trips the exact U64_MAX nonce bankBody just accepted (pins the {1,16} hex regex too)',
-    parsed?.kind === 'bank' && parsed.nonce === U64_MAX,
+    parsed?.kind === 'bank' && parsed.chips[0].nonce === U64_MAX,
     body
   );
 }

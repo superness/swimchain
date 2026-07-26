@@ -21,8 +21,9 @@
 import {
   BANK_MIN_BITS, CRUMBS_PER_CHIP, GOLDEN_BITS, GOLD_NUM, GOLD_DEN, MAX_BITS,
   SOG_BASE_NUM, SOG_DEN, AIRTIGHT_BONUS, SOG_MAX_HOURS, START_BOWL_CAP,
-  DIP_TIERS, CONGEAL_GAP_MS, UPGRADES, UPGRADE_CHAINS,
+  DIP_TIERS, CONGEAL_GAP_MS, UPGRADES, UPGRADE_CHAINS, MAX_BATCH,
 } from './chipsConst';
+import { proofKey } from './proofKey';
 
 export interface ChipsHeader {
   v: 1;
@@ -42,6 +43,7 @@ export interface ChipsReply {
 
 export type Outcome =
   | 'banked' | 'rejected-bits' | 'rejected-duplicate' | 'rejected-unverified'
+  | 'rejected-oversize'
   | 'bought' | 'rejected-cost' | 'rejected-owned' | 'rejected-order' | 'rejected-parse';
 
 export interface MoveResult {
@@ -74,9 +76,19 @@ export interface ChipsState {
   moves: MoveResult[];
 }
 
+/** One chip inside a bank move. A v1 reply carries exactly one. */
+export interface ChipEntry {
+  ms: number;
+  bits: number;
+  nonce: bigint;
+}
+
 export type ParsedMove =
-  | { kind: 'bank'; bits: number; nonce: bigint; ms: number }
-  | { kind: 'buy'; key: string; ms: number };
+  | { kind: 'bank'; chips: ChipEntry[]; ms: number }
+  | { kind: 'buy'; key: string; ms: number }
+  /** Declared more than MAX_BATCH entries. Carried as a distinct kind so the
+   *  fold can reject it whole WITHOUT verifying anything — see chipsConst. */
+  | { kind: 'oversize'; count: number; ms: number };
 
 /** The reef-style embedded authoring timestamp: `...#<ms>~` */
 export function authoringMs(body: string): number | null {
@@ -86,16 +98,48 @@ export function authoringMs(body: string): number | null {
   return Number.isSafeInteger(ms) && ms > 0 ? ms : null;
 }
 
+const ENTRY = /^(\d+):(\d+):([0-9a-fA-F]{1,16})$/;
+
 export function parseMove(body: string): ParsedMove | null {
   const ms = authoringMs(body);
   if (ms === null) return null;
   const head = body.trim().replace(/#\d+~$/, '').trim();
 
-  const bankM = /^bank\s+(\d+)\s+([0-9a-fA-F]{1,16})$/.exec(head);
+  // NOTE: (.+), not (\S+) — the v1 form ("bank <bits> <nonce>") has a space
+  // inside its argument, so a non-whitespace-only gate would never admit it
+  // into this branch at all (the nested v1 check below, which matches against
+  // `head` rather than `arg` specifically to handle that space, would then
+  // never run). `arg` itself is only consumed by the batch path below, after
+  // the v1 early-return, so widening this gate does not affect batch parsing.
+  const bankM = /^bank\s+(.+)$/.exec(head);
   if (bankM) {
-    const bits = Number(bankM[1]);
-    if (!Number.isInteger(bits) || bits < 0 || bits > MAX_BITS) return null;
-    return { kind: 'bank', bits, nonce: BigInt('0x' + bankM[2]), ms };
+    const arg = bankM[1];
+
+    // v1: `bank <bits> <nonce>` — two space-separated fields, no colons. The
+    // chip's ms IS the authoring ms, which is what it has always meant.
+    const v1 = /^bank\s+(\d+)\s+([0-9a-fA-F]{1,16})$/.exec(head);
+    if (v1) {
+      const bits = Number(v1[1]);
+      if (!Number.isInteger(bits) || bits < 0 || bits > MAX_BITS) return null;
+      return { kind: 'bank', chips: [{ ms, bits, nonce: BigInt('0x' + v1[2]) }], ms };
+    }
+
+    // Batch. Count FIRST: an over-cap reply must cost a split and nothing more.
+    const parts = arg.split(',');
+    if (parts.length > MAX_BATCH) return { kind: 'oversize', count: parts.length, ms };
+
+    const chips: ChipEntry[] = [];
+    for (const part of parts) {
+      const m = ENTRY.exec(part);
+      if (!m) return null;
+      const entryMs = Number(m[1]);
+      const bits = Number(m[2]);
+      if (!Number.isSafeInteger(entryMs) || entryMs <= 0) return null;
+      if (!Number.isInteger(bits) || bits < 0 || bits > MAX_BITS) return null;
+      chips.push({ ms: entryMs, bits, nonce: BigInt('0x' + m[3]) });
+    }
+    if (chips.length === 0) return null;
+    return { kind: 'bank', chips, ms };
   }
 
   const buyM = /^buy\s+([a-z0-9]+)$/.exec(head);
@@ -216,14 +260,15 @@ function initialState(): ChipsState {
 /**
  * Fold a table's replies into game state.
  *
- * PRECONDITION: `verified` maps content_id -> actual leading zero bits for
- * EVERY bank reply. A missing entry folds as `rejected-unverified`, which is
- * deterministic but wrong — callers must complete verification first
+ * PRECONDITION: `verified` maps `proofKey(tableId, author, chip.ms, chip.nonce)`
+ * -> actual leading zero bits, for EVERY chip of EVERY bank reply (a batch
+ * reply carries more than one). A missing entry folds as `rejected-unverified`,
+ * which is deterministic but wrong — callers must complete verification first
  * (see chipsVerify.ts) or clients will disagree.
  */
 export function foldChips(
   header: ChipsHeader,
-  _tableId: string,
+  tableId: string,
   replies: ChipsReply[],
   verified: Map<string, number>
 ): ChipsState {
@@ -268,27 +313,35 @@ export function foldChips(
     }
     const at = confirmed ? reply.created_at : state.lastConfirmedAt;
 
-    if (parsed.kind === 'bank') {
-      // Author is part of the proof preimage, so it belongs in the identity key.
-      const proofKey = `${reply.author_id}:${parsed.ms}:${parsed.nonce.toString(16)}`;
-      const actual = verified.get(reply.content_id);
+    if (parsed.kind === 'oversize') {
+      // Rejected on the count alone — nothing here is verified, which is the
+      // entire point of the cap.
+      state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-oversize' });
+      continue;
+    }
 
-      if (actual === undefined) {
-        state.unverifiedBanks++;
-        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-unverified' });
-      } else if (parsed.bits < BANK_MIN_BITS || actual < parsed.bits) {
-        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-bits', bits: parsed.bits });
-      } else if (seenProofs.has(proofKey)) {
-        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-duplicate', bits: parsed.bits });
-      } else {
-        seenProofs.add(proofKey);
-        const crumbs = payoutFor(state, parsed.bits, at);
-        state.crumbs = Math.min(state.crumbs + crumbs, state.bowlCap);
-        state.lifetimeChips += 2 ** (parsed.bits - BANK_MIN_BITS);
-        if (parsed.bits > state.crispest) state.crispest = parsed.bits;
-        state.dipIndex = dipIndexFor(state.lifetimeChips);
-        if (confirmed) state.lastBankAt = at;
-        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'banked', bits: parsed.bits, crumbs });
+    if (parsed.kind === 'bank') {
+      for (const chip of parsed.chips) {
+        const key = proofKey(tableId, reply.author_id, chip.ms, chip.nonce);
+        const actual = verified.get(key);
+
+        if (actual === undefined) {
+          state.unverifiedBanks++;
+          state.moves.push({ content_id: reply.content_id, ms: chip.ms, outcome: 'rejected-unverified' });
+        } else if (chip.bits < BANK_MIN_BITS || actual < chip.bits) {
+          state.moves.push({ content_id: reply.content_id, ms: chip.ms, outcome: 'rejected-bits', bits: chip.bits });
+        } else if (seenProofs.has(key)) {
+          state.moves.push({ content_id: reply.content_id, ms: chip.ms, outcome: 'rejected-duplicate', bits: chip.bits });
+        } else {
+          seenProofs.add(key);
+          const crumbs = payoutFor(state, chip.bits, at);
+          state.crumbs = Math.min(state.crumbs + crumbs, state.bowlCap);
+          state.lifetimeChips += 2 ** (chip.bits - BANK_MIN_BITS);
+          if (chip.bits > state.crispest) state.crispest = chip.bits;
+          state.dipIndex = dipIndexFor(state.lifetimeChips);
+          if (confirmed) state.lastBankAt = at;
+          state.moves.push({ content_id: reply.content_id, ms: chip.ms, outcome: 'banked', bits: chip.bits, crumbs });
+        }
       }
       continue;
     }

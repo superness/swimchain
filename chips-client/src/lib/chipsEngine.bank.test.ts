@@ -3,7 +3,8 @@
  * Run: npx tsx src/lib/chipsEngine.bank.test.ts
  * The fold is pure — verification results are passed in, so no crypto here.
  */
-import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { foldChips, parseMove, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { proofKey } from './proofKey';
 import { CRUMBS_PER_CHIP, GOLDEN_BITS, GOLD_NUM, GOLD_DEN } from './chipsConst';
 
 const A = 'a'.repeat(64);
@@ -27,8 +28,18 @@ const bank = (bits: number, cid: string, ms = 1_000_000, nonceHex?: string) => (
   body: `bank ${bits} ${nonceHex ?? (++nonceSeq).toString(16)}#${ms}~`,
   block_height: 1, content_id: cid, created_at: ms,
 });
+/**
+ * proofKey for a single-chip (v1) fixture reply, derived from the body it
+ * actually carries — never recomputed independently, so a fixture's map key
+ * always matches its own (ms, nonce).
+ */
+const keyFor = (r: ChipsReply): string => {
+  const p = parseMove(r.body);
+  if (p?.kind !== 'bank') throw new Error('keyFor: not a bank reply: ' + r.body);
+  return proofKey(TABLE, r.author_id, p.chips[0].ms, p.chips[0].nonce);
+};
 const verifiedAll = (replies: ChipsReply[], bits: number) =>
-  new Map(replies.map((r) => [r.content_id, bits]));
+  new Map(replies.map((r) => [keyFor(r), bits]));
 
 // 1) Linearity: one 14-bit chip == 64 eight-bit chips, before seasoning.
 {
@@ -61,7 +72,7 @@ const verifiedAll = (replies: ChipsReply[], bits: number) =>
 // 3) Over-claiming is rejected-but-present.
 {
   const rs = [bank(20, 'x1')];
-  const s = foldChips(H, TABLE, rs, new Map([['x1', 10]])); // actually only 10 bits
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 10]])); // actually only 10 bits
   check('over-claimed bank credits nothing', s.crumbs === 0, s.crumbs);
   check('over-claimed bank still ordered', s.moves.length === 1, s.moves.length);
   check('over-claimed outcome is rejected', s.moves[0].outcome === 'rejected-bits', s.moves[0].outcome);
@@ -70,7 +81,7 @@ const verifiedAll = (replies: ChipsReply[], bits: number) =>
 // 4) Under-minimum is rejected.
 {
   const rs = [bank(4, 'y1')];
-  const s = foldChips(H, TABLE, rs, new Map([['y1', 4]]));
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 4]]));
   check('sub-minimum bank rejected', s.crumbs === 0, s.crumbs);
   check('sub-minimum outcome', s.moves[0].outcome === 'rejected-bits', s.moves[0].outcome);
 }
@@ -86,7 +97,7 @@ const verifiedAll = (replies: ChipsReply[], bits: number) =>
 // 6) Lifetime crunch and crispest are tracked un-multiplied.
 {
   const rs = [bank(12, 'l1'), bank(9, 'l2', 1_000_001)];
-  const s = foldChips(H, TABLE, rs, new Map([['l1', 12], ['l2', 9]]));
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 12], [keyFor(rs[1]), 9]]));
   check('lifetime = 16 + 2 chips', s.lifetimeChips === 18, s.lifetimeChips);
   check('crispest is the max bits', s.crispest === 12, s.crispest);
 }
@@ -100,7 +111,7 @@ const verifiedAll = (replies: ChipsReply[], bits: number) =>
     { author_id: A, body: `bank 14 e1#${1_000_000}~`, block_height: 1, content_id: 'o1', created_at: 1_000_000 },
     { author_id: B, body: `bank 14 e2#${1_000_000}~`, block_height: 1, content_id: 'o2', created_at: 1_000_000 },
   ];
-  const s = foldChips(H, TABLE, rs, new Map([['o1', 14], ['o2', 14]]));
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 14], [keyFor(rs[1]), 14]]));
   check('foreign reply credits nothing', s.crumbs === CRUMBS_PER_CHIP * 64, s.crumbs);
   check('foreign reply not in move log', s.moves.length === 1, s.moves.length);
   check('foreign reply does not raise lifetime', s.lifetimeChips === 64, s.lifetimeChips);

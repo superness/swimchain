@@ -3,7 +3,8 @@
  * fixed dip-then-airtight resolution order.
  * Run: npx tsx src/lib/chipsEngine.sog.test.ts
  */
-import { foldChips, sogHoursFor, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { foldChips, parseMove, sogHoursFor, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { proofKey } from './proofKey';
 import { SOG_BASE_NUM, SOG_DEN, SOG_MAX_HOURS, START_BOWL_CAP, CRUMBS_PER_CHIP } from './chipsConst';
 
 const A = 'a'.repeat(64);
@@ -24,7 +25,13 @@ const bank = (bits: number, cid: string, ms: number): ChipsReply => ({
   author_id: A, body: `bank ${bits} ${(++nonceSeq).toString(16)}#${ms}~`,
   block_height: 1, content_id: cid, created_at: ms,
 });
-const vAll = (rs: ChipsReply[], bits: number) => new Map(rs.map((r) => [r.content_id, bits]));
+/** proofKey for a single-chip (v1) fixture reply, derived from its own body. */
+const keyFor = (r: ChipsReply): string => {
+  const p = parseMove(r.body);
+  if (p?.kind !== 'bank') throw new Error('keyFor: not a bank reply: ' + r.body);
+  return proofKey(TABLE, r.author_id, p.chips[0].ms, p.chips[0].nonce);
+};
+const vAll = (rs: ChipsReply[], bits: number) => new Map(rs.map((r) => [keyFor(r), bits]));
 
 // 1) Sub-hour gaps do not decay at all; whole hours do.
 {

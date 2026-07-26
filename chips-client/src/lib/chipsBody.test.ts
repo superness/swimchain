@@ -22,7 +22,7 @@ for (const bits of [BANK_MIN_BITS, MAX_BITS]) {
   const body = bankBody(bits, 0xdeadbeefn, 1_000_000);
   const parsed = parseMove(body);
   check(`bank bits=${bits} parses`, parsed?.kind === 'bank', body);
-  check(`bank bits=${bits} round-trips`, parsed?.kind === 'bank' && parsed.bits === bits);
+  check(`bank bits=${bits} round-trips`, parsed?.kind === 'bank' && parsed.chips[0].bits === bits);
 }
 
 // 2) nonce boundaries: 0n and the max representable u64 (16 hex digits) both
@@ -31,14 +31,14 @@ for (const bits of [BANK_MIN_BITS, MAX_BITS]) {
   const zero = bankBody(8, 0n, 1);
   const zp = parseMove(zero);
   check('nonce 0n parses', zp?.kind === 'bank', zero);
-  check('nonce 0n round-trips', zp?.kind === 'bank' && zp.nonce === 0n);
+  check('nonce 0n round-trips', zp?.kind === 'bank' && zp.chips[0].nonce === 0n);
 
   const max = 2n ** 64n - 1n;
   check('max u64 nonce hex is exactly 16 chars', max.toString(16).length === 16, max.toString(16));
   const full = bankBody(8, max, 1);
   const fp = parseMove(full);
   check('max u64 nonce parses', fp?.kind === 'bank', full);
-  check('max u64 nonce round-trips', fp?.kind === 'bank' && fp.nonce === max);
+  check('max u64 nonce round-trips', fp?.kind === 'bank' && fp.chips[0].nonce === max);
   check('hex nonce is lowercase', /^bank 8 [0-9a-f]+#1~$/.test(full), full);
 }
 

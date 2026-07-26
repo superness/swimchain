@@ -2,7 +2,8 @@
  * Upgrades: affordability, chain ordering, no double-buying, effects applied.
  * Run: npx tsx src/lib/chipsEngine.buy.test.ts
  */
-import { foldChips, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { foldChips, parseMove, type ChipsReply, type ChipsHeader } from './chipsEngine';
+import { proofKey } from './proofKey';
 import { UPGRADES, CRUMBS_PER_CHIP, SOG_BASE_NUM, SOG_DEN, AIRTIGHT_BONUS } from './chipsConst';
 
 const A = 'a'.repeat(64);
@@ -39,14 +40,21 @@ const bank = (bits: number, cid: string, ms = nextMs()): ChipsReply => ({
 const buy = (key: string, cid: string, ms = nextMs()): ChipsReply => ({
   author_id: A, body: `buy ${key}#${ms}~`, block_height: 1, content_id: cid, created_at: ms,
 });
+/** proofKey for a single-chip (v1) fixture reply, derived from its own body. */
+const keyFor = (r: ChipsReply): string => {
+  const p = parseMove(r.body);
+  if (p?.kind !== 'bank') throw new Error('keyFor: not a bank reply: ' + r.body);
+  return proofKey(TABLE, r.author_id, p.chips[0].ms, p.chips[0].nonce);
+};
 
 // Bank 15 bits = 2^7 chips = 128,000 crumbs, capped to START_BOWL_CAP 100,000.
 const rich = () => bank(15, 'rich');
 
 // 1) An affordable buy deducts and applies.
 {
-  const rs = [rich(), buy('season1', 'b1')];
-  const s = foldChips(H, TABLE, rs, new Map([['rich', 15]]));
+  const r1 = rich();
+  const rs = [r1, buy('season1', 'b1')];
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(r1), 15]]));
   check('season1 owned', s.owned.has('season1'));
   check('season1 deducted', s.crumbs === 100_000 - UPGRADES.season1.cost, s.crumbs);
   check('seasoning applied', s.seasoningNum === 3 && s.seasoningDen === 2, [s.seasoningNum, s.seasoningDen]);
@@ -55,8 +63,15 @@ const rich = () => bank(15, 'rich');
 
 // 2) Seasoning multiplies chips banked AFTER the purchase, not before.
 {
-  const rs = [rich(), buy('season1', 'b1'), bank(8, 'after')];
-  const s = foldChips(H, TABLE, rs, new Map([['rich', 15], ['after', 8]]));
+  // Preserve the ORIGINAL nextMs() evaluation order (rich, then the buy, then
+  // the post-purchase bank): computing these out of that order would hand
+  // "after" an earlier ms than the buy and silently reorder the fold, which
+  // is exactly what this test exists to pin down.
+  const r1 = rich();
+  const b1 = buy('season1', 'b1');
+  const r2 = bank(8, 'after');
+  const rs = [r1, b1, r2];
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(r1), 15], [keyFor(r2), 8]]));
   const expected = 100_000 - UPGRADES.season1.cost + Math.floor((CRUMBS_PER_CHIP * 3) / 2);
   check('post-purchase chip is multiplied', s.crumbs === expected, s.crumbs);
 }
@@ -74,23 +89,26 @@ const rich = () => bank(15, 'rich');
 
 // 4) Out-of-chain-order buy is rejected (season2 before season1).
 {
-  const rs = [rich(), buy('season2', 'b1')];
-  const s = foldChips(H, TABLE, rs, new Map([['rich', 15]]));
+  const r1 = rich();
+  const rs = [r1, buy('season2', 'b1')];
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(r1), 15]]));
   check('out-of-order rejected', s.moves[1].outcome === 'rejected-order', s.moves[1].outcome);
 }
 
 // 5) Buying the same upgrade twice is rejected the second time.
 {
-  const rs = [rich(), buy('season1', 'b1'), buy('season1', 'b2')];
-  const s = foldChips(H, TABLE, rs, new Map([['rich', 15]]));
+  const r1 = rich();
+  const rs = [r1, buy('season1', 'b1'), buy('season1', 'b2')];
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(r1), 15]]));
   check('double-buy rejected', s.moves[2].outcome === 'rejected-owned', s.moves[2].outcome);
   check('double-buy charged once', s.crumbs === 100_000 - UPGRADES.season1.cost, s.crumbs);
 }
 
 // 6) Unknown key is rejected.
 {
-  const rs = [rich(), buy('nosuch', 'b1')];
-  const s = foldChips(H, TABLE, rs, new Map([['rich', 15]]));
+  const r1 = rich();
+  const rs = [r1, buy('nosuch', 'b1')];
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(r1), 15]]));
   check('unknown upgrade rejected', s.moves[1].outcome === 'rejected-parse', s.moves[1].outcome);
 }
 
@@ -117,7 +135,7 @@ const rich = () => bank(15, 'rich');
   const t1 = nextMs();
   const t2 = nextMs();
   const rs = [bank(15, 'a1', t1), buy('airtight', 'a2', t2), bank(8, 'a3', t2 + HOUR)];
-  const s = foldChips(H, TABLE, rs, new Map([['a1', 15], ['a3', 8]]));
+  const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 15], [keyFor(rs[2]), 8]]));
   check('airtight bought when affordable', s.owned.has('airtight') && s.airtight === true, [...s.owned]);
   check('airtight deducted', s.moves[1].outcome === 'bought', s.moves[1].outcome);
   const expected = Math.floor((100_000 - UPGRADES.airtight.cost) * (SOG_BASE_NUM + AIRTIGHT_BONUS) / SOG_DEN)
