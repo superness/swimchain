@@ -24,9 +24,10 @@ import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useFryers } from './lib/useFryers';
 import { projectedCrumbs } from './lib/sogProjection';
+import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
-import { Bowl, Shelf, DipBed, DipChange } from './Bowl';
+import { Bowl, Shelf, DipBed, DipChange, GainFloats, type GainFloat } from './Bowl';
 import { Boards, useBoards } from './Boards';
 import { compact } from './lib/format';
 
@@ -121,10 +122,16 @@ export function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [flight, setFlight] = useState<DipFlightState | null>(null);
+  const [gains, setGains] = useState<GainFloat[]>([]);
   const [counting, setCounting] = useState<{ done: number; total: number } | null>(null);
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [seated, setSeated] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // Read inside the gain-detection effect below without making it re-run on
+  // every clock tick — that effect's own deps are `[state]` only, on purpose
+  // (see its comment): it must fire once per FOLD, not once per second.
+  const nowMsRef = useRef(nowMs);
+  nowMsRef.current = nowMs;
 
   // The host throws at construction if the build was never given an endpoint or
   // a space — surface that as a screen rather than a white page.
@@ -632,6 +639,101 @@ export function App() {
     lastDip.current = state.dipIndex;
   }, [state]);
 
+  /* ── what did I just get ─────────────────────────────────────────────── */
+  /**
+   * `null` means "no fold seen yet for this table" — the seed-and-say-nothing
+   * state, distinct from `new Set()` (a fold WAS seen and it banked nothing).
+   * `announcedRef` is a plain Set so its size is unbounded across a very long
+   * session, but its entries are just numbers (chip `ms` values); the memory
+   * cost of even tens of thousands of them is trivial next to a page that
+   * already carries a `moves` array of the same order of magnitude.
+   */
+  const announcedRef = useRef<Set<number> | null>(null);
+  const prevStateRef = useRef<ChipsState | null>(null);
+
+  // A different table (a fresh identity via `openShop`, or simply the very
+  // first table this browser has ever seen) must reseed from scratch — an
+  // announced-ms set from a DIFFERENT owner's fold means nothing here, and a
+  // stale `prevStateRef` would make the very next bank's `beforeCrumbs`
+  // baseline come from the wrong player's bowl.
+  useEffect(() => {
+    announcedRef.current = null;
+    prevStateRef.current = null;
+  }, [tableId]);
+
+  useEffect(() => {
+    if (!state) return;
+    if (announcedRef.current === null) {
+      // First fold this component has seen for this table: seed silently.
+      // Every bank this player ever made is already in `state.moves` the very
+      // first time a table loads — announcing all of history on page load
+      // would be exactly the wrong kind of surprise.
+      announcedRef.current = new Set(
+        state.moves.filter((m) => m.outcome === 'banked').map((m) => m.ms)
+      );
+      prevStateRef.current = state;
+      return;
+    }
+
+    // Keyed on the chip's own `ms` — never on array position or length, since
+    // a queued chip is folded once as a synthetic pending reply and again,
+    // later, as the confirmed reply that replaces it (see
+    // chipsPayoutDisplay.ts's `newBankedMoves` for why `ms` is the one field
+    // that is identical across that transition).
+    const fresh = newBankedMoves(state.moves, announcedRef.current);
+    if (fresh.length > 0) {
+      for (const m of fresh) announcedRef.current.add(m.ms);
+
+      // The bowl's level immediately before THIS batch, decay-projected the
+      // exact same way the bowl itself is rendered (`projectedCrumbs`) — never
+      // a diff of the displayed number, which decays and hour-quantises and
+      // would read that noise as part of the gain.
+      const before = prevStateRef.current ? projectedCrumbs(prevStateRef.current, nowMsRef.current) : 0;
+      // Replays the fold's own bowl-cap clamp over the fold's own recorded
+      // payouts — so a full bowl is credited as gaining 0, never the notional
+      // payout a full bowl would clip (see actualGains's doc).
+      const events = actualGains(before, state.bowlCap, fresh);
+
+      // Same destination the crumb burst already flies to — falls back to the
+      // bowl itself exactly like `launchDip` does, for the same reason: while
+      // any proof is still being verified, Bowl.tsx renders "still counting"
+      // instead of the `.bowl-crumbs` paragraph.
+      const counter = document.querySelector('.bowl-crumbs') ?? document.querySelector('.bowl-wrap');
+      if (counter) {
+        const r = counter.getBoundingClientRect();
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        const born: GainFloat[] = events.map((e, i) => ({
+          key: e.ms,
+          text: e.gained > 0 ? `+${compact(e.gained)}` : '+0',
+          golden: e.bits >= state.goldenBits,
+          empty: e.gained <= 0,
+          x, y,
+          // A small deterministic spread (never random — see the app's other
+          // seeded scatters) so two chips landing within the same breath don't
+          // print on top of each other and become illegible.
+          dx: ((e.ms % 7) - 3) * 9,
+          // `GainFloats` sets this INLINE (`style={{ animationDelay: ... }}`)
+          // so it can stagger a batch — but an inline style always wins over
+          // the stylesheet, full stop, which means it must carry the base
+          // `.95s` sync-with-crumb-land delay itself or a single-chip bank
+          // (the overwhelmingly common case, `i === 0`) gets `animationDelay:
+          // "0s"` and the figure pops up instantly instead of landing with
+          // the crumb burst. Caught live: without the `+ 0.95`, the floater
+          // appeared within ~150ms of the click instead of at ~1s. Keep this
+          // in sync with `.gain-float`'s own `animation-delay: .95s` in
+          // styles.css, which exists as the documented default and is never
+          // actually read once this inline value is present.
+          delay: 0.95 + i * 0.12,
+        }));
+        setGains((g) => [...g, ...born]);
+        events.forEach((e, i) => {
+          window.setTimeout(() => setGains((g) => g.filter((f) => f.key !== e.ms)), 2300 + i * 120);
+        });
+      }
+    }
+    prevStateRef.current = state;
+  }, [state]);
+
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(null), 5000);
@@ -787,6 +889,8 @@ export function App() {
           chips={chips}
           goldenBits={goldenBits}
           onBank={onBank}
+          state={state}
+          nowMs={nowMs}
         />
 
         <aside className="counter">
@@ -819,6 +923,7 @@ export function App() {
       </div>
 
       <DipFlight flight={flight} goldenBits={goldenBits} />
+      <GainFloats floats={gains} />
       {dipFanfare !== null && <DipChange dipIndex={dipFanfare} />}
     </div>
   );

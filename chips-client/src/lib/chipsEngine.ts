@@ -246,8 +246,15 @@ function applySog(state: ChipsState, fromMs: number, toMs: number): void {
  * client that reordered them would disagree about the same table forever. The
  * spec pins this same order (docs/superpowers/specs/2026-07-25-chips-and-dip-design.md).
  * Do not reorder these lines, and do not "simplify" them into one expression.
+ *
+ * Exported for the SAME reason `sogNum`/`sogHoursFor` are: a display that
+ * wants to show a payout — the gain a bank just credited, or what a frying
+ * chip would pay out right now — must call this, never restate the formula.
+ * A second copy of the doubling/golden/dip/congeal/seasoning chain is a
+ * display that silently drifts from the real payout the moment any one of
+ * those is retuned. See lib/chipsPayoutDisplay.ts.
  */
-function payoutFor(state: ChipsState, bits: number, at: number): number {
+export function payoutFor(state: ChipsState, bits: number, at: number): number {
   let crumbs = CRUMBS_PER_CHIP * 2 ** (bits - BANK_MIN_BITS);
   if (bits >= state.goldenBits) crumbs = Math.floor((crumbs * GOLD_NUM) / GOLD_DEN);
 

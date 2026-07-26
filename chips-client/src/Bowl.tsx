@@ -229,6 +229,57 @@ export function Bowl({ state, nowMs, counting, countProgress }: BowlProps) {
   );
 }
 
+/* ── what did I just get ─────────────────────────────────────────────────── */
+
+/**
+ * One newly-banked chip's actual credit, ready to float up from the counter.
+ * `App.tsx` builds these from `chipsPayoutDisplay.ts`'s `actualGains` — never
+ * from the raw payout — so a full bowl announces "+0" rather than a number
+ * the counter did not move for.
+ */
+export interface GainFloat {
+  /** The chip's own `ms` — stable across its pending -> confirmed transition,
+   *  which is what lets `App.tsx` key React's list reconciliation on it. */
+  key: number;
+  text: string;
+  golden: boolean;
+  /** The bowl was already at the rim: this chip's crispness earned nothing.
+   *  Styled distinctly so "+0" reads as the honest truth, not a stall. */
+  empty: boolean;
+  x: number; y: number;
+  dx: number;
+  delay: number;
+}
+
+/**
+ * The gain a bank just credited, rising from the crumb counter and fading —
+ * the other half of the crumb burst that already flies there (Kitchen.tsx's
+ * `DipFlight`): that answers "what did the chip become", this answers "what
+ * did I get". `aria-hidden` throughout, same as the crumb burst it accompanies
+ * — the bowl's own crumb count (announced via its `aria-label`) is the
+ * accessible source of truth; this is a flourish layered on top of it, never
+ * a substitute for it.
+ */
+export function GainFloats({ floats }: { floats: GainFloat[] }) {
+  return (
+    <>
+      {floats.map((f) => (
+        <span
+          key={f.key}
+          className={`gain-float${f.golden ? ' golden' : ''}${f.empty ? ' empty' : ''}`}
+          aria-hidden="true"
+          style={{
+            '--gx': `${f.x}px`, '--gy': `${f.y}px`, '--gdx': `${f.dx}px`,
+            animationDelay: `${f.delay}s`,
+          } as React.CSSProperties}
+        >
+          {f.text}
+        </span>
+      ))}
+    </>
+  );
+}
+
 /* ── the shelf ───────────────────────────────────────────────────────────── */
 
 /**

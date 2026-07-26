@@ -11,6 +11,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FryerChip } from './lib/useFryers';
 import { BANK_MIN_BITS } from './lib/chipsConst';
+import type { ChipsState } from './lib/chipsEngine';
+import { worthIfBankedNow } from './lib/chipsPayoutDisplay';
+import { compact } from './lib/format';
 
 /** xorshift32 — a chip's silhouette must be stable across every re-render, and
  *  every chip must look like a different chip. Keyed on its authoring-ms. */
@@ -231,9 +234,41 @@ interface BasketProps {
   chip: FryerChip;
   goldenBits: number;
   onBank: () => void;
+  /** `null` for the handful of frames before the first fold lands — the
+   *  worth line only ever appears once there is a real fold to ask. */
+  state: ChipsState | null;
+  nowMs: number;
 }
 
-function Basket({ chip, goldenBits, onBank, index }: BasketProps) {
+/**
+ * What this basket's chip would pay if lifted out THIS INSTANT — see
+ * `worthIfBankedNow` (lib/chipsPayoutDisplay.ts) for why this is a live call
+ * against the real fold rather than a restated formula, and why it can
+ * legitimately change with no change to the chip (congeal, the bowl cap).
+ */
+function WorthTag({ chip, goldenBits, state, nowMs }: { chip: FryerChip; goldenBits: number; state: ChipsState | null; nowMs: number }) {
+  const live = state ? worthIfBankedNow(state, chip.bits, nowMs) : null;
+  if (!state) return null;
+  if (!live) {
+    // Below BANK_MIN_BITS: worth NOTHING yet, not a misleading number — see
+    // the file header. Matches "still pale" (Basket's own title/nudge copy).
+    return <p className="worth worth-pale" aria-hidden="true">worth nothing — still pale</p>;
+  }
+  const golden = chip.bits >= goldenBits;
+  return (
+    <p className={`worth${live.capped ? ' worth-capped' : ''}${golden ? ' worth-golden' : ''}`}>
+      <strong>{compact(live.worth)}</strong> now
+      {/* The actual decision being made every second this chip keeps frying:
+       *  the fixed cost of one more bit is the fryer's time; the fixed
+       *  benefit is that this number doubles. A static tag, not a recomputed
+       *  "x2.4" or similar — the DOUBLING is the invariant fact, not a
+       *  number worth calculating live alongside the worth itself. */}
+      <em className="worth-next" aria-hidden="true">next bit ×2</em>
+    </p>
+  );
+}
+
+function Basket({ chip, goldenBits, onBank, index, state, nowMs }: BasketProps) {
   const c = crispnessOf(chip, goldenBits);
   const bubbles = useMemo(() => {
     const rnd = seeded(chip.ms ^ 0x5bf03635);
@@ -246,38 +281,41 @@ function Basket({ chip, goldenBits, onBank, index }: BasketProps) {
   }, [chip.ms]);
 
   return (
-    <button
-      type="button"
-      className={`basket${c.bankable ? ' ready' : ''}${c.golden ? ' golden' : ''}`}
-      onClick={onBank}
-      data-bits={chip.bits}
-      data-fryer={index}
-      data-attempts={chip.attempts}
-      aria-label={
-        c.golden ? 'Golden chip — lift it out'
-          : c.bankable ? 'This chip is done — lift it out'
-            : 'Still frying'
-      }
-      title={c.bankable ? 'lift it out' : 'still pale'}
-    >
-      <span className="basket-hook" aria-hidden="true" />
-      <span className="oil" aria-hidden="true">
-        {bubbles.map((b, i) => (
-          <span
-            key={i} className="bubble"
-            style={{
-              left: `${b.left}%`,
-              width: `${b.size}px`, height: `${b.size}px`,
-              animationDelay: `${b.delay}s`, animationDuration: `${b.dur}s`,
-            }}
-          />
-        ))}
-      </span>
-      <span className="basket-chip" aria-hidden="true"><Chip chip={chip} goldenBits={goldenBits} /></span>
-      <span className="mesh" aria-hidden="true" />
-      {c.bankable && <span className="steam" aria-hidden="true"><i /><i /><i /></span>}
-      <span className="tongs" aria-hidden="true">lift it out</span>
-    </button>
+    <div className="basket-slot">
+      <button
+        type="button"
+        className={`basket${c.bankable ? ' ready' : ''}${c.golden ? ' golden' : ''}`}
+        onClick={onBank}
+        data-bits={chip.bits}
+        data-fryer={index}
+        data-attempts={chip.attempts}
+        aria-label={
+          c.golden ? 'Golden chip — lift it out'
+            : c.bankable ? 'This chip is done — lift it out'
+              : 'Still frying'
+        }
+        title={c.bankable ? 'lift it out' : 'still pale'}
+      >
+        <span className="basket-hook" aria-hidden="true" />
+        <span className="oil" aria-hidden="true">
+          {bubbles.map((b, i) => (
+            <span
+              key={i} className="bubble"
+              style={{
+                left: `${b.left}%`,
+                width: `${b.size}px`, height: `${b.size}px`,
+                animationDelay: `${b.delay}s`, animationDuration: `${b.dur}s`,
+              }}
+            />
+          ))}
+        </span>
+        <span className="basket-chip" aria-hidden="true"><Chip chip={chip} goldenBits={goldenBits} /></span>
+        <span className="mesh" aria-hidden="true" />
+        {c.bankable && <span className="steam" aria-hidden="true"><i /><i /><i /></span>}
+        <span className="tongs" aria-hidden="true">lift it out</span>
+      </button>
+      <WorthTag chip={chip} goldenBits={goldenBits} state={state} nowMs={nowMs} />
+    </div>
   );
 }
 
@@ -285,9 +323,13 @@ export interface KitchenProps {
   chips: FryerChip[];
   goldenBits: number;
   onBank: (index: number) => void;
+  /** For the live "worth if banked now" tag — see `WorthTag`. `null` before
+   *  the first fold lands. */
+  state: ChipsState | null;
+  nowMs: number;
 }
 
-export function Kitchen({ chips, goldenBits, onBank }: KitchenProps) {
+export function Kitchen({ chips, goldenBits, onBank, state, nowMs }: KitchenProps) {
   // Nudge text when a player grabs at a chip that is still pale. Diegetic, and
   // it clears itself — this is a cook muttering, not an error dialog.
   const [nudge, setNudge] = useState<string | null>(null);
@@ -309,6 +351,8 @@ export function Kitchen({ chips, goldenBits, onBank }: KitchenProps) {
             index={i}
             chip={chip}
             goldenBits={goldenBits}
+            state={state}
+            nowMs={nowMs}
             onBank={() => {
               if (crispnessOf(chip, goldenBits).bankable) onBank(i);
               else setNudge('still pale — give it a minute');

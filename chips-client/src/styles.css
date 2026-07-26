@@ -221,7 +221,15 @@ h1, h2, h3, p { margin: 0; }
   background: radial-gradient(58% 46% at 50% 22%, rgba(255,214,150,.2), transparent 72%);
   filter: blur(2px); pointer-events: none;
 }
-.rack { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: center; gap: clamp(10px, 1.6vw, 30px); }
+/* `align-items: flex-start`, not `flex-end`: each rack child is now a
+   `.basket-slot` (the basket button plus its "worth" caption underneath —
+   see below), and slots are no longer all the same total height once a
+   two-line caption sits under a one-line one. Aligning by the TOP keeps the
+   baskets themselves level across the row regardless of caption length;
+   aligning by the bottom (the old rule, fine when every child WAS just the
+   equal-size button) would instead push the baskets out of line with each
+   other by exactly the caption-height difference. */
+.rack { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center; gap: clamp(10px, 1.6vw, 30px); }
 /* Every fryer you buy has to fit in the same room. Each size carries a `vh`
    term as well as a `vw` one, because four baskets at the one-basket size
    overflow the stage vertically long before they run out of width. */
@@ -366,6 +374,45 @@ h1, h2, h3, p { margin: 0; }
 .basket.ready:hover .tongs, .basket.golden .tongs { opacity: .95; }
 
 .mutter { font-family: var(--chalk); color: #d8bf99; opacity: .9; font-size: 15px; }
+
+/* the chalked price under each basket — see Kitchen.tsx's `WorthTag`. The
+   one deliberate exception to this file's own "CRISPNESS IS A LOOK, NOT A
+   NUMBER" rule: the player is choosing whether to keep frying or lift it out
+   right now, and no amount of silhouette work makes THAT legible without a
+   number. Kept as plain and small as a price chalked on a board — no border,
+   no pill, no icon — so it reads as one more diegetic label, not a stat card
+   bolted onto the fryer. */
+.basket-slot { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.worth {
+  /* Fixed regardless of content (one line of "worth nothing — still pale" vs
+     two of a live figure plus the doubling tag) — see the `.rack` comment
+     above on why a jumping caption height would misalign the baskets. */
+  min-height: 2.6em;
+  font-family: var(--chalk); font-size: clamp(10px, 1.5vw, 13px);
+  color: #d8c6a6; text-align: center; line-height: 1.25;
+  /* Smooths a congeal-triggered jump (chipsPayoutDisplay.ts's `worthIfBankedNow`
+     legitimately doubles this with no change to the chip) into a fade rather
+     than a hard snap, so it reads as "something happened" rather than a
+     glitch. Caught by the blanket prefers-reduced-motion rule above like any
+     other transition in this file — nothing extra needed here for that. */
+  transition: color .5s ease;
+}
+.worth strong {
+  font-family: var(--sign); font-weight: 400; letter-spacing: .03em;
+  font-size: 1.25em; color: #ffe6b8;
+}
+/* The one fixed fact worth stating: the number on this line doubles with the
+   next bit. Not a live-recomputed "×2.4" — the DOUBLING is the invariant the
+   player is deciding against, not a figure worth calculating twice. Its own
+   line rather than trailing the number, so it never wraps unpredictably at
+   the narrowest basket width. */
+.worth-next { display: block; font-size: .82em; color: #8d7c63; opacity: .85; }
+/* The bowl cap, not the chip, is why this figure is small — echo the bowl's
+   own "at the rim" wording rather than let a modest number beside an
+   almost-golden chip read as a bug. */
+.worth-capped strong { color: #b7a384; }
+.worth-golden strong { color: #ffe28a; text-shadow: 0 0 10px rgba(255,205,90,.5); }
+.worth-pale { color: #6f6152; opacity: .85; }
 
 /* ── the counter: bowl + shelf ───────────────────────────────────────────── */
 
@@ -783,6 +830,63 @@ h1, h2, h3, p { margin: 0; }
   100% { opacity: 0;  transform: translate(calc(var(--lx) - 23px), calc(var(--ly) - 23px)) scale(1.5); }
 }
 
+/* ── what did I just get ─────────────────────────────────────────────────── */
+
+/* The other half of the crumb burst: the actual amount just credited (from
+   `chipsPayoutDisplay.ts`'s `actualGains` — never the notional payout a full
+   bowl would clip), rising from the counter and fading. `animation-delay:
+   .95s` matches `.crumb-land` exactly, so the figure appears at the same
+   instant the crumb burst lands rather than as an unrelated toast — this is
+   the CONSEQUENCE of the chip being eaten. `--gx`/`--gy` are the same counter
+   centre `.crumb-land` targets; `--gdx` is a small per-chip spread (App.tsx
+   seeds it from the chip's own `ms`, deterministic like every other scatter
+   in this app) so two chips banked within the same breath print beside each
+   other instead of on top of each other.
+
+   The Y calc carries a constant `- 32px` throughout, on top of the `- 50%`
+   that centres the element on its own box: `--gy` is the crumb counter's
+   own vertical centre (same anchor `.crumb-land` targets), and centring TEXT
+   on top of the counter's OWN "NN crumbs" text put the two directly on top
+   of each other for the animation's first stretch (its scale starts at .7
+   and it has barely risen yet) — caught live as a doubled, illegible
+   "60.0k c60.0kbs" smear. The constant lift starts the figure just above
+   that text instead, clear of it from the very first frame. */
+.gain-float {
+  position: fixed; z-index: 32; pointer-events: none;
+  left: 0; top: 0;
+  transform: translate(calc(var(--gx) + var(--gdx) - 50%), calc(var(--gy) - 50% - 32px)) scale(.7);
+  font-family: var(--sign); font-weight: 400; letter-spacing: .03em;
+  font-size: clamp(16px, 2vw, 24px); color: #ffe9c6;
+  text-shadow: 0 0 14px rgba(255,200,120,.6), 0 2px 0 rgba(0,0,0,.4);
+  opacity: 0;
+  white-space: nowrap;
+  animation: gain-float 1.15s cubic-bezier(.2,.7,.3,1) forwards;
+  /* Documented default only — App.tsx always sets `animationDelay` inline
+     (to stagger a multi-chip batch), and an inline style always beats this
+     rule regardless of specificity. Keep this in sync with the `0.95 +` in
+     App.tsx's `delay` calculation regardless. */
+  animation-delay: .95s;
+}
+/* A golden chip's gain deserves to feel different from an ordinary one —
+   bigger, brighter, the same treatment `.basket.golden`/`.chip.is-golden`
+   already give the chip itself. */
+.gain-float.golden {
+  color: #fff3c4; font-size: clamp(19px, 2.4vw, 28px);
+  text-shadow: 0 0 22px rgba(255,214,110,.9), 0 2px 0 rgba(0,0,0,.4);
+}
+/* The bowl was already at the rim: this chip earned nothing. Still shown —
+   silence here would be indistinguishable from the announcement never having
+   fired at all — but visibly duller, so "+0" reads as the honest truth the
+   bowl's own "at the rim" copy already promises, not a stall or a bug. */
+.gain-float.empty { color: #a3937a; text-shadow: none; font-size: clamp(13px, 1.6vw, 17px); }
+
+@keyframes gain-float {
+  0%   { opacity: 0; transform: translate(calc(var(--gx) + var(--gdx) - 50%), calc(var(--gy) - 50% - 32px)) scale(.7); }
+  18%  { opacity: 1; transform: translate(calc(var(--gx) + var(--gdx) - 50%), calc(var(--gy) - 50% - 32px)) scale(1.1); }
+  78%  { opacity: 1; transform: translate(calc(var(--gx) + var(--gdx) - 50%), calc(var(--gy) - 50% - 90px)) scale(1); }
+  100% { opacity: 0; transform: translate(calc(var(--gx) + var(--gdx) - 50%), calc(var(--gy) - 50% - 116px)) scale(1); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dip-flight { animation-duration: .3s; }
   .dip-ripple, .dip-crumb, .crumb-land { display: none; }
@@ -795,5 +899,18 @@ h1, h2, h3, p { margin: 0; }
   @keyframes dip-flight {
     0%   { transform: translate(var(--fx0), var(--fy0)); opacity: 1; }
     100% { transform: translate(var(--fx1), var(--fy1)); opacity: 0; }
+  }
+
+  /* UNLIKE `.dip-ripple`/`.dip-crumb`/`.crumb-land` above, `.gain-float` is
+     not hidden here: the figure IS the information this feature exists to
+     show (see Bowl.tsx's `GainFloats` doc), and reduced motion asks for less
+     motion, not for the number to disappear. Only the rise-and-scale is
+     removed, replaced with a plain fade in place at its landing spot. */
+  .gain-float { animation-duration: .5s; }
+  @keyframes gain-float {
+    0%   { opacity: 0; transform: translate(calc(var(--gx) + var(--gdx) - 50%), calc(var(--gy) - 50% - 32px)); }
+    20%  { opacity: 1; }
+    80%  { opacity: 1; }
+    100% { opacity: 0; transform: translate(calc(var(--gx) + var(--gdx) - 50%), calc(var(--gy) - 50% - 32px)); }
   }
 }
