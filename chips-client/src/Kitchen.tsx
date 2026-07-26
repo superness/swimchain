@@ -40,16 +40,21 @@ export interface Crispness {
  * Bits alone move in discrete jumps that get exponentially rarer (8 -> 9 is
  * twice the work of everything before it), so a chip driven by bits ALONE
  * would visibly stall for minutes at a time and read as broken. `attempts`
- * fills the gap: expected work for the next bit is 2^(bits+1), so the ratio of
- * attempts-so-far to that is an honest "how deep into this bit are we" and
- * gives the chip a continuous darkening between jumps. Capped below 1 so it
- * can never overtake the next real bit.
+ * fills the gap: expected work for the next bit is 2^(bits+1), and the fill
+ * is `1 - e^(-attempts/expected)` — the actual probability that the next bit
+ * WOULD have landed by now. That curve is the fidelity fix: the old version
+ * was `min(1, attempts/expected)`, a hard cap that froze the entire visual
+ * the moment a chip ran past its expected work — i.e. on every unlucky chip,
+ * for as long as the bad luck lasted (minutes at high bits, measured live).
+ * The asymptote keeps creeping forever instead; it slows, but it never
+ * stops, and the tosses ticker (`WorthTag`) carries raw, unbounded fidelity
+ * alongside it. Scaled by .95 so it can never overtake the next real bit.
  */
 export function crispnessOf(chip: FryerChip, goldenBits: number): Crispness {
   if (chip.bits < 0) return { crisp: 0, golden: false, bankable: false, raw: true };
   const expected = Math.pow(2, chip.bits + 1);
-  const micro = expected > 0 ? Math.min(1, chip.attempts / expected) : 0;
-  const effective = chip.bits + micro * 0.9;
+  const micro = expected > 0 ? 1 - Math.exp(-chip.attempts / expected) : 0;
+  const effective = chip.bits + micro * 0.95;
   return {
     crisp: Math.max(0, effective / Math.max(1, goldenBits)),
     golden: chip.bits >= goldenBits,
@@ -249,10 +254,22 @@ interface BasketProps {
 function WorthTag({ chip, goldenBits, state, nowMs }: { chip: FryerChip; goldenBits: number; state: ChipsState | null; nowMs: number }) {
   const live = state ? worthIfBankedNow(state, chip.bits, nowMs) : null;
   if (!state) return null;
+  // The raw work meter — the one figure that NEVER stalls. Crispness is
+  // bounded below the next bit by honesty (it may only jump when a real bit
+  // lands), so on an unlucky chip every bounded visual eventually slows to a
+  // crawl; this counter is unbounded and ticks with every progress message
+  // (~4/s), which is what makes a long golden grind read as "working", not
+  // "hung". Updates every 16 attempts — the worker's report stride.
+  // Full digits, never compact(): "104k" only changes once per ~1000
+  // attempts, which would hand the ticker its own ten-second stalls at
+  // exactly the counts where it matters most.
+  const tosses = chip.attempts > 0
+    ? <em className="tosses" aria-hidden="true">{chip.attempts.toLocaleString()} tosses of the basket</em>
+    : <em className="tosses" aria-hidden="true">&nbsp;</em>;
   if (!live) {
     // Below BANK_MIN_BITS: worth NOTHING yet, not a misleading number — see
     // the file header. Matches "still pale" (Basket's own title/nudge copy).
-    return <p className="worth worth-pale" aria-hidden="true">worth nothing — still pale</p>;
+    return <p className="worth worth-pale" aria-hidden="true">worth nothing — still pale{tosses}</p>;
   }
   const golden = chip.bits >= goldenBits;
   return (
@@ -264,6 +281,7 @@ function WorthTag({ chip, goldenBits, state, nowMs }: { chip: FryerChip; goldenB
        *  "x2.4" or similar — the DOUBLING is the invariant fact, not a
        *  number worth calculating live alongside the worth itself. */}
       <em className="worth-next" aria-hidden="true">next bit ×2</em>
+      {tosses}
     </p>
   );
 }

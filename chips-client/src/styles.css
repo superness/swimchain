@@ -384,10 +384,11 @@ h1, h2, h3, p { margin: 0; }
    bolted onto the fryer. */
 .basket-slot { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .worth {
-  /* Fixed regardless of content (one line of "worth nothing — still pale" vs
-     two of a live figure plus the doubling tag) — see the `.rack` comment
-     above on why a jumping caption height would misalign the baskets. */
-  min-height: 2.6em;
+  /* Fixed regardless of content (the pale line vs a live figure plus the
+     doubling tag — both now end with the tosses ticker) — see the `.rack`
+     comment above on why a jumping caption height would misalign the
+     baskets. */
+  min-height: 3.6em;
   font-family: var(--chalk); font-size: clamp(10px, 1.5vw, 13px);
   color: #d8c6a6; text-align: center; line-height: 1.25;
   /* Smooths a congeal-triggered jump (chipsPayoutDisplay.ts's `worthIfBankedNow`
@@ -413,6 +414,15 @@ h1, h2, h3, p { margin: 0; }
 .worth-capped strong { color: #b7a384; }
 .worth-golden strong { color: #ffe28a; text-shadow: 0 0 10px rgba(255,205,90,.5); }
 .worth-pale { color: #6f6152; opacity: .85; }
+/* The raw work meter — see WorthTag. Ticks ~4x/s and never stalls, which is
+   its entire job: crispness is honestly bounded below the next bit, so on an
+   unlucky chip it slows to a crawl, and THIS line is what shows the fryer
+   still chewing through the drought. Tabular digits so the ticking number
+   doesn't wobble the line. */
+.tosses {
+  display: block; font-style: normal; font-size: .78em; color: #7d6e58;
+  font-variant-numeric: tabular-nums;
+}
 
 /* ── the counter: the dip tunnel + shelf ─────────────────────────────────── */
 
