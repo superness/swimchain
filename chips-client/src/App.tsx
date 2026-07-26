@@ -1,5 +1,5 @@
 /**
- * Chips & Dip — the shop.
+ * Dippin' Chips — the shop.
  *
  * The whole screen is the game: a fry station over a bowl of dip, boards on the
  * wall. No dashboard, no panels of statistics, no chrome. Numbers exist (a cook
@@ -788,12 +788,12 @@ export function App() {
   // their table, their crumbs and their whole lifetime crunch, irreversibly,
   // for one impatient click. Wait instead.
   if (idLoading || (hasIdentity && !me) || (!rpc && connecting)) {
-    return <Doorway dipIndex={0} title="Chips &amp; Dip"><p className="lede">the lights are coming on…</p></Doorway>;
+    return <Doorway dipIndex={0} title="Dippin' Chips"><p className="lede">the lights are coming on…</p></Doorway>;
   }
 
   if (!hasIdentity || !me) {
     return (
-      <Doorway dipIndex={0} title="Chips &amp; Dip">
+      <Doorway dipIndex={0} title="Dippin' Chips">
         <p className="lede">
           Grind a chip until it is crisp. Bank it before you get greedy. Spend the crumbs
           before they go soft. Nobody runs this shop — it lives on the network.
@@ -843,10 +843,10 @@ export function App() {
   }
 
   if (!seated) {
-    return <Doorway dipIndex={0} title="Chips &amp; Dip"><p className="lede">{seatLine}</p><Spinner /></Doorway>;
+    return <Doorway dipIndex={0} title="Dippin' Chips"><p className="lede">{seatLine}</p><Spinner /></Doorway>;
   }
   if (!tableId) {
-    return <Doorway dipIndex={0} title="Chips &amp; Dip"><p className="lede">{tableLine}</p><Spinner /></Doorway>;
+    return <Doorway dipIndex={0} title="Dippin' Chips"><p className="lede">{tableLine}</p><Spinner /></Doorway>;
   }
 
   const dipIndex = state?.dipIndex ?? 0;
@@ -869,7 +869,7 @@ export function App() {
 
       <header className="hood">
         <div className="hood-plate">
-          <span className="shop-name">CHIPS &amp; DIP</span>
+          <span className="shop-name">DIPPIN&apos; CHIPS</span>
           <span className="cook">{cookName}</span>
         </div>
         <div className="hood-dip">
