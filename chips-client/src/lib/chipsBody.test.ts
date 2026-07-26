@@ -7,9 +7,9 @@
  * Dependency-free (chipsConst only) — no RPC/PoW/WASM in this test's import
  * chain, unlike host.ts.
  */
-import { bankBody, buyBody } from './chipsBody';
+import { bankBody, buyBody, bankBatchBody } from './chipsBody';
 import { parseMove } from './chipsEngine';
-import { BANK_MIN_BITS, MAX_BITS } from './chipsConst';
+import { BANK_MIN_BITS, MAX_BITS, MAX_BATCH } from './chipsConst';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -104,6 +104,42 @@ for (const bits of [BANK_MIN_BITS, MAX_BITS]) {
   threw = false;
   try { buyBody('season1', 0); } catch { threw = true; }
   check('buyBody rejects ms == 0', threw);
+}
+
+// A batch body must parse back to exactly the chips that went in — the grammar
+// and its inverse cannot be allowed to drift.
+{
+  const chips = [
+    { ms: 1_000_000, bits: BANK_MIN_BITS, nonce: 0n },
+    { ms: 1_000_001, bits: MAX_BITS, nonce: 2n ** 64n - 1n },
+    { ms: 1_000_002, bits: 12, nonce: 0xdeadbeefn },
+  ];
+  const p = parseMove(bankBatchBody(chips, 1_000_009));
+  check('batch round-trips', p?.kind === 'bank');
+  if (p?.kind === 'bank') {
+    check('same length', p.chips.length === chips.length);
+    check('same values', chips.every((c, i) =>
+      p.chips[i].ms === c.ms && p.chips[i].bits === c.bits && p.chips[i].nonce === c.nonce));
+  }
+}
+
+// The emitter must refuse to build what the fold would reject whole.
+{
+  const many = Array.from({ length: MAX_BATCH + 1 }, (_, i) => ({ ms: 1_000_000 + i, bits: 8, nonce: BigInt(i) }));
+  let threw = false;
+  try { bankBatchBody(many, 1); } catch { threw = true; }
+  check('refuses over MAX_BATCH', threw);
+
+  let threwEmpty = false;
+  try { bankBatchBody([], 1); } catch { threwEmpty = true; }
+  check('refuses empty', threwEmpty);
+}
+
+// A full batch must stay inside the 1 KB inline-storage threshold.
+{
+  const full = Array.from({ length: MAX_BATCH }, (_, i) => ({ ms: 1_785_000_000_000 + i, bits: 20, nonce: 2n ** 64n - 1n }));
+  const body = bankBatchBody(full, 1_785_000_000_099);
+  check('full batch stays inline (<1024 bytes)', new TextEncoder().encode(body).length < 1024, new TextEncoder().encode(body).length);
 }
 
 if (failures > 0) {
