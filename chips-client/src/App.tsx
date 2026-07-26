@@ -14,14 +14,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Keypair } from '@swimchain/core';
 import { useRpc, useStoredIdentity, useStoredKeypair, createNewIdentity } from '@swimchain/react';
-import { createBrowserHost, bankBatchBody, buyBody, type ChipsHost, type Identity } from './lib/host';
-import { foldChips, type ChipsHeader, type ChipsState, type ChipsReply, type ChipEntry } from './lib/chipsEngine';
+import { createBrowserHost, type ChipsHost, type Identity } from './lib/host';
+import { foldChips, type ChipsHeader, type ChipsState, type ChipsReply } from './lib/chipsEngine';
 import { verifyReplies } from './lib/chipsVerify';
-import { proofKey } from './lib/proofKey';
-import { enqueue, ack, takeBatch, loadQueue, saveQueue, type QueuedMove } from './lib/chipsQueue';
+import { withPending } from './lib/chipsPending';
+import { planSend, afterSubmit } from './lib/chipsSender';
+import { enqueue, loadQueue, saveQueue, clearQueue, nextIdAfter, activeFor, type QueuedMove } from './lib/chipsQueue';
 import { useFryers } from './lib/useFryers';
 import { projectedCrumbs } from './lib/sogProjection';
-import { DIP_TIERS } from './lib/chipsConst';
+import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { Bowl, Shelf, DipBed, DipChange } from './Bowl';
 import { Boards, useBoards } from './Boards';
@@ -111,46 +112,6 @@ function useFlavour(pool: string[], active: boolean): string {
   return line;
 }
 
-/**
- * Queued moves as synthetic PENDING replies.
- *
- * `block_height: null` is what makes this correct rather than a hack: the
- * fold already credits pending replies without advancing the decay clock, so
- * a queued chip reads exactly as it will once it lands. Because the same fold
- * produces both, there is no second accounting path to drift and nothing to
- * reconcile when the batch confirms — the synthetic entry drops out and the
- * real one arrives.
- *
- * Bits are known locally (we mined them), so the verification map is seeded
- * directly; on confirmation the same proof is re-verified from the chain by
- * the normal path.
- */
-function withPending(
-  confirmed: ChipsReply[],
-  verified: Map<string, number>,
-  queue: QueuedMove[],
-  me: string,
-  table: string
-): { replies: ChipsReply[]; verified: Map<string, number> } {
-  if (queue.length === 0) return { replies: confirmed, verified };
-  const v = new Map(verified);
-  const extra: ChipsReply[] = [];
-  let seq = 0;
-
-  for (const m of queue) {
-    // Synthetic ids never collide with a chain content_id (`sha256:…`).
-    const cid = `pending:${m.id}`;
-    const at = Date.now();
-    if (m.kind === 'bank') {
-      v.set(proofKey(table, me, m.chip.ms, m.chip.nonce), m.chip.bits);
-      extra.push({ author_id: me, body: bankBatchBody([m.chip], at + seq++), block_height: null, content_id: cid, created_at: at });
-    } else {
-      extra.push({ author_id: me, body: buyBody(m.key, at + seq++), block_height: null, content_id: cid, created_at: at });
-    }
-  }
-  return { replies: [...confirmed, ...extra], verified: v };
-}
-
 export function App() {
   const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
   const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
@@ -201,21 +162,58 @@ export function App() {
   // it runs once, synchronously, before the first render — a chip mined and
   // queued in a previous tab session is on screen (via `withPending` below)
   // from the very first frame, not after some later effect catches up.
+  //
+  // The queue is global to the browser origin — scoped to neither identity nor
+  // table (see chipsQueue.ts's file header) — so it can outlive the identity
+  // that queued it (a new "tie on the apron" mints a fresh identity but does
+  // not touch this store). `withPending`/`planSend` both filter to
+  // `activeFor(queue, tableId, me)` before folding or sending, which is what
+  // makes a leftover entry from an earlier identity/table inert rather than
+  // phantom-crediting the new one.
   const [queue, setQueue] = useState<QueuedMove[]>(loadQueue);
   const [queueTick, setQueueTick] = useState(0);
-  // Ids only need to be unique within the CURRENT queue — `ack` drops entries
-  // by id, so two live entries sharing one id would have one `ack()` call
-  // delete BOTH, and one of them is a mined proof (a bank's CPU spend) that
-  // never actually landed. Seeding at 1 every mount would do exactly that:
-  // the queue survives a reload (that's the whole point — see below), so a
-  // restored queue can already contain ids up to N, and this session's first
-  // `nextId.current++` would mint a fresh 1 that collides with a still-queued
-  // restored entry. Seed above the highest id already on the queue instead.
-  const nextId = useRef(queue.reduce((max, m) => Math.max(max, m.id), 0) + 1);
+  const nextId = useRef(nextIdAfter(queue));
 
   // Every queue change is written straight through: each queued bank is a
   // mined proof, i.e. CPU the player has already spent and cannot get back.
   useEffect(() => { saveQueue(queue); }, [queue]);
+
+  /**
+   * The last confirmed fold input (replies + verification map), refreshed
+   * from the network in the background. `foldNow` below re-folds this
+   * synchronously against the CURRENT queue — no network wait — so a dip
+   * credits and a buy debits in the same render the click produced, online or
+   * not. `refresh()` updates this ref and then calls `foldNow`, so the
+   * network path and the instant-local path are the same fold call over
+   * different inputs, never two different code paths computing state.
+   */
+  const confirmedRef = useRef<{ replies: ChipsReply[]; verified: Map<string, number> }>({ replies: [], verified: new Map() });
+
+  const foldNow = useCallback((): void => {
+    if (!tableId || !me) return;
+    const { replies: confirmed, verified } = confirmedRef.current;
+    const merged = withPending(confirmed, verified, queue, me.publicKeyHex, tableId);
+    const header: ChipsHeader = { v: 1, kind: 'chips-table', name: cookName, owner: me.publicKeyHex };
+    setState(foldChips(header, tableId, merged.replies, merged.verified));
+  }, [tableId, me, cookName, queue]);
+
+  // Re-fold locally the instant the queue (or the identity/table it's read
+  // against) changes — this is what makes a dip or a buy credit immediately,
+  // with zero network round trip, per the task's whole point.
+  useEffect(() => { foldNow(); }, [foldNow]);
+
+  // Always the latest `foldNow`, updated unconditionally every render (same
+  // pattern as `chipsRef` further down) — `refresh` below reads THROUGH this
+  // ref rather than closing over `foldNow` directly, specifically so
+  // `refresh`'s OWN identity does not change every time `queue` changes.
+  // `foldNow` depends on `queue`; if `refresh` depended on `foldNow` (and
+  // therefore transitively on `queue`), then the polling effect further down
+  // — which depends on `refresh` and calls it immediately on every dependency
+  // change — would fire a FULL network `loadTable` + `verifyReplies` round
+  // trip on every single dip or buy, on top of the one the sender loop
+  // already does after a successful submit.
+  const foldNowRef = useRef(foldNow);
+  foldNowRef.current = foldNow;
 
   // A wall clock for the sog projection. One second is plenty — the pile is
   // meant to look like it is going soft, not to tick.
@@ -283,6 +281,14 @@ export function App() {
   }, [host, connected, me]);
 
   /* ── the fold ─────────────────────────────────────────────────────────── */
+  // Fetches confirmed replies over the network, then folds via the SAME
+  // `foldNow` the instant-local path uses (through `foldNowRef` — see its
+  // comment above for why not a direct closure) — updating `confirmedRef`
+  // first is what lets a synthetic pending entry drop out and the real one
+  // take over without a second accounting path. Deliberately NOT dependent on
+  // `queue`/`cookName`: this function's identity must stay stable across a
+  // queue change, or the polling effect below (which depends on it) fires an
+  // extra network round trip on every dip.
   const refresh = useCallback(async (): Promise<void> => {
     if (!host || !tableId || !me) return;
     const confirmed = await host.loadTable(tableId);
@@ -290,11 +296,10 @@ export function App() {
       tableId, me.publicKeyHex, confirmed,
       (done, total) => setCounting(total > 0 && done < total ? { done, total } : null)
     );
-    const merged = withPending(confirmed, verified, queue, me.publicKeyHex, tableId);
-    const header: ChipsHeader = { v: 1, kind: 'chips-table', name: cookName, owner: me.publicKeyHex };
-    setState(foldChips(header, tableId, merged.replies, merged.verified));
+    confirmedRef.current = { replies: confirmed, verified };
+    foldNowRef.current();
     setCounting(null);
-  }, [host, tableId, me, cookName, queue]);
+  }, [host, tableId, me]);
 
   useEffect(() => {
     if (!host || !tableId || !me) return;
@@ -312,7 +317,8 @@ export function App() {
   }, [host, tableId, me, refresh]);
 
   /**
-   * One flight at a time, strict FIFO, take whatever is queued.
+   * One flight at a time, strict FIFO, take whatever is queued (filtered to
+   * the identity/table currently in play — see `planSend`).
    *
    * Batch size self-clocks: an idle player's chip goes out alone; a busy
    * kitchen accumulates during each ~5.4s action PoW and the next batch grows
@@ -329,19 +335,41 @@ export function App() {
 
     (async () => {
       sending.current = true;
-      const take = takeBatch(queue);
-      if (!take) { sending.current = false; return; }
+      const plan = planSend(queue, tableId, me.publicKeyHex, Date.now());
+      if (!plan) { sending.current = false; return; }
       try {
-        const at = Date.now();
-        const body = take.kind === 'bank'
-          ? bankBatchBody(take.moves.map((m) => (m as { chip: ChipEntry }).chip), at)
-          : buyBody((take.moves[0] as { key: string }).key, at);
-        await host.submitMove(me, tableId, body);
-        if (cancelled) return;
+        await host.submitMove(me, tableId, plan.body);
         backoff.current = 0;
-        setQueue((q) => ack(q, take.moves));
-        await refresh();
-      } catch {
+        // The ack is UNCONDITIONAL — `cancelled` (a newer attempt superseded
+        // this one while it was in flight, e.g. the player dipped again)
+        // suppresses only the follow-up refresh below, never the ack.
+        // Skipping the ack here would leave an already-landed batch in the
+        // queue forever resubmitting itself: harmless to the fold (it
+        // dedupes by proofKey, so nothing is credited twice) but a real
+        // action PoW and a chain write wasted on every single retry.
+        let shouldRefresh = false;
+        setQueue((q) => {
+          const outcome = afterSubmit(q, plan.moves, cancelled);
+          shouldRefresh = outcome.shouldRefresh;
+          return outcome.queue;
+        });
+        if (shouldRefresh) await refresh();
+        // Re-arm explicitly. The ack above already changes `queue`'s
+        // reference (a fresh array from `.filter`, even when its contents
+        // end up identical), which alone re-triggers this effect in the
+        // ordinary case — but a move enqueued mid-flight is easy to reason
+        // about wrong under concurrent async updates, so this is deliberate
+        // insurance rather than reliance on that alone. Bumping `queueTick`
+        // when the queue is now empty is a harmless no-op — the effect's own
+        // `queue.length === 0` guard bails immediately.
+        setQueueTick((t) => t + 1);
+      } catch (e) {
+        console.error('[chips] a batch failed to submit', e);
+        // The chip/upgrade is safe — it stays in the queue and will retry.
+        // Silence here is the bug this message exists to fix: offline, a
+        // revoked sponsorship, or a down node otherwise tells the player
+        // nothing at all while their queue quietly grows.
+        setNotice('the kitchen can\'t hear the counter right now — it\'s still in the queue and will go in once it can');
         // Keep it queued and try again. Capped so a long offline spell does not
         // decay into one attempt an hour.
         backoff.current = Math.min(backoff.current === 0 ? 2000 : backoff.current * 2, 60_000);
@@ -426,24 +454,32 @@ export function App() {
     const chip = bank(index);        // still destructive; still the only reference
     if (!chip) return;
     launchDip(index, chip);          // the animation is the feedback now
-    // NOT an inline literal in the `enqueue` call: `enqueue`'s second parameter
-    // is typed `Omit<QueuedMove, 'id'>`, and `Omit` over a union type does not
-    // distribute — it collapses to `{ kind: 'bank' | 'buy' }` (the only keys
-    // common to both arms), losing `chip`/`key` from the checked shape
-    // entirely. An object literal passed straight into the call is checked for
-    // EXCESS properties against that collapsed type and `chip` fails as
-    // unknown; a same-shaped value bound to a variable first is checked only
-    // for assignability, which passes. Runtime behaviour is identical either
-    // way — this is a type-checking artifact of chipsQueue.ts's signature, not
-    // a bug in what gets queued (see task-5-report.md).
-    const move = { kind: 'bank' as const, chip: { ms: chip.ms, bits: chip.bits, nonce: chip.nonce } };
-    setQueue((q) => enqueue(q, move, nextId.current++));
+    // Every queued entry carries the table/identity it was mined for — see
+    // chipsQueue.ts's file header on why (a queue entry with no provenance is
+    // how a stale entry from an earlier identity ends up crediting a table it
+    // has nothing to do with).
+    setQueue((q) => enqueue(
+      q, { tableId, author: me.publicKeyHex, kind: 'bank', chip: { ms: chip.ms, bits: chip.bits, nonce: chip.nonce } },
+      nextId.current++
+    ));
   }
 
   function onBuy(key: string): void {
     if (!host || !me || !tableId) return;
-    const move = { kind: 'buy' as const, key };
-    setQueue((q) => enqueue(q, move, nextId.current++));
+    // The fold this click's crumbs are checked against (`state`) already
+    // reflects every earlier queued-but-unconfirmed move (via `withPending`),
+    // and re-folds synchronously on every queue change (`foldNow`) — so this
+    // check is current as of the LAST render, not stale. It still can't see a
+    // move enqueued in the same tick as this one (e.g. a double-click before
+    // React re-renders), which is exactly why the exact-duplicate check below
+    // does not rely on it: two clicks on the SAME jar, back to back, must not
+    // both reach the queue.
+    if (state?.owned.has(key)) return;
+    const already = activeFor(queue, tableId, me.publicKeyHex).some((m) => m.kind === 'buy' && m.key === key);
+    if (already) return;
+    const cost = UPGRADES[key]?.cost;
+    if (cost !== undefined && crumbsNow < cost) return;
+    setQueue((q) => enqueue(q, { tableId, author: me.publicKeyHex, kind: 'buy', key }, nextId.current++));
   }
 
   /* ── the dip ladder ceremony ──────────────────────────────────────────── */
@@ -477,6 +513,17 @@ export function App() {
     const name = nameDraft.trim().slice(0, 80).replace(/[\r\n]/g, ' ') || defaultName();
     try { localStorage.setItem(NAME_KEY, name); } catch { /* private mode */ }
     setCookName(name);
+    // This screen is only reachable with NO usable identity in this browser
+    // (`!hasIdentity`, checked at the call site below) — so any queue entry
+    // already sitting in storage belongs to an identity we're about to
+    // overwrite and can never sign for again. The provenance filter
+    // (`activeFor`) already makes such an entry permanently inert either way
+    // (its `author` can never match this brand-new identity), so this is a
+    // deliberate cleanup, not a correctness fix: clear it here, at the one
+    // moment this browser is unambiguously moving on, rather than let it sit
+    // in storage forever as dead weight.
+    clearQueue();
+    setQueue([]);
     const seed = new Uint8Array(32);
     crypto.getRandomValues(seed);
     const kp = Keypair.fromSeed(seed);
