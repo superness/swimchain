@@ -22,6 +22,16 @@
  * crediting one anyway is exactly the "phantom crumbs" bug this file's
  * provenance fields exist to close. See chipsPending.ts and chipsSender.ts,
  * the two callers.
+ *
+ * KNOWN GAP, DELIBERATELY NOT FIXED HERE: two tabs on the same origin. Every
+ * write is a whole-array `localStorage` read-modify-write (`loadQueue` then
+ * `saveQueue`, no lock, no `storage` event listener), and `nextIdAfter` seeds
+ * per tab from whatever that tab last loaded — so two tabs open at once can
+ * both mint the same id and each clobber the other's queued moves on its next
+ * save. Bounded (a player would need two tabs open) and unlikely, but real:
+ * this file reasons carefully about table/identity provenance and not at all
+ * about concurrent tabs on the SAME table/identity. Left as a gap rather than
+ * solved.
  */
 import { MAX_BATCH } from './chipsConst';
 import type { ChipEntry } from './chipsEngine';
@@ -108,23 +118,18 @@ export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' 
   return { moves, kind: 'bank' };
 }
 
-/** Drop exactly the moves that landed, by id. Retained for
- *  chipsSettling.ts's retirement path; the SUBMIT path uses `markSent`. */
-export function ack(q: QueuedMove[], taken: QueuedMove[]): QueuedMove[] {
-  const gone = new Set(taken.map((m) => m.id));
-  return q.filter((m) => !gone.has(m.id));
-}
-
 /**
  * Entries still awaiting submission. Everything the sender does — batching,
  * ordering, submitting — must go through this first: a settling entry has
  * ALREADY landed on the chain, and resubmitting it burns a real action PoW and
  * a chain write to be folded as `rejected-duplicate`.
  *
- * Order is preserved, which is what keeps the queue's FIFO contract intact: a
- * settling entry is always a prefix of the queue (one submission in flight,
- * strict FIFO), so removing settling entries leaves the unsent ones in exactly
- * their original relative order.
+ * Order is preserved — NOT because a settling entry is guaranteed to sit in a
+ * strict prefix of the queue (it isn't: a stale foreign-provenance entry, or
+ * one `submittable` rejects, can sit ahead of a live one and is never marked
+ * settling at all) but because `.filter` never reorders what survives it. That
+ * alone is what keeps the queue's FIFO contract intact for whatever unsent
+ * entries remain, regardless of where the settling ones were sitting.
  */
 export function unsent(q: QueuedMove[]): QueuedMove[] {
   return q.filter((m) => m.sentAt === undefined);
@@ -157,14 +162,15 @@ export function markSent(q: QueuedMove[], taken: QueuedMove[], at: number): Queu
 /**
  * The next id to hand out, given a (possibly restored) queue.
  *
- * Must never collide with an id already present. `ack` drops entries by id
- * (see above), so two live entries sharing one id would have a single
- * `ack()` call delete BOTH — one of which may be a mined proof that never
- * actually landed. The queue is designed to survive a reload (persisted,
- * restored via `loadQueue`), so a session that always reseeds at a fixed
- * starting value can mint an id that collides with a still-queued restored
- * entry the moment the player's first move of the new session is acked.
- * Seeding above the highest id already present closes that.
+ * Must never collide with an id already present. `markSent` marks entries by
+ * id, matching via a `Set` built from `taken.map((m) => m.id)` (see above), so
+ * two live entries sharing one id would have a single `markSent` call stamp
+ * BOTH as settled — one of which may be a mined proof that never actually
+ * landed. The queue is designed to survive a reload (persisted, restored via
+ * `loadQueue`), so a session that always reseeds at a fixed starting value can
+ * mint an id that collides with a still-queued restored entry the moment the
+ * player's first move of the new session is submitted. Seeding above the
+ * highest id already present closes that.
  */
 export function nextIdAfter(q: QueuedMove[]): number {
   return q.reduce((max, m) => Math.max(max, m.id), 0) + 1;

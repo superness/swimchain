@@ -367,31 +367,6 @@ h1, h2, h3, p { margin: 0; }
 
 .mutter { font-family: var(--chalk); color: #d8bf99; opacity: .9; font-size: 15px; }
 
-/* chips pulled from the oil that have not reached the chain yet */
-.napkin {
-  /* Out of the centred column entirely. As a flow child, this appearing shoved
-     the rack upward and clipped the fryer under the hood. Failures are rare and
-     short; the counter should not rearrange itself to report one. */
-  position: absolute; left: 50%; translate: -50% 0;
-  bottom: clamp(86px, 12vh, 140px);
-  background: linear-gradient(180deg, #f6efe0, #ded4c0);
-  color: #3a2f22; border-radius: 3px;
-  padding: 8px 14px 10px;
-  box-shadow: 0 10px 26px rgba(0,0,0,.5);
-  clip-path: polygon(0 4%, 3% 0, 97% 2%, 100% 6%, 99% 96%, 96% 100%, 4% 98%, 1% 94%);
-  max-width: min(460px, 90%);
-}
-.napkin-label {
-  display: block; font-family: var(--chalk); font-size: 12px; color: #7b6a53;
-  letter-spacing: .06em; margin-bottom: 4px;
-}
-.napkin ul { display: flex; gap: 12px; flex-wrap: wrap; }
-.napkin li { display: flex; flex-direction: column; align-items: center; width: 66px; }
-.napkin li .chip { width: 42px; height: 42px; }
-.napkin li.sending { opacity: .75; }
-.again { font-family: var(--chalk); font-size: 12px; color: #9a3418; text-decoration: underline; }
-.again.waiting { color: #7b6a53; text-decoration: none; }
-
 /* ── the counter: bowl + shelf ───────────────────────────────────────────── */
 
 .counter {
@@ -740,4 +715,14 @@ h1, h2, h3, p { margin: 0; }
 @media (prefers-reduced-motion: reduce) {
   .dip-flight { animation-duration: .3s; }
   .dip-ripple, .dip-crumb, .crumb-land { display: none; }
+  /* Shortening the duration alone still plays the full arc — the lift, the
+     rotation, the scale-to-1.34 crunch — just faster, which is not what this
+     media query promises. A `@keyframes` rule of the same name declared later
+     in the cascade replaces the earlier one wholesale (this is not a
+     specificity/!important question — keyframe rules don't merge), so this
+     swaps in a straight two-stop move with no flourish whenever it's active. */
+  @keyframes dip-flight {
+    0%   { transform: translate(var(--fx0), var(--fy0)); opacity: 1; }
+    100% { transform: translate(var(--fx1), var(--fy1)); opacity: 0; }
+  }
 }

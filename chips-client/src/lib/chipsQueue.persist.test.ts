@@ -11,11 +11,11 @@
  * or missing/blank provenance (`tableId`/`author`), must be dropped rather
  * than trusted. Without this, a corrupt id (e.g. `NaN`, which JSON.parse
  * cannot itself produce but a hand-edited or partially-written row could) is
- * catastrophic in a way a mere throw is not: `ack`'s de-dupe `Set` uses
+ * catastrophic in a way a mere throw is not: `markSent`'s landed-id `Set` uses
  * SameValueZero, under which `NaN === NaN` for `Set` membership purposes, so
- * a SINGLE `ack()` call would delete EVERY entry with a `NaN` id at once —
- * silently destroying every other mined proof sharing that fate, not just
- * the corrupt one.
+ * a SINGLE `markSent` call would stamp EVERY entry with a `NaN` id as settled
+ * at once — silently telling the sender to stop submitting every other mined
+ * proof sharing that fate, not just the corrupt one.
  *
  * Node has no `localStorage`. This file installs a minimal in-memory stub on
  * `globalThis` for its own duration only, and removes it (via `finally`)
@@ -29,7 +29,10 @@ import { loadQueue, saveQueue, clearQueue, type QueuedMove } from './chipsQueue'
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
   if (cond) console.log(`  ok  ${name}`);
-  else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
+  else {
+    failures++;
+    console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v)) : ''}`);
+  }
 }
 
 type GlobalWithStorage = Omit<typeof globalThis, 'localStorage'> & { localStorage?: Storage };

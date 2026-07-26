@@ -12,7 +12,10 @@ import type { ChipEntry } from './chipsEngine';
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
   if (cond) console.log(`  ok  ${name}`);
-  else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
+  else {
+    failures++;
+    console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v)) : ''}`);
+  }
 }
 
 const TABLE = 'sha256:table-a';

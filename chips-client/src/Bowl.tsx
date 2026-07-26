@@ -14,6 +14,7 @@ import type { ChipsState } from './lib/chipsEngine';
 import { projectedCrumbs, soggyLook } from './lib/sogProjection';
 import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, type Upgrade } from './lib/chipsConst';
 import { compact, sinceLabel } from './lib/format';
+import { canAffordBuy } from './lib/chipsAfford';
 
 function seeded(seed: number): () => number {
   let s = (seed >>> 0) || 0x6d2b79f5;
@@ -272,23 +273,26 @@ const FLAVOUR: Record<string, string> = {
 export interface ShelfProps {
   state: ChipsState;
   crumbsNow: number;
-  busy: boolean;
+  /** Cost of queued buys `crumbsNow` does not yet reflect — see
+   *  chipsAfford.ts. Almost always 0; passed through rather than assumed so
+   *  this stays the SAME predicate `onBuy`'s guard evaluates. */
+  committed: number;
   onBuy: (key: string) => void;
 }
 
-export function Shelf({ state, crumbsNow, busy, onBuy }: ShelfProps) {
+export function Shelf({ state, crumbsNow, committed, onBuy }: ShelfProps) {
   const { open, got } = useMemo(() => shelfItems(state.owned), [state.owned]);
   return (
     <section className="shelf" aria-label="the shelf">
       <ul className="jars">
         {open.map((u) => {
-          const afford = crumbsNow >= u.cost;
+          const afford = canAffordBuy(crumbsNow, committed, u.cost);
           return (
             <li key={u.key}>
               <button
                 type="button"
                 className={`jar${afford ? ' afford' : ' dear'}`}
-                disabled={!afford || busy}
+                disabled={!afford}
                 onClick={() => onBuy(u.key)}
                 title={FLAVOUR[u.key] ?? u.label}
               >

@@ -21,6 +21,7 @@ import { withPending } from './lib/chipsPending';
 import { planSend, afterSubmit } from './lib/chipsSender';
 import { enqueue, loadQueue, saveQueue, clearQueue, nextIdAfter, activeFor, type QueuedMove } from './lib/chipsQueue';
 import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
+import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useFryers } from './lib/useFryers';
 import { projectedCrumbs } from './lib/sogProjection';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
@@ -34,15 +35,6 @@ const NAME_KEY = 'chips.cookname.v1';
  *  set rather than allocating one every second. */
 const NO_CONFIRMED: ReadonlySet<string> = new Set<string>();
 const POLL_MS = 15_000;
-
-/** Kitchen still takes a napkin/onRetry pair (out of scope for this task to
- *  change), but there is nothing left to put in it: every mined chip goes
- *  straight into the persisted queue below, which is retried automatically in
- *  the background — there is no more per-chip "stuck, click to retry" state
- *  for a player to act on. Module-scope constants so the props are
- *  referentially stable across renders. */
-const EMPTY_NAPKIN: { ms: number; bits: number; failed: boolean }[] = [];
-function noRetry(): void { /* the sender loop below retries on its own */ }
 
 const SEAT_LINES = [
   'getting you a seat at the table…',
@@ -193,9 +185,24 @@ export function App() {
    */
   const confirmedRef = useRef<{ replies: ChipsReply[]; verified: Map<string, number> }>({ replies: [], verified: new Map() });
 
+  /**
+   * The queue-entry ids the LAST COMPLETED fold actually consumed (i.e. the
+   * ids `activeFor(queue, tableId, me)` held at that moment) — set inside
+   * `foldNow` itself, synchronously with the `state` it produces, never from
+   * inside a `setQueue` updater (see the `sentAt` comment further down on why
+   * an updater must stay pure).
+   *
+   * This is what `onBuy` uses to tell "a buy `crumbsNow` has already charged
+   * for" apart from "a buy queued after/alongside this fold that `crumbsNow`
+   * hasn't seen yet" — see chipsAfford.ts's file header for the double-charge
+   * bug this closes.
+   */
+  const foldedIdsRef = useRef<ReadonlySet<number>>(new Set());
+
   const foldNow = useCallback((): void => {
     if (!tableId || !me) return;
     const { replies: confirmed, verified } = confirmedRef.current;
+    foldedIdsRef.current = new Set(activeFor(queue, tableId, me.publicKeyHex).map((m) => m.id));
     const merged = withPending(confirmed, verified, queue, me.publicKeyHex, tableId);
     const header: ChipsHeader = { v: 1, kind: 'chips-table', name: cookName, owner: me.publicKeyHex };
     setState(foldChips(header, tableId, merged.replies, merged.verified));
@@ -393,10 +400,18 @@ export function App() {
         // (retired in `refresh`) or it expires; `planSend` skips it either way,
         // so it is never resubmitted.
         //
-        // Refresh still runs FIRST. It is no longer load-bearing for the
-        // flicker — the mark holds the credit regardless of ordering — but it
-        // is the fastest way to retire the move by its twin, so the common case
-        // settles in one round trip instead of waiting for the next poll.
+        // The mark now runs BEFORE refresh, not after. A reload landing in the
+        // gap between a landed submit and this mark used to see an
+        // already-settled batch still looking unsent (persisted queue, no
+        // `sentAt` yet) and would resubmit it on the next session — folding
+        // `rejected-duplicate` and burning one real action PoW for nothing.
+        // Marking first narrows that window from however long `refresh` takes
+        // to ~0; `sentAt` simply starts a hair earlier. This does NOT disturb
+        // `refresh`'s own ordering guarantee (inside it, `confirmedRef` is
+        // always updated before the settling set is retired against it,
+        // chipsSettling.ts's "confirmed base before the fold can lose sight of
+        // a move") — that invariant lives entirely inside `refresh` and does
+        // not depend on when its caller happens to invoke it.
         //
         // The ack stays UNCONDITIONAL on a successful submit:
         //   - `cancelled` (a newer attempt superseded this one in flight, e.g.
@@ -412,14 +427,21 @@ export function App() {
         // must be pure — React can (and under StrictMode does) invoke it more
         // than once, so a `Date.now()` in there would stamp a different expiry
         // clock on each invocation.
-        if (!cancelled) {
+        const sentAt = Date.now();
+        // `shouldRefresh` is exactly `!cancelled` (chipsSender.ts) and does not
+        // depend on the queue array at all, so computing it against the outer
+        // `queue` closure here — rather than inside the functional updater
+        // below, which must stay pure — is exact, not an approximation.
+        const { shouldRefresh } = afterSubmit(queue, plan.moves, cancelled, sentAt);
+        setQueue((q) => afterSubmit(q, plan.moves, cancelled, sentAt).queue);
+        if (shouldRefresh) {
           try { await refresh(); } catch { /* the batch landed; mark it anyway and let the poll catch up */ }
         }
-        const sentAt = Date.now();
-        setQueue((q) => afterSubmit(q, plan.moves, cancelled, sentAt).queue);
-        // Re-arm explicitly. The ack above already changes `queue`'s
-        // reference (a fresh array from `.filter`, even when its contents
-        // end up identical), which alone re-triggers this effect in the
+        // Re-arm explicitly. The mark above already changes `queue`'s
+        // reference (`markSent` returns a NEW array whenever it actually
+        // changes something — chipsQueue.ts — and it always does here, since
+        // `plan.moves` are, by construction, entries this same queue still
+        // holds unmarked), which alone re-triggers this effect in the
         // ordinary case — but a move enqueued mid-flight is easy to reason
         // about wrong under concurrent async updates, so this is deliberate
         // insurance rather than reliance on that alone. Bumping `queueTick`
@@ -436,7 +458,26 @@ export function App() {
         // Keep it queued and try again. Capped so a long offline spell does not
         // decay into one attempt an hour.
         backoff.current = Math.min(backoff.current === 0 ? 2000 : backoff.current * 2, 60_000);
-        setTimeout(() => { if (!cancelled) setQueueTick((t) => t + 1); }, backoff.current);
+        // NOT guarded by `cancelled`, unlike an earlier version of this line.
+        // This effect's own top guard (`if (sending.current || ...) return;`)
+        // bails BEFORE reaching `let cancelled = false` whenever a send is
+        // already in flight — so a queue change that arrives while THIS
+        // attempt is still awaiting the network gets its OWN effect run
+        // short-circuited with no new cleanup registered, while the ORIGINAL
+        // run's `cancelled` (captured by the run that started the request) is
+        // flipped true by the cleanup of the run being superseded. If this
+        // catch block then honoured that `cancelled`, the retry it schedules
+        // would silently never fire: the sender goes idle with a non-empty
+        // queue until the player's next unrelated bank or buy happens to bump
+        // `queue`/`queueTick` again. Nothing is lost — the queue is persisted
+        // either way — but a real failure then sits silently un-retried,
+        // which is worse than a spurious extra check. `setQueueTick` is a pure
+        // nudge: whichever effect run it wakes re-reads the CURRENT
+        // queue/host/table fresh and bails cleanly on its own if there is
+        // nothing to do, so firing it after a supersession is harmless —
+        // exactly like the unguarded `setQueue`/`setQueueTick` calls on the
+        // success path above.
+        setTimeout(() => setQueueTick((t) => t + 1), backoff.current);
       } finally {
         sending.current = false;
       }
@@ -559,13 +600,19 @@ export function App() {
     // so computing "what's already committed" from `q` HERE — not from the
     // outer `queue` closure — is what makes the second click in a same-tick
     // pair correctly see the first's cost already spoken for.
+    //
+    // `foldedIdsRef` (not `q` itself) is what tells same-tick "not yet folded"
+    // apart from "already folded, and therefore already subtracted from
+    // `crumbsNow`" — see chipsAfford.ts and the ref's own comment above. Using
+    // the SAME `canAffordBuy` predicate the Shelf's `afford` uses is what
+    // guarantees a lit jar and this guard never disagree.
     setQueue((q) => {
-      const activeBuys = activeFor(q, table, author).filter((m): m is Extract<QueuedMove, { kind: 'buy' }> => m.kind === 'buy');
+      const activeBuys = activeFor(q, table, author).filter(isBuyMove);
       if (activeBuys.some((m) => m.key === key)) return q; // exact duplicate — already queued
       const cost = UPGRADES[key]?.cost;
       if (cost === undefined) return q;
-      const committed = activeBuys.reduce((sum, m) => sum + (UPGRADES[m.key]?.cost ?? 0), 0);
-      if (crumbsNow - committed < cost) return q; // not affordable once earlier queued buys are accounted for
+      const committed = pendingBuyCost(activeBuys, foldedIdsRef.current, (k) => UPGRADES[k]?.cost);
+      if (!canAffordBuy(crumbsNow, committed, cost)) return q; // not affordable once unfolded queued buys are accounted for
       return enqueue(q, { tableId: table, author, kind: 'buy', key }, nextId.current++);
     });
   }
@@ -701,6 +748,14 @@ export function App() {
   const crumbsNow = state ? projectedCrumbs(state, nowMs) : 0;
   const unverified = (state?.unverifiedBanks ?? 0) > 0;
   const stillCounting = counting !== null || unverified || !state;
+  // Same predicate, same numbers `onBuy`'s guard uses (see chipsAfford.ts) —
+  // this is what keeps a lit jar and a click from ever disagreeing. In
+  // practice this is 0 on every render that follows a completed fold; it is
+  // only ever nonzero for the same-tick race `onBuy`'s own comment describes,
+  // which this component never observes mid-batch either way.
+  const pendingCommitted = tableId && me
+    ? pendingBuyCost(activeFor(queue, tableId, me.publicKeyHex).filter(isBuyMove), foldedIdsRef.current, (k) => UPGRADES[k]?.cost)
+    : 0;
 
   return (
     <div className="shop" data-dip={tier.key}>
@@ -731,10 +786,7 @@ export function App() {
         <Kitchen
           chips={chips}
           goldenBits={goldenBits}
-          busy={false}
           onBank={onBank}
-          napkin={EMPTY_NAPKIN}
-          onRetry={noRetry}
         />
 
         <aside className="counter">
@@ -742,7 +794,7 @@ export function App() {
             <Bowl state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
           )}
           {state && (
-            <Shelf state={state} crumbsNow={crumbsNow} busy={false} onBuy={onBuy} />
+            <Shelf state={state} crumbsNow={crumbsNow} committed={pendingCommitted} onBuy={onBuy} />
           )}
         </aside>
       </main>

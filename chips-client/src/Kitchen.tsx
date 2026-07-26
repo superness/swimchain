@@ -230,11 +230,10 @@ interface BasketProps {
   index: number;
   chip: FryerChip;
   goldenBits: number;
-  busy: boolean;
   onBank: () => void;
 }
 
-function Basket({ chip, goldenBits, busy, onBank, index }: BasketProps) {
+function Basket({ chip, goldenBits, onBank, index }: BasketProps) {
   const c = crispnessOf(chip, goldenBits);
   const bubbles = useMemo(() => {
     const rnd = seeded(chip.ms ^ 0x5bf03635);
@@ -251,7 +250,6 @@ function Basket({ chip, goldenBits, busy, onBank, index }: BasketProps) {
       type="button"
       className={`basket${c.bankable ? ' ready' : ''}${c.golden ? ' golden' : ''}`}
       onClick={onBank}
-      disabled={busy}
       data-bits={chip.bits}
       data-fryer={index}
       data-attempts={chip.attempts}
@@ -286,14 +284,10 @@ function Basket({ chip, goldenBits, busy, onBank, index }: BasketProps) {
 export interface KitchenProps {
   chips: FryerChip[];
   goldenBits: number;
-  busy: boolean;
   onBank: (index: number) => void;
-  /** Chips already pulled from the oil and waiting to reach the chain. */
-  napkin: { ms: number; bits: number; failed: boolean }[];
-  onRetry: (ms: number) => void;
 }
 
-export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: KitchenProps) {
+export function Kitchen({ chips, goldenBits, onBank }: KitchenProps) {
   // Nudge text when a player grabs at a chip that is still pale. Diegetic, and
   // it clears itself — this is a cook muttering, not an error dialog.
   const [nudge, setNudge] = useState<string | null>(null);
@@ -315,7 +309,6 @@ export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: Ki
             index={i}
             chip={chip}
             goldenBits={goldenBits}
-            busy={busy}
             onBank={() => {
               if (crispnessOf(chip, goldenBits).bankable) onBank(i);
               else setNudge('still pale — give it a minute');
@@ -325,23 +318,6 @@ export function Kitchen({ chips, goldenBits, busy, onBank, napkin, onRetry }: Ki
       </div>
 
       {nudge && <p className="mutter" role="status">{nudge}</p>}
-
-      {napkin.length > 0 && (
-        <div className="napkin" aria-label="chips waiting to go in the bowl">
-          {/* Failures only. A chip that is merely in flight is shown DIPPING
-              into the bowl instead — it is the same event, told in the world
-              rather than in a panel, and it costs the layout nothing. */}
-          <span className="napkin-label">on the napkin</span>
-          <ul>
-            {napkin.map((n) => (
-              <li key={n.ms} className="failed">
-                <Chip chip={{ ms: n.ms, bits: n.bits, attempts: 0 }} goldenBits={goldenBits} />
-                <button type="button" className="again" onClick={() => onRetry(n.ms)} disabled={busy}>try again</button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
     </section>
   );
 }

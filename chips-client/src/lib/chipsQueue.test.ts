@@ -1,11 +1,14 @@
 /** The queue's ordering rules. Run: npx tsx src/lib/chipsQueue.test.ts */
-import { enqueue, takeBatch, ack, activeFor, nextIdAfter, type QueuedMove } from './chipsQueue';
+import { enqueue, takeBatch, activeFor, nextIdAfter, type QueuedMove } from './chipsQueue';
 import { MAX_BATCH } from './chipsConst';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
   if (cond) console.log(`  ok  ${name}`);
-  else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
+  else {
+    failures++;
+    console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra, (_k, v) => (typeof v === 'bigint' ? `${v}n` : v)) : ''}`);
+  }
 }
 
 const TABLE = 'sha256:table-a';
@@ -14,6 +17,18 @@ const ME = 'aaaa';
 const chip = (n: number) => ({ ms: 1_000_000 + n, bits: 10, nonce: BigInt(n) });
 const bankMove = (n: number, tableId = TABLE, author = ME) => ({ tableId, author, kind: 'bank' as const, chip: chip(n) });
 const buyMove = (key: string, tableId = TABLE, author = ME) => ({ tableId, author, kind: 'buy' as const, key });
+
+/** Test-only scaffolding: drop moves BY ID, the way a real caller would once
+ *  it no longer needs them staged (production never does this anymore —
+ *  `markSent` marks rather than drops, chipsQueue.ts's `sentAt` doc — but
+ *  these tests are exercising `takeBatch`'s GROUPING across several calls, not
+ *  the marking/retirement machinery, so a minimal local drop is all the
+ *  scaffolding needs). Not exported from chipsQueue.ts: nothing in production
+ *  drops by id anymore. */
+function dropTaken(q: QueuedMove[], taken: QueuedMove[]): QueuedMove[] {
+  const gone = new Set(taken.map((m) => m.id));
+  return q.filter((m) => !gone.has(m.id));
+}
 
 // 1) A lone chip goes out alone — an idle player waits for nothing.
 {
@@ -30,7 +45,7 @@ const buyMove = (key: string, tableId = TABLE, author = ME) => ({ tableId, autho
   for (let i = 0; i < MAX_BATCH + 5; i++) q = enqueue(q, bankMove(i), i + 1);
   const t = takeBatch(q)!;
   check('batch capped at MAX_BATCH', t.moves.length === MAX_BATCH, t.moves.length);
-  const rest = ack(q, t.moves);
+  const rest = dropTaken(q, t.moves);
   check('remainder stays queued', rest.length === 5, rest.length);
 }
 
@@ -46,11 +61,11 @@ const buyMove = (key: string, tableId = TABLE, author = ME) => ({ tableId, autho
   const first = takeBatch(q)!;
   check('banks before the buy go first', first.kind === 'bank' && first.moves.length === 1, first.moves.length);
 
-  const afterBanks = ack(q, first.moves);
+  const afterBanks = dropTaken(q, first.moves);
   const second = takeBatch(afterBanks)!;
   check('then the buy, alone', second.kind === 'buy' && second.moves.length === 1);
 
-  const afterBuy = ack(afterBanks, second.moves);
+  const afterBuy = dropTaken(afterBanks, second.moves);
   const third = takeBatch(afterBuy)!;
   check('then the later bank', third.kind === 'bank' && third.moves.length === 1);
 }
@@ -65,31 +80,10 @@ const buyMove = (key: string, tableId = TABLE, author = ME) => ({ tableId, autho
   check('batch stops at the buy', t.moves.length === 1, t.moves.length);
 }
 
-// 5) ack removes exactly what was taken, BY IDENTITY — not by position. A
-//    positional `slice(taken.length)` would pass a naive "first N" test but
-//    delete the wrong entries the moment an ack arrives out of queue order
-//    (e.g. a retry that lands the 3rd queued move before the 1st after a
-//    network hiccup), silently losing mined chips. So: ack a NON-prefix
-//    subset (the 2nd and 4th of five) and check the exact survivors, in
-//    order — plus acking an id absent from the queue is a no-op, not a shift.
-{
-  let q: QueuedMove[] = [];
-  for (let i = 0; i < 5; i++) q = enqueue(q, bankMove(i), i + 1);
-
-  const taken = [q[1], q[3]]; // ids 2 and 4 — not a prefix
-  const rest = ack(q, taken);
-  check('ack removes a non-prefix subset by id', rest.length === 3, rest.map((m) => m.id));
-  check('order preserved', rest[0].id === 1 && rest[1].id === 3 && rest[2].id === 5, rest.map((m) => m.id));
-
-  const untouched = ack(q, [{ id: 999, tableId: TABLE, author: ME, kind: 'buy', key: 'ghost' }]);
-  check('acking an id absent from the queue is a no-op', untouched.length === q.length &&
-    untouched.every((m, i) => m.id === q[i].id), untouched.map((m) => m.id));
-}
-
-// 6) Empty queue takes nothing.
+// 5) Empty queue takes nothing.
 check('empty takes null', takeBatch([]) === null);
 
-// 7) `activeFor` is the provenance gate — this is the fix for the "stale
+// 6) `activeFor` is the provenance gate — this is the fix for the "stale
 //    queue on a new identity/table phantom-credits it" bug. A mismatched
 //    tableId AND a mismatched author must each be excluded on their own (not
 //    only when both differ at once), and a genuinely matching entry must
@@ -117,9 +111,10 @@ check('empty takes null', takeBatch([]) === null);
   check('a matching table but no matching author yields nothing', wrongAuthorOnly.length === 0, wrongAuthorOnly.length);
 }
 
-// 8) `nextIdAfter` must never collide with an id already on a restored queue
-//    — that is precisely what would let one `ack()` call delete two
-//    unrelated entries that happen to share an id (see the doc comment).
+// 7) `nextIdAfter` must never collide with an id already on a restored queue
+//    — that is precisely what would let one `markSent` call stamp two
+//    unrelated entries as settled when only one of them actually landed (see
+//    the doc comment).
 {
   check('empty queue seeds at 1', nextIdAfter([]) === 1, nextIdAfter([]));
 
