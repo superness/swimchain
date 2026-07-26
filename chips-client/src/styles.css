@@ -414,35 +414,156 @@ h1, h2, h3, p { margin: 0; }
 .worth-golden strong { color: #ffe28a; text-shadow: 0 0 10px rgba(255,205,90,.5); }
 .worth-pale { color: #6f6152; opacity: .85; }
 
-/* ── the counter: bowl + shelf ───────────────────────────────────────────── */
+/* ── the counter: the dip tunnel + shelf ─────────────────────────────────── */
 
 .counter {
   min-width: 0; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: clamp(8px, 1.6vh, 20px);
+  align-items: center; justify-content: flex-start;
+  gap: clamp(8px, 1.6vh, 20px);
+  /* Top-anchored, not centred: the dig-floor zone at the bottom of this
+     column belongs to the pile (`.tunnel-front`, fixed at `--floor`), and a
+     centred column drifts down into it as the shelf grows. */
+  padding-top: clamp(16px, 5vh, 56px);
 }
 
-.bowl-wrap { width: 100%; max-width: 340px; text-align: center; }
-.bowl { width: 100%; height: auto; display: block; filter: drop-shadow(0 26px 40px rgba(0,0,0,.6)); }
-.bowl-body { stroke: rgba(40,30,20,.6); stroke-width: 1.6; }
-.bowl-rim { fill: none; stroke: #f0e4cd; stroke-width: 4.5; opacity: .95; }
-.bowl-foot { fill: rgba(255, 231, 190, .3); }
-.bowl-dip { fill: var(--d2, #a92c19); }
+/* THE ROOM IS INSIDE THE TUNNEL. `.t-bed` is the full-bleed strata face
+   behind everything; `.t-walls` are the cut walls framing the viewport in
+   front of everything (pointer-events: none). `--bh` is one layer's drawn
+   height — most of a screen, because you are IN the layer, not looking at a
+   diagram of it. `--floor` is where the dig floor sits: the boundary between
+   the hollow above (dug, darkened) and the solid dip below, and the line the
+   pile rests on. The scroll position is an inline `top` on `.t-stack` (see
+   Tunnel.tsx for why it is not a CSS var) — digging reads as the WORLD
+   moving, which is what makes an endless tunnel feel endless. */
+.shop { --bh: 92vh; --floor: 76vh; }
+
+.t-bed {
+  position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+  background: #0d0906;
+}
+
+/* the open air above the salsa — visible only near the surface */
+.t-sky {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(120% 60% at 50% -10%, rgba(255,231,180,.14), transparent 60%),
+    linear-gradient(180deg, #241b12 0%, #120c08 100%);
+}
+
+/* a zero-height anchor the bands hang off; its inline `top` IS the scroll */
+.t-stack {
+  position: absolute; left: 0; right: 0; top: var(--floor); height: 0;
+  /* the dig: the strata glide, they do not teleport */
+  transition: top .9s cubic-bezier(.25,.7,.25,1);
+}
+
+.t-band {
+  position: absolute; left: 0; right: 0; height: var(--bh);
+  top: calc(var(--ord) * var(--bh));
+  overflow: hidden;
+}
+/* the seam where one layer was poured over the next */
+.t-band::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 6px; z-index: 2;
+  background: rgba(0,0,0,.42);
+  box-shadow: 0 2px 0 rgba(255,244,220,.08), 0 -8px 18px rgba(0,0,0,.35);
+}
+.t-fill {
+  position: absolute; inset: 0;
+  background: radial-gradient(130% 90% at 50% 42%, var(--d3, #e2593a) 0%, var(--d2, #a92c19) 54%, var(--d1, #59120b) 100%);
+}
+.t-chunks { position: absolute; inset: 0; }
+.t-chunks span {
+  position: absolute; display: block;
+  border-radius: 42% 58% 61% 39% / 55% 41% 59% 45%;
+  background: color-mix(in srgb, var(--chunk, #ff8b5e) 80%, transparent);
+  opacity: var(--chunk-o, .3);
+  filter: blur(.3vmin);
+  mix-blend-mode: soft-light;
+  animation: drift 40s ease-in-out infinite alternate;
+}
+/* the layer names itself just under its seam — big, faint, chalked on the
+   face. The NEXT layer's name is what you see coming up under the floor. */
+.t-name {
+  position: absolute; left: 7vw; top: clamp(18px, 4vh, 46px); z-index: 3;
+  font-family: var(--chalk); font-size: clamp(20px, 3.2vw, 44px);
+  color: rgba(255,248,232,.34); text-shadow: 0 2px 8px rgba(0,0,0,.5);
+}
+/* past the ladder the chalk trails off — still dip, just no promises */
+.t-band.beyond .t-name { opacity: .6; font-style: italic; }
+
+/* The hollowed part of a band — everything the dig has already eaten. Height
+   is set inline (1 for passed layers, the front's frac for the current one),
+   so the hollow and the strata always agree on where the floor is. Its bottom
+   edge IS the dig floor; the inset shadow there grounds it. */
+.t-dug {
+  position: absolute; top: 0; left: 0; right: 0; overflow: hidden; z-index: 1;
+  background: linear-gradient(180deg, rgba(5,3,2,.8) 0%, rgba(8,5,3,.62) 70%, rgba(10,6,4,.72) 100%);
+  box-shadow: inset 0 -22px 34px -14px rgba(0,0,0,.85);
+}
+.t-chip {
+  position: absolute; display: block;
+  clip-path: polygon(50% 0, 100% 82%, 0 82%);
+  background: hsl(38 68% calc(44% + var(--shade, .5) * 20%));
+  box-shadow: inset 0 -2px 2px rgba(0,0,0,.3);
+  opacity: .55;
+}
+
+/* film grain over the whole face, so nothing reads as flat vector art */
+.t-grain {
+  position: absolute; inset: 0; opacity: .16; mix-blend-mode: overlay;
+  background-image:
+    radial-gradient(rgba(255,255,255,.7) .5px, transparent .5px),
+    radial-gradient(rgba(0,0,0,.6) .5px, transparent .5px);
+  background-size: 3px 3px, 4px 4px;
+  background-position: 0 0, 2px 1px;
+}
+
+/* the foreground: the cut walls of the shaft, framing the whole viewport */
+.t-walls { position: fixed; inset: 0; z-index: 5; pointer-events: none; }
+.t-walls::before {  /* the dark of the tunnel mouth, far above */
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 11vh;
+  background: linear-gradient(180deg, rgba(0,0,0,.55), transparent);
+}
+.t-wall { position: absolute; top: 0; bottom: 0; width: clamp(26px, 4.5vw, 64px); overflow: hidden; }
+.t-wall-l { left: 0; background: linear-gradient(90deg, rgba(6,4,2,.95) 0%, rgba(8,5,3,.5) 55%, transparent 100%); }
+.t-wall-r { right: 0; background: linear-gradient(270deg, rgba(6,4,2,.95) 0%, rgba(8,5,3,.5) 55%, transparent 100%); }
+.t-wall .t-chip { opacity: .4; filter: brightness(.55); }
+
+/* the dig front: the pile on the floor, pinned at the bed's own floor line */
+.tunnel-front {
+  position: fixed; z-index: 4; top: var(--floor); right: 6vw;
+  translate: 0 -100%;
+  width: min(300px, 26vw); pointer-events: none;
+}
+.tunnel-front.counting { filter: saturate(.55) blur(1.1px); }
+.t-pile { width: 100%; height: auto; display: block; filter: drop-shadow(0 12px 18px rgba(0,0,0,.45)); }
 .heap { filter: blur(calc(var(--soggy, 0) * 0.7px)); }
 .wet-sheen { animation: gleam 6s ease-in-out infinite alternate; }
 @keyframes gleam { to { opacity: .28; } }
 .spill path { fill: hsl(34 70% 52%); opacity: .9; }
 
-.bowl-read { margin-top: 6px; }
-.crumbs { font-family: var(--sign); letter-spacing: .04em; font-size: clamp(18px, 2.2vw, 32px); color: #ffe9c6; }
+/* the counter read — floats over whatever layer is behind it, so it carries
+   its own soft dark backing instead of trusting the strata to stay dark */
+.tunnel-wrap { width: 100%; max-width: 340px; text-align: center; }
+.tunnel-read {
+  padding: 10px 20px 12px; border-radius: 14px;
+  background: radial-gradient(ellipse at 50% 50%, rgba(10,7,4,.6), rgba(10,7,4,0) 78%);
+}
+.depth-line {
+  font-family: var(--chalk); font-size: clamp(10px, .9vw, 13px);
+  letter-spacing: .18em; text-transform: uppercase; color: #d9c6a6; opacity: .85;
+}
+.crumbs { font-family: var(--sign); letter-spacing: .04em; font-size: clamp(18px, 2.2vw, 32px); color: #ffe9c6; text-shadow: 0 2px 10px rgba(0,0,0,.6); }
 .crumbs strong { font-weight: inherit; }
-.bowl-read .sub, .bowl-read .checking {
-  font-family: var(--chalk); font-size: clamp(11px, 1vw, 14px); color: #c2ab88; margin-top: 2px;
+.tunnel-read .sub, .tunnel-read .checking {
+  font-family: var(--chalk); font-size: clamp(11px, 1vw, 14px); color: #d5c1a0; margin-top: 2px;
+  text-shadow: 0 1px 6px rgba(0,0,0,.6);
 }
 /* While any bank's proof is unchecked the balance is INCOMPLETE. Never show a
    confidently wrong number — show the kitchen counting. */
-.bowl-wrap.counting .bowl { filter: drop-shadow(0 26px 40px rgba(0,0,0,.6)) saturate(.55) blur(1.1px); }
-.bowl-read .checking { color: #ffd79a; }
-.bowl-read .checking em { font-style: normal; opacity: .75; }
+.tunnel-read .checking { color: #ffd79a; }
+.tunnel-read .checking em { font-style: normal; opacity: .75; }
 
 .shelf { width: 100%; max-width: 520px; }
 .shelf .jars { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
@@ -732,6 +853,18 @@ h1, h2, h3, p { margin: 0; }
   .rack-2 .basket, .rack-3 .basket, .rack-4 .basket, .basket {
     width: min(clamp(112px, 30vw, 170px), 22vh);
   }
+
+  /* Inside-the-tunnel adjustments for a phone: the floor drops lower so the
+     pile hangs under most of the scrolling content, the pile centres (there
+     is no right-hand counter column any more at this width), and the cut
+     walls thin out so they frame rather than eat a narrow screen. */
+  .shop { --floor: 86vh; }
+  /* On a phone the stage scrolls UNDER the fixed pile, so the pile drops
+     behind the stage (z below its 2) and becomes scenery: jars and boards
+     always paint over it, the floor fiction stays. */
+  .tunnel-front { right: auto; left: 50%; translate: -50% -100%; width: min(210px, 42vw); z-index: 1; }
+  .t-wall { width: clamp(10px, 3vw, 26px); }
+  .t-name { left: 10vw; }
 }
 @media (max-width: 940px) {
   .hood { flex-wrap: wrap; gap: 10px 18px; }
@@ -756,10 +889,10 @@ h1, h2, h3, p { margin: 0; }
 
 /* ── the chip going in ───────────────────────────────────────────────────── */
 
-/* The banked chip, arcing out of its basket and down into the dip.
+/* The banked chip, arcing out of its basket and plunging into the dig front.
    Fixed and pointer-events:none: painted over the scene, part of no layout.
    Coordinates come from the live DOM (see launchDip) because the rack reflows
-   with the fryer count and the bowl moves with the viewport. */
+   with the fryer count and the tunnel moves with the viewport. */
 .dip-flight {
   position: fixed; z-index: 30; pointer-events: none;
   left: 0; top: 0; width: var(--fs); height: var(--fs);
@@ -767,18 +900,20 @@ h1, h2, h3, p { margin: 0; }
 }
 .dip-flight .chip { width: 100%; height: 100%; }
 
-/* fryer -> dip -> up -> eaten -> crumbs. ~1.25s, and deliberately decoupled
-   from the ~5.4s action PoW: this is feedback, not a progress bar. */
+/* fryer -> arc -> touch down -> UNDER, going deeper -> gone. ~1.25s, and
+   deliberately decoupled from the ~5.4s action PoW: this is feedback, not a
+   progress bar. The chip is not eaten any more — it dips into the current
+   layer and keeps going down, which is the whole tunnel fiction; the crumb
+   burst (below) is the splash it makes going under. */
 .dip-flight { animation: dip-flight 1.25s cubic-bezier(.34,.02,.52,1) forwards; }
 
 @keyframes dip-flight {
-  0%   { transform: translate(var(--fx0), var(--fy0)) scale(1) rotate(0deg); opacity: 1; }
-  22%  { transform: translate(var(--fmx), var(--fmy)) scale(1.06) rotate(-14deg); opacity: 1; }   /* lift */
-  42%  { transform: translate(var(--fx1), calc(var(--fy1) + 18px)) scale(.86) rotate(6deg); opacity: 1; }  /* in the dip */
-  61%  { transform: translate(var(--fx1), calc(var(--fy1) - 30px)) scale(1.12) rotate(-4deg); opacity: 1; } /* out, loaded */
-  76%  { transform: translate(var(--fx1), calc(var(--fy1) - 46px)) scale(1.3) rotate(2deg); opacity: 1; }   /* toward the eater */
-  80%  { transform: translate(var(--fx1), calc(var(--fy1) - 46px)) scale(1.34); opacity: 1; }               /* crunch */
-  100% { transform: translate(var(--fx1), calc(var(--fy1) - 40px)) scale(.2); opacity: 0; }
+  0%   { transform: translate(var(--fx0), var(--fy0)) scale(1) rotate(0deg); opacity: 1; filter: brightness(1); }
+  22%  { transform: translate(var(--fmx), var(--fmy)) scale(1.06) rotate(-14deg); opacity: 1; filter: brightness(1); }  /* lift */
+  42%  { transform: translate(var(--fx1), var(--fy1)) scale(.96) rotate(8deg); opacity: 1; filter: brightness(1); }     /* touch down on the front */
+  58%  { transform: translate(var(--fx1), calc(var(--fy1) + 24px)) scale(.76) rotate(14deg); opacity: .95; filter: brightness(.72); } /* under */
+  76%  { transform: translate(var(--fx1), calc(var(--fy1) + 46px)) scale(.52) rotate(20deg); opacity: .45; filter: brightness(.45); } /* deeper */
+  100% { transform: translate(var(--fx1), calc(var(--fy1) + 60px)) scale(.4) rotate(24deg); opacity: 0; filter: brightness(.3); }     /* part of the dip now */
 }
 
 /* The dip surface reacting as the chip goes in. */
@@ -797,7 +932,7 @@ h1, h2, h3, p { margin: 0; }
   100%    { box-shadow: 0 0 0 30px rgba(255,220,160,0); }
 }
 
-/* Crumbs, thrown from the crunch toward the counter. */
+/* Crumbs, splashed up as the chip goes under, thrown toward the counter. */
 .dip-crumb {
   position: fixed; z-index: 31; pointer-events: none;
   width: 5px; height: 5px; border-radius: 40% 60% 55% 45%;
@@ -891,8 +1026,8 @@ h1, h2, h3, p { margin: 0; }
   .dip-flight { animation-duration: .3s; }
   .dip-ripple, .dip-crumb, .crumb-land { display: none; }
   /* Shortening the duration alone still plays the full arc — the lift, the
-     rotation, the scale-to-1.34 crunch — just faster, which is not what this
-     media query promises. A `@keyframes` rule of the same name declared later
+     rotation, the plunge — just faster, which is not what this media query
+     promises. A `@keyframes` rule of the same name declared later
      in the cascade replaces the earlier one wholesale (this is not a
      specificity/!important question — keyframe rules don't merge), so this
      swaps in a straight two-stop move with no flourish whenever it's active. */

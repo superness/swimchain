@@ -27,7 +27,7 @@ import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
-import { Bowl, Shelf, DipBed, DipChange, GainFloats, type GainFloat } from './Bowl';
+import { TunnelBed, TunnelRead, DigFront, Shelf, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
 import { compact } from './lib/format';
 
@@ -536,31 +536,35 @@ export function App() {
 
   /* ── moves ────────────────────────────────────────────────────────────── */
   /**
-   * Send the banked chip arcing into the bowl.
+   * Send the banked chip arcing into the tunnel.
    *
    * Measured from the live DOM rather than guessed, because the rack reflows
-   * with the fryer count and the bowl moves with the viewport. Purely a
+   * with the fryer count and the tunnel moves with the viewport. Purely a
    * flourish over the scene — it is fixed-position and takes part in no
    * layout, which is the whole reason it replaced the in-flight panel.
    */
   function launchDip(index: number, chip: { ms: number; bits: number }): void {
     const basket = document.querySelector(`.rack .basket[data-fryer="${index}"] .basket-chip`);
-    const bowl = document.querySelector('.bowl-wrap');
-    if (!basket || !bowl) return;
+    const wrap = document.querySelector('.tunnel-wrap');
+    if (!basket || !wrap) return;
     const a = basket.getBoundingClientRect();
-    const b = bowl.getBoundingClientRect();
+    // The chip plunges in AT THE DIG FRONT — the pile element the Tunnel
+    // renders unconditionally (see its comment) — so the entry point tracks
+    // the front even as the strata scroll. The wrap is only the fallback.
+    const front = document.querySelector('.tunnel-front') ?? wrap;
+    const b = front.getBoundingClientRect();
     const size = Math.max(30, Math.min(a.width || 56, 76));
     // The crumb burst's destination: the crumb counter itself if the DOM has
-    // one, else the bowl it sits over — either way, somewhere on the counter,
-    // not into empty space.
-    const counter = document.querySelector('.bowl-crumbs') ?? bowl;
+    // one, else the tunnel it sits under — either way, somewhere on the
+    // counter, not into empty space.
+    const counter = document.querySelector('.tunnel-crumbs') ?? wrap;
     const cRect = counter.getBoundingClientRect();
     setFlight({
       key: chip.ms, ms: chip.ms, bits: chip.bits, size,
       x0: a.left + a.width / 2 - size / 2,
       y0: a.top + a.height / 2 - size / 2,
       x1: b.left + b.width / 2 - size / 2,
-      y1: b.top + b.height * 0.52 - size / 2,
+      y1: b.top + b.height * 0.6 - size / 2,
       cx1: cRect.left + cRect.width / 2,
       cy1: cRect.top + cRect.height / 2,
     });
@@ -695,10 +699,10 @@ export function App() {
       const events = actualGains(before, state.bowlCap, fresh);
 
       // Same destination the crumb burst already flies to — falls back to the
-      // bowl itself exactly like `launchDip` does, for the same reason: while
-      // any proof is still being verified, Bowl.tsx renders "still counting"
-      // instead of the `.bowl-crumbs` paragraph.
-      const counter = document.querySelector('.bowl-crumbs') ?? document.querySelector('.bowl-wrap');
+      // tunnel itself exactly like `launchDip` does, for the same reason:
+      // while any proof is still being verified, Tunnel.tsx renders "still
+      // counting" instead of the `.tunnel-crumbs` paragraph.
+      const counter = document.querySelector('.tunnel-crumbs') ?? document.querySelector('.tunnel-wrap');
       if (counter) {
         const r = counter.getBoundingClientRect();
         const x = r.left + r.width / 2, y = r.top + r.height / 2;
@@ -861,7 +865,7 @@ export function App() {
 
   return (
     <div className="shop" data-dip={tier.key}>
-      <DipBed dipIndex={dipIndex} />
+      <TunnelBed state={state} />
 
       <header className="hood">
         <div className="hood-plate">
@@ -869,7 +873,7 @@ export function App() {
           <span className="cook">{cookName}</span>
         </div>
         <div className="hood-dip">
-          <span className="in-the-bowl">in the bowl tonight</span>
+          <span className="in-the-bowl">the layer you&apos;re in</span>
           <strong>{tier.label}</strong>
         </div>
         <div className="hood-crunch">
@@ -895,13 +899,17 @@ export function App() {
 
         <aside className="counter">
           {state && (
-            <Bowl state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
+            <TunnelRead state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
           )}
           {state && (
             <Shelf state={state} crumbsNow={crumbsNow} committed={pendingCommitted} onBuy={onBuy} />
           )}
         </aside>
       </main>
+
+      {/* The pile on the dig floor — fixed at the bed's own 76vh floor line,
+          outside the stage's flow entirely (the flight measures it). */}
+      {state && <DigFront state={state} nowMs={nowMs} counting={stillCounting} />}
 
       {/*
         The shop-chatter corner. Both of these are asides, so they share one
