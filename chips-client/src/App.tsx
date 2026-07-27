@@ -31,6 +31,7 @@ import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { TunnelBed, TunnelRead, DigFront, Shelf, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
+import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
 import { sfx } from './lib/sound';
 
@@ -1012,6 +1013,7 @@ export function App() {
           open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
       </div>
 
+      {state && <Tutorial state={state} chips={chips} />}
       <DipFlight flight={flight} />
       <GainFloats floats={gains} />
       {dipFanfare !== null && <DipChange dipIndex={dipFanfare} />}

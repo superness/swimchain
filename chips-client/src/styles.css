@@ -1286,3 +1286,84 @@ h1, h2, h3, p { margin: 0; }
     100% { opacity: 0; transform: translate(calc(var(--gx) + var(--gdx) - 50%), calc(var(--gy) - 50% - 32px)); }
   }
 }
+
+/* ── the opening tour ────────────────────────────────────────────────────── */
+
+/* One quest at a time, bottom-centre, styled like the shop's own tickets so
+   it reads as the game talking, not a browser toast. */
+.tut-banner {
+  position: fixed; left: 50%; bottom: clamp(16px, 4vh, 44px); translate: -50% 0;
+  z-index: 19; display: flex; align-items: center; gap: 12px;
+  max-width: min(560px, 92vw); padding: 12px 18px; border-radius: 12px;
+  background: rgba(16, 11, 6, .94);
+  border: 1px solid rgba(255, 210, 150, .4);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, .6), 0 0 0 1px rgba(0, 0, 0, .5);
+  animation: tut-in .35s cubic-bezier(.2, .9, .3, 1);
+}
+@keyframes tut-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: none; }
+}
+.tut-step {
+  flex: none; font-family: var(--chalk); font-size: 12px; font-weight: 700;
+  color: #2a1a04; background: linear-gradient(180deg, #ffd88e, #e79f30);
+  padding: 4px 9px; border-radius: 999px;
+}
+.tut-body { min-width: 0; }
+.tut-body strong {
+  display: block; font-family: var(--sign); font-weight: 400;
+  letter-spacing: .06em; font-size: clamp(15px, 1.6vw, 20px); color: #ffe6b8;
+}
+.tut-body em {
+  display: block; font-style: normal; font-family: var(--chalk);
+  font-size: clamp(11px, 1vw, 13px); color: #cdbba0;
+  margin-top: 2px; line-height: 1.35;
+}
+.tut-skip {
+  flex: none; font-family: var(--chalk); font-size: 11px; color: #9a8a70;
+  padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(190, 164, 124, .3);
+}
+.tut-skip:hover { color: #e8d8b8; border-color: rgba(210, 184, 144, .6); }
+/* the ✓ beat: the banner goes warm and simple */
+.tut-banner.tut-done {
+  border-color: rgba(180, 255, 170, .5);
+}
+.tut-banner.tut-done .tut-body strong { color: #cdeec2; }
+
+/* The spotlight: a pulsing ring over the thing to touch, with a bouncing
+   arrow — pointer-events: none, it INVITES the click, never intercepts it. */
+.tut-ring {
+  position: fixed; z-index: 18; pointer-events: none;
+  border: 3px solid rgba(255, 214, 140, .85); border-radius: 18px;
+  box-shadow: 0 0 0 4px rgba(255, 190, 90, .25), 0 0 30px rgba(255, 190, 90, .35);
+  animation: tut-pulse 1.4s ease-in-out infinite;
+}
+/* hold: "watch, don't touch" — a calm steady glow, no pulse, no arrow
+   (quest 4's instruction is DON'T dip; a pulsing touch-me ring there was
+   the review's mixed-signal complaint) */
+.tut-ring.hold {
+  animation: none; opacity: .8;
+  border-color: rgba(200, 230, 255, .55);
+  box-shadow: 0 0 0 4px rgba(160, 200, 255, .12), 0 0 24px rgba(160, 200, 255, .2);
+}
+/* wait: "this is where you're headed" — dimmed until it's actually usable */
+.tut-ring.wait {
+  animation: none; opacity: .35;
+  border-style: dashed;
+}
+@keyframes tut-pulse {
+  0%, 100% { transform: scale(1); opacity: .95; }
+  50%      { transform: scale(1.035); opacity: .7; }
+}
+.tut-arrow {
+  position: absolute; left: 50%; top: -34px; translate: -50% 0;
+  font-size: 22px; color: #ffd88e; text-shadow: 0 2px 6px rgba(0,0,0,.7);
+  animation: tut-bounce .9s ease-in-out infinite;
+}
+@keyframes tut-bounce {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(7px); }
+}
+@media (max-width: 940px), (max-height: 620px) {
+  .tut-banner { bottom: clamp(52px, 9vh, 80px); padding: 9px 14px; }
+}
