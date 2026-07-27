@@ -151,7 +151,13 @@ h1, h2, h3, p { margin: 0; }
 
 .shop {
   position: fixed; inset: 0; z-index: 1;
-  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  /* THREE rows: hood, ticker, stage. The ticker's arrival with the crew
+     silently stole the stage's minmax row (a grid maps children to rows by
+     ORDER) and the stage fell into an implicit row below — on a fresh
+     phone table the ticker's flexible row then swallowed all the spare
+     viewport as a giant black band under the header (operator caught it
+     on a real phone, 2026-07-27). */
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -1710,6 +1716,10 @@ h1, h2, h3, p { margin: 0; }
 @media (max-width: 940px), (max-height: 620px) {
   .crew-row {
     top: auto; bottom: 46px; height: auto; z-index: 15;
+    /* The ledge is a SOLID SURFACE: it absorbs every tap (desktop's
+       pointer-events:none would let a near-miss on a critter fall through
+       and buy the jar scrolled underneath — operator hit exactly that). */
+    pointer-events: auto;
     display: flex; align-items: flex-end; justify-content: center;
     gap: 2px; padding: 4px 8px 3px;
     background:
