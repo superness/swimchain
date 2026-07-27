@@ -23,7 +23,13 @@ import { enqueue, loadQueue, saveQueue, clearQueue, nextIdAfter, activeFor, type
 import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useCooking, type CookEvent } from './lib/useCooking';
-import { isGolden, MAX_CRACKLES } from './lib/cooking';
+import { isGolden, MAX_CRACKLES, type TickMods } from './lib/cooking';
+import { CREW, crewFor, vendorOf, type CrewMember } from './lib/crew';
+import {
+  freshRat, freshAngel, ratTick, angelTick, ratAbsorb, ratAte, gorgeOf,
+  shooRat, spendBlessing, JOBS_MIN_DIP_INDEX, type RatState, type AngelState,
+} from './lib/crewJobs';
+import { CrewRow, FeedBanner, DipTicker, type CrewBubble } from './Crew';
 import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
@@ -131,6 +137,45 @@ export function App() {
   const [gains, setGains] = useState<GainFloat[]>([]);
   // The DOUBLE DIP splash — keyed per proc so back-to-back procs each slam.
   const [ddSplash, setDdSplash] = useState<number | null>(null);
+
+  /* ── the crew (lib/crew.ts roster, lib/crewJobs.ts jobs) ─────────────── */
+  const [rat, setRat] = useState<RatState>(freshRat);
+  const [angel, setAngel] = useState<AngelState>(freshAngel);
+  // Keys the "ate the crackle" flash on the rat's perch.
+  const [ratChomp, setRatChomp] = useState<number | null>(null);
+  // Feed mode: a vendor is armed and waiting to be paid in chips.
+  const [feeding, setFeeding] = useState<{ vendor: CrewMember; jarKey: string } | null>(null);
+  // One speech bubble at a time, app-wide — chatter is seasoning, not soup.
+  const [bubble, setBubble] = useState<CrewBubble | null>(null);
+  const ratRef = useRef(rat);
+  ratRef.current = rat;
+  const feedingRef = useRef(feeding);
+  feedingRef.current = feeding;
+  /** The angel's armed blessing: the fryer index to force-crackle on its next
+   *  tick. A ref, not state — it is read by the cooking interval's modsFor and
+   *  consumed the tick it fires; nothing renders from it. */
+  const blessRef = useRef<number | null>(null);
+  const fryersRef = useRef(0);
+  const dipIndexRef = useRef(0);
+  const bubbleTimer = useRef<number | null>(null);
+
+  const say = useCallback((id: string, line: string, holdMs = 7000) => {
+    setBubble({ id, line, key: Date.now() });
+    if (bubbleTimer.current !== null) window.clearTimeout(bubbleTimer.current);
+    bubbleTimer.current = window.setTimeout(() => setBubble(null), holdMs);
+  }, []);
+
+  // The crew's reach into the clock: rat siphons + eats on his fryer, the
+  // angel's blessing forces a crackle. Read per tick through refs.
+  const modsFor = useCallback((index: number): TickMods => {
+    const mods: TickMods = {};
+    if (ratRef.current.latched === index) {
+      mods.divertPot = true;
+      mods.eatCrackle = true;
+    }
+    if (blessRef.current === index) mods.forceCrackle = true;
+    return mods;
+  }, []);
   const [counting, setCounting] = useState<{ done: number; total: number } | null>(null);
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [seated, setSeated] = useState(false);
@@ -537,6 +582,25 @@ export function App() {
   // not just change; designer review called the bare swap "a bored odometer").
   const [tickAt, setTickAt] = useState<({ at: number; amount: number } | null)[]>([]);
   const onCookEvents = useCallback((events: CookEvent[]) => {
+    // The crew's heartbeat rides the cook clock (one call per tick, always —
+    // the pot always gains). A fired blessing is consumed; diverted ticks
+    // land in the rat's cheeks; an eaten crackle is his outrage to perform.
+    if (blessRef.current !== null && events.some((e) => e.index === blessRef.current)) {
+      blessRef.current = null;
+    }
+    for (const e of events) {
+      if (e.diverted) setRat((r) => ratAbsorb(r, e.gained));
+      if (e.crackleEaten) {
+        setRat(ratAte);
+        setRatChomp(Date.now());
+        sfx.pop();
+      }
+    }
+    if (dipIndexRef.current >= JOBS_MIN_DIP_INDEX) {
+      setRat((r) => ratTick(r, fryersRef.current, Math.random));
+      setAngel((a) => angelTick(a, Math.random));
+    }
+
     setTickAt((prev) => {
       const next = prev.slice();
       for (const e of events) next[e.index] = { at: Date.now() + e.index, amount: e.gained };
@@ -555,10 +619,28 @@ export function App() {
     }
   }, []);
 
-  const { chips, dip } = useCooking(
+  const { chips, dip, take, allocMs } = useCooking(
     fryerCount, seasoning, crackleHaste,
-    Boolean(host && me && tableId && state), onCookEvents
+    Boolean(host && me && tableId && state), onCookEvents, modsFor
   );
+  fryersRef.current = fryerCount;
+
+  /**
+   * The depth the CREW sees — normally the fold's dipIndex, but a dev build
+   * honours `?crew=N` so a screen review can meet the queso jobs without six
+   * hours of digging. Display/policy only (roster, stalls, ticker, jobs
+   * gate); the fold, the tutorial and the tier ceremony never read it, and
+   * `import.meta.env.DEV` compiles the whole branch out of production.
+   */
+  const crewDip = ((): number => {
+    const real = state?.dipIndex ?? 0;
+    if (!import.meta.env.DEV) return real;
+    const q = new URLSearchParams(window.location.search).get('crew');
+    if (q === null) return real;
+    const n = Number(q);
+    return Number.isInteger(n) && n >= 0 && n < DIP_TIERS.length ? n : real;
+  })();
+  dipIndexRef.current = crewDip;
 
   /* ── moves ────────────────────────────────────────────────────────────── */
   /**
@@ -603,6 +685,9 @@ export function App() {
 
   function onDip(index: number): void {
     if (!host || !me || !tableId) return;
+    // Feed mode reroutes the basket click entirely: the chip goes to the
+    // vendor, not the dip. Nothing below runs.
+    if (feedingRef.current) { onFeed(index); return; }
     // DESTRUCTIVE like the old bank(): the result is the only copy of this
     // dip; the basket restarts a fresh chip immediately.
     const res = dip(index, state?.doubleDipMod ?? 0);
@@ -649,6 +734,12 @@ export function App() {
       q, { tableId, author: me.publicKeyHex, kind: 'dip', amount: res.amount, ms: res.ms },
       nextId.current++
     ));
+    // The dog watched that chip go into the dip instead of into him. He has
+    // notes. Occasional, and never over someone else's bubble.
+    if (!bubble && Math.random() < 0.07) {
+      const scoop = CREW[0];
+      if (scoop.dipLines && scoop.dipLines.length > 0) say('scoop', pick(scoop.dipLines), 6000);
+    }
   }
 
   function onBuy(key: string): void {
@@ -690,18 +781,175 @@ export function App() {
     });
   }
 
+  /* ── the stalls: pay the critter in chips ─────────────────────────────── */
+  /** Clicking a jar ARMS the vendor rather than buying: the critter steps up
+   *  and waits to be fed a chip off the fryer. The crumb price is unchanged
+   *  fold business (`onBuy`); the chip is the ritual on top. */
+  function onJar(key: string): void {
+    if (!host || !me || !tableId) return;
+    if (state?.owned.has(key)) return;
+    const vendor = vendorOf(key);
+    if (!vendor) return;
+    if (feeding && feeding.jarKey === key) { setFeeding(null); setBubble(null); return; }
+    sfx.pop();
+    setFeeding({ vendor, jarKey: key });
+    say(vendor.id, pick(vendor.armLines), 9000);
+  }
+
+  /** The armed vendor is fed basket `index`. A refused chip (the angel takes
+   *  only goldens) keeps the mode armed; an accepted one is consumed off the
+   *  fryer — its pot is the price — and the guarded buy goes through. */
+  function onFeed(index: number): void {
+    const f = feedingRef.current;
+    if (!f || !host || !me || !tableId) return;
+    const chip = chips[index];
+    if (!chip || chip.pot <= 0) return;
+    if (f.vendor.feed === 'golden' && !isGolden(chip)) {
+      say(f.vendor.id, pick(f.vendor.armLines), 6000);
+      return;
+    }
+    // The crumbs must still be there — the jar could have been armed a while
+    // ago (she waits for a golden). A short bowl calls the deal off BEFORE
+    // the chip is eaten, never after.
+    const cost = UPGRADES[f.jarKey]?.cost;
+    if (cost === undefined || !canAffordBuy(crumbsNow, pendingCommitted, cost)) {
+      setFeeding(null);
+      setNotice('the crumbs came up short — the deal is off');
+      return;
+    }
+    const taken = take(index);
+    if (!taken) return;
+    launchFeed(index, taken, f.vendor.id);
+    say(f.vendor.id, pick(f.vendor.munchLines), 8000);
+    onBuy(f.jarKey);
+    setFeeding(null);
+  }
+
+  /** The fed chip flies from its fryer to the vendor — same flight machinery
+   *  as the dip, pointed at a critter instead of the dig front. */
+  function launchFeed(index: number, chip: { ms: number; crackles: number }, vendorId: string): void {
+    const basket = document.querySelector(`.rack .basket[data-fryer="${index}"] .basket-chip`);
+    const target = document.querySelector(`.critter-${vendorId}`)
+      ?? document.querySelector('.tunnel-front') ?? document.querySelector('.tunnel-wrap');
+    if (!basket || !target) return;
+    const a = basket.getBoundingClientRect();
+    const b = target.getBoundingClientRect();
+    const size = Math.max(30, Math.min(a.width || 56, 76));
+    setFlight({
+      key: chip.ms, ms: chip.ms,
+      bits: visualFor({ ms: chip.ms, crackles: chip.crackles }).bits,
+      size, double: false,
+      x0: a.left + a.width / 2 - size / 2,
+      y0: a.top + a.height / 2 - size / 2,
+      x1: b.left + b.width / 2 - size / 2,
+      y1: b.top + b.height * 0.35 - size / 2,
+      cx1: b.left + b.width / 2,
+      cy1: b.top + b.height * 0.3,
+    });
+    window.setTimeout(() => setFlight((fl) => (fl && fl.key === chip.ms ? null : fl)), 1400);
+  }
+
+  /* ── crew jobs: shoo and bless ────────────────────────────────────────── */
+  function onShoo(): void {
+    if (!host || !me || !tableId) return;
+    const { payout, rat: fresh } = shooRat(ratRef.current);
+    setRat(fresh);
+    sfx.pop();
+    const ratMember = CREW.find((c) => c.id === 'rat');
+    if (ratMember) say('rat', pick(ratMember.lines), 5000);
+    if (payout <= 0) return;
+    const ms = allocMs();
+    // Same honest cap-room accounting as a dip — his payout can spill too.
+    const room = state ? Math.max(0, state.bowlCap - crumbsNow) : payout;
+    const credited = Math.min(payout, room);
+    const spilled = payout - credited;
+    const counter = document.querySelector('.tunnel-crumbs') ?? document.querySelector('.tunnel-wrap');
+    if (counter) {
+      const r = counter.getBoundingClientRect();
+      const born: GainFloat = {
+        key: ms,
+        text: spilled > 0
+          ? (credited > 0 ? `+${compact(credited)} from the rat — ${compact(spilled)} spilled!` : `bowl full — ${compact(spilled)} spilled!`)
+          : `+${compact(payout)} from the rat`,
+        golden: false, doubled: false, empty: credited <= 0,
+        x: r.left + r.width / 2, y: r.top + r.height / 2,
+        dx: ((ms % 7) - 3) * 9,
+        delay: 0.15,
+      };
+      setGains((g) => [...g, born]);
+      window.setTimeout(() => setGains((g) => g.filter((fl) => fl.key !== ms)), 2400);
+      if (credited > 0) sfx.gain(false, 0.15);
+    }
+    // His hoard rides the ordinary self-declared dip verb — no new grammar.
+    setQueue((q) => enqueue(
+      q, { tableId, author: me.publicKeyHex, kind: 'dip', amount: payout, ms },
+      nextId.current++
+    ));
+  }
+
+  function onBless(): void {
+    if (!angel.glowing || blessRef.current !== null) return;
+    // The fattest pot that can still crackle, skipping the rat's fryer — he
+    // eats blessings too (cooking.ts), so she never wastes one on him.
+    let best = -1;
+    let bestPot = -1;
+    chips.forEach((c, i) => {
+      if (isGolden(c)) return;
+      if (ratRef.current.latched === i) return;
+      if (c.pot > bestPot) { bestPot = c.pot; best = i; }
+    });
+    if (best < 0) return; // nothing blessable right now — the glow keeps
+    blessRef.current = best;
+    setAngel(spendBlessing);
+    sfx.golden();
+    say('angel', 'you have been witnessed.', 5000);
+  }
+
+  function onCritterClick(id: string): void {
+    if (feeding && feeding.vendor.id === id) { setFeeding(null); setBubble(null); return; }
+    if (id === 'angel' && angel.glowing) { onBless(); return; }
+    const m = CREW.find((c) => c.id === id);
+    if (m && m.lines.length > 0) say(id, pick(m.lines));
+  }
+
+  // Idle chatter: every ~26s somebody says their line — unless a vendor is
+  // armed, in which case the bubble is theirs.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (feedingRef.current) return;
+      const crew = crewFor(dipIndexRef.current);
+      if (crew.length === 0) return;
+      const m = crew[Math.floor(Math.random() * crew.length)];
+      if (m.lines.length === 0) return;
+      say(m.id, pick(m.lines));
+    }, 26_000);
+    return () => window.clearInterval(t);
+  }, [say]);
+
+  // Escape backs out of feed mode.
+  useEffect(() => {
+    if (!feeding) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setFeeding(null); setBubble(null); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [feeding]);
+
   /* ── the Sous Chef: bought automation, never default ──────────────────── */
   // Owning 'autodip' dips GOLDEN (terminal) chips automatically — a golden
   // chip's multi can no longer grow, so holding it earns only pot ticks and
   // the Sous Chef cashing it is pure upside for an idle player. `dip()`
   // returning null on an empty pot guards the re-entry case.
+  // He stands down entirely while a vendor is armed (the angel may be
+  // waiting for exactly the golden he would take) and he REFUSES to touch a
+  // fryer with a rat on it — house rule.
   useEffect(() => {
-    if (!state?.owned.has('autodip') || !host || !me || !tableId) return;
+    if (!state?.owned.has('autodip') || !host || !me || !tableId || feeding) return;
     for (let i = 0; i < chips.length; i++) {
+      if (ratRef.current.latched === i) continue;
       if (chips[i] && isGolden(chips[i]) && chips[i].pot > 0) onDip(i);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chips, state, host, me, tableId]);
+  }, [chips, state, host, me, tableId, feeding]);
 
   /* ── the dip ladder ceremony ──────────────────────────────────────────── */
   const lastDip = useRef<number | null>(null);
@@ -983,10 +1231,16 @@ export function App() {
       </header>
 
 
+      <DipTicker dipIndex={crewDip} />
+
       <main className="stage">
         <Kitchen
           chips={chips} onDip={onDip} crackles={crackleAt} ticks={tickAt}
           capRoom={state ? Math.max(0, state.bowlCap - crumbsNow) : Number.MAX_SAFE_INTEGER}
+          ratAt={rat.latched}
+          ratPerch={rat.latched !== null ? { gorge: gorgeOf(rat), hoard: rat.hoard, chompKey: ratChomp } : null}
+          onShoo={onShoo}
+          feedMode={feeding ? feeding.vendor.feed : null}
         />
 
         <aside className="counter">
@@ -994,7 +1248,10 @@ export function App() {
             <TunnelRead state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
           )}
           {state && (
-            <Shelf state={state} crumbsNow={crumbsNow} committed={pendingCommitted} onBuy={onBuy} />
+            <Shelf
+              state={state} dipIndex={crewDip} crumbsNow={crumbsNow} committed={pendingCommitted}
+              onJar={onJar} armedKey={feeding?.jarKey ?? null}
+            />
           )}
         </aside>
       </main>
@@ -1002,6 +1259,24 @@ export function App() {
       {/* The pile on the dig floor — fixed at the bed's own 76vh floor line,
           outside the stage's flow entirely (the flight measures it). */}
       {state && <DigFront state={state} nowMs={nowMs} counting={stillCounting} />}
+
+      {/* The crew, loitering on that same floor. The rat leaves the row while
+          he is up on a fryer (Kitchen renders him there). */}
+      {state && (
+        <CrewRow
+          crew={crewFor(crewDip)} bubble={bubble}
+          feedingId={feeding?.vendor.id ?? null}
+          angel={angel} ratAway={rat.latched !== null}
+          onCritterClick={onCritterClick}
+        />
+      )}
+      {feeding && (
+        <FeedBanner
+          vendor={feeding.vendor}
+          jarLabel={UPGRADES[feeding.jarKey]?.label ?? 'jar'}
+          onCancel={() => { setFeeding(null); setBubble(null); }}
+        />
+      )}
 
       {/*
         The shop-chatter corner. Both of these are asides, so they share one

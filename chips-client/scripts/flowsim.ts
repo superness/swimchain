@@ -16,6 +16,7 @@
  */
 import { UPGRADES, DIP_TIERS, CRUMBS_PER_CHIP } from '../src/lib/chipsConst';
 import { TICK_CRUMBS, TICK_MS } from '../src/lib/cooking';
+import { jarAvailable } from '../src/lib/crew';
 
 interface Target { what: string; maxMin: number }
 const TARGETS: Target[] = [
@@ -45,8 +46,16 @@ function simulate(): Map<string, number> {
   for (const c of [['season1','season2','season3','season4','season5','season6'],['bowl1','bowl2','bowl3'],['fryer2','fryer3','fryer4'],['doubledip1','doubledip2'],['detector','detector2']]) {
     for (const k of c) chains[k] = c;
   }
+  // The stalls gate the shop now: a jar is on sale only once its vendor's
+  // layer has been reached (lib/crew.ts). Same rule the Shelf renders by.
+  const dipIndexOf = (): number => {
+    let d = 0;
+    for (let i = 0; i < DIP_TIERS.length; i++) if (chips >= DIP_TIERS[i].minLifetime) d = i;
+    return d;
+  };
   const buyable = (k: string): boolean => {
     if (owned.has(k)) return false;
+    if (!jarAvailable(k, dipIndexOf())) return false;
     const chain = chains[k];
     if (chain) for (const prev of chain) { if (prev === k) break; if (!owned.has(prev)) return false; }
     return UPGRADES[k].cost <= bowlCap;

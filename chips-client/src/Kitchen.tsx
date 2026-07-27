@@ -12,6 +12,7 @@
  */
 import { useMemo } from 'react';
 import { multiOf, isGolden, worthOf, MAX_CRACKLES, type CookingChip } from './lib/cooking';
+import { RatArt } from './Crew';
 import { compact } from './lib/format';
 
 /** What the chip SVG renders from — a purely visual shape since the miner
@@ -219,6 +220,18 @@ export function Chip({ chip }: { chip: VisualChip }) {
   );
 }
 
+/** The cheese rat, latched to this basket. `gorge` scales his cheeks;
+ *  `chompKey` replays the crackle-eaten flash. Clicking him is the SHOO. */
+export interface RatPerch {
+  gorge: number;
+  hoard: number;
+  chompKey: number | null;
+}
+
+/** Feed mode: a vendor is waiting to be paid in chips. 'golden' means only
+ *  a golden chip settles the bill (the angel). */
+export type FeedMode = 'any' | 'golden' | null;
+
 interface BasketProps {
   index: number;
   chip: CookingChip;
@@ -232,13 +245,18 @@ interface BasketProps {
    *  the designer review demanded the warning land BEFORE the dip, not
    *  after ("punished by information the game withheld"). */
   capRoom: number;
+  rat: RatPerch | null;
+  onShoo: () => void;
+  feedMode: FeedMode;
 }
 
-function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom }: BasketProps) {
+function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode }: BasketProps) {
   const golden = isGolden(chip);
   const multi = multiOf(chip);
   const worth = worthOf(chip);
   const spills = worth > capRoom;
+  // In golden feed mode only a golden chip settles the bill — the others dim.
+  const feedable = feedMode !== null && chip.pot > 0 && (feedMode === 'any' || golden);
   const bubbles = useMemo(() => {
     const rnd = seeded(chip.ms ^ 0x5bf03635);
     return Array.from({ length: 9 }, () => ({
@@ -253,14 +271,16 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom }: BasketProps
     <div className="basket-slot">
       <button
         type="button"
-        className={`basket ready${golden ? ' golden' : ''}`}
+        className={`basket ready${golden ? ' golden' : ''}${feedMode !== null ? (feedable ? ' feed-target' : ' feed-dim') : ''}`}
         onClick={onDip}
         data-fryer={index}
         data-crackles={chip.crackles}
-        aria-label={golden
-          ? `Golden chip worth ${compact(worth)} — dip it`
-          : `Chip worth ${compact(worth)} at times ${multi} — dip it`}
-        title="dip it"
+        aria-label={feedMode !== null
+          ? (feedable ? `Chip worth ${compact(worth)} — feed it` : 'not the chip they want')
+          : golden
+            ? `Golden chip worth ${compact(worth)} — dip it`
+            : `Chip worth ${compact(worth)} at times ${multi} — dip it`}
+        title={feedMode !== null ? (feedable ? 'feed it' : 'not this one') : 'dip it'}
       >
         <span className="basket-hook" aria-hidden="true" />
         <span className="oil" aria-hidden="true">
@@ -287,9 +307,28 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom }: BasketProps
             CRACKLED ×{multi}{golden ? ' — GOLDEN!' : '!'}
           </span>
         )}
-        {tickFx && <span key={`t${tickFx.at}`} className="tick-float" aria-hidden="true">+{compact(tickFx.amount)}</span>}
-        <span className="tongs" aria-hidden="true">dip it</span>
+        {tickFx && <span key={`t${tickFx.at}`} className={`tick-float${rat ? ' to-rat' : ''}`} aria-hidden="true">+{compact(tickFx.amount)}</span>}
+        <span className="tongs" aria-hidden="true">{feedMode !== null && feedable ? 'feed it' : 'dip it'}</span>
       </button>
+
+      {/* The cheese rat, latched on. His own button, so a shoo can never be a
+          misdip: the click stops here. The chomp flash replays per eaten
+          crackle via its key. */}
+      {rat && (
+        <button
+          type="button"
+          className="rat-perch"
+          onClick={(e) => { e.stopPropagation(); onShoo(); }}
+          title={`shoo the rat — he pays ${compact(Math.floor(rat.hoard * rat.gorge))}`}
+          aria-label={`the cheese rat is banking this fryer's ticks — shoo him for ${compact(Math.floor(rat.hoard * rat.gorge))}`}
+        >
+          <RatArt gorge={rat.gorge} />
+          <span className="rat-hoard">{compact(rat.hoard)} ×{rat.gorge.toFixed(2)}</span>
+          {rat.chompKey !== null && (
+            <span key={rat.chompKey} className="rat-chomp" aria-hidden="true">ate the crackle</span>
+          )}
+        </button>
+      )}
 
       {/* THE POT, always moving; the ladder shows the summit exists. */}
       <p className={`worth pot${golden ? ' worth-golden' : ''}`}>
@@ -316,9 +355,14 @@ export interface KitchenProps {
   ticks: ({ at: number; amount: number } | null)[];
   /** Crumbs of headroom left in the bowl — the overflow warning's input. */
   capRoom: number;
+  /** The rat's latched fryer, if any. */
+  ratAt: number | null;
+  ratPerch: RatPerch | null;
+  onShoo: () => void;
+  feedMode: FeedMode;
 }
 
-export function Kitchen({ chips, onDip, crackles, ticks, capRoom }: KitchenProps) {
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
@@ -330,6 +374,9 @@ export function Kitchen({ chips, onDip, crackles, ticks, capRoom }: KitchenProps
             crackledAt={crackles[i] ?? null}
             tickFx={ticks[i] ?? null}
             capRoom={capRoom}
+            rat={ratAt === i ? ratPerch : null}
+            onShoo={onShoo}
+            feedMode={feedMode}
             onDip={() => onDip(i)}
           />
         ))}

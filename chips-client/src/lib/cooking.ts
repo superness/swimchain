@@ -72,6 +72,28 @@ export interface TickResult {
   gained: number;
   /** True when THIS tick crackled — the loud moment. */
   crackled: boolean;
+  /** A crackle LANDED and was eaten (cheese rat): the multi did not move.
+   *  Mutually exclusive with `crackled`. */
+  crackleEaten: boolean;
+  /** The tick's gain went to whoever latched the fryer, not the pot. */
+  diverted: boolean;
+}
+
+/**
+ * Per-tick interference from the crew (lib/crewJobs.ts drives these):
+ * the cheese rat latches a fryer and siphons its ticks; the queso angel
+ * blesses one with a guaranteed crackle. All optional, all default-off —
+ * a bare tickChip call behaves exactly as it did before the crew existed.
+ */
+export interface TickMods {
+  /** Rat latched here: the gain goes to his hoard, the pot stays put. */
+  divertPot?: boolean;
+  /** Rat latched here: a crackle that lands is EATEN — reported, not kept. */
+  eatCrackle?: boolean;
+  /** Angel's blessing: this tick crackles, no dice. Eaten if the rat is
+   *  ALSO here — he eats ANY crackle, even hers (the app's targeting avoids
+   *  wasting a blessing on a latched fryer; the rule stays absolute). */
+  forceCrackle?: boolean;
 }
 
 /**
@@ -84,27 +106,34 @@ export function tickChip(
   chip: CookingChip,
   seasoning: number,
   crackleHaste: number,
-  rng: () => number
+  rng: () => number,
+  mods: TickMods = {}
 ): TickResult {
   const gained = Math.max(1, Math.floor(TICK_CRUMBS * seasoning));
+  const diverted = mods.divertPot === true;
   const next: CookingChip = {
     ...chip,
-    pot: chip.pot + gained,
+    pot: chip.pot + (diverted ? 0 : gained),
     cookedMs: chip.cookedMs + TICK_MS,
   };
   let crackled = false;
+  let crackleEaten = false;
   if (next.crackles < MAX_CRACKLES) {
     // P(crackle this tick) = tick / expected wait at this level. Memoryless,
     // so the drought CAN run long — that's the gamble — but the pot ticked
     // the whole way, so a drought is never a frozen screen.
     const expectedWaitS = CRACKLE_BASE_S * 2 ** (next.crackles + 1) * Math.max(0.05, crackleHaste);
     const p = TICK_MS / 1000 / expectedWaitS;
-    if (rng() < p) {
-      next.crackles += 1;
-      crackled = true;
+    if (mods.forceCrackle === true || rng() < p) {
+      if (mods.eatCrackle === true) {
+        crackleEaten = true;
+      } else {
+        next.crackles += 1;
+        crackled = true;
+      }
     }
   }
-  return { chip: next, gained, crackled };
+  return { chip: next, gained, crackled, crackleEaten, diverted };
 }
 
 export interface DipResult {

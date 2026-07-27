@@ -7,11 +7,15 @@
  * No workers, no WASM, no mining: the clock IS the game (see cooking.ts's
  * header — designer-paced by operator decision). This file replacing
  * useFryers.ts is what removed Argon2id from gameplay entirely.
+ *
+ * The crew reaches into the clock through `modsFor` (rat siphons a fryer,
+ * angel forces a crackle — lib/crewJobs.ts) and through `take` (a vendor is
+ * fed a chip: consumed like a dip, credited like nothing).
  */
 import { useEffect, useRef, useState } from 'react';
 import {
   tickChip, dipChip, freshChip, createMsAllocator, isGolden,
-  TICK_MS, type CookingChip, type DipResult,
+  TICK_MS, type CookingChip, type DipResult, type TickMods,
 } from './cooking';
 
 export interface CookEvent {
@@ -21,6 +25,11 @@ export interface CookEvent {
   crackled: boolean;
   /** The crackle that just landed made the chip golden (terminal). */
   wentGolden: boolean;
+  /** The gain was siphoned by whoever latched this fryer (rat) — the pot
+   *  did not move; the caller banks it in the hoard. */
+  diverted: boolean;
+  /** A crackle landed here and was EATEN — the multi did not move. */
+  crackleEaten: boolean;
 }
 
 export function useCooking(
@@ -29,7 +38,10 @@ export function useCooking(
   crackleHaste: number,
   /** No cooking before the shop is actually open (no table/identity yet). */
   active: boolean,
-  onEvents?: (events: CookEvent[]) => void
+  onEvents?: (events: CookEvent[]) => void,
+  /** Per-fryer interference for the NEXT tick (crew jobs). Read through a
+   *  ref at tick time, like the params — never restarts the clock. */
+  modsFor?: (index: number) => TickMods
 ) {
   const [chips, setChips] = useState<CookingChip[]>([]);
   const latest = useRef<CookingChip[]>([]);
@@ -42,6 +54,8 @@ export function useCooking(
   params.current = { seasoning, crackleHaste };
   const onEventsRef = useRef(onEvents);
   onEventsRef.current = onEvents;
+  const modsForRef = useRef(modsFor);
+  modsForRef.current = modsFor;
 
   // Resize the rack — keep existing chips BY IDENTITY (a pot in progress is
   // the player's accumulated watching; a count change must never reset it).
@@ -65,11 +79,13 @@ export function useCooking(
       const events: CookEvent[] = [];
       const next = latest.current.map((chip, index) => {
         const before = chip.crackles;
-        const r = tickChip(chip, params.current.seasoning, params.current.crackleHaste, Math.random);
-        if (r.gained > 0 || r.crackled) {
+        const mods = modsForRef.current?.(index) ?? {};
+        const r = tickChip(chip, params.current.seasoning, params.current.crackleHaste, Math.random, mods);
+        if (r.gained > 0 || r.crackled || r.crackleEaten) {
           events.push({
             index, ms: chip.ms, gained: r.gained, crackled: r.crackled,
             wentGolden: r.crackled && isGolden(r.chip) && before < r.chip.crackles,
+            diverted: r.diverted, crackleEaten: r.crackleEaten,
           });
         }
         return r.chip;
@@ -98,5 +114,27 @@ export function useCooking(
     return { ...res, ms: chip.ms, pot: chip.pot };
   }
 
-  return { chips, dip };
+  /**
+   * TAKE chip `index` off the fryer without dipping it — a vendor's payment.
+   * Consumed exactly like a dip (the slot restarts fresh) but credits
+   * NOTHING: the pot is the price. Null on an empty pot — a critter will not
+   * be fobbed off with raw batter.
+   */
+  function take(index: number): Pick<CookingChip, 'ms' | 'pot' | 'crackles'> | null {
+    const chip = latest.current[index];
+    if (!chip || chip.pot <= 0) return null;
+    const next = latest.current.slice();
+    next[index] = freshChip(allocRef.current!());
+    latest.current = next;
+    setChips(next);
+    return { ms: chip.ms, pot: chip.pot, crackles: chip.crackles };
+  }
+
+  /** The shared authoring-ms allocator — rat payouts need wire identities
+   *  from the SAME sequence as dips, or two moves could collide on ms. */
+  function allocMs(): number {
+    return allocRef.current!();
+  }
+
+  return { chips, dip, take, allocMs };
 }

@@ -21,6 +21,7 @@
 import type { ChipsState } from './chipsEngine';
 import type { CookingChip } from './cooking';
 import { UPGRADES, DIP_TIERS } from './chipsConst';
+import { jarAvailable } from './crew';
 import { compact } from './format';
 
 export type TutorialHighlight = 'basket' | 'shelf' | null;
@@ -32,10 +33,13 @@ export type RingMode = 'invite' | 'hold' | 'wait';
 const GUAC_AT = DIP_TIERS[1].minLifetime;
 
 /** Cheapest jar a fresh player is working toward — the affordability bridge
- *  ("keep dipping — Seasoning I wants 10.0k"). */
+ *  ("keep dipping — Seasoning I wants 10.0k"). Only jars whose vendor is on
+ *  the crew count: a stall that isn't open yet is not a goal you can see. */
 export function cheapestOpenCost(state: ChipsState): number {
   let min = Infinity;
-  for (const u of Object.values(UPGRADES)) if (!state.owned.has(u.key) && u.cost < min) min = u.cost;
+  for (const u of Object.values(UPGRADES)) {
+    if (!state.owned.has(u.key) && jarAvailable(u.key, state.dipIndex) && u.cost < min) min = u.cost;
+  }
   return Number.isFinite(min) ? min : 0;
 }
 
@@ -74,7 +78,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     text: (s) => {
       const cost = cheapestOpenCost(s);
       return s.crumbs >= cost
-        ? 'Spend your crumbs on a jar — Seasoning makes every tick fatter.'
+        ? 'Spend your crumbs at scoop\'s stall — and mind him, he takes a chip off the fryer as his cut.'
         : `Keep dipping — the first jar wants ${compact(cost)} and you're at ${compact(s.crumbs)}.`;
     },
     highlight: 'shelf',

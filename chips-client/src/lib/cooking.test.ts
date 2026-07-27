@@ -98,5 +98,36 @@ const always = () => 0;        // rng that always crackles / always procs
   check('a stale-seeded allocator still stamps wall-clock time', a >= now, { a, now });
 }
 
+// 6) CREW INTERFERENCE (TickMods) — and, crucially, that its ABSENCE is
+//    exact: a bare call must behave byte-identically to the pre-crew engine.
+{
+  const base = { ms: 6, pot: 1000, crackles: 1, cookedMs: 0 };
+
+  const diverted = tickChip(base, 1, 1, never, { divertPot: true });
+  check('divertPot: the pot does NOT move but the gain is still reported',
+    diverted.chip.pot === 1000 && diverted.gained === TICK_CRUMBS && diverted.diverted, diverted);
+  check('divertPot: the clock still advances', diverted.chip.cookedMs === base.cookedMs + TICK_MS);
+
+  const eaten = tickChip(base, 1, 1, always, { eatCrackle: true });
+  check('eatCrackle: a landing crackle is eaten — reported, multi unmoved',
+    eaten.crackleEaten && !eaten.crackled && multiOf(eaten.chip) === 2, eaten);
+  const noBite = tickChip(base, 1, 1, never, { eatCrackle: true });
+  check('eatCrackle: nothing to eat when no crackle lands', !noBite.crackleEaten && !noBite.crackled);
+
+  const blessed = tickChip(base, 1, 1, never, { forceCrackle: true });
+  check('forceCrackle: crackles on the coldest dice', blessed.crackled && multiOf(blessed.chip) === 4, blessed);
+  const goldenChip = { ms: 7, pot: 500, crackles: MAX_CRACKLES, cookedMs: 0 };
+  const overBless = tickChip(goldenChip, 1, 1, never, { forceCrackle: true });
+  check('forceCrackle: golden stays terminal even blessed', !overBless.crackled && multiOf(overBless.chip) === 2 ** MAX_CRACKLES);
+
+  const ratBeatsAngel = tickChip(base, 1, 1, never, { forceCrackle: true, eatCrackle: true });
+  check('the rat eats even a blessing (eat beats force)',
+    ratBeatsAngel.crackleEaten && !ratBeatsAngel.crackled && multiOf(ratBeatsAngel.chip) === 2, ratBeatsAngel);
+
+  const bare = tickChip(base, 1, 1, always);
+  check('no mods: identical to the pre-crew engine (crackles land, pot moves)',
+    bare.crackled && !bare.crackleEaten && !bare.diverted && bare.chip.pot === 1000 + TICK_CRUMBS);
+}
+
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }
 console.log('\nall good');
