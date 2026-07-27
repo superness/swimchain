@@ -38,8 +38,12 @@ function store(v: number | 'done'): void {
 
 function targetRect(h: TutorialHighlight): DOMRect | null {
   if (h === 'basket') return document.querySelector('.rack .basket')?.getBoundingClientRect() ?? null;
-  if (h === 'shelf') {
-    return (document.querySelector('.shelf .jar.afford') ?? document.querySelector('.shelf'))?.getBoundingClientRect() ?? null;
+  if (h === 'crew') {
+    // The dog first — he is the first vendor and the tutorial's voice. Fall
+    // back to whoever is wearing a price tag, then to the row itself.
+    return (document.querySelector('.critter-scoop')
+      ?? document.querySelector('.critter:has(.critter-deal)')
+      ?? document.querySelector('.crew-row'))?.getBoundingClientRect() ?? null;
   }
   return null;
 }
