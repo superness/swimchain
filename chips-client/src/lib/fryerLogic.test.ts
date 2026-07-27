@@ -7,7 +7,7 @@
  * Run: npx tsx src/lib/fryerLogic.test.ts
  */
 import {
-  nextNonce, isBankable, createMsAllocator, applyFryerMessage, takeChip, grindLoop, U64_MAX,
+  nextNonce, isBankable, createMsAllocator, applyFryerMessage, takeChip, grindLoop, U64_MAX, YIELD_EVERY,
   restartRecord, nextRetryDelay, planResize,
 } from './fryerLogic';
 import type { FryerRecord } from './fryerLogic';
@@ -197,32 +197,35 @@ check('isBankable(-1) is false (defensive)', isBankable(-1) === false);
 }
 
 // 6) grindLoop — the reporting cadence, and THE SCHEDULING FACT that decides
-// how useFryers.ts has to stop a fryer.
+// how useFryers.ts stops — or, since the yield fix, RETARGETS — a fryer.
 {
-  // 6a) A grind never returns to the macrotask queue.
+  // 6a) A grind YIELDS to the macrotask queue, so a running worker CAN be
+  // messaged. This inverts the property this block used to pin: hash-wasm
+  // resolves in microtasks, so without an explicit periodic macrotask yield a
+  // grind starves its own message queue forever, and the only way to stop a
+  // fryer was terminate() — a fresh 8 MiB WASM instantiation per bank, i.e.
+  // the allocation churn behind the live OOM failures. The yield makes a
+  // timer scheduled BEFORE the grind fire DURING it — which in a Worker means
+  // an incoming `start`/`stop` gets delivered and `isCurrent()` really flips.
   //
-  // This is the whole reason `bank()` terminates its worker instead of posting
-  // it a new `start`. The fake hash below resolves the way a warm hash-wasm
-  // Argon2id call does — in a microtask, with no I/O — and a microtask chain is
-  // drained to empty before the event loop runs again. So a timer scheduled
-  // BEFORE the grind started still has not fired when it ends, which in a
-  // Worker means an incoming `message` is never delivered and `isCurrent()`
-  // can never flip from outside. Reusing a running worker cannot work, and the
-  // symptom when it is tried is a basket frozen at `bits: -1` forever.
-  let macrotaskRan = false;
-  setTimeout(() => { macrotaskRan = true; }, 0);
+  // The bail counter turns the mutation "delete the yield" into a clean FAIL
+  // instead of an infinite loop: without yields the timer never fires, the
+  // grind never stops on its own, and the hash fn pulls the plug at 1,000.
   let calls = 0;
   let current = true;
+  let bailedOut = false;
+  setTimeout(() => { current = false; }, 0);   // "a message from outside"
   await grindLoop(1, {
-    hash: async () => { if (++calls >= 40) current = false; return new Uint8Array([0xff]); },
+    hash: async () => {
+      if (++calls > 1000) { bailedOut = true; current = false; }
+      return new Uint8Array([0xff]);
+    },
     post: () => { /* ignored here */ },
     isCurrent: () => current,
+    yieldToHost: () => new Promise((r) => setTimeout(r, 0)),
   });
-  check('a grind ran 40 hashes', calls === 40, calls);
-  check(
-    'a grind never yields to the macrotask queue (so a running worker cannot be messaged)',
-    macrotaskRan === false
-  );
+  check('an outside stop lands DURING the grind (delivered at a yield)', bailedOut === false, calls);
+  check('the grind stopped promptly after the delivered stop', calls <= 3 * YIELD_EVERY, calls);
 }
 
 {
@@ -240,6 +243,7 @@ check('isBankable(-1) is false (defensive)', isBankable(-1) === false);
     // never reported. Stopping at exactly 32 would silently swallow the second
     // progress message this test exists to see.
     isCurrent: () => n < 33,
+    yieldToHost: async () => { /* cadence test — yielding is 6a's subject */ },
   });
 
   const crispers = posts.filter((p) => p.type === 'crisper');
@@ -268,6 +272,7 @@ check('isBankable(-1) is false (defensive)', isBankable(-1) === false);
     hash: async () => { current = false; return new Uint8Array([0x00, 0x00]); },
     post: (m) => posts.push(m),
     isCurrent: () => current,
+    yieldToHost: async () => { /* not the subject here */ },
   });
   check('a grind superseded mid-hash posts nothing at all', posts.length === 0, posts);
 }
