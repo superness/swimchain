@@ -982,8 +982,17 @@ h1, h2, h3, p { margin: 0; }
      spare height on a roomy screen, but can never be sized smaller than the
      rack it actually contains, so `.stage`'s own scroll (below) is what
      absorbs a short viewport instead of an overlap. */
-  .stage { grid-template-columns: 1fr; grid-template-rows: minmax(min-content, 1fr) auto; overflow-y: auto; }
-  .kitchen { padding-bottom: 8px; }
+  /* Rows are `auto auto`, NOT `minmax(min-content, 1fr) auto`: the
+     min-content floor solved the old overlap (see above) but the `1fr`
+     stretch re-created a different bug — on a fresh table (one basket,
+     short counter) the kitchen row inflated with ALL the spare viewport
+     and centered its lone basket in it, reading as a massive empty band
+     under the header (operator, on a real phone, 2026-07-27). `auto` keeps
+     the overlap protection (a row sized by content can't be squeezed below
+     it) without the stretch: content tucks up under the ticker and roomy
+     screens just show more tunnel below. */
+  .stage { grid-template-columns: 1fr; grid-template-rows: auto auto; overflow-y: auto; }
+  .kitchen { padding-bottom: 8px; padding-top: 2px; justify-content: flex-start; }
 
   /* `.wallboard`'s own `position: static` a few lines down only works if its
      PARENT stops being `position: fixed` too — a static child of a fixed
@@ -1369,7 +1378,17 @@ h1, h2, h3, p { margin: 0; }
   50%      { transform: translateY(7px); }
 }
 @media (max-width: 940px), (max-height: 620px) {
-  .tut-banner { bottom: clamp(52px, 9vh, 80px); padding: 9px 14px; }
+  /* Explicit edges, not left:50% + translate: a fixed element at left:50%
+     only gets HALF the viewport for shrink-to-fit, and on a phone the flex
+     row collapsed into a one-word-wide vertical sliver (caught in real
+     device emulation on a fresh table, 2026-07-27 — the one state where
+     the tutorial and a phone meet). Sits above the crew bench. */
+  .tut-banner {
+    left: 8px; right: 8px; translate: none; width: auto; max-width: none;
+    bottom: calc(46px + clamp(38px, 11vw, 52px) + 6px);
+    padding: 9px 12px; gap: 8px;
+  }
+  .tut-body strong { font-size: 14px; }
 }
 
 /* ── DOUBLE DIP! — the jackpot proc, extremely celebrated by decree ─────── */
