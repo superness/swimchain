@@ -7,7 +7,7 @@
  */
 import { shelterWeight, shelterOf, isExposed, shelterMap, type Body } from './shelter';
 import {
-  SHELTER_BASE, SHELTER_SIZE_DIV, SHELTER_SIZE_CAP, SHELTER_THRESHOLD, SHELTER_R,
+  SHELTER_BASE, SHELTER_SIZE_DIV, SHELTER_SIZE_CAP, SHELTER_R,
 } from './shoalConst';
 
 let failures = 0;

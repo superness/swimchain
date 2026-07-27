@@ -11,7 +11,7 @@ import { cellIndex, cellCentre, markVisits, isBloomReady, bitesLeft, canEat } fr
 import type { Body } from './shelter';
 import {
   BLOOM_CELL, BLOOM_COLS, BLOOM_ROWS, BLOOM_READY_MS, BLOOM_BITES,
-  BLOOM_VISIT_R, EAT_R, EAT_COOLDOWN_MS,
+  EAT_R, EAT_COOLDOWN_MS,
 } from './shoalConst';
 
 let failures = 0;
