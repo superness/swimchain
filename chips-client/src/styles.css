@@ -1016,6 +1016,20 @@ h1, h2, h3, p { margin: 0; }
   100% { transform: translate(var(--fx1), calc(var(--fy1) + 60px)) scale(.4) rotate(24deg); opacity: 0; filter: brightness(.3); }     /* part of the dip now */
 }
 
+/* The double dip: same journey, but it bobs BACK UP once — dripping, briefly
+   brighter — and goes under a second time. Timed so sound.ts's second plop
+   (t+0.92 of 1.25s = 74%) lands as it re-enters. */
+.dip-flight.double { animation-name: dip-flight-double; }
+@keyframes dip-flight-double {
+  0%   { transform: translate(var(--fx0), var(--fy0)) scale(1) rotate(0deg); opacity: 1; filter: brightness(1); }
+  20%  { transform: translate(var(--fmx), var(--fmy)) scale(1.06) rotate(-14deg); opacity: 1; filter: brightness(1); }  /* lift */
+  38%  { transform: translate(var(--fx1), var(--fy1)) scale(.96) rotate(8deg); opacity: 1; filter: brightness(1); }     /* first touch */
+  50%  { transform: translate(var(--fx1), calc(var(--fy1) + 22px)) scale(.8) rotate(14deg); opacity: .95; filter: brightness(.72); } /* under */
+  62%  { transform: translate(var(--fx1), calc(var(--fy1) - 12px)) scale(1.02) rotate(-6deg); opacity: 1; filter: brightness(1.15); } /* back up, loaded */
+  74%  { transform: translate(var(--fx1), calc(var(--fy1) + 26px)) scale(.72) rotate(12deg); opacity: .9; filter: brightness(.65); }  /* under AGAIN */
+  100% { transform: translate(var(--fx1), calc(var(--fy1) + 60px)) scale(.4) rotate(22deg); opacity: 0; filter: brightness(.3); }     /* twice-dipped, gone */
+}
+
 /* The dip surface reacting as the chip goes in. */
 .dip-ripple {
   position: fixed; z-index: 29; pointer-events: none;
@@ -1109,6 +1123,12 @@ h1, h2, h3, p { margin: 0; }
   color: #fff3c4; font-size: clamp(19px, 2.4vw, 28px);
   text-shadow: 0 0 22px rgba(255,214,110,.9), 0 2px 0 rgba(0,0,0,.4);
 }
+/* A double-dipped gain: hotter than plain, distinct from golden (a chip can
+   be both — golden's size wins, this glow stacks). */
+.gain-float.doubled {
+  color: #ffe9d6;
+  text-shadow: 0 0 20px rgba(255,150,80,.9), 0 1px 2px rgba(0,0,0,.85), 0 2px 6px rgba(0,0,0,.6);
+}
 /* The bowl was already at the rim: this chip earned nothing. Still shown —
    silence here would be indistinguishable from the announcement never having
    fired at all — but visibly duller, so "+0" reads as the honest truth the
@@ -1132,6 +1152,10 @@ h1, h2, h3, p { margin: 0; }
      specificity/!important question — keyframe rules don't merge), so this
      swaps in a straight two-stop move with no flourish whenever it's active. */
   @keyframes dip-flight {
+    0%   { transform: translate(var(--fx0), var(--fy0)); opacity: 1; }
+    100% { transform: translate(var(--fx1), var(--fy1)); opacity: 0; }
+  }
+  @keyframes dip-flight-double {
     0%   { transform: translate(var(--fx0), var(--fy0)); opacity: 1; }
     100% { transform: translate(var(--fx1), var(--fy1)); opacity: 0; }
   }

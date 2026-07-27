@@ -146,8 +146,9 @@ class Sfx {
   /* ── one-shots ───────────────────────────────────────────────────────── */
 
   /** The bank: grab now, plop at the flight's dip entry, splash with the
-   *  crumb burst. Offsets mirror the CSS keyframes (styles.css dip-flight). */
-  dip(): void {
+   *  crumb burst. Offsets mirror the CSS keyframes (styles.css dip-flight).
+   *  A double dip plops TWICE — the second at the flight's second entry. */
+  dip(double = false): void {
     const r = this.ready(); if (!r) return;
     const { c, out } = r; const t = c.currentTime;
     // grab: a dry little snap off the basket
@@ -156,6 +157,11 @@ class Sfx {
     // plop: pitch-dropping body + a low thump, wet
     this.tone(c, out, t + 0.53, { dur: 0.16, from: 300, to: 82, peak: 0.22 });
     this.burst(c, out, t + 0.53, { dur: 0.12, type: 'lowpass', freq: 500, peak: 0.16 });
+    if (double) {
+      // the second, cheekier plop — slightly higher, slightly quieter
+      this.tone(c, out, t + 0.92, { dur: 0.14, from: 340, to: 96, peak: 0.18 });
+      this.burst(c, out, t + 0.92, { dur: 0.1, type: 'lowpass', freq: 560, peak: 0.12 });
+    }
     // splash: a scatter of tiny high ticks, same instant the crumbs fly
     for (let i = 0; i < 5; i++) {
       this.burst(c, out, t + 0.78 + i * 0.035, {

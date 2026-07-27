@@ -379,6 +379,8 @@ export interface GainFloat {
   key: number;
   text: string;
   golden: boolean;
+  /** The fold doubled this chip — the float dresses up to say so. */
+  doubled: boolean;
   /** The pile was already at the cap: this chip's crispness earned nothing.
    *  Styled distinctly so "+0" reads as the honest truth, not a stall. */
   empty: boolean;
@@ -402,7 +404,7 @@ export function GainFloats({ floats }: { floats: GainFloat[] }) {
       {floats.map((f) => (
         <span
           key={f.key}
-          className={`gain-float${f.golden ? ' golden' : ''}${f.empty ? ' empty' : ''}`}
+          className={`gain-float${f.golden ? ' golden' : ''}${f.doubled ? ' doubled' : ''}${f.empty ? ' empty' : ''}`}
           aria-hidden="true"
           style={{
             '--gx': `${f.x}px`, '--gy': `${f.y}px`, '--gdx': `${f.dx}px`,
@@ -455,6 +457,11 @@ const FLAVOUR: Record<string, string> = {
   fryer3: 'a third. the extractor complains.',
   fryer4: 'four baskets. the fire marshal has been.',
   detector: 'you can spot a golden one a beat sooner',
+  season6: 'the shaker has its own stool at the bar',
+  cellar: 'cool, dark, dry. crumbs keep.',
+  doubledip1: 'nobody is watching. dip it again.',
+  doubledip2: 'shameless. both hands.',
+  detector2: 'you can smell 14 bits through the oil',
 };
 
 export interface ShelfProps {
@@ -489,8 +496,13 @@ export function Shelf({ state, crumbsNow, committed, onBuy }: ShelfProps) {
                 <span className="jar-name">{u.label}</span>
                 <span className="jar-cost">{compact(u.cost)}</span>
                 {/* Visible, not title-only: touch screens have no hover, and
-                    a bowl's whole point is its capacity. */}
+                    an upgrade's whole point is its effect. */}
                 {u.bowlCap !== undefined && <span className="jar-fx">holds {compact(u.bowlCap)}</span>}
+                {u.doubleDipMod !== undefined && (
+                  <span className="jar-fx">{u.doubleDipMod === 2 ? 'every other chip dips twice' : `1 in ${u.doubleDipMod} chips dips twice`}</span>
+                )}
+                {u.sogBonus !== undefined && <span className="jar-fx">crumbs stay crisp longer</span>}
+                {u.goldenBits !== undefined && <span className="jar-fx">golden from {u.goldenBits} bits</span>}
               </button>
             </li>
           );

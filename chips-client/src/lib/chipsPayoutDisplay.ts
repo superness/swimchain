@@ -26,8 +26,11 @@ import { BANK_MIN_BITS } from './chipsConst';
 export interface BankedMove {
   ms: number;
   bits: number;
-  /** The fold's own `payoutFor` output for this chip — notional, pre-cap. */
+  /** The fold's own payout for this chip — notional, pre-cap, and already
+   *  including any double-dip doubling. */
   crumbs: number;
+  /** True when the fold doubled this chip (chipsEngine's `doubleDip` flag). */
+  doubleDip: boolean;
 }
 
 /**
@@ -50,7 +53,7 @@ export function newBankedMoves(moves: MoveResult[], announced: ReadonlySet<numbe
   for (const m of moves) {
     if (m.outcome !== 'banked' || m.bits === undefined || m.crumbs === undefined) continue;
     if (announced.has(m.ms)) continue;
-    out.push({ ms: m.ms, bits: m.bits, crumbs: m.crumbs });
+    out.push({ ms: m.ms, bits: m.bits, crumbs: m.crumbs, doubleDip: m.doubleDip === true });
   }
   return out;
 }
@@ -59,10 +62,12 @@ export function newBankedMoves(moves: MoveResult[], announced: ReadonlySet<numbe
 export interface GainEvent {
   ms: number;
   bits: number;
-  /** What the fold's `payoutFor` computed — before the cap. */
+  /** What the fold computed — before the cap, after any double dip. */
   notional: number;
   /** What the bowl actually gained once clamped to `bowlCap`. Never negative. */
   gained: number;
+  /** Passed through from the fold's move record, for the celebration. */
+  doubleDip: boolean;
 }
 
 /**
@@ -88,7 +93,7 @@ export function actualGains(beforeCrumbs: number, bowlCap: number, moves: Banked
   const out: GainEvent[] = [];
   for (const m of moves) {
     const next = Math.min(running + m.crumbs, bowlCap);
-    out.push({ ms: m.ms, bits: m.bits, notional: m.crumbs, gained: Math.max(0, next - running) });
+    out.push({ ms: m.ms, bits: m.bits, notional: m.crumbs, gained: Math.max(0, next - running), doubleDip: m.doubleDip });
     running = next;
   }
   return out;

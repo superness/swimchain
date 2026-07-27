@@ -55,6 +55,10 @@ export interface MoveResult {
   bits?: number;
   crumbs?: number;
   upgradeKey?: string;
+  /** Set on a banked chip whose payout was doubled by the double-dip rule —
+   *  `crumbs` already includes the doubling; this flag exists so displays
+   *  can celebrate it without re-deriving the nonce test. */
+  doubleDip?: true;
 }
 
 export interface ChipsState {
@@ -68,6 +72,12 @@ export interface ChipsState {
   fryers: number;
   goldenBits: number;
   airtight: boolean;
+  /** Additional sog numerator from upgrades (chipsConst `sogBonus`), additive
+   *  with `airtight`'s fixed +2. 0 until something grants it. */
+  sogBonus: number;
+  /** Double-dip modulus: 0 = off; otherwise a banked chip whose nonce is
+   *  divisible by this pays double (see chipsConst's grind-resistance note). */
+  doubleDipMod: number;
   dipIndex: number;
   /** Action timestamp of the last CONFIRMED move. The decay clock. */
   lastConfirmedAt: number;
@@ -203,7 +213,7 @@ export function dipIndexFor(lifetimeChips: number): number {
 export function sogNum(state: ChipsState): number {
   const tier = DIP_TIERS[state.dipIndex];
   const base = tier.sogNum ?? SOG_BASE_NUM;
-  return base + (state.airtight ? AIRTIGHT_BONUS : 0);
+  return base + (state.airtight ? AIRTIGHT_BONUS : 0) + state.sogBonus;
 }
 
 /**
@@ -271,6 +281,7 @@ function initialState(): ChipsState {
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
     goldenBits: GOLDEN_BITS, airtight: false,
+    sogBonus: 0, doubleDipMod: 0,
     dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
     unverifiedBanks: 0, moves: [],
   };
@@ -353,13 +364,24 @@ export function foldChips(
           state.moves.push({ content_id: reply.content_id, ms: chip.ms, outcome: 'rejected-duplicate', bits: chip.bits });
         } else {
           seenProofs.add(key);
-          const crumbs = payoutFor(state, chip.bits, at);
+          // The double dip sits AFTER payoutFor's fixed multiplier chain and
+          // is a plain x2 on an integer, so it commutes with nothing and
+          // needs no floor of its own. It stays OUTSIDE payoutFor because
+          // payoutFor's signature (state, bits, at) is what every display
+          // calls to price a chip whose nonce it does not know.
+          const dipped = state.doubleDipMod > 0 && chip.nonce % BigInt(state.doubleDipMod) === 0n;
+          const crumbs = payoutFor(state, chip.bits, at) * (dipped ? 2 : 1);
           state.crumbs = Math.min(state.crumbs + crumbs, state.bowlCap);
+          // Deliberately NOT doubled: tiers measure real work done, and the
+          // double dip pays crumbs, it does not mint chips.
           state.lifetimeChips += 2 ** (chip.bits - BANK_MIN_BITS);
           if (chip.bits > state.crispest) state.crispest = chip.bits;
           state.dipIndex = dipIndexFor(state.lifetimeChips);
           if (confirmed) state.lastBankAt = at;
-          state.moves.push({ content_id: reply.content_id, ms: chip.ms, outcome: 'banked', bits: chip.bits, crumbs });
+          state.moves.push({
+            content_id: reply.content_id, ms: chip.ms, outcome: 'banked', bits: chip.bits, crumbs,
+            ...(dipped ? { doubleDip: true as const } : {}),
+          });
         }
       }
       continue;
@@ -412,6 +434,8 @@ function applyBuy(
   if (upgrade.fryers !== undefined) state.fryers = upgrade.fryers;
   if (upgrade.goldenBits !== undefined) state.goldenBits = upgrade.goldenBits;
   if (upgrade.airtight) state.airtight = true;
+  if (upgrade.sogBonus !== undefined) state.sogBonus += upgrade.sogBonus;
+  if (upgrade.doubleDipMod !== undefined) state.doubleDipMod = upgrade.doubleDipMod;
 
   push('bought');
 }

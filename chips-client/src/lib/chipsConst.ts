@@ -40,29 +40,51 @@ export interface Upgrade {
   fryers?: number;           // if set, replaces the worker count
   airtight?: boolean;
   goldenBits?: number;       // if set, replaces GOLDEN_BITS
+  /** If set, replaces the double-dip modulus: a banked chip whose nonce is
+   *  divisible by this pays DOUBLE. 4 = one chip in four, 2 = every other.
+   *  Grind-resistance: cherry-picking a qualifying nonce costs `mod` times
+   *  the chip's whole expected work for a 2x payout, so at mod 4 cheating is
+   *  half as efficient as honest play and at mod 2 it is exactly break-even
+   *  — there is never an incentive to hold out for a proccing nonce. */
+  doubleDipMod?: number;
+  /** If set, ADDS to the sog numerator (stacks with `airtight`'s +2). */
+  sogBonus?: number;
 }
 
 export const UPGRADES: Record<string, Upgrade> = {
-  season1: { key: 'season1', label: 'Seasoning I',   cost: 30_000,     seasoningNum: 3, seasoningDen: 2 },
-  season2: { key: 'season2', label: 'Seasoning II',  cost: 200_000,    seasoningNum: 2, seasoningDen: 1 },
-  season3: { key: 'season3', label: 'Seasoning III', cost: 1_200_000,  seasoningNum: 3, seasoningDen: 1 },
-  season4: { key: 'season4', label: 'Seasoning IV',  cost: 8_000_000,  seasoningNum: 4, seasoningDen: 1 },
-  season5: { key: 'season5', label: 'Seasoning V',   cost: 50_000_000, seasoningNum: 6, seasoningDen: 1 },
+  season1: { key: 'season1', label: 'Seasoning I',   cost: 30_000,      seasoningNum: 3, seasoningDen: 2 },
+  season2: { key: 'season2', label: 'Seasoning II',  cost: 200_000,     seasoningNum: 2, seasoningDen: 1 },
+  season3: { key: 'season3', label: 'Seasoning III', cost: 1_200_000,   seasoningNum: 3, seasoningDen: 1 },
+  season4: { key: 'season4', label: 'Seasoning IV',  cost: 8_000_000,   seasoningNum: 4, seasoningDen: 1 },
+  season5: { key: 'season5', label: 'Seasoning V',   cost: 50_000_000,  seasoningNum: 6, seasoningDen: 1 },
+  season6: { key: 'season6', label: 'Seasoning VI',  cost: 120_000_000, seasoningNum: 9, seasoningDen: 1 },
   airtight: { key: 'airtight', label: 'Airtight Bowl', cost: 70_000, airtight: true },
+  cellar: { key: 'cellar', label: 'Cellar Shelf', cost: 4_000_000, sogBonus: 2 },
   bowl1: { key: 'bowl1', label: 'Bigger Bowl I',   cost: 60_000,      bowlCap: 3_000_000 },
   bowl2: { key: 'bowl2', label: 'Bigger Bowl II',  cost: 2_000_000,   bowlCap: 200_000_000 },
   bowl3: { key: 'bowl3', label: 'Bigger Bowl III', cost: 150_000_000, bowlCap: 5_000_000_000 },
   fryer2: { key: 'fryer2', label: 'Second Fryer', cost: 400_000,     fryers: 2 },
   fryer3: { key: 'fryer3', label: 'Third Fryer',  cost: 12_000_000,  fryers: 3 },
   fryer4: { key: 'fryer4', label: 'Fourth Fryer', cost: 100_000_000, fryers: 4 },
+  doubledip1: { key: 'doubledip1', label: 'Double Dip',      cost: 600_000,    doubleDipMod: 4 },
+  doubledip2: { key: 'doubledip2', label: 'Deep Double Dip', cost: 20_000_000, doubleDipMod: 2 },
   detector: { key: 'detector', label: 'Golden Chip Detector', cost: 3_000_000, goldenBits: 15 },
+  detector2: { key: 'detector2', label: 'Golden Chip Nose',   cost: 25_000_000, goldenBits: 14 },
 };
 
-/** Upgrades that must be bought in order. Buying out of order is rejected. */
+/** Upgrades that must be bought in order. Buying out of order is rejected.
+ *
+ *  APPEND-ONLY, at the TAIL, forever: inserting a rung into the middle of an
+ *  existing chain would make historical buys of the rung after it fold as
+ *  `rejected-order` — re-scoring every table that bought it. Appending is
+ *  safe (a tail rung validates only against the prefix, which is unchanged),
+ *  and whole new chains are safe (their keys have no history). */
 export const UPGRADE_CHAINS: string[][] = [
-  ['season1', 'season2', 'season3', 'season4', 'season5'],
+  ['season1', 'season2', 'season3', 'season4', 'season5', 'season6'],
   ['bowl1', 'bowl2', 'bowl3'],
   ['fryer2', 'fryer3', 'fryer4'],
+  ['doubledip1', 'doubledip2'],
+  ['detector', 'detector2'],
 ];
 
 export interface DipTier {
