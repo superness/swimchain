@@ -222,6 +222,25 @@ class Sfx {
     this.tone(c, out, t, { dur: 0.08, from: 150, to: 110, peak: 0.11 });
   }
 
+  /** THE DOUBLE DIP — the jackpot proc. Two heavy hits landing with the
+   *  splash's two word-stamps, then a bright ascending burst. Loud on
+   *  purpose: "it should be like DOUBLE DIP!!!! extremely celebrated". */
+  doubleDip(): void {
+    const r = this.ready(); if (!r) return;
+    const { c, out } = r; const t = c.currentTime;
+    // hit one: DOUBLE
+    this.tone(c, out, t, { dur: 0.18, from: 220, to: 110, type: 'square', peak: 0.2 });
+    this.burst(c, out, t, { dur: 0.1, type: 'lowpass', freq: 700, peak: 0.2 });
+    // hit two: DIP!
+    this.tone(c, out, t + 0.22, { dur: 0.2, from: 330, to: 165, type: 'square', peak: 0.24 });
+    this.burst(c, out, t + 0.22, { dur: 0.12, type: 'lowpass', freq: 800, peak: 0.22 });
+    // the payoff burst
+    for (const [i, f] of [660, 880, 1320, 1760].entries()) {
+      this.tone(c, out, t + 0.5 + i * 0.06, { dur: 0.4, from: f, peak: 0.08, attack: 0.008 });
+    }
+    this.burst(c, out, t + 0.5, { dur: 0.35, type: 'highpass', freq: 3200, peak: 0.08, attack: 0.02 });
+  }
+
   /** THE CRACKLE — the multiplier jumping. Loud on purpose: a player looking
    *  away should hear it and look back (Kitchen.tsx's rule). A dry snap, a
    *  hot sizzle burst, and a rising bling. */

@@ -1367,3 +1367,51 @@ h1, h2, h3, p { margin: 0; }
 @media (max-width: 940px), (max-height: 620px) {
   .tut-banner { bottom: clamp(52px, 9vh, 80px); padding: 9px 14px; }
 }
+
+/* ── DOUBLE DIP! — the jackpot proc, extremely celebrated by decree ─────── */
+
+.dd-splash {
+  position: fixed; inset: 0; z-index: 35; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; gap: .35em;
+  animation: dd-splash-out 2.2s forwards;
+}
+.dd-word {
+  font-family: var(--sign); font-weight: 400; letter-spacing: .06em;
+  font-size: clamp(56px, 11vw, 170px); line-height: 1;
+  color: #ffd35e;
+  text-shadow:
+    0 0 40px rgba(255, 170, 40, .95),
+    0 6px 0 rgba(120, 60, 0, .9),
+    0 10px 30px rgba(0, 0, 0, .6);
+  transform: scale(0) rotate(-8deg);
+  animation: dd-stamp .5s cubic-bezier(.2, 1.6, .35, 1) forwards;
+}
+.dd-word2 {
+  color: #fff1b8;
+  transform: scale(0) rotate(6deg);
+  animation-delay: .22s;
+}
+@keyframes dd-stamp {
+  0%   { transform: scale(0) rotate(-8deg); }
+  70%  { transform: scale(1.15) rotate(2deg); }
+  100% { transform: scale(1) rotate(-2deg); }
+}
+@keyframes dd-splash-out {
+  0%, 78% { opacity: 1; }
+  100%    { opacity: 0; }
+}
+/* the room takes the hit with it */
+.dd-splash::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(60% 60% at 50% 50%, rgba(255, 190, 80, .28), transparent 70%);
+  animation: dd-flash .6s ease-out forwards;
+}
+@keyframes dd-flash {
+  0%   { opacity: 0; }
+  20%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dd-word { animation: none; transform: none; }
+  .dd-splash { animation: dd-splash-out 1.2s forwards; }
+}
