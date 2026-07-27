@@ -104,39 +104,77 @@ export { bankBody, buyBody, bankBatchBody };
  * is several seconds of CPU; on the main thread it freezes the tab (and any
  * progress UI can't paint) — reef hit exactly this and fixed it with an
  * identical worker (reef-client/src/lib/pow.worker.ts / reefEngine.ts:66-104).
- * Falls back to on-thread mining only if the worker can't be constructed
- * (very old runtime).
+ * Falls back to on-thread mining only if Workers don't exist at all.
+ *
+ * ONE worker for the whole session, not one per submit. The old
+ * spawn-terminate-per-call pattern instantiated a fresh 8 MiB Argon2id WASM
+ * instance for EVERY chain write, alongside the instances the fryer workers
+ * hold permanently — and under memory pressure that fresh instantiation is
+ * exactly what failed, live and often: "WebAssembly.instantiate(): Out of
+ * memory: Cannot allocate Wasm memory for new instance" (operator report,
+ * 2026-07-27). A reused worker allocates once, stays warm, and every later
+ * submit costs zero new WASM memory.
+ *
+ * Jobs are SERIALIZED through `powQueue`: the worker's mining loop starves
+ * its own message queue while it runs (the hash-wasm microtask fact —
+ * fryerLogic.ts's grindLoop doc has the measurement), so two concurrent
+ * jobs on one worker would interleave wrongly — and the app's callers (the
+ * single-flight sender, onboarding's one-at-a-time steps) never
+ * legitimately overlap anyway. Any failure — worker-level `onerror`, or an
+ * in-worker `error` message (which includes the WASM instantiation failing
+ * INSIDE the worker) — tears the worker down and nulls the slot, so the
+ * caller's existing retry/backoff starts over with a fresh worker instead
+ * of a poisoned one.
  */
+let powWorker: Worker | null = null;
+let powQueue: Promise<unknown> = Promise.resolve();
+let powSpawns = 0;
+let powJobs = 0;
+// Spawn/job counters — the reuse is otherwise unobservable from outside this
+// module, and an unverifiable fix regresses silently.
+if (typeof window !== 'undefined') {
+  (window as unknown as Record<string, unknown>).__powStats = () => ({ spawns: powSpawns, jobs: powJobs });
+}
+
 function minePow(
   challenge: PoWChallenge,
   config: PoWConfig,
   onProgress?: ProgressCallback
 ): Promise<PoWSolution> {
-  let worker: Worker;
-  try {
-    worker = new Worker(new URL('./actionPow.worker.ts', import.meta.url), { type: 'module' });
-  } catch {
-    return computePow(challenge, config, onProgress);
-  }
-  return new Promise<PoWSolution>((resolve, reject) => {
-    worker.onmessage = (e: MessageEvent) => {
+  const job = powQueue.then(() => new Promise<PoWSolution>((resolve, reject) => {
+    if (!powWorker) {
+      try {
+        powWorker = new Worker(new URL('./actionPow.worker.ts', import.meta.url), { type: 'module' });
+        powSpawns++;
+      } catch {
+        // No Worker support at all — the one case the on-thread fallback is for.
+        computePow(challenge, config, onProgress).then(resolve, reject);
+        return;
+      }
+    }
+    const w = powWorker;
+    const fail = (message: string): void => {
+      w.terminate();
+      if (powWorker === w) powWorker = null;
+      reject(new Error(message));
+    };
+    w.onmessage = (e: MessageEvent) => {
       const m = e.data;
       if (m?.type === 'progress') {
         onProgress?.(m.attempts, m.elapsedMs, m.hashRate);
       } else if (m?.type === 'solution') {
-        resolve(m.solution as PoWSolution);
-        worker.terminate();
+        powJobs++;
+        resolve(m.solution as PoWSolution);   // the worker stays warm for the next job
       } else if (m?.type === 'error') {
-        reject(new Error(m.message));
-        worker.terminate();
+        fail(m.message);
       }
     };
-    worker.onerror = (err) => {
-      reject(new Error(err.message || 'pow worker error'));
-      worker.terminate();
-    };
-    worker.postMessage({ challenge, config });
-  });
+    w.onerror = (err) => fail(err.message || 'pow worker error');
+    w.postMessage({ challenge, config });
+  }));
+  // The queue must survive a failed job — chain on settled, not on success.
+  powQueue = job.catch(() => undefined);
+  return job;
 }
 
 /**
