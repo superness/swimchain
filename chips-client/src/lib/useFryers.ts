@@ -37,7 +37,7 @@
  *     had already been banked, every message it posted was dropped by the
  *     ms guard, and the basket sat at `bits: -1` for the rest of the
  *     session. Observed live on 2026-07-25: 100 s after a bank, still -1.
- *     `terminate()` is the only thing that stops a running grind, so the
+ *     `terminate()` used to be the only thing that stops a running grind (the
  *     replacement worker is not an optimisation choice — it is the only
  *     correct implementation. It also costs nothing that matters: a bank
  *     happens once every tens of seconds at best, against a grind that
@@ -350,18 +350,20 @@ export function useFryers(count: number, authorIdHex: string, tableId: string) {
     latest.current = records;
     setChips(records.map(toFryerChip));
 
-    // TERMINATE, then start a replacement. Posting a `start` to the running
-    // worker instead does nothing at all: it is mid-grind, and a grind starves
-    // its own message queue (see the hook's header comment). The replacement
-    // goes into `workers.current` — the same array the owning effect's cleanup
-    // closes over — so it is still terminated on unmount.
-    stopWorker(worker);
+    // RETARGET the running worker with a `start` for the fresh ms — do NOT
+    // terminate it. The grind loop now yields to its event loop every
+    // YIELD_EVERY attempts (fryerLogic.ts), so this message is actually
+    // delivered mid-grind: the worker bumps its generation, the old grind
+    // exits at its next check, and the SAME 8 MiB Argon2id WASM instance
+    // starts the next chip. The old terminate-and-respawn here cost a fresh
+    // WASM instantiation on every bank — the allocation churn behind the
+    // live "WebAssembly.instantiate(): Out of memory" failures (present
+    // since day one, game-bricking under memory pressure, 2026-07-27).
+    // Stale messages from the outgoing grind are dropped by
+    // applyFryerMessage's ms guard, exactly as before.
     backoff.current[index] = 0;
-    workers.current[index] = startWorker(
-      authorIdHex, tableId, newMs,
-      (msg) => applyMessage(index, msg),
-      (bad) => restartRef.current(index, bad)
-    );
+    const start: CrunchReq = { type: 'start', authorIdHex, tableId, ms: newMs };
+    worker.postMessage(start);
 
     return taken;
   }

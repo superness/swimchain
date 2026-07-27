@@ -59,6 +59,10 @@ async function grind(msg: StartMsg, myGeneration: number): Promise<void> {
     hash: (nonce) => chipHash(chipPreimage(msg.authorIdHex, msg.tableId, msg.ms, nonce)),
     post,
     isCurrent: () => generation === myGeneration,
+    // A real macrotask — this is the moment queued `start`/`stop` messages
+    // are delivered, which is what lets one worker (and its one 8 MiB WASM
+    // instance) serve chip after chip instead of being terminated per bank.
+    yieldToHost: () => new Promise((r) => setTimeout(r, 0)),
   });
 }
 

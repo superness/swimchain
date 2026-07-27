@@ -269,13 +269,28 @@ export interface GrindDeps {
   post(msg: CrunchRes): void;
   /** False once this grind has been superseded — see the starvation note below. */
   isCurrent(): boolean;
+  /** Return control to the host's EVENT LOOP (a macrotask, e.g.
+   *  `new Promise(r => setTimeout(r, 0))`) — NOT a microtask, which would
+   *  change nothing. Called every `YIELD_EVERY` attempts so queued messages
+   *  (a `start` for the next chip after a bank) actually get delivered to a
+   *  worker mid-grind. This is what made fryer workers REUSABLE: before it,
+   *  the only way to retarget a grinding worker was `terminate()`, which cost
+   *  a fresh 8 MiB Argon2id WASM instantiation per bank — the allocation
+   *  churn behind the live "WebAssembly.instantiate(): Out of memory"
+   *  failures (present since day one; reported bricking the game 2026-07-27). */
+  yieldToHost(): Promise<void>;
 }
+
+/** Attempts between yields. At ~60 hashes/sec this is ~7 yields/sec; a
+ *  clamped setTimeout(0) costs ~1ms each, so under 1% throughput for a
+ *  worker that can actually hear its mail. */
+export const YIELD_EVERY = 8;
 
 /**
  * One chip's grind: hash, track the best crispness so far, report it.
  *
- * THE SCHEDULING FACT THIS ENCODES, and the reason `bank()` terminates its
- * worker instead of reusing it:
+ * THE SCHEDULING FACT THIS ENCODES — and, since 2026-07-27, WORKS AROUND
+ * with `yieldToHost` (see GrindDeps) instead of surrendering to:
  *
  * `await deps.hash(...)` does NOT return control to the event loop. hash-wasm's
  * argon2id is synchronous WASM behind an async signature — once its module is
@@ -295,9 +310,12 @@ export interface GrindDeps {
  * basket sat at `bits: -1` for the rest of the session. That was the whole game
  * loop, dead after the first bank.
  *
- * `isCurrent()` is therefore a guard against orderings that CAN happen (a
- * message delivered while the worker sits idle between grinds), not a stop
- * button. The only reliable stop for a running grind is `Worker.terminate()`.
+ * The periodic macrotask yield is the fix: every YIELD_EVERY attempts the
+ * loop genuinely returns to the event loop, queued messages are delivered,
+ * `generation` can move, and `isCurrent()` becomes a REAL stop button. A
+ * running fryer is now retargeted with a `start` message and its 8 MiB WASM
+ * instance lives for the whole session; `terminate()` remains only for true
+ * teardown (unmount, fryer-count shrink, a dead worker being replaced).
  */
 export async function grindLoop(ms: number, deps: GrindDeps): Promise<void> {
   let nonce: bigint | null = 0n;
@@ -305,6 +323,13 @@ export async function grindLoop(ms: number, deps: GrindDeps): Promise<void> {
   let attempts = 0;
 
   while (deps.isCurrent() && nonce !== null) {
+    // The yield comes FIRST in the iteration so even a grind whose hash
+    // rejects on attempt 1 (a broken WASM load) has already given the host a
+    // chance to deliver mail at least once per YIELD_EVERY window.
+    if (attempts > 0 && attempts % YIELD_EVERY === 0) {
+      await deps.yieldToHost();
+      if (!deps.isCurrent()) return; // superseded while yielded — the common retarget path now
+    }
     const hash = await deps.hash(nonce);
     if (!deps.isCurrent()) return; // superseded while awaiting the hash
     attempts++;
