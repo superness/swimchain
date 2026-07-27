@@ -8,12 +8,13 @@
  * There is no bar, no percentage and no "12/16" anywhere in here. A player
  * should know whether to pull a chip by squinting at it from across the room.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FryerChip } from './lib/useFryers';
 import { BANK_MIN_BITS } from './lib/chipsConst';
 import type { ChipsState } from './lib/chipsEngine';
 import { worthIfBankedNow } from './lib/chipsPayoutDisplay';
 import { compact } from './lib/format';
+import { sfx } from './lib/sound';
 
 /** xorshift32 — a chip's silhouette must be stable across every re-render, and
  *  every chip must look like a different chip. Keyed on its authoring-ms. */
@@ -292,6 +293,15 @@ function WorthTag({ chip, goldenBits, state, nowMs }: { chip: FryerChip; goldenB
 
 function Basket({ chip, goldenBits, onBank, index, state, nowMs }: BasketProps) {
   const c = crispnessOf(chip, goldenBits);
+  // A quiet shimmer the moment THIS chip turns golden — flip-edge only, so a
+  // re-render (or a fresh chip starting pale) never re-rings it. Keyed to the
+  // chip's ms: a new chip in the same basket starts a new edge.
+  const goldenRef = useRef<{ ms: number; golden: boolean }>({ ms: chip.ms, golden: c.golden });
+  useEffect(() => {
+    const prev = goldenRef.current;
+    if (chip.ms === prev.ms && c.golden && !prev.golden) sfx.golden();
+    goldenRef.current = { ms: chip.ms, golden: c.golden };
+  }, [chip.ms, c.golden]);
   const bubbles = useMemo(() => {
     const rnd = seeded(chip.ms ^ 0x5bf03635);
     return Array.from({ length: 9 }, () => ({
@@ -377,7 +387,7 @@ export function Kitchen({ chips, goldenBits, onBank, state, nowMs }: KitchenProp
             nowMs={nowMs}
             onBank={() => {
               if (crispnessOf(chip, goldenBits).bankable) onBank(i);
-              else setNudge('still pale — give it a minute');
+              else { setNudge('still pale — give it a minute'); sfx.tap(); }
             }}
           />
         ))}
