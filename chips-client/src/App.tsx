@@ -35,6 +35,7 @@ import {
 } from './lib/crewJobs';
 import { CrewRow, FeedBanner, DipTicker, CritterArt, type CrewBubble } from './Crew';
 import { BowlReveal, TipCeremony, BowlTicket, BOWL_LINES, WELCOME_BACK } from './Bowl';
+import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
 import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
@@ -285,6 +286,11 @@ export function App() {
    */
   const confirmedRef = useRef<{ replies: ChipsReply[]; verified: Map<string, number> }>({ replies: [], verified: new Map() });
 
+  /** Bumped by `refresh` whenever `confirmedRef` is replaced, so anything that
+   *  must read the CHAIN rather than the optimistic fold has a dependency it
+   *  can actually observe (a ref write is invisible to React). */
+  const [confirmedTick, setConfirmedTick] = useState(0);
+
   /**
    * The queue-entry ids the LAST COMPLETED fold actually consumed (i.e. the
    * ids `activeFor(queue, tableId, me)` held at that moment) — set inside
@@ -439,6 +445,9 @@ export function App() {
       (done, total) => setCounting(total > 0 && done < total ? { done, total } : null)
     );
     confirmedRef.current = { replies: confirmed, verified };
+    // The reveal gate reads this ref, and a ref write does not re-render —
+    // this is what tells it the chain moved (see `chainReady` below).
+    setConfirmedTick((n) => n + 1);
     // Retire settling moves the chain has now supplied — the NORMAL end of a
     // settling move's life, and the common one; expiry (on the clock tick
     // above) is the failure path. Done here, against the freshly loaded
@@ -1078,7 +1087,23 @@ export function App() {
    */
   bowlOpenRef.current = bowlOpen;
   const tipSalt = state ? saltFor(state.lifetimeChips) : 0;
-  const struck = tipSalt > 0;
+  /**
+   * The offer is the ONE thing in this app that does not run on the optimistic
+   * fold — see lib/bowlGate.ts for why a revocable credit must not be allowed
+   * to spend the reveal's single showing. Recomputed only when the chain moves
+   * (`confirmedTick`, bumped in `refresh`), not on every dip: it folds the
+   * confirmed set a second time and there is no reason to pay that per click.
+   */
+  const chainReady = useMemo(() => {
+    if (!tableId || !me) return false;
+    const { replies, verified } = confirmedRef.current;
+    const header: ChipsHeader = { v: 1, kind: 'chips-table', name: cookName, owner: me.publicKeyHex };
+    // `queue` is passed and deliberately unused (bowlGate.ts) — it is NOT a
+    // dependency for the same reason: nothing here reads it.
+    return bowlReady(header, tableId, replies, verified, queue, me.publicKeyHex);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmedTick, tableId, me, cookName]);
+  const struck = bowlOfferVisible(chainReady, tipSalt);
   useEffect(() => {
     if (!struck || struckRef.current || !tableId) return;
     struckRef.current = true;
