@@ -184,4 +184,60 @@ export interface ShoalState {
    * with .has() and .delete(); the stored ms itself is not otherwise read.
    */
   bloomSinceMs: Map<number, number>;
+
+  /**
+   * Fold-internal bookkeeping for `foldTick` (Task 5, spec 3.9's plan-2
+   * incremental-fold seam). None of the four fields below are part of the
+   * observable world — they are deliberately absent from every fingerprint
+   * in the test suite — they exist only so a fold can be resumed one tick at
+   * a time across separate `foldTick` calls with no loop of its own.
+   */
+  /**
+   * Index into `orderLog(entries)` of the next log entry `foldTick` has not
+   * yet applied. This used to be a loop-local in `foldShoal`'s own `for`
+   * loop; an incremental caller has no such loop, so the cursor has to live
+   * somewhere a caller can carry it forward between calls. Deriving it fresh
+   * from `nowMs` each tick instead (e.g. "apply everything with ms <= t")
+   * was rejected: it cannot distinguish "not yet applied" from "already
+   * applied on an earlier call," so it would silently re-apply every entry
+   * at or before the current tick on every single `foldTick` call — visibly,
+   * double- (or N-times-) crediting every bite and re-registering every
+   * presence write. Consequently `foldTick`'s callers (including foldShoal's
+   * own loop) MUST pass the same `entries` array — same content, same order
+   * — on every call in one fold; the cursor is meaningless against a log
+   * that has been reordered or had earlier entries removed since the last
+   * call. Append-only growth is safe: `orderLog`'s sort places new entries
+   * with a later (ms, hash) key after everything already scanned, so the
+   * existing cursor position stays valid.
+   */
+  cursor: number;
+  /**
+   * Consecutive ticks each live fish has spent outside the tension core,
+   * keyed by id. Read by `topContributor` at the hush's input lock (step 5)
+   * to pick the preferred sweep target, and written every tick (step 4)
+   * regardless of whether a hush is running — an idle sea still has fish
+   * drifting in and out of the core. Was a loop-local `Map` in `foldShoal`;
+   * moved here for the same reason as `cursor`.
+   */
+  outsideTicks: Map<string, number>;
+  /**
+   * Ticks folded so far, for this state. Hunger (step 6) fires only once
+   * every `HUNGER_TICK_INTERVAL` of these, so this has to persist across
+   * `foldTick` calls or hunger would either never fire (reset to 0 every
+   * call) or fire on the wrong cadence (derived from `nowMs` alone, which
+   * would work only if a fold never skips a tick — true today, but this
+   * keeps the tick-counting logic identical to what `foldShoal`'s own loop
+   * always did, rather than introducing a second, subtly different way to
+   * compute the same thing).
+   */
+  tickCount: number;
+  /**
+   * Ids that authored an applied presence entry at some point during this
+   * fold. Consulted only by `foldShoal`, once, after its `foldTick` loop
+   * finishes, to prune seeded `departed` records nobody returned to claim
+   * (spec 3.9 point 6). An incremental caller driving `foldTick` directly
+   * (never going through `foldShoal`) can ignore this field entirely — it is
+   * never read for anything else.
+   */
+  touchedIds: Set<string>;
 }
