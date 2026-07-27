@@ -86,6 +86,22 @@ export interface ShoalState {
   hushStartMs: number;
   /** Positions locked at the input lock, or null if not yet locked. */
   lockedPositions: Map<string, { x: number; y: number; size: number }> | null;
+  /**
+   * The preferred sweep target, frozen at the same instant as
+   * lockedPositions, or null if not yet locked (or if nobody is outside the
+   * core). This lives on ShoalState rather than in a local because the fold
+   * must be resumable: a client that folds up to a tick inside the dread
+   * window and continues later would otherwise lose it and recompute a
+   * different answer.
+   *
+   * It is separate state and not derivable from lockedPositions because
+   * topContributor reads OUTSIDE-TICKS, which the fold keeps accumulating
+   * every tick through the dread window. Recomputing it at the resolve tick
+   * would let a presence write authored after T+LOCK decide who the shark
+   * takes — precisely the input the lock exists to exclude (spec 2.12
+   * rule 2).
+   */
+  lockedPreferred: string | null;
   /** Ids taken by the most recent resolved sweep. */
   lastTaken: string[];
   /** Ms of the most recent resolved sweep, or -1. */

@@ -340,6 +340,67 @@ const resolveAtMs = triggerAtMs + HUSH_MS;
   check('the credited bite grows the eater before hunger claws anything back',
     s.fish.get('e0')!.size === START_SIZE + BITE_GROWTH, s.fish.get('e0')!.size);
 }
+// --- The input lock binds the PREFERRED TARGET, not just positions ----------
+{
+  // Spec 2.12 rule 2: "Resolution binds only on inputs timestamped at or
+  // before the lock." Freezing positions is only half of it. The preferred
+  // target comes from topContributor(bodies, outsideTicks), and outsideTicks
+  // is an accumulator the fold rewrites on EVERY tick — including all sixteen
+  // ticks of the dread window. A presence write authored after the lock can
+  // therefore still reach the resolution through that map, and because
+  // `preferred` jumps the queue in selectTaken it changes WHO IS TAKEN.
+  //
+  // Hand-derived timeline for richLog (all numbers re-derived above from the
+  // constants, none read off the fold):
+  //   hush starts   triggerAtMs                 = 18000
+  //   input lock    18000 + LOCK_MS(4000)       = 22000
+  //   resolution    18000 + HUSH_MS(8000)       = 26000  (= resolveAtMs)
+  // 22250 is the first tick strictly after the lock (22250/TICK_MS = 89, so
+  // it is a real tick), and it sits deep in the dread window.
+  //
+  // The post-lock writes move o0, o1 and o2 onto the cluster's coordinate,
+  // which is the core centre — so from t=22250 those three read as INSIDE the
+  // core and step 4 resets their outsideTicks to 0 on every later tick, while
+  // o3..o7 keep accumulating. Their LOCKED positions are untouched, so all
+  // eight are still exposed candidates at resolution.
+  //
+  // Correct (locked) answer: at t=22000 all eight outsiders are tied on
+  // outside-ticks and tied on size (all present and stationary since t=0,
+  // none has ever eaten), so topContributor keeps the first id it scans —
+  // 'o0' — and selectTaken reduces to the first MAX_TAKE ids ascending:
+  //   ['o0','o1','o2']
+  // Live-accumulator (buggy) answer: at t=26000 o0/o1/o2 read 0 ticks and
+  // o3..o7 read many, so preferred becomes the lowest of those, 'o3'; it
+  // jumps the queue and the rest follow ascending:
+  //   ['o3','o0','o1']
+  // o2 is spared and o3 eaten purely on input the lock exists to exclude.
+  const postLockMs = 22_250;
+  const centre = cellCentre(367); // (1984, 1472) — the cluster's coordinate
+  const swimIn: LogEntry[] = ['o0', 'o1', 'o2'].map((id) => ({
+    kind: 'presence' as const, id, ms: postLockMs, hash: `${id}-swimin`,
+    vec: { x: centre.x, y: centre.y, heading: 0, speed: 0, t: postLockMs },
+  }));
+  check('the post-lock writes land after the lock and before resolution',
+    postLockMs > triggerAtMs + 4_000 && postLockMs < resolveAtMs && postLockMs % TICK_MS === 0,
+    { postLockMs, lockAtMs: triggerAtMs + 4_000, resolveAtMs });
+
+  const control = foldShoal(richLog, RICH_UNTIL_MS);
+  const perturbed = foldShoal([...richLog, ...swimIn], RICH_UNTIL_MS);
+
+  // Non-degeneracy: prove the post-lock writes actually landed, or the check
+  // below would pass against a log the fold silently ignored.
+  check('the post-lock writes really moved those fish',
+    perturbed.fish.get('o0')!.x === centre.x && control.fish.get('o0')!.x !== centre.x,
+    { perturbed: perturbed.fish.get('o0')!.x, control: control.fish.get('o0')!.x, centre: centre.x });
+
+  check('a post-lock swim-in does not change who the sweep takes',
+    JSON.stringify(perturbed.lastTaken) === JSON.stringify(['o0', 'o1', 'o2']),
+    { got: perturbed.lastTaken, expected: ['o0', 'o1', 'o2'] });
+  check('the post-lock fold takes the same fish as the untouched fold',
+    JSON.stringify(perturbed.lastTaken) === JSON.stringify(control.lastTaken),
+    { perturbed: perturbed.lastTaken, control: control.lastTaken });
+}
+
 {
   // The crucial one: shuffle the rich log and confirm the fold does not
   // care, now that the log actually exercises tension, the hush, the sweep

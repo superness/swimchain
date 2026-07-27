@@ -49,6 +49,7 @@ export function emptyState(startMs: number): ShoalState {
     tension: 0,
     hushStartMs: -1,
     lockedPositions: null,
+    lockedPreferred: null,
     lastTaken: [],
     lastSweepMs: -1,
     lastVisit: new Map(),
@@ -195,19 +196,38 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
     if (shouldStartHush(state.tension, state.hushStartMs)) {
       state.hushStartMs = t;
       state.lockedPositions = null;
+      state.lockedPreferred = null;
     }
     if (state.hushStartMs >= 0) {
-      // Lock inputs the moment the commit window closes.
+      // Lock inputs the moment the commit window closes. BOTH halves of the
+      // resolution's input are frozen here, in the same branch: the positions
+      // AND the preferred target. Freezing positions alone is not enough --
+      // topContributor reads `outsideTicks`, a live accumulator this loop
+      // rewrites on every tick of the dread window, so recomputing the
+      // preferred target at the resolve tick would let a presence write
+      // authored after T+LOCK change who is preferred. `preferred` jumps the
+      // queue in selectTaken, so that changes WHO IS TAKEN -- the "shark ate
+      // the wrong fish" divergence class, guaranteed to bite whenever two
+      // clients hold different post-lock write sets (spec 2.12 rule 2).
       if (state.lockedPositions === null && t - state.hushStartMs >= LOCK_MS) {
         state.lockedPositions = new Map(bodies.map((b) => [b.id, { x: b.x, y: b.y, size: b.size }]));
+        state.lockedPreferred = topContributor(bodies, outsideTicks);
       }
       if (isResolveTick(state.hushStartMs, t, TICK_MS)) {
         const locked: Body[] = state.lockedPositions
           ? [...state.lockedPositions.entries()]
               .map(([id, p]) => ({ id, x: p.x, y: p.y, size: p.size }))
-              .sort((a, b) => (a.id < b.id ? -1 : 1))
+              .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
           : bodies;
-        const preferred = topContributor(locked, outsideTicks);
+        // Read the frozen answer, never recompute it. The `: topContributor`
+        // arm is reachable only if the lock tick never ran, which the fixed
+        // tick schedule makes impossible (LOCK_MS < HUSH_MS and both are
+        // multiples of TICK_MS); it is kept so the two arms stay symmetric --
+        // locked positions with the locked preferred, live bodies with a live
+        // preferred -- rather than pairing live bodies with a null.
+        const preferred = state.lockedPositions
+          ? state.lockedPreferred
+          : topContributor(bodies, outsideTicks);
         const taken = selectTaken(locked, preferred);
         for (const id of taken) {
           const f = state.fish.get(id);
@@ -233,6 +253,7 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
         state.tension = 0;
         state.hushStartMs = -1;
         state.lockedPositions = null;
+        state.lockedPreferred = null;
       }
     }
 
