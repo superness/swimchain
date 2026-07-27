@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover is REQUIRED for env(safe-area-inset-*) to report
+         anything at all; without it the insets are 0 and every safe-area rule
+         is silently inert (measured on-device, 2026-07-27). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="description" content="Dippin' Chips — an idle game on Swimchain. Fry a chip until it is crisp, bank it before you get greedy, and spend the crumbs before the bowl goes soggy. Nobody runs the shop." />
     <meta name="theme-color" content="#0d0906" />
     <title>Dippin' Chips</title>

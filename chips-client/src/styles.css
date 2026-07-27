@@ -2184,10 +2184,7 @@ h1, h2, h3, p { margin: 0; }
 .jar-glass.kind-chef i { display: none; }
 
 /* THE FLOOR IS THE CREW'S NOW. With the shelf column gone the whole width
-   is theirs, so they spread out instead of piling into the left third —
-   and they stand BELOW the floor line rather than on top of the pot
-   readout, which they were covering. */
-.crew-row { top: calc(var(--floor) + 26px); }
+   is theirs, so they spread out instead of piling into the left third. */
 .tunnel-front { right: 2vw; }
 
 /* The fryer column used to reserve a tall band at its foot for the old wall
@@ -2195,8 +2192,12 @@ h1, h2, h3, p { margin: 0; }
    Lifting the rack keeps the pot caption clear of the floor line, and the
    crew stand on the dip surface below it — measured: the caption was ending
    at exactly the crew's feet and three critters sat on top of it. */
-.kitchen { padding-bottom: clamp(18px, 3.5vh, 40px); }
-.crew-row { top: calc(var(--floor) + 78px); }
+/* DESKTOP ONLY. These were unscoped and beat the phone's bottom anchoring
+   (a fixed element with BOTH top and bottom set is positioned by top), which
+   is what put the bench behind the nav bar. */
+@media (min-width: 941px) and (min-height: 621px) {
+  .kitchen { padding-bottom: clamp(18px, 3.5vh, 40px); }
+}
 
 /* The crew get the bottom band outright: anchored to the floor of the
    viewport (not the dig floor, which the pot caption overhangs), and THE
@@ -2266,10 +2267,10 @@ h1, h2, h3, p { margin: 0; }
     --boards-h: 46px;
     --bench-h: clamp(38px, 11vw, 52px);
     /* everything below the bench measures from here */
-    --floor-stack: calc(var(--safe) + 14px);
+    --floor-stack: calc(var(--safe) + 16px);
   }
   .corner { padding-bottom: var(--floor-stack); }
-  .crew-row { bottom: calc(var(--floor-stack) + var(--boards-h)); }
+  .crew-row { top: auto; bottom: calc(var(--floor-stack) + var(--boards-h)); }
   .crew-toast { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h)); }
   .feed-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 46px); }
   .bowl-ticket { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 48px); }
