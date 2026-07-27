@@ -2208,3 +2208,48 @@ h1, h2, h3, p { margin: 0; }
   .corner { left: auto; right: 2vw; align-items: flex-end; }
   .critter { width: clamp(40px, 5vw, 62px); }
 }
+
+/* ── the rat's badge, unpinched ──────────────────────────────────────────
+   Measured on a real phone view: the badge rendered 31px wide and 70px
+   TALL — "took 7.5k / shoo → 11.0k" wrapping into an unreadable vertical
+   sliver — because it was a block inside the 42px perch. It also hung past
+   the basket's right edge onto the neighbouring fryer.
+
+   The readout is now a single nowrap line that floats UNDER the rat at its
+   natural width, out of the perch's flow entirely, so the perch stays rat-
+   sized and the text stays legible however wide it needs to be. */
+.rat-perch { overflow: visible; }
+.rat-hoard {
+  position: absolute; top: 100%; left: 50%; translate: -50% 0;
+  width: max-content; max-width: 46vw;
+  display: flex; align-items: baseline; gap: 7px; white-space: nowrap;
+  margin-top: 2px; padding: 2px 8px;
+}
+.rat-hoard i { display: inline; }
+.rat-shoo {
+  position: absolute; top: calc(100% + 22px); left: 50%; translate: -50% 0;
+  width: max-content; white-space: nowrap; margin-top: 0;
+}
+/* the chomp flash sits above the rat so it never stacks with the readout */
+.rat-chomp { bottom: calc(100% + 4px); }
+
+@media (max-width: 940px), (max-height: 620px) {
+  /* keep the whole perch inside its own basket so it cannot land on the
+     fryer next door */
+  .rat-perch { right: 0; }
+  .rat-hoard { font-size: 9px; padding: 1px 6px; gap: 5px; }
+  .rat-shoo { font-size: 8.5px; top: calc(100% + 20px); }
+}
+
+/* On a phone the single line is legible but ~135px wide, which overhangs
+   the basket next door as soon as you own more than one fryer. Two NOWRAP
+   lines instead: ~65px wide, still one word per line, never wrapping
+   mid-number the way the original pinched column did. */
+@media (max-width: 940px), (max-height: 620px) {
+  .rat-hoard {
+    left: auto; right: 0; translate: none;
+    flex-direction: column; align-items: flex-end; gap: 0;
+    max-width: none; line-height: 1.25;
+  }
+  .rat-hoard i { display: block; white-space: nowrap; }
+}
