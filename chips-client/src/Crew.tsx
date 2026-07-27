@@ -195,8 +195,19 @@ export interface CrewRowProps {
 }
 
 export function CrewRow({ crew, bubble, feedingId, angel, ratAway, onCritterClick }: CrewRowProps) {
+  const speaker = bubble ? crew.find((m) => m.id === bubble.id) : null;
   return (
     <div className="crew-row" aria-label="your crew">
+      {/* THE PHONE'S VOICE: on small screens the per-critter bubbles are
+          hidden (34px critters on a bench can't carry them) and the current
+          line becomes this one full-width chat strip above the bench —
+          always whole, never clipped, never covering a card. Desktop hides
+          it and keeps the bubbles. */}
+      {bubble && (
+        <div key={bubble.key} className="crew-toast" role="status">
+          {speaker && <strong>{speaker.name}</strong>} {bubble.line}
+        </div>
+      )}
       {crew.map((m) => {
         if (m.id === 'rat' && ratAway) return null;
         const glowing = m.id === 'angel' && angel.glowing;
@@ -212,7 +223,8 @@ export function CrewRow({ crew, bubble, feedingId, angel, ratAway, onCritterClic
             className={
               `critter critter-${m.id}` + edge +
               (glowing ? ' glowing' : '') +
-              (feedingId === m.id ? ' feeding' : '')
+              (feedingId === m.id ? ' feeding' : '') +
+              (bubble && bubble.id === m.id ? ' speaking' : '')
             }
             style={{ left: `${spot}%` }}
             onClick={() => onCritterClick(m.id)}

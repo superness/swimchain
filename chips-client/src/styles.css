@@ -151,7 +151,13 @@ h1, h2, h3, p { margin: 0; }
 
 .shop {
   position: fixed; inset: 0; z-index: 1;
-  display: grid; grid-template-rows: auto minmax(0, 1fr);
+  /* THREE rows: hood, ticker, stage. The ticker's arrival with the crew
+     silently stole the stage's minmax row (a grid maps children to rows by
+     ORDER) and the stage fell into an implicit row below — on a fresh
+     phone table the ticker's flexible row then swallowed all the spare
+     viewport as a giant black band under the header (operator caught it
+     on a real phone, 2026-07-27). */
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -982,8 +988,17 @@ h1, h2, h3, p { margin: 0; }
      spare height on a roomy screen, but can never be sized smaller than the
      rack it actually contains, so `.stage`'s own scroll (below) is what
      absorbs a short viewport instead of an overlap. */
-  .stage { grid-template-columns: 1fr; grid-template-rows: minmax(min-content, 1fr) auto; overflow-y: auto; }
-  .kitchen { padding-bottom: 8px; }
+  /* Rows are `auto auto`, NOT `minmax(min-content, 1fr) auto`: the
+     min-content floor solved the old overlap (see above) but the `1fr`
+     stretch re-created a different bug — on a fresh table (one basket,
+     short counter) the kitchen row inflated with ALL the spare viewport
+     and centered its lone basket in it, reading as a massive empty band
+     under the header (operator, on a real phone, 2026-07-27). `auto` keeps
+     the overlap protection (a row sized by content can't be squeezed below
+     it) without the stretch: content tucks up under the ticker and roomy
+     screens just show more tunnel below. */
+  .stage { grid-template-columns: 1fr; grid-template-rows: auto auto; overflow-y: auto; }
+  .kitchen { padding-bottom: 8px; padding-top: 2px; justify-content: flex-start; }
 
   /* `.wallboard`'s own `position: static` a few lines down only works if its
      PARENT stops being `position: fixed` too — a static child of a fixed
@@ -1369,7 +1384,17 @@ h1, h2, h3, p { margin: 0; }
   50%      { transform: translateY(7px); }
 }
 @media (max-width: 940px), (max-height: 620px) {
-  .tut-banner { bottom: clamp(52px, 9vh, 80px); padding: 9px 14px; }
+  /* Explicit edges, not left:50% + translate: a fixed element at left:50%
+     only gets HALF the viewport for shrink-to-fit, and on a phone the flex
+     row collapsed into a one-word-wide vertical sliver (caught in real
+     device emulation on a fresh table, 2026-07-27 — the one state where
+     the tutorial and a phone meet). Sits above the crew bench. */
+  .tut-banner {
+    left: 8px; right: 8px; translate: none; width: auto; max-width: none;
+    bottom: calc(46px + clamp(38px, 11vw, 52px) + 6px);
+    padding: 9px 12px; gap: 8px;
+  }
+  .tut-body strong { font-size: 14px; }
 }
 
 /* ── DOUBLE DIP! — the jackpot proc, extremely celebrated by decree ─────── */
@@ -1677,22 +1702,69 @@ h1, h2, h3, p { margin: 0; }
   border-radius: 10px; padding: 7px 10px;
 }
 
-/* ── small rooms ─────────────────────────────────────────────────────────── */
+/* The mobile chat strip — hidden on desktop, where the bubbles do the job. */
+.crew-toast { display: none; }
+/* Speaker highlight only means something on the bench. */
+.critter.speaking { z-index: 6; }
+
+/* ── small rooms: the crew gets a BENCH ──────────────────────────────────── */
+/* Floating floor critters cannot survive a 390px stacked layout (review:
+   "can't even really see the critters - clustered ui"). On phones the crew
+   stands on a dedicated ledge docked above the boards pill — a reserved
+   strip nothing else may paint over — and their chatter becomes one
+   full-width line above the ledge instead of per-critter bubbles. */
 @media (max-width: 940px), (max-height: 620px) {
-  .critter { width: clamp(34px, 9vw, 48px); }
-  .critter .say { max-width: min(200px, 58vw); font-size: 10px; }
+  .crew-row {
+    top: auto; bottom: 46px; height: auto; z-index: 15;
+    /* The ledge is a SOLID SURFACE: it absorbs every tap (desktop's
+       pointer-events:none would let a near-miss on a critter fall through
+       and buy the jar scrolled underneath — operator hit exactly that). */
+    pointer-events: auto;
+    display: flex; align-items: flex-end; justify-content: center;
+    gap: 2px; padding: 4px 8px 3px;
+    background:
+      linear-gradient(180deg, rgba(12, 8, 5, .55) 0%, rgba(12, 8, 5, .88) 26%, rgba(12, 8, 5, .95) 100%);
+    border-top: 1px solid rgba(255, 226, 180, .14);
+    box-shadow: 0 -8px 22px rgba(0, 0, 0, .35);
+  }
+  .critter {
+    position: static; translate: none; bottom: auto;
+    width: clamp(28px, 8vw, 40px); flex: none;
+    animation: none;
+  }
+  .critter .say { display: none; }        /* the toast carries the line */
+  .critter-name { display: none; }
+  .critter.speaking { transform: translateY(-4px) scale(1.18); }
+  .critter.speaking .critter-art { filter: drop-shadow(0 0 8px rgba(255, 226, 180, .55)); }
+  .critter.feeding { transform: translateY(-4px) scale(1.18); }
+  .critter.glowing::before { font-size: 8px; bottom: calc(100% - 2px); }
+
+  .crew-toast {
+    display: block; position: fixed; left: 8px; right: 8px;
+    bottom: calc(46px + clamp(38px, 11vw, 52px));
+    z-index: 15;
+    font-family: var(--chalk); font-size: 11px; line-height: 1.45;
+    color: #f0e2c6; text-align: center;
+    background: rgba(14, 10, 7, .94);
+    border: 1px solid rgba(255, 226, 180, .22);
+    border-radius: 10px; padding: 6px 10px;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+    animation: say-in .28s ease-out;
+  }
+  .crew-toast strong { color: #ffd88f; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; margin-right: 4px; }
+
+  .critter { width: clamp(28px, 8vw, 40px); }
   /* the ticker wraps rather than vanishing, and stays lit */
   .dip-ticker { font-size: 10px; padding: 3px 12px; white-space: normal; }
   .ticker-line { white-space: normal; max-height: 2.9em; }
   .rat-perch { width: 42px; top: -10px; right: -8px; }
-  .feed-banner { top: auto; bottom: 16vh; }
+  .feed-banner { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 44px); }
   .stall-face { width: 20px; height: 20px; }
-  /* On a phone the stacked column runs under the floor line, and critters
-     were painting OVER purchasable cards. The row drops behind the stage —
-     EXCEPT when someone demands attention (glowing angel, armed vendor),
-     which lifts the whole row back above everything clickable. */
-  .crew-row { z-index: 1; }
-  .crew-row:has(.glowing), .crew-row:has(.feeding) { z-index: 30; }
+  /* leave room under the scrolling column for the bench + boards pill —
+     and INSIDE the scroller, so the last stall can always scroll clear of
+     the ledge instead of dying underneath it */
+  .counter { max-height: calc(100dvh - 210px); }
+  .shelf { padding-bottom: 84px; }
   .door-dog { width: 52px; left: 4vw; bottom: 5vh; }
 }
 
