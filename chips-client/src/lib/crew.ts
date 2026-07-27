@@ -219,9 +219,7 @@ export function jarAvailable(upgradeKey: string, dipIndex: number): boolean {
 /**
  * What this critter can sell you RIGHT NOW: their jars, minus owned, minus
  * chain rungs that aren't next (the fold would reject those as
- * rejected-order anyway), minus anything not yet available. The tap-a-
- * critter stall sheet and the shelf column both read through this, so the
- * two can never disagree about what is on sale.
+ * rejected-order anyway), minus anything not yet available.
  */
 export function openJarsOf(vendorId: string, owned: Set<string>, dipIndex: number): Upgrade[] {
   const v = CREW.find((m) => m.id === vendorId);
@@ -235,6 +233,37 @@ export function openJarsOf(vendorId: string, owned: Set<string>, dipIndex: numbe
     out.push(UPGRADES[key]);
   }
   return out;
+}
+
+/**
+ * WHY a critter has nothing for you — the designer review found five of them
+ * greeting a player who owns NOTHING with "sold out — you own this whole
+ * stall", because every one of their jars was a chain rung waiting on a
+ * shallower rung. A shop that claims you bought things you did not buy is
+ * simply lying, and it lands on exactly the characters you trek down to
+ * meet. 'locked' carries the rung you actually need next.
+ */
+export type StallStatus =
+  | { kind: 'open' }
+  | { kind: 'none' }                       // sells nothing, ever
+  | { kind: 'sold-out' }                   // genuinely owns the lot
+  | { kind: 'locked'; needs: Upgrade };    // waiting on an earlier rung
+
+export function stallStatus(vendorId: string, owned: Set<string>, dipIndex: number): StallStatus {
+  const v = CREW.find((m) => m.id === vendorId);
+  if (!v || v.sells.length === 0) return { kind: 'none' };
+  if (openJarsOf(vendorId, owned, dipIndex).length > 0) return { kind: 'open' };
+  if (v.sells.every((k) => owned.has(k))) return { kind: 'sold-out' };
+  // Something is held back. Name the shallowest rung actually blocking it —
+  // that is the sentence the player needs.
+  for (const key of v.sells) {
+    if (owned.has(key)) continue;
+    const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
+    if (!chain) continue;
+    const next = chain.find((k) => !owned.has(k));
+    if (next && next !== key) return { kind: 'locked', needs: UPGRADES[next] };
+  }
+  return { kind: 'locked', needs: UPGRADES[v.sells.find((k) => !owned.has(k))!] };
 }
 
 /* ── the daily drift of the dip: news ticker ─────────────────────────────── */

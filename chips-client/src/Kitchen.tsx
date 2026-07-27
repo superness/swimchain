@@ -250,9 +250,13 @@ interface BasketProps {
   feedMode: FeedMode;
   /** The angel just blessed this fryer — keyed mark until the crackle. */
   blessedAt: number | null;
+  /** The wing is perched here (pays double), keyed by its landing time. */
+  wingAt: number | null;
+  /** The strings are pointing here (pays extra while the window is open). */
+  prophesied: boolean;
 }
 
-function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt }: BasketProps) {
+function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied }: BasketProps) {
   const golden = isGolden(chip);
   const multi = multiOf(chip);
   const worth = worthOf(chip);
@@ -343,6 +347,24 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
         <span key={blessedAt} className="bless-mark" aria-hidden="true">blessed — watch it</span>
       )}
 
+      {/* THE WING sits where it hurts — a basket it is on pays double, and
+          the only skill is noticing it moved. */}
+      {wingAt !== null && (
+        <span key={wingAt} className="wing-perch" aria-label="the wing is on this basket — it pays double">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <path d="M34 30 Q60 18 72 44 Q80 64 62 78 Q46 88 36 74 Q24 56 34 30 Z" fill="#d96c2a" />
+            <circle cx="34" cy="28" r="7" fill="#f5efe3" />
+            <circle cx="44" cy="22" r="7" fill="#f5efe3" />
+            <circle cx="52" cy="56" r="2.4" fill="#3a1c08" />
+            <circle cx="62" cy="56" r="2.4" fill="#3a1c08" />
+          </svg>
+          <i>pays double</i>
+        </span>
+      )}
+      {prophesied && (
+        <span className="prophecy-mark" aria-label="the oracle named this basket">the strings point here</span>
+      )}
+
       {/* THE POT, always moving; the ladder shows the summit exists. */}
       <p className={`worth pot${golden ? ' worth-golden' : ''}`}>
         <span className="pot-line"><strong>{compact(chip.pot)}</strong> in the pot</span>
@@ -376,9 +398,12 @@ export interface KitchenProps {
   onShoo: () => void;
   feedMode: FeedMode;
   blessAt: { index: number; at: number } | null;
+  wingIndex: number | null;
+  wingSince: number;
+  oracleIndex: number | null;
 }
 
-export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt }: KitchenProps) {
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
@@ -394,6 +419,8 @@ export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerc
             onShoo={onShoo}
             feedMode={feedMode}
             blessedAt={blessAt && blessAt.index === i ? blessAt.at : null}
+            wingAt={wingIndex === i ? wingSince : null}
+            prophesied={oracleIndex === i}
             onDip={() => onDip(i)}
           />
         ))}

@@ -1970,3 +1970,241 @@ h1, h2, h3, p { margin: 0; }
   .bowl-porcelain, .bowl-beat, .bowl-offer, .tip-flood, .tip-words { animation: none; }
   .bowl-porcelain { opacity: .5; }
 }
+
+/* ── the deep jobs: wing, committee, hermit, oracle ──────────────────────── */
+
+/* the wing, perched. it pays double and the only skill is noticing. */
+.wing-perch {
+  position: absolute; top: -12px; left: -10px; z-index: 5;
+  width: clamp(38px, 4.4vw, 54px); pointer-events: none;
+  filter: drop-shadow(0 6px 8px rgba(0, 0, 0, .55));
+  animation: wing-land .5s cubic-bezier(.2,.9,.3,1);
+}
+.wing-perch svg { width: 100%; height: auto; display: block; animation: wing-hop 1.7s ease-in-out infinite; }
+.wing-perch i {
+  display: block; margin-top: -2px; text-align: center; font-style: normal;
+  font-family: var(--chalk); font-size: 9px; letter-spacing: .08em;
+  color: #ffd08a; background: rgba(14, 10, 7, .9);
+  border-radius: 999px; padding: 1px 6px;
+}
+@keyframes wing-land {
+  0% { opacity: 0; transform: translateY(-26px) rotate(-14deg); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* the strings, pointing */
+.prophecy-mark {
+  position: absolute; bottom: -6px; left: 50%; translate: -50% 0; z-index: 5;
+  width: max-content; pointer-events: none;
+  font-family: var(--chalk); font-size: 9.5px; letter-spacing: .08em;
+  color: #ffe9b0; background: rgba(30, 18, 6, .92);
+  border: 1px solid rgba(242, 197, 60, .5);
+  border-radius: 999px; padding: 2px 8px;
+  animation: prophecy-pulse 2.4s ease-in-out infinite;
+}
+@keyframes prophecy-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+
+/* the committee's floor */
+.vote-banner, .vote-carried, .hermit-holding {
+  position: fixed; left: 50%; translate: -50% 0; z-index: 28;
+  max-width: min(92vw, 560px);
+  font-family: var(--chalk); font-size: 12px; line-height: 1.45;
+  background: rgba(14, 10, 7, .95);
+  border: 1px solid rgba(255, 226, 180, .3);
+  border-radius: 12px; padding: 8px 14px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .55);
+  animation: say-in .3s ease-out;
+}
+.vote-banner { top: clamp(96px, 15vh, 150px); display: flex; align-items: center; gap: 12px; }
+.vote-text strong { color: #e8dcc0; }
+.vote-lobby {
+  flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .08em;
+  color: #2a1a04; background: linear-gradient(180deg, #ffd88e, #e79f30);
+  border-radius: 999px; padding: 5px 14px;
+}
+.vote-carried {
+  top: clamp(96px, 15vh, 150px); color: #cdeec2;
+  border-color: rgba(180, 255, 170, .45); text-align: center;
+}
+.hermit-holding { top: clamp(140px, 21vh, 200px); color: #cfd8e2; text-align: center; }
+
+@media (max-width: 940px), (max-height: 620px) {
+  .wing-perch { width: 34px; top: -9px; left: -6px; }
+  .prophecy-mark { font-size: 8.5px; }
+  .vote-banner, .vote-carried { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 88px); }
+  .hermit-holding { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 132px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wing-perch, .wing-perch svg, .prophecy-mark { animation: none; }
+}
+
+/* THE STOREFRONT. With the shelf column retired the crew are the only shop,
+   so a critter holding something affordable has to advertise it — this tag
+   is the entire discoverability surface for the economy. */
+.critter-deal {
+  position: absolute; top: -6px; right: -6px; z-index: 7;
+  font-family: var(--chalk); font-size: 8.5px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: #2a1a04; background: linear-gradient(180deg, #ffd88e, #e79f30);
+  border-radius: 999px; padding: 2px 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+  animation: deal-bob 2s ease-in-out infinite;
+}
+@keyframes deal-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+/* the counter column is only the crumb read now — let it breathe */
+.counter { max-height: none; overflow: visible; }
+@media (prefers-reduced-motion: reduce) { .critter-deal { animation: none; } }
+
+/* ── the twist takes the room ────────────────────────────────────────────
+   The review watched the game's one narrative beat share the screen with a
+   shoo-the-rat toast and a full-width recruit banner rendering straight
+   through the maker's mark. While the bowl is open or pouring, everything
+   that is not the twist goes quiet. */
+.shop.hushed .crew-row,
+.shop.hushed .bowl-ticket,
+.shop.hushed .vote-banner,
+.shop.hushed .vote-carried,
+.shop.hushed .hermit-holding,
+.shop.hushed .dip-change,
+.shop.hushed .tut-banner,
+.shop.hushed .tut-ring,
+.shop.hushed .corner,
+.shop.hushed .dip-ticker,
+.shop.hushed .rat-perch,
+.shop.hushed .wing-perch,
+.shop.hushed .prophecy-mark { opacity: 0; pointer-events: none; transition: opacity .35s; }
+.bowl-reveal { background: rgba(4, 3, 2, .96); }
+
+/* the ledger: what you lose, what you keep, in plain words */
+.bowl-ledger {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin: 14px 0 16px; text-align: left;
+}
+.ledger-col {
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 10px; padding: 9px 11px;
+}
+.ledger-col.lose { border-color: rgba(255, 122, 74, .35); }
+.ledger-col.keep { border-color: rgba(180, 255, 170, .3); }
+.ledger-head {
+  display: block; font-family: var(--chalk); font-size: 9.5px;
+  letter-spacing: .2em; text-transform: uppercase; margin-bottom: 5px;
+}
+.ledger-col.lose .ledger-head { color: #ff9a72; }
+.ledger-col.keep .ledger-head { color: #a8e39a; }
+.ledger-col ul { display: flex; flex-direction: column; gap: 4px; }
+.ledger-col li {
+  font-family: var(--chalk); font-size: 11px; line-height: 1.4; color: #d8d0c0;
+}
+.ledger-col.keep strong { color: #fff8ea; }
+
+/* the destructive option is no longer the pretty one */
+.bowl-later.primary {
+  font-family: var(--sign); font-size: 19px; letter-spacing: .06em;
+  color: #241a10; background: linear-gradient(180deg, #f6efe0, #cfc3ab);
+  padding: 9px 26px; border: 0;
+}
+.bowl-later.primary:hover { background: linear-gradient(180deg, #fffdf6, #e2d7bf); color: #241a10; }
+.bowl-tip.danger {
+  font-family: var(--chalk); font-size: 12px; letter-spacing: .06em;
+  background: none; color: #ffb39a; padding: 9px 20px;
+  border: 1px solid rgba(255, 122, 74, .5); box-shadow: none;
+}
+.bowl-tip.danger:hover { background: rgba(255, 122, 74, .12); color: #ffd0c0; }
+.bowl-tip.danger:disabled { opacity: .4; border-color: rgba(200, 190, 170, .25); color: #9a9284; }
+
+@media (max-width: 940px), (max-height: 620px) {
+  .bowl-ledger { grid-template-columns: 1fr; gap: 8px; }
+}
+
+/* ── one silhouette per kind of thing ────────────────────────────────────
+   Every product used the same lidded-tin glyph, so the art said nothing
+   about what you were buying (designer review M1). The base .jar-glass
+   stays the jar; these reshape it per category. */
+
+/* SHAKER — tall, narrow, perforated cap */
+.jar-glass.kind-shaker { width: 20px; height: 29px; border-radius: 3px 3px 4px 4px; }
+.jar-glass.kind-shaker::before { width: 18px; height: 8px; border-radius: 5px 5px 1px 1px; }
+.jar-glass.kind-shaker::after { top: 60%; height: 7px; }
+
+/* BOWL — wide, shallow, no lid at all */
+.jar-glass.kind-bowl { width: 34px; height: 20px; border-radius: 3px 3px 16px 16px; top: 9px; }
+.jar-glass.kind-bowl::before { width: 38px; height: 4px; border-radius: 999px; top: -2px; }
+.jar-glass.kind-bowl::after { display: none; }
+.jar-glass.kind-bowl i { inset: 30% 2px 2px; border-radius: 0 0 14px 14px; }
+
+/* BASKET — square, meshed, with a handle */
+.jar-glass.kind-basket { width: 28px; height: 22px; border-radius: 2px 2px 3px 3px; top: 9px; }
+.jar-glass.kind-basket::before {
+  width: 4px; height: 12px; top: -11px; left: 74%; border-radius: 2px;
+  background: linear-gradient(180deg, #b9a67e, #6d5c3c);
+}
+.jar-glass.kind-basket::after {
+  inset: 0; top: 0; height: auto; background:
+    repeating-linear-gradient(90deg, rgba(255,246,222,.3) 0 1px, transparent 1px 5px),
+    repeating-linear-gradient(0deg, rgba(255,246,222,.3) 0 1px, transparent 1px 5px);
+  box-shadow: none;
+}
+
+/* LID — a disc seen face on, no glass */
+.jar-glass.kind-lid { width: 30px; height: 30px; border-radius: 50%; }
+.jar-glass.kind-lid::before {
+  width: 30px; height: 30px; border-radius: 50%; top: 0;
+  background: radial-gradient(circle at 38% 32%, #e6d4ac, #7d6844);
+}
+.jar-glass.kind-lid::after { display: none; }
+.jar-glass.kind-lid i { display: none; }
+
+/* LENS — the detector: a round glass on a stem */
+.jar-glass.kind-lens { width: 22px; height: 30px; border-radius: 50% 50% 3px 3px; }
+.jar-glass.kind-lens::before {
+  width: 22px; height: 22px; border-radius: 50%; top: 0;
+  background: radial-gradient(circle at 34% 30%, rgba(255,255,255,.55), rgba(120,150,170,.35));
+  box-shadow: inset 0 0 0 2px rgba(255,240,210,.5);
+}
+.jar-glass.kind-lens::after { top: auto; bottom: 0; height: 8px; left: 6px; right: 6px; }
+.jar-glass.kind-lens i { display: none; }
+
+/* TWIN — the double dip: two jars, one behind the other */
+.jar-glass.kind-twin { width: 22px; height: 26px; }
+.jar-glass.kind-twin::before { width: 26px; }
+.jar-glass.kind-twin::after { top: 55%; }
+.jar-glass.kind-twin i {
+  box-shadow: 9px -4px 0 -1px rgba(255,255,255,.14), 9px -4px 0 0 rgba(255,240,210,.25);
+}
+
+/* CHEF — the sous chef: a toque */
+.jar-glass.kind-chef { width: 26px; height: 26px; border-radius: 3px 3px 4px 4px; }
+.jar-glass.kind-chef::before {
+  width: 30px; height: 13px; top: -8px; border-radius: 10px 10px 3px 3px;
+  background: linear-gradient(180deg, #fdf6e6, #cbbd9d);
+}
+.jar-glass.kind-chef::after { top: 62%; height: 7px; }
+.jar-glass.kind-chef i { display: none; }
+
+/* THE FLOOR IS THE CREW'S NOW. With the shelf column gone the whole width
+   is theirs, so they spread out instead of piling into the left third —
+   and they stand BELOW the floor line rather than on top of the pot
+   readout, which they were covering. */
+.crew-row { top: calc(var(--floor) + 26px); }
+.tunnel-front { right: 2vw; }
+
+/* The fryer column used to reserve a tall band at its foot for the old wall
+   board; the board is a corner element now and the crew need that ground.
+   Lifting the rack keeps the pot caption clear of the floor line, and the
+   crew stand on the dip surface below it — measured: the caption was ending
+   at exactly the crew's feet and three critters sat on top of it. */
+.kitchen { padding-bottom: clamp(18px, 3.5vh, 40px); }
+.crew-row { top: calc(var(--floor) + 78px); }
+
+/* The crew get the bottom band outright: anchored to the floor of the
+   viewport (not the dig floor, which the pot caption overhangs), and THE
+   BOARDS MOVE to the right corner so nobody stands on them. Measured
+   collisions drove both numbers — the caption ends at 669 and the boards
+   used to start at 722, a 53px gap a 78px critter cannot stand in. */
+@media (min-width: 941px) and (min-height: 621px) {
+  .crew-row { top: auto; bottom: 14px; }
+  .corner { left: auto; right: 2vw; align-items: flex-end; }
+  .critter { width: clamp(40px, 5vw, 62px); }
+}

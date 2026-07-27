@@ -24,7 +24,10 @@ import { UPGRADES, DIP_TIERS } from './chipsConst';
 import { jarAvailable } from './crew';
 import { compact } from './format';
 
-export type TutorialHighlight = 'basket' | 'shelf' | null;
+/** 'crew' points at the dog: with the shelf column retired (operator,
+ *  2026-07-27) the critters ARE the shop, so the quest that teaches buying
+ *  has to point at a character rather than a panel. */
+export type TutorialHighlight = 'basket' | 'crew' | null;
 /** invite = pulsing "touch this"; hold = calm "leave this alone" (quest 4's
  *  instruction is DON'T touch — the review flagged the mixed signal);
  *  wait = dimmed, the target exists but isn't usable yet. */
@@ -74,14 +77,14 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
   },
   {
     id: 'buy',
-    title: 'Hit the shelf',
+    title: 'Go see the dog',
     text: (s) => {
       const cost = cheapestOpenCost(s);
       return s.crumbs >= cost
         ? 'Buy a jar at scoop\'s stall — then pay the dog: click a cooking chip to feed him.'
         : `Keep dipping — the first jar wants ${compact(cost)} and you're at ${compact(s.crumbs)}.`;
     },
-    highlight: 'shelf',
+    highlight: 'crew',
     ringMode: (s) => (s.crumbs >= cheapestOpenCost(s) ? 'invite' : 'wait'),
     isDone: (s) => s.owned.size >= 1,
   },

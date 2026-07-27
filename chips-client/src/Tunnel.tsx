@@ -25,7 +25,7 @@ import { projectedCrumbs, soggyLook } from './lib/sogProjection';
 import { tunnelDepth, bandsAround, type TunnelBand } from './lib/tunnelDepth';
 import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, type Upgrade } from './lib/chipsConst';
 import { DOUBLE_DIP_RARITY } from './lib/cooking';
-import { vendorOf, jarAvailable, recruitsAt, type CrewMember } from './lib/crew';
+import { vendorOf, jarAvailable, recruitsAt, stallStatus, type CrewMember } from './lib/crew';
 import { CritterArt } from './Crew';
 import { compact, sinceLabel } from './lib/format';
 import { canAffordBuy } from './lib/chipsAfford';
@@ -477,6 +477,22 @@ function shelfStalls(owned: Set<string>, dipIndex: number): { stalls: Stall[]; g
   return { stalls, got };
 }
 
+/**
+ * What a jar IS, for the art. Every product wore the identical lidded tin —
+ * "it could be a butter dish or a suitcase" (designer review) — so the shop
+ * carried zero information in its pictures and the deeper-goods idea was
+ * invisible. Five silhouettes, drawn in CSS off this class.
+ */
+function jarKind(u: Upgrade): string {
+  if (u.bowlCap !== undefined) return 'bowl';
+  if (u.fryers !== undefined) return 'basket';
+  if (u.seasoningNum !== undefined) return 'shaker';
+  if (u.airtight || u.sogBonus !== undefined) return 'lid';
+  if (u.goldenBits !== undefined) return 'lens';
+  if (u.doubleDipMod !== undefined) return 'twin';
+  return 'chef';
+}
+
 const FLAVOUR: Record<string, string> = {
   season1: 'a heavier hand with the shaker',
   season2: 'the good stuff, from the back',
@@ -523,13 +539,18 @@ function JarCard({ u, vendor, afford, armed, capped, onJar }: {
       // was otherwise a 2M purchase with an unstated effect.
       title={(FLAVOUR[u.key] ?? u.label) + (u.bowlCap ? ` — holds ${compact(u.bowlCap)}` : '')}
     >
-      <span className="jar-glass" aria-hidden="true"><i /></span>
+      <span className={`jar-glass kind-${jarKind(u)}`} aria-hidden="true"><i /></span>
       <span className="jar-name">{u.label}</span>
       <span className="jar-cost">
         {compact(u.cost)}
-        <i className="chip-fee">{vendor.feed === 'golden' ? '+ a golden chip' : '+ a chip'}</i>
+        {/* Where the chip comes FROM, on the card. There is no chip counter
+            and there should not be one — a chip is not a stockpiled
+            currency, it is the one cooking in the basket right now, and
+            paying with it means giving up the pot it was building. A
+            balance readout would imply an inventory that does not exist. */}
+        <i className="chip-fee">{vendor.feed === 'golden' ? '+ a golden chip off the fryer' : '+ a chip off the fryer'}</i>
       </span>
-      {capped && <span className="jar-capped">your bowl is too small to ever hold this — get a bigger bowl first</span>}
+      {capped && <span className="jar-capped">your bowl can never hold this much — buy a Bigger Bowl first</span>}
       <span className="jar-flavour">{FLAVOUR[u.key] ?? ''}</span>
       {/* Visible, not title-only: touch screens have no hover, and
           an upgrade's whole point is its effect. */}
@@ -610,9 +631,11 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
  * shelf renders, so the two entry points can never drift; arming feed mode
  * closes the sheet so the fryers are visible for the feeding.
  */
-export function StallSheet({ vendor, jars, crumbsNow, committed, bowlCap, armedKey, onJar, onClose }: {
+export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose }: {
   vendor: CrewMember;
   jars: Upgrade[];
+  owned: Set<string>;
+  dipIndex: number;
   crumbsNow: number;
   committed: number;
   bowlCap: number;
@@ -620,6 +643,7 @@ export function StallSheet({ vendor, jars, crumbsNow, committed, bowlCap, armedK
   onJar: (key: string) => void;
   onClose: () => void;
 }) {
+  const status = stallStatus(vendor.id, owned, dipIndex);
   return (
     <div className="sheet-backdrop" onClick={onClose}>
       <div
@@ -652,7 +676,10 @@ export function StallSheet({ vendor, jars, crumbsNow, committed, bowlCap, armedK
           </ul>
         ) : (
           <p className="sheet-empty">
-            {vendor.sells.length === 0 ? 'sells nothing. is here anyway.' : 'sold out — you own this whole stall.'}
+            {status.kind === 'none' ? 'sells nothing. is here anyway.'
+              : status.kind === 'sold-out' ? 'sold out — you own this whole stall.'
+              : status.kind === 'locked' ? `nothing for you yet — bring ${status.needs.label} first.`
+              : ''}
           </p>
         )}
         <button type="button" className="sheet-close" onClick={onClose}>done</button>

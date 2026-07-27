@@ -38,7 +38,7 @@ const dipped: MoveResult = { content_id: 'c', ms: 1, outcome: 'dipped', crumbs: 
 
 // 2) Durable fast-forward: the pointer floor comes from chain state.
 {
-  check('has dipped -> shelf quest next', initialPointer(freshState({ moves: [dipped] })) === 2);
+  check('has dipped -> the dog quest next', initialPointer(freshState({ moves: [dipped] })) === 2);
   check('has bought -> crackle quest next', initialPointer(freshState({ moves: [dipped], owned: new Set(['season1']) })) === 3);
   check('reached guacamole -> nothing to teach', initialPointer(freshState({ dipIndex: 1 })) === TUTORIAL_STEPS.length);
   const legacy: MoveResult = { content_id: 'c', ms: 1, outcome: 'banked', bits: 10, crumbs: 4000 };
@@ -56,13 +56,13 @@ const dipped: MoveResult = { content_id: 'c', ms: 1, outcome: 'dipped', crumbs: 
   check('guac passes on the tier, not on chips', TUTORIAL_STEPS[4].isDone(freshState({ dipIndex: 1 }), []));
 }
 
-// 4) The affordability bridge (review finding #3): the shelf quest's copy
+// 4) The affordability bridge (review finding #3): the buy quest's copy
 //    and ring change with what the player can actually buy.
 {
   const broke = freshState({ crumbs: 2000 });
   const flush = freshState({ crumbs: 50_000 });
   check('cheapest open jar is a real price', cheapestOpenCost(broke) === 10_000, cheapestOpenCost(broke));
-  check('broke: the shelf quest bridges the gap in copy',
+  check('broke: the buy quest bridges the gap in copy',
     TUTORIAL_STEPS[2].text(broke, []).includes('Keep dipping'), TUTORIAL_STEPS[2].text(broke, []));
   check('broke: the ring waits instead of inviting', TUTORIAL_STEPS[2].ringMode(broke, []) === 'wait');
   check('flush: the ring invites', TUTORIAL_STEPS[2].ringMode(flush, []) === 'invite');

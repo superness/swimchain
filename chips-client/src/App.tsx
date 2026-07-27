@@ -28,6 +28,10 @@ import { CREW, crewFor, recruitsAt, vendorOf, openJarsOf, type CrewMember } from
 import {
   freshRat, freshAngel, ratTick, angelTick, ratAbsorb, ratAte, gorgeOf,
   shooRat, spendBlessing, JOBS_MIN_DIP_INDEX, type RatState, type AngelState,
+  freshWing, wingTick, freshVote, voteTick, lobby, motionBonus,
+  freshHermit, hermitTick, giveHermit, freshOracle, oracleTick,
+  dipBonusFor, JOB_LAYER,
+  type WingState, type VoteState, type HermitState, type OracleState,
 } from './lib/crewJobs';
 import { CrewRow, FeedBanner, DipTicker, CritterArt, type CrewBubble } from './Crew';
 import { BowlReveal, TipCeremony, BowlTicket, BOWL_LINES, WELCOME_BACK } from './Bowl';
@@ -36,7 +40,7 @@ import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
-import { TunnelBed, TunnelRead, DigFront, Shelf, StallSheet, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
+import { TunnelBed, TunnelRead, DigFront, StallSheet, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
 import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
@@ -49,6 +53,9 @@ const NAME_KEY = 'chips.cookname.v1';
  *  set rather than allocating one every second. */
 const NO_CONFIRMED: ReadonlySet<string> = new Set<string>();
 const POLL_MS = 15_000;
+/** The hermit's trade rides the vendor feed flow but buys NOTHING — this
+ *  sentinel marks a feed whose payoff is his return, not a jar. */
+const HERMIT_TRADE = '__hermit-trade__';
 
 const SEAT_LINES = [
   'getting you a seat at the table…',
@@ -142,6 +149,14 @@ export function App() {
   /* ── the crew (lib/crew.ts roster, lib/crewJobs.ts jobs) ─────────────── */
   const [rat, setRat] = useState<RatState>(freshRat);
   const [angel, setAngel] = useState<AngelState>(freshAngel);
+  // The deep jobs (lib/crewJobs.ts). Each unlocks with its character.
+  const [wing, setWing] = useState<WingState>(freshWing);
+  const [vote, setVote] = useState<VoteState>(freshVote);
+  const [hermit, setHermit] = useState<HermitState>(freshHermit);
+  const [oracle, setOracle] = useState<OracleState>(freshOracle);
+  const wingRef = useRef(wing); wingRef.current = wing;
+  const oracleRef = useRef(oracle); oracleRef.current = oracle;
+  const hermitRef = useRef(hermit); hermitRef.current = hermit;
   // Keys the "ate the crackle" flash on the rat's perch.
   const [ratChomp, setRatChomp] = useState<number | null>(null);
   // The angel's mark on the fryer she just blessed — the visible tie between
@@ -156,6 +171,7 @@ export function App() {
   const [bowlOpen, setBowlOpen] = useState(false);
   const [tipFanfare, setTipFanfare] = useState<{ salt: number; total: number } | null>(null);
   const struckRef = useRef(false);
+  const bowlOpenRef = useRef(false);
   // One speech bubble at a time, app-wide — chatter is seasoning, not soup.
   const [bubble, setBubble] = useState<CrewBubble | null>(null);
   const ratRef = useRef(rat);
@@ -600,7 +616,7 @@ export function App() {
   // keeps. It multiplies the seasoning rather than the pot so it compounds
   // with everything the run rebuilds.
   const saltBonus = 1 + (state?.oldSalt ?? 0) * SALT_TICK_BONUS;
-  const seasoning = (state ? state.seasoningNum / state.seasoningDen : 1) * saltBonus;
+  const seasoning = (state ? state.seasoningNum / state.seasoningDen : 1) * saltBonus * motionBonus(vote);
   // The detector chain, remapped in game terms: crackles come sooner.
   const crackleHaste = state?.owned.has('detector2') ? 0.6 : state?.owned.has('detector') ? 0.75 : 1;
 
@@ -628,6 +644,12 @@ export function App() {
       setRat((r) => ratTick(r, fryersRef.current, Math.random));
       setAngel((a) => angelTick(a, Math.random));
     }
+    // The deep jobs, each gated on its own character's layer.
+    const depth = dipIndexRef.current;
+    if (depth >= JOB_LAYER.wing) setWing((w) => wingTick(w, fryersRef.current, Date.now(), Math.random));
+    if (depth >= JOB_LAYER.committee) setVote((v) => voteTick(v, Math.random));
+    if (depth >= JOB_LAYER.hermit) setHermit((h) => hermitTick(h, Math.random));
+    if (depth >= JOB_LAYER.oracle) setOracle((o) => oracleTick(o, fryersRef.current, Math.random));
 
     setTickAt((prev) => {
       const next = prev.slice();
@@ -720,6 +742,17 @@ export function App() {
     // dip; the basket restarts a fresh chip immediately.
     const res = dip(index, state?.doubleDipMod ?? 0);
     if (!res) return;
+    // The wing sits where it hurts and the strings do not lie: a basket one
+    // of them is watching pays more, and both at once STACK.
+    const watchBonus = dipBonusFor(index, wingRef.current, oracleRef.current);
+    if (watchBonus > 1) {
+      res.amount = Math.floor(res.amount * watchBonus);
+      const who = wingRef.current.at === index && oracleRef.current.at === index ? 'wing'
+        : wingRef.current.at === index ? 'wing' : 'oracle';
+      say(who, who === 'wing'
+        ? 'DOUBLE. that’s what happens when you listen to a wing.'
+        : 'the strings do not lie. take your reward and pretend you decided that.', 6000);
+    }
     const crackles = Math.round(Math.log2(res.multi));
     launchDip(index, { ms: res.ms, bits: visualFor({ ms: res.ms, crackles }).bits }, res.doubled);
     sfx.dip(res.doubled);
@@ -837,6 +870,19 @@ export function App() {
     if (!chip || chip.pot <= 0) return;
     if (f.vendor.feed === 'golden' && !isGolden(chip)) {
       say(f.vendor.id, pickLine(f.vendor.id, f.vendor.armLines), 6000);
+      return;
+    }
+    // THE HERMIT'S TRADE: no jar, no crumb price — he takes the chip's whole
+    // worth down into the celery and either brings it back tripled or does
+    // not. Handled before the purchase path because there is nothing to buy.
+    if (f.jarKey === HERMIT_TRADE) {
+      const worth = chip.pot * (2 ** chip.crackles);
+      const takenChip = take(index);
+      if (!takenChip) return;
+      setHermit((h) => giveHermit(h, worth));
+      launchFeed(index, takenChip, 'hermit');
+      say('hermit', 'i take it down. i bring it back bigger. that’s the whole arrangement. no receipt.', 8000);
+      setFeeding(null);
       return;
     }
     // The crumbs must still be there — the jar could have been armed a while
@@ -958,6 +1004,19 @@ export function App() {
   function onCritterClick(id: string): void {
     if (feeding && feeding.vendor.id === id) { setFeeding(null); setBubble(null); return; }
     if (id === 'angel' && angel.glowing) { onBless(); return; }
+    // A committee with the floor open wants lobbying, not shopping.
+    if (id === 'committee' && vote.phase === 'open' && !vote.lobbied) {
+      setVote(lobby);
+      sfx.pop();
+      say('committee', 'the guacamole layer was persuaded. nobody asks how.', 6000);
+      return;
+    }
+    // The hermit only makes his offer sometimes; taking it arms the feed.
+    if (id === 'hermit' && hermit.phase === 'offering') {
+      const m = CREW.find((c) => c.id === 'hermit');
+      if (m) { setFeeding({ vendor: m, jarKey: HERMIT_TRADE }); say('hermit', pickLine('hermit', m.lines), 9000); }
+      return;
+    }
     setSheetId(id);
   }
 
@@ -965,7 +1024,7 @@ export function App() {
   // armed, in which case the bubble is theirs.
   useEffect(() => {
     const t = window.setInterval(() => {
-      if (feedingRef.current) return;
+      if (feedingRef.current || bowlOpenRef.current) return;
       const crew = crewFor(dipIndexRef.current);
       if (crew.length === 0) return;
       const m = crew[Math.floor(Math.random() * crew.length)];
@@ -1017,6 +1076,7 @@ export function App() {
    * reload and turns the game's one twist into a nag. A tip resets the latch
    * so the next run gets its own reveal.
    */
+  bowlOpenRef.current = bowlOpen;
   const tipSalt = state ? saltFor(state.lifetimeChips) : 0;
   const struck = tipSalt > 0;
   useEffect(() => {
@@ -1046,6 +1106,43 @@ export function App() {
       nextId.current++
     ));
   }
+
+  /* ── the hermit settles up ────────────────────────────────────────────── */
+  // `phase` flips to 'returned'/'ate' on a cook tick; this effect turns that
+  // into crumbs (through the ordinary dip verb) and a line, exactly once per
+  // trade — keyed on the phase transition, not on a live condition.
+  const hermitPhaseRef = useRef(hermit.phase);
+  useEffect(() => {
+    const was = hermitPhaseRef.current;
+    hermitPhaseRef.current = hermit.phase;
+    if (was === hermit.phase) return;
+    if (hermit.phase === 'ate') {
+      sfx.pop();
+      say('hermit', 'there was no chip. there was never a chip. you have no proof.', 8000);
+      return;
+    }
+    if (hermit.phase !== 'returned' || hermit.payout <= 0) return;
+    if (!host || !me || !tableId) return;
+    say('hermit', 'here. heavier than you left it. don’t ask what it ate down there.', 8000);
+    const ms = allocMs();
+    const counter = document.querySelector('.tunnel-crumbs') ?? document.querySelector('.tunnel-wrap');
+    if (counter) {
+      const r = counter.getBoundingClientRect();
+      setGains((g) => [...g, {
+        key: ms, text: `+${compact(hermit.payout)} back from the celery`,
+        golden: true, doubled: false, empty: false,
+        x: r.left + r.width / 2, y: r.top + r.height / 2,
+        dx: ((ms % 7) - 3) * 9, delay: 0.15,
+      }]);
+      window.setTimeout(() => setGains((g) => g.filter((f) => f.key !== ms)), 2600);
+      sfx.gain(true, 0.15);
+    }
+    setQueue((q) => enqueue(
+      q, { tableId, author: me.publicKeyHex, kind: 'dip', amount: hermit.payout, ms },
+      nextId.current++
+    ));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hermit.phase, hermit.payout]);
 
   /* ── the dip ladder ceremony ──────────────────────────────────────────── */
   const lastDip = useRef<number | null>(null);
@@ -1297,8 +1394,30 @@ export function App() {
     ? pendingBuyCost(activeFor(queue, tableId, me.publicKeyHex).filter(isBuyMove), foldedIdsRef.current, (k) => UPGRADES[k]?.cost)
     : 0;
 
+  /** Critters with at least one jar you can afford this instant. The shop
+   *  has no other entrance now, so this badge is the ONLY thing telling a
+   *  player their crumbs will buy something.
+   *
+   *  DELIBERATELY NOT a useMemo: this sits below the component's early
+   *  `return <Doorway/>` paths, and a hook after a conditional return
+   *  changes the hook COUNT between renders — React throws "rendered more
+   *  hooks than during the previous render" and the whole app goes black
+   *  (it did, exactly here). It is a loop over ~11 crew members; the memo
+   *  was never worth a hook. */
+  const dealIds = ((): Set<string> => {
+    const out = new Set<string>();
+    if (!state) return out;
+    for (const m of crewFor(crewDip)) {
+      if (openJarsOf(m.id, state.owned, crewDip).some((u) => canAffordBuy(crumbsNow, pendingCommitted, u.cost))) {
+        out.add(m.id);
+      }
+    }
+    return out;
+  })();
+
+
   return (
-    <div className="shop" data-dip={tier.key}>
+    <div className={`shop${bowlOpen || tipFanfare ? ' hushed' : ''}`} data-dip={tier.key}>
       <TunnelBed state={state} />
 
       <header className="hood">
@@ -1355,18 +1474,23 @@ export function App() {
           onShoo={onShoo}
           feedMode={feeding ? feeding.vendor.feed : null}
           blessAt={blessFx}
+          wingIndex={wing.at}
+          wingSince={wing.since}
+          oracleIndex={oracle.at}
         />
 
         <aside className="counter">
           {state && (
             <TunnelRead state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
           )}
-          {state && (
-            <Shelf
-              state={state} dipIndex={crewDip} crumbsNow={crumbsNow} committed={pendingCommitted}
-              onJar={onJar} armedKey={feeding?.jarKey ?? null} onStall={setSheetId}
-            />
-          )}
+          {/* NO SHELF COLUMN. Operator 2026-07-27: "just remove the upgrade
+              button / bowls sections in the main view and only use the
+              popups from tapping the critters." The crew ARE the shop now —
+              a critter with something you can afford wears a price tag
+              (Crew.tsx `hasDeal`), and tapping them opens their stall. This
+              is what finally un-crowds the room, and it retires the column
+              that caused the cramping, the hidden-tier scrolling and the
+              "bowls of salsa" misread in one move. */}
         </aside>
       </main>
 
@@ -1378,7 +1502,7 @@ export function App() {
           he is up on a fryer (Kitchen renders him there). */}
       {state && (
         <CrewRow
-          crew={crewFor(crewDip)} bubble={bubble}
+          crew={crewFor(crewDip)} bubble={bubble} dealIds={dealIds}
           feedingId={feeding?.vendor.id ?? null}
           angel={angel} ratAway={rat.latched !== null}
           onCritterClick={onCritterClick}
@@ -1388,13 +1512,22 @@ export function App() {
         <BowlTicket salt={tipSalt} onOpen={() => setBowlOpen(true)} />
       )}
       {state && bowlOpen && (
-        <BowlReveal salt={tipSalt} onTip={onTip} onClose={() => setBowlOpen(false)} />
+        <BowlReveal
+          salt={tipSalt}
+          layerLabel={tier.label}
+          jarCount={state.owned.size}
+          depth={DIP_TIERS[Math.min(DIP_TIERS.length - 1, state.dipIndex)].label}
+          onTip={onTip}
+          onClose={() => setBowlOpen(false)}
+        />
       )}
       {tipFanfare && <TipCeremony salt={tipFanfare.salt} total={tipFanfare.total} />}
       {sheetVendor && state && (
         <StallSheet
           vendor={sheetVendor}
           jars={openJarsOf(sheetVendor.id, state.owned, crewDip)}
+          owned={state.owned}
+          dipIndex={crewDip}
           crumbsNow={crumbsNow}
           committed={pendingCommitted}
           bowlCap={state.bowlCap}
@@ -1402,6 +1535,23 @@ export function App() {
           onJar={onJar}
           onClose={() => setSheetId(null)}
         />
+      )}
+      {vote.phase === 'open' && (
+        <div className="vote-banner" role="status">
+          <span className="vote-text">
+            <strong>the committee has called a vote.</strong>{' '}
+            {vote.lobbied ? 'you have made your case. the olives are unmoved.' : 'the subject is your fryers. attendance is mandatory.'}
+          </span>
+          {!vote.lobbied && (
+            <button type="button" className="vote-lobby" onClick={() => onCritterClick('committee')}>lobby them</button>
+          )}
+        </div>
+      )}
+      {vote.phase === 'carried' && (
+        <div className="vote-carried" role="status">motion carries — every fryer runs hot</div>
+      )}
+      {hermit.phase === 'holding' && (
+        <div className="hermit-holding" role="status">the hermit has your chip. he has gone under the celery.</div>
       )}
       {feeding && (
         <FeedBanner

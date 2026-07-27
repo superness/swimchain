@@ -172,8 +172,8 @@ export function RatArt({ gorge }: { gorge: number }) {
  *  owns the right corner (`.tunnel-front { right: 6vw }`) — a critter under
  *  either is unreadable, and the glowing angel must always be clickable. */
 const SPOTS: Record<string, number> = {
-  wing: 4, scoop: 11, avo: 18, limewedge: 25, committee: 32, firstchip: 38,
-  oracle: 44, onion: 50, angel: 56, rat: 62, hermit: 68,
+  scoop: 4, avo: 11, limewedge: 18, onion: 25, rat: 32, angel: 39,
+  committee: 46, hermit: 53, wing: 60, oracle: 67, firstchip: 74,
 };
 
 export interface CrewBubble {
@@ -191,10 +191,13 @@ export interface CrewRowProps {
   angel: AngelState;
   /** The rat is latched to a fryer — he is up there, not down here. */
   ratAway: boolean;
+  /** Critters holding something you can afford right now. With the shelf
+   *  column gone this tag is the shop's only storefront. */
+  dealIds: Set<string>;
   onCritterClick: (id: string) => void;
 }
 
-export function CrewRow({ crew, bubble, feedingId, angel, ratAway, onCritterClick }: CrewRowProps) {
+export function CrewRow({ crew, bubble, feedingId, angel, ratAway, dealIds, onCritterClick }: CrewRowProps) {
   const speaker = bubble ? crew.find((m) => m.id === bubble.id) : null;
   return (
     <div className="crew-row" aria-label="your crew">
@@ -215,7 +218,7 @@ export function CrewRow({ crew, bubble, feedingId, angel, ratAway, onCritterClic
         // Edge critters get edge-anchored bubbles: scoop loiters far left and
         // a centered bubble hangs half off the viewport (review: eight of
         // his lines clipped in one session — the mascot was unreadable).
-        const edge = spot <= 15 ? ' edge-l' : spot >= 58 ? ' edge-r' : '';
+        const edge = spot <= 15 ? ' edge-l' : spot >= 62 ? ' edge-r' : '';
         return (
           <button
             key={m.id}
@@ -228,10 +231,13 @@ export function CrewRow({ crew, bubble, feedingId, angel, ratAway, onCritterClic
             }
             style={{ left: `${spot}%` }}
             onClick={() => onCritterClick(m.id)}
-            title={glowing ? `${m.name} is glowing — a blessing waits` : m.name}
-            aria-label={glowing ? `${m.name}, glowing — click for a guaranteed crackle` : m.name}
+            title={glowing ? `${m.name} is glowing — a blessing waits` : dealIds.has(m.id) ? `${m.name} — has something you can afford` : m.name}
+            aria-label={glowing
+              ? `${m.name}, glowing — click for a guaranteed crackle`
+              : dealIds.has(m.id) ? `${m.name}, has something you can afford — open their stall` : m.name}
           >
             <CritterArt id={m.id} />
+            {dealIds.has(m.id) && <span className="critter-deal" aria-hidden="true">buy</span>}
             <span className="critter-name">{m.name}</span>
             {bubble && bubble.id === m.id && (
               <span key={bubble.key} className="say" role="status">{bubble.line}</span>
@@ -253,7 +259,7 @@ export function FeedBanner({ vendor, jarLabel, onCancel }: {
       <span className="feed-text">
         <strong>{vendor.name}</strong> wants a chip for the {jarLabel} —{' '}
         {vendor.feed === 'golden' ? 'click a GOLDEN chip on the fryer' : 'click a chip on the fryer'}.
-        {' '}It goes to them, pot and all.
+        {' '}it goes to them, pot and all.
       </span>
       <button type="button" className="feed-cancel" onClick={onCancel}>never mind</button>
     </div>

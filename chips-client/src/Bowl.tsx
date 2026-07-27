@@ -12,15 +12,20 @@
  */
 import { useEffect, useState } from 'react';
 import { compact } from './lib/format';
+import { SALT_TICK_BONUS } from './lib/chipsEngine';
 import { CritterArt } from './Crew';
 
-/** The four beats of the reveal, one at a time. */
-export const DISCOVERY = [
-  'the chip stops. the dip does not end here — but something does.',
-  'you clear the queso. there is a surface underneath. it is smooth. it is cold.',
-  'it is porcelain. it goes on in every direction and it curves. all of it curves.',
-  'you were never digging down. you were emptying a bowl. someone set it out for you.',
-] as const;
+/** The four beats of the reveal. Beat two names the layer YOU are standing
+ *  in — it read "you clear the queso" at the Abyssal Dip, which is a
+ *  different layer four rungs up (designer review). */
+export function discoveryFor(layerLabel: string): string[] {
+  return [
+    'the chip stops. the dip does not end here — but something does.',
+    `you clear the ${layerLabel.toLowerCase()}. there is a surface underneath. it is smooth. it is cold.`,
+    'it is porcelain. it goes on in every direction and it curves. all of it curves.',
+    'you were never digging down. you were emptying a bowl. someone set it out for you.',
+  ];
+}
 
 /** Stamped on the underside, which you can only read from down here. */
 export const MAKERS_MARK = 'DISHWASHER SAFE. MICROWAVE SAFE. NOT SAFE.';
@@ -32,9 +37,11 @@ const BEAT_MS = 2600;
  * offer. Dismissing it does NOT tip — the bowl stays struck and the offer
  * lives on the counter from then on, so nobody loses a run to a stray tap.
  */
-export function BowlReveal({ salt, onTip, onClose }: {
-  salt: number; onTip: () => void; onClose: () => void;
+export function BowlReveal({ salt, layerLabel, jarCount, depth, onTip, onClose }: {
+  salt: number; layerLabel: string; jarCount: number; depth: string;
+  onTip: () => void; onClose: () => void;
 }) {
+  const DISCOVERY = discoveryFor(layerLabel);
   const [beat, setBeat] = useState(0);
   useEffect(() => {
     if (beat >= DISCOVERY.length) return;
@@ -55,16 +62,39 @@ export function BowlReveal({ salt, onTip, onClose }: {
             <p className="bowl-mark">{MAKERS_MARK}</p>
             <div className="bowl-offer">
               <p className="bowl-offer-line">tip the bowl. everything goes back in. you keep what stuck to you.</p>
-              <p className="bowl-salt">
-                this run is worth <strong>{compact(salt)}</strong> old salt
-                <em>every grain makes every tick fatter, forever</em>
-              </p>
+
+              {/* THE LEDGER. The review refused to click this and was right
+                  to: the offer stated its cost only in metaphor, and the
+                  destructive button was the bright one. It is now an
+                  itemised, plain-language before/after, and "keep digging"
+                  is the primary. */}
+              <div className="bowl-ledger">
+                <div className="ledger-col lose">
+                  <span className="ledger-head">you lose</span>
+                  <ul>
+                    <li>every crumb in the bowl</li>
+                    <li>all {jarCount} {jarCount === 1 ? 'jar' : 'jars'} you have bought</li>
+                    <li>your depth — back to Plain Salsa from {depth}</li>
+                  </ul>
+                </div>
+                <div className="ledger-col keep">
+                  <span className="ledger-head">you keep</span>
+                  <ul>
+                    <li><strong>{compact(salt)} old salt</strong>, permanently</li>
+                    <li>+{Math.round(salt * SALT_TICK_BONUS * 100)}% on every tick, forever, in every run after this</li>
+                    <li>the whole crew — they stay</li>
+                  </ul>
+                </div>
+              </div>
+
               <div className="bowl-buttons">
-                <button type="button" className="bowl-tip" onClick={onTip}>tip the bowl</button>
-                <button type="button" className="bowl-later" onClick={onClose}>keep digging</button>
+                <button type="button" className="bowl-later primary" onClick={onClose}>keep digging</button>
+                <button type="button" className="bowl-tip danger" onClick={onTip} disabled={salt <= 0}>
+                  {salt > 0 ? 'tip the bowl' : 'not deep enough yet'}
+                </button>
               </div>
               <p className="bowl-fine">
-                the crew stays. the crumbs don&apos;t. you can tip whenever you like — it will be here.
+                nothing is lost by waiting — the floor is struck, and this offer will be here whenever you want it.
               </p>
             </div>
           </>
