@@ -528,12 +528,6 @@ export function App() {
 
   const { chips, bank } = useFryers(fryerCount, publicKeyHex ?? '', tableId ?? '');
 
-  // The oil's ambience tracks how many baskets are actually frying.
-  useEffect(() => {
-    sfx.sizzle(fryerCount);
-    return () => sfx.sizzle(0);
-  }, [fryerCount]);
-
   const chipsRef = useRef(chips);
   chipsRef.current = chips;
   useEffect(() => {
