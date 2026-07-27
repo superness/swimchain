@@ -60,7 +60,11 @@ const vAll = (rs: ChipsReply[], bits: number) => new Map(rs.map((r) => [keyFor(r
 // no comment.) Do not add a clamp assertion to this block — it would pass under
 // a broken clamp and give false confidence.
 {
-  const rs = [bank(20, 'c1', T0), bank(8, 'c2', T0 + 5000 * HOUR)];
+  // bits 19, NOT 20: the fixture's lifetime (2^11 = 2048) must stay OUT of
+  // the congeal tier, or the second bank's x2 (a correct payout, not a decay
+  // bug) breaks the exact assertion below. The 2026-07-27 pacing retune
+  // moved Queso's threshold to 4,000 — a 20-bit chip (4,096) landed in it.
+  const rs = [bank(19, 'c1', T0), bank(8, 'c2', T0 + 5000 * HOUR)];
   const started = Date.now();
   const s = foldChips(H, TABLE, rs, vAll(rs, 20));
   check('long gap folds fast', Date.now() - started < 500);

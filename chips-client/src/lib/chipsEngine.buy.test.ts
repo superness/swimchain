@@ -121,16 +121,16 @@ const rich = () => bank(15, 'rich');
 //
 //   a1: bank 15 bits. 1000 * 2^(15-8) = 128,000; 15 < GOLDEN_BITS 16 so no
 //       golden multiplier; seasoning 1/1; bowl rim  -> 100,000
-//       lifetime 2^7 = 128, below guac's 300        -> still Plain Salsa
+//       lifetime 2^7 = 128, below guac's 150        -> still Plain Salsa
 //   a2: buy airtight 1s later (under an hour, so no decay):
-//       100,000 - 70,000                            = 30,000
+//       100,000 - 30,000 (2026-07-27 retuned cost)  = 70,000
 //   a3: exactly one hour later. numerator = SOG_BASE_NUM 97 + AIRTIGHT_BONUS 2:
-//       floor(30,000 * 99/100)                      = 29,700
+//       floor(70,000 * 99/100)                      = 69,300
 //       bank 8 at salsa, no multipliers             = 1,000
-//       total                                       = 30,700
+//       total                                       = 70,300
 //
-// Without the bonus the same fixture lands on floor(30,000*97/100) + 1,000 =
-// 30,100, so this number is what the +2 is worth and nothing else.
+// Without the bonus the same fixture lands on floor(70,000*97/100) + 1,000 =
+// 68,900, so this number is what the +2 is worth and nothing else.
 {
   const t1 = nextMs();
   const t2 = nextMs();
@@ -140,7 +140,7 @@ const rich = () => bank(15, 'rich');
   check('airtight deducted', s.moves[1].outcome === 'bought', s.moves[1].outcome);
   const expected = Math.floor((100_000 - UPGRADES.airtight.cost) * (SOG_BASE_NUM + AIRTIGHT_BONUS) / SOG_DEN)
     + CRUMBS_PER_CHIP;
-  check('airtight slows decay by exactly +2/100', s.crumbs === expected && expected === 30_700,
+  check('airtight slows decay by exactly +2/100', s.crumbs === expected && expected === 70_300,
     { crumbs: s.crumbs, expected });
 }
 

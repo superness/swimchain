@@ -33,6 +33,14 @@ import { compact } from './lib/format';
 import { sfx } from './lib/sound';
 
 const NAME_KEY = 'chips.cookname.v1';
+const AUTODIP_KEY = 'chips.autodip.v1';
+/** Auto-dip pulls a chip at this many bits. Policy, not consensus: it only
+ *  decides WHEN the client banks, never what a bank is worth. 10 bits is a
+ *  ~34s expected cadence per fryer — constant motion without spam. */
+const AUTODIP_BITS = 10;
+function readAutoDip(): boolean {
+  try { return localStorage.getItem(AUTODIP_KEY) !== 'off'; } catch { return true; }
+}
 /** Module-scope so the expiry tick below passes a referentially stable empty
  *  set rather than allocating one every second. */
 const NO_CONFIRMED: ReadonlySet<string> = new Set<string>();
@@ -236,6 +244,14 @@ export function App() {
 
   /* ── sound ────────────────────────────────────────────────────────────── */
   const [soundOn, setSoundOn] = useState(() => !sfx.muted());
+  /* ── auto-dip ─────────────────────────────────────────────────────────── */
+  // ON by default. Ten measured minutes of real play (2026-07-27) showed the
+  // trap this closes: a player NURSES one chip toward a big number because
+  // nothing says small banks stack — while banking every done chip pays the
+  // exact same rate (payout and expected work both double per bit) with
+  // constant on-screen motion. Turning auto-dip OFF is now the deliberate
+  // move, and the caption sells why: golden (x2.5) is the one reason to wait.
+  const [autoDip, setAutoDip] = useState(readAutoDip);
   // The AudioContext can only exist after a user gesture (autoplay policy);
   // unlock() is idempotent, so hanging it off every pointerdown/keydown costs
   // nothing and catches whichever gesture comes first.
@@ -653,6 +669,21 @@ export function App() {
     });
   }
 
+  /* ── auto-dip: pull every done chip the moment it crosses the line ────── */
+  // Watches the same `chips` array the rack renders. `bank()` is the guard
+  // against double-fires: it returns null for anything not currently
+  // bankable, and the taken record is synchronously replaced by a fresh
+  // placeholder, so a second pass over stale state takes nothing.
+  useEffect(() => {
+    if (!autoDip || !host || !me || !tableId) return;
+    for (let i = 0; i < chips.length; i++) {
+      if (chips[i] && chips[i].bits >= AUTODIP_BITS) onBank(i);
+    }
+    // onBank is a stable-enough closure over current state; re-running on
+    // chips (each worker report) is the entire mechanism.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chips, autoDip, host, me, tableId]);
+
   /* ── the dip ladder ceremony ──────────────────────────────────────────── */
   const lastDip = useRef<number | null>(null);
   const [dipFanfare, setDipFanfare] = useState<number | null>(null);
@@ -915,6 +946,19 @@ export function App() {
               confident number next to it would just make the bowl look wrong. */}
           <strong>{state && !stillCounting ? compact(state.lifetimeChips) : '—'}</strong>
         </div>
+        <button
+          type="button"
+          className="sound-toggle autodip-toggle"
+          aria-pressed={autoDip}
+          title={autoDip ? 'auto-dip is on — chips bank themselves when done. Turn off to hunt golden (x2.5).' : 'auto-dip is off — you pull every chip yourself. The way to hunt golden.'}
+          onClick={() => {
+            const next = !autoDip;
+            try { localStorage.setItem(AUTODIP_KEY, next ? 'on' : 'off'); } catch { /* private mode */ }
+            setAutoDip(next);
+          }}
+        >
+          {autoDip ? 'auto-dip on' : 'auto-dip off'}
+        </button>
         <button
           type="button"
           className="sound-toggle"

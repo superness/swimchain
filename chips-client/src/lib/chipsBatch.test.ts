@@ -172,7 +172,11 @@ const verifyAll = (chips: { ms: number; bits: number; nonce: bigint }[]) =>
 // entry congeal-double, because no real time has elapsed between them.
 {
   const HOUR = 3_600_000;
-  const boot = { ms: T0, bits: 23, nonce: 0x201n };            // -> lifetime 32,768: queso (the congeal tier)
+  // bits 20 -> lifetime 4,096, INSIDE queso's [4,000, 12,000) band under the
+  // 2026-07-27 retune — the fixture must land exactly in the congeal tier or
+  // this whole test is vacuous (a tier without the congeal flag never
+  // congeals regardless of the clock).
+  const boot = { ms: T0, bits: 20, nonce: 0x201n };
   const e1 = { ms: T0 + 1_000, bits: 8, nonce: 0x202n };
   const e2 = { ms: e1.ms + 13 * HOUR, bits: 8, nonce: 0x203n }; // declared 13h after e1's ms
 

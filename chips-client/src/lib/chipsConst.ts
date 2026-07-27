@@ -51,25 +51,35 @@ export interface Upgrade {
   sogBonus?: number;
 }
 
+/**
+ * RETUNED 2026-07-27 against nine measured active-hours of real chain play
+ * (631 banks, 4 tables): a fresh player earned ~385k/h, a maxed-out one
+ * ~27M/h, and at those rates the old costs put Second Fryer — the unlock
+ * that doubles the event rate — over an hour away from a newcomer while the
+ * upper dip tiers sat 58 to 1,162 ACTIVE hours out. Costs cut ~3x early and
+ * ~2x late; the ladder ORDER is unchanged. A cost cut re-scores history in
+ * the growth direction only for every table that afforded its buys the
+ * first time (checked by differential fold before shipping).
+ */
 export const UPGRADES: Record<string, Upgrade> = {
-  season1: { key: 'season1', label: 'Seasoning I',   cost: 30_000,      seasoningNum: 3, seasoningDen: 2 },
-  season2: { key: 'season2', label: 'Seasoning II',  cost: 200_000,     seasoningNum: 2, seasoningDen: 1 },
-  season3: { key: 'season3', label: 'Seasoning III', cost: 1_200_000,   seasoningNum: 3, seasoningDen: 1 },
-  season4: { key: 'season4', label: 'Seasoning IV',  cost: 8_000_000,   seasoningNum: 4, seasoningDen: 1 },
-  season5: { key: 'season5', label: 'Seasoning V',   cost: 50_000_000,  seasoningNum: 6, seasoningDen: 1 },
-  season6: { key: 'season6', label: 'Seasoning VI',  cost: 120_000_000, seasoningNum: 9, seasoningDen: 1 },
-  airtight: { key: 'airtight', label: 'Airtight Bowl', cost: 70_000, airtight: true },
-  cellar: { key: 'cellar', label: 'Cellar Shelf', cost: 4_000_000, sogBonus: 2 },
-  bowl1: { key: 'bowl1', label: 'Bigger Bowl I',   cost: 60_000,      bowlCap: 3_000_000 },
-  bowl2: { key: 'bowl2', label: 'Bigger Bowl II',  cost: 2_000_000,   bowlCap: 200_000_000 },
-  bowl3: { key: 'bowl3', label: 'Bigger Bowl III', cost: 150_000_000, bowlCap: 5_000_000_000 },
-  fryer2: { key: 'fryer2', label: 'Second Fryer', cost: 400_000,     fryers: 2 },
-  fryer3: { key: 'fryer3', label: 'Third Fryer',  cost: 12_000_000,  fryers: 3 },
-  fryer4: { key: 'fryer4', label: 'Fourth Fryer', cost: 100_000_000, fryers: 4 },
-  doubledip1: { key: 'doubledip1', label: 'Double Dip',      cost: 600_000,    doubleDipMod: 4 },
-  doubledip2: { key: 'doubledip2', label: 'Deep Double Dip', cost: 20_000_000, doubleDipMod: 2 },
-  detector: { key: 'detector', label: 'Golden Chip Detector', cost: 3_000_000, goldenBits: 15 },
-  detector2: { key: 'detector2', label: 'Golden Chip Nose',   cost: 25_000_000, goldenBits: 14 },
+  season1: { key: 'season1', label: 'Seasoning I',   cost: 10_000,     seasoningNum: 3, seasoningDen: 2 },
+  season2: { key: 'season2', label: 'Seasoning II',  cost: 90_000,     seasoningNum: 2, seasoningDen: 1 },
+  season3: { key: 'season3', label: 'Seasoning III', cost: 500_000,    seasoningNum: 3, seasoningDen: 1 },
+  season4: { key: 'season4', label: 'Seasoning IV',  cost: 4_000_000,  seasoningNum: 4, seasoningDen: 1 },
+  season5: { key: 'season5', label: 'Seasoning V',   cost: 25_000_000, seasoningNum: 6, seasoningDen: 1 },
+  season6: { key: 'season6', label: 'Seasoning VI',  cost: 60_000_000, seasoningNum: 9, seasoningDen: 1 },
+  airtight: { key: 'airtight', label: 'Airtight Bowl', cost: 30_000, airtight: true },
+  cellar: { key: 'cellar', label: 'Cellar Shelf', cost: 2_000_000, sogBonus: 2 },
+  bowl1: { key: 'bowl1', label: 'Bigger Bowl I',   cost: 25_000,     bowlCap: 3_000_000 },
+  bowl2: { key: 'bowl2', label: 'Bigger Bowl II',  cost: 900_000,    bowlCap: 200_000_000 },
+  bowl3: { key: 'bowl3', label: 'Bigger Bowl III', cost: 75_000_000, bowlCap: 5_000_000_000 },
+  fryer2: { key: 'fryer2', label: 'Second Fryer', cost: 60_000,     fryers: 2 },
+  fryer3: { key: 'fryer3', label: 'Third Fryer',  cost: 6_000_000,  fryers: 3 },
+  fryer4: { key: 'fryer4', label: 'Fourth Fryer', cost: 50_000_000, fryers: 4 },
+  doubledip1: { key: 'doubledip1', label: 'Double Dip',      cost: 250_000,    doubleDipMod: 4 },
+  doubledip2: { key: 'doubledip2', label: 'Deep Double Dip', cost: 10_000_000, doubleDipMod: 2 },
+  detector: { key: 'detector', label: 'Golden Chip Detector', cost: 1_500_000, goldenBits: 15 },
+  detector2: { key: 'detector2', label: 'Golden Chip Nose',   cost: 12_000_000, goldenBits: 14 },
 };
 
 /** Upgrades that must be bought in order. Buying out of order is rejected.
@@ -97,15 +107,24 @@ export interface DipTier {
   congeal?: boolean;         // first bank after a >=12 h gap pays x2
 }
 
+/**
+ * RETUNED 2026-07-27, same measurement as UPGRADES above. Lifetime chips
+ * accrue at exactly 1/512 per toss regardless of banking strategy (a b-bit
+ * chip is 2^(b-8) chips per 2^(b+1) expected tosses), i.e. ~422/hour/fryer —
+ * so the OLD thresholds put Queso ~10 active hours out, Seven-Layer ~58 and
+ * the Abyss ~1,162, on a game with no offline progress. Compressed ~2x at
+ * the first rung and ~10-15x at the top: the ladder now runs from a
+ * 20-minute first breakthrough to a ~90-active-hour Abyss at four fryers.
+ */
 export const DIP_TIERS: DipTier[] = [
   { key: 'salsa',   label: 'Plain Salsa',    minLifetime: 0 },
-  { key: 'guac',    label: 'Guacamole',      minLifetime: 300,       sogNum: 96, payNum: 11, payDen: 10 },
-  { key: 'onion',   label: 'French Onion',   minLifetime: 3_000 },
-  { key: 'queso',   label: 'Queso',          minLifetime: 25_000,    congeal: true },
-  { key: 'seven',   label: 'Seven-Layer',    minLifetime: 150_000 },
-  { key: 'buffalo', label: 'Buffalo',        minLifetime: 500_000 },
-  { key: 'fondue',  label: 'Fondue',         minLifetime: 1_200_000 },
-  { key: 'abyss',   label: 'The Abyssal Dip', minLifetime: 3_000_000 },
+  { key: 'guac',    label: 'Guacamole',      minLifetime: 150,      sogNum: 96, payNum: 11, payDen: 10 },
+  { key: 'onion',   label: 'French Onion',   minLifetime: 1_000 },
+  { key: 'queso',   label: 'Queso',          minLifetime: 4_000,    congeal: true },
+  { key: 'seven',   label: 'Seven-Layer',    minLifetime: 12_000 },
+  { key: 'buffalo', label: 'Buffalo',        minLifetime: 30_000 },
+  { key: 'fondue',  label: 'Fondue',         minLifetime: 80_000 },
+  { key: 'abyss',   label: 'The Abyssal Dip', minLifetime: 200_000 },
 ];
 
 /** Congeal gap threshold, in ms. */

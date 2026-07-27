@@ -196,6 +196,9 @@ h1, h2, h3, p { margin: 0; }
 }
 .sound-toggle:hover { color: #f2e3c8; border-color: rgba(210, 184, 144, .6); }
 .sound-toggle[aria-pressed="false"] { opacity: .65; }
+/* auto-dip sits to the LEFT of the sound switch (both are absolute in the
+   hood's top-right corner and would otherwise stack on each other) */
+.autodip-toggle { right: calc(clamp(10px, 1.4vw, 22px) + 64px); }
 
 .stage {
   position: relative; z-index: 2; min-height: 0;

@@ -105,22 +105,22 @@ const keyFor = (r: ChipsReply): string => {
 // this; until this block existed neither did, because `airtight` was never
 // successfully bought anywhere. Hand-computed:
 //
-//   o1: bank 17 -> bowl rim 100,000, lifetime 512 -> guac
+//   o1: bank 17 -> bowl rim 100,000, lifetime 512 -> guac (threshold 150)
 //   o2: buy airtight 1s later (no whole hour, so no decay):
-//       100,000 - 70,000                     = 30,000, airtight on
+//       100,000 - 30,000 (2026-07-27 retuned cost) = 70,000, airtight on
 //   o3: one hour later. numerator = guac's 96 + AIRTIGHT_BONUS 2 = 98
-//       floor(30,000 * 98/100)               = 29,400
+//       floor(70,000 * 98/100)               = 68,600
 //       bank 8 under guac: floor(1000*11/10) = 1,100
-//       total                                = 30,500
+//       total                                = 69,700
 //
 // The number discriminates all three plausible orderings: dip-overrides-
-// airtight (96) gives 29,900; airtight-overrides-dip (99) gives 30,800.
+// airtight (96) gives 68,300; airtight-overrides-dip (99) gives 70,400.
 {
   const rs = [bank(17, 'o1', T0), buy('airtight', 'o2', T0 + 1000), bank(8, 'o3', T0 + 1000 + HOUR)];
   const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 17], [keyFor(rs[2]), 8]]));
   check('airtight is affordable off one big chip', START_BOWL_CAP >= UPGRADES.airtight.cost);
   check('airtight bought', s.airtight === true && s.owned.has('airtight'), [...s.owned]);
-  check('dip base then airtight bonus (96+2)', s.crumbs === 30_500, s.crumbs);
+  check('dip base then airtight bonus (96+2)', s.crumbs === 69_700, s.crumbs);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
