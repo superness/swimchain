@@ -47,7 +47,7 @@ function verifiedExact(rs: ChipsReply[]): Map<string, number> {
 const baseState = (over: Partial<ChipsState> = {}): ChipsState => ({
   crumbs: 0, lifetimeChips: 0, crispest: 0, owned: new Set(),
   bowlCap: START_BOWL_CAP, seasoningNum: 1, seasoningDen: 1, fryers: 1,
-  goldenBits: GOLDEN_BITS, airtight: false, dipIndex: 0,
+  goldenBits: GOLDEN_BITS, airtight: false, sogBonus: 0, doubleDipMod: 0, dipIndex: 0,
   lastConfirmedAt: 0, lastBankAt: 0, unverifiedBanks: 0, moves: [],
   ...over,
 });
@@ -62,7 +62,7 @@ const baseState = (over: Partial<ChipsState> = {}): ChipsState => ({
   const s = foldChips(H, TABLE, replies, verifiedExact(replies));
   check('sanity: all three banks succeeded', s.moves.every((m) => m.outcome === 'banked'), s.moves);
 
-  const bankedMoves: BankedMove[] = s.moves.map((m) => ({ ms: m.ms, bits: m.bits!, crumbs: m.crumbs! }));
+  const bankedMoves: BankedMove[] = s.moves.map((m) => ({ ms: m.ms, bits: m.bits!, crumbs: m.crumbs!, doubleDip: m.doubleDip === true }));
   const events = actualGains(0, s.bowlCap, bankedMoves);
   const totalGained = events.reduce((a, e) => a + e.gained, 0);
 

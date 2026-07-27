@@ -34,7 +34,7 @@ function check(name: string, cond: boolean, extra?: unknown) {
 
 // Seasoning tiers must strictly increase in both cost and multiplier.
 {
-  const keys = ['season1', 'season2', 'season3', 'season4', 'season5'];
+  const keys = ['season1', 'season2', 'season3', 'season4', 'season5', 'season6'];
   for (let i = 1; i < keys.length; i++) {
     const a = UPGRADES[keys[i - 1]], b = UPGRADES[keys[i]];
     check(`${keys[i]} costs more than ${keys[i - 1]}`, b.cost > a.cost);

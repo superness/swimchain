@@ -403,6 +403,9 @@ export interface DipFlightState {
   key: number;
   ms: number;
   bits: number;
+  /** The chip will double-dip (client-side nonce test, same rule as the
+   *  fold): the flight bobs back up and goes under a second time. */
+  double: boolean;
   x0: number; y0: number;
   x1: number; y1: number;
   /** The crumb counter's centre — where the crumb burst travels to. */
@@ -443,7 +446,7 @@ export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | nul
     <>
       <div
         key={flight.key}
-        className="dip-flight"
+        className={`dip-flight${flight.double ? ' double' : ''}`}
         aria-hidden="true"
         style={{
           '--fx0': `${flight.x0}px`, '--fy0': `${flight.y0}px`,

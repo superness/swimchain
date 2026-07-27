@@ -559,7 +559,7 @@ export function App() {
    * flourish over the scene — it is fixed-position and takes part in no
    * layout, which is the whole reason it replaced the in-flight panel.
    */
-  function launchDip(index: number, chip: { ms: number; bits: number }): void {
+  function launchDip(index: number, chip: { ms: number; bits: number }, double: boolean): void {
     const basket = document.querySelector(`.rack .basket[data-fryer="${index}"] .basket-chip`);
     const wrap = document.querySelector('.tunnel-wrap');
     if (!basket || !wrap) return;
@@ -576,7 +576,7 @@ export function App() {
     const counter = document.querySelector('.tunnel-crumbs') ?? wrap;
     const cRect = counter.getBoundingClientRect();
     setFlight({
-      key: chip.ms, ms: chip.ms, bits: chip.bits, size,
+      key: chip.ms, ms: chip.ms, bits: chip.bits, size, double,
       x0: a.left + a.width / 2 - size / 2,
       y0: a.top + a.height / 2 - size / 2,
       x1: b.left + b.width / 2 - size / 2,
@@ -598,8 +598,12 @@ export function App() {
     // anywhere. Calling bank(index) again does NOT give it back.
     const chip = bank(index);        // still destructive; still the only reference
     if (!chip) return;
-    launchDip(index, chip);          // the animation is the feedback now
-    sfx.dip();                       // grab / plop / splash, timed to the flight
+    // The SAME test the fold will apply (chipsEngine.ts's double dip) — the
+    // nonce is fixed the moment the chip is lifted, so the celebration can be
+    // honest immediately rather than waiting a fold.
+    const double = Boolean(state && state.doubleDipMod > 0 && chip.nonce % BigInt(state.doubleDipMod) === 0n);
+    launchDip(index, chip, double);  // the animation is the feedback now
+    sfx.dip(double);                 // grab / plop(s) / splash, timed to the flight
     // Every queued entry carries the table/identity it was mined for — see
     // chipsQueue.ts's file header on why (a queue entry with no provenance is
     // how a stale entry from an earlier identity ends up crediting a table it
@@ -730,8 +734,9 @@ export function App() {
         const x = r.left + r.width / 2, y = r.top + r.height / 2;
         const born: GainFloat[] = events.map((e, i) => ({
           key: e.ms,
-          text: e.gained > 0 ? `+${compact(e.gained)}` : '+0',
+          text: e.gained > 0 ? `+${compact(e.gained)}${e.doubleDip ? ' x2' : ''}` : '+0',
           golden: e.bits >= state.goldenBits,
+          doubled: e.doubleDip,
           empty: e.gained <= 0,
           x, y,
           // A small deterministic spread (never random — see the app's other

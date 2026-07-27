@@ -98,7 +98,7 @@ for (const gapHours of [1, 5, 50, 200]) {
   const s: ChipsState = {
     crumbs: 1_000_000_000, lifetimeChips: 0, crispest: 0, owned: new Set(['airtight']),
     bowlCap: 5_000_000_000, seasoningNum: 1, seasoningDen: 1, fryers: 1,
-    goldenBits: 16, airtight: true, dipIndex: 0,
+    goldenBits: 16, airtight: true, sogBonus: 0, doubleDipMod: 0, dipIndex: 0,
     lastConfirmedAt: T0, lastBankAt: T0, unverifiedBanks: 0, moves: [],
   };
   const atClamp = projectedCrumbs(s, T0 + SOG_MAX_HOURS * HOUR);
@@ -114,7 +114,7 @@ for (const gapHours of [1, 5, 50, 200]) {
   const base = (dipIndex: number, airtight: boolean): ChipsState => ({
     crumbs: START_BOWL_CAP, lifetimeChips: 0, crispest: 0, owned: new Set(),
     bowlCap: START_BOWL_CAP, seasoningNum: 1, seasoningDen: 1, fryers: 1,
-    goldenBits: 16, airtight, dipIndex, lastConfirmedAt: T0, lastBankAt: T0,
+    goldenBits: 16, airtight, sogBonus: 0, doubleDipMod: 0, dipIndex, lastConfirmedAt: T0, lastBankAt: T0,
     unverifiedBanks: 0, moves: [],
   });
   check('guacamole really does declare a faster sog', DIP_TIERS[1].sogNum === 96, DIP_TIERS[1].sogNum);
@@ -131,7 +131,7 @@ for (const gapHours of [1, 5, 50, 200]) {
   const s: ChipsState = {
     crumbs: 10_000, lifetimeChips: 0, crispest: 0, owned: new Set(),
     bowlCap: START_BOWL_CAP, seasoningNum: 1, seasoningDen: 1, fryers: 1,
-    goldenBits: 16, airtight: false, dipIndex: 0, lastConfirmedAt: T0,
+    goldenBits: 16, airtight: false, sogBonus: 0, doubleDipMod: 0, dipIndex: 0, lastConfirmedAt: T0,
     lastBankAt: T0, unverifiedBanks: 0, moves: [],
   };
   check('freshly moved looks crisp', soggyLook(s, T0) === 0);
