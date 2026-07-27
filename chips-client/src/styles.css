@@ -184,6 +184,18 @@ h1, h2, h3, p { margin: 0; }
   display: block; font-size: clamp(8px, .72vw, 11px); letter-spacing: .22em;
   text-transform: uppercase; color: #b6a385; margin-bottom: 3px;
 }
+/* The mute switch. Small and quiet — a fixture's light switch, not a
+   feature. Top-right corner of the hood, clear of the bottom-aligned stat
+   blocks. */
+.sound-toggle {
+  position: absolute; top: 7px; right: clamp(10px, 1.4vw, 22px);
+  font-family: var(--chalk); font-size: 11px; letter-spacing: .08em;
+  color: #b6a385; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid rgba(210, 184, 144, .3);
+  transition: color .2s, border-color .2s;
+}
+.sound-toggle:hover { color: #f2e3c8; border-color: rgba(210, 184, 144, .6); }
+.sound-toggle[aria-pressed="false"] { opacity: .65; }
 
 .stage {
   position: relative; z-index: 2; min-height: 0;

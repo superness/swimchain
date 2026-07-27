@@ -30,6 +30,7 @@ import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { TunnelBed, TunnelRead, DigFront, Shelf, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
 import { compact } from './lib/format';
+import { sfx } from './lib/sound';
 
 const NAME_KEY = 'chips.cookname.v1';
 /** Module-scope so the expiry tick below passes a referentially stable empty
@@ -232,6 +233,21 @@ export function App() {
   // already does after a successful submit.
   const foldNowRef = useRef(foldNow);
   foldNowRef.current = foldNow;
+
+  /* ── sound ────────────────────────────────────────────────────────────── */
+  const [soundOn, setSoundOn] = useState(() => !sfx.muted());
+  // The AudioContext can only exist after a user gesture (autoplay policy);
+  // unlock() is idempotent, so hanging it off every pointerdown/keydown costs
+  // nothing and catches whichever gesture comes first.
+  useEffect(() => {
+    const unlock = () => sfx.unlock();
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
+    return () => {
+      window.removeEventListener('pointerdown', unlock);
+      window.removeEventListener('keydown', unlock);
+    };
+  }, []);
 
   // A wall clock for the sog projection. One second is plenty — the pile is
   // meant to look like it is going soft, not to tick.
@@ -512,6 +528,12 @@ export function App() {
 
   const { chips, bank } = useFryers(fryerCount, publicKeyHex ?? '', tableId ?? '');
 
+  // The oil's ambience tracks how many baskets are actually frying.
+  useEffect(() => {
+    sfx.sizzle(fryerCount);
+    return () => sfx.sizzle(0);
+  }, [fryerCount]);
+
   const chipsRef = useRef(chips);
   chipsRef.current = chips;
   useEffect(() => {
@@ -583,6 +605,7 @@ export function App() {
     const chip = bank(index);        // still destructive; still the only reference
     if (!chip) return;
     launchDip(index, chip);          // the animation is the feedback now
+    sfx.dip();                       // grab / plop / splash, timed to the flight
     // Every queued entry carries the table/identity it was mined for — see
     // chipsQueue.ts's file header on why (a queue entry with no provenance is
     // how a stale entry from an earlier identity ends up crediting a table it
@@ -599,6 +622,10 @@ export function App() {
     // need same-tick precision (nobody buys the same upgrade from two racing
     // code paths in a way this misses).
     if (state?.owned.has(key)) return;
+    // The jar is disabled when unaffordable, so a click that gets this far is
+    // a real purchase in all but a same-tick race — a pop on that rare
+    // rejection is a harmless false positive, not a lie about state.
+    sfx.pop();
     const table = tableId;
     const author = me.publicKeyHex;
     // Everything that DOES need same-tick precision lives inside the
@@ -637,6 +664,7 @@ export function App() {
     if (state.dipIndex > lastDip.current) {
       lastDip.current = state.dipIndex;
       setDipFanfare(state.dipIndex);
+      sfx.breakthrough();
       const t = setTimeout(() => setDipFanfare(null), 5200);
       return () => clearTimeout(t);
     }
@@ -730,7 +758,10 @@ export function App() {
           delay: 0.95 + i * 0.12,
         }));
         setGains((g) => [...g, ...born]);
+        // The chime lands WITH each figure, sharing its stagger. An empty
+        // "+0" gets no chime — a full bowl earning nothing should not ring.
         events.forEach((e, i) => {
+          if (e.gained > 0) sfx.gain(e.bits >= state.goldenBits, 0.95 + i * 0.12);
           window.setTimeout(() => setGains((g) => g.filter((f) => f.key !== e.ms)), 2300 + i * 120);
         });
       }
@@ -885,6 +916,21 @@ export function App() {
               confident number next to it would just make the bowl look wrong. */}
           <strong>{state && !stillCounting ? compact(state.lifetimeChips) : '—'}</strong>
         </div>
+        <button
+          type="button"
+          className="sound-toggle"
+          aria-pressed={soundOn}
+          title={soundOn ? 'mute the shop' : 'unmute the shop'}
+          onClick={() => {
+            const next = !soundOn;
+            // The click IS a gesture — the one moment unlock always succeeds.
+            sfx.unlock();
+            sfx.setMuted(!next);
+            setSoundOn(next);
+          }}
+        >
+          {soundOn ? '♪ on' : '♪ off'}
+        </button>
       </header>
 
 
