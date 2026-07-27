@@ -165,23 +165,37 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
 
     const bodies = bodiesOf(state);
 
-    // 3. Blooms: mark where the school has been, and reset exhausted cells
-    //    whose bloom has regrown.
+    // 3. Blooms: mark where the school has been, and reset every FALLOW cell
+    //    — not merely the exhausted ones.
+    //
+    // The condition is fallowness alone. Gating on `used >= BLOOM_BITES` as
+    // well stranded every partially eaten cell forever: take one to five
+    // bites and swim away, and both the count AND the latch survived for the
+    // rest of the session however long the cell lay untouched. Two
+    // consequences, both fatal. The sea depleted monotonically, breaking
+    // spec 2.5 ("the sea refills exactly the places you were too scared to
+    // go"). And a permanently latched cell bypasses the fallow test forever,
+    // so it stayed edible under a pile of hiding fish — re-enabling the
+    // tight-blob strategy bloom.ts's own header says rivalry exists to
+    // prevent. Clearing on fallowness is a strict generalisation: every
+    // latched cell necessarily has a bitesTaken entry (the bite that latches
+    // it is the same bite that writes the count), so the two maps are always
+    // cleared together and never drift apart.
     //
     // Gated on isBloomReady, NOT merely "recently visited": the eat branch
     // above already stamps lastVisit at the moment a bloom is exhausted, so
     // a naive "lastVisit(cell) >= t" check would fire on that very same
     // tick (the exhausting fish is necessarily still within BLOOM_VISIT_R,
     // since EAT_R < BLOOM_VISIT_R) and erase bitesTaken before it was ever
-    // observable. Gating on real fallow completion keeps an exhausted cell
-    // reading as spent (bitesTaken === BLOOM_BITES) for the whole dormant
-    // window, and clears it exactly when the cell becomes ready again — the
-    // same instant a fresh claim's own isBloomReady check would also pass —
-    // rather than early.
+    // observable. Gating on real fallow completion keeps a part-eaten or
+    // spent cell reading as it stands for the whole dormant window, and
+    // clears it exactly when the cell becomes ready again — the same instant
+    // a fresh claim's own isBloomReady check would also pass — not early.
     markVisits(state.lastVisit, bodies, t);
-    for (const [cell, used] of [...state.bitesTaken]) {
-      if (used >= BLOOM_BITES && isBloomReady(state.lastVisit, cell, t)) {
+    for (const [cell] of [...state.bitesTaken]) {
+      if (isBloomReady(state.lastVisit, cell, t)) {
         state.bitesTaken.delete(cell);
+        state.bloomSinceMs.delete(cell);
       }
     }
 

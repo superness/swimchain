@@ -13,7 +13,7 @@ import {
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
   BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS,
 } from './shoalConst';
-import { cellCentre } from './bloom';
+import { cellCentre, bitesLeft } from './bloom';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -219,12 +219,20 @@ check('orderLog does not mutate its input', (() => {
   // A fresh fish 'b' arrives at the cell centre and claims a bite, both at
   // ms=60000 (same tick, so the check runs before b's own arrival could
   // re-mark the cell -- though it wouldn't matter here regardless, since
-  // 60000 - 13500 = 46500 >= BLOOM_READY_MS (45000) either way). The cell's
-  // bitesTaken was already cleared by the existing exhausted-cell reset
-  // block back at t=12500 (used>=BLOOM_BITES and lastVisit(700)>=t both held
-  // that tick), so bitesLeft reads a fresh BLOOM_BITES (6), not 0. The bite
-  // credits: bitesTaken(700) becomes 1, and it re-latches (bloomSinceMs is
-  // set again) since 1 < BLOOM_BITES.
+  // 60000 - 13500 = 46500 >= BLOOM_READY_MS (45000) either way).
+  //
+  // The cell's bitesTaken was cleared by the regrowth reset in step 3 at the
+  // first tick the cell read fallow: 13500 + BLOOM_READY_MS(45000) = 58500,
+  // comfortably before b's arrival. (NOT at t=12500, as an earlier draft of
+  // this comment asserted: the reset is gated on isBloomReady, and at t=12500
+  // lastVisit(700) had just been stamped 12500 by the exhausting bite itself
+  // and re-stamped by that same tick's markVisits, so 12500-12500 = 0 is
+  // nowhere near 45000. Directly observed: bitesTaken(700) is still 6 at
+  // t=58250 and absent at t=58500.)
+  //
+  // So bitesLeft reads a fresh BLOOM_BITES (6), not 0. The bite credits:
+  // bitesTaken(700) becomes 1, and it re-latches (bloomSinceMs is set again)
+  // since 1 < BLOOM_BITES.
   const cell = 700;
   const c = cellCentre(cell);
   const log: LogEntry[] = [
@@ -244,6 +252,89 @@ check('orderLog does not mutate its input', (() => {
   check('an exhausted bloom regrows after the fallow window with nobody at the cell',
     s.bitesTaken.get(cell) === 1 && s.fish.get('b')!.lastBiteMs === 60_000 && s.bloomSinceMs.has(cell),
     { bitesTaken: s.bitesTaken.get(cell), bLastBiteMs: s.fish.get('b')!.lastBiteMs, latched: s.bloomSinceMs.has(cell) });
+}
+
+// --- A PARTLY eaten bloom regrows too --------------------------------------
+// Spec 2.5: "the sea refills exactly the places you were too scared to go."
+// The regrowth reset is gated on fallowness alone, not on exhaustion, so a
+// cell abandoned after one to five bites comes back — count AND latch. If it
+// did not, the sea would deplete monotonically and the stranded latch would
+// keep the cell edible under a pile of hiding fish forever, which is exactly
+// the tight-blob strategy rivalry exists to prevent.
+{
+  // Cell 700: col = 700 % 32 = 28, row = floor(700/32) = 21, so its centre is
+  // (28*128+64, 21*128+64) = (3648, 2752) by BLOOM_CELL arithmetic alone.
+  //
+  // 'a' parks there at ms=0 and takes exactly TWO of the six bites: the first
+  // at ms=0 (same tick as its own presence, hash 'a0' < 'ae0', so it is
+  // checked before that tick's markVisits against a still-empty lastVisit)
+  // which credits and latches, and a second at ms=EAT_COOLDOWN_MS(2500) which
+  // credits through the latch. bitesTaken(700) = 2, still latched, four bites
+  // left in the bloom.
+  //
+  // At ms=3000 'a' departs: same point, heading 0 (+x), speed 400 cu/s.
+  // reckon's dx = trunc(speed * COS[0] * dtMs / (TRIG_SCALE*1000)); COS[0] is
+  // exactly TRIG_SCALE so this is trunc(0.4 * dtMs), then quantized to QUANT=8.
+  //   t=3000  dt=0   dx=0   x=3648            distance 0   -> marked
+  //   t=3250  dt=250 dx=100 x=3748 -> q 3744  distance 96  -> marked (96^2=9216 <= 40000)
+  //   t=3500  dt=500 dx=200 x=3848 -> q 3848  distance 200 -> marked (200^2=40000 <= 40000, inclusive)
+  //   t=3750  dt=750 dx=300 x=3948 -> q 3944  distance 296 -> NOT marked (296^2=87616 > 40000)
+  // and it only moves further away (clamping at WORLD_W=4096, 448 cu from the
+  // centre) so lastVisit(700) freezes at 3500 for good.
+  //
+  // The cell is therefore fallow at the first tick t with t - 3500 >=
+  // BLOOM_READY_MS(45000), i.e. t = 48500 (48500/250 = 194, a real tick).
+  const cell = 700;
+  const c = cellCentre(cell);
+  const abandon: LogEntry[] = [
+    pres('a', c.x, c.y, 0),
+    eat('a', cell, 0),
+    eat('a', cell, EAT_COOLDOWN_MS),
+    { kind: 'presence', id: 'a', ms: 3_000, hash: 'a-depart',
+      vec: { x: c.x, y: c.y, heading: 0, speed: 400, t: 3_000 } },
+  ];
+  check('the abandoned cell is centred where BLOOM_CELL arithmetic says',
+    c.x === 3648 && c.y === 2752, c);
+
+  // One tick BEFORE the fallow window closes: nothing has been given back.
+  const before = foldShoal(abandon, 48_250);
+  check('a part-eaten bloom is still spent one tick before it is fallow',
+    before.bitesTaken.get(cell) === 2 && before.bloomSinceMs.has(cell),
+    { bitesTaken: before.bitesTaken.get(cell), latched: before.bloomSinceMs.has(cell) });
+
+  // The tick the fallow window closes: count and latch clear TOGETHER.
+  const after = foldShoal(abandon, 48_500);
+  check('a part-eaten bloom left fallow is restored to BLOOM_BITES',
+    bitesLeft(after.bitesTaken, cell) === BLOOM_BITES && !after.bitesTaken.has(cell),
+    { bitesLeft: bitesLeft(after.bitesTaken, cell), raw: after.bitesTaken.get(cell) });
+  check('the stranded latch is released with it', !after.bloomSinceMs.has(cell),
+    after.bloomSinceMs.has(cell));
+
+  // And the restoration is worth six bites to a newcomer, not four. 'b'
+  // arrives at ms=48750 (the first tick after the reset) on the cell centre;
+  // 48750 - 3500 = 45250 >= BLOOM_READY_MS so its first claim passes the real
+  // fallow test unlatched, credits, and re-latches. Five more at
+  // EAT_COOLDOWN_MS spacing — 51250, 53750, 56250, 58750, 61250 — ride the
+  // latch. Six credited bites, so b's last credited bite is at 61250.
+  //
+  // Under the un-generalised reset the cell would still read bitesTaken=2 AND
+  // still be latched when 'b' arrived, so only 6-2 = 4 claims could credit and
+  // b's lastBiteMs would stop at 56250. That is the falsifiable difference.
+  const newcomer: LogEntry[] = [
+    ...abandon,
+    pres('b', c.x, c.y, 48_750),
+    eat('b', cell, 48_750),
+    eat('b', cell, 48_750 + 1 * EAT_COOLDOWN_MS),
+    eat('b', cell, 48_750 + 2 * EAT_COOLDOWN_MS),
+    eat('b', cell, 48_750 + 3 * EAT_COOLDOWN_MS),
+    eat('b', cell, 48_750 + 4 * EAT_COOLDOWN_MS),
+    eat('b', cell, 48_750 + 5 * EAT_COOLDOWN_MS),
+  ];
+  const fed = foldShoal(newcomer, 61_250);
+  check('a newcomer draws a full six bites from the restored bloom',
+    fed.fish.get('b')!.lastBiteMs === 61_250 && fed.bitesTaken.get(cell) === BLOOM_BITES,
+    { lastBiteMs: fed.fish.get('b')!.lastBiteMs, expected: 61_250,
+      bitesTaken: fed.bitesTaken.get(cell) });
 }
 
 // --- Scatter voids the whole trip, not just the last bite ------------------
