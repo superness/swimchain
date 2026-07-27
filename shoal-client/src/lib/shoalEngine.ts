@@ -130,12 +130,19 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
         // a fish that just arrived and is about to self-consume the fallow
         // clock on its very next tick's markVisits.
         const latched = state.bloomSinceMs.has(e.cell);
+        // Judge the claim at the instant it was CLAIMED, not at whatever
+        // f.x/f.y happen to hold. This step runs before the tick's reckon
+        // pass, so f.x/f.y are still the previous tick's positions — up to
+        // TICK_MS(250) stale, which at SPEED_DART(220) is 55 cu against an
+        // EAT_R of 90. A darting fish could be credited for a cell it had
+        // already left, or refused one it had already reached.
+        const claimedAt = reckon(f.vec, e.ms);
         const ok = canEat({
           lastVisit: latched ? NEVER_VISITED : state.lastVisit,
           bitesTaken: state.bitesTaken,
           cell: e.cell,
-          fishX: f.x,
-          fishY: f.y,
+          fishX: claimedAt.x,
+          fishY: claimedAt.y,
           lastBiteMs: f.lastBiteMs,
           nowMs: e.ms,
         });

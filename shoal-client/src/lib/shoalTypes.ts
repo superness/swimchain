@@ -31,15 +31,24 @@ export interface Presence {
   hash: string;
 }
 
-/** A durable claim that a swimmer took a bite at a place and time. */
+/**
+ * A durable claim that a swimmer took a bite from a cell at a time.
+ *
+ * There is deliberately no claimed POSITION here. The fold judges the claim
+ * against reckon(fish.vec, claim.ms) — the claimant's dead-reckoned position
+ * at the instant claimed, derived from its own presence vector. A
+ * self-reported x/y would be a second source for a value the fold can already
+ * derive, so it could only ever agree redundantly or disagree, and a field
+ * that is carried but never consulted invites the next reader to trust it.
+ * (`cell` is self-reported and IS read, but it names WHICH bloom is being
+ * claimed — it is not derivable, and canEat still checks the fish is within
+ * EAT_R of that cell's centre.)
+ */
 export interface EatClaim {
   kind: 'eat';
   id: string;
   /** Bloom cell index the bite was taken from. */
   cell: number;
-  /** Claimed position of the bite, in cu. */
-  x: number;
-  y: number;
   ms: number;
   hash: string;
 }

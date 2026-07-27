@@ -25,8 +25,9 @@ function pres(id: string, x: number, y: number, ms: number, hash = id + ms): Pre
   return { kind: 'presence', id, ms, hash, vec: { x, y, heading: 0, speed: 0, t: ms } };
 }
 function eat(id: string, cell: number, ms: number, hash = id + 'e' + ms): EatClaim {
-  const c = cellCentre(cell);
-  return { kind: 'eat', id, cell, x: c.x, y: c.y, ms, hash };
+  // No position on the claim: the fold derives it from the claimant's own
+  // presence vector at `ms`. See EatClaim in shoalTypes.ts.
+  return { kind: 'eat', id, cell, ms, hash };
 }
 
 // --- Ordering --------------------------------------------------------------
@@ -237,6 +238,60 @@ check('orderLog does not mutate its input', (() => {
   const s = foldShoal(log, 1_000);
   check('a bite claimed away from the fish does not credit',
     s.fish.get('a')!.size < START_SIZE + BITE_GROWTH, s.fish.get('a')!.size);
+}
+
+// --- A claim is judged where the claimant WAS WHEN IT CLAIMED ---------------
+// Step 1 of a tick runs BEFORE step 2's reckon pass, so f.x/f.y at claim time
+// still hold the previous tick's position — up to TICK_MS(250) stale. At
+// SPEED_DART(220) that is 55 cu against an EAT_R of 90, easily enough to flip
+// a claim. Both directions are checked below on one trajectory.
+{
+  // Cell 100's centre is (4*128+64, 3*128+64) = (576, 448) by BLOOM_CELL
+  // arithmetic. 'h' parks on it and takes the first bite at ms=0 (same tick as
+  // its own presence, hash 'h0' < 'he0'), which credits against a
+  // never-visited cell and LATCHES the bloom. The latch matters: it takes the
+  // fallow test out of the picture for every later claim, so the only gate
+  // left for the moving fish is the EAT_R distance — which is what is under
+  // test. Five bites remain.
+  const cell = 100;
+  const c = cellCentre(cell);
+
+  // 'm' starts at (8, 448) — same y as the centre, so distance is purely the
+  // x gap — heading 0 (+x) at speed 320 cu/s. reckon's dx is
+  // trunc(speed * COS[0] * dtMs / (TRIG_SCALE*1000)) and COS[0] is exactly
+  // TRIG_SCALE, so dx = trunc(0.32 * dtMs): exactly 80 cu per TICK_MS(250),
+  // and 8 (QUANT) divides both 8 and 80, so quantization is a no-op and every
+  // tick position is exact.
+  //   t=1250  x =  8 + 5*80 = 408   distance to 576 = 168
+  //   t=1500  x =  8 + 6*80 = 488   distance          =  88
+  //   t=2000  x =  8 + 8*80 = 648   distance          =  72
+  //   t=2250  x =  8 + 9*80 = 728   distance          = 152
+  // EAT_R is 90, so 88 and 72 are inside (88^2 = 7744 and 72^2 = 5184, both
+  // <= EAT_R2 = 8100) while 168 and 152 are outside.
+  const setup: LogEntry[] = [
+    pres('h', c.x, c.y, 0),
+    eat('h', cell, 0),
+    { kind: 'presence', id: 'm', ms: 0, hash: 'm0',
+      vec: { x: 8, y: c.y, heading: 0, speed: 320, t: 0 } },
+  ];
+
+  // (a) Arriving: claimed at ms=1500, where 'm' is 88 cu out — inside EAT_R,
+  // so it must credit. The stale position the fold used to judge against is
+  // the one from tick 1250, 168 cu out, which would have refused it. So this
+  // check fails if the claim is judged on stale coordinates.
+  const arriving = foldShoal([...setup, eat('m', cell, 1_500)], 1_500);
+  check('a claim that only reaches the bloom at the claimed instant credits',
+    arriving.bitesTaken.get(cell) === 2 && arriving.fish.get('m')!.lastBiteMs === 1_500,
+    { bitesTaken: arriving.bitesTaken.get(cell), lastBiteMs: arriving.fish.get('m')!.lastBiteMs });
+
+  // (b) Leaving: claimed at ms=2250, where 'm' is 152 cu out — outside EAT_R,
+  // so it must NOT credit. The stale position from tick 2000 is 72 cu out,
+  // which WOULD have credited it: a fish being paid for a bloom it had
+  // already swum past. Only 'h''s opening bite may stand.
+  const leaving = foldShoal([...setup, eat('m', cell, 2_250)], 2_250);
+  check('a claim from a fish that has already left the bloom does not credit',
+    leaving.bitesTaken.get(cell) === 1 && leaving.fish.get('m')!.lastBiteMs === -1,
+    { bitesTaken: leaving.bitesTaken.get(cell), lastBiteMs: leaving.fish.get('m')!.lastBiteMs });
 }
 
 // --- The bloom latch --------------------------------------------------------

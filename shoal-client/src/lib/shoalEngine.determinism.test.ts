@@ -207,7 +207,7 @@ function richSession(): LogEntry[] {
   // check runs before this tick's markVisits — same ms, and hash 'e00' <
   // 'e0e0' (comparing the third character, '0' < 'e'), the identical
   // convention shoalEngine.test.ts uses for the same reason.
-  out.push({ kind: 'eat', id: 'e0', cell, x: centre.x, y: centre.y, ms: 0, hash: 'e0e0' });
+  out.push({ kind: 'eat', id: 'e0', cell, ms: 0, hash: 'e0e0' });
 
   // --- Eight outsiders, spread far from the cluster in a pattern chosen so
   // the median — see coreCentre/medianInt: for an EVEN count, the LOWER of
