@@ -112,6 +112,35 @@ check('an empty sea has no spread', spreadPerMille([]) === 0);
   // Nobody outside means nobody is preferred.
   check('a tight school has no contributor', topContributor([at('a', 0, 0), at('b', 0, 0)], new Map()) === null);
 }
+{
+  // The tertiary tiebreak: equal outside-ticks AND equal size. This is a LIVE
+  // consensus decision, not a curiosity — the preferred target jumps the queue
+  // in selectTaken, so whoever wins this comparison is a fish that dies. Two
+  // clients resolving it differently is the "shark ate the wrong fish"
+  // divergence. And a tie here is the normal case, not an edge case: a school
+  // that all arrived together and has all been outside the core since is
+  // exactly tied on both keys.
+  //
+  // x-values [0,0,0,90000,90001] sorted, odd count of 5, so medianInt takes
+  // index (5-1)/2 = 2 -> 0; y is all zeros -> 0. Centre is (0,0). 'a','b','c'
+  // sit on it; 'x' at 90000 and 'y' at 90001 are both far past CORE_R(620).
+  // Both are size 500 and both are given 10 ticks outside, so ticks and size
+  // are exhausted as discriminators and only the id is left.
+  //
+  // outsideCore returns ids ASCENDING and topContributor replaces its running
+  // best only on a STRICT improvement, so the first id it scans survives:
+  // the LOWER id, 'x'.
+  const bodies = [at('a', 0, 0), at('b', 0, 0), at('c', 0, 0), at('x', 90_000, 0, 500), at('y', 90_001, 0, 500)];
+  const dead = new Map([['x', 10], ['y', 10]]);
+  check('the tie is genuine: same ticks, same size',
+    dead.get('x') === dead.get('y') && bodies[3].size === bodies[4].size,
+    { ticks: [...dead], sizes: [bodies[3].size, bodies[4].size] });
+  check('ties on time AND size break toward the lower id',
+    topContributor(bodies, dead) === 'x', topContributor(bodies, dead));
+  check('the id tiebreak does not depend on input array order',
+    topContributor([...bodies].reverse(), dead) === 'x',
+    topContributor([...bodies].reverse(), dead));
+}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

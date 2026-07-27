@@ -45,23 +45,48 @@ function session(n: number, durationMs: number): LogEntry[] {
   return out;
 }
 
-// Fingerprint every field that could diverge between two clients that folded
-// the same log in different delivery orders. `recentBites` is included even
-// though this file's sessions never post an EatClaim (so it is always empty
-// here) — Fish carries it since Task 7's scatter-voids-the-trip fix, and
-// leaving it out of the fingerprint would let a fold bug that corrupts only
-// that field pass undetected. Every map and array is sorted before
-// serialising, so insertion order — which the fold's own iteration order
-// already does not guarantee — can never leak into the comparison.
+// Fingerprint every field of ShoalState that could diverge between two clients
+// that folded the same log in different delivery orders. `recentBites` is
+// included even though this file's sessions never post an EatClaim (so it is
+// always empty here) — Fish carries it since Task 7's scatter-voids-the-trip
+// fix, and leaving it out of the fingerprint would let a fold bug that
+// corrupts only that field pass undetected. Every map and array is sorted
+// before serialising, so insertion order — which the fold's own iteration
+// order already does not guarantee — can never leak into the comparison.
+//
+// The bloom and hush fields below were originally omitted, under a header that
+// claimed to cover "every field that could diverge". They all carry
+// divergence-capable state and none is derivable from what was here:
+//   lastVisit       decides whether a cell is fallow, so it decides whether a
+//                   future bite credits at all
+//   bloomSinceMs    the latch — whether a cell bypasses the fallow test
+//   departed        size, cooldown and void-ledger of every lapsed swimmer; a
+//                   divergence here stays invisible until they come back
+//   hushStartMs,    the in-flight hush. Two clients disagreeing mid-hush have
+//   lockedPositions, already diverged even if the resolution has not landed
+//   lockedPreferred yet; waiting for lastTaken to differ is waiting until it
+//                   is a player-visible bug.
 const fingerprint = (s: ReturnType<typeof foldShoal>) =>
   JSON.stringify({
     fish: [...s.fish.entries()]
       .sort(([a], [b]) => (a < b ? -1 : 1))
       .map(([k, v]) => [k, v.size, v.x, v.y, [...v.recentBites].sort((a, b) => a - b)]),
+    departed: [...s.departed.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([k, v]) => [k, v.size, v.lastScatterMs, v.lastBiteMs, [...v.recentBites].sort((a, b) => a - b)]),
     tension: s.tension,
     lastTaken: [...s.lastTaken].sort(),
     lastSweepMs: s.lastSweepMs,
     bites: [...s.bitesTaken.entries()].sort(([a], [b]) => a - b),
+    lastVisit: [...s.lastVisit.entries()].sort(([a], [b]) => a - b),
+    bloomSince: [...s.bloomSinceMs.entries()].sort(([a], [b]) => a - b),
+    hushStartMs: s.hushStartMs,
+    lockedPositions: s.lockedPositions === null
+      ? null
+      : [...s.lockedPositions.entries()]
+          .sort(([a], [b]) => (a < b ? -1 : 1))
+          .map(([k, p]) => [k, p.x, p.y, p.size]),
+    lockedPreferred: s.lockedPreferred,
   });
 
 // --- Replay ----------------------------------------------------------------
@@ -419,6 +444,57 @@ const resolveAtMs = triggerAtMs + HUSH_MS;
   check('a shuffled RICH session folds to the same state as the ordered one',
     fingerprint(ordered) === fingerprint(reshuffled),
     { ordered: fingerprint(ordered), reshuffled: fingerprint(reshuffled) });
+}
+
+// --- The fingerprint must actually discriminate ------------------------------
+{
+  // Adding a field to the fingerprint is unfalsifiable decoration unless the
+  // fingerprint provably changes when that field changes. Take a real folded
+  // state, perturb exactly one field, and require the string to move. Deleting
+  // any line from the fingerprint fails the matching check here.
+  //
+  // The checkpoint is t=24000: after the input lock (triggerAtMs 18000 +
+  // LOCK_MS 4000 = 22000) and before resolution (18000 + HUSH_MS 8000 =
+  // 26000), so the hush fields are populated rather than sitting at their
+  // inert defaults of -1/null.
+  const DREAD_MS = 24_000;
+  const base = foldShoal(richLog, DREAD_MS);
+  const baseline = fingerprint(base);
+
+  check('the dread checkpoint is genuinely mid-hush with inputs already locked',
+    base.hushStartMs === triggerAtMs && base.lockedPositions !== null
+      && base.lockedPreferred === 'o0' && base.lastVisit.size > 0 && base.bloomSinceMs.size > 0,
+    { hushStartMs: base.hushStartMs, triggerAtMs, locked: base.lockedPositions !== null,
+      lockedPreferred: base.lockedPreferred, lastVisit: base.lastVisit.size,
+      bloomSince: base.bloomSinceMs.size });
+
+  const perturb = (field: string, mutate: (s: ReturnType<typeof foldShoal>) => void) => {
+    const s = foldShoal(richLog, DREAD_MS);
+    mutate(s);
+    check(`the fingerprint notices a change to ${field}`, fingerprint(s) !== baseline, field);
+  };
+  perturb('lastVisit', (s) => { s.lastVisit.set(1, 1); });
+  perturb('bloomSinceMs', (s) => { s.bloomSinceMs.set(1, 1); });
+  perturb('hushStartMs', (s) => { s.hushStartMs = 12_345; });
+  perturb('lockedPositions', (s) => { s.lockedPositions!.set('zz', { x: 1, y: 2, size: 3 }); });
+  perturb('lockedPreferred', (s) => { s.lockedPreferred = 'zz'; });
+  perturb('departed', (s) => {
+    s.departed.set('zz', { size: 1, lastScatterMs: -1, lastBiteMs: -1, recentBites: [] });
+  });
+  perturb('tension', (s) => { s.tension += 1; });
+  perturb('bitesTaken', (s) => { s.bitesTaken.set(9_999, 1); });
+
+  // And the mid-hush state must survive a shuffled delivery order too — the
+  // ordered/shuffled comparison above only ever looked at t=30000, by which
+  // point the hush has resolved and every hush field is back to its default.
+  const shuffledDread = [...richLog];
+  const rnd = lcg(20260729);
+  for (let i = shuffledDread.length - 1; i > 0; i--) {
+    const j = rnd() % (i + 1);
+    [shuffledDread[i], shuffledDread[j]] = [shuffledDread[j], shuffledDread[i]];
+  }
+  check('a shuffled log folds identically mid-hush, locked inputs and all',
+    fingerprint(foldShoal(shuffledDread, DREAD_MS)) === baseline);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
