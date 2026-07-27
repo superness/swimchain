@@ -11,6 +11,7 @@ import type { LogEntry, Presence, EatClaim } from './shoalTypes';
 import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST, TICK_MS,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS, BLOOM_READY_MS,
+  BLOOM_BITES, EAT_COOLDOWN_MS,
 } from './shoalConst';
 import { cellCentre } from './bloom';
 
@@ -132,6 +133,117 @@ check('orderLog does not mutate its input', (() => {
   const s = foldShoal(log, 1_000);
   check('a bite claimed away from the fish does not credit',
     s.fish.get('a')!.size < START_SIZE + BITE_GROWTH, s.fish.get('a')!.size);
+}
+
+// --- The bloom latch --------------------------------------------------------
+// bloomSinceMs makes a bloom RIVALROUS: once a cell has earned its first
+// credited bite while genuinely fallow, it stays edible for BLOOM_BITES
+// total bites regardless of who keeps swimming over it, because markVisits
+// would otherwise re-mark the cell "recently visited" on every subsequent
+// tick a fish stands there and permanently block bites 2 through 6.
+{
+  // Eating requires genuine fallow FIRST: an unlatched cell that a fish has
+  // been parked on is NOT ready, because that fish's own presence re-marks
+  // the cell as visited on every tick it occupies it (see markVisits). The
+  // presence lands at ms=0 (tick t=0) and marks the cell again at t=250; by
+  // the time the eat claim at ms=500 (tick t=500) is checked, lastVisit(700)
+  // reads 250, and 500-250=250 is far short of BLOOM_READY_MS (45000), so
+  // isBloomReady is false and the bite must NOT credit. untilMs is kept at
+  // 500 (ticks t=0,250,500 -> tickCount 1,2,3) so no hunger tick fires and
+  // this test is not contaminated by hunger arithmetic.
+  const cell = 700;
+  const c = cellCentre(cell);
+  const log: LogEntry[] = [pres('a', c.x, c.y, 0), eat('a', cell, 500)];
+  const s = foldShoal(log, 500);
+  check('an unlatched, recently-visited cell still refuses the bite',
+    s.fish.get('a')!.size === START_SIZE && (s.bitesTaken.get(cell) ?? 0) === 0
+      && !s.bloomSinceMs.has(cell),
+    { size: s.fish.get('a')!.size, bitesTaken: s.bitesTaken.get(cell), latched: s.bloomSinceMs.has(cell) });
+}
+{
+  // The six-bite test: mirrors the coordinator's probe (one fish parked on a
+  // cell centre, claims spaced EAT_COOLDOWN_MS apart). The FIRST claim lands
+  // in the SAME tick as the presence (both ms=0), so it is checked before
+  // that tick's markVisits ever runs against a still-empty lastVisit -- it
+  // credits and latches the bloom (bloomSinceMs.set(cell, 0)). Every later
+  // claim, spaced exactly EAT_COOLDOWN_MS (2500ms) apart so the cooldown
+  // check in canEat never blocks it, is checked against NEVER_VISITED (since
+  // the cell is latched) and credits regardless of the fish continuously
+  // re-marking the cell as visited. That is claims 2 through 6, landing at
+  // ms 2500, 5000, 7500, 10000, 12500 -- six credited bites total. The 6th
+  // claim's credit brings the running count to BLOOM_BITES (6), so the eat
+  // branch unlatches the cell and stamps lastVisit(700) = 12500. A 7th claim
+  // at ms=15000 (still a valid EAT_COOLDOWN_MS-spaced claim) is now checked
+  // unlatched against the REAL lastVisit, which has been kept fresh every
+  // tick since by the fish's continued presence at the cell (most recently
+  // refreshed at t=14750, just before this claim's tick t=15000 is
+  // processed) -- nowMs - seen = 15000 - 14750 = 250, nowhere near
+  // BLOOM_READY_MS, so isBloomReady is false and the 7th claim must NOT
+  // credit. bitesTaken(700) must therefore read exactly 6, not 7, and the
+  // fish's lastBiteMs must still be 12500 (from bite 6), not 15000.
+  const cell = 700;
+  const c = cellCentre(cell);
+  const log: LogEntry[] = [
+    pres('a', c.x, c.y, 0),
+    eat('a', cell, 0),
+    eat('a', cell, EAT_COOLDOWN_MS),
+    eat('a', cell, 2 * EAT_COOLDOWN_MS),
+    eat('a', cell, 3 * EAT_COOLDOWN_MS),
+    eat('a', cell, 4 * EAT_COOLDOWN_MS),
+    eat('a', cell, 5 * EAT_COOLDOWN_MS),
+    eat('a', cell, 6 * EAT_COOLDOWN_MS), // the 7th claim: must not credit
+  ];
+  const s = foldShoal(log, 20_000);
+  check('a bloom yields exactly BLOOM_BITES credited bites and no more',
+    s.bitesTaken.get(cell) === BLOOM_BITES && s.fish.get('a')!.lastBiteMs === 5 * EAT_COOLDOWN_MS,
+    { bitesTaken: s.bitesTaken.get(cell), lastBiteMs: s.fish.get('a')!.lastBiteMs, expectedLastBiteMs: 5 * EAT_COOLDOWN_MS });
+  check('the latch is released once the bloom is exhausted', !s.bloomSinceMs.has(cell), s.bloomSinceMs.has(cell));
+}
+{
+  // Regrowth: after exhaustion, waiting long enough with nobody at the cell
+  // lets it bloom again, with a fresh bite count.
+  //
+  // Fish 'a' repeats the six-bite sequence above (exhausting the bloom at
+  // ms=12500, which unlatches it and stamps lastVisit(700)=12500). At
+  // ms=13000 'a' issues a NEW presence at the same starting point but now
+  // heading at brad 0 (+x) with speed=400 cu/s, so it dead-reckons away from
+  // the cell. reckon's dx = speed*dtMs/1000 (COS[0]=TRIG_SCALE exactly, so
+  // the trig factor cancels): at t=13250, dt=250 -> dx=100, distance to the
+  // cell centre is 100, still <= BLOOM_VISIT_R (200), so markVisits marks it
+  // again at t=13250. At t=13500, dt=500 -> dx=200, distance is EXACTLY 200
+  // = BLOOM_VISIT_R, still within range (dist2 check is <=), marked again.
+  // At t=13750, dt=750 -> dx=300, distance 300 > 200, no longer marked. So
+  // the last tick that marks cell 700 via 'a' is t=13500, freezing
+  // lastVisit(700) = 13500 from then on (nobody else is near it).
+  //
+  // A fresh fish 'b' arrives at the cell centre and claims a bite, both at
+  // ms=60000 (same tick, so the check runs before b's own arrival could
+  // re-mark the cell -- though it wouldn't matter here regardless, since
+  // 60000 - 13500 = 46500 >= BLOOM_READY_MS (45000) either way). The cell's
+  // bitesTaken was already cleared by the existing exhausted-cell reset
+  // block back at t=12500 (used>=BLOOM_BITES and lastVisit(700)>=t both held
+  // that tick), so bitesLeft reads a fresh BLOOM_BITES (6), not 0. The bite
+  // credits: bitesTaken(700) becomes 1, and it re-latches (bloomSinceMs is
+  // set again) since 1 < BLOOM_BITES.
+  const cell = 700;
+  const c = cellCentre(cell);
+  const log: LogEntry[] = [
+    pres('a', c.x, c.y, 0),
+    eat('a', cell, 0),
+    eat('a', cell, EAT_COOLDOWN_MS),
+    eat('a', cell, 2 * EAT_COOLDOWN_MS),
+    eat('a', cell, 3 * EAT_COOLDOWN_MS),
+    eat('a', cell, 4 * EAT_COOLDOWN_MS),
+    eat('a', cell, 5 * EAT_COOLDOWN_MS),
+    { kind: 'presence', id: 'a', ms: 13_000, hash: 'a-depart',
+      vec: { x: c.x, y: c.y, heading: 0, speed: 400, t: 13_000 } },
+    pres('b', c.x, c.y, 60_000),
+    eat('b', cell, 60_000),
+  ];
+  const s = foldShoal(log, 60_000);
+  check('an exhausted bloom regrows after the fallow window with nobody at the cell',
+    s.bitesTaken.get(cell) === 1 && s.fish.get('b')!.lastBiteMs === 60_000 && s.bloomSinceMs.has(cell),
+    { bitesTaken: s.bitesTaken.get(cell), bLastBiteMs: s.fish.get('b')!.lastBiteMs, latched: s.bloomSinceMs.has(cell) });
 }
 
 // --- Determinism -----------------------------------------------------------

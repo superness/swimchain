@@ -12,12 +12,21 @@ import { reckon } from './fixed';
 import { type Body } from './shelter';
 import { stepTension, topContributor, outsideCore } from './tension';
 import { hushPhase, shouldStartHush, isResolveTick, selectTaken } from './sweep';
-import { markVisits, canEat, cellCentre } from './bloom';
+import { markVisits, canEat, cellCentre, isBloomReady } from './bloom';
 import type { LogEntry, ShoalState, Fish } from './shoalTypes';
 import {
   TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BLOOM_BITES, VOID_WINDOW_MS, LOCK_MS,
 } from './shoalConst';
+
+/**
+ * A cell absent from `lastVisit` already reads as ready ("the sea starts
+ * full" — see bloom.ts's isBloomReady). Passing this empty, frozen map in
+ * place of the real `lastVisit` is an honest way to tell canEat "readiness
+ * for this cell is already settled (it latched), don't re-run the fallow
+ * test" without touching canEat's signature or lying about real visit data.
+ */
+const NEVER_VISITED: ReadonlyMap<number, number> = new Map();
 
 /**
  * Total order over the log: authoring ms, then content hash.
@@ -102,8 +111,16 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
       } else {
         const f = state.fish.get(e.id);
         if (!f) continue; // a bite from a fish with no live presence never credits
+        // A latched bloom (one that has already yielded at least one credited
+        // bite and is not yet exhausted) bypasses the fallow test: it stays
+        // edible for whoever gets to it, regardless of who has swum over the
+        // cell since. An unlatched bloom must still pass canEat's real
+        // isBloomReady check against state.lastVisit — including the case of
+        // a fish that just arrived and is about to self-consume the fallow
+        // clock on its very next tick's markVisits.
+        const latched = state.bloomSinceMs.has(e.cell);
         const ok = canEat({
-          lastVisit: state.lastVisit,
+          lastVisit: latched ? NEVER_VISITED : state.lastVisit,
           bitesTaken: state.bitesTaken,
           cell: e.cell,
           fishX: f.x,
@@ -112,7 +129,20 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
           nowMs: e.ms,
         });
         if (!ok) continue;
-        state.bitesTaken.set(e.cell, (state.bitesTaken.get(e.cell) ?? 0) + 1);
+        const count = (state.bitesTaken.get(e.cell) ?? 0) + 1;
+        state.bitesTaken.set(e.cell, count);
+        // This is the bite that opens the bloom: latch it so the next five
+        // don't have to re-pass the fallow test just because someone is
+        // standing on the cell.
+        if (!latched) state.bloomSinceMs.set(e.cell, e.ms);
+        // This is the bite that empties it: the bloom is gone. Unlatch, and
+        // restart the fallow clock from this exact moment so the existing
+        // exhausted-cell reset below (and any later isBloomReady check) sees
+        // a genuinely fresh "last visited" stamp rather than a stale one.
+        if (count >= BLOOM_BITES) {
+          state.bloomSinceMs.delete(e.cell);
+          state.lastVisit.set(e.cell, e.ms);
+        }
         f.size = f.size + BITE_GROWTH;
         f.lastBiteMs = e.ms;
       }
@@ -130,9 +160,20 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
 
     // 3. Blooms: mark where the school has been, and reset exhausted cells
     //    whose bloom has regrown.
+    //
+    // Gated on isBloomReady, NOT merely "recently visited": the eat branch
+    // above already stamps lastVisit at the moment a bloom is exhausted, so
+    // a naive "lastVisit(cell) >= t" check would fire on that very same
+    // tick (the exhausting fish is necessarily still within BLOOM_VISIT_R,
+    // since EAT_R < BLOOM_VISIT_R) and erase bitesTaken before it was ever
+    // observable. Gating on real fallow completion keeps an exhausted cell
+    // reading as spent (bitesTaken === BLOOM_BITES) for the whole dormant
+    // window, and clears it exactly when the cell becomes ready again — the
+    // same instant a fresh claim's own isBloomReady check would also pass —
+    // rather than early.
     markVisits(state.lastVisit, bodies, t);
     for (const [cell, used] of [...state.bitesTaken]) {
-      if (used >= BLOOM_BITES && (state.lastVisit.get(cell) ?? -Infinity) >= t) {
+      if (used >= BLOOM_BITES && isBloomReady(state.lastVisit, cell, t)) {
         state.bitesTaken.delete(cell);
       }
     }
