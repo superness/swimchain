@@ -400,10 +400,44 @@ clients, so the consensus surface is kept deliberately small and decided **now**
 Nothing in the left column may be tuned after launch. Everything that could plausibly live on
 the right has been put there.
 
-### 3.9 OPEN DECISION — what window does the fold cover?
+### 3.9 RESOLVED — the fold covers one epoch, seeded by a checkpoint
 
-Raised by the engine's final review (2026-07-27) and deliberately **not** answered in
-code, because it is a consensus decision that cannot be patched later.
+**Decision, 2026-07-27.** Taken now rather than after launch: no one has played yet, so the
+permanence constraint does not bind until plan 4 ships. Revisit before then if plan 2
+surfaces a reason.
+
+**The rule: a client folds exactly one epoch, seeded by the previous epoch's checkpoint.**
+
+1. **The tick origin is grid-aligned and explicit.** `foldShoal` takes an epoch start
+   rather than reading `log[0].ms`, and that start is a multiple of `TICK_MS`. This alone
+   removes the phase divergence measured in review (one stale entry moved a sweep 1.2 s).
+2. **An epoch is a fixed era** — `EPOCH_MS`, one hour. Fold cost is therefore bounded at
+   `EPOCH_MS / TICK_MS` = 14,400 ticks regardless of how old the sea is. The ~69 h
+   lifetime ceiling disappears, because nothing ever replays from genesis.
+3. **Only size crosses an epoch boundary.** Everything else is short-lived by construction:
+   `lastVisit` matters for `BLOOM_READY_MS` (45 s), tension and the hush for seconds,
+   `recentBites` for `VOID_WINDOW_MS` (10 s). So a checkpoint is just the swimmer→size map
+   (plus `departed`, which is the same thing for absent players).
+4. **Checkpoints are published, deterministic, and self-verifying going forward.** Every
+   honest client computes the identical checkpoint at an epoch boundary, so publishing is
+   unprivileged and disagreement is detectable by anyone.
+5. **A cold joiner adopts the newest checkpoint it can see and verifies forward from
+   there** — it does not re-derive history back to genesis. This is the light-client
+   posture, and it matches the operator's standing ruling on Chips & Dip: *we can be as
+   secure and authentic as Cookie Clicker is; it is a game.* A joiner who wants more
+   assurance may fold additional epochs backwards; nothing stops them.
+6. **`departed` prunes at a checkpoint** once a swimmer has been absent for a full epoch:
+   their size is dropped and they return at `START_SIZE`. This bounds the map and is the
+   one place the decision is visible in play — an hour away is forgiveable, a week is a
+   fresh start.
+
+Consequence for plan 2: the shell needs an **incremental fold** (`foldTick`) rather than
+re-folding an epoch on every frame, and the checkpoint boundary is the natural seam for it.
+Design the two together.
+
+#### The problem this replaced
+
+Raised by the engine's final review (2026-07-27).
 
 `BLOOM_WINDOW_MS` is declared and **not enforced** — `lastVisit` is never bounded to any
 window. The tick grid is anchored to the first log entry's timestamp, so two clients whose
@@ -423,10 +457,7 @@ Three consequences hang off the same unanswered question:
 3. **`departed` records never expire.** Whether a swimmer's banked size decays after a
    long absence changes what returning is worth, so it is consensus either way.
 
-The likely shape of the answer is a **checkpointed epoch**: a grid-aligned origin, a
-bounded replay window behind it, and a folded checkpoint that new clients adopt instead of
-replaying from genesis. That interacts directly with the incremental-fold seam the shell
-plan needs, so decide the two together.
+All three are answered by the epoch rule above.
 
 ---
 
