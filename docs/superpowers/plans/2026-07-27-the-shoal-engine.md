@@ -304,7 +304,7 @@ export const BITE_GROWTH = 12;
  * Size lost to a scatter. FIXED, not a percentage — so big fish risk
  * proportionally less and are pulled out of the ball rather than parked in it.
  */
-export const SCATTER_COST = 45;
+export const SCATTER_COST = 30;
 /** Hunger ticks once every this many fold ticks (once per second at 250ms). */
 export const HUNGER_TICK_INTERVAL = 4;
 /** Size lost per hunger tick, while present and not eating. */
