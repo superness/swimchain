@@ -77,8 +77,11 @@ check('an empty sea has no spread', spreadPerMille([]) === 0);
   check('tension never goes below zero', stepTension(0, tight) >= 0);
 }
 {
-  // 3 of 4 outside = 750 per mille. Delta = 750 - 250 = 500, by hand.
-  const loose = [at('a', 0, 0), at('f1', 90_000, 0), at('f2', 90_001, 0), at('f3', 90_002, 0)];
+  // x-values [0,90000,180000,180001]; median x=90000; centre=(90000,0).
+  // 'a' at (0,0) is 90000 away → outside; 'mid' at (90000,0) is at centre → inside;
+  // 'f2' and 'f3' are ~90000 away → outside. 3 of 4 outside = 750 per mille.
+  // Delta = 750 - 250 = 500, by hand.
+  const loose = [at('a', 0, 0), at('mid', 90_000, 0), at('f2', 180_000, 0), at('f3', 180_001, 0)];
   check('a loose school raises tension by spread minus neutral',
     stepTension(1_000, loose) === 1_000 + (spreadPerMille(loose) - TENSION_NEUTRAL),
     { got: stepTension(1_000, loose), spread: spreadPerMille(loose), TENSION_NEUTRAL });
@@ -86,7 +89,7 @@ check('an empty sea has no spread', spreadPerMille([]) === 0);
 }
 // The trigger must be reachable in a plausible number of ticks, not never.
 {
-  const loose = [at('a', 0, 0), at('f1', 90_000, 0), at('f2', 90_001, 0), at('f3', 90_002, 0)];
+  const loose = [at('a', 0, 0), at('mid', 90_000, 0), at('f2', 180_000, 0), at('f3', 180_001, 0)];
   let t = 0, ticks = 0;
   while (t < TENSION_TRIGGER && ticks < 10_000) { t = stepTension(t, loose); ticks++; }
   check('a loose school reaches the trigger', t >= TENSION_TRIGGER, { ticks });
