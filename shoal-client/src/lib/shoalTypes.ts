@@ -74,12 +74,55 @@ export interface Fish {
   recentBites: number[];
 }
 
+/**
+ * What a swimmer keeps when its presence lapses and it is evicted from
+ * `fish`. Spec 2.7: "decay ticks only while present. Time away costs
+ * nothing, ever. You return the size you left."
+ *
+ * The rule this encodes is that eviction is a PRESENCE-LIVENESS event, not a
+ * game event: nothing durable may be created or destroyed by it. So every
+ * durable per-fish field is carried, not just size —
+ *
+ *  - `size`, obviously: seeding a returning fish from START_SIZE instead
+ *    inverts the spec into punishing absence, which is the exact pressure
+ *    that makes quitting-while-ahead dominant.
+ *  - `lastBiteMs`, because it gates EAT_COOLDOWN_MS. A bite is credited at
+ *    e.ms, and e.ms may be as late as the fish's own expiresMs, so a fish can
+ *    legally bank a bite one tick before eviction and rejoin the very next
+ *    tick. Dropping lastBiteMs would hand that fish a free bite — "lapse and
+ *    return" as a cooldown reset.
+ *  - `recentBites`, by the same argument against the scatter-void ledger: a
+ *    bite banked just before eviction is still inside VOID_WINDOW_MS when the
+ *    fish returns, and dropping the ledger would launder it out of reach of
+ *    the next sweep.
+ *  - `lastScatterMs`, so a returning fish reports the same history it left
+ *    with.
+ *
+ * Hunger is deliberately NOT here: it is defined as a while-present cost, it
+ * holds no per-fish state of its own beyond lastBiteMs, and it simply stops
+ * accruing while a fish is absent. Nor is `outsideTicks`, the tension
+ * accumulator: an absent fish is not out in the open, so it correctly resets.
+ */
+export interface Departed {
+  size: number;
+  lastScatterMs: number;
+  lastBiteMs: number;
+  recentBites: number[];
+}
+
 /** The folded world at a given tick. */
 export interface ShoalState {
   /** Tick time in ms. */
   nowMs: number;
   /** Live swimmers, keyed by id. Insertion order is never relied upon. */
   fish: Map<string, Fish>;
+  /**
+   * Durable per-swimmer record for everyone whose presence has lapsed,
+   * written at the moment of eviction and read when they come back. Outlives
+   * `fish` on purpose — see Departed. A swimmer who is currently live has no
+   * entry that is authoritative; `fish` always wins while it exists.
+   */
+  departed: Map<string, Departed>;
   /** Accumulated tension, integer, floored at 0. */
   tension: number;
   /** Ms at which the current hush began, or -1 if no hush is running. */

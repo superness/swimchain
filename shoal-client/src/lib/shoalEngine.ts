@@ -46,6 +46,7 @@ export function emptyState(startMs: number): ShoalState {
   return {
     nowMs: startMs,
     fish: new Map(),
+    departed: new Map(),
     tension: 0,
     hushStartMs: -1,
     lockedPositions: null,
@@ -99,16 +100,24 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
         // coordinates before the reckon pass below runs — enough to flip an
         // EAT_R2 boundary.
         const seed = reckon(e.vec, e.ms);
+        // Three sources, in strict priority. A live fish carries its own
+        // state forward. A fish whose presence lapsed is rebuilt from its
+        // durable `departed` record — "you return the size you left"
+        // (spec 2.7). Only a genuinely new swimmer starts at START_SIZE.
+        // Reading START_SIZE for a returning fish is what turned time away
+        // into a punishment: it silently confiscated everything above
+        // START_SIZE and refunded everything below it.
+        const prior = existing ?? state.departed.get(e.id);
         state.fish.set(e.id, {
           id: e.id,
           x: seed.x,
           y: seed.y,
-          size: existing ? existing.size : START_SIZE,
+          size: prior ? prior.size : START_SIZE,
           vec: e.vec,
           expiresMs: e.ms + PRESENCE_TTL_MS,
-          lastScatterMs: existing ? existing.lastScatterMs : -1,
-          lastBiteMs: existing ? existing.lastBiteMs : -1,
-          recentBites: existing ? existing.recentBites : [],
+          lastScatterMs: prior ? prior.lastScatterMs : -1,
+          lastBiteMs: prior ? prior.lastBiteMs : -1,
+          recentBites: prior ? prior.recentBites : [],
         });
       } else {
         const f = state.fish.get(e.id);
@@ -156,8 +165,25 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
     }
 
     // 2. Drop expired presence, then dead-reckon everyone forward.
+    //
+    // Eviction banks the swimmer's durable state before deleting the row, so
+    // hunger stops (a present-only cost) but nothing durable is lost. This is
+    // the single write site for `departed`: it captures everything applied to
+    // the fish up to and including this tick's step 1, which a bank-at-
+    // end-of-tick sweep would miss for a fish evicted on the same tick a
+    // backdated bite credited to it.
     for (const [id, f] of [...state.fish]) {
-      if (t > f.expiresMs) { state.fish.delete(id); outsideTicks.delete(id); continue; }
+      if (t > f.expiresMs) {
+        state.departed.set(id, {
+          size: f.size,
+          lastScatterMs: f.lastScatterMs,
+          lastBiteMs: f.lastBiteMs,
+          recentBites: f.recentBites,
+        });
+        state.fish.delete(id);
+        outsideTicks.delete(id);
+        continue;
+      }
       const p = reckon(f.vec, t);
       f.x = p.x;
       f.y = p.y;

@@ -97,6 +97,110 @@ check('orderLog does not mutate its input', (() => {
   check('hunger never drops below the floor', s.fish.get('a')!.size >= MIN_SIZE, s.fish.get('a')!.size);
 }
 
+// --- Time away costs nothing ----------------------------------------------
+// Spec 2.7, named load-bearing there: "decay ticks only while present. Time
+// away costs nothing, ever. You return the size you left." Seeding a
+// returning swimmer from START_SIZE instead inverts that into punishing
+// absence, which is the pressure that makes quitting-while-ahead dominant.
+{
+  // Two cells, far apart, so the second is genuinely fallow when 'a' gets
+  // there. cellCentre arithmetic (col*BLOOM_CELL + BLOOM_CELL/2):
+  //   cell 700 -> col 700%32 = 28, row floor(700/32) = 21 -> (3648, 2752)
+  //   cell 100 -> col 100%32 =  4, row floor(100/32) =  3 -> ( 576,  448)
+  const cellA = 700, cellB = 100;
+  const A = cellCentre(cellA), B = cellCentre(cellB);
+  check('the two feeding cells are where BLOOM_CELL arithmetic puts them',
+    A.x === 3648 && A.y === 2752 && B.x === 576 && B.y === 448, { A, B });
+
+  // 'a' parks on A at ms=0 and clears the bloom: six bites at EAT_COOLDOWN_MS
+  // spacing (0, 2500, 5000, 7500, 10000, 12500). The first lands in the same
+  // tick as its own presence (hash 'a0' < 'ae0') so it passes the real fallow
+  // test and latches; the rest ride the latch. Then at ms=15000 it re-seeds
+  // onto B — a fallow cell it has never been near, so its first claim there
+  // (same tick, presence first) passes the fallow test unlatched — and clears
+  // that bloom too: 15000, 17500, 20000, 22500, 25000, 27500.
+  //   12 credited bites * BITE_GROWTH(12) = +144
+  //
+  // It then goes silent. Its last presence is at ms=15000, so
+  // expiresMs = 15000 + PRESENCE_TTL_MS(90000) = 105000, and step 2 evicts it
+  // at the first tick with t > 105000, i.e. t = 105250.
+  //
+  // Hunger while present, by hand. tickCount is 1 on the tick at t=0, so
+  // hunger fires when tickCount % HUNGER_TICK_INTERVAL(4) === 0, i.e. at
+  // t = 750 + 1000k. Firings with t <= 105000: 750, 1750, ..., 104750 —
+  // (104750-750)/1000 + 1 = 105 of them. A firing is skipped when the fish
+  // bit within HUNGER_TICK_INTERVAL*TICK_MS = 1000 ms. Bites are 2500 apart
+  // and firings 1000 apart, so each bite skips exactly one firing (the one in
+  // [bite, bite+1000)): 750, 2750, 5750, 7750, 10750, 12750, 15750, 17750,
+  // 20750, 22750, 25750, 27750 — 12 skips for 12 bites. Applied = 105 - 12 =
+  // 93, each -HUNGER_AMOUNT(1).
+  //
+  //   size at eviction = START_SIZE(100) + 144 - 93 = 151
+  //
+  // The floor never binds: the running maximum is 100 + 144 - 16 = 228 at
+  // t=27500 and it only declines from there to 151, far above MIN_SIZE(60).
+  const LEFT_AT_SIZE = 151; // hand-derived above; deliberately a literal
+  const trip: LogEntry[] = [
+    pres('a', A.x, A.y, 0),
+    eat('a', cellA, 0),
+    eat('a', cellA, 1 * EAT_COOLDOWN_MS),
+    eat('a', cellA, 2 * EAT_COOLDOWN_MS),
+    eat('a', cellA, 3 * EAT_COOLDOWN_MS),
+    eat('a', cellA, 4 * EAT_COOLDOWN_MS),
+    eat('a', cellA, 5 * EAT_COOLDOWN_MS),
+    pres('a', B.x, B.y, 15_000),
+    eat('a', cellB, 15_000),
+    eat('a', cellB, 15_000 + 1 * EAT_COOLDOWN_MS),
+    eat('a', cellB, 15_000 + 2 * EAT_COOLDOWN_MS),
+    eat('a', cellB, 15_000 + 3 * EAT_COOLDOWN_MS),
+    eat('a', cellB, 15_000 + 4 * EAT_COOLDOWN_MS),
+    eat('a', cellB, 15_000 + 5 * EAT_COOLDOWN_MS),
+  ];
+
+  // The size it leaves with, observed on the last tick it is still present.
+  const leaving = foldShoal(trip, 105_000);
+  check('the fish grows to its hand-derived size before going quiet',
+    leaving.fish.get('a')!.size === LEFT_AT_SIZE,
+    { got: leaving.fish.get('a')!.size, expected: LEFT_AT_SIZE });
+  check('that size is well clear of both START_SIZE and the floor',
+    LEFT_AT_SIZE > START_SIZE && LEFT_AT_SIZE > MIN_SIZE, { LEFT_AT_SIZE, START_SIZE, MIN_SIZE });
+
+  // It really is evicted — otherwise the return below proves nothing.
+  const gone = foldShoal(trip, 105_250);
+  check('the silent fish is evicted one tick after its TTL expires',
+    !gone.fish.has('a') && gone.departed.has('a'),
+    { live: [...gone.fish.keys()], departed: [...gone.departed.keys()] });
+
+  // It comes back at ms=200000. Time absent from the fold is
+  // 200000 - 105250 = 94750 ms, and time since its last presence write is
+  // 200000 - 15000 = 185000 ms; both exceed PRESENCE_TTL_MS(90000), so this
+  // is unambiguously a return from beyond the TTL and not a refreshed
+  // presence. t=200000 is not a hunger firing tick (200000 % 1000 = 0, not
+  // 750), so nothing is subtracted on the tick it returns.
+  const RETURN_MS = 200_000;
+  check('the absence provably outlasts the TTL',
+    RETURN_MS - 105_250 > PRESENCE_TTL_MS && RETURN_MS - 15_000 > PRESENCE_TTL_MS,
+    { awayFromFold: RETURN_MS - 105_250, sinceLastWrite: RETURN_MS - 15_000, PRESENCE_TTL_MS });
+
+  const back = foldShoal([...trip, pres('a', B.x, B.y, RETURN_MS)], RETURN_MS);
+  const a = back.fish.get('a')!;
+  check('a returning swimmer is exactly the size it left', a.size === LEFT_AT_SIZE,
+    { got: a.size, expected: LEFT_AT_SIZE, START_SIZE });
+
+  // The rest of the durable ledger survives too, for the same reason: a bite
+  // may be credited as late as the fish's own expiresMs, so dropping these
+  // would make "let your presence lapse and rejoin" a free reset of the eat
+  // cooldown and a way to launder fresh bites out of the scatter-void ledger.
+  // Last credited bite was at 27500; recentBites is pruned on every credit to
+  // entries within VOID_WINDOW_MS(10000) of the newest, so at 27500 it holds
+  // ms >= 17500: [17500, 20000, 22500, 25000, 27500] — five entries.
+  check('the eat cooldown survives the absence', a.lastBiteMs === 27_500,
+    { got: a.lastBiteMs, expected: 27_500 });
+  check('the scatter-void ledger survives the absence',
+    JSON.stringify(a.recentBites) === JSON.stringify([17_500, 20_000, 22_500, 25_000, 27_500]),
+    a.recentBites);
+}
+
 // --- Eating ----------------------------------------------------------------
 {
   // The eat must land in the SAME fold tick as the presence that seeds the
