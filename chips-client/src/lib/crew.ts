@@ -40,8 +40,11 @@ export interface CrewMember {
   sells: string[];
   /** What chip the critter accepts as payment. */
   feed: 'any' | 'golden';
-  /** Phase-2 job, if any. */
-  job?: 'rat' | 'angel';
+  /** Live mechanic, if any. The deep three exist because the operator named
+   *  the real gap: "this is creating a gap in interactions" — past Queso
+   *  nothing new ever HAPPENED, every deeper critter was scenery with a
+   *  price tag. */
+  job?: 'rat' | 'angel' | 'wing' | 'committee' | 'hermit' | 'oracle';
 }
 
 export const CREW: CrewMember[] = [
@@ -124,7 +127,12 @@ export const CREW: CrewMember[] = [
   },
   {
     id: 'committee', name: 'the committee', layer: 4,
-    lines: ['the olives abstain. the olives always abstain. motion carries. dip it again.'],
+    lines: [
+      'the olives abstain. the olives always abstain. motion carries. dip it again.',
+      'the committee has called a vote. the subject is your fryers. attendance is mandatory.',
+      'a motion has been raised regarding basket temperature. the olives are already tired.',
+    ],
+    job: 'committee',
     armLines: ['the chip is tabled. motion to receive it passes 5-2. the olives abstain. approach the layers in order.'],
     munchLines: ['consumed, 6-1, one bean recused. the jar is hereby released under subsection dip. the olives abstain.'],
     sells: ['doubledip2', 'detector2', 'fryer4'],
@@ -132,7 +140,12 @@ export const CREW: CrewMember[] = [
   },
   {
     id: 'hermit', name: 'blue cheese hermit', layer: 5,
-    lines: ["everyone wants me when it burns. NOW who's 'gone off,' eh? still crisp. still CRISP."],
+    lines: [
+      "everyone wants me when it burns. NOW who's 'gone off,' eh? still crisp. still CRISP.",
+      'i take it down. i bring it back bigger. that’s the whole arrangement. no receipt.',
+      'give me the chip. don’t ask what happens in the celery. still CRISP.',
+    ],
+    job: 'hermit',
     armLines: ['WHO SENT YOU. fine. FINE. one chip. slide it under the celery. NO SUDDEN CRUNCHING.'],
     munchLines: ['GOOD CHIP. ACCEPTABLE CHIP. take your jar and forget my roof exists. GO.'],
     sells: ['season5'],
@@ -140,21 +153,28 @@ export const CREW: CrewMember[] = [
   },
   {
     id: 'wing', name: 'the wing with no bird', layer: 5,
-    lines: ['have you seen the bird? there was never a bird. there was NEVER a bird!'],
-    armLines: [],
-    munchLines: [],
-    sells: [],
+    lines: [
+      'have you seen the bird? there was never a bird. there was NEVER a bird!',
+      'THIS ONE. this basket. i have chosen it and i will not be explaining why.',
+      'hot here. good. i only sit where it hurts.',
+    ],
+    armLines: ['i have landed. the bird did not land. THERE WAS NEVER A BIRD.'],
+    munchLines: ['DOUBLE. that’s what happens when you listen to a wing.'],
+    sells: ['fryer5', 'doubledip3'],
     feed: 'any',
+    job: 'wing',
   },
   {
     id: 'oracle', name: 'the fondue oracle', layer: 6,
     lines: [
       'the strings do not lie. you will lose a chip in me tonight.',
       'do not mourn it. it goes ahead of you.',
+      'the cheese has already seen it come out. you’re just catching up.',
     ],
+    job: 'oracle',
     armLines: ['bring it to me undipped. the dip would only confuse the strings. this chip was always going to end here.'],
     munchLines: ['it is done. the strings accept. take what you came for. i watched you take it before you arrived.'],
-    sells: ['bowl3', 'season6'],
+    sells: ['bowl3', 'season6', 'detector3'],
     feed: 'any',
   },
   {
@@ -162,10 +182,11 @@ export const CREW: CrewMember[] = [
     lines: [
       'you dug through seven dips to find a chip. i waited through seven dips to find a friend.',
       'nobody is watching. it is just us now. dip.',
+      'i was dipped when it was full. i felt it go down. i said nothing because you had not arrived yet.',
     ],
-    armLines: [],
-    munchLines: [],
-    sells: [],
+    armLines: ['bring it here. i have not eaten since the beginning. i can wait longer. i would rather not.'],
+    munchLines: ['it is taken. down here nothing goes anywhere, including gratitude. take your jar.'],
+    sells: ['season7', 'season8', 'bowl4', 'fryer6', 'cellar2'],
     feed: 'any',
   },
 ];
@@ -244,6 +265,14 @@ export const TICKER: TickerLine[] = [
   { layer: 6, text: 'fondue oracle predicts your next chip will break off in the dip. sources confirm it already has.' },
   { layer: 7, text: 'the dip has always been here. the shop was built around it. dig responsibly. dig anyway.' },
   { layer: 7, text: 'abyssal dip remains at the bottom of the dip. experts confirm it has always been there. experts decline to go check.' },
+  // the deep jobs and the twist
+  { layer: 4, text: 'committee votes 5-2 to acknowledge the floor exists. olives abstain, cite ongoing review.' },
+  { layer: 5, text: 'wing sighted on basket four; basket four reports the best day of its life. no bird located.' },
+  { layer: 5, text: 'hermit returns chip at triple size. chip declines all interviews. remains crisp.' },
+  { layer: 3, text: 'porcelain confirmed at depth. geologists insist it is "just a bowl." geologists have gone quiet.' },
+  { layer: 3, text: 'area fryer tipped entirely over; operator describes feeling "lighter, and also saltier."' },
+  { layer: 3, text: 'underside inscription translated by four experts; all four now own bowls.' },
+  { layer: 0, text: 'small dog seen guarding empty stool for eleven months; declines to explain; calls it "a business meeting."' },
 ];
 
 /** Every line whose layer you have reached — deeper lines join, none leave. */

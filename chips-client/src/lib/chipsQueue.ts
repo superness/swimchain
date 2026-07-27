@@ -71,7 +71,8 @@ export type QueuedMove =
   /** A pot-x-multi cash-out. `ms` is the dip's identity (allocator-unique) —
    *  it becomes the body's authoring ms, which is how the confirmed reply is
    *  matched back to this entry (chipsSettling.moveKey). */
-  | { id: number; tableId: string; author: string; kind: 'dip'; amount: number; ms: number; sentAt?: number };
+  | { id: number; tableId: string; author: string; kind: 'dip'; amount: number; ms: number; sentAt?: number }
+  | { id: number; tableId: string; author: string; kind: 'tip'; ms: number; sentAt?: number };
 
 /** What a caller supplies to `enqueue` — everything but the id, which the
  *  queue itself assigns, and `sentAt`, which only a successful submission may
@@ -110,11 +111,12 @@ export function activeFor(q: QueuedMove[], tableId: string, author: string): Que
  * action PoW — it can only fold `rejected-bits` there) or let a stale entry
  * block a live one behind it forever.
  */
-export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' } | null {
+export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' | 'tip' } | null {
   if (q.length === 0) return null;
   if (q[0].kind === 'buy') return { moves: [q[0]], kind: 'buy' };
   // One dip per reply — the verb carries a single amount.
   if (q[0].kind === 'dip') return { moves: [q[0]], kind: 'dip' };
+  if (q[0].kind === 'tip') return { moves: [q[0]], kind: 'tip' };
 
   const moves: QueuedMove[] = [];
   for (const m of q) {
@@ -234,6 +236,11 @@ export function loadQueue(): QueuedMove[] {
       ) {
         out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'dip', amount: r.amount, ms: r.ms, ...sentAt });
       } else if (
+        r.kind === 'tip'
+        && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
+      ) {
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'tip', ms: r.ms, ...sentAt });
+      } else if (
         r.kind === 'bank' && r.chip
         && typeof r.chip.ms === 'number' && Number.isSafeInteger(r.chip.ms)
         && typeof r.chip.bits === 'number' && Number.isInteger(r.chip.bits)
@@ -265,7 +272,9 @@ export function saveQueue(q: QueuedMove[]): void {
         ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'bank', chip: { ...m.chip, nonce: m.chip.nonce.toString(16) }, ...mark }
         : m.kind === 'dip'
           ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'dip', amount: m.amount, ms: m.ms, ...mark }
-          : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };
+          : m.kind === 'tip'
+            ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'tip', ms: m.ms, ...mark }
+            : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };
     })));
   } catch { /* quota or private mode — the in-memory queue still works */ }
 }

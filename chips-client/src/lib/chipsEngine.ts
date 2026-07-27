@@ -23,6 +23,7 @@
 import {
   BANK_MIN_BITS, CRUMBS_PER_CHIP, GOLDEN_BITS, GOLD_NUM, GOLD_DEN, MAX_BITS,
   SOG_BASE_NUM, SOG_DEN, AIRTIGHT_BONUS, SOG_MAX_HOURS, START_BOWL_CAP,
+  TIP_FLOOR, SALT_PER_TIP,
   DIP_TIERS, CONGEAL_GAP_MS, UPGRADES, UPGRADE_CHAINS, MAX_BATCH,
 } from './chipsConst';
 import { proofKey } from './proofKey';
@@ -47,6 +48,7 @@ export type Outcome =
   | 'banked' | 'rejected-bits' | 'rejected-duplicate' | 'rejected-unverified'
   | 'rejected-oversize'
   | 'dipped'
+  | 'tipped' | 'rejected-shallow'
   | 'bought' | 'rejected-cost' | 'rejected-owned' | 'rejected-order' | 'rejected-parse';
 
 export interface MoveResult {
@@ -60,11 +62,19 @@ export interface MoveResult {
    *  `crumbs` already includes the doubling; this flag exists so displays
    *  can celebrate it without re-deriving the nonce test. */
   doubleDip?: true;
+  /** Old Salt granted by a `tipped` move. */
+  salt?: number;
 }
 
 export interface ChipsState {
   crumbs: number;
   lifetimeChips: number;
+  /** OLD SALT — permanent across tips, the one thing a tipped bowl keeps.
+   *  "salt that has been through a bowl. it does not dissolve and it does
+   *  not forget." */
+  oldSalt: number;
+  /** How many times this bowl has gone back over. */
+  tips: number;
   crispest: number;
   owned: Set<string>;
   bowlCap: number;
@@ -105,6 +115,9 @@ export type ParsedMove =
    *  be as secure and authentic as Cookie Clicker is. it's a GAME"). The
    *  fold's only guards are the parse bounds and the bowl cap. */
   | { kind: 'dip'; amount: number; ms: number }
+  /** The bowl goes back over: everything resets except OLD SALT, which the
+   *  FOLD computes from lifetime — never the client (see parseMove). */
+  | { kind: 'tip'; ms: number }
   /** Declared more than MAX_BATCH entries. Carried as a distinct kind so the
    *  fold can reject it whole WITHOUT verifying anything — see chipsConst. */
   | { kind: 'oversize'; count: number; ms: number };
@@ -174,6 +187,13 @@ export function parseMove(body: string): ParsedMove | null {
   const buyM = /^buy\s+([a-z0-9]+)$/.exec(head);
   if (buyM) return { kind: 'buy', key: buyM[1], ms };
 
+  // `tip` — the bottom of the bowl. Takes NO argument on purpose: the salt
+  // it awards is computed by the fold from the lifetime it can see, never
+  // declared by the client, so a hostile body cannot mint prestige. (The
+  // dip verb is self-declared because its ceiling is one chip's pot; salt
+  // is permanent and compounds across every future run.)
+  if (/^tip$/.test(head)) return { kind: 'tip', ms };
+
   // `dip <amount>` — see ParsedMove's doc for why this is unverified by
   // design. The bound stops a typo'd or hostile body from overflowing safe
   // integer arithmetic; it is a parse rule, not an economy rule.
@@ -211,6 +231,25 @@ function orderReplies(replies: ChipsReply[]): ChipsReply[] {
   });
   return keyed.map((x) => x.r);
 }
+
+/**
+ * OLD SALT from a run's lifetime — "salt that has been through a bowl. it
+ * does not dissolve and it does not forget."
+ *
+ * sqrt-shaped ON PURPOSE. Linear salt would make tipping strictly better the
+ * longer you wait, and the whole design ask was that a player be tempted to
+ * tip EARLY: under a square root, two short runs beat one run of twice the
+ * length, so looping is a real strategy rather than a consolation prize.
+ * TIP_FLOOR keeps a fresh table from farming the ceremony for free rungs.
+ */
+export function saltFor(lifetimeChips: number): number {
+  if (lifetimeChips < TIP_FLOOR) return 0;
+  return Math.floor(Math.sqrt(lifetimeChips / TIP_FLOOR) * SALT_PER_TIP);
+}
+
+/** Every grain of salt fattens each tick by this fraction (display-side in
+ *  useCooking; the fold only ever stores the salt itself). */
+export const SALT_TICK_BONUS = 0.02;
 
 export function dipIndexFor(lifetimeChips: number): number {
   let idx = 0;
@@ -294,7 +333,7 @@ export function payoutFor(state: ChipsState, bits: number, at: number): number {
 
 function initialState(): ChipsState {
   return {
-    crumbs: 0, lifetimeChips: 0, crispest: 0,
+    crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, crispest: 0,
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
     goldenBits: GOLDEN_BITS, airtight: false,
@@ -401,6 +440,39 @@ export function foldChips(
           });
         }
       }
+      continue;
+    }
+
+    if (parsed.kind === 'tip') {
+      // THE BOTTOM OF THE BOWL. Everything the run accumulated goes back in;
+      // OLD SALT is what stuck to you. Salt is derived here, from the fold's
+      // own lifetime — sqrt-shaped so a deep run is worth more but never
+      // proportionally so, which is exactly what makes tipping EARLY a live
+      // choice rather than a strictly worse one.
+      //
+      // Rejected below the floor so the twist cannot be farmed by tipping a
+      // fresh table over and over for a free rung.
+      const earned = saltFor(state.lifetimeChips);
+      if (earned <= 0) {
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-shallow' });
+        continue;
+      }
+      state.oldSalt += earned;
+      state.tips += 1;
+      state.crumbs = 0;
+      state.lifetimeChips = 0;
+      state.crispest = 0;
+      state.owned = new Set();
+      state.bowlCap = START_BOWL_CAP;
+      state.seasoningNum = 1; state.seasoningDen = 1;
+      state.fryers = 1;
+      state.goldenBits = GOLDEN_BITS;
+      state.airtight = false;
+      state.sogBonus = 0;
+      state.doubleDipMod = 0;
+      state.dipIndex = 0;
+      if (confirmed) state.lastBankAt = at;
+      state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'tipped', salt: earned });
       continue;
     }
 

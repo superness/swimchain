@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Keypair } from '@swimchain/core';
 import { useRpc, useStoredIdentity, useStoredKeypair, createNewIdentity } from '@swimchain/react';
 import { createBrowserHost, type ChipsHost, type Identity } from './lib/host';
-import { foldChips, type ChipsHeader, type ChipsState, type ChipsReply } from './lib/chipsEngine';
+import { foldChips, saltFor, SALT_TICK_BONUS, type ChipsHeader, type ChipsState, type ChipsReply } from './lib/chipsEngine';
 import { verifyReplies } from './lib/chipsVerify';
 import { withPending } from './lib/chipsPending';
 import { planSend, afterSubmit } from './lib/chipsSender';
@@ -30,6 +30,7 @@ import {
   shooRat, spendBlessing, JOBS_MIN_DIP_INDEX, type RatState, type AngelState,
 } from './lib/crewJobs';
 import { CrewRow, FeedBanner, DipTicker, CritterArt, type CrewBubble } from './Crew';
+import { BowlReveal, TipCeremony, BowlTicket, BOWL_LINES, WELCOME_BACK } from './Bowl';
 import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
@@ -150,6 +151,11 @@ export function App() {
   const [feeding, setFeeding] = useState<{ vendor: CrewMember; jarKey: string } | null>(null);
   // The open stall sheet (a critter or a stall nameplate was tapped).
   const [sheetId, setSheetId] = useState<string | null>(null);
+  // THE BOTTOM OF THE BOWL: the reveal (once, on striking it), the standing
+  // offer thereafter, and the tip ceremony.
+  const [bowlOpen, setBowlOpen] = useState(false);
+  const [tipFanfare, setTipFanfare] = useState<{ salt: number; total: number } | null>(null);
+  const struckRef = useRef(false);
   // One speech bubble at a time, app-wide — chatter is seasoning, not soup.
   const [bubble, setBubble] = useState<CrewBubble | null>(null);
   const ratRef = useRef(rat);
@@ -590,7 +596,11 @@ export function App() {
 
   /* ── the fryers (designer-paced — lib/cooking.ts holds the locked spec) ── */
   const fryerCount = state?.fryers ?? 0;
-  const seasoning = state ? state.seasoningNum / state.seasoningDen : 1;
+  // OLD SALT fattens every tick, forever — the one thing a tipped bowl
+  // keeps. It multiplies the seasoning rather than the pot so it compounds
+  // with everything the run rebuilds.
+  const saltBonus = 1 + (state?.oldSalt ?? 0) * SALT_TICK_BONUS;
+  const seasoning = (state ? state.seasoningNum / state.seasoningDen : 1) * saltBonus;
   // The detector chain, remapped in game terms: crackles come sooner.
   const crackleHaste = state?.owned.has('detector2') ? 0.6 : state?.owned.has('detector') ? 0.75 : 1;
 
@@ -959,6 +969,10 @@ export function App() {
       const crew = crewFor(dipIndexRef.current);
       if (crew.length === 0) return;
       const m = crew[Math.floor(Math.random() * crew.length)];
+      // Once the floor has been struck, whoever has an opinion about it
+      // sometimes says that instead — the twist keeps living in the room.
+      const bowlLine = struckRef.current ? BOWL_LINES[m.id] : undefined;
+      if (bowlLine && Math.random() < 0.35) { say(m.id, bowlLine, 8000); return; }
       if (m.lines.length === 0) return;
       say(m.id, pickLine(m.id, m.lines));
     }, 26_000);
@@ -994,6 +1008,44 @@ export function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chips, state, host, me, tableId, feeding]);
+
+  /* ── the bottom of the bowl ───────────────────────────────────────────── */
+  /**
+   * The reveal fires ONCE per run, the first time it is deep enough to tip,
+   * and is LATCHED IN STORAGE rather than derived live — the same lesson the
+   * tutorial learned the hard way: a derived condition re-fires on every
+   * reload and turns the game's one twist into a nag. A tip resets the latch
+   * so the next run gets its own reveal.
+   */
+  const tipSalt = state ? saltFor(state.lifetimeChips) : 0;
+  const struck = tipSalt > 0;
+  useEffect(() => {
+    if (!struck || struckRef.current || !tableId) return;
+    struckRef.current = true;
+    const key = `chips.bowl.v1:${tableId}:${state?.tips ?? 0}`;
+    let seen = false;
+    try { seen = localStorage.getItem(key) === 'seen'; } catch { /* private mode */ }
+    if (seen) return;
+    try { localStorage.setItem(key, 'seen'); } catch { /* private mode */ }
+    setBowlOpen(true);
+    sfx.breakthrough();
+  }, [struck, tableId, state?.tips]);
+
+  /** Tip the bowl. The salt is the FOLD's to compute — the body carries no
+   *  amount at all (chipsEngine.parseMove) — so this only has to ask. */
+  function onTip(): void {
+    if (!host || !me || !tableId || !state || tipSalt <= 0) return;
+    setBowlOpen(false);
+    struckRef.current = false;
+    setTipFanfare({ salt: tipSalt, total: state.oldSalt + tipSalt });
+    sfx.breakthrough();
+    window.setTimeout(() => setTipFanfare(null), 6200);
+    window.setTimeout(() => say('scoop', WELCOME_BACK[3], 9000), 6400);
+    setQueue((q) => enqueue(
+      q, { tableId, author: me.publicKeyHex, kind: 'tip', ms: allocMs() },
+      nextId.current++
+    ));
+  }
 
   /* ── the dip ladder ceremony ──────────────────────────────────────────── */
   const lastDip = useRef<number | null>(null);
@@ -1267,6 +1319,13 @@ export function App() {
               confident number next to it would just make the bowl look wrong. */}
           <strong>{state && !stillCounting ? compact(state.lifetimeChips * 1000) : '—'}</strong>
         </div>
+        {(state?.oldSalt ?? 0) > 0 && (
+          <div className="hood-salt" title="salt that has been through a bowl. it does not dissolve and it does not forget.">
+            <span className="in-the-bowl">old salt</span>
+            <strong>{compact(state!.oldSalt)}</strong>
+            <em>+{Math.round((saltBonus - 1) * 100)}% every tick</em>
+          </div>
+        )}
         <button
           type="button"
           className="sound-toggle"
@@ -1325,12 +1384,20 @@ export function App() {
           onCritterClick={onCritterClick}
         />
       )}
+      {state && struck && !bowlOpen && tipFanfare === null && (
+        <BowlTicket salt={tipSalt} onOpen={() => setBowlOpen(true)} />
+      )}
+      {state && bowlOpen && (
+        <BowlReveal salt={tipSalt} onTip={onTip} onClose={() => setBowlOpen(false)} />
+      )}
+      {tipFanfare && <TipCeremony salt={tipFanfare.salt} total={tipFanfare.total} />}
       {sheetVendor && state && (
         <StallSheet
           vendor={sheetVendor}
           jars={openJarsOf(sheetVendor.id, state.owned, crewDip)}
           crumbsNow={crumbsNow}
           committed={pendingCommitted}
+          bowlCap={state.bowlCap}
           armedKey={feeding?.jarKey ?? null}
           onJar={onJar}
           onClose={() => setSheetId(null)}
