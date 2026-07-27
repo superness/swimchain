@@ -9,12 +9,12 @@
  * pinned by a unit test rather than only by reading the effect.
  */
 import { activeFor, takeBatch, unsent, markSent, type QueuedMove } from './chipsQueue';
-import { bankBatchBody, buyBody } from './chipsBody';
+import { bankBatchBody, buyBody, dipBody } from './chipsBody';
 import type { ChipEntry } from './chipsEngine';
 
 export interface PlannedSend {
   moves: QueuedMove[];
-  kind: 'bank' | 'buy';
+  kind: 'bank' | 'buy' | 'dip';
   body: string;
 }
 
@@ -33,6 +33,7 @@ export interface PlannedSend {
 function submittable(m: QueuedMove, at: number): boolean {
   try {
     if (m.kind === 'bank') bankBatchBody([m.chip], at);
+    else if (m.kind === 'dip') dipBody(m.amount, m.ms);
     else buyBody(m.key, at);
     return true;
   } catch {
@@ -77,7 +78,9 @@ export function planSend(queue: QueuedMove[], tableId: string, author: string, a
   if (!take) return null;
   const body = take.kind === 'bank'
     ? bankBatchBody(take.moves.map((m) => (m as { chip: ChipEntry }).chip), at)
-    : buyBody((take.moves[0] as { key: string }).key, at);
+    : take.kind === 'dip'
+      ? dipBody((take.moves[0] as { amount: number }).amount, (take.moves[0] as { ms: number }).ms)
+      : buyBody((take.moves[0] as { key: string }).key, at);
   return { moves: take.moves, kind: take.kind, body };
 }
 

@@ -24,7 +24,7 @@ import {
   type PoWSolution, type ProgressCallback,
 } from '@swimchain/react';
 import { initWasm, decodeAddress } from '@swimchain/core';
-import { bankBody, buyBody, bankBatchBody } from './chipsBody';
+import { bankBody, buyBody, bankBatchBody, dipBody } from './chipsBody';
 import type { ChipsReply } from './chipsEngine';
 
 /**
@@ -97,7 +97,7 @@ export interface ChipsHost {
 // batching (Task 5) needs it reachable from the seam: App.tsx builds every
 // bank body — the synthetic pending one AND the one actually submitted —
 // through this module, never by importing chipsBody.ts directly.
-export { bankBody, buyBody, bankBatchBody };
+export { bankBody, buyBody, bankBatchBody, dipBody };
 
 /**
  * Mine an action PoW off the main thread. A difficulty ~8-10 Argon2id search

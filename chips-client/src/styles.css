@@ -180,6 +180,8 @@ h1, h2, h3, p { margin: 0; }
   font-size: clamp(16px, 2vw, 30px); line-height: 1;
   color: #efe0c4;
 }
+/* the crunch VALUE is a number — mono for legibility (see .crumbs strong) */
+.hood-crunch strong { font-family: var(--chalk); font-weight: 700; font-variant-numeric: tabular-nums; font-size: clamp(14px, 1.7vw, 25px); }
 .in-the-bowl {
   display: block; font-size: clamp(8px, .72vw, 11px); letter-spacing: .22em;
   text-transform: uppercase; color: #b6a385; margin-bottom: 3px;
@@ -386,6 +388,9 @@ h1, h2, h3, p { margin: 0; }
   color: #ffe0a8; text-shadow: 0 1px 4px #000;
   opacity: 0; transition: opacity .2s;
 }
+/* Faintly visible ALWAYS — the review's first minute had no idea the basket
+   was clickable; the hint must exist before the first dip, not after. */
+.tongs { opacity: .38; }
 .basket.ready:hover .tongs, .basket.golden .tongs { opacity: .95; }
 
 /* Out of flow ON PURPOSE: the kitchen column is vertically centred, so a
@@ -434,12 +439,104 @@ h1, h2, h3, p { margin: 0; }
   font-family: var(--sign); font-weight: 400; letter-spacing: .03em;
   font-size: 1.25em; color: #ffe6b8;
 }
-/* The one fixed fact worth stating: the number on this line doubles with the
-   next bit. Not a live-recomputed "×2.4" — the DOUBLING is the invariant the
-   player is deciding against, not a figure worth calculating twice. Its own
-   line rather than trailing the number, so it never wraps unpredictably at
-   the narrowest basket width. */
-.worth-next { display: block; font-size: .82em; color: #b3a081; }
+/* THE POT — always moving (Kitchen.tsx's first rule). The big line is the
+   accumulating pot; the badge is the multiplier the crackles have built; the
+   small line is the product a dip pays right now. */
+.pot-line { display: block; }
+.pot-line strong { font-family: var(--chalk); font-weight: 700; font-variant-numeric: tabular-nums; font-size: 1.25em; color: #ffe6b8; }
+.multi-badge {
+  display: inline-block; margin-top: 3px; padding: 1px 10px; border-radius: 999px;
+  font-family: var(--sign); letter-spacing: .08em; font-size: 1.15em;
+  color: #ffe2ae; background: rgba(60, 40, 20, .85);
+  border: 1px solid rgba(255, 210, 150, .35);
+  transition: transform .18s, color .2s, border-color .2s;
+}
+/* each crackle level warms the badge — by x16 it is glowing */
+.multi-badge.m2 { color: #ffd98e; border-color: rgba(255, 210, 150, .5); }
+.multi-badge.m3 { color: #ffce6b; border-color: rgba(255, 200, 120, .65); }
+.multi-badge.m4 { color: #ffc147; border-color: rgba(255, 190, 100, .8); box-shadow: 0 0 12px rgba(255, 180, 80, .35); }
+.multi-badge.m5 {
+  color: #2a1a04; background: linear-gradient(180deg, #ffe9a8, #f0b93c);
+  border-color: #fff3cf; box-shadow: 0 0 18px rgba(255, 205, 90, .7);
+}
+.pot-worth { display: block; font-style: normal; font-size: .85em; color: #b3a081; margin-top: 2px; }
+
+/* THE CRACKLE FLASH — a fresh mount per crackle (keyed on its timestamp), so
+   consecutive crackles each land their own hit. */
+.crackle-flash {
+  position: absolute; inset: -6px; border-radius: inherit; pointer-events: none;
+  background: radial-gradient(circle at 50% 45%, rgba(255, 230, 170, .85), rgba(255, 190, 90, .25) 55%, transparent 75%);
+  animation: crackle-flash .55s cubic-bezier(.15, .8, .3, 1) forwards;
+}
+@keyframes crackle-flash {
+  0%   { opacity: 0; transform: scale(.8); }
+  18%  { opacity: 1; transform: scale(1.04); }
+  100% { opacity: 0; transform: scale(1.12); }
+}
+.basket:has(.crackle-flash) { animation: crackle-shake .4s ease-out; }
+@keyframes crackle-shake {
+  0%, 100% { translate: 0 0; }
+  25% { translate: -3px 1px; }
+  50% { translate: 3px -2px; }
+  75% { translate: -2px 2px; }
+}
+
+/* THE CRACKLE'S WAKE — the review's headline fix: ten crackles witnessed,
+   zero seen. A banner that lingers ~3.5s over the basket, escalating per
+   tier, so eyes that were on the shop still learn what happened. */
+.crackle-banner {
+  position: absolute; left: 50%; top: 12%; translate: -50% 0; z-index: 5;
+  white-space: nowrap; pointer-events: none;
+  font-family: var(--sign); letter-spacing: .1em; font-size: clamp(15px, 1.6vw, 24px);
+  color: #ffe2a4; text-shadow: 0 2px 4px rgba(0,0,0,.85), 0 0 18px rgba(255,180,80,.6);
+  padding: 4px 14px; border-radius: 999px; background: rgba(30, 16, 5, .85);
+  border: 1px solid rgba(255, 200, 120, .5);
+  animation: crackle-banner 3.5s cubic-bezier(.2, .9, .3, 1) forwards;
+}
+.crackle-banner.m3 { color: #ffd270; }
+.crackle-banner.m4 { color: #ffc247; border-color: rgba(255,190,90,.8); box-shadow: 0 0 22px rgba(255,170,60,.5); }
+.crackle-banner.m5 {
+  color: #2a1a04; background: linear-gradient(180deg, #ffefb2, #f4bc38);
+  border-color: #fff6da; box-shadow: 0 0 30px rgba(255, 210, 100, .9);
+  font-size: clamp(17px, 1.9vw, 28px);
+}
+@keyframes crackle-banner {
+  0%   { opacity: 0; transform: scale(1.7); }
+  8%   { opacity: 1; transform: scale(1); }
+  80%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(.94) translateY(-8px); }
+}
+
+/* the per-tick "+500" — the pot PERFORMS instead of swapping digits */
+.tick-float {
+  position: absolute; right: 8%; top: 30%; z-index: 4; pointer-events: none;
+  font-family: var(--chalk); font-size: clamp(11px, 1.1vw, 14px); font-weight: 700;
+  color: #ffe9c0; text-shadow: 0 1px 3px rgba(0,0,0,.8);
+  animation: tick-float 1.4s ease-out forwards;
+}
+@keyframes tick-float {
+  0%   { opacity: 0; transform: translateY(6px); }
+  15%  { opacity: .95; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-26px); }
+}
+
+/* the multiplier ladder: the summit must be VISIBLE to make holding a
+   gamble — x2..x16 rungs, x32 topped in gold */
+.ladder { display: flex; justify-content: center; gap: 4px; margin-top: 3px; }
+.ladder .rung {
+  font-style: normal; font-family: var(--chalk); font-size: .78em;
+  padding: 0 5px; border-radius: 4px; color: #6f6152;
+  border: 1px solid rgba(190, 164, 124, .25);
+}
+.ladder .rung.lit { color: #ffd98e; border-color: rgba(255, 210, 150, .6); background: rgba(60, 40, 18, .8); }
+.ladder .rung.top { border-color: rgba(255, 220, 140, .45); }
+.ladder .rung.top.lit {
+  color: #2a1a04; background: linear-gradient(180deg, #ffe9a8, #f0b93c);
+  border-color: #fff3cf; box-shadow: 0 0 10px rgba(255, 205, 90, .7);
+}
+
+/* the overflow warning — BEFORE the dip, never after */
+.pot-worth.over { color: #ff9a72; }
 /* The bowl cap, not the chip, is why this figure is small — echo the bowl's
    own "at the rim" wording rather than let a modest number beside an
    almost-golden chip read as a bug. */
@@ -575,9 +672,12 @@ h1, h2, h3, p { margin: 0; }
 .t-wall-r { right: 0; background: linear-gradient(270deg, rgba(6,4,2,.95) 0%, rgba(8,5,3,.5) 55%, transparent 100%); }
 .t-wall .t-chip { opacity: .4; filter: brightness(.55); }
 
-/* the dig front: the pile on the floor, pinned at the bed's own floor line */
+/* the dig front: the pile on the floor, pinned at the bed's own floor line.
+   z BELOW the stage everywhere (it was 4 on desktop): the shop column grew
+   taller with the on-card flavour lines and the pile started painting over
+   jars — it is scenery, and content always wins. */
 .tunnel-front {
-  position: fixed; z-index: 4; top: var(--floor); right: 6vw;
+  position: fixed; z-index: 1; top: var(--floor); right: 6vw;
   translate: 0 -100%;
   width: min(300px, 26vw); pointer-events: none;
 }
@@ -604,8 +704,12 @@ h1, h2, h3, p { margin: 0; }
   font-family: var(--chalk); font-size: clamp(10px, .9vw, 13px);
   letter-spacing: .18em; text-transform: uppercase; color: #d9c6a6; opacity: .85;
 }
+/* Numerals in the MONO face, not the beveled display face: 0/6/8 in
+   condensed Haettenschweiler are guesswork at small sizes (designer review
+   misread the lifetime figure three ways). The display face stays for
+   headings and words; digits get tabular mono. */
 .crumbs { font-family: var(--sign); letter-spacing: .04em; font-size: clamp(18px, 2.2vw, 32px); color: #ffe9c6; text-shadow: 0 2px 10px rgba(0,0,0,.6); }
-.crumbs strong { font-weight: inherit; }
+.crumbs strong { font-weight: 700; font-family: var(--chalk); font-variant-numeric: tabular-nums; letter-spacing: 0; }
 /* The bowl's actual capacity, stated plainly under the balance — it used to
    be invisible until the moment you slammed into it. */
 .cap-line {
@@ -648,6 +752,12 @@ h1, h2, h3, p { margin: 0; }
 /* What a bowl jar actually grants — visible on the card, since touch has no
    hover for the title text. */
 .jar-fx { display: block; font-size: 9px; letter-spacing: .06em; color: #a6997e; margin-top: 1px; }
+/* the flavour line, ON the card — it was trapped in hover-title text, which
+   touch never sees and the designer review never saw either */
+.jar-flavour {
+  display: block; font-size: 9px; line-height: 1.25; color: #8d8068;
+  margin-top: 3px; padding: 0 2px; min-height: 2.4em;
+}
 .jar.afford { opacity: 1; border-color: rgba(255, 226, 180, .32); }
 .jar.afford .jar-name { color: #f4e6c8; }
 .jar.afford .jar-cost { color: #e8cfa0; }

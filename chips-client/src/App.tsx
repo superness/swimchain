@@ -22,7 +22,9 @@ import { planSend, afterSubmit } from './lib/chipsSender';
 import { enqueue, loadQueue, saveQueue, clearQueue, nextIdAfter, activeFor, type QueuedMove } from './lib/chipsQueue';
 import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
-import { useFryers } from './lib/useFryers';
+import { useCooking, type CookEvent } from './lib/useCooking';
+import { isGolden, MAX_CRACKLES } from './lib/cooking';
+import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
@@ -33,14 +35,8 @@ import { compact } from './lib/format';
 import { sfx } from './lib/sound';
 
 const NAME_KEY = 'chips.cookname.v1';
-const AUTODIP_KEY = 'chips.autodip.v1';
-/** Auto-dip pulls a chip at this many bits. Policy, not consensus: it only
- *  decides WHEN the client banks, never what a bank is worth. 10 bits is a
- *  ~34s expected cadence per fryer — constant motion without spam. */
-const AUTODIP_BITS = 10;
-function readAutoDip(): boolean {
-  try { return localStorage.getItem(AUTODIP_KEY) !== 'off'; } catch { return true; }
-}
+/** The Sous Chef upgrade (catalog key 'autodip') dips GOLDEN chips for its
+ *  owner — automation is bought, never default (operator decision). */
 /** Module-scope so the expiry tick below passes a referentially stable empty
  *  set rather than allocating one every second. */
 const NO_CONFIRMED: ReadonlySet<string> = new Set<string>();
@@ -244,14 +240,7 @@ export function App() {
 
   /* ── sound ────────────────────────────────────────────────────────────── */
   const [soundOn, setSoundOn] = useState(() => !sfx.muted());
-  /* ── auto-dip ─────────────────────────────────────────────────────────── */
-  // ON by default. Ten measured minutes of real play (2026-07-27) showed the
-  // trap this closes: a player NURSES one chip toward a big number because
-  // nothing says small banks stack — while banking every done chip pays the
-  // exact same rate (payout and expected work both double per bit) with
-  // constant on-screen motion. Turning auto-dip OFF is now the deliberate
-  // move, and the caption sells why: golden (x2.5) is the one reason to wait.
-  const [autoDip, setAutoDip] = useState(readAutoDip);
+
   // The AudioContext can only exist after a user gesture (autoplay policy);
   // unlock() is idempotent, so hanging it off every pointerdown/keydown costs
   // nothing and catches whichever gesture comes first.
@@ -533,38 +522,40 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue, queueTick, host, me, tableId]);
 
-  /* ── the fryers ───────────────────────────────────────────────────────── */
-  // DEV-only override so the worker lifecycle (teardown on a fryer-count
-  // change, and on unmount) can actually be exercised in a browser without
-  // first grinding 400,000 crumbs. `import.meta.env.DEV` is statically false in
-  // a production build, so this and the effect below vanish from the bundle.
-  const [fryerOverride, setFryerOverride] = useState<number | null>(null);
-  const fryerCount = fryerOverride ?? state?.fryers ?? 0;
-  const goldenBits = state?.goldenBits ?? 16;
+  /* ── the fryers (designer-paced — lib/cooking.ts holds the locked spec) ── */
+  const fryerCount = state?.fryers ?? 0;
+  const seasoning = state ? state.seasoningNum / state.seasoningDen : 1;
+  // The detector chain, remapped in game terms: crackles come sooner.
+  const crackleHaste = state?.owned.has('detector2') ? 0.6 : state?.owned.has('detector') ? 0.75 : 1;
 
-  const { chips, bank } = useFryers(fryerCount, publicKeyHex ?? '', tableId ?? '');
+  // Per-basket crackle timestamps — key the flash so every crackle replays it.
+  const [crackleAt, setCrackleAt] = useState<(number | null)[]>([]);
+  // Per-basket tick floaters ("+500" on every tick — the pot must PERFORM,
+  // not just change; designer review called the bare swap "a bored odometer").
+  const [tickAt, setTickAt] = useState<({ at: number; amount: number } | null)[]>([]);
+  const onCookEvents = useCallback((events: CookEvent[]) => {
+    setTickAt((prev) => {
+      const next = prev.slice();
+      for (const e of events) next[e.index] = { at: Date.now() + e.index, amount: e.gained };
+      return next;
+    });
+    const crackled = events.filter((e) => e.crackled);
+    if (crackled.length === 0) return;
+    setCrackleAt((prev) => {
+      const next = prev.slice();
+      for (const e of crackled) next[e.index] = Date.now() + e.index; // +index: two same-instant crackles still get distinct keys
+      return next;
+    });
+    for (const e of crackled) {
+      if (e.wentGolden) sfx.golden();
+      else sfx.crackle();
+    }
+  }, []);
 
-  const chipsRef = useRef(chips);
-  chipsRef.current = chips;
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    (window as unknown as Record<string, unknown>).__chips = {
-      setFryers: (n: number) => setFryerOverride(n),
-      clearFryers: () => setFryerOverride(null),
-      /** Holes check: a sparse array reports holes here, a dense one never does. */
-      holes: () => {
-        const c = chipsRef.current;
-        const missing: number[] = [];
-        for (let i = 0; i < c.length; i++) if (c[i] === undefined) missing.push(i);
-        return { length: c.length, holes: missing, bits: c.map((x) => x?.bits ?? 'HOLE') };
-      },
-      /** Show a notice without needing a failing bank — the notice is a layout
-       *  row, so this is how you check the scene shifts rather than gets covered. */
-      setNotice: (msg: string | null) => setNotice(msg),
-      /** Inspect the pending-move queue without needing to bank for real. */
-      queue: () => queue,
-    };
-  }, [queue]);
+  const { chips, dip } = useCooking(
+    fryerCount, seasoning, crackleHaste,
+    Boolean(host && me && tableId && state), onCookEvents
+  );
 
   /* ── moves ────────────────────────────────────────────────────────────── */
   /**
@@ -607,25 +598,45 @@ export function App() {
     window.setTimeout(() => setFlight((f) => (f && f.key === chip.ms ? null : f)), 1400);
   }
 
-  function onBank(index: number): void {
+  function onDip(index: number): void {
     if (!host || !me || !tableId) return;
-    // DESTRUCTIVE. After this line the basket has already moved on and started
-    // a new chip; `chip` is the only reference to this proof that exists
-    // anywhere. Calling bank(index) again does NOT give it back.
-    const chip = bank(index);        // still destructive; still the only reference
-    if (!chip) return;
-    // The SAME test the fold will apply (chipsEngine.ts's double dip) — the
-    // nonce is fixed the moment the chip is lifted, so the celebration can be
-    // honest immediately rather than waiting a fold.
-    const double = Boolean(state && state.doubleDipMod > 0 && chip.nonce % BigInt(state.doubleDipMod) === 0n);
-    launchDip(index, chip, double);  // the animation is the feedback now
-    sfx.dip(double);                 // grab / plop(s) / splash, timed to the flight
-    // Every queued entry carries the table/identity it was mined for — see
-    // chipsQueue.ts's file header on why (a queue entry with no provenance is
-    // how a stale entry from an earlier identity ends up crediting a table it
-    // has nothing to do with).
+    // DESTRUCTIVE like the old bank(): the result is the only copy of this
+    // dip; the basket restarts a fresh chip immediately.
+    const res = dip(index, state?.doubleDipMod ?? 0);
+    if (!res) return;
+    const crackles = Math.round(Math.log2(res.multi));
+    launchDip(index, { ms: res.ms, bits: visualFor({ ms: res.ms, crackles }).bits }, res.doubled);
+    sfx.dip(res.doubled);
+    // The payout float, announced HERE at the moment of the dip — and HONEST
+    // about the bowl cap: the fold clamps storage, so a rim-bound dip must
+    // say what actually landed and what spilled, never a number the counter
+    // will not move for (designer review: 78k burned silently).
+    const room = state ? Math.max(0, state.bowlCap - crumbsNow) : res.amount;
+    const credited = Math.min(res.amount, room);
+    const spilled = res.amount - credited;
+    const counter = document.querySelector('.tunnel-crumbs') ?? document.querySelector('.tunnel-wrap');
+    if (counter) {
+      const r = counter.getBoundingClientRect();
+      const born: GainFloat = {
+        key: res.ms,
+        text: spilled > 0
+          ? (credited > 0 ? `+${compact(credited)} — ${compact(spilled)} spilled!` : `bowl full — ${compact(spilled)} spilled!`)
+          : `+${compact(res.amount)}${res.doubled ? ' x2' : ''}`,
+        golden: crackles >= MAX_CRACKLES,
+        doubled: res.doubled,
+        empty: credited <= 0,
+        x: r.left + r.width / 2, y: r.top + r.height / 2,
+        dx: ((res.ms % 7) - 3) * 9,
+        delay: 0.95,
+      };
+      setGains((g) => [...g, born]);
+      window.setTimeout(() => setGains((g) => g.filter((f) => f.key !== res.ms)), 2400);
+      if (credited > 0) sfx.gain(born.golden, 0.95);
+    }
+    // Every queued entry carries the table/identity it was made for — see
+    // chipsQueue.ts's file header on provenance.
     setQueue((q) => enqueue(
-      q, { tableId, author: me.publicKeyHex, kind: 'bank', chip: { ms: chip.ms, bits: chip.bits, nonce: chip.nonce } },
+      q, { tableId, author: me.publicKeyHex, kind: 'dip', amount: res.amount, ms: res.ms },
       nextId.current++
     ));
   }
@@ -669,20 +680,18 @@ export function App() {
     });
   }
 
-  /* ── auto-dip: pull every done chip the moment it crosses the line ────── */
-  // Watches the same `chips` array the rack renders. `bank()` is the guard
-  // against double-fires: it returns null for anything not currently
-  // bankable, and the taken record is synchronously replaced by a fresh
-  // placeholder, so a second pass over stale state takes nothing.
+  /* ── the Sous Chef: bought automation, never default ──────────────────── */
+  // Owning 'autodip' dips GOLDEN (terminal) chips automatically — a golden
+  // chip's multi can no longer grow, so holding it earns only pot ticks and
+  // the Sous Chef cashing it is pure upside for an idle player. `dip()`
+  // returning null on an empty pot guards the re-entry case.
   useEffect(() => {
-    if (!autoDip || !host || !me || !tableId) return;
+    if (!state?.owned.has('autodip') || !host || !me || !tableId) return;
     for (let i = 0; i < chips.length; i++) {
-      if (chips[i] && chips[i].bits >= AUTODIP_BITS) onBank(i);
+      if (chips[i] && isGolden(chips[i]) && chips[i].pot > 0) onDip(i);
     }
-    // onBank is a stable-enough closure over current state; re-running on
-    // chips (each worker report) is the entire mechanism.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chips, autoDip, host, me, tableId]);
+  }, [chips, state, host, me, tableId]);
 
   /* ── the dip ladder ceremony ──────────────────────────────────────────── */
   const lastDip = useRef<number | null>(null);
@@ -856,8 +865,8 @@ export function App() {
     return (
       <Doorway dipIndex={0} title="Dippin' Chips">
         <p className="lede">
-          Grind a chip until it is crisp. Bank it before you get greedy. Spend the crumbs
-          before they go soft. Nobody runs this shop — it lives on the network.
+          Cook a chip and watch its pot climb. When it crackles, everything doubles —
+          hold your nerve or dip it and cash out. Nobody runs this shop — it lives on the network.
         </p>
         <label className="apron-name">
           <span>what should the board call you?</span>
@@ -938,27 +947,14 @@ export function App() {
           <strong>{tier.label}</strong>
         </div>
         <div className="hood-crunch">
-          <span className="in-the-bowl">lifetime crunch</span>
+          <span className="in-the-bowl">lifetime dipped</span>
           {/* Gated on the SAME condition as the bowl. The fold skips banks it
               has no verification for (chipsEngine.ts's `rejected-unverified`),
               so while chips are still being counted this figure is understated
               by exactly as much as `crumbs` is. The bowl says so; showing a
               confident number next to it would just make the bowl look wrong. */}
-          <strong>{state && !stillCounting ? compact(state.lifetimeChips) : '—'}</strong>
+          <strong>{state && !stillCounting ? compact(state.lifetimeChips * 1000) : '—'}</strong>
         </div>
-        <button
-          type="button"
-          className="sound-toggle autodip-toggle"
-          aria-pressed={autoDip}
-          title={autoDip ? 'auto-dip is on — chips bank themselves when done. Turn off to hunt golden (x2.5).' : 'auto-dip is off — you pull every chip yourself. The way to hunt golden.'}
-          onClick={() => {
-            const next = !autoDip;
-            try { localStorage.setItem(AUTODIP_KEY, next ? 'on' : 'off'); } catch { /* private mode */ }
-            setAutoDip(next);
-          }}
-        >
-          {autoDip ? 'auto-dip on' : 'auto-dip off'}
-        </button>
         <button
           type="button"
           className="sound-toggle"
@@ -979,11 +975,8 @@ export function App() {
 
       <main className="stage">
         <Kitchen
-          chips={chips}
-          goldenBits={goldenBits}
-          onBank={onBank}
-          state={state}
-          nowMs={nowMs}
+          chips={chips} onDip={onDip} crackles={crackleAt} ticks={tickAt}
+          capRoom={state ? Math.max(0, state.bowlCap - crumbsNow) : Number.MAX_SAFE_INTEGER}
         />
 
         <aside className="counter">
@@ -1019,7 +1012,7 @@ export function App() {
           open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />
       </div>
 
-      <DipFlight flight={flight} goldenBits={goldenBits} />
+      <DipFlight flight={flight} />
       <GainFloats floats={gains} />
       {dipFanfare !== null && <DipChange dipIndex={dipFanfare} />}
     </div>

@@ -28,7 +28,11 @@ export const SOG_BASE_NUM = 97;          // ~23 h half-life
 export const AIRTIGHT_BONUS = 2;         // added to the numerator when owned
 export const SOG_MAX_HOURS = 720;        // 30 days — bounds fold work per gap
 
-export const START_BOWL_CAP = 100_000;
+/** Raised 100k -> 1M for the pot-x-multi game (2026-07-27): a held-to-golden
+ *  early chip is worth ~1-2M, and a starting bowl that clamps 95% of the
+ *  player's first jackpot punishes exactly the gamble the game celebrates.
+ *  Re-folds history in the growth direction only (clamps less than before). */
+export const START_BOWL_CAP = 1_000_000;
 
 export interface Upgrade {
   key: string;
@@ -76,6 +80,7 @@ export const UPGRADES: Record<string, Upgrade> = {
   fryer2: { key: 'fryer2', label: 'Second Fryer', cost: 60_000,     fryers: 2 },
   fryer3: { key: 'fryer3', label: 'Third Fryer',  cost: 6_000_000,  fryers: 3 },
   fryer4: { key: 'fryer4', label: 'Fourth Fryer', cost: 50_000_000, fryers: 4 },
+  autodip: { key: 'autodip', label: 'Sous Chef', cost: 300_000 },
   doubledip1: { key: 'doubledip1', label: 'Double Dip',      cost: 250_000,    doubleDipMod: 4 },
   doubledip2: { key: 'doubledip2', label: 'Deep Double Dip', cost: 10_000_000, doubleDipMod: 2 },
   detector: { key: 'detector', label: 'Golden Chip Detector', cost: 1_500_000, goldenBits: 15 },
@@ -121,10 +126,14 @@ export const DIP_TIERS: DipTier[] = [
   { key: 'guac',    label: 'Guacamole',      minLifetime: 150,      sogNum: 96, payNum: 11, payDen: 10 },
   { key: 'onion',   label: 'French Onion',   minLifetime: 1_000 },
   { key: 'queso',   label: 'Queso',          minLifetime: 4_000,    congeal: true },
-  { key: 'seven',   label: 'Seven-Layer',    minLifetime: 12_000 },
-  { key: 'buffalo', label: 'Buffalo',        minLifetime: 30_000 },
-  { key: 'fondue',  label: 'Fondue',         minLifetime: 80_000 },
-  { key: 'abyss',   label: 'The Abyssal Dip', minLifetime: 200_000 },
+  /* Upper tiers rescaled again for the pot-x-multi engine (2026-07-27):
+     lifetime now paces on crumbs/1000, which seasoning inflates 6x late-game
+     — the first pass left the Abyss a 24h ride, and a trophy that cheap is
+     no trophy (flowsim pins a FLOOR on it now, not just a ceiling). */
+  { key: 'seven',   label: 'Seven-Layer',    minLifetime: 40_000 },
+  { key: 'buffalo', label: 'Buffalo',        minLifetime: 120_000 },
+  { key: 'fondue',  label: 'Fondue',         minLifetime: 350_000 },
+  { key: 'abyss',   label: 'The Abyssal Dip', minLifetime: 1_000_000 },
 ];
 
 /** Congeal gap threshold, in ms. */

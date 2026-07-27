@@ -67,7 +67,11 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
  */
 export type QueuedMove =
   | { id: number; tableId: string; author: string; kind: 'bank'; chip: ChipEntry; sentAt?: number }
-  | { id: number; tableId: string; author: string; kind: 'buy'; key: string; sentAt?: number };
+  | { id: number; tableId: string; author: string; kind: 'buy'; key: string; sentAt?: number }
+  /** A pot-x-multi cash-out. `ms` is the dip's identity (allocator-unique) —
+   *  it becomes the body's authoring ms, which is how the confirmed reply is
+   *  matched back to this entry (chipsSettling.moveKey). */
+  | { id: number; tableId: string; author: string; kind: 'dip'; amount: number; ms: number; sentAt?: number };
 
 /** What a caller supplies to `enqueue` — everything but the id, which the
  *  queue itself assigns, and `sentAt`, which only a successful submission may
@@ -106,9 +110,11 @@ export function activeFor(q: QueuedMove[], tableId: string, author: string): Que
  * action PoW — it can only fold `rejected-bits` there) or let a stale entry
  * block a live one behind it forever.
  */
-export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' } | null {
+export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' } | null {
   if (q.length === 0) return null;
   if (q[0].kind === 'buy') return { moves: [q[0]], kind: 'buy' };
+  // One dip per reply — the verb carries a single amount.
+  if (q[0].kind === 'dip') return { moves: [q[0]], kind: 'dip' };
 
   const moves: QueuedMove[] = [];
   for (const m of q) {
@@ -190,7 +196,8 @@ export function loadQueue(): QueuedMove[] {
     if (!raw) return [];
     const rows = JSON.parse(raw) as {
       id: unknown; tableId: unknown; author: unknown; kind: unknown; sentAt?: unknown;
-      key?: unknown; chip?: { ms: unknown; bits: unknown; nonce: unknown };
+      key?: unknown; amount?: unknown; ms?: unknown;
+      chip?: { ms: unknown; bits: unknown; nonce: unknown };
     }[];
     if (!Array.isArray(rows)) return [];
     const out: QueuedMove[] = [];
@@ -221,6 +228,12 @@ export function loadQueue(): QueuedMove[] {
       if (r.kind === 'buy' && typeof r.key === 'string') {
         out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'buy', key: r.key, ...sentAt });
       } else if (
+        r.kind === 'dip'
+        && typeof r.amount === 'number' && Number.isSafeInteger(r.amount) && r.amount >= 0
+        && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
+      ) {
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'dip', amount: r.amount, ms: r.ms, ...sentAt });
+      } else if (
         r.kind === 'bank' && r.chip
         && typeof r.chip.ms === 'number' && Number.isSafeInteger(r.chip.ms)
         && typeof r.chip.bits === 'number' && Number.isInteger(r.chip.bits)
@@ -250,7 +263,9 @@ export function saveQueue(q: QueuedMove[]): void {
       const mark = m.sentAt === undefined ? {} : { sentAt: m.sentAt };
       return m.kind === 'bank'
         ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'bank', chip: { ...m.chip, nonce: m.chip.nonce.toString(16) }, ...mark }
-        : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };
+        : m.kind === 'dip'
+          ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'dip', amount: m.amount, ms: m.ms, ...mark }
+          : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };
     })));
   } catch { /* quota or private mode — the in-memory queue still works */ }
 }

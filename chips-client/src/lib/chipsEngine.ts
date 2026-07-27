@@ -46,6 +46,7 @@ export interface ChipsReply {
 export type Outcome =
   | 'banked' | 'rejected-bits' | 'rejected-duplicate' | 'rejected-unverified'
   | 'rejected-oversize'
+  | 'dipped'
   | 'bought' | 'rejected-cost' | 'rejected-owned' | 'rejected-order' | 'rejected-parse';
 
 export interface MoveResult {
@@ -98,6 +99,12 @@ export interface ChipEntry {
 export type ParsedMove =
   | { kind: 'bank'; chips: ChipEntry[]; ms: number }
   | { kind: 'buy'; key: string; ms: number }
+  /** The pot-x-multi game's cash-out (2026-07-27): a SELF-DECLARED amount,
+   *  accepted Cookie-Clicker style — no proof, no verification. The game is
+   *  designer-paced and honor-scored by explicit operator decision ("we can
+   *  be as secure and authentic as Cookie Clicker is. it's a GAME"). The
+   *  fold's only guards are the parse bounds and the bowl cap. */
+  | { kind: 'dip'; amount: number; ms: number }
   /** Declared more than MAX_BATCH entries. Carried as a distinct kind so the
    *  fold can reject it whole WITHOUT verifying anything — see chipsConst. */
   | { kind: 'oversize'; count: number; ms: number };
@@ -166,6 +173,16 @@ export function parseMove(body: string): ParsedMove | null {
 
   const buyM = /^buy\s+([a-z0-9]+)$/.exec(head);
   if (buyM) return { kind: 'buy', key: buyM[1], ms };
+
+  // `dip <amount>` — see ParsedMove's doc for why this is unverified by
+  // design. The bound stops a typo'd or hostile body from overflowing safe
+  // integer arithmetic; it is a parse rule, not an economy rule.
+  const dipM = /^dip\s+(\d{1,15})$/.exec(head);
+  if (dipM) {
+    const amount = Number(dipM[1]);
+    if (!Number.isSafeInteger(amount) || amount < 0) return null;
+    return { kind: 'dip', amount, ms };
+  }
 
   return null;
 }
@@ -384,6 +401,18 @@ export function foldChips(
           });
         }
       }
+      continue;
+    }
+
+    if (parsed.kind === 'dip') {
+      // Pot x multi, already computed and declared by the client. Bowl cap
+      // still clamps storage; lifetime advances by the dip's chip-equivalents
+      // so the tier ladder keeps pacing on total play.
+      state.crumbs = Math.min(state.crumbs + parsed.amount, state.bowlCap);
+      state.lifetimeChips += Math.max(1, Math.round(parsed.amount / CRUMBS_PER_CHIP));
+      state.dipIndex = dipIndexFor(state.lifetimeChips);
+      if (confirmed) state.lastBankAt = at;
+      state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'dipped', crumbs: parsed.amount });
       continue;
     }
 

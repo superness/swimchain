@@ -47,8 +47,10 @@ const keyFor = (r: ChipsReply): string => {
   return proofKey(TABLE, r.author_id, p.chips[0].ms, p.chips[0].nonce);
 };
 
-// Bank 15 bits = 2^7 chips = 128,000 crumbs, capped to START_BOWL_CAP 100,000.
+// Bank 15 bits = 2^7 chips = 128,000 crumbs. (No longer rim-capped: the
+// 2026-07-27 pot-x-multi retune raised START_BOWL_CAP to 1M.)
 const rich = () => bank(15, 'rich');
+const RICH = 128_000;
 
 // 1) An affordable buy deducts and applies.
 {
@@ -56,7 +58,7 @@ const rich = () => bank(15, 'rich');
   const rs = [r1, buy('season1', 'b1')];
   const s = foldChips(H, TABLE, rs, new Map([[keyFor(r1), 15]]));
   check('season1 owned', s.owned.has('season1'));
-  check('season1 deducted', s.crumbs === 100_000 - UPGRADES.season1.cost, s.crumbs);
+  check('season1 deducted', s.crumbs === RICH - UPGRADES.season1.cost, s.crumbs);
   check('seasoning applied', s.seasoningNum === 3 && s.seasoningDen === 2, [s.seasoningNum, s.seasoningDen]);
   check('outcome bought', s.moves[1].outcome === 'bought', s.moves[1].outcome);
 }
@@ -72,7 +74,7 @@ const rich = () => bank(15, 'rich');
   const r2 = bank(8, 'after');
   const rs = [r1, b1, r2];
   const s = foldChips(H, TABLE, rs, new Map([[keyFor(r1), 15], [keyFor(r2), 8]]));
-  const expected = 100_000 - UPGRADES.season1.cost + Math.floor((CRUMBS_PER_CHIP * 3) / 2);
+  const expected = RICH - UPGRADES.season1.cost + Math.floor((CRUMBS_PER_CHIP * 3) / 2);
   check('post-purchase chip is multiplied', s.crumbs === expected, s.crumbs);
 }
 
@@ -101,7 +103,7 @@ const rich = () => bank(15, 'rich');
   const rs = [r1, buy('season1', 'b1'), buy('season1', 'b2')];
   const s = foldChips(H, TABLE, rs, new Map([[keyFor(r1), 15]]));
   check('double-buy rejected', s.moves[2].outcome === 'rejected-owned', s.moves[2].outcome);
-  check('double-buy charged once', s.crumbs === 100_000 - UPGRADES.season1.cost, s.crumbs);
+  check('double-buy charged once', s.crumbs === RICH - UPGRADES.season1.cost, s.crumbs);
 }
 
 // 6) Unknown key is rejected.
@@ -120,17 +122,17 @@ const rich = () => bank(15, 'rich');
 // Hand-computed from chipsConst.ts:
 //
 //   a1: bank 15 bits. 1000 * 2^(15-8) = 128,000; 15 < GOLDEN_BITS 16 so no
-//       golden multiplier; seasoning 1/1; bowl rim  -> 100,000
+//       golden multiplier; seasoning 1/1; under the 1M bowl -> 128,000
 //       lifetime 2^7 = 128, below guac's 150        -> still Plain Salsa
 //   a2: buy airtight 1s later (under an hour, so no decay):
-//       100,000 - 30,000 (2026-07-27 retuned cost)  = 70,000
+//       128,000 - 30,000                            = 98,000
 //   a3: exactly one hour later. numerator = SOG_BASE_NUM 97 + AIRTIGHT_BONUS 2:
-//       floor(70,000 * 99/100)                      = 69,300
+//       floor(98,000 * 99/100)                      = 97,020
 //       bank 8 at salsa, no multipliers             = 1,000
-//       total                                       = 70,300
+//       total                                       = 98,020
 //
-// Without the bonus the same fixture lands on floor(70,000*97/100) + 1,000 =
-// 68,900, so this number is what the +2 is worth and nothing else.
+// Without the bonus the same fixture lands on floor(98,000*97/100) + 1,000 =
+// 96,060, so this number is what the +2 is worth and nothing else.
 {
   const t1 = nextMs();
   const t2 = nextMs();
@@ -138,9 +140,9 @@ const rich = () => bank(15, 'rich');
   const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 15], [keyFor(rs[2]), 8]]));
   check('airtight bought when affordable', s.owned.has('airtight') && s.airtight === true, [...s.owned]);
   check('airtight deducted', s.moves[1].outcome === 'bought', s.moves[1].outcome);
-  const expected = Math.floor((100_000 - UPGRADES.airtight.cost) * (SOG_BASE_NUM + AIRTIGHT_BONUS) / SOG_DEN)
+  const expected = Math.floor((RICH - UPGRADES.airtight.cost) * (SOG_BASE_NUM + AIRTIGHT_BONUS) / SOG_DEN)
     + CRUMBS_PER_CHIP;
-  check('airtight slows decay by exactly +2/100', s.crumbs === expected && expected === 70_300,
+  check('airtight slows decay by exactly +2/100', s.crumbs === expected && expected === 98_020,
     { crumbs: s.crumbs, expected });
 }
 

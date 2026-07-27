@@ -56,9 +56,11 @@ const baseState = (over: Partial<ChipsState> = {}): ChipsState => ({
 //    payouts, from crumbs=0, must reproduce the fold's OWN final `state.crumbs`
 //    exactly — including the chip whose payout the cap clips.
 {
-  // 10 bits -> 4,000; 14 bits -> 64,000; 15 bits -> 128,000 (not golden: below
-  // GOLDEN_BITS=16). Running: 4,000 -> 68,000 -> capped at 100,000 (START_BOWL_CAP).
-  const replies = [bank(10, 'a1', 1), bank(14, 'a2', 2), bank(15, 'a3', 3)];
+  // 10 bits -> 4,000; 14 bits -> 64,000; 18 bits -> golden 1000*2^10*5/2 =
+  // 2,560,000. Running: 4,000 -> 68,000 -> capped at 1,000,000 (START_BOWL_CAP
+  // since the 2026-07-27 pot retune raised it — the last bank must still be
+  // big enough to actually hit the rim or the clip check below is vacuous).
+  const replies = [bank(10, 'a1', 1), bank(14, 'a2', 2), bank(18, 'a3', 3)];
   const s = foldChips(H, TABLE, replies, verifiedExact(replies));
   check('sanity: all three banks succeeded', s.moves.every((m) => m.outcome === 'banked'), s.moves);
 

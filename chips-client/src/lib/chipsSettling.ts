@@ -69,9 +69,9 @@ export const SETTLE_TTL_MS = 600_000 + 2 * 15_000;
  * (`bankBatchBody` over the moves `takeBatch` grouped), never in the queue.
  */
 export function moveKey(m: QueuedMove): string {
-  return m.kind === 'bank'
-    ? proofKey(m.tableId, m.author, m.chip.ms, m.chip.nonce)
-    : `buy:${m.tableId}:${m.author.toLowerCase()}:${m.key}`;
+  if (m.kind === 'bank') return proofKey(m.tableId, m.author, m.chip.ms, m.chip.nonce);
+  if (m.kind === 'dip') return `dip:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
+  return `buy:${m.tableId}:${m.author.toLowerCase()}:${m.key}`;
 }
 
 /**
@@ -103,6 +103,8 @@ export function confirmedMoveKeys(replies: ChipsReply[], tableId: string, author
       for (const chip of parsed.chips) keys.add(proofKey(tableId, author, chip.ms, chip.nonce));
     } else if (parsed.kind === 'buy') {
       keys.add(`buy:${tableId}:${me}:${parsed.key}`);
+    } else if (parsed.kind === 'dip') {
+      keys.add(`dip:${tableId}:${me}:${parsed.ms}`);
     }
     // 'oversize' carries no move to retire.
   }
