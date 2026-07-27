@@ -24,6 +24,7 @@ import type { ChipsState } from './lib/chipsEngine';
 import { projectedCrumbs, soggyLook } from './lib/sogProjection';
 import { tunnelDepth, bandsAround, type TunnelBand } from './lib/tunnelDepth';
 import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, type Upgrade } from './lib/chipsConst';
+import { DOUBLE_DIP_RARITY } from './lib/cooking';
 import { vendorOf, jarAvailable, recruitsAt, type CrewMember } from './lib/crew';
 import { CritterArt } from './Crew';
 import { compact, sinceLabel } from './lib/format';
@@ -554,7 +555,7 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey }
                         an upgrade's whole point is its effect. */}
                     {u.bowlCap !== undefined && <span className="jar-fx">holds {compact(u.bowlCap)}</span>}
                     {u.doubleDipMod !== undefined && (
-                      <span className="jar-fx">{u.doubleDipMod === 2 ? 'every other dip pays twice' : `1 in ${u.doubleDipMod} dips pays twice`}</span>
+                      <span className="jar-fx">1 in {u.doubleDipMod * DOUBLE_DIP_RARITY} dips pays twice</span>
                     )}
                     {u.sogBonus !== undefined && <span className="jar-fx">crumbs stay crisp longer</span>}
                     {u.goldenBits !== undefined && <span className="jar-fx">crackles come sooner</span>}
