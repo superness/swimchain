@@ -543,7 +543,12 @@ function JarCard({ u, vendor, afford, armed, capped, onJar }: {
       <span className="jar-name">{u.label}</span>
       <span className="jar-cost">
         {compact(u.cost)}
-        <i className="chip-fee">{vendor.feed === 'golden' ? '+ a golden chip' : '+ a chip'}</i>
+        {/* Where the chip comes FROM, on the card. There is no chip counter
+            and there should not be one — a chip is not a stockpiled
+            currency, it is the one cooking in the basket right now, and
+            paying with it means giving up the pot it was building. A
+            balance readout would imply an inventory that does not exist. */}
+        <i className="chip-fee">{vendor.feed === 'golden' ? '+ a golden chip off the fryer' : '+ a chip off the fryer'}</i>
       </span>
       {capped && <span className="jar-capped">your bowl can never hold this much — buy a Bigger Bowl first</span>}
       <span className="jar-flavour">{FLAVOUR[u.key] ?? ''}</span>
