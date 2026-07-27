@@ -167,12 +167,13 @@ export function RatArt({ gorge }: { gorge: number }) {
 
 /* ── the row ─────────────────────────────────────────────────────────────── */
 
-/** Where each critter loiters, in vw-ish percent. The pile owns the right
- *  corner on desktop (`.tunnel-front { right: 6vw }`), so nobody stands in
- *  it; the first chip is half-buried near the pile on purpose. */
+/** Where each critter loiters, in vw-ish percent. Everyone stays left of
+ *  ~68%: the counter column owns the right third on desktop and the pile
+ *  owns the right corner (`.tunnel-front { right: 6vw }`) — a critter under
+ *  either is unreadable, and the glowing angel must always be clickable. */
 const SPOTS: Record<string, number> = {
-  scoop: 12, avo: 22, limewedge: 29, committee: 37, firstchip: 45,
-  oracle: 53, onion: 62, angel: 70, rat: 78, wing: 5, hermit: 86,
+  wing: 4, scoop: 11, avo: 18, limewedge: 25, committee: 32, firstchip: 38,
+  oracle: 44, onion: 50, angel: 56, rat: 62, hermit: 68,
 };
 
 export interface CrewBubble {
