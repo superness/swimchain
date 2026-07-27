@@ -11,9 +11,9 @@
 import { reckon } from './fixed';
 import { type Body } from './shelter';
 import { stepTension, topContributor, outsideCore } from './tension';
-import { hushPhase, shouldStartHush, isResolveTick, selectTaken } from './sweep';
-import { markVisits, canEat, cellCentre, isBloomReady } from './bloom';
-import type { LogEntry, ShoalState, Fish } from './shoalTypes';
+import { shouldStartHush, isResolveTick, selectTaken } from './sweep';
+import { markVisits, canEat, isBloomReady } from './bloom';
+import type { LogEntry, ShoalState } from './shoalTypes';
 import {
   TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BLOOM_BITES, VOID_WINDOW_MS, LOCK_MS,
@@ -107,6 +107,7 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
           expiresMs: e.ms + PRESENCE_TTL_MS,
           lastScatterMs: existing ? existing.lastScatterMs : -1,
           lastBiteMs: existing ? existing.lastBiteMs : -1,
+          recentBites: existing ? existing.recentBites : [],
         });
       } else {
         const f = state.fish.get(e.id);
@@ -145,6 +146,11 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
         }
         f.size = f.size + BITE_GROWTH;
         f.lastBiteMs = e.ms;
+        // Track the bite for scatter voiding, pruned to VOID_WINDOW_MS so
+        // this can never grow across a long session: a fish that keeps
+        // biting only ever carries the tail of its own recent foraging
+        // trip, not its whole history.
+        f.recentBites = [...f.recentBites, e.ms].filter((ms) => e.ms - ms <= VOID_WINDOW_MS);
       }
     }
 
@@ -208,10 +214,18 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
           if (!f) continue;
           f.size = clampSize(f.size - SCATTER_COST);
           f.lastScatterMs = t;
-          // Void the food this fish took in the run-up: being caught costs you
-          // what you were out there for.
-          if (f.lastBiteMs >= 0 && t - f.lastBiteMs <= VOID_WINDOW_MS) {
-            f.size = clampSize(f.size - BITE_GROWTH);
+          // Void the WHOLE recent foraging trip, not just the single most
+          // recent bite: with the bloom latch, a fish can bank several
+          // bites inside one VOID_WINDOW_MS window (EAT_COOLDOWN_MS spacing
+          // makes up to 5 possible), and voiding only the last one would
+          // leave getting caught net-positive — exactly the "being caught
+          // while feeding is profitable" bug the fold must not have. Voided
+          // entries are removed from recentBites so a second sweep shortly
+          // after cannot void the same bites again.
+          const voided = f.recentBites.filter((ms) => t - ms <= VOID_WINDOW_MS);
+          if (voided.length > 0) {
+            f.size = clampSize(f.size - voided.length * BITE_GROWTH);
+            f.recentBites = f.recentBites.filter((ms) => t - ms > VOID_WINDOW_MS);
           }
         }
         state.lastTaken = taken;

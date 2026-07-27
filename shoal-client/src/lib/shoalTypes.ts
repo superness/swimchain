@@ -61,6 +61,17 @@ export interface Fish {
   lastScatterMs: number;
   /** Ms of the last credited bite, or -1. */
   lastBiteMs: number;
+  /**
+   * Ms of each bite credited recently, pruned to at most VOID_WINDOW_MS in
+   * the past on every new credited bite. A scatter voids every entry still
+   * within VOID_WINDOW_MS of the resolve tick (the whole recent foraging
+   * trip, not just the single most recent bite) and removes those entries,
+   * so a later sweep cannot void the same bites twice. The prune keeps this
+   * bounded to a small constant regardless of session length — it can never
+   * hold more than fit within one VOID_WINDOW_MS window at EAT_COOLDOWN_MS
+   * spacing.
+   */
+  recentBites: number[];
 }
 
 /** The folded world at a given tick. */
@@ -83,6 +94,12 @@ export interface ShoalState {
   lastVisit: Map<number, number>;
   /** Per-cell bites already consumed from the current bloom. */
   bitesTaken: Map<number, number>;
-  /** Ms at which each cell's current bloom was first ready, for bite reset. */
+  /**
+   * Presence of a cell in this map means its current bloom is LATCHED: it
+   * opened on the ms of the first credited bite since the bloom last
+   * regrew, and stays open — bypassing the fallow test — until BLOOM_BITES
+   * have been taken, at which point the cell is removed. Only ever checked
+   * with .has() and .delete(); the stored ms itself is not otherwise read.
+   */
   bloomSinceMs: Map<number, number>;
 }

@@ -6,12 +6,12 @@
  * tiebreak. An allocator that does not track wall clock sorts every later
  * action before every earlier one and silently rescores the session.
  */
-import { orderLog, emptyState, foldShoal, bodiesOf } from './shoalEngine';
+import { orderLog, foldShoal, bodiesOf } from './shoalEngine';
 import type { LogEntry, Presence, EatClaim } from './shoalTypes';
 import {
-  START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST, TICK_MS,
-  HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS, BLOOM_READY_MS,
-  BLOOM_BITES, EAT_COOLDOWN_MS,
+  START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
+  HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
+  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS,
 } from './shoalConst';
 import { cellCentre } from './bloom';
 
@@ -244,6 +244,155 @@ check('orderLog does not mutate its input', (() => {
   check('an exhausted bloom regrows after the fallow window with nobody at the cell',
     s.bitesTaken.get(cell) === 1 && s.fish.get('b')!.lastBiteMs === 60_000 && s.bloomSinceMs.has(cell),
     { bitesTaken: s.bitesTaken.get(cell), bLastBiteMs: s.fish.get('b')!.lastBiteMs, latched: s.bloomSinceMs.has(cell) });
+}
+
+// --- Scatter voids the whole trip, not just the last bite ------------------
+// Before the bloom latch, a fish could only ever bank one bite per visit, so
+// voiding "the last bite" and voiding "the trip" were the same thing. The
+// latch makes multi-bite trips real: EAT_COOLDOWN_MS (2500) spacing lets a
+// fish bank up to floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1 = 5 bites
+// inside one VOID_WINDOW_MS (10000) window. If a scatter only voided the
+// most recent one, banking 4 bites (+48) then getting swept (-30, -12 for
+// one voided bite = -42) would net +6 — getting caught while feeding would
+// be PROFITABLE, which breaks the game's central tension.
+//
+// Geometry shared by the three sweep-driven checks below: two fish, 'a' at
+// cellCentre(31) = (4032, 64) (large x, small y corner) and 'anchor' at
+// cellCentre(736) = (64, 3008) (small x, large y corner), both stationary
+// from ms=0. coreCentre medians x and y independently (see tension.ts): the
+// x-median of {4032, 64} is 64 (anchor's x), the y-median of {64, 3008} is
+// 64 (a's y) -- so coreCentre = (64, 64), a point that is NEITHER fish's
+// actual position. Both fish sit far outside CORE_R (620) from it (dist2
+// from 'a': 3968^2 = 15,745,024; from 'anchor': 2944^2 = 8,667,136; both far
+// past CORE_R2 = 384,400), so spreadPerMille = 1000 (both of 2 outside) on
+// every tick from t=0. stepTension adds (1000 - TENSION_NEUTRAL(250)) = 750
+// per tick, the fastest this fold can ever raise tension (spreadPerMille
+// cannot exceed 1000). Reaching TENSION_TRIGGER (30000) takes exactly
+// 30000/750 = 40 ticks; tension hits 30000 on the tick at t=(40-1)*250 =
+// 9750 (t=0 is the 1st tick), so shouldStartHush fires there: hushStartMs =
+// 9750. The hush resolves HUSH_MS (8000) later, at t = 9750+8000 = 17750 --
+// itself a valid tick (17750/250 = 71). Both fish are mutually far apart
+// (well past SHELTER_R), so both are exposed and both get taken by the
+// sweep; only 'a' is asserted on below.
+{
+  // The headline regression. 'a' credits five bites total on cell 31: the
+  // first at ms=0 lands in the SAME tick as its own arrival presence (hash
+  // 'a0' < 'ae0', so the presence is applied first), passing the genuine
+  // fallow test before that tick's markVisits ever runs, and latches the
+  // bloom. Four more, spaced exactly EAT_COOLDOWN_MS apart at
+  // 7750, 10250, 12750, 15250, are checked latched (bypassing the fallow
+  // test) and all credit. Relative to the resolve tick (17750), those four
+  // are 10000, 7500, 5000, and 2500 ms old -- all within VOID_WINDOW_MS
+  // (10000, boundary inclusive) -- while the ms=0 bite is 17750ms old, well
+  // outside it. In fact the eat branch's own per-bite pruning (keep entries
+  // within VOID_WINDOW_MS of the NEWEST bite) already drops the ms=0 entry
+  // from recentBites once the ms=10250 bite lands (10250-0=10250>10000), so
+  // by the time the sweep runs, recentBites = [7750,10250,12750,15250] --
+  // exactly the four that should void, and only those.
+  //
+  // Full tick-by-tick size trace (bite=+BITE_GROWTH(12), hunger=-1, applied
+  // only when tickCount%HUNGER_TICK_INTERVAL(4)===0 and the fish did NOT
+  // bite within the last HUNGER_TICK_INTERVAL*TICK_MS(1000)ms):
+  //   t=0     bite      100 -> 112
+  //   t=1750..6750  hunger x6 (t=750 skipped, gap=750<1000)     112 -> 106
+  //   t=7750  bite      106 -> 118   (hunger this tick skipped, gap=0)
+  //   t=8750,9750  hunger x2                                    118 -> 116
+  //   t=10250 bite      116 -> 128   (t=10750 hunger skipped, gap=500)
+  //   t=11750 hunger                                            128 -> 127
+  //   t=12750 bite      127 -> 139   (this tick's hunger skipped, gap=0)
+  //   t=13750,14750 hunger x2                                   139 -> 137
+  //   t=15250 bite      137 -> 149   (t=15750 hunger skipped, gap=500)
+  //   t=16750 hunger                                            149 -> 148
+  //   t=17750 SWEEP: -SCATTER_COST(30) -> 118; void 4 bites
+  //           -4*BITE_GROWTH(48) -> 70; then this tick's hunger
+  //           (gap=2500>=1000, applies) -> 69
+  // Final size: 69. Getting caught after banking four bites costs 31 net
+  // relative to never having fed at all (100 -> 69, ignoring the ambient
+  // hunger any idle fish would also have paid) -- strictly worse than not
+  // feeding, not the +6 the pre-latch-aware voiding would have left.
+  const cellA = 31;
+  const cellAnchor = 736;
+  const a = cellCentre(cellA);
+  const anchor = cellCentre(cellAnchor);
+  const log: LogEntry[] = [
+    pres('anchor', anchor.x, anchor.y, 0),
+    pres('a', a.x, a.y, 0),
+    eat('a', cellA, 0),
+    eat('a', cellA, 1 * EAT_COOLDOWN_MS + 5_250),
+    eat('a', cellA, 2 * EAT_COOLDOWN_MS + 5_250),
+    eat('a', cellA, 3 * EAT_COOLDOWN_MS + 5_250),
+    eat('a', cellA, 4 * EAT_COOLDOWN_MS + 5_250),
+  ];
+  const s = foldShoal(log, 17_750);
+  check('a scatter after banking four bites leaves the fish worse off than never feeding',
+    s.fish.get('a')!.size === 69 && s.lastTaken.includes('a') && s.lastSweepMs === 17_750,
+    { size: s.fish.get('a')!.size, lastTaken: s.lastTaken, lastSweepMs: s.lastSweepMs });
+
+  // A second sweep cannot re-void: the voided entries are actually REMOVED
+  // from recentBites (not merely skipped over), so nothing is left for any
+  // later check to find. This is directly falsifiable: skipping the removal
+  // step leaves the same four entries sitting in recentBites after the
+  // sweep, which this assertion would catch.
+  check('voided bites are removed from recentBites, not just skipped',
+    s.fish.get('a')!.recentBites.length === 0, s.fish.get('a')!.recentBites);
+}
+{
+  // A bite older than VOID_WINDOW_MS survives a scatter. Same geometry and
+  // resolve tick (17750) as the tests above, but 'a' credits only the ms=0
+  // bite this time. By the resolve tick that bite is 17750ms old, past
+  // VOID_WINDOW_MS (10000), so voided.length must be 0 and the bite's growth
+  // must survive.
+  //
+  // Hand trace, in tick order: t=0 bite, 100 -> 112. Hunger checks occur
+  // every 1000ms (t=750, 1750, ..., 17750 -- (17750-750)/1000+1 = 18 checks
+  // total) and apply unless the fish bit within the last 1000ms; only the
+  // first (t=750, gap=750<1000) is skipped, so t=1750 through t=16750 is 16
+  // straight applies: 112 - 16 = 96 going into the resolve tick. At
+  // t=17750 (step 5 runs before step 6 within a tick): SCATTER_COST(30)
+  // first, 96 -> 66; the void check finds recentBites=[0] with
+  // 17750-0=17750 > VOID_WINDOW_MS, so nothing voids, still 66; then this
+  // same tick's own hunger check (the 18th, gap=17750>=1000) applies,
+  // 66 -> 65. Final size: 65.
+  const cellA = 31;
+  const cellAnchor = 736;
+  const a = cellCentre(cellA);
+  const anchor = cellCentre(cellAnchor);
+  const log: LogEntry[] = [
+    pres('anchor', anchor.x, anchor.y, 0),
+    pres('a', a.x, a.y, 0),
+    eat('a', cellA, 0),
+  ];
+  const s = foldShoal(log, 17_750);
+  check('a bite older than VOID_WINDOW_MS survives a scatter',
+    s.fish.get('a')!.size === 65 && s.fish.get('a')!.recentBites.length === 1,
+    { size: s.fish.get('a')!.size, recentBites: s.fish.get('a')!.recentBites });
+}
+{
+  // recentBites stays bounded across a long fold. Reuses the six-bite
+  // schedule (cooldown-spaced claims on a latched bloom): with entries
+  // pruned to VOID_WINDOW_MS (10000) of the NEWEST bite on every credit, and
+  // EAT_COOLDOWN_MS (2500) the minimum legal spacing between credited bites,
+  // the array can never hold more than floor(10000/2500)+1 = 5 entries at
+  // once, regardless of how long the fold runs or how many bites happen --
+  // every new push re-applies the same prune. After the 5th bite (ms=10000)
+  // it holds exactly 5 ([0,2500,5000,7500,10000]); the 6th (ms=12500) pushes
+  // and prunes again (12500-0=12500>10000, drops the oldest), so it's still
+  // 5, not 6: [2500,5000,7500,10000,12500].
+  const cell = 700;
+  const c = cellCentre(cell);
+  const log: LogEntry[] = [
+    pres('a', c.x, c.y, 0),
+    eat('a', cell, 0),
+    eat('a', cell, EAT_COOLDOWN_MS),
+    eat('a', cell, 2 * EAT_COOLDOWN_MS),
+    eat('a', cell, 3 * EAT_COOLDOWN_MS),
+    eat('a', cell, 4 * EAT_COOLDOWN_MS),
+    eat('a', cell, 5 * EAT_COOLDOWN_MS),
+  ];
+  const s = foldShoal(log, 20_000);
+  check('recentBites never grows past floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1',
+    s.fish.get('a')!.recentBites.length === Math.floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1,
+    s.fish.get('a')!.recentBites);
 }
 
 // --- Determinism -----------------------------------------------------------
