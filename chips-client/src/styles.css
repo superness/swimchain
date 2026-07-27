@@ -1677,22 +1677,62 @@ h1, h2, h3, p { margin: 0; }
   border-radius: 10px; padding: 7px 10px;
 }
 
-/* ── small rooms ─────────────────────────────────────────────────────────── */
+/* The mobile chat strip — hidden on desktop, where the bubbles do the job. */
+.crew-toast { display: none; }
+/* Speaker highlight only means something on the bench. */
+.critter.speaking { z-index: 6; }
+
+/* ── small rooms: the crew gets a BENCH ──────────────────────────────────── */
+/* Floating floor critters cannot survive a 390px stacked layout (review:
+   "can't even really see the critters - clustered ui"). On phones the crew
+   stands on a dedicated ledge docked above the boards pill — a reserved
+   strip nothing else may paint over — and their chatter becomes one
+   full-width line above the ledge instead of per-critter bubbles. */
 @media (max-width: 940px), (max-height: 620px) {
-  .critter { width: clamp(34px, 9vw, 48px); }
-  .critter .say { max-width: min(200px, 58vw); font-size: 10px; }
+  .crew-row {
+    top: auto; bottom: 46px; height: auto; z-index: 15;
+    display: flex; align-items: flex-end; justify-content: center;
+    gap: 2px; padding: 4px 8px 3px;
+    background:
+      linear-gradient(180deg, rgba(12, 8, 5, .0) 0%, rgba(12, 8, 5, .78) 34%, rgba(12, 8, 5, .9) 100%);
+    border-top: 1px solid rgba(255, 226, 180, .14);
+    box-shadow: 0 -8px 22px rgba(0, 0, 0, .35);
+  }
+  .critter {
+    position: static; translate: none; bottom: auto;
+    width: clamp(28px, 8vw, 40px); flex: none;
+    animation: none;
+  }
+  .critter .say { display: none; }        /* the toast carries the line */
+  .critter-name { display: none; }
+  .critter.speaking { transform: translateY(-4px) scale(1.18); }
+  .critter.speaking .critter-art { filter: drop-shadow(0 0 8px rgba(255, 226, 180, .55)); }
+  .critter.feeding { transform: translateY(-4px) scale(1.18); }
+  .critter.glowing::before { font-size: 8px; bottom: calc(100% - 2px); }
+
+  .crew-toast {
+    display: block; position: fixed; left: 8px; right: 8px;
+    bottom: calc(46px + clamp(38px, 11vw, 52px));
+    z-index: 15;
+    font-family: var(--chalk); font-size: 11px; line-height: 1.45;
+    color: #f0e2c6; text-align: center;
+    background: rgba(14, 10, 7, .94);
+    border: 1px solid rgba(255, 226, 180, .22);
+    border-radius: 10px; padding: 6px 10px;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+    animation: say-in .28s ease-out;
+  }
+  .crew-toast strong { color: #ffd88f; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; margin-right: 4px; }
+
+  .critter { width: clamp(28px, 8vw, 40px); }
   /* the ticker wraps rather than vanishing, and stays lit */
   .dip-ticker { font-size: 10px; padding: 3px 12px; white-space: normal; }
   .ticker-line { white-space: normal; max-height: 2.9em; }
   .rat-perch { width: 42px; top: -10px; right: -8px; }
-  .feed-banner { top: auto; bottom: 16vh; }
+  .feed-banner { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 44px); }
   .stall-face { width: 20px; height: 20px; }
-  /* On a phone the stacked column runs under the floor line, and critters
-     were painting OVER purchasable cards. The row drops behind the stage —
-     EXCEPT when someone demands attention (glowing angel, armed vendor),
-     which lifts the whole row back above everything clickable. */
-  .crew-row { z-index: 1; }
-  .crew-row:has(.glowing), .crew-row:has(.feeding) { z-index: 30; }
+  /* leave room under the scrolling column for the bench + boards pill */
+  .counter { max-height: calc(100dvh - 210px); }
   .door-dog { width: 52px; left: 4vw; bottom: 5vh; }
 }
 
