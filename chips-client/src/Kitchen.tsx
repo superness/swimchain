@@ -1,20 +1,36 @@
 /**
- * The fryers.
+ * The fryers — pot × multi edition (spec verbatim in lib/cooking.ts).
  *
- * The one rule this file exists to obey: CRISPNESS IS A LOOK, NOT A NUMBER.
- * A chip's leading-zero bits drive its colour, its silhouette, its blistering
- * and its edge — a raw chip is pale, puffy and soft-cornered; a done one is
- * dark, buckled and sharp; a golden one stops being food-coloured altogether.
- * There is no bar, no percentage and no "12/16" anywhere in here. A player
- * should know whether to pull a chip by squinting at it from across the room.
+ * The rules this file obeys:
+ *   - THE POT IS ALWAYS MOVING. The number under the chip climbs on every
+ *     tick; nothing on this screen is ever frozen.
+ *   - CRACKLES ARE MOMENTS. When the multiplier jumps the basket flashes,
+ *     the chip visibly crisps a stage, and the ×N badge slams in. A player
+ *     looking away should hear it and look back.
+ *   - THE CHIP'S LOOK IS ITS MULTI. Same silhouette engine as ever — pale
+ *     and puffy at ×1, dark and buckled by ×16, gold at the top. No bars.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { FryerChip } from './lib/useFryers';
-import { BANK_MIN_BITS } from './lib/chipsConst';
-import type { ChipsState } from './lib/chipsEngine';
-import { worthIfBankedNow } from './lib/chipsPayoutDisplay';
+import { useMemo } from 'react';
+import { multiOf, isGolden, worthOf, MAX_CRACKLES, type CookingChip } from './lib/cooking';
 import { compact } from './lib/format';
-import { sfx } from './lib/sound';
+
+/** What the chip SVG renders from — a purely visual shape since the miner
+ *  retired; `bits` here is an art dial, not a proof. */
+export interface VisualChip {
+  ms: number;
+  bits: number;
+  attempts: number;
+}
+
+/** Crackle count -> the art dial. 16 is where the golden look begins in
+ *  chipColors/crispnessOf, so the terminal crackle goes gold exactly. */
+const CRACKLE_BITS = [9, 11, 12, 13, 14, 16] as const;
+const GOLD_AT = 16;
+
+export function visualFor(chip: Pick<CookingChip, 'ms' | 'crackles'>): VisualChip {
+  const bits = CRACKLE_BITS[Math.max(0, Math.min(MAX_CRACKLES, chip.crackles))];
+  return { ms: chip.ms, bits, attempts: 2 ** (bits + 1) };
+}
 
 /** xorshift32 — a chip's silhouette must be stable across every re-render, and
  *  every chip must look like a different chip. Keyed on its authoring-ms. */
@@ -29,37 +45,22 @@ function seeded(seed: number): () => number {
 }
 
 export interface Crispness {
-  /** 0 = batter, 1 = the golden threshold. Keeps climbing past 1. */
   crisp: number;
   golden: boolean;
-  bankable: boolean;
-  /** No hash reported yet — the chip is still going in. */
   raw: boolean;
 }
 
-/**
- * Bits alone move in discrete jumps that get exponentially rarer (8 -> 9 is
- * twice the work of everything before it), so a chip driven by bits ALONE
- * would visibly stall for minutes at a time and read as broken. `attempts`
- * fills the gap: expected work for the next bit is 2^(bits+1), and the fill
- * is `1 - e^(-attempts/expected)` — the actual probability that the next bit
- * WOULD have landed by now. That curve is the fidelity fix: the old version
- * was `min(1, attempts/expected)`, a hard cap that froze the entire visual
- * the moment a chip ran past its expected work — i.e. on every unlucky chip,
- * for as long as the bad luck lasted (minutes at high bits, measured live).
- * The asymptote keeps creeping forever instead; it slows, but it never
- * stops, and the tosses ticker (`WorthTag`) carries raw, unbounded fidelity
- * alongside it. Scaled by .95 so it can never overtake the next real bit.
- */
-export function crispnessOf(chip: FryerChip, goldenBits: number): Crispness {
-  if (chip.bits < 0) return { crisp: 0, golden: false, bankable: false, raw: true };
-  const expected = Math.pow(2, chip.bits + 1);
+/** The art dial: crackle level fills the same 0..1 crisp range the old game
+ *  drove with proof bits, so the whole silhouette/colour engine carries over
+ *  untouched. */
+export function crispnessOf(chip: VisualChip): Crispness {
+  if (chip.bits < 0) return { crisp: 0, golden: false, raw: true };
+  const expected = 2 ** (chip.bits + 1);
   const micro = expected > 0 ? 1 - Math.exp(-chip.attempts / expected) : 0;
   const effective = chip.bits + micro * 0.95;
   return {
-    crisp: Math.max(0, effective / Math.max(1, goldenBits)),
-    golden: chip.bits >= goldenBits,
-    bankable: chip.bits >= BANK_MIN_BITS,
+    crisp: Math.max(0, effective / GOLD_AT),
+    golden: chip.bits >= GOLD_AT,
     raw: false,
   };
 }
@@ -74,16 +75,6 @@ function chipColors(crisp: number, golden: boolean) {
     };
   }
   const t = Math.min(1, crisp);
-  // The ramp is deliberately wide on BOTH lightness and saturation. A narrow
-  // one (the first cut moved lightness only 36 points) makes a half-done chip
-  // and a nearly-golden one look like the same chip under slightly different
-  // light, which defeats the entire point of reading crispness off the object.
-  // Raw still tops out at pale DOUGH, not paper. The first cut said that and
-  // then set the ceiling at l 82 / light 88 anyway, which against the cream
-  // splashback read as a white cut-out pasted over the scene — exactly what
-  // this comment forbids. 74 is dough: clearly lighter than a fried chip, still
-  // plainly a solid object sitting in oil. The dark end is unchanged, so the
-  // full crisping ramp is only slightly shorter.
   const h = 46 - 20 * t;
   const s = 40 + 44 * t;
   const l = 74 - 38 * t;
@@ -103,10 +94,10 @@ interface Geometry {
 }
 
 /**
- * A tortilla chip: three corners, three curved sides. The BOW of those sides is
- * the whole trick — raw dough bulges outward and looks puffy and soft, a fried
- * chip pulls flat and then buckles inward with irregular, sharp edges. Same
- * geometry, opposite silhouette, driven only by crispness.
+ * A tortilla chip: three corners, three curved sides. Raw dough bulges
+ * outward and looks puffy; a cooked chip pulls flat and buckles inward with
+ * sharp edges. Same geometry engine as the proof-of-work era — the dial that
+ * drives it changed, the art did not.
  */
 function geometryFor(seed: number, crisp: number): Geometry {
   const rnd = seeded(seed);
@@ -119,7 +110,7 @@ function geometryFor(seed: number, crisp: number): Geometry {
   }
 
   const t = Math.min(1.25, crisp);
-  const bow = 13 - 19 * t;           // +13 puffy dough -> -11 buckled crisp
+  const bow = 13 - 19 * t;
   let outline = `M ${corners[0][0].toFixed(2)} ${corners[0][1].toFixed(2)}`;
   for (let i = 0; i < 3; i++) {
     const [px, py] = corners[i];
@@ -127,14 +118,13 @@ function geometryFor(seed: number, crisp: number): Geometry {
     const mx = (px + qx) / 2, my = (py + qy) / 2;
     const nx = mx - cx, ny = my - cy;
     const nl = Math.hypot(nx, ny) || 1;
-    const wob = (rnd() - 0.5) * 22 * t; // crisp chips warp; raw ones are smooth
+    const wob = (rnd() - 0.5) * 22 * t;
     const ctlx = mx + (nx / nl) * bow + wob;
     const ctly = my + (ny / nl) * bow + (rnd() - 0.5) * 22 * t;
     outline += ` Q ${ctlx.toFixed(2)} ${ctly.toFixed(2)} ${qx.toFixed(2)} ${qy.toFixed(2)}`;
   }
   outline += ' Z';
 
-  // Blistering: the bubbles that lift and brown as it fries. None on dough.
   const blisters: Geometry['blisters'] = [];
   const nb = Math.round(Math.min(1, crisp) * 11);
   for (let i = 0; i < nb; i++) {
@@ -156,7 +146,6 @@ function geometryFor(seed: number, crisp: number): Geometry {
     });
   }
 
-  // A single crease across the chip, so it reads as a solid object, not a blob.
   const f0 = corners[0], f1 = corners[2];
   const fmx = (f0[0] + f1[0]) / 2 + (rnd() - 0.5) * 10;
   const fmy = (f0[1] + f1[1]) / 2 + (rnd() - 0.5) * 10;
@@ -166,10 +155,8 @@ function geometryFor(seed: number, crisp: number): Geometry {
   return { outline, blisters, salt, fold };
 }
 
-export function Chip({ chip, goldenBits }: { chip: FryerChip; goldenBits: number }) {
-  const c = crispnessOf(chip, goldenBits);
-  // Re-cut the silhouette only when the LOOK changes materially, not on every
-  // one of the ~4 worker messages a second — otherwise the chip jitters.
+export function Chip({ chip }: { chip: VisualChip }) {
+  const c = crispnessOf(chip);
   const step = Math.round(c.crisp * 12);
   const geo = useMemo(() => geometryFor(chip.ms, step / 12), [chip.ms, step]);
   const col = chipColors(c.crisp, c.golden);
@@ -177,10 +164,10 @@ export function Chip({ chip, goldenBits }: { chip: FryerChip; goldenBits: number
 
   return (
     <svg
-      className={`chip${c.raw ? ' is-batter' : ''}${c.bankable ? ' is-done' : ''}${c.golden ? ' is-golden' : ''}`}
+      className={`chip${c.raw ? ' is-batter' : ''}${c.golden ? ' is-golden' : ''}`}
       viewBox="0 0 100 100"
       role="img"
-      aria-label={c.golden ? 'a golden chip' : c.bankable ? 'a chip that is done' : 'a pale chip, still frying'}
+      aria-label={c.golden ? 'a golden chip' : 'a chip cooking'}
       style={{ ['--crisp' as string]: c.crisp.toFixed(3) }}
     >
       <defs>
@@ -226,8 +213,6 @@ export function Chip({ chip, goldenBits }: { chip: FryerChip; goldenBits: number
         {geo.salt.map((s, i) => (
           <circle key={i} cx={s.x} cy={s.y} r={s.r} fill="#fffaf0" opacity={0.55} />
         ))}
-        {/* The golden band is a THING THAT HAPPENS TO THE CHIP: a sheen sweeps
-            across it, forever. No tooltip, no multiplier text. */}
         {c.golden && <rect className="chip-sheen" x="-120" y="-20" width="120" height="140" fill={`url(#${uid}s)`} />}
       </g>
     </svg>
@@ -235,74 +220,25 @@ export function Chip({ chip, goldenBits }: { chip: FryerChip; goldenBits: number
 }
 
 interface BasketProps {
-  /** Position in the rack — the dip flight measures this exact basket. */
   index: number;
-  chip: FryerChip;
-  goldenBits: number;
-  onBank: () => void;
-  /** `null` for the handful of frames before the first fold lands — the
-   *  worth line only ever appears once there is a real fold to ask. */
-  state: ChipsState | null;
-  nowMs: number;
+  chip: CookingChip;
+  onDip: () => void;
+  /** Timestamp of this basket's latest crackle — keys the flash animation so
+   *  every crackle replays it (same fresh-mount trick as the dip flight). */
+  crackledAt: number | null;
+  /** Latest tick's gain, keyed by timestamp — the "+500" floater. */
+  tickFx: { at: number; amount: number } | null;
+  /** How many crumbs the bowl can still take — a dip past this SPILLS, and
+   *  the designer review demanded the warning land BEFORE the dip, not
+   *  after ("punished by information the game withheld"). */
+  capRoom: number;
 }
 
-/**
- * What this basket's chip would pay if lifted out THIS INSTANT — see
- * `worthIfBankedNow` (lib/chipsPayoutDisplay.ts) for why this is a live call
- * against the real fold rather than a restated formula, and why it can
- * legitimately change with no change to the chip (congeal, the bowl cap).
- */
-function WorthTag({ chip, goldenBits, state, nowMs }: { chip: FryerChip; goldenBits: number; state: ChipsState | null; nowMs: number }) {
-  const live = state ? worthIfBankedNow(state, chip.bits, nowMs) : null;
-  // Before the first fold lands there is nothing truthful to say — but the
-  // SLOT must still hold its height. Returning null here (the old behaviour)
-  // meant the caption materialised a beat after page load and recentred the
-  // whole kitchen column: measured 7px of basket shift on load.
-  if (!state) return <p className="worth" aria-hidden="true">&nbsp;</p>;
-  // The raw work meter — the one figure that NEVER stalls. Crispness is
-  // bounded below the next bit by honesty (it may only jump when a real bit
-  // lands), so on an unlucky chip every bounded visual eventually slows to a
-  // crawl; this counter is unbounded and ticks with every progress message
-  // (~4/s), which is what makes a long golden grind read as "working", not
-  // "hung". Updates every 16 attempts — the worker's report stride.
-  // Full digits, never compact(): "104k" only changes once per ~1000
-  // attempts, which would hand the ticker its own ten-second stalls at
-  // exactly the counts where it matters most.
-  const tosses = chip.attempts > 0
-    ? <em className="tosses" aria-hidden="true">{chip.attempts.toLocaleString()} tosses of the basket</em>
-    : <em className="tosses" aria-hidden="true">&nbsp;</em>;
-  if (!live) {
-    // Below BANK_MIN_BITS: worth NOTHING yet, not a misleading number — see
-    // the file header. Matches "still pale" (Basket's own title/nudge copy).
-    return <p className="worth worth-pale" aria-hidden="true">worth nothing — still pale{tosses}</p>;
-  }
-  const golden = chip.bits >= goldenBits;
-  return (
-    <p className={`worth${live.capped ? ' worth-capped' : ''}${golden ? ' worth-golden' : ''}`}>
-      <strong>{compact(live.worth)}</strong> now
-      {/* The old tag here said "next bit ×2" — true per chip, but it taught
-       *  the WRONG lesson: payout and expected work both double per bit, so
-       *  waiting earns the same rate as banking constantly, and players sat
-       *  nursing one chip for ten minutes (measured, 2026-07-27). The one
-       *  honest reason to wait is golden's superlinear x2.5 — so that is
-       *  the only thing this line advertises now. */}
-      <em className="worth-next" aria-hidden="true">golden at {goldenBits} bits pays ×2.5</em>
-      {tosses}
-    </p>
-  );
-}
-
-function Basket({ chip, goldenBits, onBank, index, state, nowMs }: BasketProps) {
-  const c = crispnessOf(chip, goldenBits);
-  // A quiet shimmer the moment THIS chip turns golden — flip-edge only, so a
-  // re-render (or a fresh chip starting pale) never re-rings it. Keyed to the
-  // chip's ms: a new chip in the same basket starts a new edge.
-  const goldenRef = useRef<{ ms: number; golden: boolean }>({ ms: chip.ms, golden: c.golden });
-  useEffect(() => {
-    const prev = goldenRef.current;
-    if (chip.ms === prev.ms && c.golden && !prev.golden) sfx.golden();
-    goldenRef.current = { ms: chip.ms, golden: c.golden };
-  }, [chip.ms, c.golden]);
+function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom }: BasketProps) {
+  const golden = isGolden(chip);
+  const multi = multiOf(chip);
+  const worth = worthOf(chip);
+  const spills = worth > capRoom;
   const bubbles = useMemo(() => {
     const rnd = seeded(chip.ms ^ 0x5bf03635);
     return Array.from({ length: 9 }, () => ({
@@ -317,17 +253,14 @@ function Basket({ chip, goldenBits, onBank, index, state, nowMs }: BasketProps) 
     <div className="basket-slot">
       <button
         type="button"
-        className={`basket${c.bankable ? ' ready' : ''}${c.golden ? ' golden' : ''}`}
-        onClick={onBank}
-        data-bits={chip.bits}
+        className={`basket ready${golden ? ' golden' : ''}`}
+        onClick={onDip}
         data-fryer={index}
-        data-attempts={chip.attempts}
-        aria-label={
-          c.golden ? 'Golden chip — dip it'
-            : c.bankable ? 'This chip is done — dip it'
-              : 'Still frying'
-        }
-        title={c.bankable ? 'dip it' : 'still pale'}
+        data-crackles={chip.crackles}
+        aria-label={golden
+          ? `Golden chip worth ${compact(worth)} — dip it`
+          : `Chip worth ${compact(worth)} at times ${multi} — dip it`}
+        title="dip it"
       >
         <span className="basket-hook" aria-hidden="true" />
         <span className="oil" aria-hidden="true">
@@ -342,59 +275,65 @@ function Basket({ chip, goldenBits, onBank, index, state, nowMs }: BasketProps) 
             />
           ))}
         </span>
-        <span className="basket-chip" aria-hidden="true"><Chip chip={chip} goldenBits={goldenBits} /></span>
+        <span className="basket-chip" aria-hidden="true"><Chip chip={visualFor(chip)} /></span>
         <span className="mesh" aria-hidden="true" />
-        {c.bankable && <span className="steam" aria-hidden="true"><i /><i /><i /></span>}
+        {golden && <span className="steam" aria-hidden="true"><i /><i /><i /></span>}
+        {crackledAt !== null && <span key={crackledAt} className="crackle-flash" aria-hidden="true" />}
+        {/* The crackle's WAKE: a banner that lingers ~3.5s, so eyes that were
+            elsewhere still learn what happened (designer review: ten crackles
+            witnessed, zero seen — the moment needs residue). */}
+        {crackledAt !== null && chip.crackles > 0 && (
+          <span key={`b${crackledAt}`} className={`crackle-banner m${chip.crackles}`} aria-hidden="true">
+            CRACKLED ×{multi}{golden ? ' — GOLDEN!' : '!'}
+          </span>
+        )}
+        {tickFx && <span key={`t${tickFx.at}`} className="tick-float" aria-hidden="true">+{compact(tickFx.amount)}</span>}
         <span className="tongs" aria-hidden="true">dip it</span>
       </button>
-      <WorthTag chip={chip} goldenBits={goldenBits} state={state} nowMs={nowMs} />
+
+      {/* THE POT, always moving; the ladder shows the summit exists. */}
+      <p className={`worth pot${golden ? ' worth-golden' : ''}`}>
+        <span className="pot-line"><strong>{compact(chip.pot)}</strong> in the pot</span>
+        <span className="ladder" aria-hidden="true">
+          {[1, 2, 3, 4, 5].map((k) => (
+            <i key={k} className={`rung${chip.crackles >= k ? ' lit' : ''}${k === 5 ? ' top' : ''}`}>×{2 ** k}</i>
+          ))}
+        </span>
+        {spills
+          ? <em className="pot-worth over">dips for {compact(Math.max(0, capRoom))} — bowl full, {compact(worth - Math.max(0, capRoom))} would spill</em>
+          : <em className="pot-worth">dips for {compact(worth)}</em>}
+      </p>
     </div>
   );
 }
 
 export interface KitchenProps {
-  chips: FryerChip[];
-  goldenBits: number;
-  onBank: (index: number) => void;
-  /** For the live "worth if banked now" tag — see `WorthTag`. `null` before
-   *  the first fold lands. */
-  state: ChipsState | null;
-  nowMs: number;
+  chips: CookingChip[];
+  onDip: (index: number) => void;
+  /** Latest crackle per basket index (timestamps), for the flash. */
+  crackles: (number | null)[];
+  /** Latest tick per basket index, for the +N floater. */
+  ticks: ({ at: number; amount: number } | null)[];
+  /** Crumbs of headroom left in the bowl — the overflow warning's input. */
+  capRoom: number;
 }
 
-export function Kitchen({ chips, goldenBits, onBank, state, nowMs }: KitchenProps) {
-  // Nudge text when a player grabs at a chip that is still pale. Diegetic, and
-  // it clears itself — this is a cook muttering, not an error dialog.
-  const [nudge, setNudge] = useState<string | null>(null);
-  useEffect(() => {
-    if (!nudge) return;
-    const t = setTimeout(() => setNudge(null), 2200);
-    return () => clearTimeout(t);
-  }, [nudge]);
-
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
-        {/* chips.map — NEVER Array.from({length: fryers}). Effects flush after
-            render, so for one render chips.length is still the OLD count and an
-            index-built list would read past the end. */}
         {chips.map((chip, i) => (
           <Basket
             key={chip.ms}
             index={i}
             chip={chip}
-            goldenBits={goldenBits}
-            state={state}
-            nowMs={nowMs}
-            onBank={() => {
-              if (crispnessOf(chip, goldenBits).bankable) onBank(i);
-              else { setNudge('still pale — give it a minute'); sfx.tap(); }
-            }}
+            crackledAt={crackles[i] ?? null}
+            tickFx={ticks[i] ?? null}
+            capRoom={capRoom}
+            onDip={() => onDip(i)}
           />
         ))}
       </div>
-
-      {nudge && <p className="mutter" role="status">{nudge}</p>}
     </section>
   );
 }
@@ -403,21 +342,18 @@ export function Kitchen({ chips, goldenBits, onBank, state, nowMs }: KitchenProp
 export interface DipFlightState {
   key: number;
   ms: number;
+  /** Art dial for the flying chip (crackle-mapped bits). */
   bits: number;
-  /** The chip will double-dip (client-side nonce test, same rule as the
-   *  fold): the flight bobs back up and goes under a second time. */
+  /** Double-dip procced — the flight bobs and goes under twice. */
   double: boolean;
   x0: number; y0: number;
   x1: number; y1: number;
-  /** The crumb counter's centre — where the crumb burst travels to. */
   cx1: number; cy1: number;
   size: number;
 }
 
 const CRUMBS = 7;
 
-// Deterministic scatter: keyed on the chip's ms so a re-render cannot reshuffle
-// crumbs mid-flight. Same reason the chip's own silhouette is seeded.
 function crumbJitter(seed: number, i: number): { dx: number; dy: number } {
   const n = Math.sin(seed * 0.0001 + i * 12.9898) * 43758.5453;
   const f = n - Math.floor(n);
@@ -426,22 +362,12 @@ function crumbJitter(seed: number, i: number): { dx: number; dy: number } {
 }
 
 /**
- * The banked chip, arcing out of the basket and plunging into the dig front —
- * one more chip dipped into the current layer, one scratch deeper down the
- * tunnel. The crumb burst is the splash it makes going under.
- *
- * Fixed-position and pointer-events:none, so it is painted over the scene and
- * takes part in no layout — which is the point. The panel this replaced was a
- * flow child of a centred column, so showing it shoved the fryer upward and
- * under the hood.
- *
- * It is a flourish, not a progress bar: the credit already landed in the queue
- * the instant the chip was banked (see `onBank` in App.tsx), before this
- * component ever mounts. The flight runs 1.25s (DOM lifetime 1.4s so the
- * crumb burst isn't cut off mid-splash) purely to *pace the displayed
- * counter* — nothing here gates, delays, or reflects a real state change.
+ * The dipped chip, arcing out of the basket and plunging into the dig front —
+ * the crumb burst is the splash it makes going under. Fixed-position,
+ * pointer-events:none, pure flourish: the credit already landed in the queue
+ * before this mounts.
  */
-export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | null; goldenBits: number }) {
+export function DipFlight({ flight }: { flight: DipFlightState | null }) {
   if (!flight) return null;
   return (
     <>
@@ -457,7 +383,7 @@ export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | nul
           '--fs': `${flight.size}px`,
         } as React.CSSProperties}
       >
-        <Chip chip={{ ms: flight.ms, bits: flight.bits, attempts: 0 }} goldenBits={goldenBits} />
+        <Chip chip={{ ms: flight.ms, bits: flight.bits, attempts: 2 ** (flight.bits + 1) }} />
       </div>
 
       <div key={`${flight.key}-ripple`} className="dip-ripple" aria-hidden="true" style={{
@@ -472,9 +398,6 @@ export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | nul
             className="dip-crumb"
             aria-hidden="true"
             style={{
-              // The splash starts where the chip went UNDER — the entry point
-              // itself, not the old "eaten" spot 46px above it: the chip is no
-              // longer eaten, it dips in and keeps going down.
               '--cx0': `${flight.x1 + flight.size / 2}px`,
               '--cy0': `${flight.y1 + flight.size / 2}px`,
               '--cx1': `${flight.cx1 + j.dx}px`,
@@ -485,15 +408,6 @@ export function DipFlight({ flight, goldenBits }: { flight: DipFlightState | nul
         );
       })}
 
-      {/* Pure presentation: a brief warm pulse on the crumb counter itself,
-       * timed to land alongside the crumb burst, so the crumbs read as
-       * arriving somewhere rather than just dissolving in transit. Keyed
-       * off flight.key for the same reason the ripple and crumbs are — a
-       * fresh mount per bank, so overlapping banks each get their own pulse
-       * instead of reusing (and failing to retrigger) a stuck node. It has
-       * no handler of any kind and touches no state; the credit already
-       * landed before this ever renders. Hidden under reduced-motion
-       * alongside .dip-ripple/.dip-crumb (styles.css). */}
       <div
         key={`${flight.key}-land`}
         className="crumb-land"

@@ -41,6 +41,20 @@ export function bankBody(bits: number, nonce: bigint, ms: number): string {
   return `bank ${bits} ${nonce.toString(16)}#${ms}~`;
 }
 
+/** Build a `dip` move body: `dip <amount>#<ms>~` — the pot-x-multi game's
+ *  self-declared cash-out (see chipsEngine's ParsedMove doc for why no
+ *  proof). The asserts mirror parseMove's bounds: a body the fold rejects is
+ *  a silently lost dip. */
+export function dipBody(amount: number, ms: number): string {
+  if (!Number.isSafeInteger(amount) || amount < 0 || String(amount).length > 15) {
+    throw new Error(`dipBody: amount must be a safe non-negative integer of <=15 digits, got ${amount}`);
+  }
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`dipBody: ms must be a positive safe integer, got ${ms}`);
+  }
+  return `dip ${amount}#${ms}~`;
+}
+
 /** Build a `buy` move body: `buy <upgrade-key>#<ms>~`. */
 export function buyBody(key: string, ms: number): string {
   if (!/^[a-z0-9]+$/.test(key)) {

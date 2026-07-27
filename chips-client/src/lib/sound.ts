@@ -210,6 +210,17 @@ class Sfx {
     this.tone(c, out, t, { dur: 0.08, from: 150, to: 110, peak: 0.11 });
   }
 
+  /** THE CRACKLE — the multiplier jumping. Loud on purpose: a player looking
+   *  away should hear it and look back (Kitchen.tsx's rule). A dry snap, a
+   *  hot sizzle burst, and a rising bling. */
+  crackle(): void {
+    const r = this.ready(); if (!r) return;
+    const { c, out } = r; const t = c.currentTime;
+    this.burst(c, out, t, { dur: 0.05, type: 'highpass', freq: 2600, peak: 0.22 });
+    this.burst(c, out, t + 0.03, { dur: 0.28, type: 'bandpass', freq: 5200, q: 0.7, peak: 0.12 });
+    this.tone(c, out, t + 0.05, { dur: 0.3, from: 520, to: 1040, type: 'triangle', peak: 0.09, attack: 0.01 });
+  }
+
   /** A chip in the oil turning golden — quiet; it happens unprompted. */
   golden(): void {
     const r = this.ready(); if (!r) return;

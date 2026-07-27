@@ -439,7 +439,10 @@ function shelfItems(owned: Set<string>): { open: Upgrade[]; got: Upgrade[] } {
     if (!owned.has(key)) open.push(UPGRADES[key]);
   }
   for (const key of Object.keys(UPGRADES)) if (owned.has(key)) got.push(UPGRADES[key]);
-  open.sort((a, b) => a.cost - b.cost);
+  // NO cost re-sort: the grid must never reflow under the cursor after a
+  // purchase (designer review: a card slide mid-click misspent 90k). Chains
+  // keep their slot — the bought jar is replaced in place by its successor —
+  // and unchained jars sit in fixed catalog order.
   return { open, got };
 }
 
@@ -457,6 +460,7 @@ const FLAVOUR: Record<string, string> = {
   fryer3: 'a third. the extractor complains.',
   fryer4: 'four baskets. the fire marshal has been.',
   detector: 'you can spot a golden one a beat sooner',
+  autodip: 'a cook who dips the golden ones so you do not have to',
   season6: 'the shaker has its own stool at the bar',
   cellar: 'cool, dark, dry. crumbs keep.',
   doubledip1: 'nobody is watching. dip it again.',
@@ -495,14 +499,16 @@ export function Shelf({ state, crumbsNow, committed, onBuy }: ShelfProps) {
                 <span className="jar-glass" aria-hidden="true"><i /></span>
                 <span className="jar-name">{u.label}</span>
                 <span className="jar-cost">{compact(u.cost)}</span>
+                <span className="jar-flavour">{FLAVOUR[u.key] ?? ''}</span>
                 {/* Visible, not title-only: touch screens have no hover, and
                     an upgrade's whole point is its effect. */}
                 {u.bowlCap !== undefined && <span className="jar-fx">holds {compact(u.bowlCap)}</span>}
                 {u.doubleDipMod !== undefined && (
-                  <span className="jar-fx">{u.doubleDipMod === 2 ? 'every other chip dips twice' : `1 in ${u.doubleDipMod} chips dips twice`}</span>
+                  <span className="jar-fx">{u.doubleDipMod === 2 ? 'every other dip pays twice' : `1 in ${u.doubleDipMod} dips pays twice`}</span>
                 )}
                 {u.sogBonus !== undefined && <span className="jar-fx">crumbs stay crisp longer</span>}
-                {u.goldenBits !== undefined && <span className="jar-fx">golden from {u.goldenBits} bits</span>}
+                {u.goldenBits !== undefined && <span className="jar-fx">crackles come sooner</span>}
+                {u.key === 'autodip' && <span className="jar-fx">dips golden chips for you</span>}
               </button>
             </li>
           );

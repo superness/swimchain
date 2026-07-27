@@ -196,7 +196,7 @@ export function Boards({ rows, hosting, hosted, open, onToggle, myTableId }: {
   /** Live, from App — NOT baked into `rows`. See the `me` class below. */
   myTableId: string | null;
 }) {
-  const topCrisp = rows.reduce<BoardRow | null>((best, r) => (!best || r.crispest > best.crispest ? r : best), null);
+  const topRich = rows.reduce<BoardRow | null>((best, r) => (!best || r.total > best.total ? r : best), null);
 
   return (
     <>
@@ -204,8 +204,8 @@ export function Boards({ rows, hosting, hosted, open, onToggle, myTableId }: {
         aria-expanded={open} aria-label="the boards">
         <span className="chalk-title">THE BOARDS</span>
         <span className="chalk-line">
-          {topCrisp && topCrisp.crispest > 0
-            ? `crispest: ${topCrisp.name} @ ${topCrisp.crispest} bits`
+          {topRich && topRich.total > 0
+            ? `deepest dipper: ${topRich.name}`
             : 'nothing up yet'}
         </span>
         <span className={`hosting${hosting ? ' live' : ''}`}>

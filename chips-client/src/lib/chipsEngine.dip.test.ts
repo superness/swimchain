@@ -78,16 +78,16 @@ const keyFor = (r: ChipsReply): string => {
 //   g1: bank 17 bits. 1000 * 2^(17-8)        = 512,000
 //       17 >= GOLDEN_BITS 16 -> floor(*5/2)  = 1,280,000
 //       salsa has no payNum, seasoning 1/1   = 1,280,000
-//       bowl rim                             -> 100,000
-//       lifetime 2^9 = 512, in [300, 3000)   -> dipIndex 1 (guac)
+//       bowl rim (1M since the pot retune)   -> 1,000,000
+//       lifetime 2^9 = 512, in [150, 1000)... no: 512 >= guac 150, < onion 1000 -> dipIndex 1 (guac)
 //   g2: one hour later. Decay at guac's 96 (not the base 97), airtight off:
-//       floor(100,000 * 96/100)              = 96,000
+//       floor(1,000,000 * 96/100)            = 960,000
 //       bank 8: 1000 * 2^0 = 1000, below golden, guac payNum:
 //       floor(1000 * 11/10)                  = 1,100
-//       total                                = 97,100
+//       total                                = 961,100
 //
 // Both counterfactuals are excluded by that single number: a fold that ignored
-// payNum lands on 97,000, and one that decayed at the base 97 lands on 98,100.
+// payNum lands on 961,000, and one that decayed at the base 97 lands on 971,100.
 {
   const rs = [bank(17, 'g1', T0), bank(8, 'g2', T0 + HOUR)];
   const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 17], [keyFor(rs[1]), 8]]));
@@ -96,7 +96,7 @@ const keyFor = (r: ChipsReply): string => {
   // Asserted on the MOVE, not on `crumbs`: the bowl is at its rim here, so a
   // payout assertion read off state alone would be swallowed by the cap.
   check('guac payNum 11/10 reaches the payout', g2?.crumbs === 1100, g2);
-  check('guac sogNum 96 reaches the decay', s.crumbs === 97_100, s.crumbs);
+  check('guac sogNum 96 reaches the decay', s.crumbs === 961_100, s.crumbs);
 }
 
 // 5) THE SOG RESOLUTION ORDER, IN THE FOLD: dip sets the base, airtight adds.
@@ -107,20 +107,20 @@ const keyFor = (r: ChipsReply): string => {
 //
 //   o1: bank 17 -> bowl rim 100,000, lifetime 512 -> guac (threshold 150)
 //   o2: buy airtight 1s later (no whole hour, so no decay):
-//       100,000 - 30,000 (2026-07-27 retuned cost) = 70,000, airtight on
+//       1,000,000 (the 1M rim) - 30,000      = 970,000, airtight on
 //   o3: one hour later. numerator = guac's 96 + AIRTIGHT_BONUS 2 = 98
-//       floor(70,000 * 98/100)               = 68,600
+//       floor(970,000 * 98/100)              = 950,600
 //       bank 8 under guac: floor(1000*11/10) = 1,100
-//       total                                = 69,700
+//       total                                = 951,700
 //
 // The number discriminates all three plausible orderings: dip-overrides-
-// airtight (96) gives 68,300; airtight-overrides-dip (99) gives 70,400.
+// airtight (96) gives 932,300; airtight-overrides-dip (99) gives 961,400.
 {
   const rs = [bank(17, 'o1', T0), buy('airtight', 'o2', T0 + 1000), bank(8, 'o3', T0 + 1000 + HOUR)];
   const s = foldChips(H, TABLE, rs, new Map([[keyFor(rs[0]), 17], [keyFor(rs[2]), 8]]));
   check('airtight is affordable off one big chip', START_BOWL_CAP >= UPGRADES.airtight.cost);
   check('airtight bought', s.airtight === true && s.owned.has('airtight'), [...s.owned]);
-  check('dip base then airtight bonus (96+2)', s.crumbs === 69_700, s.crumbs);
+  check('dip base then airtight bonus (96+2)', s.crumbs === 951_700, s.crumbs);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

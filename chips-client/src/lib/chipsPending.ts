@@ -28,7 +28,7 @@
  * itself is untouched in the real queue, so a real, valid proof for a
  * DIFFERENT entry is never dropped by this guard.
  */
-import { bankBatchBody, buyBody } from './chipsBody';
+import { bankBatchBody, buyBody, dipBody } from './chipsBody';
 import { proofKey } from './proofKey';
 import { activeFor, type QueuedMove } from './chipsQueue';
 import type { ChipsReply } from './chipsEngine';
@@ -61,6 +61,10 @@ export function withPending(
       if (m.kind === 'bank') {
         v.set(proofKey(table, me, m.chip.ms, m.chip.nonce), m.chip.bits);
         extra.push({ author_id: me, body: bankBatchBody([m.chip], at + seq++), block_height: null, content_id: cid, created_at: at });
+      } else if (m.kind === 'dip') {
+        // The dip's OWN ms is the body's authoring ms — identity across the
+        // pending -> confirmed swap, exactly like a bank chip's ms.
+        extra.push({ author_id: me, body: dipBody(m.amount, m.ms), block_height: null, content_id: cid, created_at: at });
       } else {
         extra.push({ author_id: me, body: buyBody(m.key, at + seq++), block_height: null, content_id: cid, created_at: at });
       }
