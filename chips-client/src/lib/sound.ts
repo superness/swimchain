@@ -65,8 +65,19 @@ class Sfx {
       comp.connect(this.analyser);
       this.analyser.connect(c.destination);
       (window as unknown as Record<string, unknown>).__sfxProbe = () => this.probe();
+      // HUSH WHEN HIDDEN. The tick engine keeps running in a background tab
+      // (progress-while-away is the idle-game deal), but its crackles were
+      // sounding from LOCKED PHONES with the tab open (operator report,
+      // 2026-07-27). Suspending the context silences everything scheduled,
+      // saves battery, and stops the OS treating the tab as playing media;
+      // visibility returning resumes it.
+      document.addEventListener('visibilitychange', () => {
+        if (!this.ctx) return;
+        if (document.hidden) void this.ctx.suspend();
+        else if (!this.mutedFlag) void this.ctx.resume();
+      });
     }
-    if (this.ctx.state === 'suspended') void this.ctx.resume();
+    if (this.ctx.state === 'suspended' && !document.hidden) void this.ctx.resume();
   }
 
   muted(): boolean { return this.mutedFlag; }
@@ -95,6 +106,7 @@ class Sfx {
 
   private ready(): { c: AudioContext; out: GainNode } | null {
     if (!this.ctx || !this.master) return null;
+    if (document.hidden) return null;   // a locked phone must stay silent
     if (this.ctx.state === 'suspended') void this.ctx.resume();
     if (this.mutedFlag) return null;
     return { c: this.ctx, out: this.master };
