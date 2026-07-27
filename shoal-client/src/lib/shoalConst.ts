@@ -79,6 +79,16 @@ export const LOCK_MS = 4_000;
 /** The sweep takes at most this many fish. It may take none. */
 export const MAX_TAKE = 3;
 
+// --- Epochs ----------------------------------------------------------------
+/**
+ * The fold covers exactly one epoch, seeded by the previous epoch's checkpoint
+ * (spec section 3.9). One hour. Chosen so fold cost is bounded at
+ * EPOCH_MS / TICK_MS = 14_400 ticks regardless of how old the sea is, and so a
+ * swimmer who steps away for less than an hour keeps their size.
+ * Arbitrary-but-practical: an hour is a session, not an optimised value.
+ */
+export const EPOCH_MS = 3_600_000;
+
 // --- Blooms ----------------------------------------------------------------
 /** Bloom grid cell size in cu. WORLD_W/BLOOM_CELL and WORLD_H/BLOOM_CELL must be integers. */
 export const BLOOM_CELL = 128;
