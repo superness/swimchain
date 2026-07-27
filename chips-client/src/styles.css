@@ -923,8 +923,25 @@ h1, h2, h3, p { margin: 0; }
   .jar { width: 82px; padding: 25px 4px 5px; }
   .jar-glass { top: 4px; width: 28px; height: 19px; }
   .got { margin-top: 4px; }
-  .wallboard { margin: 0 auto 6px; padding: 8px 14px 10px; }
   .corner { padding-bottom: 6px; gap: 6px; }
+
+  /* THE BOARDS collapses to a slim pill on a phone. The full chalkboard —
+     title, teaser line, hosting status, wood frame — claimed the whole
+     bottom strip of the screen and sat over the dig floor and the pile.
+     On a phone it is a DOOR to the full-screen boards panel, not a display
+     surface: one line says what it is and the tap does the rest. */
+  .wallboard {
+    position: static; display: flex; align-items: baseline; gap: 10px;
+    width: auto; max-width: 94vw; margin: 0 auto 4px; padding: 7px 16px;
+    border-radius: 999px;
+    box-shadow: 0 0 0 2px #5a4426, 0 0 0 3px #3a2b17, 0 8px 20px rgba(0,0,0,.5);
+  }
+  .chalk-title { font-size: 12px; letter-spacing: .14em; white-space: nowrap; }
+  .chalk-line {
+    font-size: 11px; margin: 0; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .hosting { display: none; }
 }
 @media (max-width: 940px) {
   .hood { flex-wrap: wrap; gap: 10px 18px; }
