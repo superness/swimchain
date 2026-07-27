@@ -79,10 +79,14 @@ const always = () => 0;        // rng that always crackles / always procs
   check('worth = pot x multi', worthOf(chip) === 7000 * 8);
   const plain = dipChip(chip, 0, always);
   check('no upgrade: never doubles even on hot dice', plain.amount === 56_000 && !plain.doubled);
-  const proc = dipChip(chip, 4, () => 0.24);   // 1-in-4: rng < .25 procs
-  const miss = dipChip(chip, 4, () => 0.26);
-  check('double dip procs exactly under 1/mod', proc.doubled && proc.amount === 112_000, proc);
+  // 10x rarer than the modulus reads (operator 2026-07-27): mod 4 procs at
+  // 1-in-40, i.e. rng < .025.
+  const proc = dipChip(chip, 4, () => 0.024);
+  const miss = dipChip(chip, 4, () => 0.026);
+  check('double dip procs exactly under 1/(mod x RARITY)', proc.doubled && proc.amount === 112_000, proc);
   check('and not above it', !miss.doubled && miss.amount === 56_000, miss);
+  const oldOdds = dipChip(chip, 4, () => 0.24);
+  check('the old 1-in-4 odds are really gone', !oldOdds.doubled, oldOdds);
 }
 
 // 5) The allocator: strictly increasing, never repeats, and TRACKS REAL

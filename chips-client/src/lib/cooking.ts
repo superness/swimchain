@@ -144,10 +144,17 @@ export interface DipResult {
   multi: number;
 }
 
+/** Double-dip procs are 10x rarer than the catalog modulus reads (operator,
+ *  2026-07-27): mod 4 pays twice one dip in 40, mod 2 one in 20. This lives
+ *  HERE, not in chipsConst — the catalog's `doubleDipMod` also feeds the
+ *  FOLD's legacy `bank` rule (nonce % mod), which is permanent; the live
+ *  dip's odds are client policy and free to move. */
+export const DOUBLE_DIP_RARITY = 10;
+
 /**
- * Cash a chip. `doubleDipMod` is the owned upgrade's modulus (0 = none,
- * 4 = one dip in four doubles, 2 = every other) — same catalog field the
- * old game used, remapped to its plain meaning: a chance the dip pays twice.
+ * Cash a chip. `doubleDipMod` is the owned upgrade's modulus (0 = none) —
+ * same catalog field the old game used, remapped: a chance the dip pays
+ * twice, at 1 / (mod x DOUBLE_DIP_RARITY).
  */
 export function dipChip(
   chip: CookingChip,
@@ -156,7 +163,7 @@ export function dipChip(
 ): DipResult {
   const multi = multiOf(chip);
   const base = worthOf(chip);
-  const doubled = doubleDipMod > 0 && rng() < 1 / doubleDipMod;
+  const doubled = doubleDipMod > 0 && rng() < 1 / (doubleDipMod * DOUBLE_DIP_RARITY);
   return { amount: base * (doubled ? 2 : 1), doubled, multi };
 }
 

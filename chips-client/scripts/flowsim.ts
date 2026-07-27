@@ -15,7 +15,7 @@
  * constant or a target must move, on purpose, with eyes open.
  */
 import { UPGRADES, DIP_TIERS, CRUMBS_PER_CHIP } from '../src/lib/chipsConst';
-import { TICK_CRUMBS, TICK_MS } from '../src/lib/cooking';
+import { TICK_CRUMBS, TICK_MS, DOUBLE_DIP_RARITY } from '../src/lib/cooking';
 import { jarAvailable } from '../src/lib/crew';
 
 interface Target { what: string; maxMin: number }
@@ -33,7 +33,9 @@ const TARGETS: Target[] = [
   { what: 'tier:queso', maxMin: 60 * 9 },    // week one, casual
   { what: 'buy:fryer3', maxMin: 60 * 7 },
   { what: 'tier:seven', maxMin: 60 * 28 },
-  { what: 'buy:fryer4', maxMin: 60 * 22 },
+  // 22h -> 24h with the 10x double-dip nerf (operator 2026-07-27): losing
+  // the dd income bonus slows the whole late game slightly, on purpose.
+  { what: 'buy:fryer4', maxMin: 60 * 24 },
   { what: 'tier:abyss', maxMin: 60 * 170 },  // the trophy: months, not years
 ];
 
@@ -63,7 +65,7 @@ function simulate(): Map<string, number> {
 
   const STEP = 5;
   while (sec < 3600 * 220 && events.size < TARGETS.length + 30) {
-    const ddEV = ddMod > 0 ? 1 + 1 / ddMod : 1;
+    const ddEV = ddMod > 0 ? 1 + 1 / (ddMod * DOUBLE_DIP_RARITY) : 1;
     // EV crumbs/sec: designed ticks, seasoned, per fryer, with dd's dip EV.
     // The crackle curve is EV-flat (cooking.ts), so multi drops out of the
     // expectation — it is variance, which is the point of it.
