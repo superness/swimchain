@@ -19,7 +19,11 @@ function check(name: string, cond: boolean, extra?: unknown) {
 const at = (id: string, x: number, y: number, size = 100): Body => ({ id, x, y, size });
 
 // --- The core centre -------------------------------------------------------
-// medianInt takes the lower middle on even counts, so x of [0,10,20] is 10.
+// [0,10,20] is an ODD count of three, so the median is just the middle
+// element: 10. (medianInt's even-count rule — take the LOWER of the two
+// middles, so the result is always an element of the input and never a
+// fraction — needs an even-length list to show and is covered directly in
+// fixed.test.ts: medianInt([1,2,3,4]) === 2.)
 check('centre of a tight trio', (() => {
   const c = coreCentre([at('a', 0, 0), at('b', 10, 10), at('c', 20, 20)]);
   return c.x === 10 && c.y === 10;

@@ -90,8 +90,13 @@ export const BLOOM_VISIT_R2 = BLOOM_VISIT_R * BLOOM_VISIT_R; // 40_000
 /** A cell unvisited for this long carries a bloom. Arbitrary-but-practical. */
 export const BLOOM_READY_MS = 45_000;
 /**
- * How far back the bloom map looks. Must stay below PRESENCE_TTL_MS so a
- * client joining mid-session can reconstruct it from data that is still live.
+ * How far back the bloom map WOULD look, if the lookback were bounded. It is
+ * not: nothing in bloom.ts or the fold enforces this window, and isBloomReady
+ * reads the whole of lastVisit however old. The value is kept, and kept below
+ * PRESENCE_TTL_MS, so that the constants stay ready for the day a joining
+ * client has to reconstruct the map from data that is still live — but
+ * whether to enforce it at all is an open design decision, not an oversight
+ * to be quietly closed.
  */
 export const BLOOM_WINDOW_MS = 60_000;
 /** Bites a single bloom yields before it is gone. Blooms are rivalrous. */

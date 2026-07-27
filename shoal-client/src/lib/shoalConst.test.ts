@@ -71,8 +71,11 @@ check('BLOOM_ROWS derived correctly', BLOOM_ROWS === 24, { BLOOM_ROWS });
 check('one capped whale cannot shelter alone', SHELTER_BASE + SHELTER_SIZE_CAP < SHELTER_THRESHOLD,
   { whale: SHELTER_BASE + SHELTER_SIZE_CAP, SHELTER_THRESHOLD }); // 145 < 300
 
-// A client joining mid-session reconstructs the bloom map from live presence,
-// so the lookback must fit inside the TTL, and readiness inside the lookback.
+// If the bloom lookback is ever bounded, a client joining mid-session has to
+// reconstruct the map from live presence, so the window must fit inside the
+// TTL and readiness inside the window. The bound is NOT implemented — nothing
+// enforces BLOOM_WINDOW_MS today — but the relationship is checked so the
+// constants stay coherent for whoever settles that design question.
 check('bloom window fits inside presence TTL', BLOOM_WINDOW_MS < PRESENCE_TTL_MS, { BLOOM_WINDOW_MS, PRESENCE_TTL_MS });
 check('bloom readiness fits inside the window', BLOOM_READY_MS < BLOOM_WINDOW_MS, { BLOOM_READY_MS, BLOOM_WINDOW_MS });
 
@@ -81,8 +84,19 @@ check('lock falls inside the hush', LOCK_MS > 0 && LOCK_MS < HUSH_MS, { LOCK_MS,
 check('dread window is at least as long as the commit window', HUSH_MS - LOCK_MS >= LOCK_MS, { HUSH_MS, LOCK_MS });
 check('hush boundaries land on tick boundaries', LOCK_MS % TICK_MS === 0 && HUSH_MS % TICK_MS === 0, { TICK_MS });
 
-// Hunger must be survivable: one full bloom must buy more than a scatter costs,
-// or foraging is never worth the risk and the loop stalls.
+// A full bloom must outgrow the flat scatter cost, or a fish that forages and
+// then gets clear can never come out ahead and the loop stalls.
+//
+// This is NOT the "is foraging worth the risk" statement it reads as, and has
+// not been since a scatter started voiding the whole recent trip rather than
+// the single last bite. Getting caught DURING a trip is now firmly
+// unprofitable by design: with bites EAT_COOLDOWN_MS(2500) apart, the five
+// most recent fall inside VOID_WINDOW_MS(10000) of the resolve tick, so a
+// fish swept immediately after clearing a bloom nets
+//   6*12 (bloom) - 5*12 (voided) - 30 (scatter) = 72 - 60 - 30 = -18
+// The check below pins the other half of the trade — that a fish which
+// finishes a bloom and gets outside the void window before the sweep still
+// nets 72 - 30 = +42, so the risk has an upside at all.
 {
   const bloomWorth = BLOOM_BITES * BITE_GROWTH; // 6 * 12 = 72, computed by hand
   check('a full bloom outgrows a scatter', bloomWorth > SCATTER_COST, { bloomWorth, SCATTER_COST });

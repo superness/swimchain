@@ -7,8 +7,13 @@
  * the whole school, a single tight blob could walk the map together, tension
  * would never rise, and the core tension of the game would stop existing.
  *
- * The lookback is bounded by BLOOM_WINDOW_MS, which sits below PRESENCE_TTL_MS
- * so a client joining mid-session can rebuild this map from data still live.
+ * NOT YET IMPLEMENTED: a bounded lookback. BLOOM_WINDOW_MS exists and is
+ * sized to sit below PRESENCE_TTL_MS so that a client joining mid-session
+ * could rebuild this map from data still live, but nothing in this module or
+ * in the fold enforces it — isBloomReady looks back over the whole of
+ * lastVisit, however old. Whether to enforce it, and what a joining client is
+ * owed if it cannot, is an open design decision; do not implement it here
+ * without settling that.
  */
 import { dist2 } from './fixed';
 import {

@@ -53,6 +53,12 @@ export function selectTaken(locked: readonly Body[], preferred: string | null): 
     const bp = b.id === preferred ? 1 : 0;
     if (ap !== bp) return bp - ap;
     if (a.size !== b.size) return b.size - a.size;
+    // KEEP THIS. It is not redundant with Array#sort's stability: it is what
+    // replaces a dependency ON that stability with explicit arithmetic, so
+    // the answer comes from the ids rather than from the order the caller
+    // happened to hand them over. Directly covered by sweep.test.ts's "input
+    // order does not change the outcome". Two readers have now reached for
+    // it as dead code.
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
   return candidates.slice(0, MAX_TAKE).map((b) => b.id);

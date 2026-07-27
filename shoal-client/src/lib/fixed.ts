@@ -1,10 +1,32 @@
 /**
  * Integer geometry for the Shoal engine.
  *
- * No floating point survives past module initialisation: the trig table is
- * built once with Math.cos/Math.sin and immediately rounded to integers, and
- * every function below operates purely on integers. Two clients that agree on
- * the table agree on every position they ever compute.
+ * "No floating point survives past module initialisation" would be the
+ * comfortable claim, and it is literally false: quantize and reckon both
+ * divide, and a JavaScript division is double arithmetic no matter how
+ * integral its operands. The property that actually holds is stronger than
+ * the false one is comforting —
+ *
+ *   Every value this module STORES or RETURNS is an integer. Math.cos and
+ *   Math.sin are called only here, only at module init, and their results are
+ *   rounded to integers immediately (the two engines' cos/sin need not agree
+ *   bit-for-bit, but after Math.round at TRIG_SCALE they do). The transient
+ *   doubles are the two divisions, and IEEE-754 double division is CORRECTLY
+ *   ROUNDED and mandated as such by the ECMAScript spec — so every conforming
+ *   engine produces the identical double from identical operands, and
+ *   Math.trunc/Math.floor turn it back into the identical integer.
+ *
+ * The operands stay exact because they stay well below 2^53. The largest
+ * product reckon forms is speed * COS[h] * dtMs, bounded by
+ * SPEED_DART(220) * TRIG_SCALE(4096) = 901_120 per ms; exactness would only
+ * be at risk past dtMs = 2^53 / 901_120 ~= 9.996e9 ms, about 116 days. The
+ * fold never comes near it: a fish is evicted once t exceeds
+ * PRESENCE_TTL_MS(90_000) past its last vector, so dtMs <= 90_000 and the
+ * product tops out at 8.1e10 — five orders of magnitude of headroom.
+ *
+ * So two clients agree on every position they ever compute, which is the
+ * thing that had to be true. Correct rounding is what buys it, not the
+ * absence of floats.
  */
 import {
   HEADING_STEPS, TRIG_SCALE, QUANT, WORLD_W, WORLD_H,
