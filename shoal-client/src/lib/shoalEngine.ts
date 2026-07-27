@@ -88,8 +88,16 @@ function clampSize(n: number): number {
  * one stale entry moved a sweep by 1213ms and tension by 3120).
  *
  * `opts.epoch` defaults to `epochOf(untilMs)` — the epoch `untilMs` itself
- * falls in. `opts.seed` is Task 4's hook (checkpoint seeding at the epoch
- * boundary); it is accepted here but not yet consulted.
+ * falls in. `opts.seed` is the previous epoch's checkpoint (spec 3.9 point
+ * 5): a cold joiner adopts the newest checkpoint it can see and verifies
+ * forward from there, rather than replaying from genesis. Each `[id, size]`
+ * in the seed is loaded as a `departed` record before the tick loop runs, so
+ * a swimmer who writes presence during this epoch is picked up by the
+ * existing `existing ?? departed.get` revival path below and keeps the size
+ * they banked. `opts.seed.epoch` MUST be exactly `epoch - 1` — see the check
+ * immediately below. `departed` also prunes here (spec 3.9 point 6): a
+ * seeded swimmer who writes no presence at all during this epoch is dropped,
+ * not carried into the checkpoint this fold's result feeds into.
  */
 export function foldShoal(
   entries: readonly LogEntry[],
@@ -97,10 +105,38 @@ export function foldShoal(
   opts?: { epoch?: number; seed?: Checkpoint },
 ): ShoalState {
   const epoch = opts?.epoch ?? epochOf(untilMs);
+  if (opts?.seed && opts.seed.epoch !== epoch - 1) {
+    // A seed from any other epoch is a bug or an attack: silently accepting
+    // it would fold this client onto a different world than its peers (spec
+    // 3.9 point 5 only licenses adopting the NEWEST checkpoint, not any
+    // checkpoint). Refuse rather than guess which epoch was meant.
+    throw new RangeError(
+      `foldShoal: seed is from epoch ${opts.seed.epoch}, but this fold is for epoch ` +
+      `${epoch} and can only be seeded from epoch ${epoch - 1} (the immediately ` +
+      'preceding one). A seed from any other epoch is a bug or an attack.',
+    );
+  }
   const originMs = epochStartMs(epoch);
   const log = orderLog(entries);
   const state = emptyState(originMs);
   const outsideTicks = new Map<string, number>();
+
+  // Load the seed as `departed` records before the tick loop runs. This is
+  // the whole of "adopt the checkpoint": a seeded swimmer who writes no
+  // presence this epoch stays exactly here (and is pruned below); one who
+  // does write presence is picked up by the ordinary
+  // `existing ?? state.departed.get(e.id)` revival path in step 1, which
+  // reads their banked size same as any other lapsed swimmer.
+  //
+  // `touchedIds` records every id that authors a presence entry actually
+  // applied during this fold (step 1, below). It is consulted only once,
+  // after the tick loop, to prune seed entries nobody returned to claim.
+  const touchedIds = new Set<string>();
+  if (opts?.seed) {
+    for (const [id, size] of opts.seed.sizes) {
+      state.departed.set(id, { size, lastScatterMs: -1, lastBiteMs: -1, recentBites: [] });
+    }
+  }
 
   // Refuse an absurd span up front rather than hanging. The loop below runs
   // floor((untilMs - originMs) / TICK_MS) + 1 times. With a DEFAULTED epoch
@@ -168,6 +204,19 @@ export function foldShoal(
           lastBiteMs: prior ? prior.lastBiteMs : -1,
           recentBites: prior ? prior.recentBites : [],
         });
+        touchedIds.add(e.id);
+        // Task 2's carry-forward: this revival path reads `departed` but
+        // (before this fix) never cleared it, so a stale record — whether
+        // banked by a real eviction earlier this fold or loaded straight
+        // from the seed above — could coexist with the now-live fish for the
+        // rest of the fold. checkpointFrom already prefers `fish` over
+        // `departed` for the same id, so the stale record could never win on
+        // SIZE, but it would still survive as garbage, and it is exactly the
+        // kind of leftover row the seed-pruning step at the end of this
+        // function must not mistake for "still genuinely untouched." Fixed
+        // at the one place a fish is revived, generally, rather than
+        // special-cased for seeded ids only.
+        state.departed.delete(e.id);
       } else {
         const f = state.fish.get(e.id);
         if (!f) continue; // a bite from a fish with no live presence never credits
@@ -360,6 +409,26 @@ export function foldShoal(
         if (f.lastBiteMs >= 0 && t - f.lastBiteMs < HUNGER_TICK_INTERVAL * TICK_MS) continue;
         f.size = clampSize(f.size - HUNGER_AMOUNT);
       }
+    }
+  }
+
+  // Prune `departed` records that were only ever a seed value nobody
+  // returned to claim (spec 3.9 point 6): "an hour away is forgiveable, a
+  // week is a fresh start." A seed id that WAS touched (wrote presence any
+  // time this epoch) is exempt even if it is departed again by fold's end —
+  // that departed record was written fresh by THIS fold's own eviction step
+  // (step 2, above), so as of this checkpoint that swimmer has been absent
+  // less than one epoch, and must survive to be re-checked at the NEXT epoch
+  // boundary rather than being dropped a checkpoint early. Only a seed id
+  // absent from `touchedIds` — meaning its `departed` row sat untouched for
+  // the whole epoch — is dropped here. This does not "fall out naturally"
+  // from only carrying forward touched records: without this explicit pass,
+  // every seeded id would simply remain in `state.departed` forever (nothing
+  // else in the loop above ever deletes a seed record that is never
+  // revived), so it has to be done here, explicitly.
+  if (opts?.seed) {
+    for (const [id] of opts.seed.sizes) {
+      if (!touchedIds.has(id)) state.departed.delete(id);
     }
   }
 

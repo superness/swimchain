@@ -7,7 +7,8 @@
  * action before every earlier one and silently rescores the session.
  */
 import { orderLog, foldShoal, bodiesOf } from './shoalEngine';
-import type { LogEntry, Presence, EatClaim, ShoalState } from './shoalTypes';
+import { checkpointFrom } from './checkpoint';
+import type { LogEntry, Presence, EatClaim, ShoalState, Checkpoint } from './shoalTypes';
 import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
@@ -836,6 +837,134 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   const backwards = threw(() => foldShoal([pres('a', 100, 100, 5_000)], 1_000));
   check('an untilMs before the log starts folds to nothing without throwing',
     backwards === null, backwards?.message);
+}
+
+// --- Seeding from a checkpoint (spec 3.9 point 5) ---------------------------
+// A joining client adopts the previous epoch's checkpoint instead of
+// replaying from genesis. A swimmer named in the seed starts at that size,
+// not START_SIZE.
+{
+  const epoch = 4;
+  const start = epochStartMs(epoch);
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['vet', 175]] };
+  const s = foldShoal([pres('vet', 1000, 1000, start + 500)], start + 1000, { epoch, seed });
+  // Hand-derived independently of the brief's own comment (which turns out to
+  // agree, but is re-derived here rather than trusted). state.nowMs starts at
+  // originMs = start (emptyState(originMs) inside foldShoal), and the loop
+  // runs while t <= untilMs(start+1000), stepping by TICK_MS(250):
+  //   t = start, start+250, start+500, start+750, start+1000  -- 5 iterations
+  // tickCount increments once per iteration (step 6), so tickCount is 1..5 in
+  // that same order. Hunger fires only when tickCount % HUNGER_TICK_INTERVAL
+  // (4) === 0, i.e. tickCount=4, the iteration at t=start+750.
+  // 'vet's presence is authored at ms=start+500, which is applied in step 1
+  // of the tick at t=start+500 (log[cursor].ms<=t), i.e. tickCount=3 -- so
+  // 'vet' already exists by tickCount=4 and is eligible for that hunger tick.
+  // The seed is applied as a `departed` record with lastBiteMs=-1 (a
+  // Checkpoint carries only size), so at tickCount=4 the hunger skip
+  // condition (f.lastBiteMs>=0 && t-f.lastBiteMs<1000) is false and hunger
+  // DOES apply: exactly one tick, -HUNGER_AMOUNT(1). tickCount=5 is not a
+  // multiple of 4, so there is no second hunger tick.
+  //   175 (seeded) - 1 (one hunger tick) = 174
+  check('a seeded swimmer starts at their banked size', s.fish.get('vet')!.size === 174,
+    s.fish.get('vet')!.size);
+  // The Task 2 carry-forward: a live fish and a `departed` record for the
+  // same id must not coexist once the fish is revived. Verified directly
+  // here, not just inferred from checkpointFrom's dedup.
+  check('revival clears the seed record instead of leaving it as garbage',
+    !s.departed.has('vet'), [...s.departed.keys()]);
+}
+{
+  // A swimmer absent from the seed is new and starts at START_SIZE. Same
+  // tick/hunger timing as above (identical ms values): one hunger tick at
+  // tickCount=4. START_SIZE(100) - HUNGER_AMOUNT(1) = 99.
+  const epoch = 4;
+  const start = epochStartMs(epoch);
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['other', 900]] };
+  const s = foldShoal([pres('new', 1000, 1000, start + 500)], start + 1000, { epoch, seed });
+  check('an unseeded swimmer starts fresh', s.fish.get('new')!.size === START_SIZE - 1,
+    s.fish.get('new')!.size);
+}
+{
+  // A checkpoint from the wrong epoch must be refused, not silently applied
+  // -- adopting stale sizes would hand a client a different world to
+  // everyone else.
+  const epoch = 4;
+  const start = epochStartMs(epoch);
+  const stale: Checkpoint = { epoch: epoch - 5, sizes: [['vet', 900]] };
+  let threw = false;
+  let isRangeError = false;
+  try { foldShoal([pres('vet', 1, 1, start)], start + 250, { epoch, seed: stale }); }
+  catch (e) { threw = true; isRangeError = e instanceof RangeError; }
+  check('a checkpoint from the wrong epoch is refused', threw === true);
+  check('the refusal is specifically a RangeError', isRangeError === true);
+}
+
+// --- departed prunes at the boundary (spec 3.9 point 6) ---------------------
+// An hour away is forgiveable; longer is a fresh start.
+//
+// The brief's own version of this test builds a state by hand and calls
+// checkpointFrom(s, 3) directly, then asserts the swimmer SURVIVES. That is
+// vacuous: checkpointFrom has no epoch-awareness at all (checkpoint.ts merges
+// `fish` and `departed` unconditionally -- see checkpointFrom's own body,
+// which has no "how old is this record" check anywhere), and that exact
+// assertion is already covered, more directly, by checkpoint.test.ts's
+// "Departed swimmers are included" case. Nothing about the PRUNING RULE is
+// exercised: the same assertion would pass identically whether pruning
+// exists, is broken, or was never written, because checkpointFrom is not
+// where the rule lives. The rule needs to know what happened DURING an
+// epoch's fold (was this swimmer touched?), which a bare hand-built
+// ShoalState cannot express -- so the test has to go through a real fold.
+{
+  const epoch = 5;
+  const start = epochStartMs(epoch);
+  // 'ghost' is seeded from the previous epoch and never appears in this
+  // epoch's log at all -- absent for the whole epoch, the case under test.
+  // 'toucher' is also seeded, but writes presence during the epoch, so it is
+  // an ordinary returning swimmer and must NOT be pruned -- the positive
+  // control proving this isn't just "pruning wipes everything."
+  //
+  // 'toucher's seed size is 150, not something close to MIN_SIZE(60): a first
+  // draft of this test seeded it at 50 and asserted an expected size of 49
+  // (50 - one hunger tick), which is wrong -- clampSize floors hunger's
+  // result at MIN_SIZE(60), so 50-1 actually reads 60, not 49. 150 is
+  // comfortably clear of that floor, so the same one-hunger-tick arithmetic
+  // as the seeding tests above applies cleanly: 150 - 1 = 149.
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['ghost', 175], ['toucher', 150]] };
+  const log: LogEntry[] = [pres('toucher', 1000, 1000, start + 500)];
+  const s = foldShoal(log, start + 1000, { epoch, seed });
+
+  check('an untouched seeded swimmer is not carried in the folded state at all',
+    !s.fish.has('ghost') && !s.departed.has('ghost'),
+    { fish: s.fish.has('ghost'), departed: s.departed.has('ghost') });
+
+  // The discriminating assertion: checkpointFrom on the RESULT of the fold
+  // must not see 'ghost'.
+  const cp = checkpointFrom(s, epoch + 1);
+  const ids = cp.sizes.map((p) => p[0]);
+  check('a swimmer absent the whole epoch is pruned from the next checkpoint',
+    !ids.includes('ghost'), cp.sizes);
+  check('a swimmer who returned is still checkpointed, at their live size',
+    cp.sizes.find((p) => p[0] === 'toucher')?.[1] === 149, cp.sizes);
+}
+{
+  // The grace-period boundary, checked explicitly: a swimmer who departs
+  // DURING this epoch (never seeded -- brand new this fold) must NOT be
+  // pruned yet. As of this checkpoint they have been absent less than one
+  // epoch; pruning them now would turn "an hour away" into "any absence at
+  // all is a fresh start," which is not the rule.
+  const epoch = 6;
+  const start = epochStartMs(epoch);
+  const log: LogEntry[] = [pres('brief', 1000, 1000, start)];
+  // Evicted the first tick with t > expiresMs = start + PRESENCE_TTL_MS
+  // (90_000), i.e. t = start + 90_250 (90250 / 250 = 361, a real tick).
+  // Folded well past that but still inside the epoch (EPOCH_MS = 3_600_000).
+  const s = foldShoal(log, start + 200_000, { epoch });
+  check('a swimmer evicted mid-epoch (no seed involved) is genuinely departed',
+    !s.fish.has('brief') && s.departed.has('brief'),
+    { fish: s.fish.has('brief'), departed: s.departed.has('brief') });
+  const cp = checkpointFrom(s, epoch + 1);
+  check('a swimmer departed only within this epoch survives to the next checkpoint',
+    cp.sizes.some((p) => p[0] === 'brief'), cp.sizes);
 }
 
 // --- bodiesOf --------------------------------------------------------------
