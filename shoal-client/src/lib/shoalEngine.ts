@@ -9,12 +9,12 @@
  * out alone.
  */
 import { reckon } from './fixed';
-import { epochOf } from './epoch';
+import { epochOf, epochStartMs } from './epoch';
 import { type Body } from './shelter';
 import { stepTension, topContributor, outsideCore } from './tension';
 import { shouldStartHush, isResolveTick, selectTaken } from './sweep';
 import { markVisits, canEat, isBloomReady } from './bloom';
-import type { LogEntry, ShoalState } from './shoalTypes';
+import type { LogEntry, ShoalState, Checkpoint } from './shoalTypes';
 import {
   TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BLOOM_BITES, VOID_WINDOW_MS, LOCK_MS,
@@ -79,30 +79,59 @@ function clampSize(n: number): number {
  * The tick is fixed rather than event-driven because hunger, tension and the
  * hush all advance with time, not with writes — an idle sea still gets hungry
  * and still calms down.
+ *
+ * The tick origin is the ABSOLUTE start of an epoch (spec section 3.9), never
+ * `log[0].ms`. Two clients holding different slices of the same history — one
+ * with an extra long-expired entry, say — must land on the same tick phase and
+ * fold the same accumulated ticks for the live entries; anchoring to whichever
+ * entry a client happened to hold first is exactly what broke that (measured:
+ * one stale entry moved a sweep by 1213ms and tension by 3120).
+ *
+ * `opts.epoch` defaults to `epochOf(untilMs)` — the epoch `untilMs` itself
+ * falls in. `opts.seed` is Task 4's hook (checkpoint seeding at the epoch
+ * boundary); it is accepted here but not yet consulted.
  */
-export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalState {
+export function foldShoal(
+  entries: readonly LogEntry[],
+  untilMs: number,
+  opts?: { epoch?: number; seed?: Checkpoint },
+): ShoalState {
+  const epoch = opts?.epoch ?? epochOf(untilMs);
+  const originMs = epochStartMs(epoch);
   const log = orderLog(entries);
-  const state = emptyState(log.length > 0 ? log[0].ms : 0);
+  const state = emptyState(originMs);
   const outsideTicks = new Map<string, number>();
 
   // Refuse an absurd span up front rather than hanging. The loop below runs
-  // floor((untilMs - start) / TICK_MS) + 1 times; against an empty log the
-  // start is 0, so a caller passing a wall-clock untilMs asks for ~7.1e9
-  // ticks and gets no output for over an hour. Fail loudly and immediately
-  // instead — the caller's epoch is wrong, and there is no answer worth
-  // waiting for.
-  const span = untilMs - state.nowMs;
+  // floor((untilMs - originMs) / TICK_MS) + 1 times. With a DEFAULTED epoch
+  // this can never approach MAX_FOLD_TICKS: originMs = epochStartMs(epochOf(
+  // untilMs)) always sits within [untilMs - EPOCH_MS + 1, untilMs], so the
+  // span is under EPOCH_MS and the tick count under EPOCH_MS/TICK_MS = 14400,
+  // two orders of magnitude below the guard. This is the change spec 3.9
+  // describes: the old ~69h wall-clock-hang ceiling is eliminated by
+  // construction, not merely guarded against. The guard remains a real
+  // backstop only when a caller passes an EXPLICIT `opts.epoch` that is far
+  // from `untilMs` (a caller bug: resuming from a stale checkpoint's epoch
+  // against a much later untilMs) — that is the one path that can still ask
+  // for an absurd span.
+  const span = untilMs - originMs;
   const plannedTicks = span < 0 ? 0 : Math.floor(span / TICK_MS) + 1;
   if (plannedTicks > MAX_FOLD_TICKS) {
     throw new RangeError(
       `foldShoal: refusing to run ${plannedTicks} ticks (max ${MAX_FOLD_TICKS}). ` +
-      `untilMs ${untilMs} is ${span} ms after the log's first entry at ${state.nowMs}. ` +
-      `Fold from the log's own epoch, not a wall clock.`,
+      `untilMs ${untilMs} is ${span} ms after epoch ${epoch}'s start at ${originMs}. ` +
+      `Fold one epoch at a time, seeded from the previous epoch's checkpoint.`,
     );
   }
 
   let cursor = 0;
   let tickCount = 0;
+
+  // Entries authored before the epoch's own start belong to a previous epoch
+  // and are already reflected in the seed (Task 4), not replayed here from
+  // raw history. `log` is ms-ordered, so this is a one-time skip of a prefix
+  // — done once, outside the tick loop, rather than re-checked every tick.
+  while (cursor < log.length && log[cursor].ms < originMs) cursor++;
 
   for (let t = state.nowMs; t <= untilMs; t += TICK_MS) {
     state.nowMs = t;

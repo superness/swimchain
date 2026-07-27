@@ -7,13 +7,14 @@
  * action before every earlier one and silently rescores the session.
  */
 import { orderLog, foldShoal, bodiesOf } from './shoalEngine';
-import type { LogEntry, Presence, EatClaim } from './shoalTypes';
+import type { LogEntry, Presence, EatClaim, ShoalState } from './shoalTypes';
 import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
-  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS,
+  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS, EPOCH_MS,
 } from './shoalConst';
 import { cellCentre, bitesLeft } from './bloom';
+import { epochOf, epochStartMs } from './epoch';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -645,6 +646,100 @@ check('orderLog does not mutate its input', (() => {
     s.fish.get('a')!.recentBites);
 }
 
+// --- The tick origin is absolute, not log-relative --------------------------
+// The defect: two clients holding different slices of the same history folded
+// on different tick phases. Here, client A additionally holds one long-expired
+// entry. Both must produce identical state for the live entries.
+//
+// A first draft of this test used only STATIONARY fish (matching the brief's
+// literal example), and it turned out to be VACUOUS against the mutation this
+// is meant to catch — proven by actually reverting the origin to `log[0].ms`
+// and observing it still passed (see task-3-report.md's mutation-verification
+// section). The reason, worked out by hand: every ms value in the stationary
+// version (10_000, 20_000, 40_000 offsets) is itself a multiple of TICK_MS
+// (250), so shifting the origin by a non-tick-aligned amount (the stale
+// entry's ms, EPOCH_MS + 37) changes the total tick count and the fish's
+// creation-tick by amounts that happen to cancel out in the hunger-firing
+// count for this particular arithmetic — and a stationary fish's quantized
+// REST position never depends on which exact tick it was last computed at.
+// So the check needs a MOVING fish: its dead-reckoned position depends on the
+// exact absolute ms of the last tick the fold touches, which a phase-shifted
+// origin genuinely changes.
+//
+// Hand derivation (heading 0 so COS[0] = TRIG_SCALE exactly and the trig
+// factor cancels: dx = trunc(speed * dtMs / 1000), no rounding surprises).
+// 'a' turns to heading 0, speed 40 cu/s in its second write, authored at
+// EPOCH_MS + 20_000. untilMs = EPOCH_MS + 40_000, epoch = epochOf(untilMs) = 1
+// (pinned explicitly in both folds below, so both use the SAME origin
+// EPOCH_MS regardless of the stale entry).
+//
+//   correct origin (EPOCH_MS, tick-aligned, both folds):
+//     last tick <= untilMs = EPOCH_MS + floor(40000/250)*250 = EPOCH_MS+40000
+//       (untilMs itself, since 40000/250=160 is exact)
+//     dt = (EPOCH_MS+40000) - (EPOCH_MS+20000) = 20000
+//     dx = trunc(40*20000/1000) = 800 -> x = 1200+800 = 2000 (mult. of QUANT
+//       8 already, so quantize is a no-op; well under WORLD_W(4096), no clamp)
+//   MUTATED origin = log[0].ms, WITHOUT the stale entry: log[0].ms is 'a's
+//     first write, EPOCH_MS + 10_000 -- itself a multiple of TICK_MS, so this
+//     grid happens to be PHASE-IDENTICAL to the correct one. Same numbers:
+//     last tick = EPOCH_MS+10000 + floor(30000/250)*250 = EPOCH_MS+40000
+//       (30000/250=120 exact) -> dt=20000, dx=800, x=2000. Matches "correct".
+//   MUTATED origin = log[0].ms, WITH the stale entry: log[0].ms is now the
+//     stale entry, EPOCH_MS + 37 -- NOT a multiple of TICK_MS, so this grid's
+//     phase is shifted by 37ms from the other two.
+//     last tick <= untilMs = (EPOCH_MS+37) + floor((40000-37)/250)*250
+//       = (EPOCH_MS+37) + floor(159.852)*250 = (EPOCH_MS+37) + 159*250
+//       = EPOCH_MS + 37 + 39750 = EPOCH_MS + 39787 (213ms short of untilMs)
+//     dt = (EPOCH_MS+39787) - (EPOCH_MS+20000) = 19787
+//     dx = trunc(40*19787/1000) = trunc(791.48) = 791 -> x_raw = 1991
+//     quantize(1991) = floor(1991/8)*8 = floor(248.875)*8 = 248*8 = 1984
+//
+// So under the log[0].ms mutation, 'a'.x is 2000 without the stale entry but
+// 1984 with it -- a real, QUANT-visible divergence -- while the correct,
+// epoch-pinned-origin code gives 2000 in both cases. This is now genuinely
+// falsifiable: see task-3-report.md for the actual mutation run.
+{
+  const live: LogEntry[] = [
+    pres('a', 1000, 1000, EPOCH_MS + 10_000),
+    pres('b', 1010, 1000, EPOCH_MS + 10_000),
+    { kind: 'presence', id: 'a', ms: EPOCH_MS + 20_000, hash: 'a' + (EPOCH_MS + 20_000),
+      vec: { x: 1200, y: 1000, heading: 0, speed: 40, t: EPOCH_MS + 20_000 } },
+  ];
+  const stale = pres('old', 500, 500, EPOCH_MS + 37);
+  const untilMs = EPOCH_MS + 40_000;
+  const epoch = epochOf(untilMs);
+
+  const withoutStale = foldShoal(live, untilMs, { epoch });
+  const withStale = foldShoal([stale, ...live], untilMs, { epoch });
+
+  check('the hand-derived position holds under the correct (epoch-pinned) code',
+    withoutStale.fish.get('a')!.x === 2000 && withStale.fish.get('a')!.x === 2000,
+    { withoutStale: withoutStale.fish.get('a')!.x, withStale: withStale.fish.get('a')!.x });
+
+  const key = (s: ShoalState) =>
+    JSON.stringify([...s.fish.entries()]
+      .filter(([id]) => id !== 'old')
+      .sort(([x], [y]) => (x < y ? -1 : 1))
+      .map(([k, v]) => [k, v.size, v.x, v.y]));
+
+  check('an extra stale entry does not shift the fold',
+    key(withoutStale) === key(withStale), { a: key(withoutStale), b: key(withStale) });
+}
+// The origin is the epoch start, so every tick lands on the absolute grid.
+{
+  const untilMs = EPOCH_MS + 1_000;
+  const s = foldShoal([pres('a', 100, 100, EPOCH_MS + 500)], untilMs, { epoch: epochOf(untilMs) });
+  check('the fold starts at the epoch boundary, not the first entry',
+    s.epoch === epochOf(untilMs), s.epoch);
+}
+// A cross-check on the origin itself: epochOf(untilMs) is epoch 1 (untilMs =
+// EPOCH_MS + 1000 sits one second into hour two, by definition of EPOCH_MS),
+// and epochStartMs(1) = 1 * EPOCH_MS = 3_600_000 — the tick grid must start
+// there, not at 0 and not at the entry's ms (EPOCH_MS + 500).
+check('epoch 1 starts at EPOCH_MS, independent of any entry',
+  epochOf(EPOCH_MS + 1_000) === 1 && epochStartMs(1) === EPOCH_MS,
+  { epoch: epochOf(EPOCH_MS + 1_000), start: epochStartMs(1), EPOCH_MS });
+
 // --- Determinism -----------------------------------------------------------
 {
   // Shuffling the input log must not change the folded outcome at all.
@@ -661,18 +756,41 @@ check('orderLog does not mutate its input', (() => {
     { forward: key(forward), backward: key(backward) });
 }
 
-// --- The tick budget --------------------------------------------------------
-// foldShoal([], someWallClockMs) starts at t=0 and would grind through
-// ~1.78e12 / 250 = 7.1e9 ticks — about 77 minutes of dead hang — which is
-// exactly what a shell does the first time it starts against empty water.
-// The guard turns that into an immediate, legible error.
+// --- The tick budget ---------------------------------------------------------
+// Pre-epoch-origin, foldShoal([], someWallClockMs) started at t=0 and would
+// grind through ~1.78e12 / 250 = 7.1e9 ticks — about 77 minutes of dead hang.
+// Task 3 (spec section 3.9) resolves that scenario BY CONSTRUCTION rather than
+// merely guarding it: with a defaulted epoch, the origin is always
+// epochStartMs(epochOf(untilMs)), which sits within [untilMs - EPOCH_MS + 1,
+// untilMs] by epoch.ts's own "every ms lies within its own epoch span"
+// property (epoch.test.ts). So the span from origin to untilMs is always under
+// EPOCH_MS regardless of how large untilMs is, and the tick count is always
+// under EPOCH_MS/TICK_MS = 14_400 — two orders of magnitude below
+// MAX_FOLD_TICKS (1_000_000). The wall-clock-hang scenario the guard used to
+// exist for can no longer arise from a defaulted epoch at all.
+//
+// MAX_FOLD_TICKS is downgraded to a BACKSTOP: still real, but reachable only
+// if a caller passes an EXPLICIT opts.epoch that is far from untilMs (a caller
+// bug — e.g. resuming from a long-stale checkpoint's epoch against a much
+// later untilMs), not from any value of untilMs alone.
 {
   const threw = (fn: () => unknown): Error | null => {
     try { fn(); return null; } catch (e) { return e as Error; }
   };
 
-  // Hand arithmetic: the loop runs floor(span / TICK_MS) + 1 times, where
-  // span = untilMs - the log's first ms (0 for an empty log).
+  // The old dead-hang scenario, re-run against the new code: a wall-clock
+  // untilMs against an empty log, with epoch defaulted (no opts passed).
+  // epochOf(1_800_000_000_000) = 1_800_000_000_000 / EPOCH_MS(3_600_000) =
+  // 500_000 exactly, so epochStartMs(500_000) = 500_000 * 3_600_000 =
+  // 1_800_000_000_000 — the SAME value as untilMs. span = 0, so the loop runs
+  // exactly 1 tick. It must not throw, and (being one tick) it cannot hang.
+  const wallClock = threw(() => foldShoal([], 1_800_000_000_000));
+  check('a wall-clock untilMs against empty water no longer needs the guard — the epoch origin bounds it',
+    wallClock === null, wallClock?.message);
+
+  // The backstop, re-exercised via an explicit epoch mismatch. Pin opts.epoch
+  // to 0 (origin 0) while untilMs is the same values the old test used, so the
+  // span arithmetic is identical to the pre-epoch-origin guard:
   //   span 249_999_750 -> floor(249999750/250) + 1 = 999999 + 1 = 1_000_000
   //                       == MAX_FOLD_TICKS, so allowed
   //   span 250_000_000 -> floor(250000000/250) + 1 = 1000000 + 1 = 1_000_001
@@ -683,27 +801,38 @@ check('orderLog does not mutate its input', (() => {
     atBudgetMs === 249_999_750 && overBudgetMs === 250_000_000 && MAX_FOLD_TICKS === 1_000_000,
     { atBudgetMs, overBudgetMs, MAX_FOLD_TICKS });
 
-  const atBudget = threw(() => foldShoal([], atBudgetMs));
-  check('a fold of exactly MAX_FOLD_TICKS ticks is allowed', atBudget === null, atBudget?.message);
+  const atBudget = threw(() => foldShoal([], atBudgetMs, { epoch: 0 }));
+  check('a fold of exactly MAX_FOLD_TICKS ticks is allowed (explicit epoch 0)',
+    atBudget === null, atBudget?.message);
 
-  const overBudget = threw(() => foldShoal([], overBudgetMs));
-  check('one tick past the budget throws', overBudget instanceof RangeError, overBudget);
+  const overBudget = threw(() => foldShoal([], overBudgetMs, { epoch: 0 }));
+  check('one tick past the budget throws (explicit epoch mismatched with untilMs)',
+    overBudget instanceof RangeError, overBudget);
   check('the error names the budget and the offending untilMs',
     overBudget !== null && overBudget.message.includes(String(MAX_FOLD_TICKS))
       && overBudget.message.includes(String(overBudgetMs)),
     overBudget?.message);
 
-  // The motivating case: a wall-clock timestamp against an empty log.
-  const wallClock = threw(() => foldShoal([], 1_800_000_000_000));
-  check('a wall-clock untilMs against empty water throws instead of hanging',
-    wallClock instanceof RangeError, wallClock?.message);
+  // A defaulted epoch at those SAME untilMs values does not throw at all —
+  // confirming the guard fires only on the explicit-epoch caller bug, never
+  // as a live limit under ordinary (defaulted-epoch) use.
+  const atBudgetDefaulted = threw(() => foldShoal([], atBudgetMs));
+  const overBudgetDefaulted = threw(() => foldShoal([], overBudgetMs));
+  check('the same untilMs values never throw with a defaulted epoch',
+    atBudgetDefaulted === null && overBudgetDefaulted === null,
+    { atBudgetDefaulted: atBudgetDefaulted?.message, overBudgetDefaulted: overBudgetDefaulted?.message });
 
   // A log whose own epoch is recent is fine at the same untilMs — the budget
-  // is on the SPAN, not on the absolute value of untilMs.
+  // is on the SPAN, not on the absolute value of untilMs. (Redundant with the
+  // structural bound above under a defaulted epoch, but kept as a direct
+  // observation.)
   const recent = threw(() => foldShoal([pres('a', 100, 100, 1_800_000_000_000)], 1_800_000_010_000));
   check('the budget measures the span, not the absolute timestamp', recent === null, recent?.message);
 
-  // An untilMs before the log even starts is a no-op, not an error.
+  // An untilMs before the log even starts is a no-op, not an error. Origin is
+  // epochStartMs(epochOf(1_000)) = epochStartMs(0) = 0 (1000 < EPOCH_MS), and
+  // the entry at ms=5000 is after untilMs(1000), so it is never applied —
+  // this folds to an empty state, not a throw.
   const backwards = threw(() => foldShoal([pres('a', 100, 100, 5_000)], 1_000));
   check('an untilMs before the log starts folds to nothing without throwing',
     backwards === null, backwards?.message);

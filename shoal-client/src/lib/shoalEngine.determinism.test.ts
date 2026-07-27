@@ -10,8 +10,9 @@ import type { LogEntry, Presence } from './shoalTypes';
 import { cellCentre } from './bloom';
 import {
   START_SIZE, MIN_SIZE, TICK_MS, HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BITE_GROWTH,
-  TENSION_NEUTRAL, TENSION_TRIGGER, HUSH_MS, MAX_TAKE,
+  TENSION_NEUTRAL, TENSION_TRIGGER, HUSH_MS, MAX_TAKE, EPOCH_MS,
 } from './shoalConst';
+import { epochOf } from './epoch';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -95,6 +96,17 @@ const fingerprint = (s: ReturnType<typeof foldShoal>) =>
   const a = foldShoal(log, 120_000);
   const b = foldShoal(log, 120_000);
   check('the same log folds to the same state twice', fingerprint(a) === fingerprint(b));
+
+  // Task 3 (spec 3.9): every fold in this file now defaults to a tick origin
+  // of epochStartMs(epochOf(untilMs)) instead of log[0].ms. None of the
+  // untilMs values below (120_000 at most) are within EPOCH_MS (3_600_000) of
+  // a boundary — they all land in epoch 0, whose start is ms 0, the same
+  // origin as before — so every fingerprint in this file is unaffected by the
+  // change. Asserted directly rather than left as unverified prose: epochOf
+  // floors ms/EPOCH_MS, and 120_000 < EPOCH_MS, so epochOf(120_000) is 0 by
+  // hand, not by reading the import.
+  check('this file\'s untilMs values stay inside epoch 0, so the epoch-origin change does not move them',
+    epochOf(120_000) === 0 && 120_000 < EPOCH_MS, { epochOf120k: epochOf(120_000), EPOCH_MS });
 }
 {
   // Delivery order differs between peers; the fold must not care.

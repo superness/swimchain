@@ -143,11 +143,23 @@ export const VOID_WINDOW_MS = 10_000;
  *
  * Not a game rule and not consensus: no legitimate fold is anywhere near it,
  * so two clients on different values still agree on every world they both
- * manage to compute. It is a guard against a caller handing the fold a
- * WALL-CLOCK untilMs against an empty or ancient log — foldShoal([], now())
- * starts at t=0 and would grind through ~7.1e9 ticks, about 77 minutes of
- * dead hang, which is what a shell does the very first time it starts against
- * empty water.
+ * manage to compute.
+ *
+ * Originally this was a LIVE limit: with the tick origin anchored to
+ * `log[0].ms`, a caller handing the fold a WALL-CLOCK untilMs against an
+ * empty or ancient log would start at t=0 and grind through ~7.1e9 ticks,
+ * about 77 minutes of dead hang.
+ *
+ * Since the fold now folds exactly one epoch from an absolute origin (spec
+ * section 3.9, epoch.ts), that scenario cannot occur under normal use: a
+ * DEFAULTED epoch (`opts.epoch` omitted, so it is `epochOf(untilMs)`) always
+ * puts the origin within one EPOCH_MS of untilMs, bounding every ordinary
+ * fold to EPOCH_MS / TICK_MS = 14_400 ticks — two orders of magnitude below
+ * this ceiling. MAX_FOLD_TICKS is therefore now a BACKSTOP rather than a live
+ * limit: it only fires if a caller passes an explicit `opts.epoch` far from
+ * `untilMs` (e.g. resuming from a stale checkpoint's epoch against a much
+ * later untilMs) — a caller bug, not a scenario that arises from ordinary
+ * play.
  *
  * 1_000_000 ticks is 1_000_000 * TICK_MS = 250_000_000 ms, roughly 69 hours
  * of game time — orders of magnitude past any real session — so this can only
