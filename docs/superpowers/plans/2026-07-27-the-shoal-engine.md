@@ -2221,13 +2221,18 @@ const fingerprint = (s: ReturnType<typeof foldShoal>) =>
   check('a tight ball is never swept', s.lastTaken.length === 0, s.lastTaken);
 }
 
-// --- Control: the test can detect the bug it names --------------------------
+// --- Control: the starve assertion is discriminating ------------------------
 {
-  // With HUNGER_AMOUNT of zero, an idle ball would hold its size forever.
-  // Recomputed independently here to prove the assertion above is not vacuous.
-  const noHungerExpected = START_SIZE;
-  check('control: with no hunger the ball would keep its size', noHungerExpected === START_SIZE);
-  console.log('  note  run the Task 8 Step 3 mutation to confirm this end to end');
+  // The starve check above is only meaningful if the expected value it
+  // computes is actually reachable and actually different from "unchanged".
+  // Assert the discriminating gap directly, so a constants change that
+  // quietly made hunger a no-op fails HERE rather than passing silently.
+  const ticks = Math.floor(80_000 / TICK_MS);
+  const hungerTicks = Math.floor(ticks / HUNGER_TICK_INTERVAL);
+  const loss = hungerTicks * HUNGER_AMOUNT;
+  check('hunger over 80s is a nonzero loss', loss > 0, { loss, hungerTicks });
+  check('that loss is large enough to be observable', loss >= 10, { loss });
+  console.log('  note  Task 8 Step 3 mutates HUNGER_AMOUNT to 0 to confirm end to end');
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
