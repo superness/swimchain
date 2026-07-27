@@ -4,10 +4,10 @@
  * to audio. Every voice is oscillators and filtered noise shaped by
  * envelopes, glued by one master compressor.
  *
- * The palette, and what each sound is FOR:
- *   - sizzle    the fryers, continuously. Presence, not information — it
- *               scales gently with fryer count and is mixed low enough to
- *               disappear under everything else.
+ * The palette, and what each sound is FOR (all one-shots — an earlier cut
+ * had a continuous fryer-sizzle ambience, and a noise loop you cannot turn
+ * off with your attention turned out to be irritation, not presence; the
+ * operator had it removed the same evening it shipped):
  *   - dip()     the bank gesture: a grab tick, then a wet plop timed to the
  *               flight's entry into the dip (42% of its 1.25s), then the
  *               crumb-splash rattle at the same .78s the visual burst fires.
@@ -40,10 +40,6 @@ class Sfx {
   private analyser: AnalyserNode | null = null;
   private mutedFlag = readMuted();
 
-  private sizzleGain: GainNode | null = null;
-  private sizzleTimer: number | null = null;
-  private sizzleFryers = 0;
-
   /** Idempotent; call from a user gesture. Safe to call every gesture. */
   unlock(): void {
     if (!this.ctx) {
@@ -69,9 +65,8 @@ class Sfx {
       comp.connect(this.analyser);
       this.analyser.connect(c.destination);
       (window as unknown as Record<string, unknown>).__sfxProbe = () => this.probe();
-      this.applySizzle();
     }
-    if (this.ctx.state === 'suspended') void this.ctx.resume().then(() => this.applySizzle());
+    if (this.ctx.state === 'suspended') void this.ctx.resume();
   }
 
   muted(): boolean { return this.mutedFlag; }
@@ -82,11 +77,10 @@ class Sfx {
     if (this.ctx && this.master) {
       this.master.gain.setTargetAtTime(m ? 0 : 0.5, this.ctx.currentTime, 0.04);
     }
-    this.applySizzle();
   }
 
   /** How audio verification works — see the analyser comment above. */
-  private probe(): { state: string; rms: number; sizzling: boolean } {
+  private probe(): { state: string; rms: number } {
     let rms = 0;
     if (this.analyser) {
       const buf = new Float32Array(this.analyser.fftSize);
@@ -94,7 +88,7 @@ class Sfx {
       for (const v of buf) rms += v * v;
       rms = Math.sqrt(rms / buf.length);
     }
-    return { state: this.ctx?.state ?? 'none', rms, sizzling: this.sizzleTimer !== null };
+    return { state: this.ctx?.state ?? 'none', rms };
   }
 
   /* ── shared plumbing ─────────────────────────────────────────────────── */
@@ -147,50 +141,6 @@ class Sfx {
     g.gain.exponentialRampToValueAtTime(0.0005, at + opts.dur);
     o.connect(g); g.connect(out);
     o.start(at); o.stop(at + opts.dur + 0.05);
-  }
-
-  /* ── the sizzle ──────────────────────────────────────────────────────── */
-
-  /** Called by App whenever the fryer count (or 0 for "stop") changes. */
-  sizzle(fryers: number): void {
-    this.sizzleFryers = Math.max(0, fryers);
-    this.applySizzle();
-  }
-
-  private applySizzle(): void {
-    const want = this.sizzleFryers > 0 && !this.mutedFlag && this.ctx?.state === 'running';
-    if (!want) {
-      if (this.sizzleTimer !== null) { clearInterval(this.sizzleTimer); this.sizzleTimer = null; }
-      if (this.sizzleGain && this.ctx) {
-        this.sizzleGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.2);
-      }
-      return;
-    }
-    const c = this.ctx!;
-    if (!this.sizzleGain) {
-      const src = c.createBufferSource();
-      src.buffer = this.noiseBuffer(c, 2);
-      src.loop = true;
-      const band = c.createBiquadFilter();
-      band.type = 'bandpass'; band.frequency.value = 5200; band.Q.value = 0.5;
-      const hp = c.createBiquadFilter();
-      hp.type = 'highpass'; hp.frequency.value = 1800;
-      this.sizzleGain = c.createGain();
-      this.sizzleGain.gain.value = 0;
-      src.connect(band); band.connect(hp); hp.connect(this.sizzleGain);
-      this.sizzleGain.connect(this.master!);
-      src.start();
-    }
-    // The crackle: oil doesn't hiss steadily, it spits. A fast random walk
-    // on the gain around the fryer-scaled base reads as frying, not static.
-    if (this.sizzleTimer === null) {
-      this.sizzleTimer = window.setInterval(() => {
-        if (!this.ctx || !this.sizzleGain) return;
-        const base = 0.014 * Math.sqrt(this.sizzleFryers);
-        const flutter = base * (0.45 + Math.random() * 0.9);
-        this.sizzleGain.gain.setTargetAtTime(flutter, this.ctx.currentTime, 0.05);
-      }, 90);
-    }
   }
 
   /* ── one-shots ───────────────────────────────────────────────────────── */
