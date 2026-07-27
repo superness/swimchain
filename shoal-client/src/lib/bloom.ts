@@ -92,7 +92,19 @@ export interface EatCheck {
   nowMs: number;
 }
 
-/** True when a claimed bite credits. */
+/**
+ * True when a claimed bite credits.
+ *
+ * Known corner dead zone: a fish standing at a cell's exact low corner is
+ * 64^2 + 64^2 = 8192 squared-cu from that cell's centre (half the cell in
+ * each axis) — greater than EAT_R2 (8100). So that point is inside the cell
+ * per `cellIndex` but cannot eat from it, even with the bloom ready and
+ * uncontested. This is one quantized point in 256 per cell (QUANT=8 over a
+ * 128 cell -> 16x16 grid) and an 8 cu move onto the centre fixes it. It is
+ * known and accepted: EAT_R and BLOOM_CELL are both permanent CONSENSUS
+ * constants, so this relationship cannot be tuned away later without a hard
+ * fork — anyone touching either constant should know it exists.
+ */
 export function canEat(a: EatCheck): boolean {
   if (!isBloomReady(a.lastVisit, a.cell, a.nowMs)) return false;
   if (bitesLeft(a.bitesTaken, a.cell) <= 0) return false;

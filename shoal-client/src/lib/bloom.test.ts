@@ -39,8 +39,24 @@ check('every cell index is in range', (() => {
   return true;
 })());
 
+// Out-of-world points clamp instead of producing a negative or overflowing
+// index. Below the world: floor(-1/128) = -1, clamped to col 0, row 0 ->
+// index 0. Beyond it: floor(99999/128) = 781, clamped to BLOOM_COLS-1 = 31
+// and BLOOM_ROWS-1 = 23 -> index 23*32+31 = 767, which equals
+// BLOOM_ROWS*BLOOM_COLS-1 = 24*32-1 = 767.
+check('a point below the world clamps to the first cell', cellIndex(-1, -1) === 0, cellIndex(-1, -1));
+check('a point beyond the world clamps to the last cell',
+  cellIndex(99_999, 99_999) === BLOOM_ROWS * BLOOM_COLS - 1, cellIndex(99_999, 99_999));
+
 // Centre of cell 0 is (64, 64) by hand: half of 128.
 check('cell centre is the middle of the cell', cellCentre(0).x === 64 && cellCentre(0).y === 64, cellCentre(0));
+
+// Cell 70: col = 70 % 32 = 6, row = floor(70/32) = 2.
+// centre = (6*128+64, 2*128+64) = (832, 320).
+// This is an independent check of cellCentre's output — not just a
+// round-trip through cellIndex, which could be wrong in the same way.
+check('centre of cell 70 is the expected coordinates',
+  cellCentre(70).x === 832 && cellCentre(70).y === 320, cellCentre(70));
 check('centre round-trips to its own index', cellIndex(cellCentre(70).x, cellCentre(70).y) === 70,
   { centre: cellCentre(70), back: cellIndex(cellCentre(70).x, cellCentre(70).y) });
 
