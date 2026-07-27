@@ -280,12 +280,13 @@ function WorthTag({ chip, goldenBits, state, nowMs }: { chip: FryerChip; goldenB
   return (
     <p className={`worth${live.capped ? ' worth-capped' : ''}${golden ? ' worth-golden' : ''}`}>
       <strong>{compact(live.worth)}</strong> now
-      {/* The actual decision being made every second this chip keeps frying:
-       *  the fixed cost of one more bit is the fryer's time; the fixed
-       *  benefit is that this number doubles. A static tag, not a recomputed
-       *  "x2.4" or similar — the DOUBLING is the invariant fact, not a
-       *  number worth calculating live alongside the worth itself. */}
-      <em className="worth-next" aria-hidden="true">next bit ×2</em>
+      {/* The old tag here said "next bit ×2" — true per chip, but it taught
+       *  the WRONG lesson: payout and expected work both double per bit, so
+       *  waiting earns the same rate as banking constantly, and players sat
+       *  nursing one chip for ten minutes (measured, 2026-07-27). The one
+       *  honest reason to wait is golden's superlinear x2.5 — so that is
+       *  the only thing this line advertises now. */}
+      <em className="worth-next" aria-hidden="true">golden at {goldenBits} bits pays ×2.5</em>
       {tosses}
     </p>
   );
