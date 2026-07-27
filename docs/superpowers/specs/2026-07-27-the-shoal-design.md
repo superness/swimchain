@@ -400,6 +400,34 @@ clients, so the consensus surface is kept deliberately small and decided **now**
 Nothing in the left column may be tuned after launch. Everything that could plausibly live on
 the right has been put there.
 
+### 3.9 OPEN DECISION — what window does the fold cover?
+
+Raised by the engine's final review (2026-07-27) and deliberately **not** answered in
+code, because it is a consensus decision that cannot be patched later.
+
+`BLOOM_WINDOW_MS` is declared and **not enforced** — `lastVisit` is never bounded to any
+window. The tick grid is anchored to the first log entry's timestamp, so two clients whose
+logs begin at different entries fold on different tick phases *and* different accumulated
+history. Measured: one extra long-expired entry moved the sweep by 1.2 s and tension by
+3120.
+
+Three consequences hang off the same unanswered question:
+
+1. **A late joiner does not fold the same world as a veteran.** §3.7's promise that a
+   mid-session client "reconstructs both from data that is still live" is stated in three
+   comments and implemented nowhere.
+2. **A sea has a finite lifetime.** The fold always replays from the first entry, so the
+   tick budget imposes a ceiling (~69 h at present constants) after which a full log
+   cannot be folded at all. Uniform across clients, so it is a liveness cliff rather than
+   a divergence — but it has no owner.
+3. **`departed` records never expire.** Whether a swimmer's banked size decays after a
+   long absence changes what returning is worth, so it is consensus either way.
+
+The likely shape of the answer is a **checkpointed epoch**: a grid-aligned origin, a
+bounded replay window behind it, and a folded checkpoint that new clients adopt instead of
+replaying from genesis. That interacts directly with the incremental-fold seam the shell
+plan needs, so decide the two together.
+
 ---
 
 ## 5. Out of scope
