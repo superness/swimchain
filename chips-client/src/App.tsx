@@ -129,6 +129,8 @@ export function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [flight, setFlight] = useState<DipFlightState | null>(null);
   const [gains, setGains] = useState<GainFloat[]>([]);
+  // The DOUBLE DIP splash — keyed per proc so back-to-back procs each slam.
+  const [ddSplash, setDdSplash] = useState<number | null>(null);
   const [counting, setCounting] = useState<{ done: number; total: number } | null>(null);
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [seated, setSeated] = useState(false);
@@ -608,6 +610,13 @@ export function App() {
     const crackles = Math.round(Math.log2(res.multi));
     launchDip(index, { ms: res.ms, bits: visualFor({ ms: res.ms, crackles }).bits }, res.doubled);
     sfx.dip(res.doubled);
+    if (res.doubled) {
+      // EXTREMELY celebrated, per the owner: a proc is the game's slot-machine
+      // payoff and a meek "x2" suffix buried it. Full-screen stamp + sting.
+      setDdSplash(Date.now());
+      sfx.doubleDip();
+      window.setTimeout(() => setDdSplash((v) => (v && Date.now() - v >= 2100 ? null : v)), 2300);
+    }
     // The payout float, announced HERE at the moment of the dip — and HONEST
     // about the bowl cap: the fold clamps storage, so a rim-bound dip must
     // say what actually landed and what spilled, never a number the counter
@@ -1014,6 +1023,12 @@ export function App() {
       </div>
 
       {state && <Tutorial state={state} chips={chips} />}
+      {ddSplash !== null && (
+        <div key={ddSplash} className="dd-splash" aria-hidden="true">
+          <span className="dd-word">DOUBLE</span>
+          <span className="dd-word dd-word2">DIP!</span>
+        </div>
+      )}
       <DipFlight flight={flight} />
       <GainFloats floats={gains} />
       {dipFanfare !== null && <DipChange dipIndex={dipFanfare} />}
