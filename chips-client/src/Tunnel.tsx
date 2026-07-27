@@ -501,14 +501,22 @@ const FLAVOUR: Record<string, string> = {
 
 /** One jar for sale — shared by the shelf column and the tap-a-critter
  *  stall sheet, so a jar can never look or behave differently between the
- *  two ways of reaching it. */
-function JarCard({ u, vendor, afford, armed, onJar }: {
-  u: Upgrade; vendor: CrewMember; afford: boolean; armed: boolean; onJar: (key: string) => void;
+ *  two ways of reaching it.
+ *
+ *  THE CAP TRAP (found live 2026-07-27 on a real player's table): a jar
+ *  costing more than the bowl can HOLD is not expensive, it is impossible —
+ *  no amount of play can ever save for it, because the bowl clamps storage
+ *  at its cap. That table sat pinned at exactly 3,000,000 in a 3,000,000
+ *  bowl, dipping 16.9M chips and spilling ~90% of every one, while the 900k
+ *  jar that fixes it sat unremarked two rows away. A jar in that state now
+ *  SAYS SO, and points at the fix, instead of dangling as a normal price. */
+function JarCard({ u, vendor, afford, armed, capped, onJar }: {
+  u: Upgrade; vendor: CrewMember; afford: boolean; armed: boolean; capped: boolean; onJar: (key: string) => void;
 }) {
   return (
     <button
       type="button"
-      className={`jar${afford ? ' afford' : ' dear'}${armed ? ' armed' : ''}`}
+      className={`jar${afford ? ' afford' : ' dear'}${armed ? ' armed' : ''}${capped ? ' capped' : ''}`}
       disabled={!afford}
       onClick={() => onJar(u.key)}
       // A bowl jar states its actual capacity — "Bigger Bowl II"
@@ -521,6 +529,7 @@ function JarCard({ u, vendor, afford, armed, onJar }: {
         {compact(u.cost)}
         <i className="chip-fee">{vendor.feed === 'golden' ? '+ a golden chip' : '+ a chip'}</i>
       </span>
+      {capped && <span className="jar-capped">your bowl is too small to ever hold this — get a bigger bowl first</span>}
       <span className="jar-flavour">{FLAVOUR[u.key] ?? ''}</span>
       {/* Visible, not title-only: touch screens have no hover, and
           an upgrade's whole point is its effect. */}
@@ -577,6 +586,7 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
                   u={u} vendor={vendor}
                   afford={canAffordBuy(crumbsNow, committed, u.cost)}
                   armed={armedKey === u.key}
+                  capped={u.cost > state.bowlCap}
                   onJar={onJar}
                 />
               </li>
@@ -600,11 +610,12 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
  * shelf renders, so the two entry points can never drift; arming feed mode
  * closes the sheet so the fryers are visible for the feeding.
  */
-export function StallSheet({ vendor, jars, crumbsNow, committed, armedKey, onJar, onClose }: {
+export function StallSheet({ vendor, jars, crumbsNow, committed, bowlCap, armedKey, onJar, onClose }: {
   vendor: CrewMember;
   jars: Upgrade[];
   crumbsNow: number;
   committed: number;
+  bowlCap: number;
   armedKey: string | null;
   onJar: (key: string) => void;
   onClose: () => void;
@@ -633,6 +644,7 @@ export function StallSheet({ vendor, jars, crumbsNow, committed, armedKey, onJar
                   u={u} vendor={vendor}
                   afford={canAffordBuy(crumbsNow, committed, u.cost)}
                   armed={armedKey === u.key}
+                  capped={u.cost > bowlCap}
                   onJar={onJar}
                 />
               </li>

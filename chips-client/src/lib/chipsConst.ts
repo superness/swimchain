@@ -85,6 +85,29 @@ export const UPGRADES: Record<string, Upgrade> = {
   doubledip2: { key: 'doubledip2', label: 'Deep Double Dip', cost: 10_000_000, doubleDipMod: 2 },
   detector: { key: 'detector', label: 'Golden Chip Detector', cost: 1_500_000, goldenBits: 15 },
   detector2: { key: 'detector2', label: 'Golden Chip Nose',   cost: 12_000_000, goldenBits: 14 },
+
+  /* ── THE DEEP TAIL (2026-07-27) ────────────────────────────────────────
+     The game ran out of things to buy at Fondue (~54 active hours) while
+     the Abyss sat ~100 hours out — the top of the live leaderboard owned
+     every jar available to them and had ~68 hours of empty ladder left.
+     These are APPENDED AT CHAIN TAILS ONLY (see UPGRADE_CHAINS below), so
+     no historical buy re-scores, and they are sold by the three deep
+     critters who previously sold nothing at all: the wing with no bird
+     (Buffalo), the fondue oracle (Fondue), and the first chip (Abyss).   */
+  season7: { key: 'season7', label: 'Hot Sauce VII',  cost: 200_000_000,   seasoningNum: 12, seasoningDen: 1 },
+  season8: { key: 'season8', label: 'Seasoning VIII', cost: 600_000_000,   seasoningNum: 16, seasoningDen: 1 },
+  fryer5:  { key: 'fryer5',  label: 'Fifth Basket',   cost: 300_000_000,   fryers: 5 },
+  fryer6:  { key: 'fryer6',  label: 'Sixth Basket',   cost: 1_200_000_000, fryers: 6 },
+  bowl4:   { key: 'bowl4',   label: 'The Trough',     cost: 800_000_000,   bowlCap: 100_000_000_000 },
+  doubledip3: { key: 'doubledip3', label: 'Shameless Dip', cost: 400_000_000, doubleDipMod: 1 },
+  detector3:  { key: 'detector3',  label: 'The Long Spoon', cost: 500_000_000, goldenBits: 13 },
+  /** THE STARTER, made deliberate (operator 2026-07-27: "leave it -
+   *  rebalance - emergent gameplay why not"). Airtight (+2) plus Cellar
+   *  (+2) already pushes the sog numerator to 101/100 — crumbs GROW ~1%
+   *  an hour while the tab is closed, which is this game's only offline
+   *  progression and was discovered by accident. Rather than clamp it, it
+   *  is now a build path with a top rung: +2 more takes you to 103/100. */
+  cellar2: { key: 'cellar2', label: 'Old Crumbs', cost: 250_000_000, sogBonus: 2 },
 };
 
 /** Upgrades that must be bought in order. Buying out of order is rejected.
@@ -95,11 +118,15 @@ export const UPGRADES: Record<string, Upgrade> = {
  *  safe (a tail rung validates only against the prefix, which is unchanged),
  *  and whole new chains are safe (their keys have no history). */
 export const UPGRADE_CHAINS: string[][] = [
-  ['season1', 'season2', 'season3', 'season4', 'season5', 'season6'],
-  ['bowl1', 'bowl2', 'bowl3'],
-  ['fryer2', 'fryer3', 'fryer4'],
-  ['doubledip1', 'doubledip2'],
-  ['detector', 'detector2'],
+  ['season1', 'season2', 'season3', 'season4', 'season5', 'season6', 'season7', 'season8'],
+  ['bowl1', 'bowl2', 'bowl3', 'bowl4'],
+  ['fryer2', 'fryer3', 'fryer4', 'fryer5', 'fryer6'],
+  ['doubledip1', 'doubledip2', 'doubledip3'],
+  ['detector', 'detector2', 'detector3'],
+  // `cellar` was previously unchained; making it the HEAD of a new chain is
+  // safe (a head validates against an empty prefix, exactly as an unchained
+  // key did), and `cellar2` is new so it has no history to re-score.
+  ['cellar', 'cellar2'],
 ];
 
 export interface DipTier {
@@ -138,6 +165,18 @@ export const DIP_TIERS: DipTier[] = [
 
 /** Congeal gap threshold, in ms. */
 export const CONGEAL_GAP_MS = 12 * 60 * 60 * 1000;
+
+/* ── THE BOTTOM OF THE BOWL ──────────────────────────────────────────────
+   You strike porcelain at Queso — long before the deep shelves exist — and
+   can tip the whole bowl back over, keeping OLD SALT. The floor is the
+   Queso threshold itself: the twist is not offered before the game has
+   taught you what it is, and a fresh table cannot farm the ceremony.      */
+export const TIP_FLOOR = 4_000;
+/** Salt for a run that tips exactly at the floor. sqrt-scaled above it
+    (chipsEngine.saltFor), so a Queso tip pays 10 and the Abyss pays ~158 —
+    15x the salt for 250x the grind, which is what keeps looping early a
+    live choice instead of a trap. */
+export const SALT_PER_TIP = 10;
 
 /**
  * Most chips one reply may bank.

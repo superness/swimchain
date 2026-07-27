@@ -55,6 +55,16 @@ export function dipBody(amount: number, ms: number): string {
   return `dip ${amount}#${ms}~`;
 }
 
+/** Build a `tip` move body: `tip#<ms>~`. No argument by design — the fold
+ *  computes the salt itself (chipsEngine.saltFor), so nothing about this
+ *  move is client-declared. */
+export function tipBody(ms: number): string {
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`tipBody: ms must be a positive safe integer, got ${ms}`);
+  }
+  return `tip#${ms}~`;
+}
+
 /** Build a `buy` move body: `buy <upgrade-key>#<ms>~`. */
 export function buyBody(key: string, ms: number): string {
   if (!/^[a-z0-9]+$/.test(key)) {

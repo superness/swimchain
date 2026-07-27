@@ -9,12 +9,12 @@
  * pinned by a unit test rather than only by reading the effect.
  */
 import { activeFor, takeBatch, unsent, markSent, type QueuedMove } from './chipsQueue';
-import { bankBatchBody, buyBody, dipBody } from './chipsBody';
+import { bankBatchBody, buyBody, dipBody, tipBody } from './chipsBody';
 import type { ChipEntry } from './chipsEngine';
 
 export interface PlannedSend {
   moves: QueuedMove[];
-  kind: 'bank' | 'buy' | 'dip';
+  kind: 'bank' | 'buy' | 'dip' | 'tip';
   body: string;
 }
 
@@ -34,6 +34,7 @@ function submittable(m: QueuedMove, at: number): boolean {
   try {
     if (m.kind === 'bank') bankBatchBody([m.chip], at);
     else if (m.kind === 'dip') dipBody(m.amount, m.ms);
+    else if (m.kind === 'tip') tipBody(m.ms);
     else buyBody(m.key, at);
     return true;
   } catch {
@@ -80,7 +81,9 @@ export function planSend(queue: QueuedMove[], tableId: string, author: string, a
     ? bankBatchBody(take.moves.map((m) => (m as { chip: ChipEntry }).chip), at)
     : take.kind === 'dip'
       ? dipBody((take.moves[0] as { amount: number }).amount, (take.moves[0] as { ms: number }).ms)
-      : buyBody((take.moves[0] as { key: string }).key, at);
+      : take.kind === 'tip'
+        ? tipBody((take.moves[0] as { ms: number }).ms)
+        : buyBody((take.moves[0] as { key: string }).key, at);
   return { moves: take.moves, kind: take.kind, body };
 }
 
