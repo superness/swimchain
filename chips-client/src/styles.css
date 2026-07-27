@@ -1668,6 +1668,49 @@ h1, h2, h3, p { margin: 0; }
   border-color: rgba(255, 219, 128, .8);
   box-shadow: 0 0 0 2px rgba(255, 219, 128, .35), 0 12px 24px rgba(0, 0, 0, .5);
 }
+/* the nameplate is a button now — it opens the same sheet the critter does */
+.stall-head { border: 0; cursor: pointer; text-align: left; transition: background .2s; }
+.stall-head:hover { background: rgba(30, 21, 12, .9); }
+
+/* ── the tap-a-critter stall sheet ───────────────────────────────────────── */
+.sheet-backdrop {
+  position: fixed; inset: 0; z-index: 45;
+  display: grid; place-items: center; padding: 16px;
+  background: rgba(6, 4, 2, .62);
+  backdrop-filter: blur(2px);
+  animation: sheet-fade .18s ease-out;
+}
+@keyframes sheet-fade { from { opacity: 0; } }
+.stall-sheet {
+  width: min(420px, 94vw); max-height: 84dvh; overflow-y: auto;
+  background: linear-gradient(170deg, #241a10 0%, #16100a 100%);
+  border: 1px solid rgba(255, 226, 180, .3);
+  border-radius: 14px; padding: 14px 16px 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .7);
+  animation: sheet-in .22s cubic-bezier(.2, .9, .3, 1);
+}
+@keyframes sheet-in { from { opacity: 0; transform: translateY(16px) scale(.97); } }
+.sheet-head { background: none; padding: 0; margin-bottom: 8px; cursor: default; }
+.sheet-head:hover { background: none; }
+.sheet-head .stall-face { width: 40px; height: 40px; }
+.sheet-head .stall-name { font-size: 15px; }
+.sheet-line {
+  font-family: var(--chalk); font-size: 12px; line-height: 1.5;
+  color: #cdbba0; margin-bottom: 12px;
+  border-left: 2px solid rgba(255, 219, 128, .35); padding-left: 9px;
+}
+.stall-sheet .jars { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.sheet-empty {
+  font-family: var(--chalk); font-size: 12px; color: #9a8a70;
+  text-align: center; padding: 14px 0;
+}
+.sheet-close {
+  display: block; margin: 14px auto 0;
+  font-family: var(--chalk); font-size: 12px; letter-spacing: .1em;
+  color: #cdbba0; padding: 6px 22px; border-radius: 999px;
+  border: 1px solid rgba(210, 184, 144, .35);
+}
+.sheet-close:hover { color: #f2e3c8; border-color: rgba(210, 184, 144, .7); }
 
 /* ── the ceremony's new guest ────────────────────────────────────────────── */
 .dip-change .recruit-line {
