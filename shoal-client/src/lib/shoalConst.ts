@@ -123,6 +123,23 @@ export const VOID_WINDOW_MS = 10_000;
 // POLICY — free to change at any time.
 // ---------------------------------------------------------------------------
 
+/**
+ * Hard ceiling on how many ticks a single foldShoal call may run.
+ *
+ * Not a game rule and not consensus: no legitimate fold is anywhere near it,
+ * so two clients on different values still agree on every world they both
+ * manage to compute. It is a guard against a caller handing the fold a
+ * WALL-CLOCK untilMs against an empty or ancient log — foldShoal([], now())
+ * starts at t=0 and would grind through ~7.1e9 ticks, about 77 minutes of
+ * dead hang, which is what a shell does the very first time it starts against
+ * empty water.
+ *
+ * 1_000_000 ticks is 1_000_000 * TICK_MS = 250_000_000 ms, roughly 69 hours
+ * of game time — orders of magnitude past any real session — so this can only
+ * ever fire on the mistake it is looking for.
+ */
+export const MAX_FOLD_TICKS = 1_000_000;
+
 /** Cruise and dart speeds in cu per second. */
 export const SPEED_CRUISE = 60;
 export const SPEED_DART = 220;

@@ -11,7 +11,7 @@ import type { LogEntry, Presence, EatClaim } from './shoalTypes';
 import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
-  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS,
+  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS,
 } from './shoalConst';
 import { cellCentre, bitesLeft } from './bloom';
 
@@ -659,6 +659,54 @@ check('orderLog does not mutate its input', (() => {
     JSON.stringify([...s.fish.entries()].sort().map(([k, v]) => [k, v.size, v.x, v.y]));
   check('a shuffled log folds identically', key(forward) === key(backward),
     { forward: key(forward), backward: key(backward) });
+}
+
+// --- The tick budget --------------------------------------------------------
+// foldShoal([], someWallClockMs) starts at t=0 and would grind through
+// ~1.78e12 / 250 = 7.1e9 ticks — about 77 minutes of dead hang — which is
+// exactly what a shell does the first time it starts against empty water.
+// The guard turns that into an immediate, legible error.
+{
+  const threw = (fn: () => unknown): Error | null => {
+    try { fn(); return null; } catch (e) { return e as Error; }
+  };
+
+  // Hand arithmetic: the loop runs floor(span / TICK_MS) + 1 times, where
+  // span = untilMs - the log's first ms (0 for an empty log).
+  //   span 249_999_750 -> floor(249999750/250) + 1 = 999999 + 1 = 1_000_000
+  //                       == MAX_FOLD_TICKS, so allowed
+  //   span 250_000_000 -> floor(250000000/250) + 1 = 1000000 + 1 = 1_000_001
+  //                       >  MAX_FOLD_TICKS, so refused
+  const atBudgetMs = MAX_FOLD_TICKS * TICK_MS - TICK_MS; // 249_999_750
+  const overBudgetMs = MAX_FOLD_TICKS * TICK_MS;         // 250_000_000
+  check('the budget boundary is where the arithmetic says',
+    atBudgetMs === 249_999_750 && overBudgetMs === 250_000_000 && MAX_FOLD_TICKS === 1_000_000,
+    { atBudgetMs, overBudgetMs, MAX_FOLD_TICKS });
+
+  const atBudget = threw(() => foldShoal([], atBudgetMs));
+  check('a fold of exactly MAX_FOLD_TICKS ticks is allowed', atBudget === null, atBudget?.message);
+
+  const overBudget = threw(() => foldShoal([], overBudgetMs));
+  check('one tick past the budget throws', overBudget instanceof RangeError, overBudget);
+  check('the error names the budget and the offending untilMs',
+    overBudget !== null && overBudget.message.includes(String(MAX_FOLD_TICKS))
+      && overBudget.message.includes(String(overBudgetMs)),
+    overBudget?.message);
+
+  // The motivating case: a wall-clock timestamp against an empty log.
+  const wallClock = threw(() => foldShoal([], 1_800_000_000_000));
+  check('a wall-clock untilMs against empty water throws instead of hanging',
+    wallClock instanceof RangeError, wallClock?.message);
+
+  // A log whose own epoch is recent is fine at the same untilMs — the budget
+  // is on the SPAN, not on the absolute value of untilMs.
+  const recent = threw(() => foldShoal([pres('a', 100, 100, 1_800_000_000_000)], 1_800_000_010_000));
+  check('the budget measures the span, not the absolute timestamp', recent === null, recent?.message);
+
+  // An untilMs before the log even starts is a no-op, not an error.
+  const backwards = threw(() => foldShoal([pres('a', 100, 100, 5_000)], 1_000));
+  check('an untilMs before the log starts folds to nothing without throwing',
+    backwards === null, backwards?.message);
 }
 
 // --- bodiesOf --------------------------------------------------------------

@@ -17,6 +17,7 @@ import type { LogEntry, ShoalState } from './shoalTypes';
 import {
   TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BLOOM_BITES, VOID_WINDOW_MS, LOCK_MS,
+  MAX_FOLD_TICKS,
 } from './shoalConst';
 
 /**
@@ -81,6 +82,23 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
   const log = orderLog(entries);
   const state = emptyState(log.length > 0 ? log[0].ms : 0);
   const outsideTicks = new Map<string, number>();
+
+  // Refuse an absurd span up front rather than hanging. The loop below runs
+  // floor((untilMs - start) / TICK_MS) + 1 times; against an empty log the
+  // start is 0, so a caller passing a wall-clock untilMs asks for ~7.1e9
+  // ticks and gets no output for over an hour. Fail loudly and immediately
+  // instead — the caller's epoch is wrong, and there is no answer worth
+  // waiting for.
+  const span = untilMs - state.nowMs;
+  const plannedTicks = span < 0 ? 0 : Math.floor(span / TICK_MS) + 1;
+  if (plannedTicks > MAX_FOLD_TICKS) {
+    throw new RangeError(
+      `foldShoal: refusing to run ${plannedTicks} ticks (max ${MAX_FOLD_TICKS}). ` +
+      `untilMs ${untilMs} is ${span} ms after the log's first entry at ${state.nowMs}. ` +
+      `Fold from the log's own epoch, not a wall clock.`,
+    );
+  }
+
   let cursor = 0;
   let tickCount = 0;
 
