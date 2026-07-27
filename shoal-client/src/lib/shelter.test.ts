@@ -19,11 +19,12 @@ function check(name: string, cond: boolean, extra?: unknown) {
 const at = (id: string, x: number, y: number, size = 100): Body => ({ id, x, y, size });
 
 // --- Weight ----------------------------------------------------------------
-// By hand with SHELTER_BASE=100, SHELTER_SIZE_DIV=40, SHELTER_SIZE_CAP=120:
-// size 0   -> 100 + 0            = 100
-// size 100 -> 100 + trunc(100/40)= 100 + 2 = 102
-// size 400 -> 100 + 10           = 110
-// size 9999-> 100 + 120 (capped) = 220
+// By hand with SHELTER_BASE=100, SHELTER_SIZE_DIV=40, SHELTER_SIZE_CAP=45:
+// size 0     -> 100 + 0             = 100
+// size 100   -> 100 + trunc(100/40) = 100 + 2 = 102
+// size 400   -> 100 + trunc(400/40) = 100 + 10 = 110
+// size 999999-> 100 + 45 (capped)   = 145
+// The cap first binds at size SHELTER_SIZE_CAP * SHELTER_SIZE_DIV = 1800.
 check('weight of a sizeless fish is the base', shelterWeight(0) === SHELTER_BASE, shelterWeight(0));
 check('weight of a starting fish', shelterWeight(100) === 102, shelterWeight(100));
 check('weight of a grown fish', shelterWeight(400) === 110, shelterWeight(400));
@@ -61,6 +62,37 @@ check('weight is monotonic in size', shelterWeight(200) >= shelterWeight(100) &&
   check('three minnows give exactly 300', shelterOf(self, [minnow1, minnow2, minnow3]) === 300,
     shelterOf(self, [minnow1, minnow2, minnow3]));
   check('at 300 shelter, fish is sheltered not exposed', isExposed(self, [minnow1, minnow2, minnow3]) === false);
+}
+
+// --- The floor of three holds for VETERANS too ------------------------------
+// The floor-of-three block above uses size-100 fish, so it only ever proved
+// the rule for newcomers. SHELTER_SIZE_CAP is what keeps it true as a school
+// ages, and at the old value of 120 it did not: two neighbours of size 2000
+// contributed trunc(2000/40) = 50 each (the cap did not even bind), so
+// 2 * (100 + 50) = 300 met SHELTER_THRESHOLD exactly and a buddy TRIO went
+// unsweepable. The rule dissolved for precisely the population spec 2.11 was
+// written to constrain.
+//
+// Size 2000 is about (2000 - 100) / 12 = 158 net bites — routinely reachable.
+// With the cap at 45 each of those neighbours is worth 100 + 45 = 145 (the cap
+// binds from size 45*40 = 1800 up), so two give 290, ten short of 300, and no
+// pair of neighbours can ever be enough however large they grow.
+{
+  const me = at('me', 1000, 1000, 2_000);
+  const n1 = at('n1', 1010, 1000, 2_000);
+  const n2 = at('n2', 1000, 1010, 2_000);
+  const n3 = at('n3', 1010, 1010, 2_000);
+
+  check('a veteran neighbour is worth the capped weight', shelterOf(me, [n1]) === 145,
+    shelterOf(me, [n1]));
+  check('two veteran neighbours give 290', shelterOf(me, [n1, n2]) === 290, shelterOf(me, [n1, n2]));
+  check('two veteran neighbours are STILL not enough', isExposed(me, [n1, n2]) === true,
+    shelterOf(me, [n1, n2]));
+  // ...and three still are, so the fix prices pairing without banning grouping.
+  check('three veteran neighbours give 435', shelterOf(me, [n1, n2, n3]) === 435,
+    shelterOf(me, [n1, n2, n3]));
+  check('three veteran neighbours shelter', isExposed(me, [n1, n2, n3]) === false,
+    shelterOf(me, [n1, n2, n3]));
 }
 
 // --- Radius ----------------------------------------------------------------

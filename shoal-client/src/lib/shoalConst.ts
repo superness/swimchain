@@ -42,8 +42,19 @@ export const SHELTER_R2 = SHELTER_R * SHELTER_R; // 115_600
 export const SHELTER_BASE = 100;
 /** Each SHELTER_SIZE_DIV of size adds 1 more shelter... */
 export const SHELTER_SIZE_DIV = 40;
-/** ...up to this cap, so one whale cannot shelter the whole sea. */
-export const SHELTER_SIZE_CAP = 120;
+/**
+ * ...up to this cap, so one whale cannot shelter the whole sea.
+ *
+ * The cap must keep a PAIR below the threshold at ANY size, or the floor of
+ * three silently dissolves for exactly the population it was written to
+ * constrain. Two maximally-capped fish contribute
+ * 2 * (SHELTER_BASE + SHELTER_SIZE_CAP) = 2 * 145 = 290 < SHELTER_THRESHOLD
+ * (300). At the old value of 120 that sum was 440, so two size-2000 fish —
+ * roughly 158 net bites, routinely reachable — sheltered each other
+ * outright. The binding constraint is 2*(100+C) < 300, i.e. C <= 49; 45
+ * takes it with a margin of 10.
+ */
+export const SHELTER_SIZE_CAP = 45;
 /**
  * Below this shelter score a fish is exposed. Equal to 3 * SHELTER_BASE:
  * three plain neighbours is exactly enough, a pair is not. This is the
