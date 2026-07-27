@@ -1953,10 +1953,18 @@ export function foldShoal(entries: readonly LogEntry[], untilMs: number): ShoalS
       const e = log[cursor++];
       if (e.kind === 'presence') {
         const existing = state.fish.get(e.id);
+        // Seed the position through reckon, NOT from the raw vector. Authored
+        // vectors are not grid-aligned; reckon is the single place
+        // quantization happens. Assigning e.vec.x directly would leave this
+        // fish on unquantized coordinates for the rest of the tick, and an
+        // eat-claim landing on the same tick is judged against those
+        // coordinates before the reckon pass below runs — enough to flip an
+        // EAT_R2 boundary.
+        const seed = reckon(e.vec, e.ms);
         state.fish.set(e.id, {
           id: e.id,
-          x: e.vec.x,
-          y: e.vec.y,
+          x: seed.x,
+          y: seed.y,
           size: existing ? existing.size : START_SIZE,
           vec: e.vec,
           expiresMs: e.ms + PRESENCE_TTL_MS,
