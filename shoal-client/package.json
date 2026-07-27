@@ -1,0 +1,16 @@
+{
+  "name": "@swimchain/shoal-client",
+  "version": "0.1.0",
+  "description": "The Shoal — a sea you share with strangers, where safety is the crowd.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx src/lib/shoalConst.test.ts && tsx src/lib/fixed.test.ts && tsx src/lib/shelter.test.ts && tsx src/lib/tension.test.ts && tsx src/lib/sweep.test.ts && tsx src/lib/bloom.test.ts && tsx src/lib/shoalEngine.test.ts && tsx src/lib/shoalEngine.determinism.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.23.1",
+    "typescript": "^5.3.0"
+  },
+  "engines": { "node": ">=18.0.0" }
+}
