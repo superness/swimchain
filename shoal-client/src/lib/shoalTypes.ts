@@ -1,0 +1,173 @@
+/**
+ * Shared types for the Shoal engine. Every coordinate is an integer in
+ * centi-units (cu). Every time is integer milliseconds. There are no floats
+ * anywhere in this engine — see the Global Constraints in the plan.
+ */
+
+/** A swim vector: "from here, at this instant, I am heading that way." */
+export interface Vec {
+  /** Position at time `t`, in cu. */
+  x: number;
+  y: number;
+  /** Heading in brads: 0..255 maps to 0..2pi. */
+  heading: number;
+  /** Speed in cu per second. */
+  speed: number;
+  /** Authoring time in ms. */
+  t: number;
+}
+
+/** A presence write: one swimmer's latest vector, plus optional speech. */
+export interface Presence {
+  kind: 'presence';
+  /** Stable swimmer id (public key hex). */
+  id: string;
+  vec: Vec;
+  /** Speech rides along in the same message so talking never costs a life. */
+  say?: string;
+  /** Authoring time in ms — mirrors vec.t, used for log ordering. */
+  ms: number;
+  /** Content hash, used only as a deterministic ordering tiebreak. */
+  hash: string;
+}
+
+/**
+ * A durable claim that a swimmer took a bite from a cell at a time.
+ *
+ * There is deliberately no claimed POSITION here. The fold judges the claim
+ * against reckon(fish.vec, claim.ms) — the claimant's dead-reckoned position
+ * at the instant claimed, derived from its own presence vector. A
+ * self-reported x/y would be a second source for a value the fold can already
+ * derive, so it could only ever agree redundantly or disagree, and a field
+ * that is carried but never consulted invites the next reader to trust it.
+ * (`cell` is self-reported and IS read, but it names WHICH bloom is being
+ * claimed — it is not derivable, and canEat still checks the fish is within
+ * EAT_R of that cell's centre.)
+ */
+export interface EatClaim {
+  kind: 'eat';
+  id: string;
+  /** Bloom cell index the bite was taken from. */
+  cell: number;
+  ms: number;
+  hash: string;
+}
+
+export type LogEntry = Presence | EatClaim;
+
+/** A swimmer's folded state at a given tick. */
+export interface Fish {
+  id: string;
+  /** Dead-reckoned position at the current tick, in cu. */
+  x: number;
+  y: number;
+  size: number;
+  /** Last vector seen for this swimmer. */
+  vec: Vec;
+  /** Tick at which this swimmer's presence expires. */
+  expiresMs: number;
+  /** Ms at which the last scatter landed, or -1. */
+  lastScatterMs: number;
+  /** Ms of the last credited bite, or -1. */
+  lastBiteMs: number;
+  /**
+   * Ms of each bite credited recently, pruned to at most VOID_WINDOW_MS in
+   * the past on every new credited bite. A scatter voids every entry still
+   * within VOID_WINDOW_MS of the resolve tick (the whole recent foraging
+   * trip, not just the single most recent bite) and removes those entries,
+   * so a later sweep cannot void the same bites twice. The prune keeps this
+   * bounded to a small constant regardless of session length — it can never
+   * hold more than fit within one VOID_WINDOW_MS window at EAT_COOLDOWN_MS
+   * spacing.
+   */
+  recentBites: number[];
+}
+
+/**
+ * What a swimmer keeps when its presence lapses and it is evicted from
+ * `fish`. Spec 2.7: "decay ticks only while present. Time away costs
+ * nothing, ever. You return the size you left."
+ *
+ * The rule this encodes is that eviction is a PRESENCE-LIVENESS event, not a
+ * game event: nothing durable may be created or destroyed by it. So every
+ * durable per-fish field is carried, not just size —
+ *
+ *  - `size`, obviously: seeding a returning fish from START_SIZE instead
+ *    inverts the spec into punishing absence, which is the exact pressure
+ *    that makes quitting-while-ahead dominant.
+ *  - `lastBiteMs`, because it gates EAT_COOLDOWN_MS. A bite is credited at
+ *    e.ms, and e.ms may be as late as the fish's own expiresMs, so a fish can
+ *    legally bank a bite one tick before eviction and rejoin the very next
+ *    tick. Dropping lastBiteMs would hand that fish a free bite — "lapse and
+ *    return" as a cooldown reset.
+ *  - `recentBites`, by the same argument against the scatter-void ledger: a
+ *    bite banked just before eviction is still inside VOID_WINDOW_MS when the
+ *    fish returns, and dropping the ledger would launder it out of reach of
+ *    the next sweep.
+ *  - `lastScatterMs`, so a returning fish reports the same history it left
+ *    with.
+ *
+ * Hunger is deliberately NOT here: it is defined as a while-present cost, it
+ * holds no per-fish state of its own beyond lastBiteMs, and it simply stops
+ * accruing while a fish is absent. Nor is `outsideTicks`, the tension
+ * accumulator: an absent fish is not out in the open, so it correctly resets.
+ */
+export interface Departed {
+  size: number;
+  lastScatterMs: number;
+  lastBiteMs: number;
+  recentBites: number[];
+}
+
+/** The folded world at a given tick. */
+export interface ShoalState {
+  /** Tick time in ms. */
+  nowMs: number;
+  /** Live swimmers, keyed by id. Insertion order is never relied upon. */
+  fish: Map<string, Fish>;
+  /**
+   * Durable per-swimmer record for everyone whose presence has lapsed,
+   * written at the moment of eviction and read when they come back. Outlives
+   * `fish` on purpose — see Departed. A swimmer who is currently live has no
+   * entry that is authoritative; `fish` always wins while it exists.
+   */
+  departed: Map<string, Departed>;
+  /** Accumulated tension, integer, floored at 0. */
+  tension: number;
+  /** Ms at which the current hush began, or -1 if no hush is running. */
+  hushStartMs: number;
+  /** Positions locked at the input lock, or null if not yet locked. */
+  lockedPositions: Map<string, { x: number; y: number; size: number }> | null;
+  /**
+   * The preferred sweep target, frozen at the same instant as
+   * lockedPositions, or null if not yet locked (or if nobody is outside the
+   * core). This lives on ShoalState rather than in a local because the fold
+   * must be resumable: a client that folds up to a tick inside the dread
+   * window and continues later would otherwise lose it and recompute a
+   * different answer.
+   *
+   * It is separate state and not derivable from lockedPositions because
+   * topContributor reads OUTSIDE-TICKS, which the fold keeps accumulating
+   * every tick through the dread window. Recomputing it at the resolve tick
+   * would let a presence write authored after T+LOCK decide who the shark
+   * takes — precisely the input the lock exists to exclude (spec 2.12
+   * rule 2).
+   */
+  lockedPreferred: string | null;
+  /** Ids taken by the most recent resolved sweep. */
+  lastTaken: string[];
+  /** Ms of the most recent resolved sweep, or -1. */
+  lastSweepMs: number;
+  /** Per-cell ms of last visit by any fish. Absent means never visited. */
+  lastVisit: Map<number, number>;
+  /** Per-cell bites already consumed from the current bloom. */
+  bitesTaken: Map<number, number>;
+  /**
+   * Presence of a cell in this map means its current bloom is LATCHED: it
+   * opened on the ms of the first credited bite since the bloom last
+   * regrew, and stays open — bypassing the fallow test — until BLOOM_BITES
+   * have been taken, at which point the cell is removed. Only ever checked
+   * with .has() and .delete(); the stored ms itself is not otherwise read.
+   */
+  bloomSinceMs: Map<number, number>;
+}
