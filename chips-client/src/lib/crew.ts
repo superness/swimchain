@@ -20,6 +20,7 @@
  * PURE MODULE: no React, no DOM, no storage. Copy is verbatim from the
  * comedy pass — do not paraphrase it in code review.
  */
+import { UPGRADES, UPGRADE_CHAINS, type Upgrade } from './chipsConst';
 
 export interface CrewMember {
   id: string;
@@ -192,6 +193,27 @@ export function vendorOf(upgradeKey: string): CrewMember | null {
 export function jarAvailable(upgradeKey: string, dipIndex: number): boolean {
   const v = vendorOf(upgradeKey);
   return v !== null && v.layer <= dipIndex;
+}
+
+/**
+ * What this critter can sell you RIGHT NOW: their jars, minus owned, minus
+ * chain rungs that aren't next (the fold would reject those as
+ * rejected-order anyway), minus anything not yet available. The tap-a-
+ * critter stall sheet and the shelf column both read through this, so the
+ * two can never disagree about what is on sale.
+ */
+export function openJarsOf(vendorId: string, owned: Set<string>, dipIndex: number): Upgrade[] {
+  const v = CREW.find((m) => m.id === vendorId);
+  if (!v) return [];
+  const out: Upgrade[] = [];
+  for (const key of v.sells) {
+    if (owned.has(key)) continue;
+    if (!jarAvailable(key, dipIndex)) continue;
+    const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
+    if (chain && chain.find((k) => !owned.has(k)) !== key) continue; // not the next rung
+    out.push(UPGRADES[key]);
+  }
+  return out;
 }
 
 /* ── the daily drift of the dip: news ticker ─────────────────────────────── */

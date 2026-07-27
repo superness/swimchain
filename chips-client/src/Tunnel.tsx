@@ -499,6 +499,42 @@ const FLAVOUR: Record<string, string> = {
   detector2: 'you can smell 14 bits through the oil',
 };
 
+/** One jar for sale — shared by the shelf column and the tap-a-critter
+ *  stall sheet, so a jar can never look or behave differently between the
+ *  two ways of reaching it. */
+function JarCard({ u, vendor, afford, armed, onJar }: {
+  u: Upgrade; vendor: CrewMember; afford: boolean; armed: boolean; onJar: (key: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`jar${afford ? ' afford' : ' dear'}${armed ? ' armed' : ''}`}
+      disabled={!afford}
+      onClick={() => onJar(u.key)}
+      // A bowl jar states its actual capacity — "Bigger Bowl II"
+      // was otherwise a 2M purchase with an unstated effect.
+      title={(FLAVOUR[u.key] ?? u.label) + (u.bowlCap ? ` — holds ${compact(u.bowlCap)}` : '')}
+    >
+      <span className="jar-glass" aria-hidden="true"><i /></span>
+      <span className="jar-name">{u.label}</span>
+      <span className="jar-cost">
+        {compact(u.cost)}
+        <i className="chip-fee">{vendor.feed === 'golden' ? '+ a golden chip' : '+ a chip'}</i>
+      </span>
+      <span className="jar-flavour">{FLAVOUR[u.key] ?? ''}</span>
+      {/* Visible, not title-only: touch screens have no hover, and
+          an upgrade's whole point is its effect. */}
+      {u.bowlCap !== undefined && <span className="jar-fx">holds {compact(u.bowlCap)}</span>}
+      {u.doubleDipMod !== undefined && (
+        <span className="jar-fx">1 in {u.doubleDipMod * DOUBLE_DIP_RARITY} dips pays twice</span>
+      )}
+      {u.sogBonus !== undefined && <span className="jar-fx">crumbs stay crisp longer</span>}
+      {u.goldenBits !== undefined && <span className="jar-fx">crackles come sooner</span>}
+      {u.key === 'autodip' && <span className="jar-fx">dips golden chips for you</span>}
+    </button>
+  );
+}
+
 export interface ShelfProps {
   state: ChipsState;
   /** The depth the stalls open by — App passes its crew depth (which honours
@@ -514,9 +550,13 @@ export interface ShelfProps {
   onJar: (key: string) => void;
   /** The jar currently armed for feeding, for the waiting treatment. */
   armedKey: string | null;
+  /** Tapping a stall's nameplate opens that vendor's sheet — the same one a
+   *  tap on the critter opens (operator: "clicking the critters should open
+   *  each of their respective upgrades"). */
+  onStall: (vendorId: string) => void;
 }
 
-export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey }: ShelfProps) {
+export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, onStall }: ShelfProps) {
   const { stalls, got } = useMemo(
     () => shelfStalls(state.owned, dipIndex),
     [state.owned, dipIndex]
@@ -525,45 +565,22 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey }
     <section className="shelf" aria-label="the crew's stalls">
       {stalls.map(({ vendor, jars }) => (
         <div key={vendor.id} className="stall">
-          <p className="stall-head">
+          <button type="button" className="stall-head" onClick={() => onStall(vendor.id)}>
             <span className="stall-face" aria-hidden="true"><CritterArt id={vendor.id} /></span>
             <span className="stall-name">{vendor.name}</span>
             <span className="stall-hint">{vendor.feed === 'golden' ? 'pay: crumbs + a GOLDEN chip' : 'pay: crumbs + a chip'}</span>
-          </p>
+          </button>
           <ul className="jars">
-            {jars.map((u) => {
-              const afford = canAffordBuy(crumbsNow, committed, u.cost);
-              return (
-                <li key={u.key}>
-                  <button
-                    type="button"
-                    className={`jar${afford ? ' afford' : ' dear'}${armedKey === u.key ? ' armed' : ''}`}
-                    disabled={!afford}
-                    onClick={() => onJar(u.key)}
-                    // A bowl jar states its actual capacity — "Bigger Bowl II"
-                    // was otherwise a 2M purchase with an unstated effect.
-                    title={(FLAVOUR[u.key] ?? u.label) + (u.bowlCap ? ` — holds ${compact(u.bowlCap)}` : '')}
-                  >
-                    <span className="jar-glass" aria-hidden="true"><i /></span>
-                    <span className="jar-name">{u.label}</span>
-                    <span className="jar-cost">
-                      {compact(u.cost)}
-                      <i className="chip-fee">{vendor.feed === 'golden' ? '+ a golden chip' : '+ a chip'}</i>
-                    </span>
-                    <span className="jar-flavour">{FLAVOUR[u.key] ?? ''}</span>
-                    {/* Visible, not title-only: touch screens have no hover, and
-                        an upgrade's whole point is its effect. */}
-                    {u.bowlCap !== undefined && <span className="jar-fx">holds {compact(u.bowlCap)}</span>}
-                    {u.doubleDipMod !== undefined && (
-                      <span className="jar-fx">1 in {u.doubleDipMod * DOUBLE_DIP_RARITY} dips pays twice</span>
-                    )}
-                    {u.sogBonus !== undefined && <span className="jar-fx">crumbs stay crisp longer</span>}
-                    {u.goldenBits !== undefined && <span className="jar-fx">crackles come sooner</span>}
-                    {u.key === 'autodip' && <span className="jar-fx">dips golden chips for you</span>}
-                  </button>
-                </li>
-              );
-            })}
+            {jars.map((u) => (
+              <li key={u.key}>
+                <JarCard
+                  u={u} vendor={vendor}
+                  afford={canAffordBuy(crumbsNow, committed, u.cost)}
+                  armed={armedKey === u.key}
+                  onJar={onJar}
+                />
+              </li>
+            ))}
           </ul>
         </div>
       ))}
@@ -573,5 +590,61 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey }
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * THE TAP-A-CRITTER STALL SHEET: one vendor, their line, their jars, full
+ * focus — the readability combo the operator asked for. Backdrop click, the
+ * done button and Escape (App) all close it. Jars are the SAME JarCard the
+ * shelf renders, so the two entry points can never drift; arming feed mode
+ * closes the sheet so the fryers are visible for the feeding.
+ */
+export function StallSheet({ vendor, jars, crumbsNow, committed, armedKey, onJar, onClose }: {
+  vendor: CrewMember;
+  jars: Upgrade[];
+  crumbsNow: number;
+  committed: number;
+  armedKey: string | null;
+  onJar: (key: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div
+        className="stall-sheet"
+        role="dialog"
+        aria-label={`${vendor.name}'s stall`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="stall-head sheet-head">
+          <span className="stall-face" aria-hidden="true"><CritterArt id={vendor.id} /></span>
+          <span className="stall-name">{vendor.name}</span>
+          {jars.length > 0 && (
+            <span className="stall-hint">{vendor.feed === 'golden' ? 'pay: crumbs + a GOLDEN chip' : 'pay: crumbs + a chip'}</span>
+          )}
+        </p>
+        <p className="sheet-line">{vendor.lines[0]}</p>
+        {jars.length > 0 ? (
+          <ul className="jars">
+            {jars.map((u) => (
+              <li key={u.key}>
+                <JarCard
+                  u={u} vendor={vendor}
+                  afford={canAffordBuy(crumbsNow, committed, u.cost)}
+                  armed={armedKey === u.key}
+                  onJar={onJar}
+                />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="sheet-empty">
+            {vendor.sells.length === 0 ? 'sells nothing. is here anyway.' : 'sold out — you own this whole stall.'}
+          </p>
+        )}
+        <button type="button" className="sheet-close" onClick={onClose}>done</button>
+      </div>
+    </div>
   );
 }

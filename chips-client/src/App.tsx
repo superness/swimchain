@@ -24,7 +24,7 @@ import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useCooking, type CookEvent } from './lib/useCooking';
 import { isGolden, MAX_CRACKLES, type TickMods } from './lib/cooking';
-import { CREW, crewFor, recruitsAt, vendorOf, type CrewMember } from './lib/crew';
+import { CREW, crewFor, recruitsAt, vendorOf, openJarsOf, type CrewMember } from './lib/crew';
 import {
   freshRat, freshAngel, ratTick, angelTick, ratAbsorb, ratAte, gorgeOf,
   shooRat, spendBlessing, JOBS_MIN_DIP_INDEX, type RatState, type AngelState,
@@ -35,7 +35,7 @@ import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
 import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
-import { TunnelBed, TunnelRead, DigFront, Shelf, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
+import { TunnelBed, TunnelRead, DigFront, Shelf, StallSheet, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
 import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
@@ -148,6 +148,8 @@ export function App() {
   const [blessFx, setBlessFx] = useState<{ index: number; at: number } | null>(null);
   // Feed mode: a vendor is armed and waiting to be paid in chips.
   const [feeding, setFeeding] = useState<{ vendor: CrewMember; jarKey: string } | null>(null);
+  // The open stall sheet (a critter or a stall nameplate was tapped).
+  const [sheetId, setSheetId] = useState<string | null>(null);
   // One speech bubble at a time, app-wide — chatter is seasoning, not soup.
   const [bubble, setBubble] = useState<CrewBubble | null>(null);
   const ratRef = useRef(rat);
@@ -809,6 +811,9 @@ export function App() {
     if (feeding && feeding.jarKey === key) { setFeeding(null); setBubble(null); return; }
     sfx.pop();
     setFeeding({ vendor, jarKey: key });
+    // Arming means "go click a chip" — the sheet would be covering the very
+    // fryers it just asked for, so it steps out of the way.
+    setSheetId(null);
     say(vendor.id, pickLine(vendor.id, vendor.armLines), 9000);
   }
 
@@ -933,11 +938,17 @@ export function App() {
     say('angel', 'you have been witnessed.', 5000);
   }
 
+  /**
+   * Tapping a critter OPENS THEIR STALL (operator: "clicking the critters
+   * should open each of their respective upgrades — a slick combo for the
+   * ux and readability"). Two things still outrank the stall, because both
+   * are time-sensitive and the critter is their only control: a glowing
+   * angel spends her blessing, and an armed vendor cancels.
+   */
   function onCritterClick(id: string): void {
     if (feeding && feeding.vendor.id === id) { setFeeding(null); setBubble(null); return; }
     if (id === 'angel' && angel.glowing) { onBless(); return; }
-    const m = CREW.find((c) => c.id === id);
-    if (m && m.lines.length > 0) say(id, pick(m.lines));
+    setSheetId(id);
   }
 
   // Idle chatter: every ~26s somebody says their line — unless a vendor is
@@ -954,13 +965,18 @@ export function App() {
     return () => window.clearInterval(t);
   }, [say, pickLine]);
 
-  // Escape backs out of feed mode.
+  // Escape backs out of feed mode and closes an open stall sheet.
   useEffect(() => {
-    if (!feeding) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setFeeding(null); setBubble(null); } };
+    if (!feeding && sheetId === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setSheetId(null);
+      setFeeding(null);
+      setBubble(null);
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [feeding]);
+  }, [feeding, sheetId]);
 
   /* ── the Sous Chef: bought automation, never default ──────────────────── */
   // Owning 'autodip' dips GOLDEN (terminal) chips automatically — a golden
@@ -1212,6 +1228,9 @@ export function App() {
     return <Doorway dipIndex={0} title="Dippin' Chips"><p className="lede">{tableLine}</p><Spinner /></Doorway>;
   }
 
+  // The critter whose stall sheet is open, if any.
+  const sheetVendor = sheetId !== null ? CREW.find((c) => c.id === sheetId) ?? null : null;
+
   const dipIndex = state?.dipIndex ?? 0;
   const tier = DIP_TIERS[Math.min(DIP_TIERS.length - 1, dipIndex)];
   const crumbsNow = state ? projectedCrumbs(state, nowMs) : 0;
@@ -1286,7 +1305,7 @@ export function App() {
           {state && (
             <Shelf
               state={state} dipIndex={crewDip} crumbsNow={crumbsNow} committed={pendingCommitted}
-              onJar={onJar} armedKey={feeding?.jarKey ?? null}
+              onJar={onJar} armedKey={feeding?.jarKey ?? null} onStall={setSheetId}
             />
           )}
         </aside>
@@ -1304,6 +1323,17 @@ export function App() {
           feedingId={feeding?.vendor.id ?? null}
           angel={angel} ratAway={rat.latched !== null}
           onCritterClick={onCritterClick}
+        />
+      )}
+      {sheetVendor && state && (
+        <StallSheet
+          vendor={sheetVendor}
+          jars={openJarsOf(sheetVendor.id, state.owned, crewDip)}
+          crumbsNow={crumbsNow}
+          committed={pendingCommitted}
+          armedKey={feeding?.jarKey ?? null}
+          onJar={onJar}
+          onClose={() => setSheetId(null)}
         />
       )}
       {feeding && (
