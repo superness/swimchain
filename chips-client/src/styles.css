@@ -2253,3 +2253,29 @@ h1, h2, h3, p { margin: 0; }
   }
   .rat-hoard i { display: block; white-space: nowrap; }
 }
+
+/* ── keep the bottom stack off the phone's own furniture ─────────────────
+   The crew bench and the boards were anchored to raw viewport-bottom, which
+   on a phone is UNDER the home/back gesture bar — the crew were literally
+   behind the system buttons (operator, on device). Everything bottom-
+   anchored now stacks off one safe-area-aware base, so they move together
+   and always clear the hardware. */
+@media (max-width: 940px), (max-height: 620px) {
+  .shop {
+    --safe: env(safe-area-inset-bottom, 0px);
+    --boards-h: 46px;
+    --bench-h: clamp(38px, 11vw, 52px);
+    /* everything below the bench measures from here */
+    --floor-stack: calc(var(--safe) + 14px);
+  }
+  .corner { padding-bottom: var(--floor-stack); }
+  .crew-row { bottom: calc(var(--floor-stack) + var(--boards-h)); }
+  .crew-toast { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h)); }
+  .feed-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 46px); }
+  .bowl-ticket { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 48px); }
+  .tut-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 8px); }
+  .vote-banner, .vote-carried { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 90px); }
+  .hermit-holding { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 134px); }
+  /* and the scrolling column stops short of the whole stack */
+  .counter { max-height: calc(100dvh - 240px - var(--safe)); }
+}
