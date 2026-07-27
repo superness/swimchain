@@ -78,7 +78,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     text: (s) => {
       const cost = cheapestOpenCost(s);
       return s.crumbs >= cost
-        ? 'Spend your crumbs at scoop\'s stall — and mind him, he takes a chip off the fryer as his cut.'
+        ? 'Buy a jar at scoop\'s stall — then pay the dog: click a cooking chip to feed him.'
         : `Keep dipping — the first jar wants ${compact(cost)} and you're at ${compact(s.crumbs)}.`;
     },
     highlight: 'shelf',
@@ -96,7 +96,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
   {
     id: 'guac',
     title: 'Dig into the Guacamole',
-    text: (s) => `Keep dipping — the floor gives way ${GUAC_AT} chips down. You're ${Math.min(s.lifetimeChips, GUAC_AT)}/${GUAC_AT}.`,
+    text: (s) => `Keep dipping — every 1,000 crumbs digs one chip deeper, and the floor gives way at ${GUAC_AT}. You're ${Math.min(s.lifetimeChips, GUAC_AT)}/${GUAC_AT}.`,
     highlight: null,
     ringMode: () => 'invite',
     isDone: (s) => s.dipIndex >= 1,

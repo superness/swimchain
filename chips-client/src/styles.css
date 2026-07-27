@@ -427,7 +427,11 @@ h1, h2, h3, p { margin: 0; }
   /* Same rule as .tunnel-read: this caption floats over whatever band is
      behind the rack, and bands go up to near-white. */
   padding: 5px 12px 6px; border-radius: 10px;
-  background: rgba(12, 8, 5, .58);
+  /* .9, not .58: at low window heights this box can end up over the boards
+     panel, and two translucent panels bleeding text through each other was
+     an illegible mess (review 2.4). Opaque enough that whichever is on top
+     simply wins. */
+  background: rgba(12, 8, 5, .9);
   /* Smooths a congeal-triggered jump (chipsPayoutDisplay.ts's `worthIfBankedNow`
      legitimately doubles this with no change to the chip) into a fade rather
      than a hard snap, so it reads as "something happened" rather than a
@@ -1426,18 +1430,19 @@ h1, h2, h3, p { margin: 0; }
 .dip-ticker {
   position: relative; z-index: 3;
   display: flex; align-items: baseline; gap: 10px;
-  padding: 3px clamp(14px, 2.4vw, 44px);
-  background: rgba(12, 9, 6, .82);
-  border-bottom: 1px solid rgba(255, 226, 180, .08);
-  font-family: var(--chalk); font-size: clamp(9px, .95vw, 12px);
+  padding: 4px clamp(14px, 2.4vw, 44px);
+  min-height: 1.5em;
+  background: rgba(9, 6, 4, .96);
+  border-bottom: 1px solid rgba(255, 226, 180, .12);
+  font-family: var(--chalk); font-size: clamp(10px, .95vw, 12px);
   white-space: nowrap; overflow: hidden;
 }
 .ticker-tag {
   flex: none; letter-spacing: .22em; text-transform: uppercase;
-  color: #8d7c60; font-size: .82em;
+  color: #9d8a68; font-size: .82em;
 }
 .ticker-line {
-  color: #bfa982; overflow: hidden; text-overflow: ellipsis;
+  color: #d8c49a; overflow: hidden; text-overflow: ellipsis;
   animation: ticker-in .5s ease-out;
 }
 @keyframes ticker-in { from { opacity: 0; transform: translateY(6px); } }
@@ -1486,6 +1491,13 @@ h1, h2, h3, p { margin: 0; }
   content: ''; position: absolute; top: 100%; left: 50%; translate: -50% 0;
   border: 6px solid transparent; border-top-color: rgba(14, 10, 7, .93);
 }
+/* Edge anchoring: a centered bubble on a far-left critter hangs half off the
+   viewport (the review lost eight of scoop's lines to the left edge). The
+   bubble hugs the safe side; the tail stays over the speaker. */
+.critter.edge-l .say { left: -6px; translate: 0 0; text-align: left; }
+.critter.edge-l .say::after { left: 22px; translate: 0 0; }
+.critter.edge-r .say { left: auto; right: -6px; translate: 0 0; }
+.critter.edge-r .say::after { left: auto; right: 22px; translate: 0 0; }
 @keyframes say-in { from { opacity: 0; transform: translateY(6px) scale(.94); } }
 
 /* Character tics. */
@@ -1526,10 +1538,40 @@ h1, h2, h3, p { margin: 0; }
 }
 @keyframes rat-gnaw { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(4deg) translateY(1px); } }
 .rat-hoard {
-  display: block; font-family: var(--chalk); font-size: 10px;
-  font-variant-numeric: tabular-nums; color: #ffd27e; text-align: center;
-  background: rgba(14, 10, 7, .88); border: 1px solid rgba(255, 210, 126, .3);
-  border-radius: 999px; padding: 1px 6px; margin-top: -2px;
+  display: block; font-family: var(--chalk); font-size: 9.5px;
+  font-variant-numeric: tabular-nums; text-align: center;
+  background: rgba(14, 10, 7, .92); border: 1px solid rgba(255, 210, 126, .3);
+  border-radius: 8px; padding: 2px 6px; margin-top: -2px; line-height: 1.35;
+}
+.rat-hoard i { display: block; font-style: normal; }
+.rat-took { color: #ff9a72; }        /* what he TOOK — reads as theft */
+.rat-pays { color: #ffd27e; }        /* what a shoo pays — the deal */
+.rat-shoo {
+  display: block; margin-top: 2px; text-align: center;
+  font-family: var(--chalk); font-size: 9px; letter-spacing: .12em;
+  text-transform: uppercase; color: #ffe9c0;
+  background: rgba(120, 40, 16, .85); border-radius: 999px; padding: 1px 6px;
+  animation: shoo-pulse 1.2s ease-in-out infinite;
+}
+@keyframes shoo-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+/* the frozen pot says why it is frozen */
+.pot-worth.ratted { color: #ffb35c; }
+
+/* the angel's mark on the fryer she blessed — outlives the crackle it forces */
+.bless-mark {
+  position: absolute; top: -10px; left: 50%; translate: -50% 0; z-index: 6;
+  width: max-content; font-family: var(--chalk); font-size: 10px;
+  letter-spacing: .1em; color: #ffdf94;
+  background: rgba(14, 10, 7, .92); border: 1px solid rgba(255, 219, 108, .55);
+  border-radius: 999px; padding: 2px 8px;
+  box-shadow: 0 0 12px rgba(255, 219, 108, .5);
+  animation: bless-out 5.8s ease-out forwards;
+}
+@keyframes bless-out {
+  0% { opacity: 0; transform: translateY(6px); }
+  6% { opacity: 1; transform: translateY(0); }
+  80% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-6px); }
 }
 .rat-chomp {
   position: absolute; bottom: calc(100% + 2px); left: 50%; translate: -50% 0;
@@ -1614,14 +1656,44 @@ h1, h2, h3, p { margin: 0; }
   color: #ffd88f;
 }
 
+/* the whole stall column scrolls — the review found a hidden tier of jars
+   below the fold with no way to reach them (body is overflow:hidden) */
+.counter { overflow-y: auto; max-height: calc(100dvh - 150px); overscroll-behavior: contain; scrollbar-width: thin; padding-right: 4px; }
+
+/* the dog at the door — fills the seating wait */
+.door-dog {
+  position: fixed; left: 6vw; bottom: 8vh; width: clamp(64px, 9vw, 110px);
+  filter: drop-shadow(0 8px 10px rgba(0, 0, 0, .5));
+  animation: loiter 5.2s ease-in-out infinite;
+  pointer-events: none;
+}
+.door-dog .say {
+  position: absolute; bottom: calc(100% + 10px); left: -6px;
+  width: max-content; max-width: min(240px, 60vw);
+  font-family: var(--chalk); font-size: 11px; line-height: 1.45;
+  color: #f0e2c6; white-space: normal;
+  background: rgba(14, 10, 7, .93);
+  border: 1px solid rgba(255, 226, 180, .22);
+  border-radius: 10px; padding: 7px 10px;
+}
+
 /* ── small rooms ─────────────────────────────────────────────────────────── */
 @media (max-width: 940px), (max-height: 620px) {
   .critter { width: clamp(34px, 9vw, 48px); }
   .critter .say { max-width: min(200px, 58vw); font-size: 10px; }
-  .dip-ticker { font-size: 9px; padding: 2px 12px; }
+  /* the ticker wraps rather than vanishing, and stays lit */
+  .dip-ticker { font-size: 10px; padding: 3px 12px; white-space: normal; }
+  .ticker-line { white-space: normal; max-height: 2.9em; }
   .rat-perch { width: 42px; top: -10px; right: -8px; }
   .feed-banner { top: auto; bottom: 16vh; }
   .stall-face { width: 20px; height: 20px; }
+  /* On a phone the stacked column runs under the floor line, and critters
+     were painting OVER purchasable cards. The row drops behind the stage —
+     EXCEPT when someone demands attention (glowing angel, armed vendor),
+     which lifts the whole row back above everything clickable. */
+  .crew-row { z-index: 1; }
+  .crew-row:has(.glowing), .crew-row:has(.feeding) { z-index: 30; }
+  .door-dog { width: 52px; left: 4vw; bottom: 5vh; }
 }
 
 @media (prefers-reduced-motion: reduce) {

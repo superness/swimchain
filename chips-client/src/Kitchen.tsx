@@ -248,9 +248,11 @@ interface BasketProps {
   rat: RatPerch | null;
   onShoo: () => void;
   feedMode: FeedMode;
+  /** The angel just blessed this fryer — keyed mark until the crackle. */
+  blessedAt: number | null;
 }
 
-function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode }: BasketProps) {
+function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt }: BasketProps) {
   const golden = isGolden(chip);
   const multi = multiOf(chip);
   const worth = worthOf(chip);
@@ -313,7 +315,8 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
 
       {/* The cheese rat, latched on. His own button, so a shoo can never be a
           misdip: the click stops here. The chomp flash replays per eaten
-          crackle via its key. */}
+          crackle via its key. The badge says what he TOOK and what a shoo
+          PAYS — the review read the old unlabeled counter as a bonus pet. */}
       {rat && (
         <button
           type="button"
@@ -323,11 +326,21 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
           aria-label={`the cheese rat is banking this fryer's ticks — shoo him for ${compact(Math.floor(rat.hoard * rat.gorge))}`}
         >
           <RatArt gorge={rat.gorge} />
-          <span className="rat-hoard">{compact(rat.hoard)} ×{rat.gorge.toFixed(2)}</span>
+          <span className="rat-hoard">
+            <i className="rat-took">took {compact(rat.hoard)}</i>
+            <i className="rat-pays">shoo → {compact(Math.floor(rat.hoard * rat.gorge))}</i>
+          </span>
+          <span className="rat-shoo" aria-hidden="true">shoo him!</span>
           {rat.chompKey !== null && (
             <span key={rat.chompKey} className="rat-chomp" aria-hidden="true">ate the crackle</span>
           )}
         </button>
+      )}
+
+      {/* Her mark — mounts on the click, outlives the crackle it forces, so
+          the x2 that lands moments later is visibly HERS. */}
+      {blessedAt !== null && (
+        <span key={blessedAt} className="bless-mark" aria-hidden="true">blessed — watch it</span>
       )}
 
       {/* THE POT, always moving; the ladder shows the summit exists. */}
@@ -338,9 +351,11 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
             <i key={k} className={`rung${chip.crackles >= k ? ' lit' : ''}${k === 5 ? ' top' : ''}`}>×{2 ** k}</i>
           ))}
         </span>
-        {spills
-          ? <em className="pot-worth over">dips for {compact(Math.max(0, capRoom))} — bowl full, {compact(worth - Math.max(0, capRoom))} would spill</em>
-          : <em className="pot-worth">dips for {compact(worth)}</em>}
+        {rat
+          ? <em className="pot-worth ratted">the rat is eating this fryer&apos;s crumbs — shoo him</em>
+          : spills
+            ? <em className="pot-worth over">dips for {compact(Math.max(0, capRoom))} — bowl full, {compact(worth - Math.max(0, capRoom))} would spill</em>
+            : <em className="pot-worth">dips for {compact(worth)}</em>}
       </p>
     </div>
   );
@@ -360,9 +375,10 @@ export interface KitchenProps {
   ratPerch: RatPerch | null;
   onShoo: () => void;
   feedMode: FeedMode;
+  blessAt: { index: number; at: number } | null;
 }
 
-export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode }: KitchenProps) {
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
@@ -377,6 +393,7 @@ export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerc
             rat={ratAt === i ? ratPerch : null}
             onShoo={onShoo}
             feedMode={feedMode}
+            blessedAt={blessAt && blessAt.index === i ? blessAt.at : null}
             onDip={() => onDip(i)}
           />
         ))}

@@ -200,16 +200,21 @@ export function CrewRow({ crew, bubble, feedingId, angel, ratAway, onCritterClic
       {crew.map((m) => {
         if (m.id === 'rat' && ratAway) return null;
         const glowing = m.id === 'angel' && angel.glowing;
+        const spot = SPOTS[m.id] ?? 50;
+        // Edge critters get edge-anchored bubbles: scoop loiters far left and
+        // a centered bubble hangs half off the viewport (review: eight of
+        // his lines clipped in one session — the mascot was unreadable).
+        const edge = spot <= 15 ? ' edge-l' : spot >= 58 ? ' edge-r' : '';
         return (
           <button
             key={m.id}
             type="button"
             className={
-              `critter critter-${m.id}` +
+              `critter critter-${m.id}` + edge +
               (glowing ? ' glowing' : '') +
               (feedingId === m.id ? ' feeding' : '')
             }
-            style={{ left: `${SPOTS[m.id] ?? 50}%` }}
+            style={{ left: `${spot}%` }}
             onClick={() => onCritterClick(m.id)}
             title={glowing ? `${m.name} is glowing — a blessing waits` : m.name}
             aria-label={glowing ? `${m.name}, glowing — click for a guaranteed crackle` : m.name}
@@ -235,7 +240,8 @@ export function FeedBanner({ vendor, jarLabel, onCancel }: {
     <div className="feed-banner" role="status">
       <span className="feed-text">
         <strong>{vendor.name}</strong> wants a chip for the {jarLabel} —{' '}
-        {vendor.feed === 'golden' ? 'click a GOLDEN chip on the fryer' : 'click a chip on the fryer'}
+        {vendor.feed === 'golden' ? 'click a GOLDEN chip on the fryer' : 'click a chip on the fryer'}.
+        {' '}It goes to them, pot and all.
       </span>
       <button type="button" className="feed-cancel" onClick={onCancel}>never mind</button>
     </div>

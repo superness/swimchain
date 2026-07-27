@@ -24,12 +24,12 @@ import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useCooking, type CookEvent } from './lib/useCooking';
 import { isGolden, MAX_CRACKLES, type TickMods } from './lib/cooking';
-import { CREW, crewFor, vendorOf, type CrewMember } from './lib/crew';
+import { CREW, crewFor, recruitsAt, vendorOf, type CrewMember } from './lib/crew';
 import {
   freshRat, freshAngel, ratTick, angelTick, ratAbsorb, ratAte, gorgeOf,
   shooRat, spendBlessing, JOBS_MIN_DIP_INDEX, type RatState, type AngelState,
 } from './lib/crewJobs';
-import { CrewRow, FeedBanner, DipTicker, type CrewBubble } from './Crew';
+import { CrewRow, FeedBanner, DipTicker, CritterArt, type CrewBubble } from './Crew';
 import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
@@ -143,6 +143,9 @@ export function App() {
   const [angel, setAngel] = useState<AngelState>(freshAngel);
   // Keys the "ate the crackle" flash on the rat's perch.
   const [ratChomp, setRatChomp] = useState<number | null>(null);
+  // The angel's mark on the fryer she just blessed — the visible tie between
+  // her click and the crackle that follows.
+  const [blessFx, setBlessFx] = useState<{ index: number; at: number } | null>(null);
   // Feed mode: a vendor is armed and waiting to be paid in chips.
   const [feeding, setFeeding] = useState<{ vendor: CrewMember; jarKey: string } | null>(null);
   // One speech bubble at a time, app-wide — chatter is seasoning, not soup.
@@ -163,6 +166,19 @@ export function App() {
     setBubble({ id, line, key: Date.now() });
     if (bubbleTimer.current !== null) window.clearTimeout(bubbleTimer.current);
     bubbleTimer.current = window.setTimeout(() => setBubble(null), holdMs);
+  }, []);
+
+  // Per-critter last-line memory, so nobody repeats themselves back to back —
+  // the review heard "that chip looks heavy…" three times in ten minutes.
+  const lastLineRef = useRef<Record<string, string>>({});
+  const pickLine = useCallback((id: string, pool: string[]): string => {
+    if (pool.length === 0) return '';
+    let line = pool[Math.floor(Math.random() * pool.length)];
+    if (pool.length > 1 && line === lastLineRef.current[id]) {
+      line = pool[(pool.indexOf(line) + 1) % pool.length];
+    }
+    lastLineRef.current[id] = line;
+    return line;
   }, []);
 
   // The crew's reach into the clock: rat siphons + eats on his fryer, the
@@ -738,7 +754,7 @@ export function App() {
     // notes. Occasional, and never over someone else's bubble.
     if (!bubble && Math.random() < 0.07) {
       const scoop = CREW[0];
-      if (scoop.dipLines && scoop.dipLines.length > 0) say('scoop', pick(scoop.dipLines), 6000);
+      if (scoop.dipLines && scoop.dipLines.length > 0) say('scoop', pickLine('scoop', scoop.dipLines), 6000);
     }
   }
 
@@ -793,7 +809,7 @@ export function App() {
     if (feeding && feeding.jarKey === key) { setFeeding(null); setBubble(null); return; }
     sfx.pop();
     setFeeding({ vendor, jarKey: key });
-    say(vendor.id, pick(vendor.armLines), 9000);
+    say(vendor.id, pickLine(vendor.id, vendor.armLines), 9000);
   }
 
   /** The armed vendor is fed basket `index`. A refused chip (the angel takes
@@ -805,7 +821,7 @@ export function App() {
     const chip = chips[index];
     if (!chip || chip.pot <= 0) return;
     if (f.vendor.feed === 'golden' && !isGolden(chip)) {
-      say(f.vendor.id, pick(f.vendor.armLines), 6000);
+      say(f.vendor.id, pickLine(f.vendor.id, f.vendor.armLines), 6000);
       return;
     }
     // The crumbs must still be there — the jar could have been armed a while
@@ -820,7 +836,7 @@ export function App() {
     const taken = take(index);
     if (!taken) return;
     launchFeed(index, taken, f.vendor.id);
-    say(f.vendor.id, pick(f.vendor.munchLines), 8000);
+    say(f.vendor.id, pickLine(f.vendor.id, f.vendor.munchLines), 8000);
     onBuy(f.jarKey);
     setFeeding(null);
   }
@@ -856,7 +872,7 @@ export function App() {
     setRat(fresh);
     sfx.pop();
     const ratMember = CREW.find((c) => c.id === 'rat');
-    if (ratMember) say('rat', pick(ratMember.lines), 5000);
+    if (ratMember) say('rat', pickLine('rat', ratMember.lines), 5000);
     if (payout <= 0) return;
     const ms = allocMs();
     // Same honest cap-room accounting as a dip — his payout can spill too.
@@ -898,8 +914,20 @@ export function App() {
       if (ratRef.current.latched === i) return;
       if (c.pot > bestPot) { bestPot = c.pot; best = i; }
     });
-    if (best < 0) return; // nothing blessable right now — the glow keeps
+    if (best < 0) {
+      // Nothing blessable (the rat on the only fryer, or everything already
+      // golden). The glow keeps — but SAY SO: the review clicked a glowing
+      // angel four times and concluded she was broken, because this branch
+      // was silent.
+      say('angel', 'nothing here is ready to be witnessed. cook on, child.', 6000);
+      return;
+    }
     blessRef.current = best;
+    // The mark on the blessed fryer — the crackle lands within one tick, and
+    // this is what ties it to HER (review: a x4 crackle eventually happened
+    // and "nothing on screen connected it to her").
+    setBlessFx({ index: best, at: Date.now() });
+    window.setTimeout(() => setBlessFx((b) => (b && Date.now() - b.at >= 5800 ? null : b)), 6000);
     setAngel(spendBlessing);
     sfx.golden();
     say('angel', 'you have been witnessed.', 5000);
@@ -921,10 +949,10 @@ export function App() {
       if (crew.length === 0) return;
       const m = crew[Math.floor(Math.random() * crew.length)];
       if (m.lines.length === 0) return;
-      say(m.id, pick(m.lines));
+      say(m.id, pickLine(m.id, m.lines));
     }, 26_000);
     return () => window.clearInterval(t);
-  }, [say]);
+  }, [say, pickLine]);
 
   // Escape backs out of feed mode.
   useEffect(() => {
@@ -961,8 +989,15 @@ export function App() {
       lastDip.current = state.dipIndex;
       setDipFanfare(state.dipIndex);
       sfx.breakthrough();
+      // The recruits don't just appear — one of them SAYS HELLO as the flood
+      // clears, so the "joins your crew" line has a body attached (review:
+      // avo and limewedge were "simply present afterward").
+      const joined = recruitsAt(state.dipIndex);
+      const hello = joined.length > 0
+        ? window.setTimeout(() => say(joined[0].id, pickLine(joined[0].id, joined[0].lines), 8000), 5400)
+        : null;
       const t = setTimeout(() => setDipFanfare(null), 5200);
-      return () => clearTimeout(t);
+      return () => { clearTimeout(t); if (hello !== null) window.clearTimeout(hello); };
     }
     lastDip.current = state.dipIndex;
   }, [state]);
@@ -1241,6 +1276,7 @@ export function App() {
           ratPerch={rat.latched !== null ? { gorge: gorgeOf(rat), hoard: rat.hoard, chompKey: ratChomp } : null}
           onShoo={onShoo}
           feedMode={feeding ? feeding.vendor.feed : null}
+          blessAt={blessFx}
         />
 
         <aside className="counter">
@@ -1326,6 +1362,13 @@ function Doorway({ dipIndex, title, children }: { dipIndex: number; title: strin
       <div className="doorway-card">
         <h1>{title}</h1>
         {children}
+      </div>
+      {/* The dog is at the door before the shop even opens — "present from
+          the very first frame" now includes the waits, which is where a
+          long seat/table grind most needs somebody to look at. */}
+      <div className="door-dog" aria-hidden="true">
+        <CritterArt id="scoop" />
+        <span className="say">i&apos;m not begging. this is a business meeting.</span>
       </div>
     </div>
   );

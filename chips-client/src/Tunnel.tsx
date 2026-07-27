@@ -527,7 +527,7 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey }
           <p className="stall-head">
             <span className="stall-face" aria-hidden="true"><CritterArt id={vendor.id} /></span>
             <span className="stall-name">{vendor.name}</span>
-            <span className="stall-hint">{vendor.feed === 'golden' ? 'takes golden chips only' : 'takes chips'}</span>
+            <span className="stall-hint">{vendor.feed === 'golden' ? 'pay: crumbs + a GOLDEN chip' : 'pay: crumbs + a chip'}</span>
           </p>
           <ul className="jars">
             {jars.map((u) => {
