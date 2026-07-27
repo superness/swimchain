@@ -9,6 +9,7 @@
  * out alone.
  */
 import { reckon } from './fixed';
+import { epochOf } from './epoch';
 import { type Body } from './shelter';
 import { stepTension, topContributor, outsideCore } from './tension';
 import { shouldStartHush, isResolveTick, selectTaken } from './sweep';
@@ -45,6 +46,7 @@ export function orderLog(entries: readonly LogEntry[]): LogEntry[] {
 /** A world with nobody in it. */
 export function emptyState(startMs: number): ShoalState {
   return {
+    epoch: epochOf(startMs),
     nowMs: startMs,
     fish: new Map(),
     departed: new Map(),

@@ -119,8 +119,22 @@ export interface Departed {
   recentBites: number[];
 }
 
+/**
+ * The only state that crosses an epoch boundary (spec section 3.9).
+ *
+ * `sizes` is an array of [id, size] pairs sorted by id rather than a Map, so
+ * the structure is canonical: two clients that agree on the world produce
+ * byte-identical checkpoints, and a Map's insertion order cannot leak in.
+ */
+export interface Checkpoint {
+  epoch: number;
+  sizes: Array<[string, number]>;
+}
+
 /** The folded world at a given tick. */
 export interface ShoalState {
+  /** The epoch this state is folding (spec section 3.9). */
+  epoch: number;
   /** Tick time in ms. */
   nowMs: number;
   /** Live swimmers, keyed by id. Insertion order is never relied upon. */
