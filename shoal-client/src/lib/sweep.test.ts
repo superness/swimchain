@@ -44,8 +44,10 @@ check('no resolution without a hush', isResolveTick(-1, 5_000, TICK_MS) === fals
 
 // --- Absolute threshold: the sweep may take NOBODY --------------------------
 {
-  // Six fish piled together: everyone has five neighbours, far above the
-  // threshold of three. Nobody is exposed, so nobody is taken.
+  // Six fish piled 1 cu apart, size 100 each: every fish sees the other five
+  // within SHELTER_R (340), each worth shelterWeight(100) = 100 + trunc(100/40)
+  // = 102. Total shelter per fish = 5 * 102 = 510 >= SHELTER_THRESHOLD (300),
+  // so nobody is exposed and nobody is taken.
   const tight: Body[] = [];
   for (let i = 0; i < 6; i++) tight.push(at(`f${i}`, 1000 + i, 1000));
   check('a tight school loses nobody', selectTaken(tight, null).length === 0, selectTaken(tight, null));
@@ -53,7 +55,10 @@ check('no resolution without a hush', isResolveTick(-1, 5_000, TICK_MS) === fals
 
 // --- ...and may take several ----------------------------------------------
 {
-  // Five fish scattered far apart: all exposed. Capped at MAX_TAKE.
+  // Five fish spaced 50000 cu apart on the x-axis: every gap far exceeds
+  // SHELTER_R (340), so each fish has 0 neighbours within range and 0 shelter,
+  // which is < SHELTER_THRESHOLD (300) — all five are exposed. Capped at
+  // MAX_TAKE (3).
   const scattered: Body[] = [];
   for (let i = 0; i < 5; i++) scattered.push(at(`f${i}`, i * 50_000, 0));
   const taken = selectTaken(scattered, null);
@@ -69,7 +74,13 @@ check('no resolution without a hush', isResolveTick(-1, 5_000, TICK_MS) === fals
   const isolated = [...pack, at('victim', 90_000, 90_000, 900)];
   check('an isolated fish is taken', selectTaken(isolated, null).includes('victim'), selectTaken(isolated, null));
 
-  // Two other outcasts are not enough (the floor of three), but three are.
+  // Victim at size 900 so it sorts FIRST under a take-the-maximum mutation —
+  // only the exposure filter can spare it, never sort order.
+  // Shelter received: o1 at dist2 100, o2 at 100, o3 at 200, all <= SHELTER_R2
+  // (115600). Each is size 100, so shelterWeight = 100 + trunc(100/40) = 102.
+  // Total 3 * 102 = 306 >= SHELTER_THRESHOLD 300 — sheltered, by a margin of 6.
+  // NOTE: not the "exactly 300" the constant's comment implies; the default
+  // body size contributes 2 apiece.
   const rescued = [...pack, at('victim', 90_000, 90_000, 900), at('o1', 90_010, 90_000),
     at('o2', 90_000, 90_010), at('o3', 90_010, 90_010)];
   check('four outcasts together are safe', !selectTaken(rescued, null).includes('victim'),
