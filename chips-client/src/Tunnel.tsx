@@ -24,6 +24,8 @@ import type { ChipsState } from './lib/chipsEngine';
 import { projectedCrumbs, soggyLook } from './lib/sogProjection';
 import { tunnelDepth, bandsAround, type TunnelBand } from './lib/tunnelDepth';
 import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, type Upgrade } from './lib/chipsConst';
+import { vendorOf, jarAvailable, recruitsAt, type CrewMember } from './lib/crew';
+import { CritterArt } from './Crew';
 import { compact, sinceLabel } from './lib/format';
 import { canAffordBuy } from './lib/chipsAfford';
 
@@ -77,15 +79,23 @@ export function DipBed({ dipIndex }: { dipIndex: number }) {
   );
 }
 
-/** The tier-up ceremony: the new layer floods the screen and names itself. */
+/** The tier-up ceremony: the new layer floods the screen and names itself —
+ *  and the layer's residents JOIN YOUR CREW, by name, in the same breath. */
 export function DipChange({ dipIndex }: { dipIndex: number }) {
   const tier = DIP_TIERS[Math.max(0, Math.min(DIP_TIERS.length - 1, dipIndex))];
+  const recruits = recruitsAt(dipIndex);
   return (
     <div className="dip-change" data-dip={tier.key} role="status">
       <div className="flood" />
       <div className="proclaim">
         <span className="small">you break through into</span>
         <strong>{tier.label}</strong>
+        {recruits.length > 0 && (
+          <span className="recruit-line">
+            <em>{recruits.map((r) => r.name).join(' & ')}</em>
+            {' '}{recruits.length > 1 ? 'join' : 'joins'} your crew
+          </span>
+        )}
       </div>
     </div>
   );
@@ -425,25 +435,45 @@ export function GainFloats({ floats }: { floats: GainFloat[] }) {
  * the back room, and the fold would reject them as `rejected-order` anyway.
  * Owned jars stay visible but spent, so the shelf reads as a history of what
  * this kitchen has become.
+ *
+ * THE SHELF IS NOW THE CREW'S STALLS: every jar belongs to exactly one
+ * critter (lib/crew.ts), and a jar is on sale only once its vendor has been
+ * recruited — "assign them at expected levels of layer availability"
+ * (operator). Client policy only; the fold does not know vendors exist.
  */
-function shelfItems(owned: Set<string>): { open: Upgrade[]; got: Upgrade[] } {
+export interface Stall {
+  vendor: CrewMember;
+  jars: Upgrade[];
+}
+
+function shelfStalls(owned: Set<string>, dipIndex: number): { stalls: Stall[]; got: Upgrade[] } {
   const chained = new Set(UPGRADE_CHAINS.flat());
   const open: Upgrade[] = [];
   const got: Upgrade[] = [];
   for (const chain of UPGRADE_CHAINS) {
     const next = chain.find((k) => !owned.has(k));
-    if (next) open.push(UPGRADES[next]);
+    if (next && jarAvailable(next, dipIndex)) open.push(UPGRADES[next]);
   }
   for (const key of Object.keys(UPGRADES)) {
     if (chained.has(key)) continue;
-    if (!owned.has(key)) open.push(UPGRADES[key]);
+    if (!owned.has(key) && jarAvailable(key, dipIndex)) open.push(UPGRADES[key]);
   }
   for (const key of Object.keys(UPGRADES)) if (owned.has(key)) got.push(UPGRADES[key]);
   // NO cost re-sort: the grid must never reflow under the cursor after a
   // purchase (designer review: a card slide mid-click misspent 90k). Chains
   // keep their slot — the bought jar is replaced in place by its successor —
-  // and unchained jars sit in fixed catalog order.
-  return { open, got };
+  // and unchained jars sit in fixed catalog order. Stalls are ordered by
+  // recruitment depth, so new ones only ever APPEND at the bottom.
+  const stalls: Stall[] = [];
+  for (const u of open) {
+    const v = vendorOf(u.key);
+    if (!v) continue;
+    const s = stalls.find((x) => x.vendor.id === v.id);
+    if (s) s.jars.push(u);
+    else stalls.push({ vendor: v, jars: [u] });
+  }
+  stalls.sort((a, b) => a.vendor.layer - b.vendor.layer);
+  return { stalls, got };
 }
 
 const FLAVOUR: Record<string, string> = {
@@ -470,50 +500,72 @@ const FLAVOUR: Record<string, string> = {
 
 export interface ShelfProps {
   state: ChipsState;
+  /** The depth the stalls open by — App passes its crew depth (which honours
+   *  the dev-only preview), never raw state, so the two always agree. */
+  dipIndex: number;
   crumbsNow: number;
   /** Cost of queued buys `crumbsNow` does not yet reflect — see
    *  chipsAfford.ts. Almost always 0; passed through rather than assumed so
    *  this stays the SAME predicate `onBuy`'s guard evaluates. */
   committed: number;
-  onBuy: (key: string) => void;
+  /** Clicking a jar ARMS feed mode (App routes to the vendor), it does not
+   *  buy directly — the critter takes a chip first. */
+  onJar: (key: string) => void;
+  /** The jar currently armed for feeding, for the waiting treatment. */
+  armedKey: string | null;
 }
 
-export function Shelf({ state, crumbsNow, committed, onBuy }: ShelfProps) {
-  const { open, got } = useMemo(() => shelfItems(state.owned), [state.owned]);
+export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey }: ShelfProps) {
+  const { stalls, got } = useMemo(
+    () => shelfStalls(state.owned, dipIndex),
+    [state.owned, dipIndex]
+  );
   return (
-    <section className="shelf" aria-label="the shelf">
-      <ul className="jars">
-        {open.map((u) => {
-          const afford = canAffordBuy(crumbsNow, committed, u.cost);
-          return (
-            <li key={u.key}>
-              <button
-                type="button"
-                className={`jar${afford ? ' afford' : ' dear'}`}
-                disabled={!afford}
-                onClick={() => onBuy(u.key)}
-                // A bowl jar states its actual capacity — "Bigger Bowl II"
-                // was otherwise a 2M purchase with an unstated effect.
-                title={(FLAVOUR[u.key] ?? u.label) + (u.bowlCap ? ` — holds ${compact(u.bowlCap)}` : '')}
-              >
-                <span className="jar-glass" aria-hidden="true"><i /></span>
-                <span className="jar-name">{u.label}</span>
-                <span className="jar-cost">{compact(u.cost)}</span>
-                <span className="jar-flavour">{FLAVOUR[u.key] ?? ''}</span>
-                {/* Visible, not title-only: touch screens have no hover, and
-                    an upgrade's whole point is its effect. */}
-                {u.bowlCap !== undefined && <span className="jar-fx">holds {compact(u.bowlCap)}</span>}
-                {u.doubleDipMod !== undefined && (
-                  <span className="jar-fx">{u.doubleDipMod === 2 ? 'every other dip pays twice' : `1 in ${u.doubleDipMod} dips pays twice`}</span>
-                )}
-                {u.sogBonus !== undefined && <span className="jar-fx">crumbs stay crisp longer</span>}
-                {u.goldenBits !== undefined && <span className="jar-fx">crackles come sooner</span>}
-                {u.key === 'autodip' && <span className="jar-fx">dips golden chips for you</span>}
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+    <section className="shelf" aria-label="the crew's stalls">
+      {stalls.map(({ vendor, jars }) => (
+        <div key={vendor.id} className="stall">
+          <p className="stall-head">
+            <span className="stall-face" aria-hidden="true"><CritterArt id={vendor.id} /></span>
+            <span className="stall-name">{vendor.name}</span>
+            <span className="stall-hint">{vendor.feed === 'golden' ? 'pay: crumbs + a GOLDEN chip' : 'pay: crumbs + a chip'}</span>
+          </p>
+          <ul className="jars">
+            {jars.map((u) => {
+              const afford = canAffordBuy(crumbsNow, committed, u.cost);
+              return (
+                <li key={u.key}>
+                  <button
+                    type="button"
+                    className={`jar${afford ? ' afford' : ' dear'}${armedKey === u.key ? ' armed' : ''}`}
+                    disabled={!afford}
+                    onClick={() => onJar(u.key)}
+                    // A bowl jar states its actual capacity — "Bigger Bowl II"
+                    // was otherwise a 2M purchase with an unstated effect.
+                    title={(FLAVOUR[u.key] ?? u.label) + (u.bowlCap ? ` — holds ${compact(u.bowlCap)}` : '')}
+                  >
+                    <span className="jar-glass" aria-hidden="true"><i /></span>
+                    <span className="jar-name">{u.label}</span>
+                    <span className="jar-cost">
+                      {compact(u.cost)}
+                      <i className="chip-fee">{vendor.feed === 'golden' ? '+ a golden chip' : '+ a chip'}</i>
+                    </span>
+                    <span className="jar-flavour">{FLAVOUR[u.key] ?? ''}</span>
+                    {/* Visible, not title-only: touch screens have no hover, and
+                        an upgrade's whole point is its effect. */}
+                    {u.bowlCap !== undefined && <span className="jar-fx">holds {compact(u.bowlCap)}</span>}
+                    {u.doubleDipMod !== undefined && (
+                      <span className="jar-fx">{u.doubleDipMod === 2 ? 'every other dip pays twice' : `1 in ${u.doubleDipMod} dips pays twice`}</span>
+                    )}
+                    {u.sogBonus !== undefined && <span className="jar-fx">crumbs stay crisp longer</span>}
+                    {u.goldenBits !== undefined && <span className="jar-fx">crackles come sooner</span>}
+                    {u.key === 'autodip' && <span className="jar-fx">dips golden chips for you</span>}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
       {got.length > 0 && (
         <p className="got" aria-label="already on the shelf">
           {got.map((u) => <span key={u.key} className="got-jar">{u.label}</span>)}
