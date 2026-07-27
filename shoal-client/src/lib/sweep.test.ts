@@ -66,11 +66,11 @@ check('no resolution without a hush', isResolveTick(-1, 5_000, TICK_MS) === fals
   // is always taken and can do nothing. Here, joining ANY two others saves it.
   const pack: Body[] = [];
   for (let i = 0; i < 19; i++) pack.push(at(`p${i}`, 1000 + i, 1000));
-  const isolated = [...pack, at('victim', 90_000, 90_000)];
+  const isolated = [...pack, at('victim', 90_000, 90_000, 900)];
   check('an isolated fish is taken', selectTaken(isolated, null).includes('victim'), selectTaken(isolated, null));
 
   // Two other outcasts are not enough (the floor of three), but three are.
-  const rescued = [...pack, at('victim', 90_000, 90_000), at('o1', 90_010, 90_000),
+  const rescued = [...pack, at('victim', 90_000, 90_000, 900), at('o1', 90_010, 90_000),
     at('o2', 90_000, 90_010), at('o3', 90_010, 90_010)];
   check('four outcasts together are safe', !selectTaken(rescued, null).includes('victim'),
     selectTaken(rescued, null));
