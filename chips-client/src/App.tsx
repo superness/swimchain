@@ -1077,7 +1077,12 @@ export function App() {
     if (id === 'committee' && vote.phase === 'open' && !vote.lobbied) {
       setVote(lobby);
       sfx.pop();
-      say('committee', 'the guacamole layer was persuaded. nobody asks how.', 6000);
+      // Was "the guacamole layer was persuaded. nobody asks how." — a claim
+      // of VICTORY, fired on the click, while the banner beside it announced
+      // defeat and the actual result was still 25 seconds away. It now says
+      // what lobbying really buys (one layer, not the room) and names the
+      // reason it can still fail, so a lost vote is not a surprise.
+      say('committee', 'guacamole is persuaded. nobody asks how. the olives are another matter.', 6000);
       return;
     }
     setSheetId(id);
@@ -1650,11 +1655,33 @@ export function App() {
           onClose={() => setSheetId(null)}
         />
       )}
+      {/* THE COMMITTEE SAYS WHAT IT IS DOING AT EVERY STAGE. It used to say
+          "you have made your case. the olives are unmoved." the moment you
+          lobbied — which reads as the VERDICT, and a rejection — and then
+          carried the motion anyway 65% of the time. Meanwhile the critter row
+          fired "the guacamole layer was persuaded" on the same click, so two
+          messages announced opposite outcomes simultaneously, neither of them
+          the actual result. Operator: "the stuff from the council is a little
+          weird?" The lobbied line is now plainly a WAITING state; the olives
+          keep their joke for the resolution, where it belongs. */}
+      {/* THE CRIER. Every one of these used to be `position: fixed` at its own
+          hand-picked `top`, which is fine for exactly one at a time and wrong
+          the moment two are up — the hermit's 120-second hold overlaps a vote
+          easily, and the operator watched "under the celery" and "motion
+          carries" land on top of each other. Hand-tuning the offsets again
+          would only push the collision to the next pair (the same lesson the
+          bowl ticket taught in #155/#156, and the burner in #168).
+
+          One stack, laid out in flow: N banners can never overlap because the
+          column places them. Order is by urgency — the thing waiting on YOU
+          first, the thing merely happening last. The wrapper is
+          click-through; only the buttons inside take pointer events. */}
+      <div className="crier">
       {vote.phase === 'open' && (
         <div className="vote-banner" role="status">
           <span className="vote-text">
             <strong>the committee has called a vote.</strong>{' '}
-            {vote.lobbied ? 'you have made your case. the olives are unmoved.' : 'the subject is your fryers. attendance is mandatory.'}
+            {vote.lobbied ? 'your case is heard. the beans are conferring.' : 'the subject is your fryers. attendance is mandatory.'}
           </span>
           {!vote.lobbied && (
             <button type="button" className="vote-lobby" onClick={() => onCritterClick('committee')}>lobby them</button>
@@ -1663,6 +1690,19 @@ export function App() {
       )}
       {vote.phase === 'carried' && (
         <div className="vote-carried" role="status">motion carries — every fryer runs hot</div>
+      )}
+      {/* A LOST VOTE SAID NOTHING AT ALL. `voteTick` has always produced a
+          'failed' phase and held it for six seconds, and nothing rendered it
+          — the banner simply vanished. So a player learned the rule "lobbying
+          is what carries a motion" only from the times they won, which is to
+          say never. The two failures read differently on purpose: one is the
+          dice, the other is you not turning up. */}
+      {vote.phase === 'failed' && (
+        <div className="vote-failed" role="status">
+          {vote.lobbied
+            ? 'motion fails. the olives abstain. they always abstain.'
+            : 'nobody spoke for the motion. it dies on the floor. attendance was mandatory.'}
+        </div>
       )}
       {hermit.phase === 'offering' && !feeding && (
         <div className="hermit-offer" role="status">
@@ -1683,6 +1723,7 @@ export function App() {
           onCancel={() => { setFeeding(null); setBubble(null); }}
         />
       )}
+      </div>
 
       {/*
         The shop-chatter corner. Both of these are asides, so they share one

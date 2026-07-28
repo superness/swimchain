@@ -1717,9 +1717,10 @@ h1, h2, h3, p { margin: 0; }
 
 /* ── feed mode ───────────────────────────────────────────────────────────── */
 .feed-banner {
-  position: fixed; top: clamp(64px, 11vh, 110px); left: 50%; translate: -50% 0;
-  z-index: 30; display: flex; align-items: center; gap: 12px;
-  max-width: min(92vw, 560px);
+  /* order 0: an armed vendor is waiting on YOUR next tap — nothing outranks
+     it. Anchoring now belongs to `.crier`. */
+  position: static; translate: none; order: 0; width: 100%;
+  display: flex; align-items: center; gap: 12px;
   background: rgba(14, 10, 7, .95);
   border: 1px solid rgba(255, 226, 180, .35);
   border-radius: 12px; padding: 9px 14px;
@@ -1902,7 +1903,6 @@ h1, h2, h3, p { margin: 0; }
   .dip-ticker { font-size: 10px; padding: 3px 12px; white-space: normal; }
   .ticker-line { white-space: normal; max-height: 2.9em; }
   .rat-perch { width: 42px; top: -10px; right: -8px; }
-  .feed-banner { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 44px); }
   .stall-face { width: 20px; height: 20px; }
   /* leave room under the scrolling column for the bench + boards pill —
      and INSIDE the scroller, so the last stall can always scroll clear of
@@ -2099,10 +2099,26 @@ h1, h2, h3, p { margin: 0; }
    invisible walls: a status line nobody can click through, parked over the
    middle of a phone screen for two minutes. Only the BUTTONS inside them
    take pointer events; the panels themselves never do. */
-.vote-banner, .vote-carried, .hermit-holding, .hermit-offer {
-  position: fixed; left: 50%; translate: -50% 0; z-index: 28;
+/* THE CRIER — the one column every floating announcement lives in.
+   Each of these was `position: fixed` at its own hand-picked `top`, which is
+   correct for exactly one at a time and wrong the moment two are up: the
+   hermit holds a chip for 120 seconds, and a vote called inside that window
+   landed straight on top of him (operator, 2026-07-28). Re-tuning the offsets
+   only moves the collision to the next pair — the bowl ticket taught this in
+   #155/#156 and the burner in #168. A column cannot overlap itself.
+   `order` sets the reading order without moving any JSX: whatever is waiting
+   on the PLAYER sits highest, plain status sinks. */
+.crier {
+  position: fixed; z-index: 30; left: 50%; translate: -50% 0;
+  top: clamp(64px, 11vh, 110px);
+  display: flex; flex-direction: column; align-items: center;
+  gap: 8px; width: min(92vw, 560px);
+  pointer-events: none;          /* only the buttons inside take taps */
+}
+
+.vote-banner, .vote-carried, .vote-failed, .hermit-holding, .hermit-offer {
+  position: static; translate: none; width: 100%;
   pointer-events: none;
-  max-width: min(92vw, 560px);
   font-family: var(--chalk); font-size: 12px; line-height: 1.45;
   background: rgba(14, 10, 7, .95);
   border: 1px solid rgba(255, 226, 180, .3);
@@ -2110,7 +2126,7 @@ h1, h2, h3, p { margin: 0; }
   box-shadow: 0 12px 30px rgba(0, 0, 0, .55);
   animation: say-in .3s ease-out;
 }
-.vote-banner { top: clamp(96px, 15vh, 150px); display: flex; align-items: center; gap: 12px; }
+.vote-banner { order: 2; display: flex; align-items: center; gap: 12px; }
 .vote-text strong { color: #e8dcc0; }
 .vote-lobby {
   flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .08em;
@@ -2119,10 +2135,16 @@ h1, h2, h3, p { margin: 0; }
   pointer-events: auto;   /* the one clickable thing in a click-through panel */
 }
 .vote-carried {
-  top: clamp(96px, 15vh, 150px); color: #cdeec2;
+  order: 3; color: #cdeec2;
   border-color: rgba(180, 255, 170, .45); text-align: center;
 }
-.hermit-holding { top: clamp(140px, 21vh, 200px); color: #cfd8e2; text-align: center; }
+/* The other half of the coin. Same slot as the carried banner — one motion,
+   one outcome, one place to look — read in the losing colour. */
+.vote-failed {
+  order: 3; color: #e5c9c0;
+  border-color: rgba(255, 180, 170, .38); text-align: center;
+}
+.hermit-holding { order: 4; color: #cfd8e2; text-align: center; }
 
 /* His offer used to hijack the TAP on the critter, which meant that while he
    was offering you could not open his stall at all. That was survivable when
@@ -2130,7 +2152,7 @@ h1, h2, h3, p { margin: 0; }
    off the only bowl at Buffalo. The offer gets its own control instead —
    the same shape the committee's "lobby them" already uses. */
 .hermit-offer {
-  top: clamp(140px, 21vh, 200px); color: #cfd8e2;
+  order: 1; color: #cfd8e2;
   display: flex; align-items: center; gap: 12px;
 }
 .hermit-take {
@@ -2140,10 +2162,10 @@ h1, h2, h3, p { margin: 0; }
 }
 
 @media (max-width: 940px), (max-height: 620px) {
+  /* the whole column rises above the bench, in one place */
+  .crier { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 44px); }
   .wing-perch { width: 34px; top: -9px; left: -6px; }
   .prophecy-mark { font-size: 8.5px; }
-  .vote-banner, .vote-carried { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 88px); }
-  .hermit-holding, .hermit-offer { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 132px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .wing-perch, .wing-perch svg, .prophecy-mark { animation: none; }
@@ -2173,8 +2195,10 @@ h1, h2, h3, p { margin: 0; }
    that is not the twist goes quiet. */
 .shop.hushed .crew-row,
 .shop.hushed .bowl-ticket,
+.shop.hushed .crier,
 .shop.hushed .vote-banner,
 .shop.hushed .vote-carried,
+.shop.hushed .vote-failed,
 .shop.hushed .hermit-holding,
 .shop.hushed .hermit-offer,
 .shop.hushed .dip-change,
@@ -2384,11 +2408,9 @@ h1, h2, h3, p { margin: 0; }
   .corner { padding-bottom: var(--floor-stack); }
   .crew-row { top: auto; bottom: calc(var(--floor-stack) + var(--boards-h)); }
   .crew-toast { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h)); }
-  .feed-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 46px); }
+  .crier { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 44px); }
   .bowl-ticket { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 48px); }
   .tut-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 8px); }
-  .vote-banner, .vote-carried { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 90px); }
-  .hermit-holding, .hermit-offer { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 134px); }
   /* and the scrolling column stops short of the whole stack */
   .counter { max-height: calc(100dvh - 240px - var(--safe)); }
 }
