@@ -1,18 +1,22 @@
 /**
  * Assembling the log from a room's replies. Run: npx tsx src/lib/shoalRoom.test.ts
  *
- * Only `repliesToLog` is tested here — it is pure and is where all the correctness
- * lives (see shoalRoom.ts's module header). `fetchRoomLog` needs a live node and is
- * exercised by Task 6's smoke script instead.
+ * `repliesToLog` and `narrowRoomReplies` are both pure and are where all the
+ * correctness lives (see shoalRoom.ts's module header). `fetchRoomLog` itself is now
+ * a bare `rpcCall` plus those two, needs a live node, and is exercised by Task 6's
+ * smoke script instead.
  *
  * Bodies below are built with the REAL `encodePresence`/`encodeEat` from shoalWire.ts,
- * not hand-written wire strings — this file is testing `repliesToLog`'s orchestration
- * (author/hash sourcing, dedupe, ordering, drop-on-failure), not `decodeBody`'s own
- * grammar, which shoalWire.test.ts already covers exhaustively. Expected values are
- * derived by hand in comments, never by calling `repliesToLog` or `orderLog` twice and
- * comparing the result to itself.
+ * not hand-written wire strings — this file is testing the orchestration
+ * (author/hash sourcing, dedupe, ordering, drop-on-failure, the fetch ceiling), not
+ * `decodeBody`'s own grammar, which shoalWire.test.ts already covers exhaustively.
+ * Expected values are derived by hand in comments, never by calling `repliesToLog` or
+ * `orderLog` twice and comparing the result to itself.
  */
-import { repliesToLog, type RawReply } from './shoalRoom';
+import {
+  repliesToLog, narrowRoomReplies, ROOM_FETCH_LIMIT,
+  type RawReply, type NodeReply, type GetRepliesResult,
+} from './shoalRoom';
 import { encodePresence, encodeEat } from './shoalWire';
 import type { EatClaim } from './shoalTypes';
 
@@ -22,10 +26,21 @@ function check(name: string, cond: boolean, extra?: unknown) {
   else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
 }
 
+// Author ids are now SHAPE-CHECKED by repliesToLog (64 lowercase hex — the form
+// both node paths produce), and `encodePresence`/`encodeEat` derive the body's
+// salt from the same string, so every id below is a real-shaped 64-hex key
+// rather than a readable label. Each is one hex digit repeated 64 times, so they
+// stay easy to tell apart at a glance and are trivially distinct.
+const A = 'a'.repeat(64);
+const B = 'b'.repeat(64);
+const C = 'c'.repeat(64);
+const D = 'd'.repeat(64);
+
 function reply(
-  content_id: string, author_id: string, body: string, block_height: number | null = null,
+  content_id: string, author_id: string, body: string,
+  block_height: number | null = null, created_at = 0,
 ): RawReply {
-  return { content_id, author_id, body, block_height };
+  return { content_id, author_id, body, block_height, created_at };
 }
 
 // --- Undecodable bodies are dropped, not thrown on --------------------------------
@@ -35,10 +50,10 @@ function reply(
 // verifies PoW and signatures, never application semantics —
 // project_fold_rules_are_permanent); one bad reply must not poison the room.
 {
-  const goodBody = encodePresence({ x: 10, y: 20, heading: 5, speed: 7, t: 1000 });
+  const goodBody = encodePresence({ x: 10, y: 20, heading: 5, speed: 7, t: 1000 }, A);
   const replies: RawReply[] = [
-    reply('sha256:good1', 'author-good', goodBody),
-    reply('sha256:bad1', 'author-bad', 'not-wire-format-at-all'),
+    reply('sha256:good1', A, goodBody),
+    reply('sha256:bad1', B, 'not-wire-format-at-all'),
   ];
   let threw: unknown = null;
   let log: ReturnType<typeof repliesToLog> = [];
@@ -56,20 +71,49 @@ function reply(
 // The whole anti-spoofing property at this layer: the reply's OWN signed author_id
 // must become the decoded entry's `id`, never anything sourced from the body (which a
 // hostile client can write to be literally anything — the node never validates
-// application semantics). Here the body text and the author_id are deliberately
-// distinct strings, so a bug that sourced `id` from `body` instead of `author_id`
-// (e.g. `decodeBody(r.body, r.body, r.content_id)`) produces an entry whose `id` is
-// the body text — visibly wrong and easy to assert against.
+// application semantics).
+//
+// The body now carries a SALT derived from an author key (shoalWire.ts), which makes
+// this case sharper rather than weaker: here the body is salted as `B` while the
+// envelope says `A`, so a bug that trusted the body would produce a visibly wrong id.
+// The salt is never adjudicated against the envelope — see shoalWire.test.ts's own
+// "the salt is NEVER trusted as the author" section.
 {
-  const body = encodeEat(5, 2000);
-  const realAuthor = 'real-author-pubkey-hex';
-  const replies: RawReply[] = [reply('sha256:spoof1', realAuthor, body)];
+  const bodySaltedAsB = encodeEat(5, 2000, B);
+  const replies: RawReply[] = [reply('sha256:spoof1', A, bodySaltedAsB)];
   const log = repliesToLog(replies);
   check('exactly one entry decodes', log.length === 1, log);
-  check('the decoded id is the reply\'s author_id',
-    log.length === 1 && log[0].id === realAuthor, log[0]?.id);
+  check('the decoded id is the reply\'s author_id (A), not the body\'s salt owner (B)',
+    log.length === 1 && log[0].id === A, log[0]?.id);
   check('the decoded id is NOT the body text (the only thing a hostile client controls)',
-    log.length === 1 && log[0].id !== body, log[0]?.id);
+    log.length === 1 && log[0].id !== bodySaltedAsB, log[0]?.id);
+}
+
+// --- An author_id of the wrong SHAPE is dropped ------------------------------------
+// A tripwire, not routine validation: both node paths hex-encode a 32-byte pubkey, so
+// a healthy node cannot emit anything else. It matters because checkpoints EMBED these
+// ids verbatim — a node regression that changed the spelling (bech32, a `0x` prefix,
+// uppercase) would split one swimmer into two rows sharing no size and no bites, and
+// invalidate every checkpoint published under the old form. The well-formed reply in
+// the same batch must survive, exactly like the malformed-body case above.
+//
+// (A `console.warn` line per dropped reply is expected in this section's output.)
+{
+  const bodyA = encodePresence({ x: 1, y: 1, heading: 0, speed: 0, t: 100 }, A);
+  const bodyB = encodePresence({ x: 2, y: 2, heading: 0, speed: 0, t: 200 }, B);
+  const badShapes = [
+    ['sha256:upper', A.toUpperCase(), 'uppercase hex'],
+    ['sha256:short', A.slice(0, 63), '63 characters'],
+    ['sha256:long', `${A}a`, '65 characters'],
+    ['sha256:prefixed', `0x${A.slice(2)}`, 'an 0x prefix'],
+    ['sha256:bech32', 'sw1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', 'a bech32m address'],
+  ] as const;
+  for (const [cid, badId, why] of badShapes) {
+    const log = repliesToLog([reply(cid, badId, bodyA), reply('sha256:ok', B, bodyB)]);
+    check(`an author_id that is ${why} is dropped, and the healthy reply survives`,
+      log.length === 1 && log[0].hash === 'sha256:ok' && log[0].id === B,
+      log.map((e) => e.id));
+  }
 }
 
 // --- The hash comes from content_id, used to break same-ms ties -------------------
@@ -78,10 +122,10 @@ function reply(
 // 'sha256:aaa' < 'sha256:bbb' lexicographically (index 7: 'a' < 'b'), so the expected
 // order is [aaa, bbb] regardless of input order.
 {
-  const bodyX = encodePresence({ x: 1, y: 1, heading: 0, speed: 0, t: 100 });
-  const bodyY = encodePresence({ x: 2, y: 2, heading: 0, speed: 0, t: 100 });
-  const replyAaa = reply('sha256:aaa', 'author-x', bodyX);
-  const replyBbb = reply('sha256:bbb', 'author-y', bodyY);
+  const bodyX = encodePresence({ x: 1, y: 1, heading: 0, speed: 0, t: 100 }, A);
+  const bodyY = encodePresence({ x: 2, y: 2, heading: 0, speed: 0, t: 100 }, B);
+  const replyAaa = reply('sha256:aaa', A, bodyX);
+  const replyBbb = reply('sha256:bbb', B, bodyY);
 
   const logForward = repliesToLog([replyAaa, replyBbb]);
   const logReversed = repliesToLog([replyBbb, replyAaa]);
@@ -97,37 +141,42 @@ function reply(
 
 // --- Output is ordered exactly as orderLog orders it -------------------------------
 // Three replies at ms 500, 100, 300 (same values shoalEngine.test.ts's own orderLog
-// section uses) — hand-derived ascending order is 100, 300, 500, i.e. ids [b, c, a].
-// The RawReply input array below is shuffled into a THIRD order ([a, c, b]), distinct
+// section uses) — hand-derived ascending order is 100, 300, 500, i.e. authors [B, C, A].
+// The RawReply input array below is shuffled into a THIRD order ([A, C, B]), distinct
 // from both the expected output order and its exact reverse, so a passing test cannot
 // be explained by repliesToLog accidentally preserving or reversing input order.
 {
-  const bodyFor = (ms: number) => encodePresence({ x: 0, y: 0, heading: 0, speed: 0, t: ms });
-  const replyA = reply('sha256:a', 'a', bodyFor(500));
-  const replyB = reply('sha256:b', 'b', bodyFor(100));
-  const replyC = reply('sha256:c', 'c', bodyFor(300));
+  const bodyFor = (ms: number, who: string) =>
+    encodePresence({ x: 0, y: 0, heading: 0, speed: 0, t: ms }, who);
+  const replyA = reply('sha256:a', A, bodyFor(500, A));
+  const replyB = reply('sha256:b', B, bodyFor(100, B));
+  const replyC = reply('sha256:c', C, bodyFor(300, C));
 
   const shuffled: RawReply[] = [replyA, replyC, replyB];
   const log = repliesToLog(shuffled);
-  check('output is ordered by authoring ms (b@100, c@300, a@500), independent of input order',
-    log.map((e) => e.id).join(',') === 'b,c,a', log.map((e) => ({ id: e.id, ms: e.ms })));
+  check('output is ordered by authoring ms (B@100, C@300, A@500), independent of input order',
+    log.map((e) => e.id).join(',') === [B, C, A].join(','),
+    log.map((e) => ({ id: e.id.slice(0, 4), ms: e.ms })));
 
   // Independence from input order, mirroring shoalEngine.test.ts's own orderLog check.
   const logOtherOrder = repliesToLog([replyB, replyA, replyC]);
   check('the same three replies in a different input order produce the identical output order',
-    logOtherOrder.map((e) => e.id).join(',') === log.map((e) => e.id).join(','), logOtherOrder.map((e) => e.id));
+    logOtherOrder.map((e) => e.id).join(',') === log.map((e) => e.id).join(','),
+    logOtherOrder.map((e) => e.id.slice(0, 4)));
 }
 
 // --- Duplicate content_ids are collapsed, keeping one -------------------------------
 // The node can serve the same reply twice across a paginated fetch (once still
 // pending in the mempool with block_height: null, once finalized with a real height,
 // or simply duplicated verbatim). Same content_id, same body — only block_height
-// differs, exactly like the pending-to-finalized transition on a real node.
+// and created_at differ, exactly like the pending-to-finalized transition on a real
+// node (where `created_at` is a query-time clock read while pending and the action's
+// own second-granularity timestamp once finalized — see RawReply's doc).
 {
-  const dupBody = encodeEat(9, 3000);
-  const pendingCopy = reply('sha256:dup', 'author-dup', dupBody, null);
-  const finalizedCopy = reply('sha256:dup', 'author-dup', dupBody, 42);
-  const other = reply('sha256:other', 'author-other', encodeEat(1, 3100), 10);
+  const dupBody = encodeEat(9, 3000, D);
+  const pendingCopy = reply('sha256:dup', D, dupBody, null, 3_000);
+  const finalizedCopy = reply('sha256:dup', D, dupBody, 42, 4_000);
+  const other = reply('sha256:other', C, encodeEat(1, 3100, C), 10, 3_100);
 
   const log = repliesToLog([pendingCopy, other, finalizedCopy]);
   check('the duplicate content_id collapses to exactly one entry',
@@ -147,6 +196,112 @@ function reply(
   }
   check('an empty reply list does not throw', threw === null, threw);
   check('an empty reply list yields an empty log', log.length === 0, log);
+}
+
+// ===================================================================================
+// narrowRoomReplies — the fetch ceiling, and the parent_id filter
+// ===================================================================================
+
+const ROOM = 'sha256:theroom';
+
+function nodeReply(i: number, parent = ROOM): NodeReply {
+  return {
+    content_id: `sha256:r${i}`,
+    author_id: A,
+    body: encodePresence({ x: 0, y: 0, heading: 0, speed: 0, t: 1000 + i }, A),
+    parent_id: parent,
+    block_height: null,
+    created_at: 1000 + i,
+  };
+}
+
+function result(replies: NodeReply[]): GetRepliesResult {
+  // `total_count` is deliberately set to `replies.length` here because that is
+  // EXACTLY what the node sends: it computes the field as `all_replies.len()`
+  // (methods.rs:9620), i.e. the length of the array it is already returning.
+  // That is precisely why it cannot drive a tail fetch — see the module header.
+  return { parent_id: ROOM, replies, total_count: replies.length };
+}
+
+// --- A response AT the requested limit is a loud failure, never a quiet log --------
+// The single highest-consequence defect this module can have. get_replies returns
+// the OLDEST replies first (chain.rs:1511-1540 scans `parent || timestamp || hash`
+// forward) and the node clamps nothing, so a saturated response is not "slightly
+// stale" — it is the whole live window missing, folded as an empty sea, with no
+// error anywhere. It must be indistinguishable from a crash, not from success.
+{
+  const LIMIT = 5; // a small stand-in for ROOM_FETCH_LIMIT; the rule is `length >= limit`
+  const atLimit = result([0, 1, 2, 3, 4].map((i) => nodeReply(i))); // exactly 5
+  let threw: unknown = null;
+  try { narrowRoomReplies(atLimit, ROOM, LIMIT); } catch (e) { threw = e; }
+  check('a response with exactly `limit` replies THROWS rather than returning a truncated log',
+    threw instanceof RangeError, threw);
+  check('…and the message names both the count and the limit, so the cause is readable',
+    threw instanceof Error && threw.message.includes('5 replies') && threw.message.includes('limit of 5'),
+    threw instanceof Error ? threw.message : threw);
+
+  // Over the limit too: the mempool block appends pending replies AFTER the node's
+  // own `all_replies.len() >= limit` break (methods.rs:9599-9611 vs :9457), so a
+  // real response CAN exceed the limit it asked for. That is still a ceiling hit.
+  const overLimit = result([0, 1, 2, 3, 4, 5, 6].map((i) => nodeReply(i))); // 7
+  threw = null;
+  try { narrowRoomReplies(overLimit, ROOM, LIMIT); } catch (e) { threw = e; }
+  check('a response OVER the limit throws too (pendings are appended past the node\'s own break)',
+    threw instanceof RangeError, threw);
+
+  // One under the limit is the healthy case and must sail through untouched.
+  const underLimit = result([0, 1, 2, 3].map((i) => nodeReply(i))); // 4
+  threw = null;
+  let narrowed: RawReply[] = [];
+  try { narrowed = narrowRoomReplies(underLimit, ROOM, LIMIT); } catch (e) { threw = e; }
+  check('a response one under the limit does NOT throw', threw === null, threw);
+  check('…and returns all four replies', narrowed.length === 4, narrowed.length);
+
+  // An empty response is not a ceiling hit — an idle room has no replies yet.
+  threw = null;
+  try { narrowRoomReplies(result([]), ROOM, LIMIT); } catch (e) { threw = e; }
+  check('an empty response does not throw (an idle room is not a saturated one)', threw === null, threw);
+}
+
+// --- The parent_id filter is load-bearing for the mempool path --------------------
+// depth_limit: 0 bounds only the node's CHAIN-store path (methods.rs:9464). The
+// mempool path has no depth gate on inclusion at all and will chain-admit a
+// reply-to-a-pending-reply, mislabelled depth 0, whose `parent_id` nonetheless names
+// its true parent (methods.rs:9603). Only this filter catches that.
+{
+  const mixed = result([
+    nodeReply(0),                          // direct
+    nodeReply(1, 'sha256:someotherreply'), // nested pending, mislabelled depth 0
+    nodeReply(2),                          // direct
+  ]);
+  const narrowed = narrowRoomReplies(mixed, ROOM, 100);
+  check('a reply whose parent is NOT the room is filtered out',
+    narrowed.length === 2 && narrowed.every((r) => r.content_id !== 'sha256:r1'),
+    narrowed.map((r) => r.content_id));
+}
+
+// --- created_at is carried through, unread -----------------------------------------
+// Carried so a future `ms` sanity bound is possible at all; nothing reads it today.
+{
+  const r0 = nodeReply(0);
+  const narrowed = narrowRoomReplies(result([r0]), ROOM, 100);
+  check('created_at survives the narrowing to RawReply',
+    narrowed.length === 1 && narrowed[0].created_at === r0.created_at,
+    narrowed[0]?.created_at);
+  // And it is genuinely unread by the fold: two otherwise-identical replies whose
+  // created_at values disagree wildly (including one implying a year-out ghost)
+  // decode to the same entry, because `ms` comes from the BODY.
+  const sane = repliesToLog([reply('sha256:x', A, encodeEat(4, 5000, A), 1, 5_000)]);
+  const insane = repliesToLog([reply('sha256:x', A, encodeEat(4, 5000, A), 1, 99_999_999_999)]);
+  check('created_at does not reach the fold: the same body decodes identically either way',
+    JSON.stringify(sane) === JSON.stringify(insane), { sane, insane });
+}
+
+// --- ROOM_FETCH_LIMIT itself -------------------------------------------------------
+{
+  check('ROOM_FETCH_LIMIT is a positive integer (fetchRoomLog passes it as both the ' +
+        'request limit and the ceiling it checks against)',
+    Number.isSafeInteger(ROOM_FETCH_LIMIT) && ROOM_FETCH_LIMIT > 0, ROOM_FETCH_LIMIT);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
