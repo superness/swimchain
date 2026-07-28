@@ -1857,8 +1857,11 @@ h1, h2, h3, p { margin: 0; }
 }
 
 /* the standing offer, once the floor has been struck */
+/* A card in the counter column (App.tsx), NOT an overlay. It used to be
+   `position: fixed` at a hand-picked right/top, which landed it on the depth
+   readout it sits under — an overlay positioned by guessing where the layout
+   put something else can only ever be right by coincidence, and it wasn't. */
 .bowl-ticket {
-  position: fixed; right: 2vw; top: clamp(88px, 13vh, 130px); z-index: 22;
   display: flex; align-items: center; gap: 8px;
   padding: 7px 12px 7px 7px; border-radius: 999px;
   background: rgba(14, 10, 7, .94);
@@ -1963,7 +1966,9 @@ h1, h2, h3, p { margin: 0; }
 }
 
 @media (max-width: 940px), (max-height: 620px) {
-  .bowl-ticket { right: auto; left: 50%; translate: -50% 0; top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 46px); }
+  /* No .bowl-ticket override here any more: it is a counter-column child on
+     every width, so the column's own responsive rules place it and there is
+     no second set of offsets to keep in sync with the bottom stack. */
   .hood-salt em { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
