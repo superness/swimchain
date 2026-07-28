@@ -141,7 +141,7 @@ export function tickChip(
   const burned = lit ? grown * OVERCOOK_DRAIN : 0;
   const next: CookingChip = {
     ...chip,
-    pot: Math.max(0, grown - burned),
+    pot: Math.max(0, grown - burned),  // Defensive: grown >= 0, burned <= grown (drain < 1), so unreachable.
     cookedMs: chip.cookedMs + TICK_MS,
   };
   let crackled = false;

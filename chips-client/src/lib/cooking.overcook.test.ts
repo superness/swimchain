@@ -66,11 +66,15 @@ const never = () => 1;      // rng that never crackles
 }
 
 // 5) The rat's diversion wins: a lit fryer whose pot is being siphoned has no
-//    gain to burn, and must not go NEGATIVE.
+//    gain, but the burn STILL takes its cut of the existing pot. This catches
+//    implementations that burn only the gain, or skip the burn when diverted.
 {
-  const chip = { ...freshChip(1), pot: 0 };
+  const chip = { ...freshChip(1), pot: 100_000 };
   const r = tickChip(chip, 1, 1, never, { overcook: true, divertPot: true });
-  check('a diverted lit fryer never goes negative', r.chip.pot >= 0, r.chip.pot);
+  const want = 100_000 * (1 - OVERCOOK_DRAIN);
+  check('a diverted lit fryer burns the existing pot', Math.abs(r.chip.pot - want) < 1e-9,
+    { got: r.chip.pot, want });
+  check('a diverted lit fryer reports what it burned', Math.abs(r.burned - 100_000 * OVERCOOK_DRAIN) < 1e-9, r.burned);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
