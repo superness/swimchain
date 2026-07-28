@@ -49,12 +49,40 @@
  * just direct ones — sharing the same `limit` budget as direct replies (methods.rs's
  * BFS/DFS-mixed walk counts every fetched node, nested or not, against one cap before
  * it stops). chips-client (host.ts's `loadTable`) hit exactly this and fixed it by
- * filtering to `r.parent_id === tableId` after the fetch; this module does both:
- * requests `depth_limit: 0` (so the node itself only walks direct children — verified
- * against methods.rs:9464's `if depth < depth_limit` gate, which pending replies also
- * respect via methods.rs:9530's `depth < depth_limit` walk) AND filters on `parent_id`
- * defensively, so a room's log can never include a reply-to-a-reply even if the
- * `depth_limit` param were ever ignored or misapplied server-side.
+ * filtering to `r.parent_id === tableId` after the fetch; this module does both —
+ * BUT the two paths on the node are not symmetric, and the `parent_id` filter is
+ * REQUIRED, not defensive, because of that asymmetry:
+ *
+ *  - **Chain-store (finalized) path**: `depth_limit: 0` really does bound this to
+ *    direct children only. `methods.rs:9464`'s `if depth < depth_limit` gate
+ *    controls whether a finalized reply's own children ever get enqueued for
+ *    fetching at all — with `depth_limit: 0` (`0 < 0` is false) nothing past depth 0
+ *    is ever walked, so this path cannot surface a reply-to-a-reply regardless of
+ *    the filter below.
+ *  - **Mempool (pending) path** (`methods.rs:9473-9616`) has NO depth gate on
+ *    inclusion at all. A pending reply is admitted purely by "is its immediate
+ *    parent already known" (`methods.rs:9522-9525`, checked against a
+ *    `known_hashes` set built from the chain replies plus whatever pending replies
+ *    earlier passes already admitted), via a multi-pass loop
+ *    (`methods.rs:9508-9616`) that explicitly exists to chain-admit A -> B -> C
+ *    even when all three are still pending (`methods.rs:9506`'s own comment: "This
+ *    handles chains like A -> B -> C where B and C are both pending"). The walk at
+ *    `methods.rs:9527-9545` that reads `depth < depth_limit` only bounds how far
+ *    the DEPTH LABEL computation looks back (so with `depth_limit: 0` a genuinely
+ *    nested pending reply gets mislabelled `depth: 0`) — it does not gate whether
+ *    the reply is pushed into `all_replies` (`methods.rs:9599-9611` pushes
+ *    unconditionally once the parent-known check above passes). So a pending
+ *    reply-to-a-pending-reply DOES come back from the node, mislabelled as direct,
+ *    with `depth_limit` set to any value including 0.
+ *
+ * What actually keeps a nested pending reply out of a room's log is that its
+ * `parent_id` field still names its TRUE immediate parent (not `roomContentId`) —
+ * `methods.rs:9603` sets `parent_id` from the real `parent_id` the mempool action
+ * carries, independent of the (possibly wrong) `depth` label. The `parent_id ===
+ * roomContentId` filter in `fetchRoomLog` below is therefore load-bearing for the
+ * mempool path specifically, not a redundant belt-and-suspenders check on top of
+ * `depth_limit: 0` — do not remove it on the assumption that `depth_limit: 0`
+ * already covers this; it only covers the chain-store path.
  */
 import type { LogEntry } from './shoalTypes';
 import { decodeBody } from './shoalWire';
@@ -90,7 +118,16 @@ export function repliesToLog(replies: readonly RawReply[]): LogEntry[] {
   const seen = new Set<string>();
   const entries: LogEntry[] = [];
   for (const r of replies) {
-    if (seen.has(r.content_id)) continue; // duplicate content_id: keep the first seen
+    // Duplicate content_id: keep the first seen. This is a deliberate but
+    // unforced choice — the brief only requires collapsing to "one", not which one
+    // — and it is currently unobservable: repliesToLog reads nothing per-reply
+    // that could differ between duplicate copies of the same content_id (the
+    // decoded LogEntry comes from body/author_id/content_id, all identical across
+    // copies of the same reply). It WOULD become observable if a future field
+    // (e.g. block_height, dropped by fetchRoomLog's map to RawReply today) started
+    // being read here, since a pending copy (block_height: null) and its later-
+    // finalized self (block_height: <n>) can both be in the input.
+    if (seen.has(r.content_id)) continue;
     seen.add(r.content_id);
 
     // id/hash come from the reply's own envelope — never from `body`, which a
@@ -145,8 +182,13 @@ export async function fetchRoomLog(
     depth_limit: 0, // direct replies only — see the module header
   });
 
-  // Defensive even with depth_limit: 0 — see the module header's chips-and-dip
-  // precedent for exactly why a reply-to-a-reply must never reach the log.
+  // REQUIRED, not defensive: depth_limit: 0 only bounds the node's chain-store
+  // path (methods.rs:9464). The mempool/pending path (methods.rs:9473-9616) has no
+  // depth gate on inclusion at all — it admits a pending reply purely by "is its
+  // parent already known" and will chain-admit a reply-to-a-pending-reply across
+  // its multi-pass loop, mislabelled depth: 0 regardless of depth_limit. Only this
+  // parent_id check catches that case (see the module header for the full
+  // line-by-line trace). Do not delete this as redundant with depth_limit: 0.
   const direct = result.replies.filter((r) => r.parent_id === roomContentId);
 
   const raw: RawReply[] = direct.map((r) => ({
