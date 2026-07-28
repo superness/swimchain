@@ -295,7 +295,72 @@ comment. That is the entire third-bowl-onward presentation.
 
 ---
 
-## 9. Still open
+## 9. ENLIGHTENMENT — the comedy the loop unlocks
+
+Operator: *"otherwise they are now 'enlightened' :D for more jokes / 'you were
+always in the matrix neo' etc."*
+
+Coming up through someone else's bowl is not just a counter. It is a **state**,
+and it is the funniest thing the descent gives us, because the shallow game's
+entire cast can now be re-written for an audience that KNOWS.
+
+`enlightened` is one boolean derived from `bowls > 0`. It swaps line pools. That
+is the whole implementation — `pickLine` already picks from a per-critter pool
+(`crew.ts`), so this is content, not machinery.
+
+### The rule that makes it funny
+
+**Nobody agrees about what you saw.** Some of them knew. Some refuse to know.
+Some knew and are annoyed you found out. None of them will have a straight
+conversation about it, because none of them ever has about anything.
+
+### The cast, enlightened
+
+- **scoop** — knew the whole time, and it costs him nothing to say so:
+  *"you took your time."* / *"i said one more chip. i meant one more chip."*
+- **the first chip** — the shallow game's last line was *"i said nothing because
+  you had not arrived yet."* Its enlightened version inverts exactly:
+  *"you came back. i said nothing because you had not left yet."*
+- **the weeping onion** — denial, load-bearing:
+  *"i'm fine. it's the caramelization. it was never the caramelization."*
+- **cheese rat** — unbothered:
+  *"so you've seen outside. i live here. legally you still can't prove that."*
+- **queso angel** — you have joined the wrong side of a verb:
+  *"you have been witnessed. you have also been witnessing. it does not suit
+  you, child."*
+- **the committee** — procedure absorbs everything:
+  *"a motion has been raised that the bowl does not exist. the motion is out of
+  order. the motion carries."*
+- **the hermit** — betrayed:
+  *"OH SO NOW you know about the celery. NOW. WHO SENT YOU."*
+- **the wing** — finally, an actual epistemology:
+  *"there was never a bird. THERE WAS NEVER A BOWL EITHER. one of those is a
+  lie and i will not be told which."*
+- **the fondue oracle** — smug, and entitled to be:
+  *"i told you. i told you and you dipped anyway. the strings do not lie. they
+  just don't explain."*
+
+### The ticker, enlightened
+
+- *there is no long spoon.* — the game already sells a jar called **The Long
+  Spoon** (`detector3`), so the joke is a film allusion and an inventory
+  reference at once, and costs one line.
+- *local man reports table has underside. table declines to confirm.*
+- *management denies bowl. management is a bowl.*
+- *four experts who translated the underside inscription have been reassigned.*
+- *shop confirms it was built around the dip. shop cannot say who built the shop.*
+
+### Why this is the cheapest content in the feature
+
+Every one of these is a string in an array. `crew.ts` already keys its ticker by
+layer and its critter lines by id; enlightenment is one more axis on data that is
+already shaped for it. **It also doubles the value of a second playthrough for
+the price of writing**, which is exactly what the operator asked the descent to
+do — the jokes are the reason to go round again, not the multipliers.
+
+---
+
+## 10. Still open
 
 1. **What scoop finally says at the lava.** The single most important line in the
    feature, and it should not be written in a hurry.
@@ -305,11 +370,13 @@ comment. That is the entire third-bowl-onward presentation.
 
 ---
 
-## 10. Build order, if approved
+## 11. Build order, if approved
 
 1. `broke <band>` fold verb + char accrual — the only permanent decision. The
    deep tip (§7) is the same verb at band 13, so design it to carry a band
    number from the start rather than bolting one on.
+1b. The `enlightened` line pools (§9). Pure content, no machinery, shippable the
+   day `bowls > 0` exists — and the highest laughs-per-hour in the whole plan.
 2. Bands 8–12: names, palettes, `BEYOND_LINES` replacement. Cheap, visible, ships alone.
 3. `the magma`, simulated against `overcooksim`/`longfrysim` before anything is priced.
 4. Bosses one at a time, cheapest first (the porcelain is a single comparison).
