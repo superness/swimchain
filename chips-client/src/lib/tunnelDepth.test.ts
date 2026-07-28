@@ -9,7 +9,7 @@
  *
  * Run: npx tsx src/lib/tunnelDepth.test.ts
  */
-import { tunnelDepth, bandAt, bandsAround } from './tunnelDepth';
+import { tunnelDepth, bandAt, bandsAround, DEEP_BANDS } from './tunnelDepth';
 import { DIP_TIERS } from './chipsConst';
 
 let failures = 0;
@@ -81,19 +81,43 @@ for (let i = 0; i < LAST; i++) {
   check('frac stays in [0, 1) at every probed edge', ok);
 }
 
-// 5) Bands: the defined tiers keep their own key and label; synthetic bands
-//    reuse the deepest palette, say something, and are marked `beyond`.
+// 5) Bands, in three regions now: the dip ladder, THE DESCENT below it, and
+//    the endless continuation below that.
 {
   const defined = DIP_TIERS.every((t, i) => {
     const b = bandAt(i);
     return b.key === t.key && b.label === t.label && !b.beyond;
   });
   check('bands 0..last mirror DIP_TIERS exactly', defined);
-  const deepOk = [DIP_TIERS.length, DIP_TIERS.length + 3, DIP_TIERS.length + 500].every((o) => {
+
+  // THE DESCENT. These used to be filler — seven throwaway chalk lines over
+  // the reused abyss palette — and the old test asserted exactly that, so it
+  // is rewritten rather than extended. `beyond` must be FALSE for them: it is
+  // the flag that dims a band's chalk into scenery (styles.css
+  // `.t-band.beyond .t-name`), and a place you can break through is not
+  // scenery.
+  const deep = DEEP_BANDS.map((_, i) => bandAt(DIP_TIERS.length + i));
+  check('the descent is six named bands', DEEP_BANDS.length === 6, DEEP_BANDS.length);
+  check('each carries its own label', deep.every((b, i) => b.label === DEEP_BANDS[i].label));
+  check('each carries its OWN palette key, not the abyss palette',
+    deep.every((b) => b.key !== DIP_TIERS[LAST].key), deep.map((b) => b.key));
+  check('none of them is marked beyond', deep.every((b) => !b.beyond));
+  check('the porcelain is the first thing under the dip', deep[0].key === 'porcelain');
+  check('the lava is under the dirt', DEEP_BANDS[4].key === 'lava' && DEEP_BANDS[3].key === 'dirt');
+
+  // Keys become `[data-dip=…]` selectors, so a duplicate silently paints one
+  // band with another's palette.
+  const keys = [...DIP_TIERS.map((t) => t.key), ...DEEP_BANDS.map((b) => b.key)];
+  check('every band key in the game is unique', new Set(keys).size === keys.length, keys);
+
+  // AND IT STILL NEVER ENDS. The descent is finite; the tunnel is not.
+  const past = [DIP_TIERS.length + DEEP_BANDS.length, DIP_TIERS.length + DEEP_BANDS.length + 3, 500];
+  const tailOk = past.every((o) => {
     const b = bandAt(o);
-    return b.key === DIP_TIERS[LAST].key && b.label.length > 0 && b.beyond;
+    return b.label.length > 0 && b.beyond && b.key === DEEP_BANDS[DEEP_BANDS.length - 1].key;
   });
-  check('bands past the ladder are endless, labelled, and marked beyond', deepOk);
+  check('below the descent the tunnel is still endless and labelled', tailOk);
+  check('a depth of 500 does not run off the end of the chalk', bandAt(500).label.length > 0);
 }
 
 // 6) The render window: contiguous ordinals, never negative, always containing
