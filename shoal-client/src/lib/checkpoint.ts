@@ -15,6 +15,7 @@
  */
 import type { ShoalState, Checkpoint } from './shoalTypes';
 import { VOID_WINDOW_MS } from './shoalConst';
+import { epochEndMs } from './epoch';
 
 /**
  * Build the checkpoint for `state` at `epoch`.
@@ -30,17 +31,44 @@ import { VOID_WINDOW_MS } from './shoalConst';
  * path and so was never guaranteed to have made the same cleanup.
  *
  * `recent` includes `[id, lastBiteMs, recentBites]` only for swimmers whose
- * `lastBiteMs` is within `VOID_WINDOW_MS` of `state.nowMs` (the moment this
- * checkpoint is taken) — see shoalTypes.ts's `Checkpoint` doc for why this
- * exists and why the cutoff keeps the payload small.
+ * `lastBiteMs` is within `VOID_WINDOW_MS` of `epochEndMs(epoch)` — see
+ * shoalTypes.ts's `Checkpoint` doc for why this exists and why the cutoff
+ * keeps the payload small.
+ *
+ * The cutoff is measured against the EPOCH'S END, never `state.nowMs`.
+ * `state.nowMs` is whatever tick the caller happened to stop on, so measuring
+ * against it made the serialisation a function of the fold's endpoint: the
+ * same epoch, the same log and the same world, folded to three defensible
+ * endpoints, produced three different `recent` tails and therefore three
+ * different byte strings. That destroys the single property a checkpoint
+ * exists for — two honest clients must produce identical bytes or they cannot
+ * tell agreement from disagreement. `epochEndMs(epoch)` is a constant of the
+ * epoch, known to every client, and is the instant the checkpoint conceptually
+ * describes.
+ *
+ * Throws a `RangeError` when `state.epoch` is not `epoch`. Since the cutoff
+ * now depends on `epoch`, checkpointing a mid-epoch-3 state as epoch 7 would
+ * silently produce a `recent` tail measured against the wrong hour — a wrong
+ * answer rather than a detectable error.
  */
 export function checkpointFrom(state: ShoalState, epoch: number): Checkpoint {
+  if (state.epoch !== epoch) {
+    throw new RangeError(
+      `checkpointFrom: state is folding epoch ${state.epoch} but was asked for a ` +
+      `checkpoint of epoch ${epoch}. The recent-tail cutoff is measured against ` +
+      "epochEndMs(epoch), so a mismatch silently produces the wrong `recent`.",
+    );
+  }
+  const cutoffMs = epochEndMs(epoch);
   const sizes: Array<[string, number]> = [];
   const recent: Array<[string, number, number[]]> = [];
   const record = (id: string, size: number, lastBiteMs: number, recentBites: number[]) => {
     sizes.push([id, size]);
-    if (lastBiteMs >= 0 && state.nowMs - lastBiteMs <= VOID_WINDOW_MS) {
-      recent.push([id, lastBiteMs, recentBites]);
+    if (lastBiteMs >= 0 && cutoffMs - lastBiteMs <= VOID_WINDOW_MS) {
+      // Copied, not aliased: `recentBites` is the live array on the Fish or
+      // Departed record it came from. A published checkpoint must not change
+      // underneath its publisher because the fold kept folding.
+      recent.push([id, lastBiteMs, [...recentBites]]);
     }
   };
   for (const f of state.fish.values()) record(f.id, f.size, f.lastBiteMs, f.recentBites);

@@ -7,7 +7,7 @@
  * action before every earlier one and silently rescores the session.
  */
 import { orderLog, foldShoal, bodiesOf } from './shoalEngine';
-import { checkpointFrom } from './checkpoint';
+import { checkpointFrom, serialiseCheckpoint } from './checkpoint';
 import type { LogEntry, Presence, EatClaim, ShoalState, Checkpoint } from './shoalTypes';
 import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
@@ -15,7 +15,7 @@ import {
   BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS, EPOCH_MS,
 } from './shoalConst';
 import { cellCentre, bitesLeft } from './bloom';
-import { epochOf, epochStartMs } from './epoch';
+import { epochOf, epochStartMs, epochEndMs, epochFoldEndMs } from './epoch';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -1146,6 +1146,115 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
     { got: sE1.fish.get('a')!.recentBites, expected: [preMs, postMs] });
   check('lastBiteMs also reflects the new credit', sE1.fish.get('a')!.lastBiteMs === postMs,
     sE1.fish.get('a')!.lastBiteMs);
+}
+
+// --- The checkpoint is canonical across fold endpoints (fix review C1) ------
+// checkpointFrom used to measure its `recent` cutoff against state.nowMs,
+// which foldShoal set to whatever untilMs the caller passed. Same epoch, same
+// log, same world, three defensible endpoints -> two different serialisations,
+// which destroys the one property a published checkpoint exists for.
+//
+// The fixture is built so the WORLD is provably identical at all three
+// endpoints (so any difference in the output can only come from the cutoff):
+// both swimmers are already EVICTED before the earliest endpoint, and a
+// `departed` record is frozen — hunger is a while-present cost and nothing
+// else in the fold touches it.
+//
+// Hand arithmetic. epoch 3: start = 3*EPOCH_MS = 10_800_000, end (=
+// epochEndMs(3)) = 14_400_000. Cell 700's centre is (28*128+64, 21*128+64) =
+// (3648, 2752) by BLOOM_CELL arithmetic.
+//   W  = end - 95_000 = 14_305_000   both swimmers arrive, parked on the cell
+//        centre (14_305_000 / 250 = 57_220, a real tick)
+//   'a' also claims at ms=W. Same tick as its own presence (hash 'a14305000' <
+//        'ae14305000', '1' < 'e'), so the claim is judged before that tick's
+//        markVisits against a still-empty lastVisit: it credits and LATCHES
+//        the cell. Every later claim rides that latch, which is the only way
+//        a fish parked on a cell can ever eat from it twice.
+//   Ma = end - 11_000 = 14_389_000   'a's second bite. Gap from W is 84_000,
+//        far past EAT_COOLDOWN_MS(2500). bitesLeft 5 > 0. Credits.
+//   Mz = end -  9_000 = 14_391_000   'z's only bite. Latched, bitesLeft 4,
+//        lastBiteMs -1. Credits.
+//   Both expire at W + PRESENCE_TTL_MS(90_000) = 14_395_000 and are evicted
+//   on the first tick past it, t = 14_395_250. Ma and Mz are both <=
+//   14_395_000, so both bites land while their claimant is still live.
+//   'a's recentBites after Ma: [W, Ma] pruned to within VOID_WINDOW_MS of Ma
+//   -> W is 84_000 old, dropped -> [Ma]. 'z's: [Mz].
+//
+// Ages at the CANONICAL cutoff, epochEndMs(3) = 14_400_000:
+//   'a': 11_000 > VOID_WINDOW_MS(10_000)  -> NOT carried, at every endpoint
+//   'z':  9_000 <= 10_000                 -> carried, at every endpoint
+// Ages under the OLD state.nowMs cutoff, per endpoint:
+//   t1 = 14_398_000: 'a' 9_000  -> carried
+//   t2 = 14_399_000: 'a' 10_000 -> carried (inclusive boundary)
+//   t3 = 14_399_750: 'a' 10_750 -> dropped        <-- the divergence
+// So the old rule emitted two different strings for one world and the new one
+// emits a single string that still carries 'z' (non-degenerate).
+{
+  const epoch = 3;
+  const end = epochEndMs(epoch);
+  check('epoch 3 ends where the arithmetic says', end === 14_400_000, end);
+
+  const cell = 700;
+  const c = cellCentre(cell);
+  check('the feeding cell is centred where BLOOM_CELL arithmetic says',
+    c.x === 3648 && c.y === 2752, c);
+
+  const W = end - 95_000;
+  const Ma = end - 11_000;
+  const Mz = end - 9_000;
+  check('every fixture timestamp lands on the absolute tick grid',
+    W % TICK_MS === 0 && Ma % TICK_MS === 0 && Mz % TICK_MS === 0, { W, Ma, Mz });
+  check('both bites land while their claimant is still live (ms <= expiresMs)',
+    Ma <= W + PRESENCE_TTL_MS && Mz <= W + PRESENCE_TTL_MS,
+    { expiresMs: W + PRESENCE_TTL_MS, Ma, Mz });
+
+  const log: LogEntry[] = [
+    pres('a', c.x, c.y, W),
+    eat('a', cell, W),
+    pres('z', c.x, c.y, W),
+    eat('a', cell, Ma),
+    eat('z', cell, Mz),
+  ];
+
+  const t1 = end - 2_000;             // 14_398_000
+  const t2 = end - 1_000;             // 14_399_000
+  const t3 = epochFoldEndMs(epoch);   // 14_399_750, the canonical last tick
+  check('the three endpoints are distinct real ticks inside epoch 3',
+    t1 < t2 && t2 < t3 && t3 === end - TICK_MS
+      && t1 % TICK_MS === 0 && t2 % TICK_MS === 0 && t3 % TICK_MS === 0,
+    { t1, t2, t3 });
+  check('all three endpoints are after both swimmers are evicted (frozen world)',
+    t1 > W + PRESENCE_TTL_MS + TICK_MS, { evictedAt: W + PRESENCE_TTL_MS + TICK_MS, t1 });
+
+  const s1 = foldShoal(log, t1, { epoch });
+  const s2 = foldShoal(log, t2, { epoch });
+  const s3 = foldShoal(log, t3, { epoch });
+
+  // Non-degeneracy: the fixture really did credit three bites and really did
+  // leave both swimmers departed, or the comparison below compares two empty
+  // worlds and proves nothing.
+  check('the fixture credited all three hand-derived bites',
+    s3.bitesTaken.get(cell) === 3, s3.bitesTaken.get(cell));
+  check('both swimmers really are departed at every endpoint',
+    s1.departed.has('a') && s1.departed.has('z') && s3.departed.has('a') && s3.departed.has('z')
+      && s3.fish.size === 0,
+    { fish: [...s3.fish.keys()], departed: [...s3.departed.keys()] });
+  check("'a's ledger is the hand-derived [Ma], not [W, Ma]",
+    JSON.stringify(s3.departed.get('a')!.recentBites) === JSON.stringify([Ma]),
+    s3.departed.get('a')!.recentBites);
+
+  const c1 = serialiseCheckpoint(checkpointFrom(s1, epoch));
+  const c2 = serialiseCheckpoint(checkpointFrom(s2, epoch));
+  const c3 = serialiseCheckpoint(checkpointFrom(s3, epoch));
+  check('three defensible fold endpoints produce byte-identical checkpoints',
+    c1 === c2 && c2 === c3, { c1, c2, c3 });
+
+  // And the shared answer is the hand-derived one, not merely "identical".
+  const cp = checkpointFrom(s3, epoch);
+  check("the canonical answer carries 'z' (age 9_000) and not 'a' (age 11_000)",
+    JSON.stringify(cp.recent) === JSON.stringify([['z', Mz, [Mz]]]), cp.recent);
+  check('both swimmers are still checkpointed on SIZE regardless of the recent tail',
+    cp.sizes.map((p) => p[0]).join(',') === 'a,z', cp.sizes);
 }
 
 // --- bodiesOf --------------------------------------------------------------
