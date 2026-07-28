@@ -1034,13 +1034,20 @@ export function App() {
       say('committee', 'the guacamole layer was persuaded. nobody asks how.', 6000);
       return;
     }
-    // The hermit only makes his offer sometimes; taking it arms the feed.
-    if (id === 'hermit' && hermit.phase === 'offering') {
-      const m = CREW.find((c) => c.id === 'hermit');
-      if (m) { setFeeding({ vendor: m, jarKey: HERMIT_TRADE }); say('hermit', pickLine('hermit', m.lines), 9000); }
-      return;
-    }
     setSheetId(id);
+  }
+
+  /* The hermit's gamble. It used to HIJACK the tap on the critter, so while he
+     was offering there was no way to reach his stall at all — survivable when
+     he sold one seasoning jar, a hard wall now that he holds Bigger Bowl III
+     (the only bowl on sale at Buffalo). It gets its own button, the same shape
+     as the committee's "lobby them"; tapping the hermit always shops. */
+  function onHermitTake(): void {
+    if (hermitRef.current.phase !== 'offering') return;
+    const m = CREW.find((c) => c.id === 'hermit');
+    if (!m) return;
+    setFeeding({ vendor: m, jarKey: HERMIT_TRADE });
+    say('hermit', pickLine('hermit', m.lines), 9000);
   }
 
   // Idle chatter: every ~26s somebody says their line — unless a vendor is
@@ -1604,6 +1611,15 @@ export function App() {
       )}
       {vote.phase === 'carried' && (
         <div className="vote-carried" role="status">motion carries — every fryer runs hot</div>
+      )}
+      {hermit.phase === 'offering' && !feeding && (
+        <div className="hermit-offer" role="status">
+          <span className="vote-text">
+            <strong>the hermit wants a chip.</strong>{' '}
+            he takes it under the celery and brings it back triple. sometimes he does not bring it back.
+          </span>
+          <button type="button" className="hermit-take" onClick={onHermitTake}>hand it over</button>
+        </div>
       )}
       {hermit.phase === 'holding' && (
         <div className="hermit-holding" role="status">the hermit has your chip. he has gone under the celery.</div>

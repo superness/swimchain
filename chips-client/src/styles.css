@@ -2045,8 +2045,15 @@ h1, h2, h3, p { margin: 0; }
 @keyframes prophecy-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 
 /* the committee's floor */
-.vote-banner, .vote-carried, .hermit-holding {
+/* THE TAP-EATING BANNER (operator, 2026-07-28: "blocking other UI popups").
+   These are fixed, z-index 28 — ABOVE the boards panel at 20 — and the
+   hermit's sits there for his full 120-second hold. Without this they are
+   invisible walls: a status line nobody can click through, parked over the
+   middle of a phone screen for two minutes. Only the BUTTONS inside them
+   take pointer events; the panels themselves never do. */
+.vote-banner, .vote-carried, .hermit-holding, .hermit-offer {
   position: fixed; left: 50%; translate: -50% 0; z-index: 28;
+  pointer-events: none;
   max-width: min(92vw, 560px);
   font-family: var(--chalk); font-size: 12px; line-height: 1.45;
   background: rgba(14, 10, 7, .95);
@@ -2061,6 +2068,7 @@ h1, h2, h3, p { margin: 0; }
   flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .08em;
   color: #2a1a04; background: linear-gradient(180deg, #ffd88e, #e79f30);
   border-radius: 999px; padding: 5px 14px;
+  pointer-events: auto;   /* the one clickable thing in a click-through panel */
 }
 .vote-carried {
   top: clamp(96px, 15vh, 150px); color: #cdeec2;
@@ -2068,11 +2076,26 @@ h1, h2, h3, p { margin: 0; }
 }
 .hermit-holding { top: clamp(140px, 21vh, 200px); color: #cfd8e2; text-align: center; }
 
+/* His offer used to hijack the TAP on the critter, which meant that while he
+   was offering you could not open his stall at all. That was survivable when
+   he sold one seasoning jar; now that he holds Bigger Bowl III it would wall
+   off the only bowl at Buffalo. The offer gets its own control instead —
+   the same shape the committee's "lobby them" already uses. */
+.hermit-offer {
+  top: clamp(140px, 21vh, 200px); color: #cfd8e2;
+  display: flex; align-items: center; gap: 12px;
+}
+.hermit-take {
+  flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .08em;
+  color: #2a1a04; background: linear-gradient(180deg, #cfe0f2, #7fa6c8);
+  border-radius: 999px; padding: 5px 14px; pointer-events: auto;
+}
+
 @media (max-width: 940px), (max-height: 620px) {
   .wing-perch { width: 34px; top: -9px; left: -6px; }
   .prophecy-mark { font-size: 8.5px; }
   .vote-banner, .vote-carried { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 88px); }
-  .hermit-holding { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 132px); }
+  .hermit-holding, .hermit-offer { top: auto; bottom: calc(46px + clamp(38px, 11vw, 52px) + 132px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .wing-perch, .wing-perch svg, .prophecy-mark { animation: none; }
@@ -2105,6 +2128,7 @@ h1, h2, h3, p { margin: 0; }
 .shop.hushed .vote-banner,
 .shop.hushed .vote-carried,
 .shop.hushed .hermit-holding,
+.shop.hushed .hermit-offer,
 .shop.hushed .dip-change,
 .shop.hushed .tut-banner,
 .shop.hushed .tut-ring,
@@ -2316,7 +2340,7 @@ h1, h2, h3, p { margin: 0; }
   .bowl-ticket { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 48px); }
   .tut-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 8px); }
   .vote-banner, .vote-carried { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 90px); }
-  .hermit-holding { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 134px); }
+  .hermit-holding, .hermit-offer { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 134px); }
   /* and the scrolling column stops short of the whole stack */
   .counter { max-height: calc(100dvh - 240px - var(--safe)); }
 }

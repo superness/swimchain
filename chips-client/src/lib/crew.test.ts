@@ -13,7 +13,7 @@
  * Run: npx tsx src/lib/crew.test.ts
  */
 import { CREW, crewFor, recruitsAt, vendorOf, jarAvailable, TICKER, tickerPoolFor } from './crew';
-import { UPGRADES, UPGRADE_CHAINS, DIP_TIERS } from './chipsConst';
+import { UPGRADES, UPGRADE_CHAINS, DIP_TIERS, START_BOWL_CAP } from './chipsConst';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -106,6 +106,43 @@ function check(name: string, cond: boolean, extra?: unknown) {
   check('the surface has news', sizes[0] >= 4, sizes[0]);
   check('the Abyss hears everything', sizes[7] === TICKER.length);
   check('no line is unreachable', TICKER.every((t) => t.layer >= 0 && t.layer < DIP_TIERS.length));
+}
+
+// 9) THE CAP DIAGONAL — the invariant that was missing when the wing arrived
+//    at Buffalo with a stall nobody could ever clear (live table Corner Rail
+//    684, 2026-07-28: fryer5 300M and doubledip3 400M on sale under a 200M
+//    bowl, with Bigger Bowl III sold a whole tier deeper by the oracle. The
+//    player had bought every other jar in the game and had NOTHING to spend
+//    on until Fondue, staring at two cards telling them to "buy a Bigger Bowl
+//    first" — a bowl that was not on any stall they could reach).
+//
+//    Three guards existed and all three missed it, because each looks at one
+//    axis: chipsConst.test.ts compares every cost to the single largest cap
+//    in the game with no layer at all; check 2) above compares layers to
+//    layers; flowsim silently treats over-cap as "not yet" and has no target
+//    naming a deep jar. The bug lives on the diagonal: COST AT LAYER L vs THE
+//    BIGGEST BOWL OBTAINABLE AT LAYER L. That is what this checks.
+{
+  // Bowls in ascending capacity — derived, so a new bowl is covered for free.
+  const bowls = Object.keys(UPGRADES)
+    .filter((k) => UPGRADES[k].bowlCap !== undefined)
+    .sort((a, b) => UPGRADES[a].bowlCap! - UPGRADES[b].bowlCap!);
+  // The most a bowl can hold once you have reached layer L. A bowl sold AT L
+  // counts: it and the jar it unlocks are on the shelf at the same moment.
+  const capAt = (L: number): number => {
+    let cap = START_BOWL_CAP;
+    for (const k of bowls) { const v = vendorOf(k); if (v && v.layer <= L) cap = UPGRADES[k].bowlCap!; }
+    return cap;
+  };
+
+  const overpriced = Object.keys(UPGRADES).filter((k) => UPGRADES[k].cost > capAt(vendorOf(k)!.layer));
+  check('no jar costs more than the bowl reachable at its vendor\'s layer', overpriced.length === 0,
+    overpriced.map((k) => `${k}=${UPGRADES[k].cost} > cap ${capAt(vendorOf(k)!.layer)}`));
+
+  // The sharper form: a stall whose EVERY jar is over cap is a critter you
+  // trek down to meet who can sell you nothing, ever.
+  const dead = CREW.filter((m) => m.sells.length > 0 && m.sells.every((k) => UPGRADES[k].cost > capAt(m.layer)));
+  check('no vendor arrives with a fully unbuyable stall', dead.length === 0, dead.map((m) => m.id));
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }

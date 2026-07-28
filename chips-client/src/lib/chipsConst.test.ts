@@ -14,19 +14,30 @@ function check(name: string, cond: boolean, extra?: unknown) {
   else { failures++; console.log(`FAIL  ${name}${extra !== undefined ? '  ' + JSON.stringify(extra) : ''}`); }
 }
 
+// Bowls in ascending capacity — DERIVED, not a hand-written list. Both checks
+// below used to name 'bowl3' literally, which silently went stale the day
+// bowl4 shipped: "the largest reachable cap" was measuring the second-largest,
+// and the newest bowl's own affordability was not checked at all.
+const BOWLS = Object.keys(UPGRADES)
+  .filter((k) => UPGRADES[k].bowlCap !== undefined)
+  .sort((a, b) => UPGRADES[a].bowlCap! - UPGRADES[b].bowlCap!);
+
 // Each bowl tier must be affordable under the cap in force before it.
 {
   let cap = START_BOWL_CAP;
-  for (const key of ['bowl1', 'bowl2', 'bowl3']) {
+  for (const key of BOWLS) {
     const u = UPGRADES[key];
     check(`${key} affordable under preceding cap`, u.cost <= cap, { cost: u.cost, cap });
     cap = u.bowlCap!;
   }
 }
 
-// No upgrade may cost more than the largest reachable cap.
+// No upgrade may cost more than the largest reachable cap. NOTE this is the
+// GLOBAL, layer-blind bound — necessary, nowhere near sufficient. It passed
+// happily while the wing sold 400M jars under a 200M bowl (2026-07-28); the
+// per-layer version that actually catches that lives in crew.test.ts check 9.
 {
-  const maxCap = UPGRADES['bowl3'].bowlCap!;
+  const maxCap = UPGRADES[BOWLS[BOWLS.length - 1]].bowlCap!;
   for (const [key, u] of Object.entries(UPGRADES)) {
     check(`${key} cost within max cap`, u.cost <= maxCap, { cost: u.cost, maxCap });
   }

@@ -71,7 +71,12 @@ function simulate(): Map<string, number> {
   };
 
   const STEP = 5;
-  while (sec < 3600 * 220 && events.size < TARGETS.length + 30) {
+  // The horizon must outrun the WHOLE catalog, not just the target list —
+  // the deepest jar (fryer6) lands at ~224h and the old 220h cutoff sliced it
+  // off, which nothing noticed until the never-bought check below existed.
+  // Exit early the moment every jar and every tier has landed.
+  const ALL = Object.keys(UPGRADES).length + DIP_TIERS.length;
+  while (sec < 3600 * 400 && events.size < ALL) {
     const ddEV = ddMod > 0 ? 1 + 1 / (ddMod * DOUBLE_DIP_RARITY) : 1;
     // EV crumbs/sec: designed ticks, seasoned, per fryer, with dd's dip EV.
     // The crackle curve is EV-flat (cooking.ts), so multi drops out of the
@@ -132,5 +137,22 @@ for (const f of FLOORS) {
   if (!ok) misses++;
   console.log(`  ${ok ? ' ok ' : 'MISS'}  ${f.what.padEnd(16)} floor  ${fmt(f.maxMin * 60).padStart(7)}  actual ${got === undefined ? 'never' : fmt(got)}`);
 }
+// NEVER-BOUGHT: the hole that let the wing ship with a dead stall (2026-07-28).
+// `buyable` rejects a jar priced over the bowl cap with the SAME `false` it
+// uses for "vendor not recruited yet" — so a permanently unbuyable jar is
+// indistinguishable from one that is merely early, and simply never appears in
+// the timeline. Nothing noticed, because TARGETS names none of the deep jars:
+// a jar nobody targets can be unreachable forever and cost zero MISSes.
+//
+// So: every jar in the catalog must get bought inside the sim's horizon, or
+// say why not. This needs no target line and cannot go stale when a jar is
+// added — which is exactly why the old per-jar target list failed.
+{
+  const never = Object.keys(UPGRADES).filter((k) => !events.has(`buy:${k}`));
+  const ok = never.length === 0;
+  if (!ok) misses++;
+  console.log(`  ${ok ? ' ok ' : 'MISS'}  ${'every jar reachable'.padEnd(16)} ${ok ? '' : `never bought: ${never.join(', ')}`}`);
+}
+
 console.log(misses === 0 ? '\nall targets met' : `\n${misses} target(s) missed`);
 process.exit(misses === 0 ? 0 : 1);
