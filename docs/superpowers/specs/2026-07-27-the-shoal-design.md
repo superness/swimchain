@@ -443,6 +443,25 @@ surfaces a reason.
 
    The warm-up is **consensus**: every client replays the same window from the same
    absolute origin, so all of them reconstruct identically.
+
+   **There is exactly one way to start an epoch.** A client never carries live state
+   across a boundary as an optimisation, because that creates a second definition of an
+   epoch's starting state which must then be kept in agreement with the replay forever —
+   and it will not be. Measured on the first attempt: a carried continuation and a cold
+   fold disagreed on `touchedIds` (so they published *different checkpoints* for the same
+   world), on `outsideTicks` (14,396 vs 237) and on `tension` (51,000 vs 15,750), landing
+   their sweeps six seconds apart. An epoch rollover therefore publishes a checkpoint and
+   **re-enters through the same warm-up path as a cold joiner**. The rollover is not a
+   shortcut; it is a checkpoint plus a normal start.
+
+   **The replay window must include everything still alive during the warm-up.** A vector
+   authored just before the warm-up start is live for all 360 warm-up ticks, so a fold
+   that skips it reconstructs an incomplete sea — and a blob that simply stops refreshing
+   90 s before the hour gets the whole bloom map handed back. The entry cursor therefore
+   admits everything from `epochStartMs(E) - WARMUP_MS - PRESENCE_TTL_MS`, i.e. the fold
+   reads 180 s of the prior epoch's log. **A joining client must hold that much prior
+   history or it will silently fold a different world**; the fold cannot detect the
+   missing prefix, so fetching it is the client's obligation.
 4. **Checkpoints are published, deterministic, and self-verifying going forward.** Every
    honest client computes the identical checkpoint at an epoch boundary, so publishing is
    unprivileged and disagreement is detectable by anyone.
