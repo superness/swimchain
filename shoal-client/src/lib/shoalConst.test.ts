@@ -10,6 +10,7 @@ import {
   HUSH_MS, LOCK_MS, TICK_MS, HUNGER_TICK_INTERVAL,
   START_SIZE, MIN_SIZE, SCATTER_COST, BITE_GROWTH, BLOOM_BITES,
   TENSION_NEUTRAL, TENSION_TRIGGER, MAX_TAKE, QUANT, SHELTER_R, CORE_R,
+  WARMUP_MS, EPOCH_MS, HUNGER_AMOUNT,
 } from './shoalConst';
 
 let failures = 0;
@@ -113,6 +114,62 @@ check('the sweep can take more than one', MAX_TAKE >= 2, { MAX_TAKE });
 check('quantization is finer than shelter radius', QUANT * 8 < SHELTER_R, { QUANT, SHELTER_R });
 check('quantization is finer than core radius', QUANT * 8 < CORE_R, { QUANT, CORE_R });
 check('hunger ticks at most once per second', HUNGER_TICK_INTERVAL * TICK_MS >= 1000, { HUNGER_TICK_INTERVAL, TICK_MS });
+
+// --- The warm-up window (spec 3.9 point 3) ----------------------------------
+// A fold's tick loop starts WARMUP_MS before its epoch's first ms and replays
+// the pre-origin tail. Four relationships make that work, and every one of
+// them is load-bearing rather than decorative.
+{
+  // 1. It must cover the longest window any reconstructible rule depends on.
+  //    Presence liveness IS that window, so equality is the exact answer, not
+  //    a generous margin: a vector older than PRESENCE_TTL_MS has already
+  //    expired at the origin, so replaying it could not change anything.
+  check('the warm-up is exactly the presence TTL', WARMUP_MS === PRESENCE_TTL_MS,
+    { WARMUP_MS, PRESENCE_TTL_MS });
+  // 2. It must comfortably exceed every shorter reconstructible window: the
+  //    bloom fallow clock, the fastest possible climb from tension 0 to the
+  //    trigger, and a hush in flight.
+  //    Tension's fastest climb: spreadPerMille maxes at 1000, so the per-tick
+  //    delta maxes at 1000 - TENSION_NEUTRAL(250) = 750, and reaching
+  //    TENSION_TRIGGER(30_000) takes at least 40 ticks = 10_000 ms.
+  const fastestTensionRampMs = Math.ceil(TENSION_TRIGGER / (1000 - TENSION_NEUTRAL)) * TICK_MS;
+  check('the fastest possible tension ramp is the hand-derived 40 ticks',
+    fastestTensionRampMs === 10_000, fastestTensionRampMs);
+  check('the warm-up covers the bloom fallow clock', WARMUP_MS > BLOOM_READY_MS,
+    { WARMUP_MS, BLOOM_READY_MS });
+  check('the warm-up covers a whole tension ramp plus its hush',
+    WARMUP_MS > fastestTensionRampMs + HUSH_MS,
+    { WARMUP_MS, fastestTensionRampMs, HUSH_MS });
+  check('the warm-up covers the bloom lookback window', WARMUP_MS >= BLOOM_WINDOW_MS,
+    { WARMUP_MS, BLOOM_WINDOW_MS });
+  // 3. It must be a whole number of ticks, or the warm-up would shift the
+  //    epoch's tick phase off the absolute grid.
+  check('the warm-up is a whole number of ticks', WARMUP_MS % TICK_MS === 0,
+    { warmTicks: WARMUP_MS / TICK_MS, TICK_MS });
+  // 4. It must be a whole number of HUNGER PERIODS, or starting the loop
+  //    360 ticks earlier would move every hunger firing. Both WARMUP_MS
+  //    (90 periods) and EPOCH_MS (3_600 periods) divide evenly, so hunger
+  //    fires at the same ABSOLUTE times in every epoch, warm-up or not —
+  //    which is what lets every hand-derived hunger count in the fold tests
+  //    stay stated in absolute ms.
+  const hungerPeriodMs = HUNGER_TICK_INTERVAL * TICK_MS; // 1000
+  check('the warm-up is a whole number of hunger periods, so it cannot shift hunger phase',
+    WARMUP_MS % hungerPeriodMs === 0 && EPOCH_MS % hungerPeriodMs === 0,
+    { WARMUP_MS, EPOCH_MS, hungerPeriodMs });
+  // 5. And the cost is the 360 ticks spec 3.9 point 3 quotes, on top of the
+  //    epoch's own 14_400 — not a fold-cost regression by an order of
+  //    magnitude.
+  check('the warm-up costs the hand-derived 360 ticks against the epoch\'s 14_400',
+    WARMUP_MS / TICK_MS === 360 && EPOCH_MS / TICK_MS === 14_400,
+    { warmTicks: WARMUP_MS / TICK_MS, epochTicks: EPOCH_MS / TICK_MS });
+  // 6. A swimmer replayed through the whole warm-up loses at most 90 size to
+  //    hunger, which is more than START_SIZE - MIN_SIZE. That is precisely
+  //    why the seed is applied AFTER the warm-up rather than before it: a
+  //    seeded size run through the warm-up would be floored at MIN_SIZE.
+  check('a full warm-up of hunger would flatten a starting fish, so the seed cannot precede it',
+    (WARMUP_MS / hungerPeriodMs) * HUNGER_AMOUNT > START_SIZE - MIN_SIZE,
+    { warmHunger: (WARMUP_MS / hungerPeriodMs) * HUNGER_AMOUNT, START_SIZE, MIN_SIZE });
+}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

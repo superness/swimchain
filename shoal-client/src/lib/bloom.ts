@@ -7,13 +7,16 @@
  * the whole school, a single tight blob could walk the map together, tension
  * would never rise, and the core tension of the game would stop existing.
  *
- * NOT YET IMPLEMENTED: a bounded lookback. BLOOM_WINDOW_MS exists and is
- * sized to sit below PRESENCE_TTL_MS so that a client joining mid-session
- * could rebuild this map from data still live, but nothing in this module or
- * in the fold enforces it — isBloomReady looks back over the whole of
- * lastVisit, however old. Whether to enforce it, and what a joining client is
- * owed if it cannot, is an open design decision; do not implement it here
- * without settling that.
+ * THE LOOKBACK IS BOUNDED BY THE FOLD, NOT BY THIS MODULE. isBloomReady still
+ * reads whatever `lastVisit` holds, however old — but the fold builds that map
+ * from scratch starting at `epochWarmStartMs`, so nothing in it can derive
+ * from a log entry more than WARMUP_MS(90_000) before the epoch's origin
+ * (shoalEngine.ts's foldShoal, spec 3.9 point 3). Since WARMUP_MS exceeds
+ * BLOOM_READY_MS(45_000), a cell absent from the reconstructed map has
+ * provably been fallow longer than the fallow clock, so "the sea starts full"
+ * below is a correct reading rather than a convenient fiction. Do not add a
+ * window check here: the bound belongs to the replay, and a second one here
+ * would be a consensus rule with no test behind it.
  */
 import { dist2 } from './fixed';
 import {

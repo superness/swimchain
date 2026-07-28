@@ -48,9 +48,9 @@ import type { LogEntry, Presence } from './shoalTypes';
 import { cellCentre } from './bloom';
 import {
   TICK_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, HUNGER_AMOUNT,
-  BLOOM_BITES, BLOOM_COLS,
+  BLOOM_BITES, BLOOM_COLS, WARMUP_MS,
 } from './shoalConst';
-import { epochOf, epochStartMs } from './epoch';
+import { epochOf, epochStartMs, epochWarmStartMs } from './epoch';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -115,10 +115,14 @@ function check(name: string, cond: boolean, extra?: unknown) {
 // this short window, so bitesTaken/bloomSinceMs never reset.
 //
 // --- Hunger -----------------------------------------------------------------
-// Ticks land at t=0,250,500,750,1000 (five ticks folded to UNTIL_MS=1000,
-// tickCount 1,2,3,4,5 in order). Hunger fires only when tickCount %
-// HUNGER_TICK_INTERVAL(4) === 0 -- that is exactly ONE firing, at the tick
-// processing t=750 (tickCount=4). No other tick in this window fires it.
+// The epoch-proper ticks land at t=0,250,500,750,1000 (folded to
+// UNTIL_MS=1000). Hunger fires when tickCount % HUNGER_TICK_INTERVAL(4) === 0,
+// which — because the loop starts at epochWarmStartMs(0) = -WARMUP_MS(90_000)
+// and WARMUP_MS is exactly 90 whole hunger periods — works out to the absolute
+// times t = 750 + 1000k. That is exactly ONE firing in this window, at t=750.
+// No other tick in it fires. (Firings do land during the warm-up, at
+// t=-89250, -88250, ..., -250, but every entry in this fixture is at ms=0 so
+// no fish is alive during any of them.)
 //   p0: lastBiteMs=0, and at t=750, t-lastBiteMs = 750 < HUNGER_TICK_INTERVAL
 //       * TICK_MS (4*250=1000) -- EXEMPT. p0's size never moves from 112.
 //   p1, p2: lastBiteMs=-1 (never ate) -- NOT exempt. Each loses HUNGER_AMOUNT
@@ -294,9 +298,21 @@ const richOrdered = orderLog(richLog);
 // comfortably inside [0, 29_750], so nothing about the fixture's own
 // richness is lost by the change.
 const UNTIL_MS = 29_750;
-const originMs = epochStartMs(epochOf(UNTIL_MS));
+const EPOCH = epochOf(UNTIL_MS);
+const originMs = epochStartMs(EPOCH);
+// An incremental driver starts where foldShoal starts: at the WARM-UP start,
+// WARMUP_MS before the epoch's own first ms (spec 3.9 point 3), with
+// state.epoch naming the epoch being folded rather than the one the first
+// tick lands in. Starting at originMs instead would silently fold a
+// 360-tick-shorter history than foldShoal does — which for this fixture
+// happens to make no observable difference (no entry predates ms=0, and
+// WARMUP_MS is a whole number of hunger periods so the phase is unchanged),
+// and that near-miss is exactly why it is spelled out rather than relied on.
+const warmStartMs = epochWarmStartMs(EPOCH);
 check('this file folds inside epoch 0, so the origin is 0 as assumed below',
-  epochOf(UNTIL_MS) === 0 && originMs === 0, { epoch: epochOf(UNTIL_MS), originMs });
+  EPOCH === 0 && originMs === 0, { epoch: EPOCH, originMs });
+check('and the incremental driver starts at the warm-up start, like foldShoal',
+  warmStartMs === originMs - WARMUP_MS && warmStartMs === -90_000, warmStartMs);
 
 // =============================================================================
 // Test B — state must survive a structural round trip
@@ -315,7 +331,7 @@ check('this file folds inside epoch 0, so the origin is 0 as assumed below',
   check('the stop point is a real tick strictly inside the in-flight hush',
     STOP_AT % TICK_MS === 0 && STOP_AT > 22_000 && STOP_AT < 26_000, STOP_AT);
 
-  let state = emptyState(originMs);
+  let state = emptyState(warmStartMs, EPOCH);
   while (state.nowMs <= STOP_AT) state = foldTick(state, richOrdered);
 
   check('the fold stopped mid-hush, with inputs already locked (non-degenerate checkpoint)',
@@ -451,7 +467,7 @@ check('this file folds inside epoch 0, so the origin is 0 as assumed below',
   check('the reference batch fold actually credited a bite (non-degenerate)',
     referenceBatch.bitesTaken.size > 0, [...referenceBatch.bitesTaken.entries()]);
 
-  let state = emptyState(originMs);
+  let state = emptyState(warmStartMs, EPOCH);
   let ticks = 0;
   while (state.nowMs <= UNTIL_MS) {
     state = foldTick(state, richOrdered);

@@ -89,6 +89,52 @@ export const MAX_TAKE = 3;
  */
 export const EPOCH_MS = 3_600_000;
 
+/**
+ * How far BEFORE its epoch's start a fold begins ticking (spec 3.9 point 3).
+ *
+ * The checkpoint carries only durable, player-owned value: size, plus a
+ * bounded recent-bite tail. Everything else that must cross a boundary is
+ * RECONSTRUCTED by replaying this pre-origin window — bloom fallow state,
+ * live presence, accumulated tension, and any in-flight hush. State a bounded
+ * replay can rebuild does not belong in a checkpoint.
+ *
+ * The value is PRESENCE_TTL_MS (90_000) because that is the longest window
+ * any reconstructible rule depends on, and no rule can depend on anything
+ * older: a presence vector authored more than PRESENCE_TTL_MS before the
+ * origin has already expired, so replaying it would change nothing. It
+ * comfortably exceeds every shorter window it also has to cover —
+ * BLOOM_READY_MS (45_000, the fallow clock), the 40-tick / 10_000 ms minimum
+ * for tension to climb from 0 to TENSION_TRIGGER at its fastest possible rate
+ * of 750/tick, and HUSH_MS (8_000, a committed sweep in flight).
+ *
+ * Without it, `emptyState` IS the epoch boundary: everything outside the
+ * checkpoint reads as zero at a predictable, publicly-readable instant. That
+ * is not a random interruption, it is a clock a player can aim at — the whole
+ * sea reads edible for exactly one tick every hour, an in-flight hush is
+ * annihilated (so any hush starting within HUSH_MS of a boundary is free),
+ * and the sea empties of every swimmer whose vector was authored before the
+ * boundary but is still live.
+ *
+ * Cost: WARMUP_MS / TICK_MS = 360 extra ticks on top of the epoch's 14_400,
+ * so the bounded-cost guarantee is unaffected.
+ *
+ * CONSENSUS: every client replays the same window from the same absolute
+ * origin, so all of them reconstruct identically.
+ *
+ * WHAT THE WARM-UP DOES NOT FIX, stated plainly. Its own first tick is a
+ * boundary of the same kind, 90 s earlier: at `epochWarmStartMs` the bloom
+ * map is empty again, so a fish that had been parked on a cell since before
+ * then reads it as fallow for one tick. What survives that into the epoch is
+ * only `bitesTaken`/`bloomSinceMs` for such a cell — the size, cooldown and
+ * void-ledger consequences are all overwritten by the checkpoint at the
+ * origin (see foldShoal), and the cell's own state clears on its next fallow
+ * window. It is bounded, it decays, and every client computes it identically,
+ * so it is a small inaccuracy rather than a divergence or a free lunch. The
+ * alternative — an unbounded replay — is the ~69 h lifetime ceiling spec 3.9
+ * point 2 exists to remove.
+ */
+export const WARMUP_MS = PRESENCE_TTL_MS; // 90_000
+
 // --- Blooms ----------------------------------------------------------------
 /** Bloom grid cell size in cu. WORLD_W/BLOOM_CELL and WORLD_H/BLOOM_CELL must be integers. */
 export const BLOOM_CELL = 128;
@@ -100,13 +146,19 @@ export const BLOOM_VISIT_R2 = BLOOM_VISIT_R * BLOOM_VISIT_R; // 40_000
 /** A cell unvisited for this long carries a bloom. Arbitrary-but-practical. */
 export const BLOOM_READY_MS = 45_000;
 /**
- * How far back the bloom map WOULD look, if the lookback were bounded. It is
- * not: nothing in bloom.ts or the fold enforces this window, and isBloomReady
- * reads the whole of lastVisit however old. The value is kept, and kept below
- * PRESENCE_TTL_MS, so that the constants stay ready for the day a joining
- * client has to reconstruct the map from data that is still live — but
- * whether to enforce it at all is an open design decision, not an oversight
- * to be quietly closed.
+ * How far back the bloom map is reconstructed from. This IS now enforced, by
+ * construction rather than by a check: the fold builds `lastVisit` from
+ * scratch starting at `epochWarmStartMs`, so no stamp in it can ever derive
+ * from a log entry older than WARMUP_MS before the epoch's origin, and
+ * WARMUP_MS (90_000) >= BLOOM_WINDOW_MS.
+ *
+ * The relationship that makes the reconstruction CORRECT rather than merely
+ * bounded is WARMUP_MS > BLOOM_READY_MS: a cell nobody visited during the
+ * whole warm-up has been fallow for at least 90 s, which is already past the
+ * 45 s fallow clock, so "absent from lastVisit" and "genuinely ready"
+ * coincide at every tick from the origin onward. That is what makes
+ * isBloomReady's "the sea starts full" an honest reading of a reconstructed
+ * map instead of a fiction about an empty one.
  */
 export const BLOOM_WINDOW_MS = 60_000;
 /** Bites a single bloom yields before it is gone. Blooms are rivalrous. */

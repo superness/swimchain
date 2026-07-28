@@ -9,7 +9,7 @@
  * out alone.
  */
 import { reckon } from './fixed';
-import { epochOf, epochStartMs } from './epoch';
+import { epochOf, epochStartMs, epochWarmStartMs } from './epoch';
 import { type Body } from './shelter';
 import { stepTension, topContributor, outsideCore } from './tension';
 import { shouldStartHush, isResolveTick, selectTaken } from './sweep';
@@ -18,7 +18,7 @@ import type { LogEntry, ShoalState, Checkpoint } from './shoalTypes';
 import {
   TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BLOOM_BITES, VOID_WINDOW_MS, LOCK_MS,
-  MAX_FOLD_TICKS,
+  MAX_FOLD_TICKS, WARMUP_MS,
 } from './shoalConst';
 
 /**
@@ -43,10 +43,19 @@ export function orderLog(entries: readonly LogEntry[]): LogEntry[] {
   });
 }
 
-/** A world with nobody in it. */
-export function emptyState(startMs: number): ShoalState {
+/**
+ * A world with nobody in it, starting at `startMs`.
+ *
+ * `epoch` defaults to the epoch `startMs` falls in, which is right for every
+ * caller EXCEPT one: a fold begins ticking at `epochWarmStartMs(e)`, which is
+ * in epoch `e - 1` by construction (spec 3.9 point 3's warm-up replay), while
+ * the state it builds is folding epoch `e`. `state.epoch` must name the epoch
+ * being folded, not the epoch the first tick happens to land in, so that path
+ * passes it explicitly.
+ */
+export function emptyState(startMs: number, epoch = epochOf(startMs)): ShoalState {
   return {
-    epoch: epochOf(startMs),
+    epoch,
     nowMs: startMs,
     fish: new Map(),
     departed: new Map(),
@@ -369,25 +378,71 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
  * entry a client happened to hold first is exactly what broke that (measured:
  * one stale entry moved a sweep by 1213ms and tension by 3120).
  *
+ * THE TICK LOOP STARTS AT `epochWarmStartMs(epoch)` — `WARMUP_MS` BEFORE the
+ * epoch's own first ms (spec 3.9 point 3) — and replays the pre-origin tail,
+ * discarding nothing. `emptyState` used to BE the epoch boundary: everything
+ * outside the checkpoint read as zero at a predictable, publicly-readable
+ * instant, which is a clock a player can aim at rather than a random
+ * interruption. Three defects, one root cause, all fixed by the replay
+ * instead of by widening the checkpoint:
+ *
+ *  - THE BLOOM MAP. `lastVisit` started empty, and `isBloomReady` reads an
+ *    absent cell as ready ("the sea starts full"). Six fish parked on one
+ *    cell took 0 bites all epoch, then BLOOM_BITES at exactly `epochStart`,
+ *    then 0 again one tick later — the parked-blob feed the rivalry rules
+ *    exist to prevent, for one tick, every hour, on schedule. The warm-up
+ *    replays their own markVisits, so the cell reads correctly fallow.
+ *  - AN IN-FLIGHT HUSH. A hush 2 s in and 6 s from resolving simply vanished
+ *    (tension 33_280 -> 0), so any hush starting within HUSH_MS of a
+ *    boundary was free. WARMUP_MS covers the whole tension ramp, so the hush
+ *    is reconstructed mid-flight, lock and all.
+ *  - LIVE PRESENCE. Entries before the origin were skipped outright, so a
+ *    vector authored 10 s before the boundary — still live for another 80 s
+ *    — yielded no fish at all and the sea emptied hourly.
+ *
  * `opts.epoch` defaults to `epochOf(untilMs)` — the epoch `untilMs` itself
  * falls in. `opts.seed` is the previous epoch's checkpoint (spec 3.9 point
  * 5): a cold joiner adopts the newest checkpoint it can see and verifies
- * forward from there, rather than replaying from genesis. Each swimmer in
- * the seed is loaded as a `departed` record before the tick loop runs, so a
- * swimmer who writes presence during this epoch is picked up by the
- * existing `existing ?? departed.get` revival path inside `foldTick` and
- * keeps the size they banked — AND, for a swimmer whose `opts.seed.recent`
- * entry says they ate within VOID_WINDOW_MS of the checkpoint, their
- * `lastBiteMs`/`recentBites` too. Carrying the latter is not optional
- * polish: without it, a swimmer who ate right before the boundary and
- * writes again right after gets a free `EAT_COOLDOWN_MS` reset (their
- * cooldown silently reads as "never bitten"), and any bite still inside its
- * void window at the boundary becomes permanently unvoidable — the exact
- * two things `Departed`'s own doc comment says a presence lapse must never
- * cause, now reachable on a schedule a player can time deliberately. Every
- * OTHER seeded swimmer (no `recent` entry) correctly seeds with
- * `lastBiteMs: -1, recentBites: []`, same as before: a bite already outside
- * the void window carries no more protection than a brand-new arrival's.
+ * forward from there, rather than replaying from genesis.
+ *
+ * THE SEED IS APPLIED AT THE EPOCH START, NOT AT THE WARM-UP START — after
+ * the last warm-up tick, before the tick at `originMs`. The two orders are
+ * not interchangeable and only this one is correct:
+ *
+ *  - Applied at the warm-up start, a seeded swimmer's banked size would then
+ *    be subjected to up to WARMUP_MS of extra hunger (360 ticks, 90 hunger
+ *    firings, -90 size) that the previous epoch's fold already charged them
+ *    for. Time is billed twice at every boundary, forever.
+ *  - Worse, any eat-claim in the warm-up window would credit BITE_GROWTH a
+ *    second time: those bites are already inside the checkpoint's `size`.
+ *    A swimmer could farm the last 90 s of every hour twice over.
+ *
+ * Applying it at `originMs` overwrites `size`, `lastBiteMs` and
+ * `recentBites` with the checkpoint's authoritative values for every id the
+ * checkpoint names — for a swimmer the warm-up brought back to life as well
+ * as for one who is still absent — while KEEPING everything the warm-up
+ * reconstructed that the checkpoint does not carry: position, vector,
+ * expiry, the bloom map, tension, outside-ticks and any in-flight hush. The
+ * two requirements do not conflict: the checkpoint owns durable value, the
+ * replay owns reconstructible state, and the epoch start is exactly the
+ * instant the checkpoint describes.
+ *
+ * A swimmer named in `opts.seed.recent` (they ate within VOID_WINDOW_MS of
+ * the checkpoint) also gets their `lastBiteMs`/`recentBites` from it rather
+ * than from the replay, because the checkpoint is authoritative for those
+ * too: without carrying them, a swimmer who ate right before the boundary
+ * and wrote again right after got a free `EAT_COOLDOWN_MS` reset and any
+ * bite still inside its void window became permanently unvoidable — the two
+ * things `Departed`'s doc says a presence lapse must never cause, on a
+ * schedule a player can time. Every OTHER seeded swimmer seeds with
+ * `lastBiteMs: -1, recentBites: []`: a bite already outside the void window
+ * carries no more protection than a brand-new arrival's.
+ *
+ * An id NOT named in the seed is left exactly as the warm-up reconstructed
+ * it. That case only arises from a seed that is missing swimmers it should
+ * have had; deleting them instead would throw away live presence, which is
+ * the very defect the warm-up exists to fix.
+ *
  * `opts.seed.epoch` MUST be exactly `epoch - 1` — see the check immediately
  * below. `departed` also prunes here (spec 3.9 point 6): a seeded swimmer
  * who writes no presence at all during this epoch is dropped, not carried
@@ -428,31 +483,81 @@ export function foldShoal(
     );
   }
   const originMs = epochStartMs(epoch);
+  const warmStartMs = epochWarmStartMs(epoch);
+  if (untilMs < originMs) {
+    // Silently folding to a tick that precedes the epoch's own start used to
+    // return a state whose `nowMs` was in the PREVIOUS epoch while
+    // `state.epoch` named this one — a state no caller can do anything
+    // correct with, and one `checkpointFrom`/`rollEpoch` would happily
+    // misread. Refuse instead.
+    throw new RangeError(
+      `foldShoal: untilMs ${untilMs} precedes epoch ${epoch}'s start at ${originMs}. ` +
+      'A fold covers exactly one epoch; fold the epoch untilMs actually falls in.',
+    );
+  }
   const log = orderLog(entries);
-  const state = emptyState(originMs);
+  const state = emptyState(warmStartMs, epoch);
 
-  // Load the seed as `departed` records before the tick loop runs. This is
-  // the whole of "adopt the checkpoint": a seeded swimmer who writes no
-  // presence this epoch stays exactly here (and is pruned below); one who
-  // does write presence is picked up by the ordinary
-  // `existing ?? state.departed.get(e.id)` revival path in foldTick's step
-  // 1, which reads their banked size (and, if carried, their cooldown/void
-  // ledger) same as any other lapsed swimmer.
+  // Refuse an absurd span up front rather than hanging. The loop below runs
+  // floor((untilMs - warmStartMs) / TICK_MS) + 1 times. With a DEFAULTED
+  // epoch this can never approach MAX_FOLD_TICKS: originMs =
+  // epochStartMs(epochOf(untilMs)) always sits within [untilMs - EPOCH_MS +
+  // 1, untilMs], so the span is under EPOCH_MS + WARMUP_MS and the tick count
+  // under (EPOCH_MS + WARMUP_MS)/TICK_MS = 14_760, two orders of magnitude
+  // below the guard. This is the change spec 3.9 describes: the old ~69h
+  // wall-clock-hang ceiling is eliminated by construction, not merely guarded
+  // against. The guard remains a real backstop only when a caller passes an
+  // EXPLICIT `opts.epoch` that is far from `untilMs` (a caller bug: resuming
+  // from a stale checkpoint's epoch against a much later untilMs) — that is
+  // the one path that can still ask for an absurd span.
+  const span = untilMs - warmStartMs;
+  const plannedTicks = Math.floor(span / TICK_MS) + 1;
+  if (plannedTicks > MAX_FOLD_TICKS) {
+    throw new RangeError(
+      `foldShoal: refusing to run ${plannedTicks} ticks (max ${MAX_FOLD_TICKS}). ` +
+      `untilMs ${untilMs} is ${untilMs - originMs} ms after epoch ${epoch}'s start at ` +
+      `${originMs} (the loop also replays ${WARMUP_MS} ms of warm-up before it). ` +
+      `Fold one epoch at a time, seeded from the previous epoch's checkpoint.`,
+    );
+  }
+
+  // Entries authored before the WARM-UP start are older than PRESENCE_TTL_MS
+  // at the epoch's origin, so replaying them could not change anything: any
+  // presence they carry has already expired, and any eat-claim they carry is
+  // long outside both EAT_COOLDOWN_MS and VOID_WINDOW_MS. That is exactly why
+  // WARMUP_MS is PRESENCE_TTL_MS and not something shorter. `log` is
+  // ms-ordered, so this is a one-time skip of a prefix — done once, before
+  // the tick loop starts, rather than re-checked every tick. Setting
+  // `state.cursor` here (rather than leaving it at emptyState's default of 0)
+  // is what makes this skip happen exactly once: every subsequent `foldTick`
+  // call resumes from wherever the cursor was left, never re-scanning this
+  // prefix.
+  let cursor = 0;
+  while (cursor < log.length && log[cursor].ms < warmStartMs) cursor++;
+  state.cursor = cursor;
+
+  // The warm-up: replay the pre-origin tail so bloom fallow state, live
+  // presence, tension and any in-flight hush are RECONSTRUCTED. Same tick
+  // body, same absolute grid — every client replays this identically.
+  while (state.nowMs < originMs) {
+    foldTick(state, log);
+  }
+
+  // Now, at the epoch's own first ms, adopt the checkpoint. See this
+  // function's doc for why this happens HERE and not before the warm-up.
   //
-  // `opts.seed.recent` is looked up by id here, once, into a Map — cheaper
-  // than a linear scan of `recent` per swimmer in `sizes`, and it keeps the
-  // "does this id have carried bite state" check obviously O(1) rather than
-  // relying on `recent` staying small (it does, by construction — see
-  // shoalTypes.ts's `Checkpoint` doc — but this shouldn't depend on that).
-  // A swimmer absent from `recent` seeds with `lastBiteMs: -1,
-  // recentBites: []`, same as before this fix: their last bite (if any) is
-  // already outside VOID_WINDOW_MS, so it carries no more protection than a
-  // brand-new arrival's — there is nothing to lose by not carrying it.
+  // `opts.seed.recent` is looked up by id once, into a Map — cheaper than a
+  // linear scan of `recent` per swimmer in `sizes`, and it keeps the "does
+  // this id have carried bite state" check obviously O(1) rather than relying
+  // on `recent` staying small (it does, by construction — see shoalTypes.ts's
+  // `Checkpoint` doc — but this shouldn't depend on that).
   //
-  // `state.touchedIds` records every id that authors a presence entry
-  // actually applied during this fold (foldTick's step 1). It is consulted
-  // only once, after the tick loop, to prune seed entries nobody returned
-  // to claim.
+  // `state.touchedIds` records every id that authored a presence entry
+  // actually applied during this fold, INCLUDING during the warm-up. It is
+  // consulted once, after the tick loop, to prune seed entries nobody
+  // returned to claim. Warm-up writes count as a claim on purpose: a swimmer
+  // whose vector is still live at the boundary has been in the water within
+  // the last WARMUP_MS, which is nothing like "absent for a full epoch."
   if (opts?.seed) {
     const recentById = new Map<string, { lastBiteMs: number; recentBites: number[] }>();
     for (const [id, lastBiteMs, recentBites] of opts.seed.recent) {
@@ -460,48 +565,31 @@ export function foldShoal(
     }
     for (const [id, size] of opts.seed.sizes) {
       const r = recentById.get(id);
+      const lastBiteMs = r ? r.lastBiteMs : -1;
+      // Copied, never aliased: the seed is the caller's Checkpoint and must
+      // not be mutated by the fold that consumed it.
+      const recentBites = r ? [...r.recentBites] : [];
+      const live = state.fish.get(id);
+      if (live) {
+        // The warm-up brought this swimmer back to life. Keep everything the
+        // replay reconstructed (position, vector, expiry) and overwrite only
+        // what the checkpoint owns.
+        live.size = size;
+        live.lastBiteMs = lastBiteMs;
+        live.recentBites = recentBites;
+        continue;
+      }
       state.departed.set(id, {
         size,
-        lastScatterMs: -1,
-        lastBiteMs: r ? r.lastBiteMs : -1,
-        recentBites: r ? r.recentBites : [],
+        // `lastScatterMs` is not in the checkpoint. If the warm-up saw this
+        // swimmer scattered, that observation is better than nothing; if not,
+        // -1 is the same value the seed used to install unconditionally.
+        lastScatterMs: state.departed.get(id)?.lastScatterMs ?? -1,
+        lastBiteMs,
+        recentBites,
       });
     }
   }
-
-  // Refuse an absurd span up front rather than hanging. The loop below runs
-  // floor((untilMs - originMs) / TICK_MS) + 1 times. With a DEFAULTED epoch
-  // this can never approach MAX_FOLD_TICKS: originMs = epochStartMs(epochOf(
-  // untilMs)) always sits within [untilMs - EPOCH_MS + 1, untilMs], so the
-  // span is under EPOCH_MS and the tick count under EPOCH_MS/TICK_MS = 14400,
-  // two orders of magnitude below the guard. This is the change spec 3.9
-  // describes: the old ~69h wall-clock-hang ceiling is eliminated by
-  // construction, not merely guarded against. The guard remains a real
-  // backstop only when a caller passes an EXPLICIT `opts.epoch` that is far
-  // from `untilMs` (a caller bug: resuming from a stale checkpoint's epoch
-  // against a much later untilMs) — that is the one path that can still ask
-  // for an absurd span.
-  const span = untilMs - originMs;
-  const plannedTicks = span < 0 ? 0 : Math.floor(span / TICK_MS) + 1;
-  if (plannedTicks > MAX_FOLD_TICKS) {
-    throw new RangeError(
-      `foldShoal: refusing to run ${plannedTicks} ticks (max ${MAX_FOLD_TICKS}). ` +
-      `untilMs ${untilMs} is ${span} ms after epoch ${epoch}'s start at ${originMs}. ` +
-      `Fold one epoch at a time, seeded from the previous epoch's checkpoint.`,
-    );
-  }
-
-  // Entries authored before the epoch's own start belong to a previous epoch
-  // and are already reflected in the seed (Task 4), not replayed here from
-  // raw history. `log` is ms-ordered, so this is a one-time skip of a prefix
-  // — done once, before the tick loop starts, rather than re-checked every
-  // tick. Setting `state.cursor` here (rather than leaving it at emptyState's
-  // default of 0) is what makes this skip happen exactly once: every
-  // subsequent `foldTick` call resumes from wherever the cursor was left,
-  // never re-scanning this prefix.
-  let cursor = 0;
-  while (cursor < log.length && log[cursor].ms < originMs) cursor++;
-  state.cursor = cursor;
 
   while (state.nowMs <= untilMs) {
     foldTick(state, log);

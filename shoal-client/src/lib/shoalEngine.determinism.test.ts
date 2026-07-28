@@ -370,9 +370,11 @@ const resolveAtMs = triggerAtMs + HUSH_MS;
 }
 {
   // Growth from the bite IS real and immediate — check it before hunger has
-  // had any chance to claw it back. The first hunger firing lands at
-  // t=750 (tickCount 4); at t=500 none has fired yet, so the eater's size
-  // is purely START_SIZE + BITE_GROWTH with nothing subtracted.
+  // had any chance to claw it back. Hunger fires at t = 750 + 1000k, so the
+  // first firing at or after this fixture's t=0 lands at t=750; at t=500 none
+  // has fired yet (the warm-up ticks before t=0 contain firings, but no fish
+  // is alive during them — every entry in richLog is at ms=0), so the eater's
+  // size is purely START_SIZE + BITE_GROWTH with nothing subtracted.
   const s = foldShoal(richLog, 500);
   check('the credited bite grows the eater before hunger claws anything back',
     s.fish.get('e0')!.size === START_SIZE + BITE_GROWTH, s.fish.get('e0')!.size);

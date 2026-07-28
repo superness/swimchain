@@ -5,6 +5,20 @@
  * ordered by EMBEDDED AUTHORING MS, with the content hash as the only
  * tiebreak. An allocator that does not track wall clock sorts every later
  * action before every earlier one and silently rescores the session.
+ *
+ * HUNGER PHASE, stated once because every hand-derived size below depends on
+ * it. A fold's tick loop starts at epochWarmStartMs(e) = epochStartMs(e) -
+ * WARMUP_MS(90_000), so state.tickCount on the tick at absolute time t is
+ *   (t - epochStartMs(e)) / TICK_MS + WARMUP_MS / TICK_MS + 1
+ *   = (t - epochStartMs(e)) / 250 + 361
+ * and hunger (tickCount % HUNGER_TICK_INTERVAL(4) === 0) therefore fires when
+ *   (t - epochStartMs(e)) / 250 ≡ 3 (mod 4),  i.e.  t ≡ epochStart + 750 (mod 1000)
+ * — the SAME absolute times as before the warm-up existed, because WARMUP_MS
+ * is exactly 90 whole hunger periods and EPOCH_MS is 3_600 of them (pinned in
+ * shoalConst.test.ts). So every "hunger fires at t = 750 + 1000k" derivation
+ * in this file is unchanged; only the tickCount LABELS shift by 360, and the
+ * comments below name the absolute times rather than the labels wherever the
+ * distinction could matter.
  */
 import { orderLog, foldShoal, bodiesOf } from './shoalEngine';
 import { checkpointFrom, serialiseCheckpoint } from './checkpoint';
@@ -12,7 +26,7 @@ import type { LogEntry, Presence, EatClaim, ShoalState, Checkpoint } from './sho
 import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
-  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS, EPOCH_MS,
+  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS, EPOCH_MS, WARMUP_MS,
 } from './shoalConst';
 import { cellCentre, bitesLeft } from './bloom';
 import { epochOf, epochStartMs, epochEndMs, epochFoldEndMs } from './epoch';
@@ -59,13 +73,13 @@ check('orderLog does not mutate its input', (() => {
 
 // --- Presence and expiry ---------------------------------------------------
 {
-  // untilMs must stay below the fold's first hunger tick. Ticks land at
-  // t=0,250,500,750,1000,... with tickCount 1,2,3,4,5,... (tickCount
-  // increments once per iteration, starting from the tick at t=state.nowMs).
-  // Hunger fires when tickCount % HUNGER_TICK_INTERVAL === 0, i.e. first at
-  // tickCount=4, which is the iteration at t=750. Folding only to t=500 gives
-  // iterations t=0,250,500 -> tickCount 1,2,3, so hunger has not fired yet
-  // and this checks pure seeding, uncontaminated by hunger.
+  // untilMs must stay below the fold's first hunger tick AFTER this fish
+  // exists. Hunger fires at t = 750 + 1000k (see the hunger-phase note in
+  // this file's header), so the first firing at or after t=0 is t=750.
+  // Folding only to t=500 covers the ticks at t=0,250,500 and none of them
+  // is a firing, so this checks pure seeding, uncontaminated by hunger. (The
+  // warm-up ticks before t=0 do contain firings, but there is no fish alive
+  // during them — the log's first entry is at ms=0.)
   const s = foldShoal([pres('a', 1000, 1000, 0)], 500);
   check('a swimmer appears in the fold', s.fish.has('a'), [...s.fish.keys()]);
   check('a new swimmer starts at START_SIZE', s.fish.get('a')!.size === START_SIZE, s.fish.get('a')!.size);
@@ -128,9 +142,9 @@ check('orderLog does not mutate its input', (() => {
   // expiresMs = 15000 + PRESENCE_TTL_MS(90000) = 105000, and step 2 evicts it
   // at the first tick with t > 105000, i.e. t = 105250.
   //
-  // Hunger while present, by hand. tickCount is 1 on the tick at t=0, so
-  // hunger fires when tickCount % HUNGER_TICK_INTERVAL(4) === 0, i.e. at
-  // t = 750 + 1000k. Firings with t <= 105000: 750, 1750, ..., 104750 —
+  // Hunger while present, by hand. Hunger fires at t = 750 + 1000k (see the
+  // hunger-phase note in this file's header). Firings with
+  // 0 <= t <= 105000: 750, 1750, ..., 104750 —
   // (104750-750)/1000 + 1 = 105 of them. A firing is skipped when the fish
   // bit within HUNGER_TICK_INTERVAL*TICK_MS = 1000 ms. Bites are 2500 apart
   // and firings 1000 apart, so each bite skips exactly one firing (the one in
@@ -222,8 +236,8 @@ check('orderLog does not mutate its input', (() => {
   const c = cellCentre(cell);
   const log: LogEntry[] = [pres('a', c.x, c.y, 0), eat('a', cell, 0)];
   const s = foldShoal(log, 1_000);
-  // Hand arithmetic: as above, the only hunger opportunity in [0, 1000] is
-  // the iteration at t=750 (tickCount=4). foldShoal skips hunger for a fish
+  // Hand arithmetic: as above, the only hunger firing in [0, 1000] is at
+  // t=750. foldShoal skips hunger for a fish
   // that ate within HUNGER_TICK_INTERVAL * TICK_MS (= 1000ms) of now; this
   // fish ate at ms=0, and 750 - 0 = 750 < 1000, so that hunger tick is
   // skipped. No hunger is ever applied inside this window, so the bite's
@@ -310,8 +324,8 @@ check('orderLog does not mutate its input', (() => {
   // the time the eat claim at ms=500 (tick t=500) is checked, lastVisit(700)
   // reads 250, and 500-250=250 is far short of BLOOM_READY_MS (45000), so
   // isBloomReady is false and the bite must NOT credit. untilMs is kept at
-  // 500 (ticks t=0,250,500 -> tickCount 1,2,3) so no hunger tick fires and
-  // this test is not contaminated by hunger arithmetic.
+  // 500 (ticks t=0,250,500, none of which is a t = 750 + 1000k firing) so no
+  // hunger tick fires and this test is not contaminated by hunger arithmetic.
   const cell = 700;
   const c = cellCentre(cell);
   const log: LogEntry[] = [pres('a', c.x, c.y, 0), eat('a', cell, 500)];
@@ -790,17 +804,25 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
     wallClock === null, wallClock?.message);
 
   // The backstop, re-exercised via an explicit epoch mismatch. Pin opts.epoch
-  // to 0 (origin 0) while untilMs is the same values the old test used, so the
-  // span arithmetic is identical to the pre-epoch-origin guard:
-  //   span 249_999_750 -> floor(249999750/250) + 1 = 999999 + 1 = 1_000_000
-  //                       == MAX_FOLD_TICKS, so allowed
-  //   span 250_000_000 -> floor(250000000/250) + 1 = 1000000 + 1 = 1_000_001
-  //                       >  MAX_FOLD_TICKS, so refused
-  const atBudgetMs = MAX_FOLD_TICKS * TICK_MS - TICK_MS; // 249_999_750
-  const overBudgetMs = MAX_FOLD_TICKS * TICK_MS;         // 250_000_000
+  // to 0 while untilMs is huge, so the span is absurd.
+  //
+  // The loop starts at epochWarmStartMs(0) = -WARMUP_MS(90_000), not at 0, so
+  // the span the guard measures is untilMs + WARMUP_MS and the boundary
+  // untilMs values are WARMUP_MS lower than they were before the warm-up
+  // existed. Re-derived, not adjusted-until-green:
+  //   ticks = floor((untilMs + WARMUP_MS) / TICK_MS) + 1
+  //   want ticks == MAX_FOLD_TICKS  ->  untilMs = (MAX_FOLD_TICKS-1)*TICK_MS
+  //     - WARMUP_MS = 999_999*250 - 90_000 = 249_999_750 - 90_000 = 249_909_750
+  //     span 249_999_750 -> floor(.../250) + 1 = 999_999 + 1 = 1_000_000, allowed
+  //   one tick more   ->  untilMs = MAX_FOLD_TICKS*TICK_MS - WARMUP_MS
+  //     = 250_000_000 - 90_000 = 249_910_000
+  //     span 250_000_000 -> 1_000_000 + 1 = 1_000_001, refused
+  const atBudgetMs = (MAX_FOLD_TICKS - 1) * TICK_MS - WARMUP_MS; // 249_909_750
+  const overBudgetMs = MAX_FOLD_TICKS * TICK_MS - WARMUP_MS;     // 249_910_000
   check('the budget boundary is where the arithmetic says',
-    atBudgetMs === 249_999_750 && overBudgetMs === 250_000_000 && MAX_FOLD_TICKS === 1_000_000,
-    { atBudgetMs, overBudgetMs, MAX_FOLD_TICKS });
+    atBudgetMs === 249_909_750 && overBudgetMs === 249_910_000
+      && MAX_FOLD_TICKS === 1_000_000 && WARMUP_MS === 90_000,
+    { atBudgetMs, overBudgetMs, MAX_FOLD_TICKS, WARMUP_MS });
 
   const atBudget = threw(() => foldShoal([], atBudgetMs, { epoch: 0 }));
   check('a fold of exactly MAX_FOLD_TICKS ticks is allowed (explicit epoch 0)',
@@ -849,22 +871,22 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   const seed: Checkpoint = { epoch: epoch - 1, sizes: [['vet', 175]], recent: [] };
   const s = foldShoal([pres('vet', 1000, 1000, start + 500)], start + 1000, { epoch, seed });
   // Hand-derived independently of the brief's own comment (which turns out to
-  // agree, but is re-derived here rather than trusted). state.nowMs starts at
-  // originMs = start (emptyState(originMs) inside foldShoal), and the loop
-  // runs while t <= untilMs(start+1000), stepping by TICK_MS(250):
-  //   t = start, start+250, start+500, start+750, start+1000  -- 5 iterations
-  // tickCount increments once per iteration (step 6), so tickCount is 1..5 in
-  // that same order. Hunger fires only when tickCount % HUNGER_TICK_INTERVAL
-  // (4) === 0, i.e. tickCount=4, the iteration at t=start+750.
-  // 'vet's presence is authored at ms=start+500, which is applied in step 1
-  // of the tick at t=start+500 (log[cursor].ms<=t), i.e. tickCount=3 -- so
-  // 'vet' already exists by tickCount=4 and is eligible for that hunger tick.
-  // The seed's `recent` is empty here, so the seed is applied as a
-  // `departed` record with lastBiteMs=-1 (no carried bite state), so at
-  // tickCount=4 the hunger skip condition (f.lastBiteMs>=0 &&
-  // t-f.lastBiteMs<1000) is false and hunger DOES apply: exactly one tick,
-  // -HUNGER_AMOUNT(1). tickCount=5 is not a multiple of 4, so there is no
-  // second hunger tick.
+  // agree, but is re-derived here rather than trusted). Ticks in the epoch
+  // proper run from t = start while t <= untilMs(start+1000), stepping by
+  // TICK_MS(250):
+  //   t = start, start+250, start+500, start+750, start+1000
+  // Hunger fires at t = start + 750 + 1000k (see this file's header note), so
+  // exactly ONE firing lands in that range: t = start+750. The warm-up ticks
+  // before `start` contain firings too, but no fish is alive during them —
+  // the log's only entry is at ms=start+500 — and the seed is not applied
+  // until the epoch's own first ms, precisely so warm-up hunger can never
+  // touch a banked size.
+  // 'vet's presence is authored at ms=start+500, applied in step 1 of the
+  // tick at t=start+500, so 'vet' exists in time for the t=start+750 firing.
+  // The seed's `recent` is empty here, so 'vet' is seeded with lastBiteMs=-1
+  // (no carried bite state) and the hunger skip condition (f.lastBiteMs>=0 &&
+  // t-f.lastBiteMs<1000) is false: hunger DOES apply, exactly once,
+  // -HUNGER_AMOUNT(1). t=start+1000 is not a firing.
   //   175 (seeded) - 1 (one hunger tick) = 174
   check('a seeded swimmer starts at their banked size', s.fish.get('vet')!.size === 174,
     s.fish.get('vet')!.size);
@@ -876,8 +898,8 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
 }
 {
   // A swimmer absent from the seed is new and starts at START_SIZE. Same
-  // tick/hunger timing as above (identical ms values): one hunger tick at
-  // tickCount=4. START_SIZE(100) - HUNGER_AMOUNT(1) = 99.
+  // tick/hunger timing as above (identical ms values): one hunger firing, at
+  // t=start+750. START_SIZE(100) - HUNGER_AMOUNT(1) = 99.
   const epoch = 4;
   const start = epochStartMs(epoch);
   const seed: Checkpoint = { epoch: epoch - 1, sizes: [['other', 900]], recent: [] };
@@ -1146,6 +1168,291 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
     { got: sE1.fish.get('a')!.recentBites, expected: [preMs, postMs] });
   check('lastBiteMs also reflects the new credit', sE1.fish.get('a')!.lastBiteMs === postMs,
     sE1.fish.get('a')!.lastBiteMs);
+}
+
+// =============================================================================
+// The warm-up replay (spec 3.9 point 3, fix review's three Criticals)
+// =============================================================================
+//
+// `emptyState` used to BE the epoch boundary: every field outside the
+// checkpoint read as zero at a predictable, publicly-readable instant. The
+// fold now starts ticking at epochWarmStartMs(e) = epochStartMs(e) -
+// WARMUP_MS(90_000) and replays the pre-origin tail, so bloom fallow state,
+// live presence, tension and any in-flight hush are RECONSTRUCTED. One test
+// per defect, each with a control that fails identically if WARMUP_MS is 0.
+
+// --- 1. The bloom map crosses the boundary ----------------------------------
+// Six fish parked on one cell took 0 bites all epoch, then BLOOM_BITES at
+// exactly epochStart, then 0 again one tick later: step 1 judges eat claims
+// before step 3 runs markVisits, and isBloomReady reads an absent cell as
+// ready ("the sea starts full"). That is the parked-blob feed rivalry exists
+// to prevent, for one tick, every hour, on a clock anyone can read.
+//
+// Hand derivation. epoch 12: start = 12 * EPOCH_MS = 43_200_000.
+//   target cell 700  -> centre (28*128+64, 21*128+64) = (3648, 2752)
+//   away   cell 100  -> centre ( 4*128+64,  3*128+64) = ( 576,  448)
+// The two centres are 3072 and 2304 cu apart on the axes — far past
+// BLOOM_VISIT_R(200), so standing on one never marks the other.
+//
+// Six swimmers f0..f5 write presence at start - 30_000 (inside the warm-up
+// window, which reaches back to start - 90_000), then write again at ms=start
+// and claim cell 700 at ms=start. Within tick t=start, orderLog sorts
+// 'f043200000' < 'f0e43200000' (index 2: '0' < 'e') < 'f143200000' (index 1:
+// '0' < '1'), so each fish is live before its own claim is judged.
+//
+//   PARKED run  — the six sat ON cell 700 for the whole warm-up, so
+//     markVisits stamped lastVisit(700) on every warm-up tick, most recently
+//     at t = start - 250. When step 1 of tick t=start judges the claims,
+//     start - (start-250) = 250, nowhere near BLOOM_READY_MS(45_000): every
+//     claim is refused. bitesTaken(700) is never written at all.
+//   AWAY run    — identical in every respect except that the six spent the
+//     warm-up on cell 100 instead. Cell 700 is then genuinely absent from
+//     lastVisit, isBloomReady is true, and all six claims credit: exactly
+//     BLOOM_BITES(6), the number the review measured.
+//
+// Sizes, by hand. Hunger fires at t = start + 750 + 1000k (header note), so
+// firings while these fish are alive, from t = start-30_000 to t = start, are
+// at offsets -29_250, -28_250, ..., -250: (29_250-250)/1000 + 1 = 30 of them.
+// t=start itself is not a firing (0 mod 1000 != 750).
+//   parked: START_SIZE(100) - 30 = 70, and no bite ever credits
+//   away:   100 - 30 + BITE_GROWTH(12) = 82
+// Both are clear of MIN_SIZE(60), so the floor never blurs the difference.
+{
+  const epoch = 12;
+  const start = epochStartMs(epoch);
+  const target = cellCentre(700);
+  const away = cellCentre(100);
+  check('epoch 12 starts where the arithmetic says', start === 43_200_000, start);
+  check('the two cells are centred where BLOOM_CELL arithmetic says',
+    target.x === 3648 && target.y === 2752 && away.x === 576 && away.y === 448, { target, away });
+  check('the away cell cannot mark the target cell (well past BLOOM_VISIT_R)',
+    Math.abs(target.x - away.x) > 200 && Math.abs(target.y - away.y) > 200, { target, away });
+
+  const PARK_MS = start - 30_000;
+  check('the parking write is inside the warm-up window and on the tick grid',
+    PARK_MS >= start - WARMUP_MS && PARK_MS % TICK_MS === 0, { PARK_MS, warmStart: start - WARMUP_MS });
+
+  const ids = ['f0', 'f1', 'f2', 'f3', 'f4', 'f5'];
+  check('the fixture has exactly BLOOM_BITES swimmers, so "all six credit" is the whole bloom',
+    ids.length === BLOOM_BITES, { swimmers: ids.length, BLOOM_BITES });
+
+  const build = (warmX: number, warmY: number): LogEntry[] => {
+    const out: LogEntry[] = [];
+    for (const id of ids) {
+      out.push(pres(id, warmX, warmY, PARK_MS));
+      out.push(pres(id, target.x, target.y, start));
+      out.push(eat(id, 700, start));
+    }
+    return out;
+  };
+
+  const parked = foldShoal(build(target.x, target.y), start, { epoch });
+  const arrived = foldShoal(build(away.x, away.y), start, { epoch });
+
+  // The control first: if THIS is not six, the parked run's zero proves
+  // nothing (it could be zero for some unrelated reason).
+  check('the control credits the full bloom — the cell really is edible at epochStart',
+    arrived.bitesTaken.get(700) === BLOOM_BITES, arrived.bitesTaken.get(700));
+  check('and every control swimmer is at the hand-derived fed size',
+    ids.every((id) => arrived.fish.get(id)!.size === 82 && arrived.fish.get(id)!.lastBiteMs === start),
+    ids.map((id) => [id, arrived.fish.get(id)!.size, arrived.fish.get(id)!.lastBiteMs]));
+
+  // The defect itself.
+  check('parked fish get ZERO bites at epochStart, not BLOOM_BITES',
+    (parked.bitesTaken.get(700) ?? 0) === 0 && !parked.bitesTaken.has(700),
+    { bitesTaken: parked.bitesTaken.get(700) });
+  check('no parked swimmer records a bite at all',
+    ids.every((id) => parked.fish.get(id)!.lastBiteMs === -1),
+    ids.map((id) => [id, parked.fish.get(id)!.lastBiteMs]));
+  check('parked swimmers are at the hand-derived unfed size, so they were alive and hungry throughout',
+    ids.every((id) => parked.fish.get(id)!.size === 70),
+    ids.map((id) => [id, parked.fish.get(id)!.size]));
+  // And the reason is the reconstructed bloom map, observed directly.
+  check('the warm-up reconstructed the fallow clock: cell 700 was last visited one tick ago',
+    parked.lastVisit.get(700) === start && arrived.lastVisit.get(700) === start,
+    { parked: parked.lastVisit.get(700), arrived: arrived.lastVisit.get(700) });
+}
+
+// --- 2. An in-flight hush crosses the boundary ------------------------------
+// A hush 2 s in and 6 s from resolving simply vanished, and tension went
+// 33_280 -> 0, so any hush starting within HUSH_MS of a boundary was free.
+//
+// Geometry (shared with the step-order test further down). Four swimmers,
+// stationary, at
+//   a (0, 1504)   b (1600, 0)   c (1600, 3000)   d (3200, 1504)
+// coreCentre medians x and y INDEPENDENTLY and takes the LOWER of the two
+// middle values for an even count (fixed.ts's medianInt):
+//   x sorted [0, 1600, 1600, 3200] -> index 1 -> 1600
+//   y sorted [0, 1504, 1504, 3000] -> index 1 -> 1504
+// so the core centre is (1600, 1504) — a point no fish occupies. Each fish is
+// 1600, 1504, 1496 and 1600 cu from it, every one far past CORE_R(620), so
+// all four read outside the core on every tick: spreadPerMille = 1000 and
+// stepTension adds 1000 - TENSION_NEUTRAL(250) = 750 per tick, the fastest
+// this fold can go. The closest pair is 1600/1504 apart, far past
+// SHELTER_R(340), so all four are exposed and none shelters another.
+// Every coordinate is a multiple of QUANT(8), so reckon is exact.
+//
+// Timeline, from the first tick the four exist (call it W):
+//   tension hits TENSION_TRIGGER(30_000) on tick 30_000/750 = 40, i.e. at
+//     t = W + 39*TICK_MS = W + 9750   -> hushStartMs
+//   input lock  W + 9750 + LOCK_MS(4000)  = W + 13750
+//   resolution  W + 9750 + HUSH_MS(8000)  = W + 17750
+// Choosing W = epochStart - 15750 puts the hush start at epochStart - 6000,
+// the lock at epochStart - 2000, and the RESOLUTION at epochStart + 2000:
+// committed before the boundary, resolved after it.
+{
+  const epoch = 20;
+  const start = epochStartMs(epoch);
+  const spots: Array<[string, number, number]> = [
+    ['a', 0, 1504], ['b', 1600, 0], ['c', 1600, 3000], ['d', 3200, 1504],
+  ];
+  const RAMP_MS = 9_750;      // 40 ticks at 750/tick to TENSION_TRIGGER
+  const LIFT_MS = 15_750;     // epochStart - W
+
+  const scenario = (w: number, refreshAt: number): LogEntry[] => {
+    const out: LogEntry[] = [];
+    for (const [id, x, y] of spots) out.push(pres(id, x, y, w));
+    // A refresh write, so that under a zero warm-up the swimmers still EXIST
+    // after the boundary and the failure is "the committed hush was
+    // annihilated" rather than "the sea is empty".
+    for (const [id, x, y] of spots) out.push(pres(id, x, y, refreshAt));
+    return out;
+  };
+
+  const W = start - LIFT_MS;
+  check('the boundary run\'s arrival is inside the warm-up window, on the grid',
+    W >= start - WARMUP_MS && W % TICK_MS === 0, { W, warmStart: start - WARMUP_MS });
+  const hushAt = W + RAMP_MS;
+  const lockAt = hushAt + 4_000;
+  const resolveAt = hushAt + 8_000;
+  check('the hush commits before the boundary and resolves after it',
+    hushAt === start - 6_000 && lockAt === start - 2_000 && resolveAt === start + 2_000,
+    { hushAt, lockAt, resolveAt, start });
+
+  const crossing = scenario(W, start);
+
+  // (a) At the boundary itself, the hush is mid-dread with inputs locked and
+  //     tension carrying the whole ramp. Ticks from W to start inclusive:
+  //     LIFT_MS/TICK_MS + 1 = 63 + 1 = 64, each +750 -> tension 48_000.
+  const atBoundary = foldShoal(crossing, start, { epoch });
+  check('at epochStart the hush is still in flight, with inputs already locked',
+    atBoundary.hushStartMs === hushAt && atBoundary.lockedPositions !== null
+      && atBoundary.lockedPreferred === 'a',
+    { hushStartMs: atBoundary.hushStartMs, expected: hushAt,
+      locked: atBoundary.lockedPositions !== null, preferred: atBoundary.lockedPreferred });
+  check('and tension crossed the boundary at its hand-derived value (64 ticks * 750)',
+    atBoundary.tension === 48_000, atBoundary.tension);
+  check('all four swimmers are live at the boundary',
+    atBoundary.fish.size === 4, [...atBoundary.fish.keys()]);
+
+  // (b) The sweep resolves after the boundary, and takes the hand-derived set.
+  //     All four are equally exposed, equally sized (none has ever eaten, so
+  //     hunger has treated them identically) and equally long outside the
+  //     core, so topContributor keeps the first id it scans, 'a', and
+  //     selectTaken reduces to preferred-then-ascending-id, capped at
+  //     MAX_TAKE(3): ['a','b','c'], sparing 'd'.
+  const resolved = foldShoal(crossing, resolveAt, { epoch });
+  check('the committed sweep still resolves, on the far side of the boundary',
+    resolved.lastSweepMs === resolveAt, { got: resolved.lastSweepMs, expected: resolveAt });
+  check('and it takes the hand-derived set, sparing the fourth',
+    JSON.stringify(resolved.lastTaken) === JSON.stringify(['a', 'b', 'c']), resolved.lastTaken);
+
+  // (c) The same scenario with NO boundary anywhere near it must take the
+  //     same fish and leave the same sizes. W2 is congruent to W modulo the
+  //     1000 ms hunger period (both are 250 mod 1000), so the hunger phase
+  //     relative to arrival is identical and the two runs are comparable
+  //     tick for tick.
+  const W2 = start + 100_250;
+  check('the control arrives at the same hunger phase, well inside the same epoch',
+    W2 % 1_000 === W % 1_000 && W2 % TICK_MS === 0 && W2 + 17_750 < epochEndMs(epoch),
+    { W, W2, epochEnd: epochEndMs(epoch) });
+  const control = foldShoal(scenario(W2, W2 + LIFT_MS), W2 + RAMP_MS + 8_000, { epoch });
+  check('the no-boundary control resolves its own sweep at the mirrored tick',
+    control.lastSweepMs === W2 + RAMP_MS + 8_000, control.lastSweepMs);
+  check('the boundary-crossing hush takes exactly the fish the no-boundary one takes',
+    JSON.stringify(resolved.lastTaken) === JSON.stringify(control.lastTaken),
+    { crossing: resolved.lastTaken, control: control.lastTaken });
+
+  // Sizes, by hand, identical in both runs. Hunger fires 1000 ms apart at
+  // t = W + 500 + 1000k (W is 250 mod 1000, firings are 750 mod 1000), so
+  // between arrival and the resolve tick (W + 17_750) there are
+  // (17_500 - 500)/1000 + 1 = 18 firings; the resolve tick itself is
+  // W + 17_750 = 0 mod 1000, not a firing.
+  //   untaken 'd': START_SIZE(100) - 18 = 82
+  //   taken:       82 - SCATTER_COST(30) = 52 -> clamped to MIN_SIZE(60)
+  //                (nobody ate, so there is nothing to void)
+  check('the untaken swimmer ends at the hand-derived size in both runs',
+    resolved.fish.get('d')!.size === 82 && control.fish.get('d')!.size === 82,
+    { crossing: resolved.fish.get('d')!.size, control: control.fish.get('d')!.size });
+  check('the taken swimmers end at the hand-derived clamped size in both runs',
+    ['a', 'b', 'c'].every((id) => resolved.fish.get(id)!.size === MIN_SIZE
+      && control.fish.get(id)!.size === MIN_SIZE),
+    { crossing: ['a', 'b', 'c'].map((id) => resolved.fish.get(id)!.size),
+      control: ['a', 'b', 'c'].map((id) => control.fish.get(id)!.size) });
+}
+
+// --- 3. Live presence crosses the boundary ----------------------------------
+// The fold skipped every entry authored before the epoch's origin, but
+// PRESENCE_TTL_MS is 90 s: a vector written 10 s before the boundary is live
+// for another 80 s and used to yield ZERO fish in the new epoch. The sea
+// emptied hourly and refilled only as swimmers happened to rewrite.
+//
+// Hand derivation. epoch 30: start = 30 * EPOCH_MS = 108_000_000.
+//   'liv' writes ONCE, at start - 10_000, from (1000, 1000) — a multiple of
+//   QUANT(8) — heading 0 (COS[0] = TRIG_SCALE exactly, SIN[0] = 0 exactly, so
+//   the trig factor cancels) at speed 40 cu/s. It never writes again.
+//     expiresMs = (start - 10_000) + PRESENCE_TTL_MS(90_000) = start + 80_000
+//   so at untilMs = start + 20_000 it is still live with 60 s to spare.
+//     dt = (start + 20_000) - (start - 10_000) = 30_000
+//     dx = trunc(40 * 30_000 / 1000) = 1200 -> x = 2200 (a multiple of QUANT,
+//          so quantize is a no-op), y = 1000 (dy = 0 always)
+//   Hunger fires at t = start + 750 + 1000k; from -10_000 to +20_000 the
+//   firings are at -9_250, -8_250, ..., 19_750: (19_750 + 9_250)/1000 + 1 =
+//   30 of them. size = START_SIZE(100) - 30 = 70, clear of MIN_SIZE(60).
+//
+//   'dead' writes once at start - 95_000, which is BEFORE the warm-up start
+//   (start - 90_000) and therefore expires at start - 5_000, before the epoch
+//   even begins. It must NOT be resurrected — that is exactly why WARMUP_MS
+//   is PRESENCE_TTL_MS and not something longer: everything the fold skips is
+//   already dead.
+{
+  const epoch = 30;
+  const start = epochStartMs(epoch);
+  check('epoch 30 starts where the arithmetic says', start === 108_000_000, start);
+
+  const LIVE_AT = start - 10_000;
+  const DEAD_AT = start - 95_000;
+  check('the live write predates the boundary but is still inside the TTL there',
+    LIVE_AT < start && start - LIVE_AT < PRESENCE_TTL_MS
+      && LIVE_AT + PRESENCE_TTL_MS === start + 80_000,
+    { LIVE_AT, remainingAtBoundary: LIVE_AT + PRESENCE_TTL_MS - start });
+  check('the dead write is older than the warm-up window and already expired at the boundary',
+    DEAD_AT < start - WARMUP_MS && DEAD_AT + PRESENCE_TTL_MS < start,
+    { DEAD_AT, warmStart: start - WARMUP_MS, expiresMs: DEAD_AT + PRESENCE_TTL_MS });
+
+  const log: LogEntry[] = [
+    { kind: 'presence', id: 'liv', ms: LIVE_AT, hash: 'liv' + LIVE_AT,
+      vec: { x: 1_000, y: 1_000, heading: 0, speed: 40, t: LIVE_AT } },
+    pres('dead', 2_000, 2_000, DEAD_AT),
+  ];
+  const untilMs = start + 20_000;
+  const s = foldShoal(log, untilMs, { epoch });
+
+  check('a swimmer whose last write predates the boundary is LIVE in the new epoch',
+    s.fish.has('liv'), [...s.fish.keys()]);
+  check('and it is at the hand-derived dead-reckoned position, so the warm-up really replayed it',
+    s.fish.get('liv')!.x === 2_200 && s.fish.get('liv')!.y === 1_000,
+    { x: s.fish.get('liv')!.x, y: s.fish.get('liv')!.y });
+  check('and at the hand-derived size: 30 hunger firings across the boundary',
+    s.fish.get('liv')!.size === 70, s.fish.get('liv')!.size);
+  check('its presence still expires on schedule, unshifted by the boundary',
+    s.fish.get('liv')!.expiresMs === start + 80_000, s.fish.get('liv')!.expiresMs);
+
+  // The other direction: the warm-up must not resurrect the genuinely
+  // expired. WARMUP_MS === PRESENCE_TTL_MS is what makes these two
+  // statements consistent rather than a tuning coincidence.
+  check('a swimmer whose vector had already expired is NOT brought back',
+    !s.fish.has('dead'), [...s.fish.keys()]);
 }
 
 // --- The checkpoint is canonical across fold endpoints (fix review C1) ------
