@@ -7,9 +7,17 @@
  * Models the default player: chips tick on the designed clock, dips happen
  * at a casual cadence (whenever a crackle lands or the pot feels full —
  * modelled as "dip on every crackle-or-90s"), cheapest affordable jar bought
- * the moment it lights up. The crackle curve is EV-flat by design (cooking.ts
- * header), so expected crumbs/sec == tick rate x seasoning x fryers x the
- * double-dip EV — the sim uses expectations, deterministic on purpose.
+ * the moment it lights up. The sim uses expectations, deterministic on
+ * purpose: crumbs/sec == tick rate x seasoning x fryers x the double-dip EV,
+ * with multi dropped out of the expectation.
+ *
+ * THESE TIMINGS ARE A FLOOR, NOT A PREDICTION. Dropping multi out was
+ * justified by a claim in cooking.ts's header that the crackle curve is
+ * EV-flat. It is not — measured, the value rate DOUBLES per crackle level, so
+ * a player who holds earns multiples of what this models (see cooking.ts's
+ * BALANCE MATH note and scripts/longfrysim.ts). That is the game's secret and
+ * it stays; what it means here is that this sim describes the CASUAL player
+ * only, and every number below is the slowest anyone should ever see it.
  *
  * The targets are the design contract, in player time. A MISS means a
  * constant or a target must move, on purpose, with eyes open.
