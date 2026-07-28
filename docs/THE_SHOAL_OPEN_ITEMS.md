@@ -414,7 +414,28 @@ schedules a second refetch 600 ms after each event-driven one. **Not fixed, acco
 the node-side answer would be to publish after the merge rather than before, and that is a
 node change nobody has costed.
 
-### 13. The wild shoal's seed is a parameter with no agreed source
+### 13. The wild shoal's seed is a parameter with no agreed source *(RESOLVED 2026-07-28)*
+
+**Resolved by Task 5 of plan 3**, which is the first real consumer (the paint) and was
+therefore the caller this item said had to settle it.
+
+`Sea.wildSeed` (`shoal-client/src/ui/demoSea.ts`) is now part of the contract every sea
+implements, so a sea states which ocean it is at the one seam that knows what room it is,
+and no caller can invent a private one:
+
+- the two offline seas use `DEMO_WILD_SEED = 1`, matching `npm run harness`'s own default,
+  so the window and the text output describe one sea;
+- `chainSea` uses `wildSeedFrom(spaceId, roomContentId)` — FNV-1a over
+  `` `${spaceId}/${roomContentId}` `` folded to 31 bits. BOTH ids, not just the space,
+  because item 1 has rooms rotating within a space and two rooms should be two seas.
+  Non-negative because a negative seed survives a JSON or query-string round trip
+  differently depending on where it stops, and the seed space loses nothing.
+
+Any second implementation (the launcher, a native shell) must derive it the SAME way —
+`wildSeedFrom` is exported for exactly that reason. The original text follows.
+
+---
+
 
 `wildAt(seed, tick, hush, now)` and `shelterBodiesOf(state, wildSeed, atMs)` both take a
 seed, and **every client in a room must pass the same one** or two players standing in the
@@ -452,6 +473,50 @@ wants to sell. But if the operator wants wild cover to be something a player has
 out rather than something they are usually standing in, the lever is `WILD_PER_SCHOOL` or
 `WILD_SCHOOL_R` in wild.ts, not the weight. Both are CONSENSUS and both are cheap **now**
 and never again.
+
+### 16. `terrain.ts` places its four regions by plan view; the sea is drawn in elevation
+
+**Found by:** Task 5 of plan 3 (the-shoal-wild), drawing the places for the first time.
+
+The sea is painted in ELEVATION, not in plan. `seaPaint.paintWater` runs its gradient down
+the world's y axis from a surface above y=0 to the abyss below `WORLD_H`, `paintShafts`
+drops light from y=-700, and a swimmer is drawn side-on with its dorsal up. **World y is
+depth.**
+
+`terrain.ts` chose its four coordinates by plan-view quadrant — its own header says "NW
+quadrant", "NE quadrant", "SE" — which under that projection means the Kelp Stand (y=900)
+and the Wreck (y=750) sit in the upper third of the water column rather than on any
+seabed, and the four places are distributed by *depth* far more than the quadrant language
+suggests (750, 900, 2300, 2700).
+
+**Nothing is broken.** The geometry, the queries and all 37 of `terrain.test.ts`'s checks
+are about distances and containment, none of which cares which way is down; the module is
+display-only and consensus-free either way. What is wrong is the *rationale in the header*,
+which a reader will use to place the fifth landmark.
+
+`terrainPaint.ts` accommodates it rather than moving the coordinates (which would mean
+rewriting hand-derived boundary cases in `terrain.test.ts`): every place is drawn standing
+on its own rock outcrop that fades into the murk below it, so a kelp stand on a shallow
+pinnacle and a wreck caught on a ledge are both ordinary things at any depth. Whoever adds
+a fifth place should decide deliberately whether that is the model, or whether the four
+should be re-laid-out along a real seabed near `WORLD_H` — the second is the bigger change
+and would want the same pass to give the world a floor, which it does not have today.
+
+### 17. Wild fish shelter you, and the tether draws strands to them
+
+**Found by:** Task 5 of plan 3, wiring the tether to `shelterBodiesOf`'s population.
+
+Not a defect — a consequence worth having on the record, because it is the first thing a
+player will ask about. `bodyShelterWeight` prices a wild fish at half a person, so wild
+fish are among `shelterOf`'s summands, so the tether — whose strand weights sum to
+`shelterOf` exactly, which is the property that makes the picture trustworthy — draws a
+strand to every wild fish inside `SHELTER_R`.
+
+That means a player can be held up almost entirely by scenery, see a warm short tether
+saying so, and be telling the truth right up until the hush. It is what makes the bolt land
+(the strands all leave at once) and it is what open item 14 is about. The alternative —
+counting wild fish for shelter but hiding them from the tether — was rejected: it would
+make the tether disagree with `shelterOf`, which `tether.ts`'s own header forbids outright.
 
 ### 15. Terrain does not bias where blooms appear
 

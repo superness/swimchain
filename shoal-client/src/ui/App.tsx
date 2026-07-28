@@ -90,7 +90,8 @@ import { harnessSea, livelySea, type Sea } from './demoSea';
 import { chainSea, type ChainSea } from './chainSea';
 import { identityFromLabel } from './browserIdentity';
 import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
-import { fitBodies, fitScale, followCamera, screenToWorld, type Camera, type Viewport } from './render';
+import { fitBodies, fitScale, followCamera, reckonSmooth, screenToWorld, type Camera, type Viewport } from './render';
+import { boltProgress, wildClock, wildShelterBodies, wildViewAt } from './wildView';
 import {
   applyInput, canClaimEat, createInput, dartCharge, eatTarget, emitDue,
   headingTo, isDarting, markEat, positionAt, refundOnHush,
@@ -102,7 +103,7 @@ import {
 } from './tether';
 import { canEat, cellCentre } from '../lib/bloom';
 import { bodiesOf } from '../lib/shoalEngine';
-import type { Body } from '../lib/shelter';
+import type { Body, ShelterBody } from '../lib/shelter';
 import type { ReadonlyVisitMap } from '../lib/shoalTypes';
 import { reckon } from '../lib/fixed';
 import { HUSH_MS, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
@@ -548,13 +549,40 @@ export function App() {
       // header on the display never disagreeing with the fold.
       const drawMs = replay === null ? atMs : (freshLock ? lockedAtMs : replay.atMs);
 
+      // --- 6b. THE WILD SHOAL (spec 2.6). Read at `drawMs` — the instant this
+      // frame is DRAWN AT, which during the scatter freeze is deliberately in
+      // the past. Two things follow from using one instant for both halves:
+      //
+      //  - a swimmer is never sheltered by a fish that has already fled,
+      //    because position and disappearance come out of the same clock;
+      //  - the frozen replay shows the ocean as it was when the sweep judged,
+      //    which is EMPTY. `wildClock` recognises a pre-sweep instant and
+      //    keeps the shoal gone; without that the fold has already reset
+      //    `hushStartMs` to -1 and thirty-six fish blink into the diagram.
+      const clock = wildClock(drawMs, state.hushStartMs, state.lastSweepMs);
+      const wildBodies = wildShelterBodies(sea.wildSeed, drawMs, clock);
+
       // AFTER THE LOCK THE TETHER STOPS LISTENING. It is read off the frozen
       // bodies, so it hangs where the player was and no longer answers to
       // them — which is what makes spec 2.12's input lock a thing you feel
       // rather than a rule you are told about.
       const tetherBodies = hush.locked && lockedNow !== null ? lockedNow : bodies;
       const meBody = tetherBodies.find((b) => b.id === sea.selfId) ?? null;
-      const tether: TetherRead | null = meBody === null ? null : readTether(meBody, tetherBodies);
+      // THE ONE PLACE THE TWO POPULATIONS MEET ON THIS PAGE. Wild fish shelter
+      // you at half a person (WILD_SHELTER_WEIGHT), so the tether has to count
+      // them or it would be drawing a shorter tether than the shelter score it
+      // claims to be. That is what makes the bolt land: the strands it is
+      // holding you up with are the ones that all leave at once.
+      //
+      // They are added to the LIVE reading only. After the lock the tether is
+      // read off `lockedNow`, which is people alone — correct, and not a
+      // special case anyone has to maintain: the bolt completes at
+      // hush+WILD_BOLT_MS (2_000) and the lock lands at LOCK_MS (4_000), so
+      // there is never a wild fish left to count by then anyway.
+      const shelterPop: ShelterBody[] = hush.locked && lockedNow !== null
+        ? tetherBodies
+        : [...bodies, ...wildBodies];
+      const tether: TetherRead | null = meBody === null ? null : readTether(meBody, shelterPop);
 
       const scatter: ScatterPaint | null = replay === null ? null : {
         progress: replay.progress,
@@ -620,11 +648,19 @@ export function App() {
         ? cam
         : fitBodies(replay.bodies, view, REPLAY_MARGIN_CU);
 
+      // The wild shoal to DRAW. Interpolated between fold ticks (the shelter
+      // read above is not — see wildView.ts), and handed the player's own
+      // drawn position, which reaches nothing but which way a fish points.
+      const mePoint = me ? reckonSmooth(me.vec, drawMs) : null;
+      const wild = wildViewAt(sea.wildSeed, drawMs, clock, mePoint);
+
       paintFrame(ctx, {
         view,
         cam: shownCam,
         atMs: drawMs,
         swimmers,
+        wild,
+        bolt: boltProgress(clock),
         aim,
         bite,
         tether,

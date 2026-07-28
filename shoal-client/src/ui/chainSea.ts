@@ -105,7 +105,7 @@ import { powProfileFor, sendEat, sendPresence, type SendCtx, type SignFn } from 
 import { PRESENCE_TTL_MS } from '../lib/shoalConst';
 import type { RpcAuth } from '../lib/shoalRpc';
 import type { LogEntry, ShoalState, Vec } from '../lib/shoalTypes';
-import { speechFrom, type Sea } from './demoSea';
+import { speechFrom, wildSeedFrom, type Sea } from './demoSea';
 
 export interface ChainSeaConfig {
   readonly auth: RpcAuth;
@@ -245,6 +245,10 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
 
   return {
     selfId: cfg.authorIdHex,
+    // The sea is a property of the ROOM (open item 13): every client pointed
+    // at this space and this room derives the identical wild shoal, and a
+    // client pointed at another room gets another one.
+    wildSeed: wildSeedFrom(cfg.spaceId, cfg.roomContentId),
     spawn: cfg.spawn,
     seaMs: (wallMs: number) => wallMs,
 
