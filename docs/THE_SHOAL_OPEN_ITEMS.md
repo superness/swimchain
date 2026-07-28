@@ -95,6 +95,80 @@ Related: the bridge has no way to distinguish "you have no sponsor" from "the no
 down" without string-matching an error message. A typed classification in `shoalSend` is a
 small addition and belongs with this work.
 
+### 12. The shell computes a checkpoint every hour and throws it away
+
+**Found by:** the final whole-branch review of the Shoal shell (plan 2c), reading
+`chainSea.ts`'s frame step against `shoalLoop.advance`'s return type. Not a live run — it
+has never been observed, because nobody has yet had two clients up across an hour boundary.
+
+`advance` returns `{ loop, rolled }`. `chainSea.ts:194-197` writes:
+
+```ts
+if (loop === null) loop = createLoop(epochOf(wallMs), null);
+loop = advance(loop, combined(), wallMs).loop;   // `.rolled` is discarded
+```
+
+`scripts/harness.ts` is the **only** consumer of `rolled` anywhere in the tree, and the only
+`createLoop` call on the chain path seeds `null`. **So the shell never publishes a
+checkpoint and never adopts one.** Both halves of the mechanism are built, tested and
+unreachable.
+
+**What it costs to leave.** Two clients in the same sea disagree about the world, and the
+disagreement is the one the game cannot survive:
+
+- A client that has been running through an hour boundary is seeded by its *own* in-memory
+  `rolled` (`advance` sets `seed = rolled` internally), so it keeps every swimmer's
+  accumulated size across the boundary.
+- A client that joins *after* that boundary calls `createLoop(epochOf(now), null)` — an
+  **unseeded** fold — and sees every swimmer back at `START_SIZE`.
+- Size feeds `shelterWeight` → `shelterOf` → `isExposed` → `selectTaken`. **The two clients
+  therefore compute different answers to "who did the shark eat."** `sweep.ts`'s own header
+  names that outcome the most trust-destroying bug this game can have.
+- Spec §2.7's promise — *"you return the size you left"* — is false across any reload that
+  crosses an hour, which is also every crash, every hot reload and every app restart.
+
+This is **not** a divergence between honest folds: `rollEpoch` is deterministic and every
+client computes the identical checkpoint. It is a divergence between clients that *have* one
+and clients that *cannot get* one, which is worse, because both are behaving correctly.
+
+**Spec §3.9 point 4** — *"Checkpoints are published, deterministic, and self-verifying going
+forward"* — is unimplemented: nothing publishes. **Spec §3.9 point 5** — *"A cold joiner
+adopts the newest checkpoint it can see and verifies forward from there"* — is unimplemented:
+nothing adopts, and a cold joiner re-derives from an unseeded warm-up instead. Points 1, 2
+and 3 (grid-aligned origin, fixed era, warm-up replay) **are** implemented and tested; it is
+only the two that require a *published* artifact that are missing. The shell plan's
+self-review claim "§3.9 epoch rollover → Task 2" is therefore too strong and has been
+corrected in `docs/superpowers/plans/2026-07-28-the-shoal-shell.md`.
+
+**What the fix would take** — plan-3 scale, deliberately not attempted on this branch:
+
+1. **A checkpoint wire form and a verb.** `Checkpoint` is a `Map`-bearing structure
+   (`shoalTypes.ts`); it needs a canonical, byte-stable encoding in `shoalWire.ts` with its
+   own round-trip and ordering tests, because two clients that serialize the same checkpoint
+   differently republish different bytes for the same world.
+2. **Publish.** A third `send*` in `shoalSend.ts`, mined and signed like the other two, into
+   the same room — plus a rule for who publishes. Every client publishing every hour costs
+   one write per client per hour (negligible against the per-space budget in item 4), but
+   they must all be *identical*, which is exactly what makes them cheap to verify.
+3. **Adopt.** `chainSea` must, before its first fold, fetch the room, find the newest
+   checkpoint entries for the epoch it is about to fold, and **verify by agreement**: adopt
+   the value at least *k* independent authors agree on, never simply "the newest one seen".
+   A single hostile publisher who is trusted unilaterally can hand every joiner an arbitrary
+   size table — a strictly worse failure than the one being fixed.
+4. **The seam already exists and is the easy part.** `createLoop(epoch, seed)` takes a
+   checkpoint, `advance` already returns one, and `demoSea.livelySea` already proves the
+   seeded-join path folds correctly (that is precisely how its size spread is produced). The
+   work is entirely in 1–3.
+5. **Ordering against item 1.** The room does not rotate, so checkpoints accumulate in the
+   same log that is already heading for `ROOM_FETCH_LIMIT`. Whatever resolves item 1 has to
+   resolve where checkpoints live at the same time; doing this first would bake a second
+   consumer into a log shape that is going to change.
+
+**Recorded, not fixed.** `chainSea.ts` now says at the call site that `rolled` is dropped
+deliberately, what it costs, and points here. Until this is built, the shell is safe only in
+a session that never crosses an hour boundary, and any two clients that do cross one together
+agree only because they crossed it together.
+
 ### 3. Gossip is unproven end to end — **RESOLVED 2026-07-28**
 
 **Closed by:** `shoal-client/scripts/two-client-smoke.ts`, run against two real peered

@@ -237,6 +237,8 @@ If two nodes cannot be peered in this environment, **say so plainly and report i
 
 **Spec coverage.** §2.4 verbs → Task 5. §2.9–2.12 failure/tether/sweep/hush → Task 6. §3.1 shell → Task 1. §3.3 dead reckoning → Tasks 2 and 4. §3.9 epoch rollover → Task 2. Open items §8 → Task 2. Open item §3 (gossip) → Task 7.
 
+**Correction, 2026-07-28 (final whole-branch review).** The "§3.9 epoch rollover → Task 2" claim above is **too strong and was wrong as written**. Task 2 delivers §3.9 points 1–3 — grid-aligned origin, the fixed one-hour era, and the warm-up replay — and `shoalLoop.advance` does compute the boundary checkpoint. But **points 4 and 5 are not covered by any task in this plan**: nothing publishes a checkpoint and nothing adopts one. `chainSea.ts` discards `advance`'s `rolled` and seeds `createLoop` with a hard `null`, so a client that joins after an hour boundary folds an unseeded epoch while one that was already running keeps every size — and since size feeds `selectTaken`, the two disagree about who the shark eats. Recorded as **Blocker 12** in `docs/THE_SHOAL_OPEN_ITEMS.md`, which states the cost and what building it would take. It is plan-3 scale and deliberately out of scope here.
+
 **Deliberately not here:** wild fish, terrain and ambience (plan 3); shallows, vouching, tides, marks (plan 4); sound; the first-run teaching sequence, which needs a playable game to teach against and belongs with plan 3's craft pass; mainnet provisioning.
 
 **Placeholders:** none. Tasks 4–6 specify testable contracts plus screenshot obligations rather than full code, deliberately — the paint is judged by looking, and pretending otherwise produces tests that assert a colour and prove nothing.

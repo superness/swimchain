@@ -192,6 +192,22 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       // so a sea built a moment before a boundary still starts in the epoch it
       // will actually be folding. `advance` rolls it from there.
       if (loop === null) loop = createLoop(epochOf(wallMs), null);
+      // `.rolled` — the checkpoint `advance` computes at every hour boundary —
+      // IS DELIBERATELY DROPPED HERE, and that is a known, recorded defect, not
+      // a tidy destructure. Nothing in this client publishes a checkpoint and
+      // nothing adopts one: the seed above is a hard `null`, so a client that
+      // joins after a boundary folds an UNSEEDED epoch and sees everyone back
+      // at START_SIZE, while a client that was already running keeps every
+      // swimmer's accumulated size (`advance` seeds itself from its own
+      // `rolled` internally). Size feeds shelterWeight -> shelterOf ->
+      // isExposed -> selectTaken, so the two clients disagree about WHO THE
+      // SHARK EATS — the outcome sweep.ts's header names as the most
+      // trust-destroying bug this game can have — and spec 2.7's "you return
+      // the size you left" is false across any reload crossing an hour.
+      // Spec 3.9 points 4 (checkpoints are published) and 5 (a cold joiner
+      // adopts the newest verified one) are both unimplemented because of it.
+      // Full write-up, including what the fix costs and why it is not done
+      // here: docs/THE_SHOAL_OPEN_ITEMS.md, Blocker 12.
       loop = advance(loop, combined(), wallMs).loop;
       return loop.state;
     },
