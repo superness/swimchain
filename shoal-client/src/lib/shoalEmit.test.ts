@@ -3,8 +3,14 @@
  * npx tsx src/lib/shoalEmit.test.ts
  *
  * No wall-clock reads anywhere in this file — every timestamp is a literal
- * ms value, fed straight into `shouldEmit(last, intent, nowMs, lastEmitMs)`.
+ * ms value, fed straight into `shouldEmit(last, intent, lastEmitMs)`.
  * No `Date.now()`, no `Math.random()` (global constraints).
+ *
+ * ONE CLOCK. `shouldEmit` measures its gap against `intent.t` — the same
+ * instant that reaches the wire — rather than a separate `nowMs` parameter it
+ * used to take alongside it. Every case below therefore sets `intent.t` to the
+ * instant the decision is being made at, and that value is the only "now" in
+ * the call.
  *
  * Every expected number below is computed BY HAND in the comment next to
  * it, never by calling a helper from shoalEmit.ts and comparing the
@@ -32,7 +38,7 @@ function main() {
   // --- No prior vector: always emit -------------------------------------------
   {
     const intent = vec({ heading: 0, speed: SPEED_CRUISE, t: 5_000 });
-    check('no prior vector always emits', shouldEmit(null, intent, 5_000, 0) === true);
+    check('no prior vector always emits', shouldEmit(null, intent, 0) === true);
   }
 
   // --- Identical intent inside the floor: never emit --------------------------
@@ -40,7 +46,7 @@ function main() {
     const last = vec({ heading: 10, speed: SPEED_CRUISE, t: 0 });
     const intent = vec({ heading: 10, speed: SPEED_CRUISE, t: 1_500 });
     // gap = 1_500 - 0 = 1_500 < MIN_EMIT_GAP_MS(3_000)
-    check('identical intent inside the floor does not emit', shouldEmit(last, intent, 1_500, 0) === false);
+    check('identical intent inside the floor does not emit', shouldEmit(last, intent, 0) === false);
   }
 
   // --- The floor is ABSOLUTE: it blocks even a genuine change of mind --------
@@ -53,7 +59,7 @@ function main() {
     const intent = vec({ heading: 10, speed: 0, t: 1_500 }); // a real stop
     // gap = 1_500 < MIN_EMIT_GAP_MS(3_000) -> the floor blocks it regardless
     check('a genuine change of mind still waits out the floor (no exception)',
-      shouldEmit(last, intent, 1_500, 0) === false);
+      shouldEmit(last, intent, 0) === false);
   }
 
   // --- Heading change beyond the threshold: emit soon after the last ---------
@@ -63,7 +69,7 @@ function main() {
     // gap = 3_200: MIN(3_000) <= 3_200 < MAX(8_000).
     // heading delta = |8 - 0| = 8 >= HEADING_CHANGE_THRESHOLD_BRADS(8) -> a turn.
     check('a heading change at the threshold emits soon after the last write (not waiting for the keep-alive)',
-      shouldEmit(last, intent, 3_200, 0) === true);
+      shouldEmit(last, intent, 0) === true);
   }
   {
     const last = vec({ heading: 0, speed: SPEED_CRUISE, t: 0 });
@@ -71,7 +77,7 @@ function main() {
     // delta = 7 < threshold(8): jitter, not a change of mind. gap is inside
     // [MIN, MAX) so there is no keep-alive obligation yet either.
     check('a heading change below the threshold is jitter, not a change of mind',
-      shouldEmit(last, intent, 3_200, 0) === false);
+      shouldEmit(last, intent, 0) === false);
   }
   {
     // Circular wraparound: 254 -> 2 is a SMALL turn the short way around the
@@ -80,14 +86,14 @@ function main() {
     const last = vec({ heading: 254, speed: SPEED_CRUISE, t: 0 });
     const intent = vec({ heading: 2, speed: SPEED_CRUISE, t: 3_200 });
     check('heading delta wraps correctly across the 0/255 boundary (small turn, no false positive)',
-      shouldEmit(last, intent, 3_200, 0) === false);
+      shouldEmit(last, intent, 0) === false);
   }
   {
     // |254-244| = 10; the short way is min(10, 256-10=246) = 10 >= 8: a real turn.
     const last = vec({ heading: 254, speed: SPEED_CRUISE, t: 0 });
     const intent = vec({ heading: 244, speed: SPEED_CRUISE, t: 3_200 });
     check('a real turn is still detected near the wrap boundary',
-      shouldEmit(last, intent, 3_200, 0) === true);
+      shouldEmit(last, intent, 0) === true);
   }
 
   // --- Stop: emit promptly, not delayed to the keep-alive ---------------------
@@ -96,12 +102,12 @@ function main() {
     const intent = vec({ heading: 5, speed: 0, t: 3_000 });
     // gap = 3_000 >= MIN(3_000), < MAX(8_000); speed 60 -> 0 differs.
     check('a stop emits promptly once the floor clears (not waiting for the keep-alive)',
-      shouldEmit(last, intent, 3_000, 0) === true);
+      shouldEmit(last, intent, 0) === true);
   }
 
   // --- Dart: same mechanism as stop, no extra signal needed -------------------
-  // Derivation #3 from the task: can shouldEmit(last, intent, nowMs,
-  // lastEmitMs) tell a dart from a plain heading change? Yes — a dart is
+  // Derivation #3 from the task: can shouldEmit(last, intent, lastEmitMs)
+  // tell a dart from a plain heading change? Yes — a dart is
   // fully expressed as a SPEED change already carried inside `intent`
   // (Vec's speed field), exactly like a stop. No separate "intent kind" tag
   // is required for the given signature to be sufficient.
@@ -109,7 +115,47 @@ function main() {
     const last = vec({ heading: 5, speed: SPEED_CRUISE, t: 0 });
     const intent = vec({ heading: 5, speed: SPEED_DART, t: 3_000 });
     check('a dart is detected purely from the speed field carried in the Vec, no extra signal needed',
-      shouldEmit(last, intent, 3_000, 0) === true);
+      shouldEmit(last, intent, 0) === true);
+  }
+
+  // --- Dart END: the mirror case, and why firing TWICE per dart is required ---
+  //
+  // A dart is TWO emits, not one. The case above covers `cruise -> dart`; this
+  // one covers `dart -> cruise`, the moment the dart is over. Both must emit,
+  // and the second is the one that is easy to forget because nothing visibly
+  // "changes direction" — the swimmer just stops sprinting.
+  //
+  // OMITTING THE END IS NOT A COSMETIC LOSS. Every other client dead-reckons
+  // this swimmer forward from the last vector it received (spec §3.3), so
+  // between the missing end-of-dart write and whatever comes next, every peer
+  // renders and FOLDS that swimmer travelling at SPEED_DART. The upper bound on
+  // that window is the keep-alive: MAX_EMIT_GAP_MS (8_000 ms), because nothing
+  // else guarantees another write. At SPEED_DART(220 cu/s in the same units
+  // `reckon` uses) that is a peer-side position error of up to
+  // (220 - SPEED_CRUISE) * 8 seconds of divergence from the truth — and the
+  // divergence is not merely visual: `canEat` judges bites against
+  // `reckon(fish.vec, claim.ms)`, and `outsideCore`/`selectTaken` judge who the
+  // sweep takes by position, so a phantom sprint changes who eats and who is
+  // caught. Symmetric with the start case, so the end is exercised the same way.
+  {
+    const last = vec({ heading: 5, speed: SPEED_DART, t: 0 });
+    const intent = vec({ heading: 5, speed: SPEED_CRUISE, t: 3_000 });
+    // gap = 3_000 - 0 = 3_000 >= MIN(3_000) and < MAX(8_000), so the timing
+    // gate defers to isChangeOfMind; heading is unchanged (delta 0 < 8), so the
+    // ONLY thing that can carry this decision is speed SPEED_DART -> SPEED_CRUISE.
+    check('the END of a dart (dart -> cruise) emits too, on the speed field alone',
+      shouldEmit(last, intent, 0) === true);
+
+    // And it must not be rescued by the floor being lenient: inside the floor
+    // even the end of a dart waits, exactly like every other change of mind.
+    const early = vec({ heading: 5, speed: SPEED_CRUISE, t: 2_999 });
+    // gap = 2_999 < MIN(3_000)
+    check('…but the end of a dart still waits out the absolute floor',
+      shouldEmit(last, early, 0) === false);
+
+    // The two speeds must genuinely differ, or the case above proves nothing.
+    check('setup: SPEED_DART and SPEED_CRUISE are distinct (the case above is not vacuous)',
+      (SPEED_DART as number) !== (SPEED_CRUISE as number), { SPEED_DART, SPEED_CRUISE });
   }
 
   // --- Keep-alive: nothing changed, but MAX_EMIT_GAP_MS has elapsed ----------
@@ -117,11 +163,11 @@ function main() {
     const last = vec({ heading: 5, speed: SPEED_CRUISE, t: 0 });
     const stillNothing = vec({ heading: 5, speed: SPEED_CRUISE, t: MAX_EMIT_GAP_MS - 1 });
     check('nothing changed, one ms short of the keep-alive: still silent',
-      shouldEmit(last, stillNothing, MAX_EMIT_GAP_MS - 1, 0) === false);
+      shouldEmit(last, stillNothing, 0) === false);
 
     const stillNothing2 = vec({ heading: 5, speed: SPEED_CRUISE, t: MAX_EMIT_GAP_MS });
     check('nothing changed, keep-alive interval reached: emits anyway',
-      shouldEmit(last, stillNothing2, MAX_EMIT_GAP_MS, 0) === true);
+      shouldEmit(last, stillNothing2, 0) === true);
   }
 
   // --- Derivation #1: the keep-alive must survive a missed write with margin
@@ -245,7 +291,7 @@ function main() {
       const t = i * FRAME_MS;
       const heading = (i % 2) * HEADING_CHANGE_THRESHOLD_BRADS; // toggles 0 / 8
       const intent = vec({ heading, speed: SPEED_CRUISE, t });
-      if (shouldEmit(last, intent, t, lastEmitMs)) {
+      if (shouldEmit(last, intent, lastEmitMs)) {
         emitCount++;
         last = intent;
         lastEmitMs = t;

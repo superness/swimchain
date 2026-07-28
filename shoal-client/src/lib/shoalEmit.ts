@@ -6,12 +6,34 @@
  * from that one message. A new vector is emitted only on a change of mind:
  * turn, stop, arrive, dart. This module is the entire distance between a
  * 60fps render loop and that ~1-write-per-3-8s cadence: without it, an
- * emitter that writes per frame breaks both hard platform limits below, and
- * because eviction takes the lowest-PoW actions first, it would evict OTHER
- * PLAYERS' speech, not just its own excess movement.
+ * emitter that writes per frame breaks both hard platform limits below and
+ * crowds every other swimmer out of a mempool budget they all share.
  *
- * `shouldEmit` is pure — no wall-clock reads. `nowMs` and `lastEmitMs` are
- * its only source of time (global constraint); callers own a real clock.
+ * ## The differential-PoW mitigation is STATED INTENT, NOT IMPLEMENTED
+ *
+ * An earlier version of this header claimed that because eviction takes the
+ * lowest-PoW actions first, a per-frame emitter would evict "other players'
+ * speech" — i.e. that speech mines harder than movement and therefore outranks
+ * it in the eviction queue. THAT MECHANISM DOES NOT EXIST. Every shoal write —
+ * a swim vector, a swim vector carrying `say`, an eat claim — is submitted as a
+ * `Reply` at `difficultyFor`'s MINIMUM for that action type (shoalSend.ts:
+ * `submitMove` mines `ACTION_TYPE_REPLY` and `difficultyFor` deliberately
+ * returns the minimum, since anything above it is pure wasted work). So all
+ * shoal actions carry identical difficulty and eviction has NO ordering signal
+ * among them: past capacity the mempool sheds whichever of them it sheds, and
+ * speech is exactly as evictable as a keep-alive.
+ *
+ * The design's "footsteps stutter before speech is lost" (the design doc §3.6,
+ * "Eviction is a feature") is therefore an INTENT this bridge does not yet
+ * implement. Implementing it would mean deliberately over-mining speech-bearing
+ * writes above the minimum — a real, quantified cost per write and a policy
+ * decision, not a comment. Until then, MIN_EMIT_GAP_MS is the ONLY thing
+ * keeping one client from crowding the shared per-space budget, which is why
+ * the floor below is absolute and has no change-of-mind exception.
+ *
+ * `shouldEmit` is pure — no wall-clock reads. `intent.t` and `lastEmitMs` are
+ * its only source of time (global constraint); callers own a real clock, and
+ * read it exactly ONCE per decision — see `shouldEmit`'s own "one clock" note.
  *
  * ## Why position (x, y) is never compared
  *
@@ -27,7 +49,7 @@
  * swimmer reaching a destination reports it exactly the way a stop does —
  * speed drops to 0 — so the (heading, speed) comparison already covers it.
  *
- * ## Is `shouldEmit`'s (last, intent, nowMs, lastEmitMs) signature
+ * ## Is `shouldEmit`'s (last, intent, lastEmitMs) signature
  * sufficient to tell a dart from a plain heading change?
  *
  * Yes, and this is not a guess to verify by adding a parameter — a dart is
@@ -68,8 +90,11 @@
  *    window, would need `25 * (600_000 / 3_000) = 5_000 > 2_000` — over
  *    budget. That is not a defect in these constants: past capacity the
  *    mempool sheds the lowest-PoW pending action first, by design ("Eviction
- *    is a feature", same doc §3.6) — footsteps stutter before speech is
- *    lost. MIN_EMIT_GAP_MS's job is to make sure that degradation only
+ *    is a feature", same doc §3.6). NOTE that among SHOAL writes this shedding
+ *    is undirected — every one of them is a Reply at the same minimum
+ *    difficulty, so the doc's "footsteps stutter before speech is lost" does
+ *    not hold here; see the unimplemented-differential-PoW note above.
+ *    MIN_EMIT_GAP_MS's job is to make sure that degradation only
  *    engages under genuinely heavy simultaneous activity, not on every
  *    render frame. Full arithmetic, including the RPC-cap and per-space
  *    checks run as real assertions, lives in shoalEmit.test.ts.
@@ -161,15 +186,34 @@ function isChangeOfMind(last: Vec, intent: Vec): boolean {
  *
  *  - `last === null` (no prior vector for this session): always emit —
  *    there is nothing yet for any other client to dead-reckon from.
- *  - `nowMs - lastEmitMs < MIN_EMIT_GAP_MS`: never emit, unconditionally.
- *  - `nowMs - lastEmitMs >= MAX_EMIT_GAP_MS`: always emit — the keep-alive,
+ *  - `intent.t - lastEmitMs < MIN_EMIT_GAP_MS`: never emit, unconditionally.
+ *  - `intent.t - lastEmitMs >= MAX_EMIT_GAP_MS`: always emit — the keep-alive,
  *    regardless of whether `intent` has changed at all.
  *  - Otherwise (the gap is between the floor and the ceiling): emit only if
  *    `intent` represents a genuine change of mind versus `last`.
+ *
+ * ## ONE CLOCK: the gap is measured against `intent.t`, not a separate `nowMs`
+ *
+ * This function used to take a `nowMs` parameter and gate on it, while the
+ * value that actually reached the wire was `intent.t`. Those are the SAME
+ * INSTANT by definition — `intent` is "the vector I would write right now", and
+ * `shoalSend`'s own header states the design "gives the caller exactly one
+ * clock read to make instead of two". A second parameter for the same instant
+ * is not merely redundant, it is a way for the two to disagree: a caller that
+ * reused a stale `intent` against a fresh `nowMs` (or the reverse) would gate
+ * on one millisecond and publish another, and the failure would be a silently
+ * mis-spaced write cadence with nothing to catch it.
+ *
+ * It also removes the last way an honest client could author two byte-identical
+ * bodies. With two clocks, a keep-alive could re-publish a `Vec` whose `t` had
+ * not advanced; identical `t`, identical fields, identical body, identical
+ * `content_id = sha256(body)` — and the node keeps only one of them. That is
+ * the same-swimmer half of the collision argument in shoalWire.ts's salt
+ * section, and it closes here rather than there.
  */
-export function shouldEmit(last: Vec | null, intent: Vec, nowMs: number, lastEmitMs: number): boolean {
+export function shouldEmit(last: Vec | null, intent: Vec, lastEmitMs: number): boolean {
   if (last === null) return true;
-  const gap = nowMs - lastEmitMs;
+  const gap = intent.t - lastEmitMs;
   if (gap < MIN_EMIT_GAP_MS) return false;
   if (gap >= MAX_EMIT_GAP_MS) return true;
   return isChangeOfMind(last, intent);
