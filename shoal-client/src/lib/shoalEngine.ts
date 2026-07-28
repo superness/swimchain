@@ -128,10 +128,26 @@ export function bodiesOf(state: ShoalState): SwimmerBody[] {
  * position and disappearance together, there is no tick on which a swimmer is
  * sheltered by a fish that has already fled.
  *
+ * NOTHING ENFORCES THAT RELATION. `atMs` and `state.nowMs` are independent
+ * parameters — there is no assertion here and no type that ties them
+ * together — so a caller that passes `state.nowMs` instead of
+ * `state.nowMs - TICK_MS` does not get an error; it silently gets the
+ * swimmers as they stood at tick `k` (`bodiesOf` reads live `state.fish`, not
+ * `atMs`) paired with the wild shoal as it stands at tick `k+1`, one tick
+ * out of step. This function has zero non-test callers today — the seam is
+ * unwired — so get the contract into any future caller's head before wiring
+ * it up, rather than adding a runtime check to a path nothing yet exercises.
+ *
  * `wildSeed` must be a value every client in the room agrees on. There is no
  * such value in `ShoalState` yet — deriving one (from the room id) is recorded
  * as an open item in docs/THE_SHOAL_OPEN_ITEMS.md — so it is a parameter, not
  * a lookup, and no caller can accidentally invent a private sea.
+ *
+ * ORDERING, unlike `bodiesOf`: the return is NOT fully id-sorted. Swimmers
+ * come first, sorted by id exactly as `bodiesOf` promises; the wild shoal is
+ * appended after them in `wildAt`'s own index order (wild:0, wild:1, ...),
+ * which does not interleave with the swimmer ids. A caller that needs one
+ * total id order across the whole population must sort this return itself.
  */
 export function shelterBodiesOf(
   state: ShoalState,

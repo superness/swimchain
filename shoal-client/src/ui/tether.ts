@@ -380,8 +380,21 @@ function nearestOf(self: Body, others: readonly ShelterBody[]): TetherRead['near
 
 /**
  * Everything the paint needs about one swimmer's tether, all of it derived
- * from the engine's own `shelterOf`/`isExposed` over the SAME body list the
- * sweep would judge.
+ * from the engine's own `shelterOf`/`isExposed` — but NOT, in general, over
+ * the same body list the sweep would judge.
+ *
+ * When `others` is built from `shelterBodiesOf` it holds the wild shoal too,
+ * and `sweep.ts:63` filters wild fish from both candidacy and cover before it
+ * ever judges anyone. So a tether fed wild-inclusive `others` reads FELT
+ * safety — cover that includes scenery — while the sweep judges people only.
+ * That gap is intended, not a bug to close: it is the false sense of safety
+ * spec 2.6 sells (a school around you that is partly wild fish feels exactly
+ * as safe right up until the hush), and it self-corrects at the bolt, two
+ * full seconds before the input lock and long before any verdict —
+ * `WILD_BOLT_MS` (2_000) < `LOCK_MS` (4_000), see wild.ts. A caller wanting
+ * the tether to read exactly what the sweep would judge must pass it a
+ * people-only body list (`bodiesOf`, not `shelterBodiesOf`); this function
+ * has no opinion on which list it is handed.
  *
  * `others` may include `self`; both engine functions skip a body with the
  * caller's own id, and so do the two loops here.

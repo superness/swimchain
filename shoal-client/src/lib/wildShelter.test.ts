@@ -467,8 +467,30 @@ function soloState(x: number, y: number, hushStartMs: number, nowMs: number): Sh
   check('a wild fish named as the preferred target is still not taken',
     JSON.stringify(preferredWild) === JSON.stringify(['aaa']), preferredWild);
 
-  // And the count rule still holds for people: three exposed swimmers, all
-  // alone, with six wild fish scattered among them, takes exactly MAX_TAKE.
+  // And the count rule still holds for people, with six wild fish scattered
+  // among them — but a length check and an every-non-wild check do NOT prove
+  // the exclusion held here, because both pass under the mutation that
+  // removes it too (caught by the implementer's own mutation testing; see the
+  // task report). What discriminates is the exact IDENTITY of who is taken,
+  // not merely how many or that none is wild.
+  //
+  // Hand-derived, correctly excluding wild fish: `school` is [aaa,bbb,ccc,ddd]
+  // only. Every pairwise distance among them exceeds SHELTER_R (aaa-bbb and
+  // aaa-ccc are 1900 cu apart on one axis alone), so none shelters any other
+  // and all four are exposed. Equal size (100) means ties break on ascending
+  // id, so the sweep takes the first three of aaa, bbb, ccc, ddd: aaa, bbb,
+  // ccc — dropping ddd only because MAX_TAKE is 3, never because of a wild
+  // fish.
+  //
+  // Hand-derived under the removed-exclusion mutation, for contrast (not
+  // asserted below, since this file only tests the real implementation): the
+  // six wild fish sit within 60 cu of `aaa` and would count if not filtered,
+  // giving `aaa` 6 * WILD_SHELTER_WEIGHT = 300 = SHELTER_THRESHOLD exactly —
+  // sheltered, since `isExposed` is a strict `<`. `aaa` drops OUT of the
+  // exposed set and the sweep takes bbb, ccc, ddd instead: same length
+  // (MAX_TAKE), still zero wild ids, but the WRONG THREE PEOPLE. That is
+  // exactly the pair of checks this block used to have, and exactly why they
+  // passed identically whether or not the exclusion existed.
   const many = [
     swimmer('aaa', 100, 100), swimmer('bbb', 2000, 100), swimmer('ccc', 100, 2000),
     swimmer('ddd', 2000, 2000),
@@ -476,8 +498,9 @@ function soloState(x: number, y: number, hushStartMs: number, nowMs: number): Sh
     wild(3, 140, 100), wild(4, 150, 100), wild(5, 160, 100),
   ] as unknown as SwimmerBody[];
   const takenMany = selectTaken(many, null);
-  check('the sweep still takes MAX_TAKE exposed people', takenMany.length === MAX_TAKE, takenMany);
-  check('...and every one of them is a person', takenMany.every((id) => !isWildId(id)), takenMany);
+  check('the sweep takes exactly aaa, bbb, ccc (respecting MAX_TAKE) — a wild-sheltered aaa would let ddd in instead',
+    JSON.stringify(takenMany) === JSON.stringify(['aaa', 'bbb', 'ccc']) && takenMany.length === MAX_TAKE,
+    takenMany);
 }
 
 // ===========================================================================

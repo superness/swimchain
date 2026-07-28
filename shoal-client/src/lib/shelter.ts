@@ -33,15 +33,28 @@
  *   Body         the structural minimum — a place and a size. Still the type
  *                of `self`, since a fish's own kind never affects the answer.
  *   SwimmerBody  a person. `wild?: never` is a brand, not data: it is what
- *                makes a WildBody structurally UNassignable here, while an
- *                ordinary `{id, x, y, size}` literal still is, so no existing
- *                caller had to change.
+ *                makes a WildBody DIRECTLY unassignable here — `const s:
+ *                SwimmerBody = someWildBody` is a compile error — while an
+ *                ordinary `{id, x, y, size}` literal still is assignable, so
+ *                no existing caller had to change.
  *   WildBody     a wild fish, carrying `wild: true`.
  *   ShelterBody  either. The only population shelter accepts.
  *
+ * "DIRECTLY", because the wall is narrower than it looks: TypeScript only
+ * runs excess-property checking against object LITERALS, not against a value
+ * that already carries a wider type. `WildBody` is structurally assignable to
+ * `Body` (it has every field `Body` asks for), and `Body` is structurally
+ * assignable to `SwimmerBody` (nothing in `Body` conflicts with `wild?:
+ * never` — the property is simply absent). So a `WildBody` laundered through
+ * one intermediate `Body`-typed variable or return value reaches
+ * `SwimmerBody` with no `as`, no cast, and no `@ts-expect-error` needed
+ * anywhere on the way. The type catches the careless call site that hands a
+ * `WildBody` straight over; it was never going to catch a determined one.
+ * That is exactly why the runtime guard below exists and is not redundant.
+ *
  * AND A RUNTIME GUARD AS WELL, on the ID rather than the flag. The flag is for
- * the compiler; the id prefix is for everything the compiler cannot see. Three
- * reasons it is not belt-and-braces:
+ * the compiler; the id prefix is for everything the compiler cannot see —
+ * including the laundering above. Three reasons it is not belt-and-braces:
  *
  *  - `ShoalState.lockedPositions` is a Map of `{x, y, size}` keyed by id, and
  *    the sweep rebuilds bodies out of it. Any object flag is gone by then. The

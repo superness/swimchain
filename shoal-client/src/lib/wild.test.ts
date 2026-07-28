@@ -96,11 +96,15 @@ const NO_HUSH = -1;
   check('the x amplitude budget leaves 448 cu of margin', xLo === 448 && xLo > 0, xLo);
   check('the y amplitude budget leaves 336 cu of margin', yLo === 336 && yLo > 0, yLo);
 
-  // Sizes: three plain wild fish must be able to shelter a player, or the bolt
-  // has nothing to take away. shelterWeight(60) = 100 + trunc(60/40) = 101, so
-  // three of the SMALLEST wild fish give 303 >= SHELTER_THRESHOLD (300).
-  // (Task 3 owns that wiring; this only checks the sizes make it possible.)
-  check('the smallest wild fish is still worth sheltering with',
+  // Sizes are PURE PAINT: wild shelter weight is flat and size-independent
+  // (WILD_SHELTER_WEIGHT, shelter.ts), so nothing here is checking that a
+  // particular size shelters — it can't, size never enters that arithmetic.
+  // This only pins the declared draw range so a future edit to it is a
+  // visible diff rather than a silent one. (An earlier version of this check
+  // derived a shelterWeight-per-size figure from a per-size shelter rule that
+  // no longer exists; that rationale was false and has been dropped — see
+  // Task 3 / shelter.ts for the actual flat 2:1 wild-to-person ratio.)
+  check('the declared wild size range is still [60, 120)',
     WILD_SIZE_MIN === 60 && WILD_SIZE_SPREAD === 60, { WILD_SIZE_MIN, WILD_SIZE_SPREAD });
 }
 
@@ -241,6 +245,16 @@ const NO_HUSH = -1;
 // than fragile: a wild fish cannot see a player, so there is no in-flight view
 // for two clients to disagree about. The signature is the first wall (four
 // numbers in, fish out) and the imports are the second.
+//
+// THE SECOND WALL IS A DENYLIST, not an allowlist: it names the specific
+// modules a live-presence dependency would have to come in through today
+// (`shoalEngine`, `shoalLive`, `shoalRoom`, `shoalRpc`, `shoalSend`), so a
+// future player-state module under a name none of these patterns match would
+// pass every check below while quietly reading live state. The signature
+// check just above (`wildAt.length === 4`, section 1) is the wall that
+// actually holds against that: no matter what a new module is called, its
+// values cannot reach `wildAt` without widening the signature, and that is a
+// diff on this file's most-watched line.
 {
   const src = readFileSync(fileURLToPath(new URL('./wild.ts', import.meta.url)), 'utf8');
   check('wild.ts does not import the folded world', !/from\s+'[^']*shoalEngine'/.test(src));

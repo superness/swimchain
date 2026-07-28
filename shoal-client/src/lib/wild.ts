@@ -126,15 +126,35 @@ import { COS, SIN, quantize } from './fixed';
 import { HEADING_STEPS, TRIG_SCALE, WORLD_W, WORLD_H, TICK_MS } from './shoalConst';
 
 // ---------------------------------------------------------------------------
-// CONSENSUS — permanent. Do not change after launch.
+// SHARED-APPEARANCE — every client must agree, but this is NOT the fold's
+// consensus surface. Read this before assuming the numbers below are frozen.
 //
-// Wild fish count toward shelter (Task 3), so their count, their shape and the
-// timing of their bolt decide who the sweep is allowed to take. Changing any
-// number in this block re-scores every session ever played and splits clients
-// running different versions, exactly as for shoalConst.ts's own CONSENSUS
-// block. Values marked "arbitrary-but-practical" were chosen for feel and have
-// never been played; that is not a promise of a later tuning pass, because for
-// consensus values there is none.
+// It would be easy to assume this whole block is CONSENSUS in the
+// fold-rules-are-permanent sense (shoalConst.ts's own CONSENSUS block, or
+// WILD_ID_PREFIX just below): change a number, re-score every session ever
+// played, split clients running different versions. That is NOT true here,
+// checked against every fold-reachable call site: `wildAt` has exactly one
+// non-test caller, `shelterBodiesOf` (shoalEngine.ts), and THAT has zero
+// non-test callers. No wild position, count, weight or bolt timing reaches
+// `foldTick`, `lockedPositions`, `selectTaken`, `markVisits`, a checkpoint, or
+// any fingerprint — replaying a log with a different `WILD_PER_SCHOOL` or
+// `WILD_SCHOOL_R` re-scores NOTHING; it draws a different picture and reaches
+// the identical verdict.
+//
+// So every constant in this block is shared-appearance, not fold rule: ship a
+// mismatched value and players on different clients see a different sea (a
+// visible bug), but nobody's history gets re-scored and nobody's chain
+// diverges. They may move later — see docs/THE_SHOAL_OPEN_ITEMS.md item 14 —
+// and that is a UI change, not a hard fork. Values marked
+// "arbitrary-but-practical" were chosen for feel and have never been played;
+// that is not a promise of a later tuning pass, but it is not a promise
+// AGAINST one either.
+//
+// THE ONE EXCEPTION: `WILD_ID_PREFIX`, declared further down, IS fold-reachable
+// — `bloom.ts:146` and `sweep.ts:63` both branch on it (`isWildId`) to keep
+// wild fish out of the bloom map and the sweep. A swimmer whose id ever began
+// with that prefix would be unsweepable and untrample-able for real. That one
+// constant is CONSENSUS in the permanent sense; nothing else here is.
 // ---------------------------------------------------------------------------
 
 /** Schools in the sea, and fish per school. Arbitrary-but-practical. */
@@ -213,10 +233,16 @@ export const WILD_EPI2_S_SPAN = 17; // s2 in [18, 34], a 30..57 s mill
  * Wild sizes, in the same units as a swimmer's. In [60, 119], i.e. from
  * MIN_SIZE up to just under a starting swimmer.
  *
- * Chosen so wild fish are worth sheltering with and no more: shelterWeight of
- * the SMALLEST is 100 + trunc(60/40) = 101, so three of them give 303, one
- * point over SHELTER_THRESHOLD (300). Three wild fish is exactly the floor of
- * three — and every one of them leaves at the hush.
+ * PURE PAINT — no shelter consequence at all. Wild shelter weight is flat and
+ * size-independent (`WILD_SHELTER_WEIGHT`, `shelter.ts:115`, `bodyShelterWeight`
+ * reads `isWildId` and never `size` for a wild body), so `WILD_SIZE_MIN` and
+ * `WILD_SIZE_SPREAD` only decide how big a wild fish is drawn on screen; it
+ * takes six of them to shelter, at any size, not three (see wild.ts's own
+ * CONSENSUS-block note and shelter.ts's header for the 2:1 ratio). An earlier
+ * version of this comment derived a shelterWeight-per-size figure and a
+ * "three is the floor" claim from a rule that no longer exists; both are
+ * false against the current flat-weight implementation and are corrected
+ * here rather than left for a reader to trust.
  */
 export const WILD_SIZE_MIN = 60;
 export const WILD_SIZE_SPREAD = 60;
@@ -243,8 +269,16 @@ export const WILD_BOLT_MS = 2_000;
  */
 export const WILD_SPEED_BOLT = 420;
 
-/** Every wild id begins with this. A swimmer id is public-key hex, so a
- *  collision is impossible rather than unlikely. */
+/**
+ * Every wild id begins with this. A swimmer id is public-key hex, so a
+ * collision is impossible rather than unlikely.
+ *
+ * THE ONE TRULY-CONSENSUS CONSTANT IN THIS FILE — permanent, unlike the block
+ * above. `bloom.ts:146` and `sweep.ts:63` both branch on it via `isWildId`,
+ * so it is fold-reachable: change the prefix (or a swimmer id that happened
+ * to start with it) and a real person could become untrample-able and
+ * unsweepable. Nothing else in this module reaches the fold at all.
+ */
 export const WILD_ID_PREFIX = 'wild:';
 
 // ---------------------------------------------------------------------------
