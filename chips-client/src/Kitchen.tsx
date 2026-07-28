@@ -11,7 +11,7 @@
  *     and puffy at ×1, dark and buckled by ×16, gold at the top. No bars.
  */
 import { useMemo } from 'react';
-import { multiOf, isGolden, worthOf, MAX_CRACKLES, type CookingChip } from './lib/cooking';
+import { multiOf, isGolden, worthOf, LONG_FRY_CRACKLES, type CookingChip } from './lib/cooking';
 import { RatArt } from './Crew';
 import { compact } from './lib/format';
 
@@ -24,12 +24,24 @@ export interface VisualChip {
 }
 
 /** Crackle count -> the art dial. 16 is where the golden look begins in
- *  chipColors/crispnessOf, so the terminal crackle goes gold exactly. */
-const CRACKLE_BITS = [9, 11, 12, 13, 14, 16] as const;
+ *  chipColors/crispnessOf, so the fifth crackle goes gold exactly.
+ *
+ *  THE SIXTH ENTRY IS THE LONG FRY. The array used to stop at six values and
+ *  `visualFor` clamped to MAX_CRACKLES, so a x64 chip wore the exact same
+ *  gold as a x32 one — the deepest jar in the game bought a multiplier you
+ *  could not see. 19 is past GOLD_AT, which `crispnessOf` reads as a state
+ *  BEYOND golden rather than more of it. */
+const CRACKLE_BITS = [9, 11, 12, 13, 14, 16, 19] as const;
 const GOLD_AT = 16;
+/** At or above this the chip is not "more golden", it is something else —
+ *  cooked past the point gold describes. Only the sixth crackle reaches it. */
+const DEEP_AT = 19;
 
 export function visualFor(chip: Pick<CookingChip, 'ms' | 'crackles'>): VisualChip {
-  const bits = CRACKLE_BITS[Math.max(0, Math.min(MAX_CRACKLES, chip.crackles))];
+  // Clamped to the ART's top rung, not the RULES' — the two came apart when
+  // The Long Fry raised the ceiling, and clamping to MAX_CRACKLES is what
+  // silently threw the sixth look away.
+  const bits = CRACKLE_BITS[Math.max(0, Math.min(CRACKLE_BITS.length - 1, chip.crackles))];
   return { ms: chip.ms, bits, attempts: 2 ** (bits + 1) };
 }
 
@@ -48,6 +60,8 @@ function seeded(seed: number): () => number {
 export interface Crispness {
   crisp: number;
   golden: boolean;
+  /** Past gold — the sixth crackle. A different state, not a brighter one. */
+  deep: boolean;
   raw: boolean;
 }
 
@@ -55,18 +69,31 @@ export interface Crispness {
  *  drove with proof bits, so the whole silhouette/colour engine carries over
  *  untouched. */
 export function crispnessOf(chip: VisualChip): Crispness {
-  if (chip.bits < 0) return { crisp: 0, golden: false, raw: true };
+  if (chip.bits < 0) return { crisp: 0, golden: false, deep: false, raw: true };
   const expected = 2 ** (chip.bits + 1);
   const micro = expected > 0 ? 1 - Math.exp(-chip.attempts / expected) : 0;
   const effective = chip.bits + micro * 0.95;
   return {
     crisp: Math.max(0, effective / GOLD_AT),
     golden: chip.bits >= GOLD_AT,
+    deep: chip.bits >= DEEP_AT,
     raw: false,
   };
 }
 
-function chipColors(crisp: number, golden: boolean) {
+function chipColors(crisp: number, golden: boolean, deep = false) {
+  // THE LONG FRY. Gold is pale and bright; this is what happens after it —
+  // the sugars have gone. Dark amber glass with a molten core and a white-hot
+  // rim, so a x64 reads instantly as "that one has been in there too long,
+  // and it was worth it" rather than as a slightly different yellow.
+  if (deep) {
+    return {
+      light: 'hsl(38 100% 72%)',
+      mid: 'hsl(24 96% 46%)',
+      dark: 'hsl(12 88% 26%)',
+      edge: 'hsl(6 82% 15%)',
+    };
+  }
   if (golden) {
     return {
       light: 'hsl(50 100% 84%)',
@@ -160,15 +187,15 @@ export function Chip({ chip }: { chip: VisualChip }) {
   const c = crispnessOf(chip);
   const step = Math.round(c.crisp * 12);
   const geo = useMemo(() => geometryFor(chip.ms, step / 12), [chip.ms, step]);
-  const col = chipColors(c.crisp, c.golden);
+  const col = chipColors(c.crisp, c.golden, c.deep);
   const uid = `c${chip.ms.toString(36)}`;
 
   return (
     <svg
-      className={`chip${c.raw ? ' is-batter' : ''}${c.golden ? ' is-golden' : ''}`}
+      className={`chip${c.raw ? ' is-batter' : ''}${c.golden ? ' is-golden' : ''}${c.deep ? ' is-deep' : ''}`}
       viewBox="0 0 100 100"
       role="img"
-      aria-label={c.golden ? 'a golden chip' : 'a chip cooking'}
+      aria-label={c.deep ? 'a long-fried chip' : c.golden ? 'a golden chip' : 'a chip cooking'}
       style={{ ['--crisp' as string]: c.crisp.toFixed(3) }}
     >
       <defs>
@@ -310,7 +337,7 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
       <div className="basket-well">
       <button
         type="button"
-        className={`basket ready${golden ? ' golden' : ''}${feedMode !== null ? (feedable ? ' feed-target' : ' feed-dim') : ''}`}
+        className={`basket ready${golden ? ' golden' : ''}${chip.crackles >= LONG_FRY_CRACKLES ? ' deep' : ''}${feedMode !== null ? (feedable ? ' feed-target' : ' feed-dim') : ''}`}
         onClick={onDip}
         data-fryer={index}
         data-crackles={chip.crackles}
@@ -343,7 +370,7 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
             witnessed, zero seen — the moment needs residue). */}
         {crackledAt !== null && chip.crackles > 0 && (
           <span key={`b${crackledAt}`} className={`crackle-banner m${chip.crackles}`} aria-hidden="true">
-            CRACKLED ×{multi}{golden ? ' — GOLDEN!' : '!'}
+            CRACKLED ×{multi}{chip.crackles >= LONG_FRY_CRACKLES ? ' — THE LONG FRY!' : golden ? ' — GOLDEN!' : '!'}
           </span>
         )}
         {tickFx && <span key={`t${tickFx.at}`} className={`tick-float${rat ? ' to-rat' : ''}`} aria-hidden="true">+{compact(tickFx.amount)}</span>}
@@ -448,9 +475,18 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
       {/* THE POT, always moving; the ladder shows the summit exists. */}
       <p className={`worth pot${golden ? ' worth-golden' : ''}`}>
         <span className="pot-line"><strong>{compact(chip.pot)}</strong> in the pot</span>
+        {/* THE LADDER SHOWS THE SUMMIT EXISTS — and it was hardcoded to five
+            rungs, so The Long Fry's x64 had no rung at all: at six crackles
+            the ladder looked exactly like five. It runs to the PLAYER'S
+            ceiling now. Deliberately not further: dangling a x64 in front of
+            someone who cannot buy it yet is not a tease, it is a rung they
+            will wait for forever. */}
         <span className="ladder" aria-hidden="true">
-          {[1, 2, 3, 4, 5].map((k) => (
-            <i key={k} className={`rung${chip.crackles >= k ? ' lit' : ''}${k === 5 ? ' top' : ''}`}>×{2 ** k}</i>
+          {Array.from({ length: ceiling }, (_, i) => i + 1).map((k) => (
+            <i
+              key={k}
+              className={`rung${chip.crackles >= k ? ' lit' : ''}${k === ceiling ? ' top' : ''}${k === LONG_FRY_CRACKLES ? ' deep' : ''}`}
+            >×{2 ** k}</i>
           ))}
         </span>
         {rat
