@@ -53,24 +53,50 @@ generic continuation lines move *below* it for anyone who digs past 13.
 
 ---
 
-## 3. The boss is an ACT, not a threshold
+## 3. The boss is an ACT, not a threshold — and it TAKES THE SCREEN
 
 Reaching a band's lifetime does not break it. Something has to be *done*, and it
 must be done with **verbs the game already has** — dip, hold, overcook, feed,
 whistle, lobby, gamble, shoo, bless. No combat system, no new input model.
 
-Each boss is a **timed condition that tests the mechanic its layer is about**,
-and each is losable and retryable. The rule that keeps them honest: a boss should
-be beatable by a player who *understands* the game, not one who has merely idled
-in it longer.
+**MODAL, operator's ruling** (over my recommendation of a background condition).
+It is the right call twice over.
 
-| band | the boss | how you beat it | what it tests |
+First, a set-piece can be *drawn*: "the bowl cracking above you" and "four table
+legs splintering one at a time" are images, where a background condition is only
+ever a sentence in a toast.
+
+Second — and this is where my recommendation was simply built on a false premise
+— **THIS IS NOT AN IDLE GAME.** It is Cookie-Clicker-inspired and actively
+played: `cooking.ts` calls itself "DESIGNER-PACED, COOKIE-CLICKER HONEST" and
+`chipsConst.ts` states flatly that this is "a game with no offline progress". The
+player is at the screen by definition. I argued against modal on the grounds that
+it "stops an idle game dead"; there is no idle game to stop. Presence is
+guaranteed rather than hoped for, which also means the bosses can be genuinely
+demanding.
+
+Two rules, then — not to protect an absent player, but because the fight should
+be the real game rather than a minigame:
+
+1. **THE POT KEEPS TICKING BEHIND IT.** The fight is your actual rack under a
+   spotlight, with your actual pots and your actual multipliers. Nothing pauses.
+   Losing costs real time; winning is the game you already know how to play.
+2. **You choose when it starts.** Not because someone might be away — they are
+   not — but because entering a hard fight with cold pots and a spent blessing
+   is a worse decision than the game should force on you. The boss waits at the
+   band until you take it, so the setup is part of the fight.
+
+Each is losable and retryable. The rule that keeps them honest: a boss should be
+beatable by a player who *understands* the game, not one who has merely idled in
+it longer.
+
+| band | the boss | how you beat it | what the takeover shows |
 |---|---|---|---|
-| 8 | **the porcelain** | land ONE dip worth more than everything else you have banked this run | holding to the ceiling instead of cashing early |
-| 9 | **the table** | hold all four fryers at ×32 or better *simultaneously* | parallel management, the thing four fryers were always for |
-| 10 | **the chip from 1974** | it has been cooking for fifty years and has a number on it. Beat its worth in a single dip, inside a window | the long fry, and nerve |
-| 11 | **the rat's family** | every fryer latched at once; shoo them all inside a window while still banking | the shoo verb, under pressure |
-| 12 | **the first fryer** | everything overcooks whether you want it to or not — the pot drains constantly and you must still land a ×64 | overcook mastery |
+| 8 | **the porcelain** | land ONE dip worth more than everything else you have banked this run | the bowl from beneath, filling the screen. Every dip puts a hairline in it. The last one goes through. |
+| 9 | **the table** | hold all four fryers at ×32 or better | four legs above you. Each fryer that reaches ×32 splinters one; drop below and it grows back. |
+| 10 | **the chip from 1974** | beat its worth in a single dip, inside a window | it and your best fryer side by side, its number sitting there the whole time |
+| 11 | **the rat's family** | shoo them all inside a window while still banking | they come in from the edges of the screen and keep coming |
+| 12 | **the first fryer** | everything overcooks whether you want it to or not — the pot drains constantly and you must still land a ×64 | the whole view lit red, every pot visibly bleeding |
 | 13 | **the other side** | there is no fight — see §7 | — |
 
 **Layer 12 is the keystone.** Overcook is deliberately EV-negative and the code
@@ -91,9 +117,11 @@ poor deep one pay different currencies and neither is strictly better.
   bosses is not dead time.
 - Char survives a tip, like salt. That is the entire point.
 
-Open number: whether char is also re-earnable on later runs (diminishing), or
-strictly once per boss. Once-per-boss is cleaner and makes the descent a
-*campaign* rather than a farm; it also means char cannot inflate.
+**ONCE PER BOSS, operator's ruling.** Not re-earnable. The descent is a campaign,
+not a farm: char cannot inflate, ability pricing stays stable forever, and the
+five abilities are a finite set you eventually own outright. It also gives the
+deep game a real END to its power curve, which is what stops it swallowing the
+shallow one.
 
 ---
 
@@ -111,9 +139,32 @@ the layer it came from:
 | **the burrow** | dirt | the rat works FOR you — his hoard pays out instead of siphoning |
 | **the magma** | lava | **overcook feeds the multiplier instead of draining the pot** |
 
-Bought in any order, so char is a real choice rather than a track. Sold by a new
-deep vendor (§7), not by the first chip — the first chip is the end of the
-*shallow* game and should stay that.
+Bought in any order, so char is a real choice rather than a track.
+
+### The vendor is SCOOP (operator: "something that followed you down")
+
+The small dog. Layer 0. The **first character in the game** — and the writing set
+this up long before anybody planned a descent:
+
+> small dog seen guarding empty stool for **eleven months**; declines to explain;
+> calls it "a business meeting."
+
+> scoop announces retirement from begging, **effective after one more chip**.
+> sources confirm this is the ninth retirement.
+
+> i've done the math. you can't eat all of them. **i've done the math twice.**
+
+He was never begging. He was waiting for somebody to dig. He has been asking for
+one more chip since the first minute of the game, and at the bottom you find out
+what for.
+
+**How he plays:** he appears at the porcelain, sits a little further down each
+band, and **says nothing** — no lines, no price tags — until the lava. Everything
+before that is simply him being there, which is worse. His art already exists
+(`CritterArt id="scoop"`), so the cost is copy and one placement rule.
+
+The descent's character arc is therefore the shallow game's oldest running joke,
+paid off. Nothing had to be invented for it.
 
 **`the magma` is the design's centre of gravity** and everything else is
 calibrated against it. It should be built and simulated first (`scripts/` has the
@@ -215,26 +266,117 @@ Cheap, escalating, all copy and palette:
 
 ---
 
-## 8. Still open
+## 8. The bowl count: no ceiling, and a nod (operator's ruling)
 
-1. **The deep vendor.** Who sells char abilities? A new critter met at the
-   porcelain, or something that has been following you down. (Layer 13 is no
-   longer a candidate — it is a place now, not a person.)
-2. **Char re-earnable or once-only** (§4).
-3. **Does a boss interrupt play, or run in the background?** A modal fight stops
-   the idle game dead; a background condition ("all four at ×32 right now") lets
-   the game keep running and rewards noticing. Leaning background, consistent
-   with how the wing, the oracle and the committee already work.
-4. **Does the bowl count have a ceiling?** Probably not — but the copy needs an
-   answer for what the tenth bowl reads like, or it degrades into a number.
+The count never stops. What stops is the ceremony.
+
+The descent's payoff is narrative, and a revelation does not repeat. Salt and char
+are numbers and numbers repeat fine, but "you were never digging down" lands
+exactly once. So:
+
+| bowl | what the game does |
+|---|---|
+| 1st | the full inversion — every beat, the maker's mark, all of it |
+| 2nd | one short beat. "it happened again" is a different feeling from both "it happened" and "it happens", and it is the last time the game will say anything |
+| 3rd+ | **a nod.** You surface. The count goes up. No ceremony, no copy. |
+
+The nod is the whole design: **they know they did it.** A game that keeps
+congratulating you for a thing you now do routinely is a game that has stopped
+believing you. The horror became your commute, and saying nothing about that says
+more than any amount of copy would.
+
+Mechanically it is a restart they *choose*: char and salt both survive, so
+everything permanent they have earned comes with them and the numbers only ever
+go up. The count itself is the one thing the deep leaderboard ranks on, which is
+a second argument against a ceiling — it has to still mean something at ten.
+
+Concretely, the nod is the count sitting in the hood beside old salt, without
+comment. That is the entire third-bowl-onward presentation.
 
 ---
 
-## 9. Build order, if approved
+## 9. ENLIGHTENMENT — the comedy the loop unlocks
+
+Operator: *"otherwise they are now 'enlightened' :D for more jokes / 'you were
+always in the matrix neo' etc."*
+
+Coming up through someone else's bowl is not just a counter. It is a **state**,
+and it is the funniest thing the descent gives us, because the shallow game's
+entire cast can now be re-written for an audience that KNOWS.
+
+`enlightened` is one boolean derived from `bowls > 0`. It swaps line pools. That
+is the whole implementation — `pickLine` already picks from a per-critter pool
+(`crew.ts`), so this is content, not machinery.
+
+### The rule that makes it funny
+
+**Nobody agrees about what you saw.** Some of them knew. Some refuse to know.
+Some knew and are annoyed you found out. None of them will have a straight
+conversation about it, because none of them ever has about anything.
+
+### The cast, enlightened
+
+- **scoop** — knew the whole time, and it costs him nothing to say so:
+  *"you took your time."* / *"i said one more chip. i meant one more chip."*
+- **the first chip** — the shallow game's last line was *"i said nothing because
+  you had not arrived yet."* Its enlightened version inverts exactly:
+  *"you came back. i said nothing because you had not left yet."*
+- **the weeping onion** — denial, load-bearing:
+  *"i'm fine. it's the caramelization. it was never the caramelization."*
+- **cheese rat** — unbothered:
+  *"so you've seen outside. i live here. legally you still can't prove that."*
+- **queso angel** — you have joined the wrong side of a verb:
+  *"you have been witnessed. you have also been witnessing. it does not suit
+  you, child."*
+- **the committee** — procedure absorbs everything:
+  *"a motion has been raised that the bowl does not exist. the motion is out of
+  order. the motion carries."*
+- **the hermit** — betrayed:
+  *"OH SO NOW you know about the celery. NOW. WHO SENT YOU."*
+- **the wing** — finally, an actual epistemology:
+  *"there was never a bird. THERE WAS NEVER A BOWL EITHER. one of those is a
+  lie and i will not be told which."*
+- **the fondue oracle** — smug, and entitled to be:
+  *"i told you. i told you and you dipped anyway. the strings do not lie. they
+  just don't explain."*
+
+### The ticker, enlightened
+
+- *there is no long spoon.* — the game already sells a jar called **The Long
+  Spoon** (`detector3`), so the joke is a film allusion and an inventory
+  reference at once, and costs one line.
+- *local man reports table has underside. table declines to confirm.*
+- *management denies bowl. management is a bowl.*
+- *four experts who translated the underside inscription have been reassigned.*
+- *shop confirms it was built around the dip. shop cannot say who built the shop.*
+
+### Why this is the cheapest content in the feature
+
+Every one of these is a string in an array. `crew.ts` already keys its ticker by
+layer and its critter lines by id; enlightenment is one more axis on data that is
+already shaped for it. **It also doubles the value of a second playthrough for
+the price of writing**, which is exactly what the operator asked the descent to
+do — the jokes are the reason to go round again, not the multipliers.
+
+---
+
+## 10. Still open
+
+1. **What scoop finally says at the lava.** The single most important line in the
+   feature, and it should not be written in a hurry.
+2. **Boss retry cost.** Free retries make a modal a slot machine; a cost makes it
+   a decision. Leaning free, but the boss does not re-offer until you have dug a
+   little further — so the cost is time rather than a resource.
+
+---
+
+## 11. Build order, if approved
 
 1. `broke <band>` fold verb + char accrual — the only permanent decision. The
    deep tip (§7) is the same verb at band 13, so design it to carry a band
    number from the start rather than bolting one on.
+1b. The `enlightened` line pools (§9). Pure content, no machinery, shippable the
+   day `bowls > 0` exists — and the highest laughs-per-hour in the whole plan.
 2. Bands 8–12: names, palettes, `BEYOND_LINES` replacement. Cheap, visible, ships alone.
 3. `the magma`, simulated against `overcooksim`/`longfrysim` before anything is priced.
 4. Bosses one at a time, cheapest first (the porcelain is a single comparison).
