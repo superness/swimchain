@@ -4,14 +4,16 @@
  * DISPLAY SIDE. Floats, wall-clock reads and DOM access are all fine here; nothing in
  * this directory may be imported by `src/lib/`.
  *
- * Task 1 of the shell plan deliberately mounts a DIAGNOSTIC panel rather than a game.
- * The game surfaces land in Tasks 4-6; inventing player copy here would only have to be
- * deleted, and the diegetic rule (spec §1.1) is easier to hold if the developer-facing
- * screen never pretends to be a player-facing one.
+ * Task 1 mounted the DIAGNOSTIC panel here, because there was no game yet. Task 4
+ * replaces it with the sea: `App` owns the canvas and keeps Task 1's panel reachable
+ * behind F1 (or the dim corner dot), since Tasks 5-7 still need to see whether the
+ * sidecar is alive. The diegetic rule (spec §1.1) is why the panel is hidden by
+ * default rather than merged into the game surface — a developer screen should stay
+ * unmistakably a developer screen instead of dressing the plumbing in sea language.
  */
 import { createRoot } from 'react-dom/client';
-import { Diagnostics } from './Diagnostics';
+import { App } from './App';
 
 const host = document.getElementById('root');
 if (!host) throw new Error('index.html is missing its #root element');
-createRoot(host).render(<Diagnostics />);
+createRoot(host).render(<App />);
