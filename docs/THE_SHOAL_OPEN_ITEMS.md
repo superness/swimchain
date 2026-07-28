@@ -10,6 +10,13 @@ says what is broken, how it was found, and what it costs to leave.
 
 ## Resolved
 
+### 3. Gossip is unproven end to end *(RESOLVED 2026-07-28)*
+
+Closed by two real peered regtest nodes and `shoal-client/scripts/two-client-smoke.ts`.
+Full write-up in place below, under Blockers.
+
+---
+
 ### 10. The core loop was unreachable — a swimmer could never eat *(RESOLVED 2026-07-28)*
 
 To eat you must be within `EAT_R` (90) of a cell centre, but you stamp it visited — killing
@@ -88,15 +95,43 @@ Related: the bridge has no way to distinguish "you have no sponsor" from "the no
 down" without string-matching an error message. A typed classification in `shoalSend` is a
 small addition and belongs with this work.
 
-### 3. Gossip is unproven end to end
+### 3. Gossip is unproven end to end — **RESOLVED 2026-07-28**
 
-Both smoke identities talk to **one** node, so `src/node/router/router.rs:5947` — the
-gossip-ingest event publisher, the entire reason the live channel exists — never fired.
-Every event in the smoke came from the local-submission publisher.
+**Closed by:** `shoal-client/scripts/two-client-smoke.ts`, run against two real peered
+regtest nodes (`npm run smoke:two`, 41 checks, ALL PASS — see the Task 7 report).
 
-**Missing run:** two nodes, a peer connection, one identity on each, and an assertion that a
-`content_new` raised by *gossip* triggers a refetch. Until then the live channel's central
-premise is verified only by reading the Rust.
+Two `sw` processes, two data dirs, two port pairs, peered with `--connect` and each
+verified to list the *other's* `node_id` via `get_peers`. One identity per node. A presence
+written only to node A made node B's client refetch **6040 ms after its watcher started,
+19 ms after the write was requested**, against a 60 s poll heartbeat that provably had not
+ticked — and the mirror direction held too.
+
+That the event came from `router.rs:5947` and not from a local submission is established by
+elimination, made airtight four ways rather than asserted:
+
+1. **The poll timer cannot have fired.** Every watcher ran at `pollIntervalMs = 60_000` and
+   the whole watch window was 9,726 ms. `nextAction` only sets `refetch` from a matching
+   `content` event or from a `tick`, and no tick was possible.
+2. **The observing node received no write.** `globalThis.fetch` is wrapped for the run and
+   every (endpoint, method, ms) recorded; node B's endpoint saw only `get_info`,
+   `get_peers`, `register_sponsored_identity` and `get_content` up to the refetch. The
+   script also **reads the Rust** and asserts every `.publish_content_new(` call site
+   outside `router.rs` sits in `submit_post` or `submit_reply`, so the elimination cannot
+   silently go stale when a third publisher is added.
+3. **A negative control on the same socket** — a watcher on node B with a well-formed but
+   different space id — recorded **0** refetches while watcher B recorded 3. Mutation-tested:
+   pointing the control at the real space id flips it to 3 and fails the check.
+4. **A quiet window first.** All three watchers recorded zero refetches across a 4 s idle
+   period before anyone wrote, so no late setup gossip could be mistaken for the event.
+
+Corroborated positively by node B's own log: `[MEMPOOL] Added action … from peer
+60f1839fba1dd9a5 to mempool (type=Reply …)` — the gossip-ingest path's own line, a few
+above the publisher.
+
+Also proven in the same run: both clients fold to identical fingerprints from two
+independent nodes; all three moves finalize with a `block_height` on **both** nodes; and
+A's rendered position for B is **exactly** B's own (0 cu), with a one-broadcast-stale view
+397.3 cu out against a derived bound of 1320 cu.
 
 ---
 
@@ -214,6 +249,27 @@ lone-fish farming case, and the 36-vs-432 pruning bound over 48 swimmers), `bloo
 reaches both levels of the map), and the arithmetic tripwire in `src/ui/input.test.ts` §8,
 which still fails the day either constant moves — that is the day to re-examine whether the
 exemption is still load-bearing.
+
+### 11. `content_new` arrives before `get_replies` can serve it
+
+**Found by:** the first run of the two-node smoke, which passed every gossip assertion and
+then failed four content assertions in a row.
+
+The node publishes the gossip event immediately after `block_builder.add_action`
+(router.rs, a few lines above 5947), but the mempool merge `get_replies` performs is a
+different read. Measured lag between the event firing and the log becoming readable:
+**74–372 ms** on a local regtest node, in both directions.
+
+So **a `content_new` means "something happened", not "the log now contains it."** A client
+that refetches exactly once per event and renders the result drops writes silently. This
+never shows up on one node, because the local-submission path writes and merges in the same
+call — which is exactly why the bridge's single-node smoke could not have found it.
+
+`startLive` already survives this (its poll heartbeat and silence detection refetch again),
+but "eventually" there means up to `DEFAULT_POLL_INTERVAL_MS`. `chainSea.ts` therefore
+schedules a second refetch 600 ms after each event-driven one. **Not fixed, accommodated** —
+the node-side answer would be to publish after the merge rather than before, and that is a
+node change nobody has costed.
 
 ### 9. Smaller
 

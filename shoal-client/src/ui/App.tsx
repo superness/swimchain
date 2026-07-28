@@ -80,6 +80,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
+import { chainSea, type ChainSea } from './chainSea';
+import { identityFromLabel } from './browserIdentity';
 import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
 import { fitBodies, fitScale, followCamera, screenToWorld, type Camera, type Viewport } from './render';
 import {
@@ -97,7 +99,86 @@ import type { ReadonlyVisitMap } from '../lib/shoalTypes';
 import { reckon } from '../lib/fixed';
 import { HUSH_MS, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
 
-type SceneKind = 'lively' | 'harness';
+type SceneKind = 'lively' | 'harness' | 'chain';
+
+/**
+ * A real room on a real node, from query parameters — Task 7's capture, and
+ * the first time anything in this window writes to a chain.
+ *
+ * `?rpc=` alone selects it; the rest are required alongside and the sea says
+ * so loudly rather than half-starting:
+ *
+ *   ?rpc=http://127.0.0.1:29736   the node's RPC endpoint
+ *   &cookie=<hex>                 contents of that node's `.cookie` file
+ *   &space=sp1…                   the room's space, bech32m wire form
+ *   &room=sha256:…                the room post every swimmer replies into
+ *   &id=<64 hex>                  this window's public key (the camera's fish)
+ *   &who=<label>                  the passphrase that derives that key
+ *
+ * `scripts/two-client-smoke.ts` prints both windows' URLs, fully formed, at
+ * the end of a successful run — the parameters are fiddly on purpose (they
+ * are not reachable from inside the game, exactly like `?at=`/`?played=`), and
+ * a printed URL is less error-prone than a documented recipe.
+ *
+ * The cookie rides in the query string because a browser cannot read the
+ * node's cookie file. That is acceptable for a localhost regtest capture and
+ * for nothing else; a shipped shell gets its auth from the Tauri side through
+ * `get_rpc_config` (see Diagnostics.tsx), never from a URL.
+ */
+interface ChainParams {
+  rpc: string;
+  cookie: string | null;
+  space: string;
+  room: string;
+  id: string;
+  who: string;
+}
+
+/**
+ * Build the chain sea from the URL, or `null` if this window was not pointed
+ * at a room. Synchronous on purpose: the signing key resolves asynchronously
+ * (WebCrypto `importKey`), but `Sea.selfId` must be known on the first frame,
+ * so the public key comes from `&id=` and `chainSea` checks the two agree once
+ * the key arrives. That keeps the frame loop's construction unchanged.
+ */
+function buildChainSea(): ChainSea | null {
+  const p = chainParams();
+  if (p === null) return null;
+  return chainSea({
+    auth: {
+      endpoint: p.rpc,
+      authHeader: p.cookie === null ? null : `Basic ${btoa(`__cookie__:${p.cookie}`)}`,
+    },
+    spaceId: p.space,
+    roomContentId: p.room,
+    authorIdHex: p.id,
+    signer: identityFromLabel(p.who),
+    // Mid-world, so a fresh window is somewhere the other window's camera can
+    // plausibly reach. The fold overrides this the moment a real vector for
+    // this swimmer arrives; it only decides where the pointer starts steering
+    // from before the first publish.
+    spawn: { x: Math.round(WORLD_W / 2), y: Math.round(WORLD_H / 2) },
+    onError: (where, err) => { console.error(`[shoal] chain sea (${where}):`, err); },
+  });
+}
+
+function chainParams(): ChainParams | null {
+  const rpc = devParam('rpc');
+  if (rpc === null) return null;
+  const space = devParam('space');
+  const room = devParam('room');
+  const id = devParam('id');
+  const who = devParam('who');
+  if (space === null || room === null || id === null || who === null) {
+    // Half a configuration would render an empty sea that looks exactly like a
+    // node with nobody in it — the single most confusing failure available
+    // here. Better to be unmistakable in the console than plausible on screen.
+    console.error('[shoal] ?rpc= needs &space=, &room=, &id= and &who= alongside it; '
+      + 'run scripts/two-client-smoke.ts, which prints both windows\' URLs.');
+    return null;
+  }
+  return { rpc, cookie: devParam('cookie'), space, room, id, who };
+}
 
 /** How long a swept swimmer is drawn dazed. Spec 2.9's "a few seconds". */
 const DAZED_MS = 2_500;
@@ -176,7 +257,10 @@ function devNumber(name: string): number | null {
 
 export function App() {
   const [showDiag, setShowDiag] = useState(false);
-  const [scene, setScene] = useState<SceneKind>(() => (devNumber('at') !== null ? 'harness' : 'lively'));
+  const [scene, setScene] = useState<SceneKind>(() => {
+    if (chainParams() !== null) return 'chain';
+    return devNumber('at') !== null ? 'harness' : 'lively';
+  });
   /** The line being typed, or null when not speaking. */
   const [typing, setTyping] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -226,8 +310,13 @@ export function App() {
         return;
       }
       if (e.key === 'F1' || e.key === '`') { e.preventDefault(); setShowDiag((v) => !v); }
-      else if (e.key === '1') setScene('lively');
-      else if (e.key === '2') setScene('harness');
+      // The demo-scene toggle is disabled once this window is pointed at a
+      // real room: switching away would tear down the live socket and the
+      // room's log, and switching back would rebuild them — a stray keystroke
+      // during a capture would silently replace the sea being photographed
+      // with a scripted one that looks very much like it.
+      else if (e.key === '1' && chainParams() === null) setScene('lively');
+      else if (e.key === '2' && chainParams() === null) setScene('harness');
       else if (e.key === ' ') { e.preventDefault(); push({ kind: 'dart' }); }
       else if (e.key === 'e' || e.key === 'E') { e.preventDefault(); wantsBiteRef.current = true; }
       else if (e.key === 'Enter') { e.preventDefault(); setTyping(''); }
@@ -244,9 +333,14 @@ export function App() {
 
     const startWall = Date.now();
     const at = devNumber('at');
-    const sea: Sea = scene === 'harness'
-      ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
-      : livelySea(startWall);
+    // Built once per scene, and torn down by this effect's cleanup — a chain
+    // sea owns a WebSocket and timers, so leaking one across a hot reload
+    // would leave a growing pile of subscribers on the node.
+    const chain = scene === 'chain' ? buildChainSea() : null;
+    const sea: Sea = chain
+      ?? (scene === 'harness'
+        ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
+        : livelySea(startWall));
 
     // The tether's fade clock. `?played=` overrides it for a screenshot.
     const playedOverride = devNumber('played');
@@ -499,6 +593,7 @@ export function App() {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
+      chain?.stop();
     };
   }, [scene]);
 

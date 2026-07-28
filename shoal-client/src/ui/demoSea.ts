@@ -74,7 +74,7 @@ export const SPEECH_MS = 7_000;
  * is walking — so this works identically for a scripted sea and for a real
  * room, and there is no second place speech could live and disagree.
  */
-function speechFrom(log: readonly LogEntry[], atMs: number): Map<string, string> {
+export function speechFrom(log: readonly LogEntry[], atMs: number): Map<string, string> {
   const out = new Map<string, string>();
   for (const e of log) {
     if (e.kind !== 'presence' || e.say === undefined) continue;
