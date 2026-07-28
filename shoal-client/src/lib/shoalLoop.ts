@@ -142,9 +142,29 @@
  * are pinned against the engine itself in shoalLoop.test.ts section 4.
  *
  * `appliedHashes` still remembers a floored-out entry, so a refetch does not
- * reconsider it every poll. That set is bounded by the room's own fetch
- * ceiling (`ROOM_FETCH_LIMIT`, past which `narrowRoomReplies` refuses the
- * response outright), so it cannot grow without bound either.
+ * reconsider it every poll.
+ *
+ * THAT SET'S BOUND, CORRECTED. This paragraph used to say it was bounded by
+ * the room's own fetch ceiling (`ROOM_FETCH_LIMIT`, past which
+ * `narrowRoomReplies` refuses the response outright). That is true of REAL
+ * content ids and false of the log a shell actually hands over: `chainSea.ts`
+ * mints a synthetic `pending-N` hash for every optimistic local write, and
+ * those are hashes no room will ever serve, so no ceiling on the room bounds
+ * them. At the emitter's own rate — up to 21 presence writes a minute plus up
+ * to 24 eat claims (`shoalEmit.ts`'s budget table) — that is roughly 2,700
+ * synthetic hashes an hour, and NOTHING removed them: the rollover pruned
+ * `ordered` and left `applied` alone, so the set grew for the life of the
+ * window.
+ *
+ * The rollover now prunes BOTH, to exactly the hashes `ordered` still holds
+ * (section 4). That is safe rather than merely tidy: every hash it drops
+ * belongs to an entry whose `ms` is below the NEXT epoch's admit floor, and
+ * floors only ever move forward — so a re-offered copy is re-added to
+ * `applied` and then floored again on the same pass, reaching neither `fresh`
+ * nor `behindCursor`. The observable behaviour ("a refetch cannot re-admit a
+ * floored-out entry") is unchanged; what changes is that the set is now
+ * bounded per epoch instead of per session. Pinned in shoalLoop.test.ts
+ * section 6.
  *
  * =============================================================================
  * 4. THE ROLLOVER: there is exactly one way to start an epoch
@@ -319,6 +339,17 @@ export function advance(
     // live cursor.
     const nextFloorMs = admitFloorMs(epoch);
     ordered = ordered.filter((e) => e.ms >= nextFloorMs);
+    // ...and prune `applied` WITH it, to exactly what `ordered` still holds.
+    // Without this the set is bounded per SESSION rather than per epoch: a
+    // shell's optimistic local writes carry synthetic `pending-N` hashes no
+    // room will ever serve, so the room's own fetch ceiling does not bound them
+    // (~2,700 an hour at the emitter's rate — see section 3). Safe because
+    // every hash dropped here belongs to an entry below the next epoch's admit
+    // floor, and floors only move forward, so a re-offered copy is floored
+    // again on the same pass it is re-added.
+    const keep = new Set<string>();
+    for (const e of ordered) keep.add(e.hash);
+    for (const h of applied) if (!keep.has(h)) applied.delete(h);
     const nextFoldEnd = epochFoldEndMs(epoch);
     state = foldShoal(ordered, toMs < nextFoldEnd ? toMs : nextFoldEnd, { epoch, seed });
   }

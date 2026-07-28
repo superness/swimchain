@@ -514,10 +514,60 @@ check('and the hand-derived recent tail: e0 alone, its last bite X_MS, ' +
   check('the fold\'s log is pruned of entries no future fold can see',
     loop.ordered.length === 0 && admitFloorMs(E + 2) > BOUNDARY,
     { ordered: loop.ordered.length, floor: admitFloorMs(E + 2) });
-  check('but their hashes are remembered, so a refetch cannot re-admit them',
-    loop.appliedHashes.size === LOG.length &&
-    advance(loop, LOG, FAR).loop.ordered.length === 0,
-    loop.appliedHashes.size);
+  // THE BOUND, which is what changed. This check used to read
+  // `loop.appliedHashes.size === LOG.length` — i.e. it pinned that the set kept
+  // every hash it had ever seen, for the life of the driver. That was the
+  // defect, not the guarantee: a shell's optimistic writes carry synthetic
+  // `pending-N` hashes no room ever serves, so nothing bounded them and the set
+  // grew ~2,700 entries an hour, forever. The rollover now prunes `applied`
+  // alongside `ordered`, so after a roll the two agree exactly — and here, where
+  // the whole fixture is below epoch E+2's floor, both are EMPTY.
+  //
+  // The old assertion is not being relaxed: the property it was standing in for
+  // is asserted directly above, and this one is strictly stronger than "the set
+  // does not grow without bound."
+  check('the applied set is pruned with the log at every rollover, entry for entry',
+    loop.appliedHashes.size === loop.ordered.length && loop.appliedHashes.size === 0,
+    { applied: loop.appliedHashes.size, ordered: loop.ordered.length });
+
+  // THE BEHAVIOURAL CLAUSE, UNCHANGED: re-offering the whole room after the
+  // roll must not re-admit a single floored-out entry. This is what the loop
+  // actually promises, and it is now guaranteed by the ADMIT FLOOR rather than
+  // by remembering every hash forever. It runs AFTER the bound check because
+  // `advance` mutates `appliedHashes` in place (section 5's calling convention)
+  // and this call re-adds all 16 room hashes before flooring them out again —
+  // which is itself the demonstration that dropping them costs nothing.
+  check('a refetch of the whole room re-admits nothing the floor already swallowed',
+    advance(loop, LOG, FAR).loop.ordered.length === 0);
+
+  // The bound stated against a driver that has been running for HOURS with a
+  // shell's synthetic hashes in it — the case that motivated the change.
+  // Hand-derived: 12 fabricated `pending-N` entries are admitted into epoch E
+  // (their `ms` is inside it), so before any roll `applied` holds
+  // LOG.length + 12. After rolling out to epoch E+2 every one of them is below
+  // the floor, so both collections are empty and the SECOND hour starts from
+  // zero rather than from 2,700.
+  {
+    const synthetic: LogEntry[] = [];
+    for (let i = 0; i < 12; i++) {
+      synthetic.push({
+        kind: 'presence',
+        id: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+        ms: BOUNDARY - 10_000 + i * 100,
+        hash: `pending-${i}`,
+        vec: { x: 2000, y: 1500, heading: 0, speed: 0, t: BOUNDARY - 10_000 + i * 100 },
+      });
+    }
+    const withPending = [...LOG, ...synthetic];
+    let l2 = advance(createLoop(E, null), withPending, epochFoldEndMs(E)).loop;
+    check('a shell\'s synthetic pending hashes are admitted like any other (hand-derived LOG + 12)',
+      l2.appliedHashes.size === LOG.length + 12, l2.appliedHashes.size);
+    l2 = advance(l2, withPending, FAR).loop;
+    l2 = advance(l2, withPending, FAR).loop;
+    check('...and two rollovers later NONE of them is still held, so the set is bounded per epoch, not per session',
+      l2.appliedHashes.size === 0 && l2.ordered.length === 0,
+      { applied: l2.appliedHashes.size, ordered: l2.ordered.length });
+  }
 }
 
 // =============================================================================
