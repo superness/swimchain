@@ -30,7 +30,7 @@ import {
   tetherFade, tetherOpacity, senseThreshold, premonition,
   hushRead, lockedBodies, scatterReplay,
 } from './tether';
-import { shelterOf, isExposed, shelterWeight, type Body } from '../lib/shelter';
+import { shelterOf, isExposed, shelterWeight, type Body, type ShelterBody } from '../lib/shelter';
 import { selectTaken } from '../lib/sweep';
 import { bodiesOf } from '../lib/shoalEngine';
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
@@ -290,6 +290,29 @@ check('no shelter at all is adrift', tetherMood(0) === 'adrift', tetherMood(0));
   const r = readTether(me, [me]);
   check('a swimmer with nobody at all has no nearest and no strands',
     r.nearest === null && r.strands.length === 0 && r.shelter === 0 && r.mood === 'adrift', r);
+}
+
+// A stranded player near a bolting wild school must trail toward the nearest
+// PERSON, never a wild fish — `nearestOf` feeds ONLY `seaPaint.ts`'s
+// "nobody is holding you" streamer, drawn precisely when `strands.length ===
+// 0`, i.e. the one moment a player has no cover at all. `App.tsx:584` hands
+// `readTether` a wild-inclusive population (`[...bodies, ...wildBodies]`), so
+// with 36 wild fish in three schools the nearest BODY at that moment is
+// usually a fleeing fish; the streamer must still point at a person.
+//
+// Both bodies sit outside SHELTER_R (340) so `strandsOf` is empty (this is
+// the real failure shape — not a lone swimmer with zero neighbours, but one
+// whose only neighbours are out of shelter range) and the wild fish is
+// nearer (400 cu) than the person (500 cu), so an unfiltered `nearestOf`
+// would report the wild fish.
+{
+  const me: Body = { id: 'me', x: 2000, y: 1500, size: 100 };
+  const wildFish: ShelterBody = { id: 'wild:0', x: 2400, y: 1500, size: 999, wild: true }; // 400 cu
+  const person: ShelterBody = { id: 'p1', x: 2500, y: 1500, size: 100 }; // 500 cu
+  const r = readTether(me, [me, wildFish, person]);
+  check('a nearer wild fish is never picked: nearest still names the farther PERSON (hand-derived 500cu)',
+    r.strands.length === 0 && r.nearest !== null && r.nearest.id === 'p1' && r.nearest.distCu === 500,
+    r);
 }
 
 // ===========================================================================

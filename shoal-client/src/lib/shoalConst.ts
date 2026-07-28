@@ -62,6 +62,49 @@ export const SHELTER_SIZE_CAP = 45;
  */
 export const SHELTER_THRESHOLD = 3 * SHELTER_BASE; // 300
 
+/**
+ * What a WILD fish is worth as cover. Flat, and half a person.
+ *
+ * THE ARITHMETIC, which is the whole ruling:
+ *   a plain person   SHELTER_BASE                     = 100 (up to 145 grown)
+ *   a wild fish      WILD_SHELTER_WEIGHT              =  50, whatever its size
+ *   the threshold    SHELTER_THRESHOLD = 3 * 100      = 300
+ *   two wild fish    2 * 50 = 100 = SHELTER_BASE      = one plain person
+ *   five wild fish   5 * 50 = 250 < 300               -> still exposed
+ *   six  wild fish   6 * 50 = 300 = SHELTER_THRESHOLD -> sheltered
+ * So six wild fish do exactly what three people do: a 2:1 ratio, exact rather
+ * than approximate, because the weight is flat.
+ *
+ * WHY NOT A PERSON'S WEIGHT. Wild sizes are drawn in [60, 119] (wild.ts), so
+ * under the size-weighted rule the SMALLEST wild fish was worth
+ * 100 + trunc(60/40) = 101 and three of them gave 303 against a threshold of
+ * 300 — three wild fish were exactly as good as three people, with a
+ * one-point margin. Two things were wrong with that.
+ *
+ *  - *Your safety is other people* has to be true BEFORE the bolt, not only
+ *    at the instant of it. If a wild shoal is as good as a human crowd right
+ *    up until the hush lands, the thesis holds for the four seconds an hour
+ *    that the hush is running and is false for the rest of the session.
+ *  - A one-point margin is a knife-edge, and this is a CONSENSUS number: it
+ *    becomes permanent the moment anyone plays. Half a person is a ratio a
+ *    player can learn by looking (two wild fish, one person) and one that no
+ *    future size constant can drift across.
+ *
+ * The flatness is deliberate too: a wild fish has no size history and no bite
+ * ledger, so a size-weighted wild body would be pricing something the game
+ * never lets a player influence.
+ *
+ * WHAT THIS DOES NOT DO, stated so nobody re-derives it hopefully: it does not
+ * make wild cover scarce. A school is WILD_PER_SCHOOL (12) fish inside
+ * WILD_SCHOOL_R (200), and SHELTER_R is 340, so a swimmer at the middle of any
+ * school holds 12 * 50 = 600 — twice the threshold — exactly as it held
+ * 12 * 101 = 1212 before. What the halving moves is the FRINGE: cover now
+ * requires being IN a shoal rather than trailing one, and mixed arithmetic
+ * ("a pair plus one wild fish is safe") stops being true. If scarcity is ever
+ * wanted, the lever is WILD_PER_SCHOOL or WILD_SCHOOL_R in wild.ts, not this.
+ */
+export const WILD_SHELTER_WEIGHT = 50; // = SHELTER_BASE / 2
+
 // --- Tension ---------------------------------------------------------------
 /** Fish farther than this from the median position count as outside the core. */
 export const CORE_R = 620;

@@ -106,7 +106,10 @@
  */
 import { dist2 } from '../lib/fixed';
 import { hushPhase, type HushPhase } from '../lib/sweep';
-import { shelterOf, isExposed, shelterWeight, type Body } from '../lib/shelter';
+import { isWildId } from '../lib/wild';
+import {
+  shelterOf, isExposed, bodyShelterWeight, type Body, type SwimmerBody, type ShelterBody,
+} from '../lib/shelter';
 import {
   HUSH_MS, LOCK_MS, MIN_SIZE, SHELTER_R, SHELTER_R2, SHELTER_THRESHOLD, TENSION_TRIGGER,
 } from '../lib/shoalConst';
@@ -218,9 +221,10 @@ export interface TetherRead {
   /** One per sheltering neighbour, nearest first. Their weights sum to `shelter`. */
   strands: Strand[];
   /**
-   * The nearest OTHER swimmer, at any distance, or null if this fish is
-   * alone. What a tether with no strands left trails toward — the only
-   * honest thing to point at when nobody is holding you.
+   * The nearest other PERSON, at any distance, or null if none is in the
+   * population handed in. Wild fish are never candidates — see `nearestOf`'s
+   * doc. What a tether with no strands left trails toward — the only honest
+   * thing to point at when nobody is holding you.
    */
   nearest: { id: string; x: number; y: number; distCu: number } | null;
 }
@@ -330,12 +334,23 @@ export function tetherMood(shelter: number): TetherMood {
  *
  * The membership test is the engine's — `dist2 <= SHELTER_R2`, the identical
  * comparison `shelterOf` makes — and the weight is the engine's
- * `shelterWeight`, so the strand weights sum to `shelterOf(self, others)`
- * exactly. Not capped: a shoal is fifteen to twenty-five fish, so this is at
- * most a couple of dozen short lines, and capping it would break the one
+ * `bodyShelterWeight`, so the strand weights sum to `shelterOf(self, others)`
+ * exactly. Not capped: when `others` is people only, a shoal is fifteen to
+ * twenty-five fish, so that population is at most a couple of dozen short
+ * lines. But `others` may also be wild-inclusive (`shelterBodiesOf`'s
+ * population), and a player at a school's centre can hold a strand to every
+ * wild fish in range on top of the people — `WILD_PER_SCHOOL` (12) per school,
+ * so up to a dozen extra lines from cover alone. Capping it would break the
+ * one property that makes the picture trustworthy, so this stays uncapped
+ * either way.
+ *
+ * `bodyShelterWeight` rather than `shelterWeight` because `others` may hold
+ * wild fish, which are worth a flat WILD_SHELTER_WEIGHT (half a person). Using
+ * the person weight here would draw a strand heavier than the shelter it
+ * actually bought, and the sum would stop being `shelterOf` — which is the one
  * property that makes the picture trustworthy.
  */
-export function strandsOf(self: Body, others: readonly Body[]): Strand[] {
+export function strandsOf(self: Body, others: readonly ShelterBody[]): Strand[] {
   const out: Strand[] = [];
   for (const o of others) {
     if (o.id === self.id) continue;
@@ -347,7 +362,7 @@ export function strandsOf(self: Body, others: readonly Body[]): Strand[] {
       x: o.x,
       y: o.y,
       distCu,
-      weight: shelterWeight(o.size),
+      weight: bodyShelterWeight(o),
       taut: 1 - clamp01(distCu / SHELTER_R),
     });
   }
@@ -355,12 +370,28 @@ export function strandsOf(self: Body, others: readonly Body[]): Strand[] {
   return out;
 }
 
-/** The nearest other swimmer at any distance, or null when nobody is there. */
-function nearestOf(self: Body, others: readonly Body[]): TetherRead['nearest'] {
+/**
+ * The nearest other PERSON at any distance, or null when nobody is there.
+ *
+ * Wild fish are filtered out (`!isWildId(o.id)`), even though `others` may be
+ * wild-inclusive (`shelterBodiesOf`'s population, which `strandsOf` and
+ * `shelterOf`/`isExposed` are meant to see). This is deliberate and narrower
+ * than `strandsOf`: this function feeds ONLY the "nobody is holding you"
+ * streamer (`seaPaint.ts`'s `nearest` branch, drawn precisely when
+ * `strands.length === 0`) — the one moment a player has no cover at all — and
+ * a streamer that pointed at scenery there would be actively misleading: with
+ * 36 wild fish in three schools, the nearest body at that moment is usually a
+ * bolting fish, not a person. `strands`/`shelter` stay wild-inclusive because
+ * that is the felt-safety property the rest of this module is built on (see
+ * `readTether`'s header and docs/THE_SHOAL_OPEN_ITEMS.md item 17); only the
+ * "point at the nearest THING" fallback needs to mean "person".
+ */
+function nearestOf(self: Body, others: readonly ShelterBody[]): TetherRead['nearest'] {
   let best: TetherRead['nearest'] = null;
   let bestD2 = Infinity;
   for (const o of others) {
     if (o.id === self.id) continue;
+    if (isWildId(o.id)) continue;
     const d2 = dist2(self.x, self.y, o.x, o.y);
     if (d2 < bestD2 || (d2 === bestD2 && best !== null && o.id < best.id)) {
       bestD2 = d2;
@@ -372,13 +403,26 @@ function nearestOf(self: Body, others: readonly Body[]): TetherRead['nearest'] {
 
 /**
  * Everything the paint needs about one swimmer's tether, all of it derived
- * from the engine's own `shelterOf`/`isExposed` over the SAME body list the
- * sweep would judge.
+ * from the engine's own `shelterOf`/`isExposed` — but NOT, in general, over
+ * the same body list the sweep would judge.
+ *
+ * When `others` is built from `shelterBodiesOf` it holds the wild shoal too,
+ * and `sweep.ts:63` filters wild fish from both candidacy and cover before it
+ * ever judges anyone. So a tether fed wild-inclusive `others` reads FELT
+ * safety — cover that includes scenery — while the sweep judges people only.
+ * That gap is intended, not a bug to close: it is the false sense of safety
+ * spec 2.6 sells (a school around you that is partly wild fish feels exactly
+ * as safe right up until the hush), and it self-corrects at the bolt, two
+ * full seconds before the input lock and long before any verdict —
+ * `WILD_BOLT_MS` (2_000) < `LOCK_MS` (4_000), see wild.ts. A caller wanting
+ * the tether to read exactly what the sweep would judge must pass it a
+ * people-only body list (`bodiesOf`, not `shelterBodiesOf`); this function
+ * has no opinion on which list it is handed.
  *
  * `others` may include `self`; both engine functions skip a body with the
  * caller's own id, and so do the two loops here.
  */
-export function readTether(self: Body, others: readonly Body[]): TetherRead {
+export function readTether(self: Body, others: readonly ShelterBody[]): TetherRead {
   const shelter = shelterOf(self, others);
   return {
     self,
@@ -472,7 +516,7 @@ export function hushRead(hushStartMs: number, atMs: number): HushRead {
  * verdict the fold is going to reach, which is what makes the dread window
  * honest rather than theatrical.
  */
-export function lockedBodies(state: LockEcho): Body[] | null {
+export function lockedBodies(state: LockEcho): SwimmerBody[] | null {
   const locked = state.lockedPositions;
   if (locked === null) return null;
   return [...locked.entries()]

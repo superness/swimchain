@@ -67,6 +67,24 @@ import type { Checkpoint, LogEntry, ShoalState, Vec } from '../lib/shoalTypes';
 export interface Sea {
   /** Which swimmer the camera follows. */
   readonly selfId: string;
+  /**
+   * The wild shoal's seed (wild.ts, spec 2.6) — WHICH SEA THIS IS.
+   *
+   * `wildAt` draws every school's orbit, every fish's epicycles and every
+   * size from a hash of this one integer, so two clients that disagree about
+   * it are looking at two different oceans and — because wild fish shelter
+   * you at half a person — reading two different shelter scores in the same
+   * water. It therefore has to be a property of the PLACE, not of whoever
+   * wired the call, which is what open item 13 records and what putting it on
+   * `Sea` settles: every sea now states its own, at the one seam that knows
+   * what room it is.
+   *
+   * The two offline seas use a fixed constant (the harness's own
+   * `--wild-seed 1`, so the window and `npm run harness` describe the same
+   * sea); `chainSea` derives it from the room, which is the value every
+   * client in that room already agrees on. See `wildSeedFrom`.
+   */
+  readonly wildSeed: number;
   /** Where the player's swimmer starts, before it has published anything. */
   readonly spawn: { readonly x: number; readonly y: number };
   /** Fold forward and return the world at this wall-clock instant. */
@@ -83,6 +101,36 @@ export interface Sea {
 
 /** How long a word stays over a swimmer's head. Display-side, arbitrary. */
 export const SPEECH_MS = 7_000;
+
+/**
+ * The offline seas' wild seed. 1, matching `npm run harness`'s own default
+ * (`--wild-seed 1`), so the text output and the window describe one ocean.
+ */
+export const DEMO_WILD_SEED = 1;
+
+/**
+ * A room's wild seed, from a string every client in that room already agrees
+ * on — the space id and the room's content id, concatenated.
+ *
+ * BOTH, not just the space: a space can hold more than one room over its
+ * lifetime (open item 1 has rooms rotating), and two rooms in one space should
+ * be two seas rather than the same fish twice.
+ *
+ * FNV-1a, folded to a 31-bit non-negative integer. `wildAt`'s hash is exact
+ * 32-bit `Math.imul` arithmetic and would accept the sign bit happily, but a
+ * negative seed is the kind of thing that survives a round trip through JSON
+ * or a query parameter differently depending on where it stops, and the seed
+ * space loses nothing worth having.
+ */
+export function wildSeedFrom(spaceId: string, roomContentId: string): number {
+  let h = 2166136261 >>> 0;
+  const s = `${spaceId}/${roomContentId}`;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h & 0x7fffffff;
+}
 
 /**
  * Words currently over swimmers' heads, read straight out of the log the fold
@@ -168,6 +216,7 @@ export function harnessSea(wallStartMs: number, fromMs: number = 0, selfId: stri
     // about to take, which is the whole subject of spec 2.10 and cannot be
     // reached any other way in a scripted log. See App.tsx's `?me=`.
     selfId,
+    wildSeed: DEMO_WILD_SEED,
     // e0 is a FIXTURE swimmer, so this is where the harness puts it (the
     // centre of bloom cell 367) rather than a spawn the player owns. It is
     // read only before this client's first publish, and `publish` here is
@@ -323,6 +372,7 @@ export function livelySea(wallStartMs: number): Sea {
 
   return {
     selfId: 'you',
+    wildSeed: DEMO_WILD_SEED,
     spawn,
     seaMs: (wallMs: number) => wallMs,
     /**

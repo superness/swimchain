@@ -118,10 +118,49 @@ export function richSession(): LogEntry[] {
  *   lockedPreferred yet; waiting for lastTaken to differ is waiting until it
  *                   is a player-visible bug.
  *
- * The fold-internal bookkeeping (`cursor`, `outsideTicks`, `tickCount`,
- * `touchedIds`, `nowMs`, `epoch`) is deliberately absent: it is not part of
- * the observable world, and two clients that stopped on different ticks
- * should still be comparable on what the world looks like.
+ * `cursor`, `tickCount`, `nowMs` and `epoch` are deliberately still absent —
+ * but for a narrower reason than the paragraph this replaces used to claim,
+ * and it is worth being exact about which reason, because `outsideTicks` and
+ * `touchedIds` used to sit in that same excluded list under the same
+ * one-line rationale ("fold-internal bookkeeping... not part of the
+ * observable world") and that rationale was wrong for both of them (open
+ * item 8, docs/THE_SHOAL_OPEN_ITEMS.md). The four still excluded here are
+ * POSITION-IN-THE-FOLD, not world state: `cursor` is an index into this
+ * client's own log array, `tickCount` counts this client's own `foldTick`
+ * calls, `nowMs` is wherever this client's caller happened to stop ticking,
+ * and `epoch` is which epoch this particular state object is mid-folding.
+ * Two clients that reach the same `toMs` by different call paths —
+ * `foldShoal` in one straight monolithic call versus a shell driving
+ * `foldTick` one tick at a time across many polls, or a client that is
+ * genuinely one tick further behind because it has not yet been asked to
+ * catch up — legitimately disagree on all four while agreeing on every last
+ * bite, position and size the sea holds. Fingerprinting them would fail two
+ * honest clients against each other for no divergence in the WORLD at all.
+ *
+ * `outsideTicks` and `touchedIds` do not have that excuse. Both are
+ * accumulators over the fold's own TRAJECTORY — how a fish's classification
+ * (inside/outside the tension core) changed tick by tick, and which ids ever
+ * authored a presence write — not over the log's final content, and nothing
+ * else in this fingerprint captures trajectory the way they do: fish/x/y and
+ * departed/* only ever record where something ended UP. spec 3.9's own
+ * measurement is the proof this was reachable, not hypothetical: a carried
+ * epoch continuation was recorded diverging from a cold reconstruction on
+ * `touchedIds`, `outsideTicks` (14_396 vs 237) and `tension` (51_000 vs
+ * 15_750) — shoalLoop.ts section 4 — and `outsideTicks` feeds
+ * `topContributor` -> `lockedPreferred` -> `selectTaken`, i.e. who the shark
+ * eats. A divergence confined to it is player-visible and was, until this
+ * widening, invisible to every check this project has.
+ *
+ * "Confined to it" is the operative phrase, and it is not decoration —
+ * shoalEngine.determinism.test.ts's "outsideTicks and touchedIds: reachable,
+ * not decoration" section constructs two REAL folds (via `foldShoal`, no
+ * hand-mutated state) that agree on literally everything the OLD fingerprint
+ * covered — fish, departed, tension, the hush, the bloom map, all of it —
+ * while disagreeing only on `outsideTicks`, and a second real pair that
+ * agrees on everything through a checkpoint seed while disagreeing only on
+ * `touchedIds`, with `rollEpoch` showing that disagreement becomes two
+ * different published checkpoints. Both are reachable by an honest fold, not
+ * by hand-editing a `ShoalState`.
  */
 export function fingerprint(s: ShoalState): string {
   return JSON.stringify({
@@ -131,6 +170,13 @@ export function fingerprint(s: ShoalState): string {
     departed: [...s.departed.entries()]
       .sort(([a], [b]) => (a < b ? -1 : 1))
       .map(([k, v]) => [k, v.size, v.lastScatterMs, v.lastBiteMs, [...v.recentBites].sort((a, b) => a - b)]),
+    // Every fish that has ever been outside the tension core carries a
+    // ticks-so-far count, including one currently reading 0 (just re-entered
+    // the core) — the entry itself, not merely a nonzero value, is part of
+    // what a real fold produces, so it is sorted and included whole rather
+    // than filtered.
+    outsideTicks: [...s.outsideTicks.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+    touchedIds: [...s.touchedIds].sort(),
     tension: s.tension,
     lastTaken: [...s.lastTaken].sort(),
     lastSweepMs: s.lastSweepMs,

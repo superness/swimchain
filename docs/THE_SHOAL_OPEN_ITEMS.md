@@ -47,6 +47,13 @@ Two cautionary notes worth keeping:
 
 ---
 
+### 8. The shared `fingerprint` is not a complete divergence detector *(RESOLVED 2026-07-28)*
+
+Closed by Task 1 of plan 3 (the-shoal-wild), before wild fish landed. Full write-up in place
+below, under Carried items.
+
+---
+
 ## Blockers — decide, don't just build
 
 ### 1. Long-lived rooms need a node change, or the room must rotate
@@ -282,22 +289,56 @@ an app-addressed space, the room post, and a scoped auto-approve sponsorship off
 game-sponsor bot (which auto-renews via `game-offer-keeper-mainnet.service` — adding a game
 is one space id in its `GAME_SPACES` env).
 
-### 8. The shared `fingerprint` is not a complete divergence detector
+### 8. The shared `fingerprint` is not a complete divergence detector — **RESOLVED 2026-07-28**
 
 **Found by:** the shell's Task 2 review.
+**Fixed by:** Task 1 of plan 3 (the-shoal-wild), `shoal-client/src/lib/shoalFixtures.ts`.
 
 `shoalFixtures.ts`'s `fingerprint` — used by every byte-identical check in the suite —
-deliberately omits `touchedIds` and `outsideTicks`. Those are **two of the three fields**
-spec §3.9 measured a carried epoch continuation diverging on (the third, `tension`, is
+deliberately omitted `touchedIds` and `outsideTicks`. Those are **two of the three fields**
+spec §3.9 measured a carried epoch continuation diverging on (the third, `tension`, was
 covered).
 
 `outsideTicks` feeds `topContributor` → `lockedPreferred` → `selectTaken` — i.e. **who the
-shark eats**. So a divergence confined to it is player-visible and yet invisible to every
-determinism check on the project. Nothing has diverged there; the point is that nothing
+shark eats**. So a divergence confined to it was player-visible and yet invisible to every
+determinism check on the project. Nothing had diverged there; the point was that nothing
 would tell us if it did.
 
-Widening the fingerprint is cheap. Do it before plan 3 adds wild fish, which touch both
-fields.
+**Resolved by widening `fingerprint` to include both fields**, sorted canonically like every
+other entry. `cursor`, `tickCount`, `nowMs` and `epoch` stay out — they are
+POSITION-IN-THE-FOLD (which log index, which call, which tick, which epoch a client happens
+to have stopped folding at), not world state, and two honest clients that reach the same
+`toMs` by different call paths (a straight `foldShoal` versus a shell driving `foldTick` one
+tick at a time) legitimately disagree on all four with no divergence in the sea itself.
+`outsideTicks` and `touchedIds` do not have that excuse: both are TRAJECTORY accumulators
+(how a fish's core membership changed tick by tick; which ids ever authored a presence
+write), not final-state values, which is exactly what let a divergence hide in them.
+
+Widening was checked against the concern that a fingerprint field only reachable state can
+vary is decoration — a field that only a hand-mutated `ShoalState` can move is not real
+coverage. `shoalEngine.determinism.test.ts`'s "outsideTicks and touchedIds: reachable, not
+decoration" section builds two REAL fold pairs (via `foldShoal`, never a hand-mutated state):
+
+- **outsideTicks:** two logs where, at every tick, the tension core holds exactly the same
+  COUNT of outside fish (so `tension` — which reads only the count, never the identities —
+  is identical throughout) but a DIFFERENT specific fish is outside during an early window,
+  before both logs converge onto the same trajectory. Every field the old fingerprint covered
+  matches byte-for-byte; only `outsideTicks` differs (189 vs 181 ticks for the fish in
+  question, hand-derived and asserted).
+- **touchedIds:** two folds seeded from an identical checkpoint carrying a phantom `departed`
+  row for `'ghost'`. One log gives `'ghost'` a single presence write, timed to the fold's
+  exact admit floor so it lives for one tick (before hunger's first firing) and is evicted
+  the next, banking the exact values the seed already gave it — so `departed` ends up
+  byte-identical between the two folds, but `touchedIds` does not. Rolling both to the epoch
+  boundary confirms the real, player-visible consequence: `rollEpoch` keeps `'ghost'` in one
+  published checkpoint and prunes it from the other — two honest clients publishing different
+  checkpoints for what the old fingerprint called the same world.
+
+Both constructions were mutation-verified: removing the two new lines from `fingerprint`
+makes exactly those two "the widened fingerprint tells ... apart" checks fail (and nothing
+else), confirming the widening is load-bearing rather than decorative. Full test-driven
+evidence, hand arithmetic and verbatim mutation output in
+`.superpowers/sdd/2026-07-28-the-shoal-wild/task-1-report.md`.
 
 ### 10. A swimmer that swims to a bloom can never eat it — **RESOLVED 2026-07-28**
 
@@ -372,6 +413,138 @@ but "eventually" there means up to `DEFAULT_POLL_INTERVAL_MS`. `chainSea.ts` the
 schedules a second refetch 600 ms after each event-driven one. **Not fixed, accommodated** —
 the node-side answer would be to publish after the merge rather than before, and that is a
 node change nobody has costed.
+
+### 13. The wild shoal's seed is a parameter with no agreed source *(RESOLVED 2026-07-28)*
+
+**Resolved by Task 5 of plan 3**, which is the first real consumer (the paint) and was
+therefore the caller this item said had to settle it.
+
+`Sea.wildSeed` (`shoal-client/src/ui/demoSea.ts`) is now part of the contract every sea
+implements, so a sea states which ocean it is at the one seam that knows what room it is,
+and no caller can invent a private one:
+
+- the two offline seas use `DEMO_WILD_SEED = 1`, matching `npm run harness`'s own default,
+  so the window and the text output describe one sea;
+- `chainSea` uses `wildSeedFrom(spaceId, roomContentId)` — FNV-1a over
+  `` `${spaceId}/${roomContentId}` `` folded to 31 bits. BOTH ids, not just the space,
+  because item 1 has rooms rotating within a space and two rooms should be two seas.
+  Non-negative because a negative seed survives a JSON or query-string round trip
+  differently depending on where it stops, and the seed space loses nothing.
+
+Any second implementation (the launcher, a native shell) must derive it the SAME way —
+`wildSeedFrom` is exported for exactly that reason. The original text follows.
+
+---
+
+
+`wildAt(seed, tick, hush, now)` and `shelterBodiesOf(state, wildSeed, atMs)` both take a
+seed, and **every client in a room must pass the same one** or two players standing in the
+same water read different shelter. Nothing in `ShoalState` carries it today, so it is a
+parameter every caller supplies (the harness defaults to `--wild-seed 1`).
+
+The obvious source is the room itself — the space id is a value every client already agrees
+on, and hashing it to a 32-bit integer would make the sea a property of the place rather
+than of whoever wired the call. That is a small change, but it is a **consensus** one (it
+decides which sea everyone sees, permanently), so it is recorded rather than slipped in as
+part of Task 3.
+
+Nothing depends on it yet: no shipped client draws or counts wild fish, because the paint
+is Task 5 of the same plan. Whoever wires the first real consumer must resolve this first,
+and the launcher and the browser client must resolve it the *same* way.
+
+### 14. Wild cover is not scarce, and the shelter weight cannot make it so
+
+`WILD_SHELTER_WEIGHT` (shoalConst.ts) prices a wild fish at half a person, so six of them
+do what three people do. That fixes the *ratio* — the old size-weighted reading made three
+wild fish worth 303 against a threshold of 300, i.e. exactly as good as three people — but
+it does not make wild cover rare, and the numbers say so plainly: a school is
+`WILD_PER_SCHOOL` (12) fish inside `WILD_SCHOOL_R` (200), against a `SHELTER_R` of 340, so a
+swimmer at the middle of any school holds 12 × 50 = **600**, twice the threshold. It held
+1212 before. Both are "completely safe".
+
+Measured on the harness's own session (`--wild-seed 1`), two of the eight outsiders were
+sheltered by scenery alone right up to the hush, at 550 and 350. Sampling three hundred
+seeds against that fixture's twelve swimmers, it is rare for *no* swimmer to have six wild
+fish in range.
+
+This is not obviously wrong — the bolt means wild cover is never worth anything at the
+verdict, so what it buys is a *false* sense of safety, which is exactly what the design
+wants to sell. But if the operator wants wild cover to be something a player has to seek
+out rather than something they are usually standing in, the lever is `WILD_PER_SCHOOL` or
+`WILD_SCHOOL_R` in wild.ts, not the weight. Both are CONSENSUS and both are cheap **now**
+and never again.
+
+### 16. `terrain.ts` places its four regions by plan view; the sea is drawn in elevation
+
+**Found by:** Task 5 of plan 3 (the-shoal-wild), drawing the places for the first time.
+
+The sea is painted in ELEVATION, not in plan. `seaPaint.paintWater` runs its gradient down
+the world's y axis from a surface above y=0 to the abyss below `WORLD_H`, `paintShafts`
+drops light from y=-700, and a swimmer is drawn side-on with its dorsal up. **World y is
+depth.**
+
+`terrain.ts` chose its four coordinates by plan-view quadrant — its own header says "NW
+quadrant", "NE quadrant", "SE" — which under that projection means the Kelp Stand (y=900)
+and the Wreck (y=750) sit in the upper third of the water column rather than on any
+seabed, and the four places are distributed by *depth* far more than the quadrant language
+suggests (750, 900, 2300, 2700).
+
+**Nothing is broken.** The geometry, the queries and all 37 of `terrain.test.ts`'s checks
+are about distances and containment, none of which cares which way is down; the module is
+display-only and consensus-free either way. What is wrong is the *rationale in the header*,
+which a reader will use to place the fifth landmark.
+
+`terrainPaint.ts` accommodates it rather than moving the coordinates (which would mean
+rewriting hand-derived boundary cases in `terrain.test.ts`): every place is drawn standing
+on its own rock outcrop that fades into the murk below it, so a kelp stand on a shallow
+pinnacle and a wreck caught on a ledge are both ordinary things at any depth. Whoever adds
+a fifth place should decide deliberately whether that is the model, or whether the four
+should be re-laid-out along a real seabed near `WORLD_H` — the second is the bigger change
+and would want the same pass to give the world a floor, which it does not have today.
+
+### 17. Wild fish shelter you, and the tether draws strands to them
+
+**Found by:** Task 5 of plan 3, wiring the tether to `shelterBodiesOf`'s population.
+
+Not a defect — a consequence worth having on the record, because it is the first thing a
+player will ask about. `bodyShelterWeight` prices a wild fish at half a person, so wild
+fish are among `shelterOf`'s summands, so the tether — whose strand weights sum to
+`shelterOf` exactly, which is the property that makes the picture trustworthy — draws a
+strand to every wild fish inside `SHELTER_R`.
+
+That means a player can be held up almost entirely by scenery, see a warm short tether
+saying so, and be telling the truth right up until the hush. It is what makes the bolt land
+(the strands all leave at once) and it is what open item 14 is about. The alternative —
+counting wild fish for shelter but hiding them from the tether — was rejected: it would
+make the tether disagree with `shelterOf`, which `tether.ts`'s own header forbids outright.
+
+### 15. Terrain does not bias where blooms appear
+
+**Found by:** Task 4 of plan 3 (the-shoal-wild), reading spec 2.13 against its own brief.
+
+Spec 2.13 says the sea's named places should "give blooms legible places to appear" — food
+should be more likely to grow at the Kelp Stand than in open water, so the places earn their
+keep as more than scenery. `shoal-client/src/ui/terrain.ts` (four hand-authored places: Kelp
+Stand, The Wreck, The Drop-off, The Shelf — centre and radius each, plus `placeAt` /
+`nearestPlace` queries) **does not do this, on purpose.**
+
+Biasing bloom placement toward a region is a **consensus** rule: `isBloomReady` and the cell
+grid it reads (`bloom.ts`) feed `foldTick`, so any rule that makes cells near a place more
+likely to ready would change which cells every client agrees are edible — the same category
+of change as item 10's claimant-exemption rule, and item 5's `ms` bound. It needs its own
+design (does "biased" mean a shorter `BLOOM_READY_MS` near a place, a higher `BLOOM_BITES`,
+or something else; do overlapping places stack; does the bias apply to the 32x24 bloom grid
+cell-by-cell or only to cells whose centre falls inside a place's extent) and its own review,
+not a quiet addition riding along with a display-only terrain module.
+
+**Consequence of leaving it:** `terrain.ts` is display-only and consensus-free by
+construction — `src/lib/` never imports it and nothing about it enters `foldShoal` or a
+checkpoint — so places are legible to *look at* and to *say* ("kelp!") but carry no gameplay
+weight yet. The minute-between-sweeps improvement spec 2.13 promises ("be near people, at the
+good spot") still lands from making places somewhere to shelter and rally, but "the good
+spot" is not yet also *the place food is more likely to be*, which is the other half of the
+same sentence. Whoever picks this up should also decide whether wild-fish schools (`wild.ts`)
+ought to loiter near named places, which is the same shape of question one level up.
 
 ### 9. Smaller
 

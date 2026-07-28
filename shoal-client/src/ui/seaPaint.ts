@@ -36,7 +36,11 @@ import {
   type Camera, type Point, type Viewport,
 } from './render';
 import { TETHER_MIN_CU, type HushRead, type TetherRead } from './tether';
+import { ABYSS, DEEP, MID, SURFACE, UPPER, hashStr, unit } from './paintKit';
+import { paintBoltWash, paintWildShoal } from './wildPaint';
+import { paintPlacesFar, paintPlacesNear } from './terrainPaint';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
+import type { WildView } from './wildView';
 import type { Vec } from '../lib/shoalTypes';
 
 // ---------------------------------------------------------------------------
@@ -113,6 +117,26 @@ export interface Frame {
   premonition?: number;
   /** The frozen replay after a scatter, or null. */
   scatter?: ScatterPaint | null;
+
+  // -------------------------------------------------------------------------
+  // The wild shoal (spec 2.6). Read by `wildView.ts` from the fold's own
+  // `hushStartMs`/`lastSweepMs` and drawn by `wildPaint.ts`.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The wild fish, as `wildViewAt` returned them. Deliberately a SEPARATE
+   * array from `swimmers` rather than a flag on it: everything that hangs off
+   * a swimmer here — the tether, the wake, the dart ring, the word over its
+   * head — is drawn by walking `swimmers`, so keeping the two populations in
+   * two arrays is what makes "a wild fish has none of those" a fact about the
+   * code instead of four things somebody has to remember to check.
+   */
+  wild?: readonly WildView[];
+  /**
+   * 0 in calm water, climbing to 1 across the bolt. Read off the hush by the
+   * shell; this file has no opinion about WHEN a bolt happens.
+   */
+  bolt?: number;
 }
 
 /** Everything the frozen replay needs. Built by the shell from `scatterReplay`. */
@@ -128,13 +152,12 @@ export interface ScatterPaint {
 // ---------------------------------------------------------------------------
 // Palette. Cold, low-chroma, and very dark at the bottom of the range: the
 // sea has to be somewhere you do not want to be alone in.
+//
+// The five water colours and the three hash helpers live in `paintKit.ts`,
+// because `wildPaint.ts` and `terrainPaint.ts` draw into the same water and a
+// landmark mixed against a slightly different blue is exactly how scenery ends
+// up looking pasted on.
 // ---------------------------------------------------------------------------
-
-const ABYSS = '#01060a';
-const DEEP = '#03131d';
-const MID = '#07293a';
-const UPPER = '#0d4c60';
-const SURFACE = '#1b8095';
 
 /**
  * Swimmers that are not you: cold silver-greens, lit from above. FOUR sets
@@ -154,33 +177,6 @@ const SELF_DARK = '#4a2f12';
 const SELF_LIT = '#f4b563';
 const SELF_DEEP = '#1c1005';
 const SELF_RIM = '#ffe2b0';
-
-// ---------------------------------------------------------------------------
-// Deterministic per-id and per-index noise. Not consensus — this only decides
-// which fish flicks its tail on which beat — but it must be STABLE, or every
-// fish resets its animation phase whenever the array order changes.
-// ---------------------------------------------------------------------------
-
-function hashStr(s: string): number {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
-  }
-  return h >>> 0;
-}
-
-function hashInt(n: number): number {
-  let h = Math.imul(n ^ 0x9e3779b9, 0x85ebca6b) >>> 0;
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35) >>> 0;
-  return (h ^ (h >>> 16)) >>> 0;
-}
-
-/** A stable 0..1 from an integer seed. */
-function unit(n: number): number {
-  return hashInt(n) / 4294967296;
-}
 
 // ---------------------------------------------------------------------------
 // The water
@@ -976,8 +972,9 @@ function paintTether(
     });
   } else if (read.nearest !== null) {
     // Nothing is holding this swimmer. One long thin streamer toward the
-    // nearest fish, stopping well short of it and fraying: the picture of a
-    // tether that has come loose, not of a longer one.
+    // nearest PERSON (`nearestOf` filters out wild fish, so this never
+    // points at bolting scenery), stopping well short of it and fraying: the
+    // picture of a tether that has come loose, not of a longer one.
     const target = at.get(read.nearest.id)
       ?? worldToScreen(f.cam, f.view, read.nearest.x, read.nearest.y);
     const dx = target.x - selfP.x;
@@ -1213,6 +1210,18 @@ function paintScatter(
  * attached to a fish. In the frozen replay it goes OVER everything, after the
  * colour has been drained — because that moment is not a scene any more, it
  * is a diagram, and the diagram is the whole point of it.
+ *
+ * THE TWO NEW LAYERS SIT WHERE THEY DO FOR THE SAME KIND OF REASON:
+ *
+ *  - **Terrain, far** goes down straight after the light and BEFORE the
+ *    marine snow, so the snow drifts in front of a landmark and the landmark
+ *    is behind the water rather than on it. **Terrain, near** goes after the
+ *    swimmers, so a fish passes BEHIND the front rank of kelp — the only
+ *    occlusion in this game, and the strongest depth cue it has.
+ *  - **The wild shoal** goes under the swimmers, in its own pass. Not merged
+ *    into the swimmer loop, deliberately: everything in that loop (wake, dart
+ *    ring, speech, tether anchor) belongs to people, and a shared loop is how
+ *    scenery ends up with a cooldown ring.
  */
 export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
   ctx.save();
@@ -1221,6 +1230,7 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
 
   paintWater(ctx, f);
   paintShafts(ctx, f);
+  paintPlacesFar(ctx, f);
   paintMotes(ctx, f);
 
   // Position every swimmer through the engine's own reckoning, once, then
@@ -1236,6 +1246,13 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
   // reach an anchor just outside the window, and it should still point at it.
   const at = new Map<string, Point>();
   for (const p of placed) at.set(p.id, worldToScreen(f.cam, f.view, p.x, p.y));
+  // Wild fish go in the SAME map, for the same reason and no other: a wild
+  // fish inside SHELTER_R is one of `shelterOf`'s own summands, so the tether
+  // draws a strand to it, and that strand has to land on the body as DRAWN
+  // (interpolated between two fold ticks) rather than on the tick-quantized
+  // coordinate the shelter read was taken at. It buys them nothing else —
+  // nothing walks this map to decide what to paint.
+  for (const w of f.wild ?? []) at.set(w.id, worldToScreen(f.cam, f.view, w.x, w.y));
 
   // Deepest first, so overlapping fish stack the way the water implies.
   visible.sort((a, b) => a.y - b.y);
@@ -1249,6 +1266,9 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
     paintBite(ctx, f);
     paintAim(ctx, f);
   }
+
+  // The wild shoal, under the people. Scenery is behind you.
+  paintWildShoal(ctx, f, f.wild ?? [], f.bolt ?? 0);
 
   for (const v of visible) {
     if (!v.sw.self) continue;
@@ -1271,6 +1291,13 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
     const s = worldToScreen(f.cam, f.view, v.x, v.y);
     paintSay(ctx, f, v.sw, s.x, s.y);
   }
+
+  // The near half of every landmark, over the swimmers: fish pass behind it.
+  paintPlacesNear(ctx, f);
+
+  // The bolt's wash, over the fish and under the pall — so a player standing
+  // in water that happened to hold no wild fish still sees the sea react.
+  paintBoltWash(ctx, f, f.bolt ?? 0);
 
   paintPremonition(ctx, f);
   paintHush(ctx, f);

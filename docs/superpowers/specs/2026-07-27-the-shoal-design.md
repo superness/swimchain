@@ -91,8 +91,23 @@ itself.**
 
 ### 2.6 Wild fish
 
-The sea is full of fish that are not people. They shoal, they feed, they scatter, and they
-count toward shielding and toward tension.
+The sea is full of fish that are not people. They shoal, they scatter, and they count toward
+shielding — and deliberately toward nothing else.
+
+They do **not** feed: they never touch the bloom map, so "food grows where the school isn't"
+stays a fact about player behaviour alone. A wild fish drifting over a fallow cell for free would
+let scenery deny a player food.
+
+They do **not** count toward tension, for a sharper reason than the bloom exclusion: tension is
+what summons the shark, and *"the shark is something the school does to itself"* (§2.5). Wild
+fish are drawn from a hash, not from player greed — if their drift moved tension, the predator
+could arrive because the SCENERY spread out, which is a verdict about nobody's choices and
+breaks the moral the whole mechanic is built to teach. So tension is computed from player bodies
+only (`tension.ts`; `outsideCore`, `spreadPerMille`, `stepTension`, `topContributor`), and
+shielding is the one place a wild fish is allowed to matter, because being surrounded by a
+crowd — any crowd — is genuinely how safety feels, right up until the hush proves otherwise
+(§3.8, and see the implementation's own accounting of the gap between felt and judged safety in
+`tether.ts`).
 
 They exist because **an ocean containing only twenty players and nothing else is a barren
 ocean** — this is world-building, correct at any population, and explicitly *not* a patch for
@@ -381,13 +396,29 @@ is a game* — and is recorded here so nobody later mistakes it for an oversight
 
 ### 3.8 Simulating wild fish without an authority
 
-Wild fish affect exposure and tension, so every client must simulate them **identically** or
-the sweep resolves differently on different screens.
+Wild fish affect exposure (§2.6), so every client must render the SAME shoal at the SAME
+instant, or two players standing in what looks like identical cover get different tether
+readouts. (They never affect the sweep's verdict, which sees people only — see §2.6's
+revision — so "identically" here is about the shared PICTURE, not about consensus in the
+fold-rules-are-permanent sense.)
 
-They are stepped deterministically on the same quantized tick and the same settled snapshot
-the sweep resolves against — never on live presence, which differs between clients. Their
-seed derives from confirmed chain state. Their inputs are only their own prior state plus
-locked player vectors, so the simulation is a pure function every client can run.
+The implementation abandons "their own prior state plus locked player vectors" entirely, and
+for good reason: stepping a shoal forward from accumulated prior state means two clients that
+joined the room at different moments, or that briefly disagreed about a player's locked
+vector, can drift onto different shoals with no way to detect it short of a snapshot exchange —
+exactly the lock-discipline problem this section exists to avoid. Locked player vectors are
+worse than merely unnecessary as an input: reading them at all is the same door as reading live
+presence, since a lock is still a player-derived value that two clients can transiently
+disagree about mid-hush.
+
+The actual design (`wild.ts`) closes that door instead of guarding it: a wild fish's position
+is a **pure, closed-form function of `(seed, tickIndex, hushStartMs, nowMs)`** — four numbers
+every client already agrees on — with NO player state and no prior-tick state as inputs at all.
+`seed` derives from confirmed chain state; `tickIndex` is the shared motion clock; `hushStartMs`
+and `nowMs` drive the bolt. Determinism then holds **by construction**: there is no accumulated
+state to diverge, no snapshot to exchange, and nothing about the wild shoal enters a checkpoint,
+because it is derived rather than stored. Two clients evaluating `wildAt` for the same four
+numbers get bit-identical output whether or not they agree about anything else in the room.
 
 This is the single largest piece of engineering in the design and it is not optional: a
 host-peer arrangement would reintroduce an authority and forfeit the claim in §1.
@@ -407,11 +438,21 @@ clients, so the consensus surface is kept deliberately small and decided **now**
 | Position quantization and deterministic tiebreak | Dead-reckoning smoothing and interpolation |
 | Vector and eat-claim wire format | Crowding warnings, shoal-split UX |
 | Presence TTL and last-write-wins rule | Tide hours, terrain layout, marks and their names |
-| Wild-fish simulation rules, seed and tick | Wild-fish appearance, variety, ambient behaviour |
+| Wild-fish id-prefix exclusion from the bloom map and the sweep (`WILD_ID_PREFIX`) | Wild-fish simulation rules (seed, tick, motion shape, count, school size, bolt timing), shelter weight, appearance, variety, ambient behaviour |
 | Hunger rate; size credited per bite; fixed scatter cost | Tutorial, tether fade curve, replay presentation |
 
 Nothing in the left column may be tuned after launch. Everything that could plausibly live on
 the right has been put there.
+
+**A note on the wild-fish row, because "policy" reads oddly next to §3.8's "every client must
+simulate them identically."** Every client DOES need to ship the same wild-fish constants, or
+players see different seas — that requirement is real and unchanged. But "must match across
+clients" and "is fold consensus" are different claims: nothing about a wild fish's position,
+count, weight or bolt timing is fold-reachable (no wild value enters `foldTick`,
+`lockedPositions`, a checkpoint, or any fingerprint — see `wild.ts`'s own header), so shipping a
+changed constant is a coordinated client update, exactly like any other shared-appearance value,
+not a hard fork. `WILD_ID_PREFIX` is the one exception, because the sweep and the bloom map
+branch on it at runtime (`sweep.ts`, `bloom.ts`) — that is what earns it the left column.
 
 ### 3.9 RESOLVED — the fold covers one epoch, seeded by a checkpoint
 

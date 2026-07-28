@@ -10,7 +10,8 @@
  */
 import { reckon } from './fixed';
 import { epochOf, epochStartMs, epochEndMs, epochWarmStartMs } from './epoch';
-import { type Body } from './shelter';
+import { wildBodyOf, type SwimmerBody, type ShelterBody } from './shelter';
+import { wildAt } from './wild';
 import { stepTension, topContributor, outsideCore } from './tension';
 import { shouldStartHush, isResolveTick, selectTaken } from './sweep';
 import { markVisits, canEat, isBloomReady, stampVisit } from './bloom';
@@ -88,11 +89,81 @@ export function emptyState(startMs: number, epoch = epochOf(startMs)): ShoalStat
   };
 }
 
-/** Live fish as bodies, sorted by id so every caller sees the same order. */
-export function bodiesOf(state: ShoalState): Body[] {
-  const out: Body[] = [];
+/**
+ * Live SWIMMERS as bodies, sorted by id so every caller sees the same order.
+ *
+ * PEOPLE ONLY, and now said in the type: this is what the fold measures
+ * tension with, marks the bloom map with and locks positions from. The wild
+ * shoal is never in here and never will be — `shelterBodiesOf` below is the
+ * one place the two populations meet. (The shell's own review flagged that
+ * `bodiesOf` "means one thing today and another with a second population";
+ * this is the answer to that: it keeps meaning exactly what it meant.)
+ */
+export function bodiesOf(state: ShoalState): SwimmerBody[] {
+  const out: SwimmerBody[] = [];
   for (const f of state.fish.values()) out.push({ id: f.id, x: f.x, y: f.y, size: f.size });
   return out.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * The population `shelterOf`/`isExposed` judge: the swimmers, PLUS the wild
+ * shoal as it stands at `atMs`. The only join between the two populations in
+ * this codebase.
+ *
+ * Nothing in the fold calls this. `foldTick` never computes a wild fish at
+ * all: tension, the bloom map and `lockedPositions` are all built from
+ * `bodiesOf`, and the sweep resolves against `lockedPositions`. So this is a
+ * READ, for whatever is showing a swimmer how safe it feels — the tether, the
+ * paint, the harness — and the reason that is not a loophole is that the wild
+ * shoal has bolted (wild.ts, WILD_BOLT_MS = 2_000) two full seconds before the
+ * input lock at LOCK_MS = 4_000. A player who felt sheltered by scenery still
+ * gets told the truth with time left on the clock to act on it.
+ *
+ * `atMs` is the tick this reading is FOR, and it drives both clocks at once:
+ * the wild shoal's motion (`atMs / TICK_MS`) and its bolt (`atMs` against
+ * `state.hushStartMs`). Passing the state's own `nowMs` would read one tick
+ * ahead of the world the state describes — `foldTick` leaves `nowMs` at the
+ * NEXT tick — so callers pass the tick they are drawing, exactly as the
+ * harness passes `state.nowMs - TICK_MS`. Because the same `atMs` decides
+ * position and disappearance together, there is no tick on which a swimmer is
+ * sheltered by a fish that has already fled.
+ *
+ * NOTHING ENFORCES THAT RELATION. `atMs` and `state.nowMs` are independent
+ * parameters — there is no assertion here and no type that ties them
+ * together — so a caller that passes `state.nowMs` instead of
+ * `state.nowMs - TICK_MS` does not get an error; it silently gets the
+ * swimmers as they stood at tick `k` (`bodiesOf` reads live `state.fish`, not
+ * `atMs`) paired with the wild shoal as it stands at tick `k+1`, one tick
+ * out of step. This function has exactly one non-test caller today —
+ * `scripts/harness.ts`'s `printSnapshot`, which passes `state.nowMs -
+ * TICK_MS` as documented and feeds the result to nothing but a console line —
+ * so the contract is honoured everywhere it is wired, but get it into any
+ * FUTURE caller's head before wiring one up, rather than adding a runtime
+ * check to a path this one exercises correctly. (`src/ui/wildView.ts`'s
+ * `wildShelterBodies`/`wildViewAt` call `wildAt` directly instead of coming
+ * through here — see that module's header §2 — so they are not callers of
+ * this function and do not bear on this contract.)
+ *
+ * `wildSeed` must be a value every client in the room agrees on. There is no
+ * such value in `ShoalState` yet — deriving one (from the room id) is recorded
+ * as an open item in docs/THE_SHOAL_OPEN_ITEMS.md — so it is a parameter, not
+ * a lookup, and no caller can accidentally invent a private sea.
+ *
+ * ORDERING, unlike `bodiesOf`: the return is NOT fully id-sorted. Swimmers
+ * come first, sorted by id exactly as `bodiesOf` promises; the wild shoal is
+ * appended after them in `wildAt`'s own index order (wild:0, wild:1, ...),
+ * which does not interleave with the swimmer ids. A caller that needs one
+ * total id order across the whole population must sort this return itself.
+ */
+export function shelterBodiesOf(
+  state: ShoalState,
+  wildSeed: number,
+  atMs: number,
+): ShelterBody[] {
+  const wild = wildAt(wildSeed, Math.floor(atMs / TICK_MS), state.hushStartMs, atMs);
+  const out: ShelterBody[] = bodiesOf(state);
+  for (const f of wild) out.push(wildBodyOf(f));
+  return out;
 }
 
 function clampSize(n: number): number {
@@ -419,7 +490,7 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
       state.lockedPreferred = topContributor(bodies, state.outsideTicks);
     }
     if (isResolveTick(state.hushStartMs, t, TICK_MS)) {
-      const locked: Body[] = state.lockedPositions
+      const locked: SwimmerBody[] = state.lockedPositions
         ? [...state.lockedPositions.entries()]
             .map(([id, p]) => ({ id, x: p.x, y: p.y, size: p.size }))
             .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))

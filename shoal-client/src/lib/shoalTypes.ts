@@ -250,10 +250,18 @@ export interface ShoalState {
 
   /**
    * Fold-internal bookkeeping for `foldTick` (Task 5, spec 3.9's plan-2
-   * incremental-fold seam). None of the four fields below are part of the
-   * observable world — they are deliberately absent from every fingerprint
-   * in the test suite — they exist only so a fold can be resumed one tick at
-   * a time across separate `foldTick` calls with no loop of its own.
+   * incremental-fold seam) — all four fields below exist so a fold can be
+   * resumed one tick at a time across separate `foldTick` calls with no loop
+   * of its own. That is NOT the same claim as "none of them are observable
+   * world state," which used to be written here as a single blanket
+   * statement covering all four. It was wrong for two of them, and the
+   * shoal-client/src/lib/shoalFixtures.ts `fingerprint()` widening (Task 1,
+   * the-shoal-wild plan 3, open item 8 in docs/THE_SHOAL_OPEN_ITEMS.md) is
+   * the correction: `cursor` and `tickCount` really are absent from every
+   * fingerprint, for the reason given on each below; `outsideTicks` and
+   * `touchedIds` are NOT — they are both IN the fingerprint now, also for
+   * reasons given on each below. Read each field's own doc; do not infer
+   * fingerprint membership from this paragraph alone.
    */
   /**
    * Index into `orderLog(entries)` of the next log entry `foldTick` has not
@@ -272,6 +280,12 @@ export interface ShoalState {
    * call. Append-only growth is safe: `orderLog`'s sort places new entries
    * with a later (ms, hash) key after everything already scanned, so the
    * existing cursor position stays valid.
+   *
+   * POSITION-IN-THE-FOLD, not world state, and deliberately absent from
+   * `fingerprint()`: it is an index into THIS client's own log array, and
+   * two clients that reach the same `toMs` by different call paths (a
+   * straight `foldShoal` vs. a shell driving `foldTick` a tick at a time)
+   * legitimately hold different cursors while agreeing on the whole sea.
    */
   cursor: number;
   /**
@@ -281,6 +295,19 @@ export interface ShoalState {
    * regardless of whether a hush is running — an idle sea still has fish
    * drifting in and out of the core. Was a loop-local `Map` in `foldShoal`;
    * moved here for the same reason as `cursor`.
+   *
+   * PART OF THE OBSERVABLE WORLD, and included in `fingerprint()` (Task 1,
+   * the-shoal-wild plan 3): it feeds `topContributor` -> `lockedPreferred`
+   * -> `selectTaken`, i.e. who the sweep takes, and it is a TRAJECTORY
+   * accumulator that `tension` cannot stand in for — `spreadPerMille`
+   * (tension.ts) reads only the COUNT of fish outside the core, never their
+   * identities, so two folds can hold identical tension while disagreeing on
+   * which specific fish accrued the ticks. spec 3.9 measured exactly this
+   * diverging (14_396 vs 237) between a carried epoch continuation and a
+   * cold reconstruction — shoalLoop.ts section 4. See
+   * shoalEngine.determinism.test.ts's "outsideTicks and touchedIds:
+   * reachable, not decoration" for a real (not hand-mutated) fold pair that
+   * disagrees on this field alone.
    */
   outsideTicks: Map<string, number>;
   /**
@@ -292,15 +319,39 @@ export interface ShoalState {
    * keeps the tick-counting logic identical to what `foldShoal`'s own loop
    * always did, rather than introducing a second, subtly different way to
    * compute the same thing).
+   *
+   * POSITION-IN-THE-FOLD, not world state, and deliberately absent from
+   * `fingerprint()`: it counts THIS client's own `foldTick` calls, not
+   * anything about the sea, and two clients that reach the same `toMs` by
+   * different call paths legitimately hold different counts.
    */
   tickCount: number;
   /**
    * Ids that authored an applied presence entry at some point during this
-   * fold. Consulted only by `foldShoal`, once, after its `foldTick` loop
-   * finishes, to prune seeded `departed` records nobody returned to claim
-   * (spec 3.9 point 6). An incremental caller driving `foldTick` directly
-   * (never going through `foldShoal`) can ignore this field entirely — it is
-   * never read for anything else.
+   * fold. Consulted by `rollEpoch` at the epoch boundary, once, to prune
+   * seeded `departed` records nobody returned to claim (spec 3.9 point 6):
+   * it deletes exactly `{id in departed : id not in touchedIds}`. An
+   * incremental caller driving `foldTick` directly (never going through
+   * `foldShoal`/`rollEpoch`) can ignore this field for that purpose — it is
+   * never read anywhere else.
+   *
+   * INCLUDED in `fingerprint()` (Task 1, the-shoal-wild plan 3) even though,
+   * for a NATURALLY-touched id, it is fully recoverable from `fish` union
+   * `departed` (the same code path that adds to `touchedIds` also puts the
+   * id into `fish`, and the only way out of `fish` is eviction into
+   * `departed`). The case that is NOT recoverable is a checkpoint-seeded
+   * `departed` row for an id whose OWN log never touches it: it sits in
+   * `departed` either way, but whether it is in `touchedIds` decides whether
+   * `rollEpoch` prunes it at the next boundary — i.e. whether two peers
+   * publish the same checkpoint. Any presence write for that id anywhere in
+   * the epoch's warm-up window produces this (the seed-application step
+   * overwrites `size`/`lastBiteMs`/`recentBites` back to the checkpoint's
+   * own values regardless of when in the warm-up the write landed, so
+   * `departed` ends up identical either way) — a real gossip scenario (two
+   * peers disagreeing on a stray reconnect near an hour boundary), not a
+   * contrived one. See shoalEngine.determinism.test.ts's "outsideTicks and
+   * touchedIds: reachable, not decoration" for a real fold pair built this
+   * way, including the `rollEpoch` consequence.
    */
   touchedIds: Set<string>;
 }

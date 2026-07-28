@@ -5,15 +5,17 @@
  * and the turtled-ball equilibrium must be demonstrably absent — including a
  * control run proving the test can actually detect it.
  */
-import { foldShoal } from './shoalEngine';
+import { foldShoal, rollEpoch } from './shoalEngine';
 import { richSession, fingerprint } from './shoalFixtures';
-import type { LogEntry, Presence } from './shoalTypes';
+import type { LogEntry, Presence, ShoalState, Checkpoint } from './shoalTypes';
 import { cellCentre } from './bloom';
 import {
   START_SIZE, MIN_SIZE, TICK_MS, HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BITE_GROWTH,
-  TENSION_NEUTRAL, TENSION_TRIGGER, HUSH_MS, MAX_TAKE, EPOCH_MS,
+  TENSION_NEUTRAL, TENSION_TRIGGER, HUSH_MS, MAX_TAKE, EPOCH_MS, CORE_R2,
+  PRESENCE_TTL_MS, BLOOM_READY_MS,
 } from './shoalConst';
-import { epochOf } from './epoch';
+import { epochOf, epochStartMs, epochWarmStartMs, epochFoldEndMs } from './epoch';
+import { serialiseCheckpoint } from './checkpoint';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -406,6 +408,208 @@ const resolveAtMs = triggerAtMs + HUSH_MS;
   }
   check('a shuffled log folds identically mid-hush, locked inputs and all',
     fingerprint(foldShoal(shuffledDread, DREAD_MS)) === baseline);
+}
+
+// --- outsideTicks and touchedIds: reachable, not decoration -----------------
+//
+// Task 1 of the-shoal-wild widens `fingerprint` to add `outsideTicks` and
+// `touchedIds` (open item 8, docs/THE_SHOAL_OPEN_ITEMS.md). Widening it is
+// unfalsifiable unless a REAL fold — via `foldShoal`, never a hand-mutated
+// `ShoalState` — can produce a divergence confined to exactly one of the two
+// new fields, with every field the OLD fingerprint covered staying identical.
+// `oldFingerprint` below is that old fingerprint, verbatim, kept only to prove
+// the two constructions below were genuinely invisible before this task.
+function oldFingerprint(s: ShoalState): string {
+  return JSON.stringify({
+    fish: [...s.fish.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([k, v]) => [k, v.size, v.x, v.y, [...v.recentBites].sort((a, b) => a - b)]),
+    departed: [...s.departed.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([k, v]) => [k, v.size, v.lastScatterMs, v.lastBiteMs, [...v.recentBites].sort((a, b) => a - b)]),
+    tension: s.tension,
+    lastTaken: [...s.lastTaken].sort(),
+    lastSweepMs: s.lastSweepMs,
+    bites: [...s.bitesTaken.entries()].sort(([a], [b]) => a - b),
+    lastVisit: [...s.lastVisit.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([cell, by]) => [cell, [...by.entries()].sort(([a], [b]) => (a < b ? -1 : 1))]),
+    bloomSince: [...s.bloomSinceMs.entries()].sort(([a], [b]) => a - b),
+    hushStartMs: s.hushStartMs,
+    lockedPositions: s.lockedPositions === null
+      ? null
+      : [...s.lockedPositions.entries()]
+          .sort(([a], [b]) => (a < b ? -1 : 1))
+          .map(([k, p]) => [k, p.x, p.y, p.size]),
+    lockedPreferred: s.lockedPreferred,
+  });
+}
+
+{
+  // outsideTicks is a TRAJECTORY accumulator: consecutive ticks a live fish
+  // has spent outside the tension core, reset to 0 the instant it steps back
+  // inside (shoalEngine.ts foldTick step 4). Two folds that agree on every
+  // FINAL position can still disagree on it if they took different paths to
+  // get there — and critically, `tension` (spreadPerMille, tension.ts) only
+  // ever reads the COUNT of fish outside the core, never which ones, so the
+  // count can stay fixed while the IDENTITY of who is outside changes,
+  // hiding the whole thing from tension and therefore from every field the
+  // old fingerprint read.
+  //
+  // Three fish: b, a, x. b sits at IN=(0,0) the entire session and never
+  // moves. During an early window W1 (t=0..1750) exactly one of {a, x} sits
+  // at OUT=(1000,0) and the other sits at IN alongside b; from t=2000 onward
+  // BOTH logs move a to OUT and x to IN, identically, and hold that for the
+  // rest of the session. So at every tick, in BOTH logs, exactly 1 of 3 fish
+  // is outside the core — same count, same tension, every tick — but in log
+  // P it is ALWAYS 'a' outside, while in log Q 'a' spends W1 inside (its
+  // spot at OUT taken by 'x') before swapping to match P from t=2000 on.
+  const IN = { x: 0, y: 0 };
+  const OUT = { x: 1_000, y: 0 };
+  // dist2(OUT, IN) = 1_000_000 > CORE_R2 (384_400): OUT reads outside the
+  // core whenever the other two fish anchor the median at IN, which they do
+  // throughout (b never moves, and whichever of a/x is "in" sits exactly on
+  // b's own coordinate — median of {IN,IN,OUT} on each axis is IN).
+  const outIsOutside = OUT.x * OUT.x > CORE_R2;
+
+  const vecAt = (p: { x: number; y: number }, t: number) => ({ x: p.x, y: p.y, heading: 0, speed: 0, t });
+  const entry = (id: string, ms: number, tag: string, p: { x: number; y: number }): Presence =>
+    ({ kind: 'presence', id, ms, hash: `${id}-${tag}`, vec: vecAt(p, ms) });
+
+  const M0 = 0;
+  const M1 = 2_000;
+  const CHECK_MS = 47_000; // >= M1 + BLOOM_READY_MS: see the lastVisit note below
+
+  const logP: LogEntry[] = [
+    entry('b', M0, '0', IN),
+    entry('a', M0, '0', OUT), entry('x', M0, '0', IN),
+    entry('a', M1, '1', OUT), entry('x', M1, '1', IN),
+  ];
+  const logQ: LogEntry[] = [
+    entry('b', M0, '0', IN),
+    entry('a', M0, '0', IN), entry('x', M0, '0', OUT),
+    entry('a', M1, '1', OUT), entry('x', M1, '1', IN),
+  ];
+
+  const P = foldShoal(logP, CHECK_MS);
+  const Q = foldShoal(logQ, CHECK_MS);
+
+  // Hand-derived tick counts (TICK_MS=250). W1 ticks are t=0,250,...,1750:
+  // (1750-0)/250 + 1 = 8. Post-swap ticks are t=2000,...,47000:
+  // (47000-2000)/250 + 1 = 181. Total main-loop ticks: 8+181 = 189, which
+  // must equal (CHECK_MS-M0)/TICK_MS+1 = 47000/250+1 = 189 — asserted below
+  // rather than assumed.
+  const w1Ticks = (M1 - TICK_MS - M0) / TICK_MS + 1;
+  const postTicks = (CHECK_MS - M1) / TICK_MS + 1;
+  const totalTicks = w1Ticks + postTicks;
+  check('the hand-derived tick split matches the session span',
+    totalTicks === (CHECK_MS - M0) / TICK_MS + 1, { w1Ticks, postTicks, totalTicks });
+  check('CHECK_MS clears BLOOM_READY_MS past the W1/post-swap boundary, so W1-era visit stamps have aged out',
+    CHECK_MS >= M1 + BLOOM_READY_MS, { CHECK_MS, M1, BLOOM_READY_MS });
+  check('OUT really reads outside the core', outIsOutside);
+
+  check('non-degeneracy: outsideTicks(a) really differs between the two folds',
+    P.outsideTicks.get('a') !== Q.outsideTicks.get('a'),
+    { P: P.outsideTicks.get('a'), Q: Q.outsideTicks.get('a') });
+  check('P: a was outside every tick of the session, so outsideTicks(a) equals the full tick count',
+    P.outsideTicks.get('a') === totalTicks, { got: P.outsideTicks.get('a'), totalTicks });
+  check('Q: a was only outside from t=2000, so outsideTicks(a) is short by exactly W1\'s tick count',
+    Q.outsideTicks.get('a') === totalTicks - w1Ticks,
+    { got: Q.outsideTicks.get('a'), expected: totalTicks - w1Ticks });
+  check('x stepped back inside at t=2000 and reset to 0, so it agrees across both folds (control)',
+    P.outsideTicks.get('x') === 0 && Q.outsideTicks.get('x') === 0,
+    { P: P.outsideTicks.get('x'), Q: Q.outsideTicks.get('x') });
+
+  // Hand-derived tension: exactly 1 of 3 fish outside on every tick in BOTH
+  // logs -> spreadPerMille = trunc(1000*1/3) = 333 every tick ->
+  // delta = 333 - TENSION_NEUTRAL(250) = 83/tick, accumulating with the
+  // floor never binding (always positive), for `totalTicks` ticks.
+  const expectedTension = 83 * totalTicks; // 83*189 = 15_687
+  check('hand-derived tension is identical in both folds and never reaches the hush trigger',
+    P.tension === expectedTension && Q.tension === expectedTension && expectedTension < TENSION_TRIGGER,
+    { P: P.tension, Q: Q.tension, expectedTension, TENSION_TRIGGER });
+
+  check('non-degeneracy: lastVisit is not vacuously empty in either fold',
+    P.lastVisit.size > 0 && Q.lastVisit.size > 0, { P: P.lastVisit.size, Q: Q.lastVisit.size });
+
+  check('the widened fingerprint tells P and Q apart',
+    fingerprint(P) !== fingerprint(Q));
+  check('the OLD fingerprint — every field this project checked before this task — saw no difference at all',
+    oldFingerprint(P) === oldFingerprint(Q));
+}
+
+{
+  // touchedIds. Unlike outsideTicks, a NATURALLY-touched id (one that lived
+  // in `fish` at some point this fold) is always recoverable from fish or
+  // departed: touchedIds.add(id) runs in the exact same branch that puts an
+  // id into `fish` (shoalEngine.ts foldTick step 1), and the only way out of
+  // `fish` is eviction into `departed` (never anywhere else) — so a
+  // naturally-touched id always still shows up in fish or departed, and a
+  // divergence there is already visible in the OLD fingerprint.
+  //
+  // The one case that breaks that equivalence is a CHECKPOINT-SEEDED
+  // `departed` row for an id the log never touches: it sits in `departed`
+  // (visible to the old fingerprint) but is absent from `touchedIds`, and
+  // `rollEpoch` prunes exactly that difference — `{id in departed : id not
+  // in touchedIds}` — at the next epoch boundary (shoalEngine.ts's
+  // `rollEpoch` doc, spec 3.9 point 6). So: seed BOTH folds with an identical
+  // departed row for 'ghost'. Log A additionally gives 'ghost' one presence
+  // write, timed to the exact admit floor (the oldest ms `foldShoal`'s log
+  // cursor still admits) so it lives for exactly one tick — the fold's very
+  // first, before hunger's first firing (tickCount 0->1, and hunger only
+  // fires on tickCount % 4 === 0) — and is evicted the very next tick,
+  // banking the identical size/lastBiteMs/lastScatterMs/recentBites the seed
+  // already gave it. Log B never mentions 'ghost' at all. Both folds end
+  // with byte-identical `departed`, and different `touchedIds`.
+  const EPOCH = 1;
+  const warmStartMs = epochWarmStartMs(EPOCH);
+  const originMs = epochStartMs(EPOCH);
+  const ghostMs = warmStartMs - PRESENCE_TTL_MS;
+  check('the admit-floor arithmetic used below matches the constants it is derived from',
+    warmStartMs === originMs - 90_000 && ghostMs === warmStartMs - 90_000,
+    { warmStartMs, originMs, ghostMs });
+
+  const seed: Checkpoint = { epoch: EPOCH - 1, sizes: [['ghost', 500]], recent: [] };
+  const ghostEntry: Presence = {
+    kind: 'presence', id: 'ghost', ms: ghostMs, hash: 'ghost-touch',
+    vec: { x: 0, y: 0, heading: 0, speed: 0, t: ghostMs },
+  };
+  const logTouched: LogEntry[] = [ghostEntry];
+  const logUntouched: LogEntry[] = [];
+
+  const CHECK_MS = originMs; // the earliest legal untilMs for this epoch
+  const touchedState = foldShoal(logTouched, CHECK_MS, { epoch: EPOCH, seed });
+  const untouchedState = foldShoal(logUntouched, CHECK_MS, { epoch: EPOCH, seed });
+
+  check('non-degeneracy: touchedIds really differs (ghost touched in one fold, not the other)',
+    touchedState.touchedIds.has('ghost') && !untouchedState.touchedIds.has('ghost'));
+  check('both folds carry the identical seeded departed row for ghost',
+    JSON.stringify([...touchedState.departed.entries()]) === JSON.stringify([...untouchedState.departed.entries()])
+      && touchedState.departed.get('ghost')?.size === 500,
+    { touched: touchedState.departed.get('ghost'), untouched: untouchedState.departed.get('ghost') });
+  check('non-degeneracy: neither fold ever has a live fish (this checks departed/touchedIds in isolation)',
+    touchedState.fish.size === 0 && untouchedState.fish.size === 0);
+
+  check('the widened fingerprint tells the touched fold apart from the untouched one',
+    fingerprint(touchedState) !== fingerprint(untouchedState));
+  check('the OLD fingerprint saw no difference between them at all',
+    oldFingerprint(touchedState) === oldFingerprint(untouchedState));
+
+  // The player-visible consequence: roll both folds to the epoch boundary
+  // and confirm the PUBLISHED CHECKPOINTS actually differ. This is not an
+  // abstract field — it is two honest clients broadcasting different
+  // histories for what the OLD fingerprint said was the same world.
+  const endMs = epochFoldEndMs(EPOCH);
+  const touchedFull = foldShoal(logTouched, endMs, { epoch: EPOCH, seed });
+  const untouchedFull = foldShoal(logUntouched, endMs, { epoch: EPOCH, seed });
+  const cpTouched = rollEpoch(touchedFull);
+  const cpUntouched = rollEpoch(untouchedFull);
+  check('rollEpoch keeps ghost in the touched fold\'s checkpoint',
+    cpTouched.sizes.some(([id]) => id === 'ghost'), cpTouched.sizes);
+  check('rollEpoch prunes ghost from the untouched fold\'s checkpoint',
+    !cpUntouched.sizes.some(([id]) => id === 'ghost'), cpUntouched.sizes);
+  check('two honest clients publish DIFFERENT checkpoints for what the OLD fingerprint called the same world',
+    serialiseCheckpoint(cpTouched) !== serialiseCheckpoint(cpUntouched));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
