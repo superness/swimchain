@@ -310,6 +310,16 @@ export const TICKER: TickerLine[] = [
   { layer: 4, text: 'committee votes 5-2 to acknowledge the floor exists. olives abstain, cite ongoing review.' },
   { layer: 5, text: 'wing sighted on basket four; basket four reports the best day of its life. no bird located.' },
   { layer: 5, text: 'hermit returns chip at triple size. chip declines all interviews. remains crisp.' },
+  // The strings' PAYOFF, leaked as gossip rather than printed on the badge
+  // (operator, 2026-07-28: "just mention it somewhere like a known secret but
+  // not overt"). The perch already says "pays double" on its face; the
+  // oracle's mark says only WHERE, never WHAT, and a player who cannot find
+  // out what obeying the strings is worth cannot decide to obey them. The
+  // ticker is where this game has always leaked its numbers — see the
+  // hermit's "triple size" two lines up.
+  { layer: 6, text: 'strings pay half again on the basket they name. oracle calls this common knowledge. nobody had heard.' },
+  // And the stack, which is the part actually worth knowing: x2 x x1.5 = x3.
+  { layer: 6, text: 'wing lands on a basket the strings had already named; payout triples. wing insists the two are unrelated. there was never a bird.' },
   { layer: 3, text: 'porcelain confirmed at depth. geologists insist it is "just a bowl." geologists have gone quiet.' },
   { layer: 3, text: 'area fryer tipped entirely over; operator describes feeling "lighter, and also saltier."' },
   { layer: 3, text: 'underside inscription translated by four experts; all four now own bowls.' },
