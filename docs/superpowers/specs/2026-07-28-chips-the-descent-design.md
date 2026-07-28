@@ -405,17 +405,66 @@ do — the jokes are the reason to go round again, not the multipliers.
 
 ---
 
-## 10. Still open
+## 10. What scoop says at the lava
 
-1. **What scoop finally says at the lava.** The single most important line in the
-   feature, and it should not be written in a hurry.
-2. **Boss retry cost.** Free retries make a modal a slot machine; a cost makes it
+He has followed you down five bands without a word. At the lava he speaks, and
+**not one word of it is new.**
+
+### Before the fight — the ask
+
+> *i'm not begging.*
+>
+> *i have never been begging.*
+>
+> *one more chip.*
+
+That is the whole thing. Line one is his oldest joke (`"i'm not begging. this is
+a business meeting."`). Line two is the same joke with the punchline removed,
+which is what turns it into a statement. Line three is what he has asked for
+since the first minute of the game — the ticker has him *"retiring from begging,
+effective after one more chip"* and calls it his ninth retirement.
+
+The horror is not that he says something shocking. It is that **he says exactly
+what he always said** and the player realises it was never a bit. A small dog
+has been asking them to finish the bowl since the first frame, and they have
+been laughing at him for it.
+
+It also sets up the second reveal (§8) without spending it: *one more chip is
+what empties a bowl.* You do not understand the ask here. You understand it one
+bowl later, and then you remember he asked nicely.
+
+**Restraint is the design.** He does not explain, does not gloat, does not have
+a revelation scene. He is a dog with a business meeting. Anything longer would
+be the game explaining its own twist through a character who has never once
+explained anything.
+
+### After the fight — the shop opens
+
+His last catchphrase is `"sit. stay. good. now fry."` — commands given to the
+player, funny because a dog is giving them. At the lava, having been obeyed:
+
+> *sit. stay. good. now dig.*
+
+The char shop opens on that line. The joke was that he was ordering you around.
+He was ordering you around.
+
+### His shop voice stays transactional
+
+Nothing softens. He sells char abilities the way he begged: rates are
+reasonable, the terms are not negotiable, and he is not fussy — he is exactly
+this fussy.
+
+---
+
+## 11. Still open
+
+1. **Boss retry cost.** Free retries make a modal a slot machine; a cost makes it
    a decision. Leaning free, but the boss does not re-offer until you have dug a
    little further — so the cost is time rather than a resource.
 
 ---
 
-## 11. Build order, if approved
+## 12. Build order, if approved
 
 1. `broke <band>` fold verb + char accrual — the only permanent decision. The
    deep tip (§7) is the same verb at band 13, so design it to carry a band
