@@ -9,12 +9,13 @@
  * out alone.
  */
 import { reckon } from './fixed';
-import { epochOf, epochStartMs, epochWarmStartMs } from './epoch';
+import { epochOf, epochStartMs, epochEndMs, epochWarmStartMs } from './epoch';
 import { type Body } from './shelter';
 import { stepTension, topContributor, outsideCore } from './tension';
 import { shouldStartHush, isResolveTick, selectTaken } from './sweep';
 import { markVisits, canEat, isBloomReady } from './bloom';
 import type { LogEntry, ShoalState, Checkpoint } from './shoalTypes';
+import { checkpointFrom } from './checkpoint';
 import {
   TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BLOOM_BITES, VOID_WINDOW_MS, LOCK_MS,
@@ -124,6 +125,25 @@ function clampSize(n: number): number {
 export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): ShoalState {
   const log = ordered;
   const t = state.nowMs;
+
+  // A fold covers exactly one epoch (spec 3.9). Ticking past its end would
+  // keep accumulating into a state whose `epoch` no longer describes it: no
+  // checkpoint would ever be taken, `departed` and `touchedIds` would grow
+  // without bound, and `checkpointFrom`'s cutoff would be measured against
+  // the wrong hour. An incremental driver has no loop bound of its own to
+  // catch this, so the bound lives here.
+  //
+  // Ticks BEFORE the epoch's start are fine and expected -- that is the
+  // warm-up replay (spec 3.9 point 3), which deliberately runs while
+  // `nowMs < epochStartMs(state.epoch)`.
+  if (t >= epochEndMs(state.epoch)) {
+    throw new RangeError(
+      `foldTick: tick ${t} is at or past the end of epoch ${state.epoch} ` +
+      `(${epochEndMs(state.epoch)}). A fold covers exactly one epoch: call ` +
+      'rollEpoch(state) to take the boundary checkpoint and carry the world ' +
+      'into the next one.',
+    );
+  }
 
   // 1. Apply every entry authored at or before this tick.
   while (state.cursor < log.length && log[state.cursor].ms <= t) {
@@ -444,9 +464,14 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
  * the very defect the warm-up exists to fix.
  *
  * `opts.seed.epoch` MUST be exactly `epoch - 1` — see the check immediately
- * below. `departed` also prunes here (spec 3.9 point 6): a seeded swimmer
- * who writes no presence at all during this epoch is dropped, not carried
- * into the checkpoint this fold's result feeds into.
+ * below. The `departed` prune (spec 3.9 point 6) does NOT happen here: it is
+ * a boundary operation and lives in `rollEpoch`, which is also the only place
+ * a canonical checkpoint is produced. Fold to `epochFoldEndMs(epoch)` and
+ * roll.
+ *
+ * `untilMs` must lie inside `epoch`: before its start there is nothing
+ * coherent to return, and at or past its end a fold would be covering more
+ * than one epoch. Both are refused.
  *
  * This function is now a thin wrapper: it builds the seeded empty state,
  * then loops `foldTick` from the epoch's start up to `untilMs`. The tick
@@ -518,6 +543,18 @@ export function foldShoal(
       `untilMs ${untilMs} is ${untilMs - originMs} ms after epoch ${epoch}'s start at ` +
       `${originMs} (the loop also replays ${WARMUP_MS} ms of warm-up before it). ` +
       `Fold one epoch at a time, seeded from the previous epoch's checkpoint.`,
+    );
+  }
+  if (untilMs >= epochEndMs(epoch)) {
+    // Strictly stronger than the MAX_FOLD_TICKS budget above, which is
+    // therefore now unreachable from any real call and stays only as a POLICY
+    // backstop against an arithmetic mistake in this very check. The budget is
+    // tested first so its own error message still has a reachable case.
+    throw new RangeError(
+      `foldShoal: untilMs ${untilMs} is at or past the end of epoch ${epoch} ` +
+      `(${epochEndMs(epoch)}). A fold covers exactly one epoch (spec 3.9); the ` +
+      `last tick this epoch owns is epochFoldEndMs(${epoch}) = ` +
+      `${epochEndMs(epoch) - TICK_MS}. Roll the epoch and fold the next one.`,
     );
   }
 
@@ -595,25 +632,64 @@ export function foldShoal(
     foldTick(state, log);
   }
 
-  // Prune `departed` records that were only ever a seed value nobody
-  // returned to claim (spec 3.9 point 6): "an hour away is forgiveable, a
-  // week is a fresh start." A seed id that WAS touched (wrote presence any
-  // time this epoch) is exempt even if it is departed again by fold's end —
-  // that departed record was written fresh by THIS fold's own eviction step
-  // (foldTick's step 2), so as of this checkpoint that swimmer has been
-  // absent less than one epoch, and must survive to be re-checked at the
-  // NEXT epoch boundary rather than being dropped a checkpoint early. Only a
-  // seed id absent from `state.touchedIds` — meaning its `departed` row sat
-  // untouched for the whole epoch — is dropped here. This does not "fall out
-  // naturally" from only carrying forward touched records: without this
-  // explicit pass, every seeded id would simply remain in `state.departed`
-  // forever (nothing else in the loop above ever deletes a seed record that
-  // is never revived), so it has to be done here, explicitly.
-  if (opts?.seed) {
-    for (const [id] of opts.seed.sizes) {
-      if (!state.touchedIds.has(id)) state.departed.delete(id);
-    }
-  }
-
   return state;
+}
+
+/**
+ * Close an epoch: prune, checkpoint, and carry the world into the next one.
+ *
+ * This is the boundary operation the incremental driver (and `foldShoal`'s
+ * caller) needs, and the only place a canonical checkpoint is produced. It
+ * MUTATES and returns `state` as `next`, the same convention `foldTick` uses.
+ *
+ * `state.nowMs` must be exactly `epochEndMs(state.epoch)` — the position a
+ * fold is left in after its last legal tick, i.e. after folding to
+ * `epochFoldEndMs(state.epoch)`. Rolling from anywhere else would checkpoint
+ * a half-folded epoch: the sizes would be whatever the caller happened to
+ * stop on, which is precisely the non-canonicality `checkpointFrom`'s
+ * epoch-end cutoff exists to remove.
+ *
+ * THE `departed` PRUNE LIVES HERE (spec 3.9 point 6): "an hour away is
+ * forgiveable, a week is a fresh start." It used to live at the end of
+ * `foldShoal`, keyed off the seed's id list, which meant an incremental
+ * driver — the shell — never ran it at all and `departed` grew forever.
+ * Keying it off `touchedIds` instead is exactly equivalent and needs no seed:
+ * every `departed` record is either a seeded one (untouched -> absent the
+ * whole epoch -> dropped) or one this epoch's own eviction step wrote, and
+ * eviction can only reach a fish that entered `state.fish`, which only a
+ * presence write in this fold can do — so every self-evicted id is in
+ * `touchedIds` and is correctly exempt. A swimmer evicted late in the epoch
+ * must survive to be re-checked at the NEXT boundary rather than be dropped a
+ * checkpoint early.
+ *
+ * `next.touchedIds` is re-seeded with the ids still LIVE at the boundary,
+ * not emptied. A swimmer live here has written within PRESENCE_TTL_MS, which
+ * is exactly the set a cold client's warm-up replay would mark as touched for
+ * the new epoch — so an incremental driver and a cold fold agree about who is
+ * exempt from the next prune. Emptying it instead would drop a swimmer who
+ * was live at the boundary and lapsed early in the new epoch, despite their
+ * having been in the water the whole time.
+ *
+ * `tickCount` is deliberately NOT reset: hunger's phase is a function of it,
+ * and EPOCH_MS is a whole number of hunger periods, so continuing the count
+ * keeps an incremental driver's firings on the same absolute schedule a cold
+ * fold of the new epoch would compute.
+ */
+export function rollEpoch(state: ShoalState): { checkpoint: Checkpoint; next: ShoalState } {
+  const boundaryMs = epochEndMs(state.epoch);
+  if (state.nowMs !== boundaryMs) {
+    throw new RangeError(
+      `rollEpoch: state is at ${state.nowMs}, not epoch ${state.epoch}'s boundary ` +
+      `at ${boundaryMs}. Fold to epochFoldEndMs(${state.epoch}) = ` +
+      `${boundaryMs - TICK_MS} first; a checkpoint taken anywhere else is not ` +
+      'the canonical one every other client will compute.',
+    );
+  }
+  for (const [id] of [...state.departed]) {
+    if (!state.touchedIds.has(id)) state.departed.delete(id);
+  }
+  const checkpoint = checkpointFrom(state, state.epoch);
+  state.epoch += 1;
+  state.touchedIds = new Set(state.fish.keys());
+  return { checkpoint, next: state };
 }

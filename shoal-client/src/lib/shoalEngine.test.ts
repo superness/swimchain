@@ -20,7 +20,7 @@
  * comments below name the absolute times rather than the labels wherever the
  * distinction could matter.
  */
-import { orderLog, foldShoal, bodiesOf } from './shoalEngine';
+import { orderLog, foldShoal, foldTick, rollEpoch, bodiesOf } from './shoalEngine';
 import { checkpointFrom, serialiseCheckpoint } from './checkpoint';
 import type { LogEntry, Presence, EatClaim, ShoalState, Checkpoint } from './shoalTypes';
 import {
@@ -824,9 +824,19 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
       && MAX_FOLD_TICKS === 1_000_000 && WARMUP_MS === 90_000,
     { atBudgetMs, overBudgetMs, MAX_FOLD_TICKS, WARMUP_MS });
 
+  // The budget is now STRICTLY WEAKER than the one-epoch bound: any span the
+  // budget would refuse is already many epochs long. A fold of exactly
+  // MAX_FOLD_TICKS therefore passes the budget check and is refused by the
+  // epoch bound instead — with a different message, which is what makes the
+  // two distinguishable rather than "it throws, close enough". The budget
+  // survives only as a POLICY backstop against an arithmetic mistake in the
+  // epoch bound itself, and it is checked first so its own message still has
+  // a reachable case (the one below).
   const atBudget = threw(() => foldShoal([], atBudgetMs, { epoch: 0 }));
-  check('a fold of exactly MAX_FOLD_TICKS ticks is allowed (explicit epoch 0)',
-    atBudget === null, atBudget?.message);
+  check('a fold of exactly MAX_FOLD_TICKS ticks clears the budget but is refused by the one-epoch bound',
+    atBudget instanceof RangeError && atBudget.message.includes('end of epoch 0')
+      && !atBudget.message.includes('refusing to run'),
+    atBudget?.message);
 
   const overBudget = threw(() => foldShoal([], overBudgetMs, { epoch: 0 }));
   check('one tick past the budget throws (explicit epoch mismatched with untilMs)',
@@ -937,6 +947,14 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
 // where the rule lives. The rule needs to know what happened DURING an
 // epoch's fold (was this swimmer touched?), which a bare hand-built
 // ShoalState cannot express -- so the test has to go through a real fold.
+//
+// The prune now lives in `rollEpoch`, not at the end of `foldShoal` (fix
+// review I1). It used to be keyed off the SEED's id list, which meant an
+// incremental driver -- the shell, which never calls foldShoal at all --
+// never ran it and `departed` grew forever. Keying it off `touchedIds` is
+// exactly equivalent and needs no seed; see rollEpoch's doc. So these tests
+// fold a whole epoch (to epochFoldEndMs, which leaves nowMs exactly on the
+// boundary) and roll it, which is what a real client does.
 {
   const epoch = 5;
   const start = epochStartMs(epoch);
@@ -946,28 +964,38 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   // an ordinary returning swimmer and must NOT be pruned -- the positive
   // control proving this isn't just "pruning wipes everything."
   //
-  // 'toucher's seed size is 150, not something close to MIN_SIZE(60): a first
-  // draft of this test seeded it at 50 and asserted an expected size of 49
-  // (50 - one hunger tick), which is wrong -- clampSize floors hunger's
-  // result at MIN_SIZE(60), so 50-1 actually reads 60, not 49. 150 is
-  // comfortably clear of that floor, so the same one-hunger-tick arithmetic
-  // as the seeding tests above applies cleanly: 150 - 1 = 149.
-  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['ghost', 175], ['toucher', 150]], recent: [] };
+  // 'toucher's size, by hand. Seeded at 200, deliberately far from MIN_SIZE
+  // (60) so the floor cannot blur the arithmetic (a first draft of this test
+  // seeded at 50 and expected 49, which clampSize would have read as 60).
+  // Presence at start+500, so expiresMs = start+90_500 and eviction lands on
+  // the first tick past it, t = start+90_750. Hunger fires at
+  // t = start + 750 + 1000k, so the firings while it is alive run
+  // start+750 ... start+89_750 -- (89_750-750)/1000 + 1 = 90 of them. The
+  // eviction tick is itself a firing time, but step 2 deletes the fish
+  // before step 6 runs, so it does not count.
+  //   200 - 90 * HUNGER_AMOUNT(1) = 110
+  // Nothing else happens for the remaining ~58 minutes of the epoch: one
+  // departed record and an empty sea.
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['ghost', 175], ['toucher', 200]], recent: [] };
   const log: LogEntry[] = [pres('toucher', 1000, 1000, start + 500)];
-  const s = foldShoal(log, start + 1000, { epoch, seed });
+  const s = foldShoal(log, epochFoldEndMs(epoch), { epoch, seed });
+  check('folding to epochFoldEndMs leaves the state exactly on the epoch boundary',
+    s.nowMs === epochEndMs(epoch), { nowMs: s.nowMs, boundary: epochEndMs(epoch) });
 
-  check('an untouched seeded swimmer is not carried in the folded state at all',
-    !s.fish.has('ghost') && !s.departed.has('ghost'),
-    { fish: s.fish.has('ghost'), departed: s.departed.has('ghost') });
+  // Before the roll, the untouched seed record is still there: the prune is
+  // a boundary operation, not something the fold does continuously.
+  check('the untouched seed record survives the fold itself',
+    s.departed.has('ghost'), [...s.departed.keys()]);
 
-  // The discriminating assertion: checkpointFrom on the RESULT of the fold
-  // must not see 'ghost'.
-  const cp = checkpointFrom(s, epoch);
+  const { checkpoint: cp, next } = rollEpoch(s);
+  check('the roll prunes the untouched seeded swimmer out of the state',
+    !next.fish.has('ghost') && !next.departed.has('ghost'),
+    { fish: next.fish.has('ghost'), departed: next.departed.has('ghost') });
   const ids = cp.sizes.map((p) => p[0]);
   check('a swimmer absent the whole epoch is pruned from the next checkpoint',
     !ids.includes('ghost'), cp.sizes);
-  check('a swimmer who returned is still checkpointed, at their live size',
-    cp.sizes.find((p) => p[0] === 'toucher')?.[1] === 149, cp.sizes);
+  check('a swimmer who returned is still checkpointed, at their hand-derived size',
+    cp.sizes.find((p) => p[0] === 'toucher')?.[1] === 110, cp.sizes);
 }
 {
   // The grace-period boundary, checked explicitly: a swimmer who departs
@@ -979,13 +1007,13 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   const start = epochStartMs(epoch);
   const log: LogEntry[] = [pres('brief', 1000, 1000, start)];
   // Evicted the first tick with t > expiresMs = start + PRESENCE_TTL_MS
-  // (90_000), i.e. t = start + 90_250 (90250 / 250 = 361, a real tick).
-  // Folded well past that but still inside the epoch (EPOCH_MS = 3_600_000).
-  const s = foldShoal(log, start + 200_000, { epoch });
+  // (90_000), i.e. t = start + 90_250 (90250 / 250 = 361, a real tick), then
+  // folded to the end of the epoch.
+  const s = foldShoal(log, epochFoldEndMs(epoch), { epoch });
   check('a swimmer evicted mid-epoch (no seed involved) is genuinely departed',
     !s.fish.has('brief') && s.departed.has('brief'),
     { fish: s.fish.has('brief'), departed: s.departed.has('brief') });
-  const cp = checkpointFrom(s, epoch);
+  const { checkpoint: cp } = rollEpoch(s);
   check('a swimmer departed only within this epoch survives to the next checkpoint',
     cp.sizes.some((p) => p[0] === 'brief'), cp.sizes);
 }
@@ -1003,16 +1031,77 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   const start = epochStartMs(epoch);
   const seed: Checkpoint = { epoch: epoch - 1, sizes: [['ronin', 120]], recent: [] };
   const log: LogEntry[] = [pres('ronin', 1000, 1000, start)];
-  // Evicted again the first tick with t > expiresMs = start + PRESENCE_TTL_MS
-  // (90_000), i.e. t = start + 90_250 (90250/250 = 361, a real tick). Folded
-  // well past that but still inside the epoch (EPOCH_MS = 3_600_000).
-  const s = foldShoal(log, start + 200_000, { epoch, seed });
+  const s = foldShoal(log, epochFoldEndMs(epoch), { epoch, seed });
   check('a swimmer touched then re-evicted this epoch is genuinely departed again',
     !s.fish.has('ronin') && s.departed.has('ronin'),
     { fish: s.fish.has('ronin'), departed: s.departed.has('ronin') });
-  const cp = checkpointFrom(s, epoch);
+  const { checkpoint: cp } = rollEpoch(s);
   check('being touched once this epoch exempts a swimmer from pruning even if departed again',
     cp.sizes.some((p) => p[0] === 'ronin'), cp.sizes);
+}
+
+// --- The epoch rolls over, and nothing ticks past its end (fix review I1) ---
+// foldTick had no epoch awareness at all: it never read epochEndMs, never
+// advanced state.epoch, and never pruned `departed` or cleared `touchedIds`
+// -- both of which grow forever under an incremental driver, which is exactly
+// what the shell will be.
+{
+  const epoch = 15;
+  const start = epochStartMs(epoch);
+  const nextStart = epochStartMs(epoch + 1);
+  // 'liveAcross' writes near the end of the epoch, so it is still live when
+  // the roll happens: expiresMs = (end - 10_000) + PRESENCE_TTL_MS, well into
+  // the next epoch. 'gone' writes at the epoch's start and is long evicted.
+  const lateMs = epochEndMs(epoch) - 10_000;
+  const log: LogEntry[] = [
+    pres('gone', 1_000, 1_000, start),
+    pres('liveAcross', 2_000, 2_000, lateMs),
+  ];
+  const s = foldShoal(log, epochFoldEndMs(epoch), { epoch });
+  check('the fixture is non-degenerate: one live swimmer and one departed at the boundary',
+    s.fish.has('liveAcross') && s.departed.has('gone') && s.fish.size === 1,
+    { fish: [...s.fish.keys()], departed: [...s.departed.keys()] });
+
+  // The refusal. nowMs is exactly epochEndMs, the first ms the epoch does not
+  // own, so another tick must be refused rather than silently taken.
+  let refused: Error | null = null;
+  try { foldTick(s, orderLog(log)); } catch (e) { refused = e as Error; }
+  check('foldTick refuses to tick past its epoch\'s end',
+    refused instanceof RangeError, refused?.message);
+  check('and the refusal points at rollEpoch',
+    refused !== null && refused.message.includes('rollEpoch'), refused?.message);
+
+  // The rollover.
+  const { checkpoint, next } = rollEpoch(s);
+  check('the roll checkpoints the epoch that was folded', checkpoint.epoch === epoch, checkpoint.epoch);
+  check('the next state names the next epoch and sits on its first ms',
+    next.epoch === epoch + 1 && next.nowMs === nextStart,
+    { epoch: next.epoch, nowMs: next.nowMs, nextStart });
+  check('touchedIds is re-seeded with exactly the swimmers still live at the boundary',
+    next.touchedIds.size === 1 && next.touchedIds.has('liveAcross'),
+    [...next.touchedIds]);
+  check('the still-live swimmer crosses with the world, not via the checkpoint alone',
+    next.fish.has('liveAcross') && next.fish.get('liveAcross')!.x === 2_000,
+    { fish: [...next.fish.keys()] });
+  // 'gone' was departed and NOT touched... but it WAS touched -- it wrote
+  // presence this epoch -- so it is exempt and survives one more epoch.
+  check('a swimmer who was in the water this epoch is not pruned at its first boundary',
+    next.departed.has('gone') && checkpoint.sizes.some((p) => p[0] === 'gone'),
+    { departed: [...next.departed.keys()], sizes: checkpoint.sizes });
+
+  // And the rolled state ticks: the refusal is about the OLD epoch, not a
+  // dead end.
+  const resumed = foldTick(next, orderLog(log));
+  check('the rolled state ticks on into the new epoch',
+    resumed.nowMs === nextStart + TICK_MS, resumed.nowMs);
+
+  // Rolling from anywhere but the boundary is refused: a checkpoint taken
+  // mid-epoch is not the one other clients compute.
+  const mid = foldShoal(log, start + 1_000, { epoch });
+  let earlyRoll: Error | null = null;
+  try { rollEpoch(mid); } catch (e) { earlyRoll = e as Error; }
+  check('rolling before the epoch boundary is refused',
+    earlyRoll instanceof RangeError, earlyRoll?.message);
 }
 {
   // A hand-built seed with a malformed epoch must be refused by foldShoal's
