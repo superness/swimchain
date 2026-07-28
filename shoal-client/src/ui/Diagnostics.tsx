@@ -77,11 +77,19 @@ export function Diagnostics() {
     try {
       const a = await resolveAuth();
       setAuth(a);
+      // `resolveAuth` now returns `null` rather than inventing an unauthenticated
+      // `http://127.0.0.1:9736` — see its header. Nothing to cache and nothing to call.
+      if (a === null) {
+        setRpcError('resolveAuth found no node: no app-shell envelope, no get_rpc_config '
+          + 'answer, and no SHOAL_RPC_ENDPOINT. There is deliberately no bare-localhost '
+          + 'fallback (shoalRpc.ts) — an unauthenticated endpoint answers reads and fails '
+          + 'every write, which reads as healthy and is not.');
+        return null;
+      }
       // Cache only a REAL answer. Inside a Tauri shell an `authHeader`-less result means
-      // `get_rpc_config` did not answer and `resolveAuth` walked all the way down to its
-      // unauthenticated `http://127.0.0.1:9736` fallback — which this node answers for
-      // read methods, so caching it would freeze the app in a state that looks connected
-      // and cannot write. Leaving it uncached makes the next poll try again.
+      // `get_rpc_config` did not answer and `resolveAuth` fell through to the
+      // `SHOAL_RPC_ENDPOINT` env step — caching that would freeze the app in a state that
+      // looks connected and cannot write. Leaving it uncached makes the next poll retry.
       if (a.authHeader || !tauriInvoke()) authRef.current = a;
       return a;
     } finally {
@@ -100,11 +108,12 @@ export function Diagnostics() {
         setStatus(null);
         setRpcError(`node_status failed: ${String(e)}`);
       }
-      // Invoked RAW, separately from `resolveAuth`, on purpose. `resolveAuth` swallows
-      // a failing `get_rpc_config` (it has three more sources to try) and silently ends
-      // up on the unauthenticated `http://127.0.0.1:9736` fallback — which, on a node
-      // whose read methods do not require auth, still ANSWERS. A green "reachable" lamp
-      // is therefore not evidence the auth path works. This row is.
+      // Invoked RAW, separately from `resolveAuth`, on purpose. `resolveAuth` swallows a
+      // failing `get_rpc_config` — it has other sources to try — so this row is the only
+      // place the handoff's own answer (or its exception) is visible. It stays even now
+      // that the unauthenticated fallback is gone: `SHOAL_RPC_ENDPOINT` can still put the
+      // shell on an endpoint whose read methods answer without auth, and a green
+      // "reachable" lamp would again not be evidence the auth path works.
       try {
         const cfg = await invoke<{ endpoint: string; auth: string | null }>('get_rpc_config');
         setHandoff(`${cfg.endpoint}  auth=${cfg.auth ? `${cfg.auth.slice(0, 16)}… (${cfg.auth.length} chars)` : 'null'}`);
@@ -181,7 +190,7 @@ export function Diagnostics() {
           rows={[
             ['endpoint', auth?.endpoint],
             ['Authorization', auth?.authHeader ? `${auth.authHeader.slice(0, 16)}… (${auth.authHeader.length} chars)` : auth ? '(none)' : undefined],
-            ['auth source', auth === null ? undefined : auth.authHeader ? 'get_rpc_config (shell)' : 'UNAUTHENTICATED FALLBACK'],
+            ['auth source', auth === null ? 'NONE — resolveAuth found no node' : auth.authHeader ? 'get_rpc_config (shell)' : 'SHOAL_RPC_ENDPOINT (unauthenticated)'],
             ['get_rpc_config (raw)', handoff ?? undefined],
           ]}
         />

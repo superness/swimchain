@@ -279,13 +279,27 @@ function envEndpoint(): string | undefined {
  * Resolve where/how to reach the node, in the order the game's shells offer it:
  *   1. app-shell embed: `SWIMCHAIN_RPC_CONFIG` postMessage (10s window)
  *   2. Tauri desktop shell: `get_rpc_config` command
- *   3. `SHOAL_RPC_ENDPOINT` env (no auth — dev nodes are usually unauthenticated, or
- *      the caller layers its own auth on top)
- *   4. `http://127.0.0.1:9736` — bare local-node fallback (mainnet's default RPC
- *      port: p2p 9735 + 1)
+ *   3. `SHOAL_RPC_ENDPOINT` env (no auth — an explicit operator opt-in, and only
+ *      reachable under Node/tsx; see `envEndpoint`)
+ *   4. **`null`.** There is no fourth source.
  *
  * Steps 1-2 are browser/Tauri-only and no-op (resolve `null`) under Node, so calling
- * this from a plain-tsx context just falls through to steps 3-4.
+ * this from a plain-tsx context just falls through to step 3.
+ *
+ * ## WHY THERE IS NO BARE-LOCALHOST FALLBACK
+ *
+ * This used to end `return { endpoint: 'http://127.0.0.1:9736', authHeader: null }` —
+ * mainnet's default RPC port, unauthenticated, baked into every bundle. It is the exact
+ * class of value this project's standing bundle rule exists to keep out
+ * (`scripts/deploy-web-clients.sh`, project memory "verify client bundle endpoints"),
+ * and it caused real harm here rather than hypothetical: a node answers READ methods
+ * without auth, so the shell looked completely healthy — green lamp, live block height —
+ * right up until the first write. That is what cost Task 1 an hour and what
+ * `HANDOFF_WAIT`'s 120 s (src-tauri/src/main.rs) was raised to work around.
+ *
+ * A silent unauthenticated fallback is worse than no answer, because no answer is
+ * diagnosable and this was not. `null` means "nothing told me where the node is", and a
+ * caller has to say so. Diagnostics.tsx is the only caller and does exactly that.
  *
  * Order of operations mirrors nodeRpc.ts's `resolveAuth` exactly, including why:
  * `__TAURI__` being present is not proof IPC will answer (the launcher's app-shell
@@ -293,7 +307,7 @@ function envEndpoint(): string | undefined {
  * IPC), so when it IS present we try IPC first and fall back to the parent-envelope
  * wait; when it's absent we go straight to the parent wait.
  */
-export async function resolveAuth(): Promise<RpcAuth> {
+export async function resolveAuth(): Promise<RpcAuth | null> {
   const inTauri = Boolean(getWindow()?.__TAURI__);
 
   if (inTauri) {
@@ -311,7 +325,7 @@ export async function resolveAuth(): Promise<RpcAuth> {
   const env = envEndpoint();
   if (env) return { endpoint: env, authHeader: null };
 
-  return { endpoint: 'http://127.0.0.1:9736', authHeader: null };
+  return null;
 }
 
 // --- Node identity, adopted as the player's --------------------------------------

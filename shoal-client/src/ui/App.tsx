@@ -27,6 +27,13 @@
  *   - three query parameters — `?at=`, `?played=`, `?me=` — documented on
  *     `devParam` below. None of them is reachable from inside the game.
  *
+ * The chain-sea parameters (`?rpc=`, `&cookie=`, `&who=`, …) are a FOURTH set,
+ * and unlike those three they are gated on `import.meta.env.DEV` in both
+ * `chainParams` and `buildChainSea` — see the comments there. They carry a
+ * credential and a key derivation, "not reachable from inside the game" is not
+ * a security property when `devtools` is on in release, and the static gate is
+ * also what keeps `browserIdentity.ts` out of the production bundle at all.
+ *
  * =============================================================================
  * THE TETHER, THE HUSH AND THE SCATTER (Task 6)
  * =============================================================================
@@ -142,6 +149,17 @@ interface ChainParams {
  * the key arrives. That keeps the frame loop's construction unchanged.
  */
 function buildChainSea(): ChainSea | null {
+  // THE STATIC GATE, and it is here as well as inside `chainParams` on purpose.
+  // `import.meta.env.DEV` is replaced by the literal `false` in a production
+  // build, so this becomes `if (true) return null;` and everything below it —
+  // including the only reference anywhere to `identityFromLabel` — is dead code
+  // rollup removes, taking `browserIdentity.ts` out of the bundle entirely.
+  // Gating `chainParams` alone would not do that: rollup does not inline across
+  // the call to prove the branch unreachable, so the weak dev key derivation
+  // would still ship, unreferenced but present, in a release the operator has
+  // no reason to expect it in. Verified by grepping `dist/` for `shoal-two:`
+  // after `npm run build`.
+  if (!import.meta.env.DEV) return null;
   const p = chainParams();
   if (p === null) return null;
   return chainSea({
@@ -163,6 +181,21 @@ function buildChainSea(): ChainSea | null {
 }
 
 function chainParams(): ChainParams | null {
+  // DEV ONLY, and enforced rather than documented. Everything this function
+  // reads is a development affordance with no place in a shipped build:
+  //
+  //  - `&who=` derives a signing key as `sha256('shoal-two:' + label)` with no
+  //    KDF (browserIdentity.ts says so itself), so anyone who knows the label
+  //    holds the key;
+  //  - `&cookie=` takes the node's RPC credential out of the address bar,
+  //    which is acceptable for a localhost regtest capture and nothing else;
+  //  - `&rpc=` points the shell at an arbitrary endpoint.
+  //
+  // None of it is reachable from inside the game, but `location.search` is
+  // settable from the inspector and `devtools` is enabled in RELEASE
+  // (src-tauri/Cargo.toml) — so "not reachable" was never the same as "not
+  // available". `import.meta.env.DEV` is the only thing that makes it true.
+  if (!import.meta.env.DEV) return null;
   const rpc = devParam('rpc');
   if (rpc === null) return null;
   const space = devParam('space');
