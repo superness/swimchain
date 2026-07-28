@@ -374,7 +374,24 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
           </span>
         )}
         {tickFx && <span key={`t${tickFx.at}`} className={`tick-float${rat ? ' to-rat' : ''}`} aria-hidden="true">+{compact(tickFx.amount)}</span>}
-        <span className="tongs" aria-hidden="true">{feedMode !== null && feedable ? 'feed it' : 'dip it'}</span>
+        {/* THE BUTTON SAYS WHAT PRESSING IT PAYS. It said "dip it" — a label
+            for an action whose target is the only thing you can do to a
+            basket anyway — while the number it would actually hand you sat
+            on a separate line under the fryer. Putting the figure on the
+            control frees that line entirely (see `.pot-worth` below) and
+            puts the decision where the thumb already is.
+
+            The spill case comes with it: a dip past the bowl's rim is
+            clamped, and the warning has to land BEFORE the press, not after
+            (designer review: "punished by information the game withheld").
+            On the button is the last possible moment it can still be read. */}
+        <span className="tongs" aria-hidden="true">
+          {feedMode !== null && feedable
+            ? 'feed it'
+            : spills
+              ? <>{compact(Math.max(0, capRoom))}<i>rim — {compact(worth - Math.max(0, capRoom))} spills</i></>
+              : compact(worth)}
+        </span>
       </button>
 
       {/* The cheese rat, latched on. His own button, so a shoo can never be a
@@ -492,13 +509,16 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
             >{2 ** k}</i>
           ))}
         </span>
+        {/* ONLY THE EXCEPTIONS LIVE HERE NOW. "dips for X" moved onto the
+            button (above) and the spill warning went with it, so this line
+            renders nothing at all in the ordinary case — which is most of
+            the time, on most fryers. What is left is the two states the
+            player cannot see any other way. */}
         {rat
-          ? <em className="pot-worth ratted">the rat is eating this fryer&apos;s crumbs — shoo him</em>
+          ? <em className="pot-worth ratted">the rat is eating this — shoo him</em>
           : overcooking
-            ? <em className="pot-worth burning">overcooking — the pot pays for the hurry</em>
-            : spills
-              ? <em className="pot-worth over">dips for {compact(Math.max(0, capRoom))} — bowl full, {compact(worth - Math.max(0, capRoom))} would spill</em>
-              : <em className="pot-worth">dips for {compact(worth)}</em>}
+            ? <em className="pot-worth burning">burning for speed</em>
+            : null}
       </p>
     </div>
   );
