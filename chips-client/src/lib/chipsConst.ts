@@ -81,6 +81,12 @@ export const UPGRADES: Record<string, Upgrade> = {
   fryer3: { key: 'fryer3', label: 'Third Fryer',  cost: 6_000_000,  fryers: 3 },
   fryer4: { key: 'fryer4', label: 'Fourth Fryer', cost: 50_000_000, fryers: 4 },
   autodip: { key: 'autodip', label: 'Sous Chef', cost: 300_000 },
+  /* APPENDED 2026-07-27. A new key is safe: no reply has ever named it, so
+     no history re-folds (same precedent as cellar2). The Sous Chef above
+     keeps its key AND its cost — both are fold constants, and deleting or
+     re-pricing it would fold every past purchase as rejected. It only moves
+     SHOP, which is crew.ts policy. */
+  overcook: { key: 'overcook', label: 'Burner Knob', cost: 120_000 },
   doubledip1: { key: 'doubledip1', label: 'Double Dip',      cost: 250_000,    doubleDipMod: 4 },
   doubledip2: { key: 'doubledip2', label: 'Deep Double Dip', cost: 10_000_000, doubleDipMod: 2 },
   detector: { key: 'detector', label: 'Golden Chip Detector', cost: 1_500_000, goldenBits: 15 },

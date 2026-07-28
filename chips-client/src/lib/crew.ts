@@ -85,7 +85,7 @@ export const CREW: CrewMember[] = [
     lines: ["come back thursday. i'm not ready. nobody squeeze me."],
     armLines: ["fine. one chip. hand it over slowly. don't touch me with it. don't touch me at all."],
     munchLines: ["crunch. okay. take the jar. transaction's over. everyone go back to not perceiving me."],
-    sells: ['season2', 'autodip'],
+    sells: ['season2', 'overcook'],
     feed: 'any',
   },
   {
@@ -121,7 +121,7 @@ export const CREW: CrewMember[] = [
     ],
     armLines: ['only the golden one. i would know an ordinary chip. i know all chips. bring me the one that shines, child.'],
     munchLines: ['it is accepted. the shine passes through me. take your seasoning. you have been witnessed. you are always being witnessed.'],
-    sells: ['season4'],
+    sells: ['season4', 'autodip'],
     feed: 'golden',
     job: 'angel',
   },

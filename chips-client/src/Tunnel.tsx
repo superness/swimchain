@@ -508,6 +508,7 @@ const FLAVOUR: Record<string, string> = {
   fryer4: 'four baskets. the fire marshal has been.',
   detector: 'you can spot a golden one a beat sooner',
   autodip: 'a cook who dips the golden ones so you do not have to',
+  overcook: 'crank the burner. the pot pays for the hurry.',
   season6: 'the shaker has its own stool at the bar',
   cellar: 'cool, dark, dry. crumbs keep.',
   doubledip1: 'nobody is watching. dip it again.',
@@ -561,6 +562,7 @@ function JarCard({ u, vendor, afford, armed, capped, onJar }: {
       {u.sogBonus !== undefined && <span className="jar-fx">crumbs stay crisp longer</span>}
       {u.goldenBits !== undefined && <span className="jar-fx">crackles come sooner</span>}
       {u.key === 'autodip' && <span className="jar-fx">dips golden chips for you</span>}
+      {u.key === 'overcook' && <span className="jar-fx">burns the pot for sooner crackles</span>}
     </button>
   );
 }
