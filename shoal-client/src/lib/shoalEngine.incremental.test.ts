@@ -43,7 +43,7 @@
  * The old incremental-vs-batch comparison is kept at the bottom, trimmed,
  * with an explicit note that it is a consistency check only.
  */
-import { foldShoal, foldTick, emptyState } from './shoalEngine';
+import { foldShoal, foldTick, emptyState, orderLog } from './shoalEngine';
 import type { LogEntry, Presence } from './shoalTypes';
 import { cellCentre } from './bloom';
 import {
@@ -275,6 +275,11 @@ const fingerprint = (s: ReturnType<typeof foldShoal>) =>
   });
 
 const richLog = richSession();
+// foldTick takes an ALREADY-ORDERED log (it used to call orderLog itself, once
+// per tick: 18ms of a 29ms 801-tick fold, and ~0.3s of pure sorting plus
+// 14_400 throwaway arrays over a full epoch). Sorted once here, exactly as
+// foldShoal now sorts once internally.
+const richOrdered = orderLog(richLog);
 // 29_750, not the rounder 30_000 shoalEngine.determinism.test.ts uses for
 // this same log: chosen by mutation-testing Test B itself (see this task's
 // report). With UNTIL_MS=30_000 the post-STOP_AT continuation is 31 ticks
@@ -311,7 +316,7 @@ check('this file folds inside epoch 0, so the origin is 0 as assumed below',
     STOP_AT % TICK_MS === 0 && STOP_AT > 22_000 && STOP_AT < 26_000, STOP_AT);
 
   let state = emptyState(originMs);
-  while (state.nowMs <= STOP_AT) state = foldTick(state, richLog);
+  while (state.nowMs <= STOP_AT) state = foldTick(state, richOrdered);
 
   check('the fold stopped mid-hush, with inputs already locked (non-degenerate checkpoint)',
     state.hushStartMs >= 0 && state.lockedPositions !== null && state.lockedPreferred !== null,
@@ -339,8 +344,7 @@ check('this file folds inside epoch 0, so the origin is 0 as assumed below',
     fingerprint(clone) === fingerprint(state));
 
   // Continue the ORIGINAL, unbroken lineage to the end of the session.
-  while (state.nowMs <= UNTIL_MS) state = foldTick(state, richLog);
-  state.nowMs = UNTIL_MS;
+  while (state.nowMs <= UNTIL_MS) state = foldTick(state, richOrdered);
 
   // Non-degeneracy BEFORE comparing: this session must actually have fired a
   // hush, resolved a sweep, and credited bites, or the byte-identical
@@ -355,12 +359,75 @@ check('this file folds inside epoch 0, so the origin is 0 as assumed below',
 
   // Continue the CLONE, separately, over the identical remaining span.
   let clonedState = clone;
-  while (clonedState.nowMs <= UNTIL_MS) clonedState = foldTick(clonedState, richLog);
-  clonedState.nowMs = UNTIL_MS;
+  while (clonedState.nowMs <= UNTIL_MS) clonedState = foldTick(clonedState, richOrdered);
 
   check('resuming from the round-tripped clone matches resuming the original, byte-for-byte',
     fingerprint(clonedState) === fingerprint(state),
     { viaClone: fingerprint(clonedState), viaOriginal: fingerprint(state) });
+}
+
+// =============================================================================
+// Test C — foldShoal's result must be RESUMABLE (fix review C2)
+// =============================================================================
+//
+// foldShoal used to overwrite state.nowMs with `untilMs` after its loop. The
+// loop leaves nowMs on the absolute tick grid, at the first tick strictly
+// after untilMs; the overwrite dragged it BACK onto untilMs, so a caller
+// resuming with foldTick re-folded the tick at untilMs and skipped the next
+// one. With an off-grid untilMs the grid stayed permanently displaced —
+// exactly the phase divergence the epoch origin was introduced to remove.
+//
+// Hand derivation. One mover 'm': starts at (1000, 1000) — a multiple of
+// QUANT(8) — heading 0 (COS[0] = TRIG_SCALE exactly, SIN[0] = 0 exactly, so
+// reckon's trig factor cancels) at speed 88 cu/s, authored at ms=0.
+//   reckon dx = trunc(88 * dtMs / 1000), then quantized to QUANT(8).
+// Ticks land on the absolute grid at 0, 250, 500, ...
+//   t=1000  dx = trunc(88)        =  88  -> x_raw = 1088, quantize -> 1088
+//   t=1250  dx = trunc(110)       = 110  -> x_raw = 1110, quantize -> 1104
+//   t=1500  dx = trunc(132)       = 132  -> x_raw = 1132, quantize -> 1128
+// So folding to 1250 and then taking ONE more tick must land on the t=1500
+// row: nowMs 1750 (the next ungrid... the next grid tick after 1500) and
+// x = 1128. Under the overwrite, foldShoal(log, 1250) reported nowMs=1250,
+// the resumed tick re-ran t=1250 and the fish stopped at x=1104 with
+// nowMs=1500 — one whole tick behind, forever.
+{
+  const log: LogEntry[] = [{
+    kind: 'presence', id: 'm', ms: 0, hash: 'm0',
+    vec: { x: 1_000, y: 1_000, heading: 0, speed: 88, t: 0 },
+  }];
+  const ordered = orderLog(log);
+
+  const T = 1_250;
+  check('the resume point is a real tick', T % TICK_MS === 0, T);
+
+  const stopped = foldShoal(log, T);
+  check('foldShoal leaves nowMs on the grid, one tick past untilMs',
+    stopped.nowMs === T + TICK_MS, { got: stopped.nowMs, expected: T + TICK_MS });
+  check('the fish is at the hand-derived t=1250 position when the fold stops',
+    stopped.fish.get('m')!.x === 1_104, stopped.fish.get('m')!.x);
+
+  foldTick(stopped, ordered);
+  const straight = foldShoal(log, T + TICK_MS);
+  check('one resumed tick equals folding straight through to untilMs + TICK_MS',
+    stopped.nowMs === straight.nowMs && stopped.fish.get('m')!.x === straight.fish.get('m')!.x
+      && stopped.tickCount === straight.tickCount,
+    { resumedNow: stopped.nowMs, straightNow: straight.nowMs,
+      resumedX: stopped.fish.get('m')!.x, straightX: straight.fish.get('m')!.x,
+      resumedTicks: stopped.tickCount, straightTicks: straight.tickCount });
+  check('and that shared answer is the hand-derived t=1500 row, not the t=1250 one',
+    stopped.fish.get('m')!.x === 1_128 && stopped.nowMs === 1_750,
+    { x: stopped.fish.get('m')!.x, nowMs: stopped.nowMs });
+
+  // An OFF-GRID untilMs must not displace the grid either: the fold stops on
+  // the same tick it would have with untilMs rounded down, and nowMs is still
+  // a multiple of TICK_MS.
+  const offGrid = foldShoal(log, T + 137);
+  check('an off-grid untilMs still leaves nowMs on the absolute tick grid',
+    offGrid.nowMs % TICK_MS === 0 && offGrid.nowMs === T + TICK_MS,
+    { nowMs: offGrid.nowMs });
+  check('and folds exactly the ticks at or before it — same world as the grid-aligned fold',
+    offGrid.fish.get('m')!.x === 1_104 && offGrid.tickCount === foldShoal(log, T).tickCount,
+    { x: offGrid.fish.get('m')!.x, ticks: offGrid.tickCount });
 }
 
 // =============================================================================
@@ -387,10 +454,9 @@ check('this file folds inside epoch 0, so the origin is 0 as assumed below',
   let state = emptyState(originMs);
   let ticks = 0;
   while (state.nowMs <= UNTIL_MS) {
-    state = foldTick(state, richLog);
+    state = foldTick(state, richOrdered);
     ticks++;
   }
-  state.nowMs = UNTIL_MS;
 
   check('foldTick actually ran more than one tick (a real incremental fold, not a no-op loop)',
     ticks > 1, ticks);

@@ -97,16 +97,23 @@ function clampSize(n: number): number {
  * shoalEngine.test.ts and shoalEngine.determinism.test.ts assumes. Do not
  * reorder them.
  *
- * `entries` MUST be the same log — same content, same order — across every
- * `foldTick` call within one fold; see `cursor`'s doc in shoalTypes.ts for
- * why (a caller that re-applies an already-applied entry silently
- * double-credits its bite). `foldShoal`'s own loop passes the identical
- * `entries` argument to every call for exactly this reason. An incremental
- * caller (the shell) whose log grows between calls is safe as long as growth
- * is append-only relative to what has already been folded.
+ * `ordered` MUST ALREADY BE `orderLog(entries)`, and MUST be the same log —
+ * same content, same order — across every `foldTick` call within one fold;
+ * see `cursor`'s doc in shoalTypes.ts for why (a caller that re-applies an
+ * already-applied entry silently double-credits its bite). `foldShoal` sorts
+ * once and hands the identical array to every call for exactly this reason.
+ * An incremental caller (the shell) whose log grows between calls is safe as
+ * long as growth is append-only relative to what has already been folded, and
+ * re-sorts once per append rather than once per tick.
+ *
+ * Sorting here instead was measured at 18 ms of 29 ms for an 801-tick fold
+ * over a 2_000-entry log — a full epoch would be ~0.3 s of pure sorting and
+ * 14_400 throwaway arrays, scaling with log length, which undercuts the
+ * entire reason `foldTick` exists (a shell re-sorting the whole epoch on
+ * every frame).
  */
-export function foldTick(state: ShoalState, entries: readonly LogEntry[]): ShoalState {
-  const log = orderLog(entries);
+export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): ShoalState {
+  const log = ordered;
   const t = state.nowMs;
 
   // 1. Apply every entry authored at or before this tick.
@@ -390,7 +397,18 @@ export function foldTick(state: ShoalState, entries: readonly LogEntry[]): Shoal
  * then loops `foldTick` from the epoch's start up to `untilMs`. The tick
  * body itself lives in exactly one place (`foldTick`, above) so a
  * whole-epoch fold and an incremental, tick-at-a-time fold (the shell's use
- * case — see foldTick's doc) can never disagree about what a tick does.
+ * case — see foldTick's doc) can never disagree about what a tick does. The
+ * log is sorted ONCE here and the same array is handed to every `foldTick`
+ * call.
+ *
+ * The RESULT IS RESUMABLE: `state.nowMs` is left on the absolute tick grid,
+ * at the first tick strictly after `untilMs`, so
+ * `foldTick(foldShoal(log, t), ordered)` is exactly `foldShoal(log, t +
+ * TICK_MS)`. It used to be overwritten with `untilMs` after the loop, which
+ * made a resumed fold re-fold the tick at `untilMs` and skip the next
+ * (measured: nowMs 1250 vs 1500, a moving fish's x 1216 vs 1272) — and with
+ * an off-grid `untilMs` it displaced the grid permanently, reintroducing the
+ * exact phase divergence the epoch origin removed.
  */
 export function foldShoal(
   entries: readonly LogEntry[],
@@ -486,7 +504,7 @@ export function foldShoal(
   state.cursor = cursor;
 
   while (state.nowMs <= untilMs) {
-    foldTick(state, entries);
+    foldTick(state, log);
   }
 
   // Prune `departed` records that were only ever a seed value nobody
@@ -509,6 +527,5 @@ export function foldShoal(
     }
   }
 
-  state.nowMs = untilMs;
   return state;
 }
