@@ -28,15 +28,37 @@
  * the reason for ignoring it, and lets bowlGate.test.ts prove the ignoring by
  * passing a queue that would otherwise open the reveal.
  */
-import { foldChips, saltFor, type ChipsHeader, type ChipsReply } from './chipsEngine';
+import { foldChips, type ChipsHeader, type ChipsReply } from './chipsEngine';
 import type { QueuedMove } from './chipsQueue';
+
+/**
+ * WHERE THE GAME OFFERS THE BOWL — policy, and deliberately NOT `TIP_FLOOR`.
+ *
+ * `TIP_FLOOR` (4,000) is a FOLD constant: `saltFor` reads it inside the tip
+ * verb, so moving it re-scores every tip already on the chain. Measured
+ * against mainnet on 2026-07-27, raising it to 8,000 would have turned two
+ * real players' tips into `rejected-shallow` — one of them losing their old
+ * salt outright, the other having its entire post-tip history re-fold, since
+ * a run that never resets carries its crumbs, jars and caps forward instead.
+ * Clients on the old bundle would have disagreed with new ones about the
+ * state of a live game.
+ *
+ * So the OFFER moved and the RULE did not. The fold still honours a tip at
+ * 4,000 — anything already on the chain stays exactly as scored — while the
+ * game simply doesn't put the twist in front of you until 10,000, which is
+ * also worth more when it lands (15 salt rather than 10).
+ *
+ * The one leak: a player on a stale cached bundle can still be offered, and
+ * paid, at 4,000. Hosted web client, so it heals on refresh.
+ */
+export const REVEAL_FLOOR = 10_000;
 
 export function bowlReady(
   header: ChipsHeader, tableId: string,
   confirmed: ChipsReply[], verified: Map<string, number>,
   _pending: QueuedMove[], _author: string,
 ): boolean {
-  return saltFor(foldChips(header, tableId, confirmed, verified).lifetimeChips) > 0;
+  return foldChips(header, tableId, confirmed, verified).lifetimeChips >= REVEAL_FLOOR;
 }
 
 /**

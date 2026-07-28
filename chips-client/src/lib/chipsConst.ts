@@ -167,10 +167,16 @@ export const DIP_TIERS: DipTier[] = [
 export const CONGEAL_GAP_MS = 12 * 60 * 60 * 1000;
 
 /* ── THE BOTTOM OF THE BOWL ──────────────────────────────────────────────
-   You strike porcelain at Queso — long before the deep shelves exist — and
-   can tip the whole bowl back over, keeping OLD SALT. The floor is the
-   Queso threshold itself: the twist is not offered before the game has
-   taught you what it is, and a fresh table cannot farm the ceremony.      */
+   You strike porcelain in the Queso — long before the deep shelves exist —
+   and can tip the whole bowl back over, keeping OLD SALT.
+
+   THIS IS THE CONSENSUS FLOOR, NOT THE OFFER. A tip below it folds
+   `rejected-shallow`, so a fresh table cannot farm the ceremony; that rule
+   is on the chain and CANNOT MOVE (raising it re-scores every tip already
+   taken — priced against mainnet 2026-07-27, two real tables). Where the
+   game actually PUTS the twist in front of you is policy and lives in
+   lib/bowlGate.ts (`REVEAL_FLOOR`, 10,000 — about 4.9 active hours, still
+   inside the Queso and still long before the deep shelves).              */
 export const TIP_FLOOR = 4_000;
 /** Salt for a run that tips exactly at the floor. sqrt-scaled above it
     (chipsEngine.saltFor), so a Queso tip pays 10 and the Abyss pays ~158 —
