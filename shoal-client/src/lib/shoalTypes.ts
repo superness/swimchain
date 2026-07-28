@@ -119,8 +119,60 @@ export interface Departed {
   recentBites: number[];
 }
 
+/**
+ * The state that crosses an epoch boundary (spec section 3.9): size, plus a
+ * bounded tail of recent-bite state.
+ *
+ * `sizes` is an array of [id, size] pairs sorted by id rather than a Map, so
+ * the structure is canonical: two clients that agree on the world produce
+ * byte-identical checkpoints, and a Map's insertion order cannot leak in.
+ *
+ * `recent` carries `[id, lastBiteMs, recentBites]` for every swimmer whose
+ * `lastBiteMs` fell within `VOID_WINDOW_MS` of `epochEndMs(epoch)` —
+ * everyone else is correctly reconstructed with `lastBiteMs: -1` and
+ * `recentBites: []` at the seeding site, since a bite older than the void
+ * window carries no more protection than a brand-new arrival's. Sorted by
+ * id, same canonicality rule as `sizes`.
+ *
+ * Both halves of the carry are load-bearing, but for different reasons and
+ * with different force —
+ *
+ *  - `lastBiteMs` gates `EAT_COOLDOWN_MS`. Without it, a swimmer who ate
+ *    right before the boundary and claimed again right after read as "never
+ *    bitten" and got a free cooldown reset. That is directly reachable
+ *    (EAT_COOLDOWN_MS is 2_500 ms and the boundary is a public clock) and is
+ *    exercised by shoalEngine.test.ts's cross-boundary cooldown test.
+ *  - `recentBites` gates the scatter void. This one was UNREACHABLE under the
+ *    pre-warm-up fold and is reachable now, which is worth stating precisely
+ *    because the intermediate review concluded — correctly, for the code in
+ *    front of it — that it could never matter. The old argument: tension was
+ *    zeroed at every boundary, so a fresh epoch needed at least 40 ticks to
+ *    reach TENSION_TRIGGER and HUSH_MS more to resolve, putting the earliest
+ *    possible sweep at `epochStart + 17_750` — already past VOID_WINDOW_MS
+ *    (10_000) from anything that happened before the epoch began. The warm-up
+ *    replay (spec 3.9 point 3) removes that floor: tension and an in-flight
+ *    hush now cross the boundary, so a sweep can resolve as little as one
+ *    tick into a new epoch and CAN void a bite credited before it. Pinned by
+ *    shoalEngine.test.ts's "a carried bite is voidable by a sweep that
+ *    resolves just after the boundary".
+ *
+ * Kept small by construction: at most the swimmers who ate in the last
+ * `VOID_WINDOW_MS` of the epoch. That is a bound set BY the population — in
+ * the worst case (everyone eats in the final ten seconds) it is everyone —
+ * not a bound below it. What keeps it small in practice is
+ * `EAT_COOLDOWN_MS` and the fact that a shoal is fifteen to twenty-five fish,
+ * so the payload is at most a few dozen short arrays.
+ */
+export interface Checkpoint {
+  epoch: number;
+  sizes: Array<[string, number]>;
+  recent: Array<[string, number, number[]]>;
+}
+
 /** The folded world at a given tick. */
 export interface ShoalState {
+  /** The epoch this state is folding (spec section 3.9). */
+  epoch: number;
   /** Tick time in ms. */
   nowMs: number;
   /** Live swimmers, keyed by id. Insertion order is never relied upon. */
@@ -170,4 +222,60 @@ export interface ShoalState {
    * with .has() and .delete(); the stored ms itself is not otherwise read.
    */
   bloomSinceMs: Map<number, number>;
+
+  /**
+   * Fold-internal bookkeeping for `foldTick` (Task 5, spec 3.9's plan-2
+   * incremental-fold seam). None of the four fields below are part of the
+   * observable world — they are deliberately absent from every fingerprint
+   * in the test suite — they exist only so a fold can be resumed one tick at
+   * a time across separate `foldTick` calls with no loop of its own.
+   */
+  /**
+   * Index into `orderLog(entries)` of the next log entry `foldTick` has not
+   * yet applied. This used to be a loop-local in `foldShoal`'s own `for`
+   * loop; an incremental caller has no such loop, so the cursor has to live
+   * somewhere a caller can carry it forward between calls. Deriving it fresh
+   * from `nowMs` each tick instead (e.g. "apply everything with ms <= t")
+   * was rejected: it cannot distinguish "not yet applied" from "already
+   * applied on an earlier call," so it would silently re-apply every entry
+   * at or before the current tick on every single `foldTick` call — visibly,
+   * double- (or N-times-) crediting every bite and re-registering every
+   * presence write. Consequently `foldTick`'s callers (including foldShoal's
+   * own loop) MUST pass the same `entries` array — same content, same order
+   * — on every call in one fold; the cursor is meaningless against a log
+   * that has been reordered or had earlier entries removed since the last
+   * call. Append-only growth is safe: `orderLog`'s sort places new entries
+   * with a later (ms, hash) key after everything already scanned, so the
+   * existing cursor position stays valid.
+   */
+  cursor: number;
+  /**
+   * Consecutive ticks each live fish has spent outside the tension core,
+   * keyed by id. Read by `topContributor` at the hush's input lock (step 5)
+   * to pick the preferred sweep target, and written every tick (step 4)
+   * regardless of whether a hush is running — an idle sea still has fish
+   * drifting in and out of the core. Was a loop-local `Map` in `foldShoal`;
+   * moved here for the same reason as `cursor`.
+   */
+  outsideTicks: Map<string, number>;
+  /**
+   * Ticks folded so far, for this state. Hunger (step 6) fires only once
+   * every `HUNGER_TICK_INTERVAL` of these, so this has to persist across
+   * `foldTick` calls or hunger would either never fire (reset to 0 every
+   * call) or fire on the wrong cadence (derived from `nowMs` alone, which
+   * would work only if a fold never skips a tick — true today, but this
+   * keeps the tick-counting logic identical to what `foldShoal`'s own loop
+   * always did, rather than introducing a second, subtly different way to
+   * compute the same thing).
+   */
+  tickCount: number;
+  /**
+   * Ids that authored an applied presence entry at some point during this
+   * fold. Consulted only by `foldShoal`, once, after its `foldTick` loop
+   * finishes, to prune seeded `departed` records nobody returned to claim
+   * (spec 3.9 point 6). An incremental caller driving `foldTick` directly
+   * (never going through `foldShoal`) can ignore this field entirely — it is
+   * never read for anything else.
+   */
+  touchedIds: Set<string>;
 }

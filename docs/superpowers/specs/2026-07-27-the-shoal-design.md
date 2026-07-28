@@ -400,10 +400,88 @@ clients, so the consensus surface is kept deliberately small and decided **now**
 Nothing in the left column may be tuned after launch. Everything that could plausibly live on
 the right has been put there.
 
-### 3.9 OPEN DECISION — what window does the fold cover?
+### 3.9 RESOLVED — the fold covers one epoch, seeded by a checkpoint
 
-Raised by the engine's final review (2026-07-27) and deliberately **not** answered in
-code, because it is a consensus decision that cannot be patched later.
+**Decision, 2026-07-27.** Taken now rather than after launch: no one has played yet, so the
+permanence constraint does not bind until plan 4 ships. Revisit before then if plan 2
+surfaces a reason.
+
+**The rule: a client folds exactly one epoch, seeded by the previous epoch's checkpoint.**
+
+1. **The tick origin is grid-aligned and explicit.** `foldShoal` takes an epoch start
+   rather than reading `log[0].ms`, and that start is a multiple of `TICK_MS`. This alone
+   removes the phase divergence measured in review (one stale entry moved a sweep 1.2 s).
+2. **An epoch is a fixed era** — `EPOCH_MS`, one hour. Fold cost is therefore bounded at
+   `EPOCH_MS / TICK_MS` = 14,400 ticks regardless of how old the sea is. The ~69 h
+   lifetime ceiling disappears, because nothing ever replays from genesis.
+3. **The checkpoint carries durable value; a warm-up replay reconstructs everything else.**
+
+   **The reasoning that was wrong, twice.** The first draft asked of each field "is its
+   window shorter than an hour?" Every answer was yes, so everything but size was dropped.
+   That is the wrong test. The right one is **"does zeroing this at a predictable instant
+   hand someone something?"** — because an epoch boundary is not a random interruption, it
+   is a public clock a player can aim at. Asked correctly, four fields fail: `lastBiteMs`
+   (a free cooldown reset), the bloom map (the whole sea edible for one tick, every hour),
+   an in-flight hush (a committed sweep annihilated, and tension wiped), and live presence
+   (the sea empties and refills only as swimmers rewrite).
+
+   **The checkpoint** therefore carries **size**, plus a bounded `recent` tail of
+   `lastBiteMs`/`recentBites` for swimmers who ate within `VOID_WINDOW_MS` of the epoch
+   end. That is durable, player-owned value which no replay can recover.
+
+   **The warm-up** covers the rest. A fold for epoch *E* begins its tick loop at
+   `epochStartMs(E) - WARMUP_MS` and replays the pre-origin tail, discarding nothing, so
+   bloom fallow state, live presence, accumulated tension and any in-flight hush are
+   *reconstructed* rather than transmitted. State that a bounded replay can rebuild does
+   not belong in a checkpoint.
+
+   `WARMUP_MS` is `PRESENCE_TTL_MS` (90 s) — the longest window any reconstructible rule
+   depends on, and comfortably above `BLOOM_READY_MS` (45 s), the 40-tick minimum for
+   tension to reach its trigger, and `HUSH_MS` (8 s). It costs 360 extra ticks on top of
+   14,400, so the bounded-cost guarantee in point 2 is unaffected. `BLOOM_WINDOW_MS` was
+   sized for exactly this and is now the thing that enforces it.
+
+   The warm-up is **consensus**: every client replays the same window from the same
+   absolute origin, so all of them reconstruct identically.
+
+   **There is exactly one way to start an epoch.** A client never carries live state
+   across a boundary as an optimisation, because that creates a second definition of an
+   epoch's starting state which must then be kept in agreement with the replay forever —
+   and it will not be. Measured on the first attempt: a carried continuation and a cold
+   fold disagreed on `touchedIds` (so they published *different checkpoints* for the same
+   world), on `outsideTicks` (14,396 vs 237) and on `tension` (51,000 vs 15,750), landing
+   their sweeps six seconds apart. An epoch rollover therefore publishes a checkpoint and
+   **re-enters through the same warm-up path as a cold joiner**. The rollover is not a
+   shortcut; it is a checkpoint plus a normal start.
+
+   **The replay window must include everything still alive during the warm-up.** A vector
+   authored just before the warm-up start is live for all 360 warm-up ticks, so a fold
+   that skips it reconstructs an incomplete sea — and a blob that simply stops refreshing
+   90 s before the hour gets the whole bloom map handed back. The entry cursor therefore
+   admits everything from `epochStartMs(E) - WARMUP_MS - PRESENCE_TTL_MS`, i.e. the fold
+   reads 180 s of the prior epoch's log. **A joining client must hold that much prior
+   history or it will silently fold a different world**; the fold cannot detect the
+   missing prefix, so fetching it is the client's obligation.
+4. **Checkpoints are published, deterministic, and self-verifying going forward.** Every
+   honest client computes the identical checkpoint at an epoch boundary, so publishing is
+   unprivileged and disagreement is detectable by anyone.
+5. **A cold joiner adopts the newest checkpoint it can see and verifies forward from
+   there** — it does not re-derive history back to genesis. This is the light-client
+   posture, and it matches the operator's standing ruling on Chips & Dip: *we can be as
+   secure and authentic as Cookie Clicker is; it is a game.* A joiner who wants more
+   assurance may fold additional epochs backwards; nothing stops them.
+6. **`departed` prunes at a checkpoint** once a swimmer has been absent for a full epoch:
+   their size is dropped and they return at `START_SIZE`. This bounds the map and is the
+   one place the decision is visible in play — an hour away is forgiveable, a week is a
+   fresh start.
+
+Consequence for plan 2: the shell needs an **incremental fold** (`foldTick`) rather than
+re-folding an epoch on every frame, and the checkpoint boundary is the natural seam for it.
+Design the two together.
+
+#### The problem this replaced
+
+Raised by the engine's final review (2026-07-27).
 
 `BLOOM_WINDOW_MS` is declared and **not enforced** — `lastVisit` is never bounded to any
 window. The tick grid is anchored to the first log entry's timestamp, so two clients whose
@@ -423,10 +501,7 @@ Three consequences hang off the same unanswered question:
 3. **`departed` records never expire.** Whether a swimmer's banked size decays after a
    long absence changes what returning is worth, so it is consensus either way.
 
-The likely shape of the answer is a **checkpointed epoch**: a grid-aligned origin, a
-bounded replay window behind it, and a folded checkpoint that new clients adopt instead of
-replaying from genesis. That interacts directly with the incremental-fold seam the shell
-plan needs, so decide the two together.
+All three are answered by the epoch rule above.
 
 ---
 

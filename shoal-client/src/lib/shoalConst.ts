@@ -79,6 +79,89 @@ export const LOCK_MS = 4_000;
 /** The sweep takes at most this many fish. It may take none. */
 export const MAX_TAKE = 3;
 
+// --- Epochs ----------------------------------------------------------------
+/**
+ * The fold covers exactly one epoch, seeded by the previous epoch's checkpoint
+ * (spec section 3.9). One hour. Chosen so fold cost is bounded at
+ * EPOCH_MS / TICK_MS = 14_400 ticks regardless of how old the sea is, and so a
+ * swimmer who steps away for less than an hour keeps their size.
+ * Arbitrary-but-practical: an hour is a session, not an optimised value.
+ */
+export const EPOCH_MS = 3_600_000;
+
+/**
+ * How far BEFORE its epoch's start a fold begins ticking (spec 3.9 point 3).
+ *
+ * The checkpoint carries only durable, player-owned value: size, plus a
+ * bounded recent-bite tail. Everything else that must cross a boundary is
+ * RECONSTRUCTED by replaying this pre-origin window — bloom fallow state,
+ * live presence, accumulated tension, and any in-flight hush. State a bounded
+ * replay can rebuild does not belong in a checkpoint.
+ *
+ * The bound is derived from WHEN AN ENTRY STOPS MATTERING, not from when it
+ * was authored, and the reference point is the fold's OWN EARLIEST TICK —
+ * `warmStartMs` — never the epoch's origin. An earlier version of this
+ * comment argued "a presence vector authored more than PRESENCE_TTL_MS
+ * before the origin has already expired, so replaying it would change
+ * nothing." That is true AT THE ORIGIN, and it is the exact argument that
+ * (twice) narrowed the log-entry cursor in shoalEngine.ts's `foldShoal` down
+ * to `warmStartMs` itself — which is false for every one of the 360 warm-up
+ * ticks the replay actually runs: a presence vector authored at
+ * `warmStartMs - 1` is live for all of them (liveness reach is exactly
+ * PRESENCE_TTL_MS, evicted only once `t > expiresMs`), so skipping it
+ * reconstructs an incomplete sea. The correct statement — the one that
+ * cannot be used to re-narrow anything — is: an entry matters to the fold
+ * iff it is still live at the fold's earliest tick, i.e.
+ * `ms + PRESENCE_TTL_MS >= warmStartMs`, equivalently `ms >= warmStartMs -
+ * PRESENCE_TTL_MS`. That is why `foldShoal`'s log cursor reaches back an
+ * additional PRESENCE_TTL_MS past `warmStartMs` (see its doc there); WARMUP_MS
+ * below governs only where TICKING starts, not which log entries are read.
+ *
+ * WARMUP_MS itself is set to PRESENCE_TTL_MS because that is the longest
+ * window any OTHER reconstructible rule depends on. It comfortably exceeds
+ * every shorter window it also has to cover — BLOOM_READY_MS (45_000, the
+ * fallow clock), the 40-tick / 10_000 ms minimum for tension to climb from 0
+ * to TENSION_TRIGGER at its fastest possible rate of 750/tick, and HUSH_MS
+ * (8_000, a committed sweep in flight).
+ *
+ * Without it, `emptyState` IS the epoch boundary: everything outside the
+ * checkpoint reads as zero at a predictable, publicly-readable instant. That
+ * is not a random interruption, it is a clock a player can aim at — the whole
+ * sea reads edible for exactly one tick every hour, an in-flight hush is
+ * annihilated (so any hush starting within HUSH_MS of a boundary is free),
+ * and the sea empties of every swimmer whose vector was authored before the
+ * boundary but is still live.
+ *
+ * Cost: WARMUP_MS / TICK_MS = 360 extra ticks on top of the epoch's 14_400,
+ * so the bounded-cost guarantee is unaffected.
+ *
+ * CONSENSUS: every client replays the same window from the same absolute
+ * origin, so all of them reconstruct identically.
+ *
+ * WHAT THE WARM-UP DOES NOT FIX, stated plainly, and its real magnitude. Its
+ * own first tick is a boundary of the same kind, 90 s earlier: at
+ * `epochWarmStartMs` the bloom map is empty again, so any cell that had gone
+ * fallow before then reads it as fallow for exactly one tick — "the sea
+ * starts full" applied to the warm-up's own start. With the wider log cursor
+ * (`warmStartMs - PRESENCE_TTL_MS`, see foldShoal), this is not "one tick of
+ * one parked fish": up to 90 s of BACKLOGGED eat claims — every entry the
+ * cursor admits from before `warmStartMs` — are all judged on that single
+ * tick, against a map that has not yet seen a single `markVisits` call.
+ * Measured on an UNSEEDED fold: 37 claims credited on that one tick, +355 net
+ * size. What survives that into the epoch is only `bitesTaken`/`bloomSinceMs`
+ * for the affected cells — the size, cooldown and void-ledger consequences
+ * are overwritten by the checkpoint at the origin (see foldShoal) — BUT ONLY
+ * FOR A SEEDED FOLD. `opts.seed` in `foldShoal` is OPTIONAL, and a seedless
+ * call is accepted silently (no error, no warning), so a caller that folds
+ * without a seed gets no such overwrite and the +355 stands as real,
+ * uncorrected size. It is still bounded, and every client computes it
+ * identically, so it is not a divergence between honest clients — but for an
+ * unseeded fold it is a real artifact, not a small inaccuracy. The
+ * alternative — an unbounded replay — is the ~69 h lifetime ceiling spec 3.9
+ * point 2 exists to remove.
+ */
+export const WARMUP_MS = PRESENCE_TTL_MS; // 90_000
+
 // --- Blooms ----------------------------------------------------------------
 /** Bloom grid cell size in cu. WORLD_W/BLOOM_CELL and WORLD_H/BLOOM_CELL must be integers. */
 export const BLOOM_CELL = 128;
@@ -90,13 +173,25 @@ export const BLOOM_VISIT_R2 = BLOOM_VISIT_R * BLOOM_VISIT_R; // 40_000
 /** A cell unvisited for this long carries a bloom. Arbitrary-but-practical. */
 export const BLOOM_READY_MS = 45_000;
 /**
- * How far back the bloom map WOULD look, if the lookback were bounded. It is
- * not: nothing in bloom.ts or the fold enforces this window, and isBloomReady
- * reads the whole of lastVisit however old. The value is kept, and kept below
- * PRESENCE_TTL_MS, so that the constants stay ready for the day a joining
- * client has to reconstruct the map from data that is still live — but
- * whether to enforce it at all is an open design decision, not an oversight
- * to be quietly closed.
+ * How far back the bloom map is reconstructed from. This governs the ABSENCE
+ * half of the map's guarantee, which is by construction rather than by a
+ * check: the fold builds `lastVisit` from scratch starting at
+ * `epochWarmStartMs`, so a cell absent from it has had no visit for the
+ * WHOLE warm-up, i.e. at least WARMUP_MS (90_000) >= BLOOM_WINDOW_MS. (A cell
+ * PRESENT in the map is a different story: its stamp can derive from a log
+ * entry as old as WARMUP_MS + PRESENCE_TTL_MS before the origin, because the
+ * fold's log cursor reaches back that far — see bloom.ts's module doc and
+ * `foldShoal` in shoalEngine.ts. That does not weaken the absence guarantee
+ * below, which only ever needs a LOWER bound on how long an absent cell has
+ * been fallow.)
+ *
+ * The relationship that makes the reconstruction CORRECT rather than merely
+ * bounded is WARMUP_MS > BLOOM_READY_MS: a cell nobody visited during the
+ * whole warm-up has been fallow for at least 90 s, which is already past the
+ * 45 s fallow clock, so "absent from lastVisit" and "genuinely ready"
+ * coincide at every tick from the origin onward. That is what makes
+ * isBloomReady's "the sea starts full" an honest reading of a reconstructed
+ * map instead of a fiction about an empty one.
  */
 export const BLOOM_WINDOW_MS = 60_000;
 /** Bites a single bloom yields before it is gone. Blooms are rivalrous. */
@@ -133,11 +228,23 @@ export const VOID_WINDOW_MS = 10_000;
  *
  * Not a game rule and not consensus: no legitimate fold is anywhere near it,
  * so two clients on different values still agree on every world they both
- * manage to compute. It is a guard against a caller handing the fold a
- * WALL-CLOCK untilMs against an empty or ancient log — foldShoal([], now())
- * starts at t=0 and would grind through ~7.1e9 ticks, about 77 minutes of
- * dead hang, which is what a shell does the very first time it starts against
- * empty water.
+ * manage to compute.
+ *
+ * Originally this was a LIVE limit: with the tick origin anchored to
+ * `log[0].ms`, a caller handing the fold a WALL-CLOCK untilMs against an
+ * empty or ancient log would start at t=0 and grind through ~7.1e9 ticks,
+ * about 77 minutes of dead hang.
+ *
+ * Since the fold now folds exactly one epoch from an absolute origin (spec
+ * section 3.9, epoch.ts), that scenario cannot occur under normal use: a
+ * DEFAULTED epoch (`opts.epoch` omitted, so it is `epochOf(untilMs)`) always
+ * puts the origin within one EPOCH_MS of untilMs, bounding every ordinary
+ * fold to EPOCH_MS / TICK_MS = 14_400 ticks — two orders of magnitude below
+ * this ceiling. MAX_FOLD_TICKS is therefore now a BACKSTOP rather than a live
+ * limit: it only fires if a caller passes an explicit `opts.epoch` far from
+ * `untilMs` (e.g. resuming from a stale checkpoint's epoch against a much
+ * later untilMs) — a caller bug, not a scenario that arises from ordinary
+ * play.
  *
  * 1_000_000 ticks is 1_000_000 * TICK_MS = 250_000_000 ms, roughly 69 hours
  * of game time — orders of magnitude past any real session — so this can only

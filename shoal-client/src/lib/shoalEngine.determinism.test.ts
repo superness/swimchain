@@ -6,12 +6,14 @@
  * control run proving the test can actually detect it.
  */
 import { foldShoal } from './shoalEngine';
+import { richSession, fingerprint } from './shoalFixtures';
 import type { LogEntry, Presence } from './shoalTypes';
 import { cellCentre } from './bloom';
 import {
   START_SIZE, MIN_SIZE, TICK_MS, HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BITE_GROWTH,
-  TENSION_NEUTRAL, TENSION_TRIGGER, HUSH_MS, MAX_TAKE,
+  TENSION_NEUTRAL, TENSION_TRIGGER, HUSH_MS, MAX_TAKE, EPOCH_MS,
 } from './shoalConst';
+import { epochOf } from './epoch';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -45,56 +47,23 @@ function session(n: number, durationMs: number): LogEntry[] {
   return out;
 }
 
-// Fingerprint every field of ShoalState that could diverge between two clients
-// that folded the same log in different delivery orders. `recentBites` is
-// included even though this file's sessions never post an EatClaim (so it is
-// always empty here) — Fish carries it since Task 7's scatter-voids-the-trip
-// fix, and leaving it out of the fingerprint would let a fold bug that
-// corrupts only that field pass undetected. Every map and array is sorted
-// before serialising, so insertion order — which the fold's own iteration
-// order already does not guarantee — can never leak into the comparison.
-//
-// The bloom and hush fields below were originally omitted, under a header that
-// claimed to cover "every field that could diverge". They all carry
-// divergence-capable state and none is derivable from what was here:
-//   lastVisit       decides whether a cell is fallow, so it decides whether a
-//                   future bite credits at all
-//   bloomSinceMs    the latch — whether a cell bypasses the fallow test
-//   departed        size, cooldown and void-ledger of every lapsed swimmer; a
-//                   divergence here stays invisible until they come back
-//   hushStartMs,    the in-flight hush. Two clients disagreeing mid-hush have
-//   lockedPositions, already diverged even if the resolution has not landed
-//   lockedPreferred yet; waiting for lastTaken to differ is waiting until it
-//                   is a player-visible bug.
-const fingerprint = (s: ReturnType<typeof foldShoal>) =>
-  JSON.stringify({
-    fish: [...s.fish.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([k, v]) => [k, v.size, v.x, v.y, [...v.recentBites].sort((a, b) => a - b)]),
-    departed: [...s.departed.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([k, v]) => [k, v.size, v.lastScatterMs, v.lastBiteMs, [...v.recentBites].sort((a, b) => a - b)]),
-    tension: s.tension,
-    lastTaken: [...s.lastTaken].sort(),
-    lastSweepMs: s.lastSweepMs,
-    bites: [...s.bitesTaken.entries()].sort(([a], [b]) => a - b),
-    lastVisit: [...s.lastVisit.entries()].sort(([a], [b]) => a - b),
-    bloomSince: [...s.bloomSinceMs.entries()].sort(([a], [b]) => a - b),
-    hushStartMs: s.hushStartMs,
-    lockedPositions: s.lockedPositions === null
-      ? null
-      : [...s.lockedPositions.entries()]
-          .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([k, p]) => [k, p.x, p.y, p.size]),
-    lockedPreferred: s.lockedPreferred,
-  });
-
 // --- Replay ----------------------------------------------------------------
 {
   const log = session(12, 120_000);
   const a = foldShoal(log, 120_000);
   const b = foldShoal(log, 120_000);
   check('the same log folds to the same state twice', fingerprint(a) === fingerprint(b));
+
+  // Task 3 (spec 3.9): every fold in this file now defaults to a tick origin
+  // of epochStartMs(epochOf(untilMs)) instead of log[0].ms. None of the
+  // untilMs values below (120_000 at most) are within EPOCH_MS (3_600_000) of
+  // a boundary — they all land in epoch 0, whose start is ms 0, the same
+  // origin as before — so every fingerprint in this file is unaffected by the
+  // change. Asserted directly rather than left as unverified prose: epochOf
+  // floors ms/EPOCH_MS, and 120_000 < EPOCH_MS, so epochOf(120_000) is 0 by
+  // hand, not by reading the import.
+  check('this file\'s untilMs values stay inside epoch 0, so the epoch-origin change does not move them',
+    epochOf(120_000) === 0 && 120_000 < EPOCH_MS, { epochOf120k: epochOf(120_000), EPOCH_MS });
 }
 {
   // Delivery order differs between peers; the fold must not care.
@@ -186,81 +155,11 @@ const fingerprint = (s: ReturnType<typeof foldShoal>) =>
 
 // --- A session that actually drives the engine ------------------------------
 //
-// session() above only ever emits `presence`: tension there peaks around 82
-// (nowhere near TENSION_TRIGGER, 30000), no hush ever starts, no sweep ever
-// resolves, and with no EatClaim ever posted, bitesTaken stays empty and
-// every fish's recentBites stays []. The replay/shuffle checks above are
-// therefore proven only for presence dead-reckoning and hunger — the hush,
-// the sweep resolution, and bloom crediting have no shuffled full-session
-// coverage anywhere in the suite. That is exactly the class of bug sweep.ts
-// itself calls out as the most trust-destroying this game can have: two
-// clients disagreeing about who the shark took.
-//
-// richSession() is a hand-built, fully static fixture (every fish stationary
-// from t=0) engineered so tension climbs to the trigger, a sweep actually
-// resolves, and a bloom actually credits — with every number below derived
-// from the constants, not read off whatever the fold happens to produce.
-function richSession(): LogEntry[] {
-  const out: LogEntry[] = [];
-  const pres = (id: string, x: number, y: number, ms: number): Presence => ({
-    kind: 'presence', id, ms, hash: `${id}${ms}`, vec: { x, y, heading: 0, speed: 0, t: ms },
-  });
-
-  // The eat cell: col 15, row 11 of the BLOOM_COLS(32) x BLOOM_ROWS(24) grid
-  // -> cell index = row*BLOOM_COLS + col = 11*32 + 15 = 367. cellCentre's own
-  // formula is col*BLOOM_CELL + BLOOM_CELL/2, so its centre is
-  // (15*128+64, 11*128+64) = (1984, 1472) — arithmetic on BLOOM_CELL alone,
-  // independent of anything canEat/markVisits computes.
-  const cell = 367;
-  const centre = cellCentre(cell); // (1984, 1472)
-
-  // --- The sheltered cluster: the eater (e0) plus three buddies, all parked
-  // exactly on the cell centre (distance 0, well inside SHELTER_R and
-  // EAT_R). shelterOf sums SHELTER_BASE(100) + trunc(size/40) (capped) from
-  // every OTHER body within SHELTER_R(340); at distance 0 all three buddies
-  // qualify. Even once hunger has floored a buddy at MIN_SIZE(60), it still
-  // contributes 100 + trunc(60/40) = 101, so three of them sum to 303 —
-  // still >= SHELTER_THRESHOLD(300). So this cluster is sheltered (never
-  // exposed, never swept) for the fish's entire lifetime, regardless of how
-  // far hunger has eaten into their size by the time the sweep fires.
-  out.push(pres('e0', centre.x, centre.y, 0));
-  out.push(pres('c1', centre.x, centre.y, 0));
-  out.push(pres('c2', centre.x, centre.y, 0));
-  out.push(pres('c3', centre.x, centre.y, 0));
-  // e0's own presence must sort before its eat claim within tick 0 so the
-  // fold sees a live fish before it checks the bite, and so the fallow
-  // check runs before this tick's markVisits — same ms, and hash 'e00' <
-  // 'e0e0' (comparing the third character, '0' < 'e'), the identical
-  // convention shoalEngine.test.ts uses for the same reason.
-  out.push({ kind: 'eat', id: 'e0', cell, ms: 0, hash: 'e0e0' });
-
-  // --- Eight outsiders, spread far from the cluster in a pattern chosen so
-  // the median — see coreCentre/medianInt: for an EVEN count, the LOWER of
-  // the two middle sorted values, not an average — lands exactly on the
-  // cluster's own coordinate on both axes independently. That puts the
-  // cluster inside the core (distance 0) and every outsider outside it.
-  // Offsets are multiples of 8 (QUANT) so reckon's quantization is a no-op
-  // and every resulting position is exact.
-  //
-  // x-offsets {-896,-704,-496,-304,304,496,704,896}: paired with the
-  // cluster's four copies of x=1984, the 12 sorted x-values are [4 lower
-  // outsiders][4 x 1984][4 higher outsiders] — index 5 (0-indexed, the
-  // "lower middle" of 12) falls inside the middle block, value 1984.
-  // Likewise the y-offsets (a permutation of the same magnitude set,
-  // deliberately paired with a DIFFERENT magnitude for x each time so no
-  // outsider's combined 2D distance from the cluster is small) put the
-  // y-median at 1472 too. Every one of the 8 combined (dx,dy) pairs below
-  // has dx^2+dy^2 > CORE_R2 (620^2 = 384400) — the smallest is o1's
-  // 704^2+304^2 = 588032 — so all 8 read as outside the core on every tick.
-  const offsets: Array<[string, number, number]> = [
-    ['o0', -896, 496], ['o1', -704, -304], ['o2', -496, 896], ['o3', -304, -704],
-    ['o4', 304, -896], ['o5', 496, 704], ['o6', 704, -496], ['o7', 896, 304],
-  ];
-  for (const [id, dx, dy] of offsets) out.push(pres(id, centre.x + dx, centre.y + dy, 0));
-
-  return out;
-}
-
+// richSession() lives in shoalFixtures.ts (imported above) rather than being
+// defined here: shoalEngine.incremental.test.ts needs the identical fixture,
+// and it used to hold a hand-kept verbatim copy because importing from THIS
+// file would execute (and then process.exit inside) the whole suite below as
+// an import side effect. Its own doc comment explains the fixture's design.
 const richLog = richSession();
 const RICH_UNTIL_MS = 30_000;
 
@@ -358,9 +257,11 @@ const resolveAtMs = triggerAtMs + HUSH_MS;
 }
 {
   // Growth from the bite IS real and immediate — check it before hunger has
-  // had any chance to claw it back. The first hunger firing lands at
-  // t=750 (tickCount 4); at t=500 none has fired yet, so the eater's size
-  // is purely START_SIZE + BITE_GROWTH with nothing subtracted.
+  // had any chance to claw it back. Hunger fires at t = 750 + 1000k, so the
+  // first firing at or after this fixture's t=0 lands at t=750; at t=500 none
+  // has fired yet (the warm-up ticks before t=0 contain firings, but no fish
+  // is alive during them — every entry in richLog is at ms=0), so the eater's
+  // size is purely START_SIZE + BITE_GROWTH with nothing subtracted.
   const s = foldShoal(richLog, 500);
   check('the credited bite grows the eater before hunger claws anything back',
     s.fish.get('e0')!.size === START_SIZE + BITE_GROWTH, s.fish.get('e0')!.size);
