@@ -414,10 +414,35 @@ surfaces a reason.
 2. **An epoch is a fixed era** — `EPOCH_MS`, one hour. Fold cost is therefore bounded at
    `EPOCH_MS / TICK_MS` = 14,400 ticks regardless of how old the sea is. The ~69 h
    lifetime ceiling disappears, because nothing ever replays from genesis.
-3. **Only size crosses an epoch boundary.** Everything else is short-lived by construction:
-   `lastVisit` matters for `BLOOM_READY_MS` (45 s), tension and the hush for seconds,
-   `recentBites` for `VOID_WINDOW_MS` (10 s). So a checkpoint is just the swimmer→size map
-   (plus `departed`, which is the same thing for absent players).
+3. **The checkpoint carries durable value; a warm-up replay reconstructs everything else.**
+
+   **The reasoning that was wrong, twice.** The first draft asked of each field "is its
+   window shorter than an hour?" Every answer was yes, so everything but size was dropped.
+   That is the wrong test. The right one is **"does zeroing this at a predictable instant
+   hand someone something?"** — because an epoch boundary is not a random interruption, it
+   is a public clock a player can aim at. Asked correctly, four fields fail: `lastBiteMs`
+   (a free cooldown reset), the bloom map (the whole sea edible for one tick, every hour),
+   an in-flight hush (a committed sweep annihilated, and tension wiped), and live presence
+   (the sea empties and refills only as swimmers rewrite).
+
+   **The checkpoint** therefore carries **size**, plus a bounded `recent` tail of
+   `lastBiteMs`/`recentBites` for swimmers who ate within `VOID_WINDOW_MS` of the epoch
+   end. That is durable, player-owned value which no replay can recover.
+
+   **The warm-up** covers the rest. A fold for epoch *E* begins its tick loop at
+   `epochStartMs(E) - WARMUP_MS` and replays the pre-origin tail, discarding nothing, so
+   bloom fallow state, live presence, accumulated tension and any in-flight hush are
+   *reconstructed* rather than transmitted. State that a bounded replay can rebuild does
+   not belong in a checkpoint.
+
+   `WARMUP_MS` is `PRESENCE_TTL_MS` (90 s) — the longest window any reconstructible rule
+   depends on, and comfortably above `BLOOM_READY_MS` (45 s), the 40-tick minimum for
+   tension to reach its trigger, and `HUSH_MS` (8 s). It costs 360 extra ticks on top of
+   14,400, so the bounded-cost guarantee in point 2 is unaffected. `BLOOM_WINDOW_MS` was
+   sized for exactly this and is now the thing that enforces it.
+
+   The warm-up is **consensus**: every client replays the same window from the same
+   absolute origin, so all of them reconstruct identically.
 4. **Checkpoints are published, deterministic, and self-verifying going forward.** Every
    honest client computes the identical checkpoint at an epoch boundary, so publishing is
    unprivileged and disagreement is detectable by anyone.
