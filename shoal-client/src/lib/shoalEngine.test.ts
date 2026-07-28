@@ -31,6 +31,12 @@ import {
 } from './shoalConst';
 import { cellCentre, bitesLeft } from './bloom';
 import { epochOf, epochStartMs, epochEndMs, epochFoldEndMs } from './epoch';
+// shoalFixtures.ts is deliberately NON-EXECUTING (it declares and returns; it
+// runs no checks and calls no process.exit), so importing it here cannot run
+// another suite as a side effect. `fingerprint` covers the observable world;
+// the epoch-boundary section below wraps it to add the fold-internal
+// bookkeeping that is consensus-relevant AT a boundary.
+import { fingerprint } from './shoalFixtures';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -1100,10 +1106,15 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   check('the untouched seed record survives the fold itself',
     s.departed.has('ghost'), [...s.departed.keys()]);
 
-  const { checkpoint: cp, next } = rollEpoch(s);
-  check('the roll prunes the untouched seeded swimmer out of the state',
-    !next.fish.has('ghost') && !next.departed.has('ghost'),
-    { fish: next.fish.has('ghost'), departed: next.departed.has('ghost') });
+  // rollEpoch CONSUMES the state: it prunes in place and returns only the
+  // checkpoint. There is no `next` -- the next epoch is started by handing
+  // this checkpoint to foldShoal (spec 3.9 point 3, "exactly one way to start
+  // an epoch"), so the prune reaches the new epoch through the checkpoint and
+  // nowhere else.
+  const cp = rollEpoch(s);
+  check('the roll prunes the untouched seeded swimmer out of the state it consumed',
+    !s.fish.has('ghost') && !s.departed.has('ghost'),
+    { fish: s.fish.has('ghost'), departed: s.departed.has('ghost') });
   const ids = cp.sizes.map((p) => p[0]);
   check('a swimmer absent the whole epoch is pruned from the next checkpoint',
     !ids.includes('ghost'), cp.sizes);
@@ -1126,7 +1137,7 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   check('a swimmer evicted mid-epoch (no seed involved) is genuinely departed',
     !s.fish.has('brief') && s.departed.has('brief'),
     { fish: s.fish.has('brief'), departed: s.departed.has('brief') });
-  const { checkpoint: cp } = rollEpoch(s);
+  const cp = rollEpoch(s);
   check('a swimmer departed only within this epoch survives to the next checkpoint',
     cp.sizes.some((p) => p[0] === 'brief'), cp.sizes);
 }
@@ -1148,9 +1159,20 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   check('a swimmer touched then re-evicted this epoch is genuinely departed again',
     !s.fish.has('ronin') && s.departed.has('ronin'),
     { fish: s.fish.has('ronin'), departed: s.departed.has('ronin') });
-  const { checkpoint: cp } = rollEpoch(s);
+  const cp = rollEpoch(s);
   check('being touched once this epoch exempts a swimmer from pruning even if departed again',
     cp.sizes.some((p) => p[0] === 'ronin'), cp.sizes);
+
+  // The prune fires EXACTLY ONCE per boundary, and the third leg of that
+  // argument (see rollEpoch's doc) is idempotence: it deletes exactly
+  // {id in departed : id not in touchedIds} and touches neither map
+  // otherwise, so that set is empty afterwards. Rolling the same boundary a
+  // second time must therefore return a byte-identical checkpoint rather
+  // than eroding `departed` a little further each time.
+  const cpAgain = rollEpoch(s);
+  check('rolling twice at the same boundary is idempotent: the same bytes, not a further prune',
+    serialiseCheckpoint(cpAgain) === serialiseCheckpoint(cp),
+    { first: serialiseCheckpoint(cp), second: serialiseCheckpoint(cpAgain) });
 }
 
 // --- The epoch rolls over, and nothing ticks past its end (fix review I1) ---
@@ -1184,29 +1206,36 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   check('and the refusal points at rollEpoch',
     refused !== null && refused.message.includes('rollEpoch'), refused?.message);
 
-  // The rollover.
-  const { checkpoint, next } = rollEpoch(s);
+  // The rollover. rollEpoch returns ONLY the checkpoint: no `next`, no
+  // carried world (spec 3.9 point 3). The shape is asserted at runtime as
+  // well as by the compiler, because "a rollover is a checkpoint plus a
+  // normal start" is a consensus rule, not an implementation detail -- a
+  // future re-addition of a continuation field is exactly what this catches.
+  const checkpoint = rollEpoch(s);
   check('the roll checkpoints the epoch that was folded', checkpoint.epoch === epoch, checkpoint.epoch);
-  check('the next state names the next epoch and sits on its first ms',
-    next.epoch === epoch + 1 && next.nowMs === nextStart,
-    { epoch: next.epoch, nowMs: next.nowMs, nextStart });
-  check('touchedIds is re-seeded with exactly the swimmers still live at the boundary',
-    next.touchedIds.size === 1 && next.touchedIds.has('liveAcross'),
-    [...next.touchedIds]);
-  check('the still-live swimmer crosses with the world, not via the checkpoint alone',
-    next.fish.has('liveAcross') && next.fish.get('liveAcross')!.x === 2_000,
-    { fish: [...next.fish.keys()] });
+  check('the roll returns a checkpoint and nothing else -- no carried continuation',
+    !('next' in (checkpoint as object)) && !('checkpoint' in (checkpoint as object))
+      && JSON.stringify(Object.keys(checkpoint)) === JSON.stringify(['epoch', 'sizes', 'recent']),
+    Object.keys(checkpoint));
+  check('the still-live swimmer crosses in the checkpoint, at its boundary size',
+    checkpoint.sizes.some((p) => p[0] === 'liveAcross'), checkpoint.sizes);
   // 'gone' was departed and NOT touched... but it WAS touched -- it wrote
   // presence this epoch -- so it is exempt and survives one more epoch.
   check('a swimmer who was in the water this epoch is not pruned at its first boundary',
-    next.departed.has('gone') && checkpoint.sizes.some((p) => p[0] === 'gone'),
-    { departed: [...next.departed.keys()], sizes: checkpoint.sizes });
+    checkpoint.sizes.some((p) => p[0] === 'gone'), checkpoint.sizes);
 
-  // And the rolled state ticks: the refusal is about the OLD epoch, not a
-  // dead end.
-  const resumed = foldTick(next, orderLog(log));
-  check('the rolled state ticks on into the new epoch',
-    resumed.nowMs === nextStart + TICK_MS, resumed.nowMs);
+  // The ONE way onward: hand the checkpoint to a normal seeded fold of the
+  // next epoch. 'liveAcross' wrote at epochEndMs(15) - 10_000, which is
+  // inside epoch 16's warm-up window (it reaches back to nextStart -
+  // WARMUP_MS - PRESENCE_TTL_MS), so the replay -- not a carried state --
+  // is what puts it back in the water, at the position it authored.
+  const opened = foldShoal(log, nextStart, { epoch: epoch + 1, seed: checkpoint });
+  check('the next epoch opens through the warm-up path and reconstructs the live swimmer',
+    opened.epoch === epoch + 1 && opened.nowMs === nextStart + TICK_MS
+      && opened.fish.has('liveAcross') && opened.fish.get('liveAcross')!.x === 2_000,
+    { epoch: opened.epoch, nowMs: opened.nowMs, fish: [...opened.fish.keys()] });
+  check('and the warm-up marks the reconstructed swimmer as touched, so it is exempt next boundary',
+    opened.touchedIds.has('liveAcross'), [...opened.touchedIds]);
 
   // Rolling from anywhere but the boundary is refused: a checkpoint taken
   // mid-epoch is not the one other clients compute.
@@ -1455,6 +1484,125 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
     { parked: parked.lastVisit.get(700), arrived: arrived.lastVisit.get(700) });
 }
 
+// --- 1b. ...and the blob cannot dodge it by stopping 90 s early -------------
+// The warm-up above closed the bloom exploit only for a blob whose last write
+// lands inside [warmStart, epochStart). The entry cursor skipped everything
+// authored before `warmStart`, justified by "those entries are older than
+// PRESENCE_TTL_MS at the ORIGIN, so replaying them could not change
+// anything" — true at the origin, FALSE for the 360 warm-up ticks, which is
+// the window the warm-up itself introduced. A vector authored at
+// `warmStart - 1` is live for every one of them.
+//
+// So the exploit only MOVED 90 s earlier: park the blob, stop refreshing just
+// before the warm-up start, and the whole warm-up sees an empty sea, cell 700
+// stays absent from `lastVisit`, and BLOOM_BITES lands at exactly epochStart —
+// the same number, on the same public clock, now easier to aim at
+// deliberately. Measured on this very fixture, moving the park write by two
+// milliseconds:
+//   PARK_MS = start - 89_999  ->  bitesTaken(700) at epochStart = 0
+//   PARK_MS = start - 90_001  ->  bitesTaken(700) at epochStart = 6
+// The cursor bound is now `warmStart - PRESENCE_TTL_MS`: the window must
+// admit everything still ALIVE during the warm-up, which reaches back
+// WARMUP_MS + PRESENCE_TTL_MS = 180 s.
+//
+// Hand derivation. epoch 13: start = 13 * EPOCH_MS = 46_800_000.
+//   warmStart = start - WARMUP_MS(90_000) = 46_710_000
+//   window    = warmStart - PRESENCE_TTL_MS(90_000) = start - 180_000
+//   PARK_MS   = start - 90_250 — ONE TICK before warmStart (so the old bound
+//               skipped it) and comfortably inside the new window.
+//               expiresMs = PARK_MS + 90_000 = start - 250, which is the LAST
+//               warm-up tick, so the six are alive for all 360 of them; the
+//               refresh write at ms = start renews them before step 2 could
+//               ever evict them.
+//   STALE_MS  = start - 180_250 — one tick OUTSIDE the window, the control
+//               for the far edge.
+//
+// Ordering within tick t = start is the same hash tiebreak as run 1:
+// 'f046800000' < 'f0e46800000' (index 2, '4' < 'e') < 'f146800000' (index 1),
+// so each fish is live before its own claim is judged.
+//
+// Sizes, by hand. Hunger fires at t = start + 750 + 1000k. The six are alive
+// from the first warm-up tick (t = start - 90_000, where PARK_MS is applied)
+// through t = start, so the firings that reach them run start-89_250 ...
+// start-250: (89_250 - 250)/1000 + 1 = 90 of them. t = start itself is not a
+// firing (0 mod 1000 != 750). START_SIZE(100) - 90 = 10, which CLAMPS to
+// MIN_SIZE(60) — the floor binds here, and it binds identically in the
+// control, so the 12 that separates them is still exactly BITE_GROWTH:
+//   parked : 60          (no bite ever credits)
+//   arrived: 60 + 12 = 72
+//   stale  : the six are absent from the sea for the whole warm-up, so they
+//            arrive brand new at t = start: START_SIZE(100) + 12 = 112, with
+//            no hunger at all. That unclamped 112 is what proves the other
+//            two runs' 60 really came from 360 ticks of being in the water.
+{
+  const epoch = 13;
+  const start = epochStartMs(epoch);
+  const target = cellCentre(700);
+  const away = cellCentre(100);
+  check('epoch 13 starts where the arithmetic says', start === 46_800_000, start);
+
+  const warmStart = start - WARMUP_MS;
+  const windowStart = warmStart - PRESENCE_TTL_MS;
+  const PARK_MS = start - 90_250;
+  const STALE_MS = start - 180_250;
+  check('the park write is one tick BEFORE the warm-up start — the entry the old bound skipped',
+    PARK_MS < warmStart && warmStart - PARK_MS === TICK_MS && PARK_MS % TICK_MS === 0,
+    { PARK_MS, warmStart });
+  check('but it is inside the replay window, which reaches back WARMUP_MS + PRESENCE_TTL_MS',
+    PARK_MS >= windowStart && windowStart === start - 180_000, { PARK_MS, windowStart });
+  check('and its presence is still live on the LAST warm-up tick, not merely the first',
+    PARK_MS + PRESENCE_TTL_MS === start - TICK_MS, PARK_MS + PRESENCE_TTL_MS);
+  check('the stale control is one tick outside the window',
+    STALE_MS < windowStart && windowStart - STALE_MS === TICK_MS, { STALE_MS, windowStart });
+
+  const ids = ['f0', 'f1', 'f2', 'f3', 'f4', 'f5'];
+  const build = (warmMs: number, warmX: number, warmY: number): LogEntry[] => {
+    const out: LogEntry[] = [];
+    for (const id of ids) {
+      out.push(pres(id, warmX, warmY, warmMs));
+      out.push(pres(id, target.x, target.y, start));
+      out.push(eat(id, 700, start));
+    }
+    return out;
+  };
+
+  const parked = foldShoal(build(PARK_MS, target.x, target.y), start, { epoch });
+  const arrived = foldShoal(build(PARK_MS, away.x, away.y), start, { epoch });
+  const stale = foldShoal(build(STALE_MS, target.x, target.y), start, { epoch });
+
+  // The control first: if THIS is not six, the parked run's zero proves
+  // nothing.
+  check('the control credits the full bloom — a swimmer who really was elsewhere still eats',
+    arrived.bitesTaken.get(700) === BLOOM_BITES, arrived.bitesTaken.get(700));
+  check('and every control swimmer is at the hand-derived fed size (MIN_SIZE + BITE_GROWTH)',
+    ids.every((id) => arrived.fish.get(id)!.size === MIN_SIZE + BITE_GROWTH
+      && arrived.fish.get(id)!.lastBiteMs === start),
+    ids.map((id) => [id, arrived.fish.get(id)!.size, arrived.fish.get(id)!.lastBiteMs]));
+
+  // The defect itself: stopping 90 s early must not buy the bloom back.
+  check('a blob that stops refreshing just before the warm-up start gets ZERO bites at epochStart',
+    (parked.bitesTaken.get(700) ?? 0) === 0 && !parked.bitesTaken.has(700),
+    { bitesTaken: parked.bitesTaken.get(700) });
+  check('no such swimmer records a bite at all',
+    ids.every((id) => parked.fish.get(id)!.lastBiteMs === -1),
+    ids.map((id) => [id, parked.fish.get(id)!.lastBiteMs]));
+  check('and all six really were in the water for the whole warm-up: 90 hunger firings, floored',
+    parked.fish.size === 6 && ids.every((id) => parked.fish.get(id)!.size === MIN_SIZE),
+    ids.map((id) => [id, parked.fish.get(id)!.size]));
+  check('the warm-up reconstructed the fallow clock from a pre-warm-up write',
+    parked.lastVisit.get(700) === start, parked.lastVisit.get(700));
+
+  // The far edge, and the reason it is not a hole: a swimmer whose last write
+  // is 180 s old was OUT OF THE SEA for the whole warm-up (PRESENCE_TTL_MS is
+  // 90 s), invisible and unsweepable, so the cell really is fallow and the
+  // bloom is correctly theirs. Buying it costs 180 s of absence against a
+  // 45 s BLOOM_READY_MS — strictly worse than just swimming away.
+  check('a swimmer outside the window arrives brand new and the cell is genuinely fallow',
+    stale.bitesTaken.get(700) === BLOOM_BITES
+      && ids.every((id) => stale.fish.get(id)!.size === START_SIZE + BITE_GROWTH),
+    { bites: stale.bitesTaken.get(700), sizes: ids.map((id) => stale.fish.get(id)!.size) });
+}
+
 // --- 2. An in-flight hush crosses the boundary ------------------------------
 // A hush 2 s in and 6 s from resolving simply vanished, and tension went
 // 33_280 -> 0, so any hush starting within HUSH_MS of a boundary was free.
@@ -1592,11 +1740,41 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
 //   firings are at -9_250, -8_250, ..., 19_750: (19_750 + 9_250)/1000 + 1 =
 //   30 of them. size = START_SIZE(100) - 30 = 70, clear of MIN_SIZE(60).
 //
-//   'dead' writes once at start - 95_000, which is BEFORE the warm-up start
-//   (start - 90_000) and therefore expires at start - 5_000, before the epoch
-//   even begins. It must NOT be resurrected — that is exactly why WARMUP_MS
-//   is PRESENCE_TTL_MS and not something longer: everything the fold skips is
-//   already dead.
+//   'dead' writes once at start - 95_000 and expires at start - 5_000, before
+//   the epoch begins. It must NOT be live at the origin.
+//
+//   THE RATIONALE THIS COMMENT USED TO GIVE WAS FALSE, and correcting it is
+//   the point of this paragraph. It said 'dead' sits "BEFORE the warm-up start
+//   (start - 90_000)" and therefore that "everything the fold skips is already
+//   dead" — which is exactly the reasoning that let a too-narrow cursor bound
+//   ship. 'dead' is NOT skipped: the replay window reaches back to
+//   `warmStart - PRESENCE_TTL_MS` = start - 180_000, so the fold applies
+//   'dead' on its very first warm-up tick and it is ALIVE for 341 of the 360
+//   warm-up ticks — marking bloom cells, counting toward coreCentre and
+//   spreadPerMille, and sheltering neighbours the whole time. What is true is
+//   only the conclusion: it is evicted before the origin.
+//     present on ticks start-90_000 .. start-5_000 -> (85_000/250)+1 = 341
+//     evicted on the first tick past its expiry, t = start - 4_750, which is
+//       19 ticks before the origin
+//     hunger fires at t = start + 750 + 1000k, so while present: start-89_250
+//       ... start-5_250 -> (84_000/1000)+1 = 85 firings, and it never ate, so
+//       none is exempt: START_SIZE(100) - 85 = 15 -> clamped to MIN_SIZE(60)
+//   So the honest assertions are: NOT in `fish`, but IS in `departed` — the
+//   record a replayed-then-evicted swimmer leaves behind.
+//
+//   THE CONTROL THAT STILL DISCRIMINATES THE CURSOR BOUND is therefore a
+//   third swimmer, 'ancient', at start - 180_250 — one tick older than the
+//   window. It is skipped outright, so it appears in NEITHER map, and that
+//   absence-from-`departed` is what separates "skipped" from "replayed then
+//   evicted". 'edge', at exactly start - 180_000, pins the other side of the
+//   same boundary: it is admitted, alive for exactly the one tick at
+//   warmStart (its expiry IS warmStart, and step 2 evicts only on
+//   t > expiresMs), evicted at warmStart + 250 with no hunger firing in
+//   between (warmStart is 0 mod 1000, firings are 750 mod 1000), so it lands
+//   in `departed` at exactly START_SIZE. Together they pin `<` rather than
+//   `<=`, and pin the window's width at exactly WARMUP_MS + PRESENCE_TTL_MS:
+//   an entry is skipped iff its presence had already expired before the first
+//   warm-up tick could see it.
 {
   const epoch = 30;
   const start = epochStartMs(epoch);
@@ -1604,18 +1782,32 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
 
   const LIVE_AT = start - 10_000;
   const DEAD_AT = start - 95_000;
+  const EDGE_AT = start - 180_000;    // exactly the oldest admitted ms
+  const ANCIENT_AT = start - 180_250; // one tick older: skipped
+  const windowStart = start - WARMUP_MS - PRESENCE_TTL_MS;
+  check('the replay window opens at WARMUP_MS + PRESENCE_TTL_MS before the origin',
+    windowStart === start - 180_000, { windowStart, expected: start - 180_000 });
   check('the live write predates the boundary but is still inside the TTL there',
     LIVE_AT < start && start - LIVE_AT < PRESENCE_TTL_MS
       && LIVE_AT + PRESENCE_TTL_MS === start + 80_000,
     { LIVE_AT, remainingAtBoundary: LIVE_AT + PRESENCE_TTL_MS - start });
-  check('the dead write is older than the warm-up window and already expired at the boundary',
-    DEAD_AT < start - WARMUP_MS && DEAD_AT + PRESENCE_TTL_MS < start,
-    { DEAD_AT, warmStart: start - WARMUP_MS, expiresMs: DEAD_AT + PRESENCE_TTL_MS });
+  check('the dead write is inside the replay window but expires before the origin',
+    DEAD_AT >= windowStart && DEAD_AT < start - WARMUP_MS
+      && DEAD_AT + PRESENCE_TTL_MS === start - 5_000,
+    { DEAD_AT, windowStart, warmStart: start - WARMUP_MS, expiresMs: DEAD_AT + PRESENCE_TTL_MS });
+  check('the edge write is the oldest the window admits, expiring exactly on the warm-up start',
+    EDGE_AT === windowStart && EDGE_AT + PRESENCE_TTL_MS === start - WARMUP_MS,
+    { EDGE_AT, windowStart, expiresMs: EDGE_AT + PRESENCE_TTL_MS });
+  check('the ancient write is one tick older than the window and lands on the grid',
+    ANCIENT_AT < windowStart && windowStart - ANCIENT_AT === TICK_MS && ANCIENT_AT % TICK_MS === 0,
+    { ANCIENT_AT, windowStart });
 
   const log: LogEntry[] = [
     { kind: 'presence', id: 'liv', ms: LIVE_AT, hash: 'liv' + LIVE_AT,
       vec: { x: 1_000, y: 1_000, heading: 0, speed: 40, t: LIVE_AT } },
     pres('dead', 2_000, 2_000, DEAD_AT),
+    pres('edge', 2_000, 2_000, EDGE_AT),
+    pres('ancient', 2_000, 2_000, ANCIENT_AT),
   ];
   const untilMs = start + 20_000;
   const s = foldShoal(log, untilMs, { epoch });
@@ -1630,11 +1822,19 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   check('its presence still expires on schedule, unshifted by the boundary',
     s.fish.get('liv')!.expiresMs === start + 80_000, s.fish.get('liv')!.expiresMs);
 
-  // The other direction: the warm-up must not resurrect the genuinely
-  // expired. WARMUP_MS === PRESENCE_TTL_MS is what makes these two
-  // statements consistent rather than a tuning coincidence.
-  check('a swimmer whose vector had already expired is NOT brought back',
+  // The other direction: the warm-up replays the already-expiring, but must
+  // not carry them past their own expiry.
+  check('a swimmer whose vector had already expired is NOT live at the origin',
     !s.fish.has('dead'), [...s.fish.keys()]);
+  check('but it WAS replayed and evicted, so it left the departed record it should have',
+    s.departed.has('dead') && s.departed.get('dead')!.size === MIN_SIZE,
+    { departed: [...s.departed.keys()], size: s.departed.get('dead')?.size });
+  check('the edge entry — the oldest the window admits — is replayed for its single live tick',
+    s.departed.has('edge') && s.departed.get('edge')!.size === START_SIZE,
+    { departed: [...s.departed.keys()], size: s.departed.get('edge')?.size });
+  check('the ancient entry is SKIPPED outright: neither live nor departed, no trace at all',
+    !s.fish.has('ancient') && !s.departed.has('ancient'),
+    { fish: [...s.fish.keys()], departed: [...s.departed.keys()] });
 }
 
 // --- A carried bite IS voidable by a sweep just after the boundary ----------
@@ -1824,6 +2024,225 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
     JSON.stringify(cp.recent) === JSON.stringify([['z', Mz, [Mz]]]), cp.recent);
   check('both swimmers are still checkpointed on SIZE regardless of the recent tail',
     cp.sizes.map((p) => p[0]).join(',') === 'a,z', cp.sizes);
+}
+
+// =============================================================================
+// There is exactly ONE way to start an epoch (spec 3.9 point 3)
+// =============================================================================
+//
+// `rollEpoch` used to return a `next` state that carried the live world across
+// the boundary. That is a SECOND definition of an epoch's starting state,
+// which then has to be kept in agreement with the warm-up replay forever — and
+// it is not. Measured on the fixture below, same log, same shared epoch-40
+// fold, same checkpoint:
+//
+//   carried tension at the boundary       17_098   reconstructed  29_880
+//   carried outsideTicks('mate')             600   reconstructed     360
+//   carried departed('gone').lastBiteMs 144_013_500  reconstructed     -1
+//   carried lastVisit(700)              144_091_000  reconstructed  absent
+//
+// Two honest clients would publish different checkpoints for the same world
+// and land their sweeps seconds apart. `outsideTicks` feeds topContributor ->
+// lockedPreferred -> selectTaken, so with asymmetric fish that is the "shark
+// ate the wrong fish" class directly. The continuation is DELETED, not
+// reconciled: a rollover publishes a checkpoint and re-enters through the same
+// warm-up path a cold joiner uses.
+//
+// THE FIXTURE, all of it hand-derived before the fold runs.
+// epoch 40: start = 40 * EPOCH_MS = 144_000_000; boundary = epochEndMs(40) =
+// epochStartMs(41) = 147_600_000.
+//
+// 'gone' — a departed swimmer carrying a real bite ledger, so `departed` has
+// something the checkpoint provably does NOT carry.
+//   presence at start+1_000 parked on cell 700's centre (3648, 2752), then six
+//   eat claims at start + 1_000, 3_500, 6_000, 8_500, 11_000, 13_500. The gaps
+//   are exactly EAT_COOLDOWN_MS(2_500), which canEat admits (it refuses only
+//   a gap strictly LESS than the cooldown). Its own presence sorts before its
+//   first claim within tick start+1_000 ('gone144001000' < 'gonee144001000',
+//   index 4: '1' < 'e'), so the first claim is judged before that tick's
+//   markVisits, against a never-visited cell: it credits and LATCHES, and the
+//   next five ride the latch. Six is BLOOM_BITES exactly, so the bloom is
+//   emptied and no seventh could credit.
+//     size = START_SIZE(100) + 6 * BITE_GROWTH(12) = 172
+//   Hunger fires at t = start + 750 + 1000k. 'gone' is present from
+//   start+1_000 until its expiry at start+91_000 (evicted on the first tick
+//   past it, start+91_250), so the firings that reach it are start+1_750 ...
+//   start+90_750 = (89_000/1000) + 1 = 90. It is exempt on a firing when
+//   t - lastBiteMs < HUNGER_TICK_INTERVAL*TICK_MS (1_000), which happens at
+//   offsets 1_750, 3_750, 6_750, 8_750, 11_750 and 13_750 — one per bite, 6
+//   in all. So 84 firings apply:
+//     172 - 84 = 88, clear of MIN_SIZE(60), and its ledger keeps
+//     lastBiteMs = start + 13_500 = 144_013_500.
+//   At the boundary that bite is 3_586_500 ms old, far outside
+//   VOID_WINDOW_MS(10_000), so the checkpoint carries 'gone's SIZE and
+//   nothing else — which is exactly why a carried `departed` row and a
+//   seeded one cannot agree.
+//
+// 'keep' (1000,1000), 'pal' (1080,1000), 'mate' (3000,3000) — a trio chosen
+// so tension climbs at the SLOWEST positive rate this fold has, making the
+// ramp longer than the warm-up so the carried and reconstructed answers cannot
+// coincide by luck. coreCentre medians each axis independently and takes the
+// middle element of an odd count:
+//     x sorted [1000, 1080, 3000] -> 1080;  y sorted [1000, 1000, 3000] -> 1000
+//   so the centre is (1080, 1000). keep is 80 cu away (6_400 < CORE_R2
+//   384_400, inside), pal is 0 away (inside), mate is 1920/2000 away
+//   (3_686_400 + 4_000_000 = 7_686_400 > CORE_R2, OUTSIDE). One of three
+//   outside gives spreadPerMille = trunc(1000/3) = 333, so stepTension adds
+//   333 - TENSION_NEUTRAL(250) = 83 per tick.
+//   They write at W1 = boundary - 150_000, W2 = boundary - 70_000 and
+//   W3 = boundary + 10_000 — gaps of 80_000, under PRESENCE_TTL_MS(90_000),
+//   so they are continuously live from W1 to boundary + 100_000.
+//
+// EPOCH 40, folded by the veteran. The sea is empty between 'gone's eviction
+// and W1, and stepTension floors at zero, so tension is 0 at W1.
+//   83n >= TENSION_TRIGGER(30_000) first at n = 362 (83*361 = 29_963,
+//     83*362 = 30_046), i.e. t = W1 + 361*TICK_MS = W1 + 90_250 =
+//     boundary - 59_750  -> hushStartMs
+//   resolution at + HUSH_MS(8_000) = boundary - 51_750, tension -> 0.
+//   All three are exposed: keep and pal are 80 apart, so each gives the other
+//     SHELTER_BASE(100) + trunc(60/40) = 101, far under SHELTER_THRESHOLD
+//     (300). 'mate' is the only fish outside the core so it is the preferred
+//     target, and selectTaken is preferred-then-descending-size-then-id over
+//     three equal-sized candidates: ['mate','keep','pal'], MAX_TAKE exactly.
+//   From the tick after the resolution to the epoch's last tick:
+//     boundary-51_500 ... boundary-250 -> (51_250/250) + 1 = 206 ticks
+//     tension at the boundary = 206 * 83 = 17_098
+//   The next trigger would be 362 ticks later, at boundary + 38_750, so epoch
+//   40 contains exactly one sweep.
+//   outsideTicks('mate') has counted every tick since W1:
+//     (150_000 - 250)/250 + 1 = 600
+//
+// EPOCH 41, reconstructed. The warm-up starts at boundary - WARMUP_MS =
+// boundary - 90_000 and the entry window opens at boundary - 180_000, so W1
+// (boundary - 150_000) IS admitted and the trio is live from the very first
+// warm-up tick — but tension restarts from 0 there:
+//   360 warm-up ticks * 83 = 29_880 at the boundary — 120 short of the
+//     trigger, while the veteran's carried state sat at 17_098 having already
+//     spent its sweep. The two can never be made to agree.
+//   trigger at n = 362 from the warm-up start: t = (boundary - 90_000) +
+//     361*250 = boundary + 250; resolution at boundary + 8_250.
+//   At T = boundary + 20_000:
+//     tension = ticks from boundary+8_500 to T = (11_500/250) + 1 = 47,
+//       47 * 83 = 3_901
+//     outsideTicks('mate') = (110_000/250) + 1 = 441
+{
+  const E1 = 40;
+  const E2 = 41;
+  const E1START = epochStartMs(E1);
+  const BOUNDARY = epochEndMs(E1);
+  check('epoch 40 spans where the arithmetic says',
+    E1START === 144_000_000 && BOUNDARY === 147_600_000 && BOUNDARY === epochStartMs(E2),
+    { E1START, BOUNDARY });
+
+  const c700 = cellCentre(700);
+  const BITE_OFFSETS = [1_000, 3_500, 6_000, 8_500, 11_000, 13_500];
+  check('the six bite gaps are exactly EAT_COOLDOWN_MS, which canEat admits',
+    BITE_OFFSETS.length === BLOOM_BITES
+      && BITE_OFFSETS.every((o, i) => i === 0 || o - BITE_OFFSETS[i - 1] === EAT_COOLDOWN_MS),
+    BITE_OFFSETS);
+
+  const W1 = BOUNDARY - 150_000;
+  const W2 = BOUNDARY - 70_000;
+  const W3 = BOUNDARY + 10_000;
+  check('the trio never lapses: every gap is under PRESENCE_TTL_MS, and all land on the grid',
+    W2 - W1 < PRESENCE_TTL_MS && W3 - W2 < PRESENCE_TTL_MS
+      && [W1, W2, W3].every((m) => m % TICK_MS === 0),
+    { gap1: W2 - W1, gap2: W3 - W2, PRESENCE_TTL_MS });
+  check('W1 is inside epoch 41\'s replay window, so the reconstruction sees the trio arrive',
+    W1 >= BOUNDARY - WARMUP_MS - PRESENCE_TTL_MS, { W1, windowStart: BOUNDARY - WARMUP_MS - PRESENCE_TTL_MS });
+
+  const trio: Array<[string, number, number]> = [
+    ['keep', 1_000, 1_000], ['pal', 1_080, 1_000], ['mate', 3_000, 3_000],
+  ];
+  const log: LogEntry[] = [pres('gone', c700.x, c700.y, E1START + 1_000)];
+  for (const off of BITE_OFFSETS) log.push(eat('gone', 700, E1START + off));
+  for (const ms of [W1, W2, W3]) for (const [id, x, y] of trio) log.push(pres(id, x, y, ms));
+
+  // --- The veteran folds epoch 40 and rolls it. -----------------------------
+  const vet = foldShoal(log, epochFoldEndMs(E1), { epoch: E1 });
+  check('epoch 40 ends at the hand-derived tension, having spent exactly one sweep',
+    vet.tension === 17_098 && vet.lastSweepMs === BOUNDARY - 51_750
+      && JSON.stringify(vet.lastTaken) === JSON.stringify(['mate', 'keep', 'pal'])
+      && vet.hushStartMs === -1,
+    { tension: vet.tension, lastSweepMs: vet.lastSweepMs, rel: vet.lastSweepMs - BOUNDARY,
+      taken: vet.lastTaken });
+  check('and outsideTicks has been counting mate since W1, 600 ticks',
+    vet.outsideTicks.get('mate') === 600 && vet.outsideTicks.get('keep') === 0,
+    { mate: vet.outsideTicks.get('mate'), keep: vet.outsideTicks.get('keep') });
+  check("'gone' departed at the hand-derived size with its real bite ledger intact",
+    vet.departed.get('gone')!.size === 88
+      && vet.departed.get('gone')!.lastBiteMs === E1START + 13_500,
+    { size: vet.departed.get('gone')?.size, lastBiteMs: vet.departed.get('gone')?.lastBiteMs });
+
+  const cp = rollEpoch(vet);
+  check('the checkpoint is the hand-derived one: sizes only, and no recent tail',
+    serialiseCheckpoint(cp) ===
+      '{"epoch":40,"sizes":[["gone",88],["keep",60],["mate",60],["pal",60]],"recent":[]}',
+    serialiseCheckpoint(cp));
+  check("the boundary drops 'gone's bite ledger, because it is far outside VOID_WINDOW_MS",
+    cp.recent.length === 0 && BOUNDARY - (E1START + 13_500) > VOID_WINDOW_MS,
+    { age: BOUNDARY - (E1START + 13_500), VOID_WINDOW_MS });
+
+  // --- Both clients open epoch 41 the ONLY way there is. --------------------
+  // The veteran drives incrementally after the seeded open, which is what a
+  // shell does; the cold joiner has never seen epoch 40 at all and holds only
+  // the published checkpoint. Nothing else crosses the boundary.
+  const T = BOUNDARY + 20_000;
+  const ordered = orderLog(log);
+  const veteranPath = foldShoal(log, BOUNDARY, { epoch: E2, seed: cp });
+  while (veteranPath.nowMs <= T) foldTick(veteranPath, ordered);
+  const coldJoiner = foldShoal(log, T, { epoch: E2, seed: cp });
+
+  // Non-degeneracy first: epoch 41 must actually be a live world at T, or
+  // "byte-identical" is a comparison of two empty seas.
+  check('epoch 41 is a live world at T: three fish, a resolved sweep, real tension',
+    coldJoiner.fish.size === 3 && coldJoiner.lastSweepMs >= 0
+      && coldJoiner.tension > 0 && (coldJoiner.outsideTicks.get('mate') ?? 0) > 0,
+    { fish: [...coldJoiner.fish.keys()], lastSweepMs: coldJoiner.lastSweepMs,
+      tension: coldJoiner.tension });
+
+  // The reconstructed values, hand-derived — and every one of them differs
+  // from what the deleted continuation would have carried.
+  check('epoch 41 reconstructs the hand-derived tension and outside-tick count, NOT the carried ones',
+    coldJoiner.tension === 3_901 && coldJoiner.outsideTicks.get('mate') === 441,
+    { tension: coldJoiner.tension, outsideTicks: coldJoiner.outsideTicks.get('mate') });
+  check('its sweep lands at the hand-derived reconstructed tick, seconds off the carried ramp',
+    coldJoiner.lastSweepMs === BOUNDARY + 8_250, coldJoiner.lastSweepMs - BOUNDARY);
+  check("and 'gone' comes back through the checkpoint alone: size kept, bite ledger reset",
+    coldJoiner.departed.get('gone')!.size === 88
+      && coldJoiner.departed.get('gone')!.lastBiteMs === -1
+      && coldJoiner.departed.get('gone')!.recentBites.length === 0,
+    coldJoiner.departed.get('gone'));
+  check('the bloom map is reconstructed from the warm-up, so epoch 40\'s stamp on cell 700 is gone',
+    !coldJoiner.lastVisit.has(700) && coldJoiner.lastVisit.size > 0,
+    { has700: coldJoiner.lastVisit.has(700), cells: coldJoiner.lastVisit.size });
+
+  // THE COMPARISON. Everything, including the fold-internal bookkeeping the
+  // shared `fingerprint` deliberately omits — `touchedIds` decides the next
+  // boundary's prune, `outsideTicks` decides who the shark prefers, and
+  // `tickCount` decides hunger's phase, so all three are consensus-relevant
+  // at a boundary even though they are not part of the visible world.
+  const fullPrint = (s: ShoalState): string => JSON.stringify({
+    world: fingerprint(s),
+    epoch: s.epoch,
+    nowMs: s.nowMs,
+    tickCount: s.tickCount,
+    cursor: s.cursor,
+    touchedIds: [...s.touchedIds].sort(),
+    outsideTicks: [...s.outsideTicks.entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+  });
+  check('a rollover followed by a fresh seeded fold IS a cold fold, byte for byte',
+    fullPrint(veteranPath) === fullPrint(coldJoiner),
+    { veteran: fullPrint(veteranPath), cold: fullPrint(coldJoiner) });
+
+  // The obligation the ruling puts on the joiner, stated as a test: the fold
+  // CANNOT detect a missing prefix. A joiner holding only the entries at or
+  // after the boundary folds a different world and never learns it.
+  const shortLog = log.filter((e) => e.ms >= BOUNDARY);
+  const underfed = foldShoal(shortLog, T, { epoch: E2, seed: cp });
+  check('a joiner missing the 180 s prefix folds a DIFFERENT world, silently',
+    fullPrint(underfed) !== fullPrint(coldJoiner) && underfed.tension !== coldJoiner.tension,
+    { shortTension: underfed.tension, fullTension: coldJoiner.tension });
 }
 
 // --- bodiesOf --------------------------------------------------------------

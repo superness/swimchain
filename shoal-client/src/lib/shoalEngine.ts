@@ -28,6 +28,18 @@ import {
  * place of the real `lastVisit` is an honest way to tell canEat "readiness
  * for this cell is already settled (it latched), don't re-run the fallow
  * test" without touching canEat's signature or lying about real visit data.
+ *
+ * INVARIANT: this Map is EMPTY FOREVER. It is a module-level singleton shared
+ * by every fold in the process, so a single `.set` on it would silently
+ * poison every latched-bloom check everywhere — including in another client's
+ * fold running in the same page. The `ReadonlyMap` type is the whole
+ * enforcement: `Map`'s mutators are simply not on that interface, so nothing
+ * can write to it through this binding, and nothing else in this file ever
+ * aliases it into a mutable position (it is only ever passed as canEat's
+ * `lastVisit`, which is itself declared `ReadonlyMap`). Stated rather than
+ * assumed, matching the "copied, not aliased" notes elsewhere in this file —
+ * a frozen empty Map cannot be expressed in TypeScript any more strongly than
+ * this, so the invariant has to live in a comment.
  */
 const NEVER_VISITED: ReadonlyMap<number, number> = new Map();
 
@@ -169,8 +181,10 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
     throw new RangeError(
       `foldTick: tick ${t} is at or past the end of epoch ${state.epoch} ` +
       `(${epochEndMs(state.epoch)}). A fold covers exactly one epoch: call ` +
-      'rollEpoch(state) to take the boundary checkpoint and carry the world ' +
-      'into the next one.',
+      'rollEpoch(state) to publish the boundary checkpoint, then start the ' +
+      'next epoch with foldShoal(log, t, { epoch: e + 1, seed: checkpoint }) ' +
+      '— there is exactly one way to start an epoch, and it is the warm-up ' +
+      'path a cold joiner uses.',
     );
   }
 
@@ -594,19 +608,49 @@ export function foldShoal(
     );
   }
 
-  // Entries authored before the WARM-UP start are older than PRESENCE_TTL_MS
-  // at the epoch's origin, so replaying them could not change anything: any
-  // presence they carry has already expired, and any eat-claim they carry is
-  // long outside both EAT_COOLDOWN_MS and VOID_WINDOW_MS. That is exactly why
-  // WARMUP_MS is PRESENCE_TTL_MS and not something shorter. `log` is
-  // ms-ordered, so this is a one-time skip of a prefix — done once, before
-  // the tick loop starts, rather than re-checked every tick. Setting
-  // `state.cursor` here (rather than leaving it at emptyState's default of 0)
-  // is what makes this skip happen exactly once: every subsequent `foldTick`
-  // call resumes from wherever the cursor was left, never re-scanning this
-  // prefix.
+  // THE REPLAY WINDOW MUST ADMIT EVERYTHING STILL ALIVE DURING THE WARM-UP,
+  // which reaches back WARMUP_MS + PRESENCE_TTL_MS — 180 s of the PRIOR
+  // epoch's log (spec 3.9 point 3).
+  //
+  // The bound used to be `ms < warmStartMs`, justified by "entries authored
+  // before the warm-up start are older than PRESENCE_TTL_MS at the epoch's
+  // ORIGIN, so replaying them could not change anything." That justification
+  // is true at the origin and FALSE for the 360 warm-up ticks, which is the
+  // window the warm-up itself introduced: a vector authored at
+  // `warmStartMs - 1` is live for every one of them. Skipping it reconstructs
+  // an incomplete sea, and the bloom exploit the warm-up exists to close
+  // simply moved 90 s earlier — a blob that stops refreshing before the
+  // warm-up start has cell 700 absent from `lastVisit` for the whole replay
+  // and is handed BLOOM_BITES at exactly `epochStart`, on the same public
+  // clock, now easier to aim at deliberately. Measured on the fixture in
+  // shoalEngine.test.ts, moving the park write by two milliseconds:
+  //   PARK_MS = start -  89_999 -> bitesTaken(700) at epochStart = 0
+  //   PARK_MS = start -  90_001 -> bitesTaken(700) at epochStart = 6
+  //
+  // `warmStartMs - PRESENCE_TTL_MS` is exactly the right bound, not merely a
+  // safe one: an entry is skipped iff `ms + PRESENCE_TTL_MS < warmStartMs`,
+  // i.e. iff its presence has ALREADY expired at the first warm-up tick, so
+  // step 2 would evict it on the very tick step 1 admitted it. Skipping such
+  // an entry is not just cheaper, it is more correct — admitting it would
+  // leave a spurious `departed` row and a spurious `touchedIds` entry behind.
+  // An entry at exactly `warmStartMs - PRESENCE_TTL_MS` expires at
+  // `warmStartMs` and step 2 evicts only on `t > expiresMs`, so it is alive
+  // for that one tick and is admitted; hence `<`, not `<=`.
+  //
+  // A joining client must HOLD that much prior history or it will silently
+  // fold a different world. The fold cannot detect a missing prefix, so
+  // fetching it is the client's obligation (spec 3.9 point 3).
+  //
+  // The tick count is unchanged by this: the loop still starts at
+  // `warmStartMs` and still runs 360 warm-up ticks. Only the cursor prefix
+  // moves. `log` is ms-ordered, so this is a one-time skip of a prefix — done
+  // once, before the tick loop starts, rather than re-checked every tick.
+  // Setting `state.cursor` here (rather than leaving it at emptyState's
+  // default of 0) is what makes this skip happen exactly once: every
+  // subsequent `foldTick` call resumes from wherever the cursor was left,
+  // never re-scanning this prefix.
   let cursor = 0;
-  while (cursor < log.length && log[cursor].ms < warmStartMs) cursor++;
+  while (cursor < log.length && log[cursor].ms < warmStartMs - PRESENCE_TTL_MS) cursor++;
   state.cursor = cursor;
 
   // The warm-up: replay the pre-origin tail so bloom fallow state, live
@@ -672,11 +716,34 @@ export function foldShoal(
 }
 
 /**
- * Close an epoch: prune, checkpoint, and carry the world into the next one.
+ * Close an epoch: prune, then publish the canonical checkpoint. THAT IS ALL
+ * IT DOES — it deliberately does NOT produce a state for the next epoch.
  *
- * This is the boundary operation the incremental driver (and `foldShoal`'s
- * caller) needs, and the only place a canonical checkpoint is produced. It
- * MUTATES and returns `state` as `next`, the same convention `foldTick` uses.
+ * THERE IS EXACTLY ONE WAY TO START AN EPOCH (spec 3.9 point 3). A rollover is
+ * not a shortcut; it is a checkpoint plus a normal start. The driver takes the
+ * checkpoint returned here and re-enters through the SAME seeded warm-up path
+ * a cold joiner uses:
+ *
+ *   const cp = rollEpoch(state);                       // epoch e closes
+ *   state = foldShoal(log, t, { epoch: e + 1, seed: cp });   // epoch e+1 opens
+ *
+ * An earlier version also returned a `next` state that carried the live world
+ * across the boundary as an optimisation. That created a SECOND definition of
+ * an epoch's starting state, which then had to be kept in agreement with the
+ * replay forever — and it was not. Measured on the fixture in
+ * shoalEngine.test.ts's "one way to start an epoch" section, same log, same
+ * shared epoch-40 fold, same checkpoint:
+ *
+ *   carried tension at the boundary  17_098   reconstructed  29_880
+ *   carried outsideTicks('mate')        600   reconstructed     360
+ *   carried departed('gone').lastBiteMs 144_013_500   reconstructed  -1
+ *   carried lastVisit(700)      144_091_000   reconstructed  absent
+ *
+ * — two honest clients publishing different checkpoints for the same world and
+ * landing their sweeps seconds apart, which is the "shark ate the wrong fish"
+ * class directly (`outsideTicks` feeds `topContributor` -> `lockedPreferred`
+ * -> `selectTaken`). The continuation was deleted rather than reconciled,
+ * because reconciliation is the thing the ruling rejects.
  *
  * `state.nowMs` must be exactly `epochEndMs(state.epoch)` — the position a
  * fold is left in after its last legal tick, i.e. after folding to
@@ -698,20 +765,28 @@ export function foldShoal(
  * must survive to be re-checked at the NEXT boundary rather than be dropped a
  * checkpoint early.
  *
- * `next.touchedIds` is re-seeded with the ids still LIVE at the boundary,
- * not emptied. A swimmer live here has written within PRESENCE_TTL_MS, which
- * is exactly the set a cold client's warm-up replay would mark as touched for
- * the new epoch — so an incremental driver and a cold fold agree about who is
- * exempt from the next prune. Emptying it instead would drop a swimmer who
- * was live at the boundary and lapsed early in the new epoch, despite their
- * having been in the water the whole time.
+ * IT FIRES EXACTLY ONCE PER BOUNDARY, and the argument is now short enough to
+ * state in full:
+ *  - This is the only place in the engine that drops a `departed` record for
+ *    absence, and the prune's ONLY effect is on the checkpoint built two
+ *    lines below it (the state is not reused — see the next paragraph), so
+ *    the prune reaches the next epoch through the checkpoint or not at all.
+ *  - The boundary guard above admits exactly one instant per epoch, so it
+ *    cannot run mid-epoch or twice at different points.
+ *  - It is idempotent: it deletes exactly `{id in departed : id not in
+ *    touchedIds}` and touches neither map otherwise, so that set is empty
+ *    afterwards and a second call at the same boundary returns a
+ *    byte-identical checkpoint. Pinned by "rolling twice at the same boundary
+ *    is idempotent" in shoalEngine.test.ts.
  *
- * `tickCount` is deliberately NOT reset: hunger's phase is a function of it,
- * and EPOCH_MS is a whole number of hunger periods, so continuing the count
- * keeps an incremental driver's firings on the same absolute schedule a cold
- * fold of the new epoch would compute.
+ * THIS CALL CONSUMES `state`. It mutates `state.departed` in place and the
+ * state must not be folded further: `state.nowMs` is `epochEndMs(state.epoch)`
+ * and `state.epoch` is left unchanged, so the very next `foldTick` throws (see
+ * the guard at the top of this file). That is deliberate — the only way
+ * onward is `foldShoal` with this checkpoint as the seed, which builds a fresh
+ * state from `emptyState`.
  */
-export function rollEpoch(state: ShoalState): { checkpoint: Checkpoint; next: ShoalState } {
+export function rollEpoch(state: ShoalState): Checkpoint {
   const boundaryMs = epochEndMs(state.epoch);
   if (state.nowMs !== boundaryMs) {
     throw new RangeError(
@@ -724,8 +799,5 @@ export function rollEpoch(state: ShoalState): { checkpoint: Checkpoint; next: Sh
   for (const [id] of [...state.departed]) {
     if (!state.touchedIds.has(id)) state.departed.delete(id);
   }
-  const checkpoint = checkpointFrom(state, state.epoch);
-  state.epoch += 1;
-  state.touchedIds = new Set(state.fish.keys());
-  return { checkpoint, next: state };
+  return checkpointFrom(state, state.epoch);
 }
