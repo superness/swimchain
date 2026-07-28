@@ -453,6 +453,34 @@ out rather than something they are usually standing in, the lever is `WILD_PER_S
 `WILD_SCHOOL_R` in wild.ts, not the weight. Both are CONSENSUS and both are cheap **now**
 and never again.
 
+### 15. Terrain does not bias where blooms appear
+
+**Found by:** Task 4 of plan 3 (the-shoal-wild), reading spec 2.13 against its own brief.
+
+Spec 2.13 says the sea's named places should "give blooms legible places to appear" — food
+should be more likely to grow at the Kelp Stand than in open water, so the places earn their
+keep as more than scenery. `shoal-client/src/ui/terrain.ts` (four hand-authored places: Kelp
+Stand, The Wreck, The Drop-off, The Shelf — centre and radius each, plus `placeAt` /
+`nearestPlace` queries) **does not do this, on purpose.**
+
+Biasing bloom placement toward a region is a **consensus** rule: `isBloomReady` and the cell
+grid it reads (`bloom.ts`) feed `foldTick`, so any rule that makes cells near a place more
+likely to ready would change which cells every client agrees are edible — the same category
+of change as item 10's claimant-exemption rule, and item 5's `ms` bound. It needs its own
+design (does "biased" mean a shorter `BLOOM_READY_MS` near a place, a higher `BLOOM_BITES`,
+or something else; do overlapping places stack; does the bias apply to the 32x24 bloom grid
+cell-by-cell or only to cells whose centre falls inside a place's extent) and its own review,
+not a quiet addition riding along with a display-only terrain module.
+
+**Consequence of leaving it:** `terrain.ts` is display-only and consensus-free by
+construction — `src/lib/` never imports it and nothing about it enters `foldShoal` or a
+checkpoint — so places are legible to *look at* and to *say* ("kelp!") but carry no gameplay
+weight yet. The minute-between-sweeps improvement spec 2.13 promises ("be near people, at the
+good spot") still lands from making places somewhere to shelter and rally, but "the good
+spot" is not yet also *the place food is more likely to be*, which is the other half of the
+same sentence. Whoever picks this up should also decide whether wild-fish schools (`wild.ts`)
+ought to loiter near named places, which is the same shape of question one level up.
+
 ### 9. Smaller
 
 - `foldShoal` throws a `RangeError` at every epoch end, so a naive
