@@ -459,11 +459,45 @@ async function main(): Promise<void> {
     profile.network === 'regtest' && profile.config.memoryKib === 1024
       && profile.config.iterations === 1 && profile.config.parallelism === 1,
     profile);
-  // The cache is the whole point of detecting once (see shoalSend's header):
-  // a second lookup must be the very same resolved object, not a second
-  // round trip that merely happens to agree.
-  check('the PoW profile is cached per endpoint (same object on re-detect)',
-    (await powProfileFor(auth)) === profile);
+  // The cache is the whole point of detecting once (see shoalSend's header).
+  //
+  // This check used to be `(await powProfileFor(auth)) === profile`, WHICH
+  // COULD NOT FAIL: `profileFor()` returns module-level singletons, so the
+  // identity comparison holds whether or not `profileCache` exists at all.
+  // Deleting the cache entirely still printed PASS — it proved the opposite of
+  // what its comment claimed. The only thing that actually distinguishes a
+  // cache from no cache is a ROUND TRIP, so count them: wrap `fetch` for the
+  // duration of a second `powProfileFor` and assert ZERO new `get_info` calls
+  // go out. Delete the cache and this reads 1 and fails.
+  const realFetch = globalThis.fetch;
+  let getInfoCalls = 0;
+  globalThis.fetch = (async (input: Parameters<typeof realFetch>[0], init?: Parameters<typeof realFetch>[1]) => {
+    const body = typeof init?.body === 'string' ? init.body : '';
+    if (body.includes('"get_info"')) getInfoCalls++;
+    return realFetch(input, init);
+  }) as typeof realFetch;
+  let profileAgain: typeof profile;
+  try {
+    profileAgain = await powProfileFor(auth);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  check('the PoW profile is cached per endpoint (a re-detect makes ZERO new get_info round trips)',
+    getInfoCalls === 0 && profileAgain === profile, { getInfoCalls, same: profileAgain === profile });
+  // The counter itself must be discriminating: one deliberate uncached call has
+  // to move it, or `getInfoCalls === 0` above would pass for the wrong reason.
+  globalThis.fetch = (async (input: Parameters<typeof realFetch>[0], init?: Parameters<typeof realFetch>[1]) => {
+    const body = typeof init?.body === 'string' ? init.body : '';
+    if (body.includes('"get_info"')) getInfoCalls++;
+    return realFetch(input, init);
+  }) as typeof realFetch;
+  try {
+    await rpcCall<{ network?: string }>(auth, 'get_info', {});
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  check('…and the round-trip counter is real: one deliberate uncached get_info moves it to 1',
+    getInfoCalls === 1, { getInfoCalls });
 
   const alice = player('alice');
   const bob = player('bob');
@@ -498,8 +532,36 @@ async function main(): Promise<void> {
   check('create_space returned the bech32m wire form (sp1…, 37 chars)', isWireSpaceId(spaceId), spaceId);
 
   const spaceHex = spaceIdToHex(spaceId);
-  log(`same space in raw hex (the wrong form, for the negative control) -> ${spaceHex}`);
+  log(`same space in raw hex (the wrong form) -> ${spaceHex}`);
   check('the hex form is NOT the wire form', !isWireSpaceId(spaceHex), spaceHex);
+
+  // `startLive` now REFUSES the hex form outright. It used to accept it and
+  // silently degrade to poll-only — the highest-value defect this smoke exists
+  // to catch, and the one no unit test could see. Asserted against the live
+  // path specifically (the write path has always checked; `startLive` was the
+  // module the check protected and the module that lacked it).
+  {
+    let threw: unknown = null;
+    try {
+      watch(auth, 'hex-refused', spaceHex).stop();
+    } catch (e) { threw = e; }
+    check('startLive REFUSES a raw-hex space id instead of silently degrading to polling',
+      threw instanceof RangeError, threw instanceof Error ? threw.message : threw);
+  }
+
+  // The end-to-end negative control still runs, but now with a WELL-FORMED
+  // space id that simply is not ours: the real one with a single character
+  // rotated inside the bech32 charset. It passes `isWireSpaceId` (still 37
+  // chars, still `sp1`, still in-charset), so `startLive` accepts it, the
+  // socket connects, it receives every `content_new` this run produces — and
+  // must record ZERO refetches, because `nextAction` compares the FULL string.
+  // That is what proves the filter does real work and that the form this
+  // client passes is the form the node's events carry, end to end.
+  const rotate = (c: string) => BECH32_CHARSET[(BECH32_CHARSET.indexOf(c) + 1) % BECH32_CHARSET.length];
+  const wrongSpaceId = spaceId.slice(0, 36) + rotate(spaceId[36]);
+  log(`well-formed but different space id, for the negative control -> ${wrongSpaceId}`);
+  check('the control space id is well-formed', isWireSpaceId(wrongSpaceId), wrongSpaceId);
+  check('…and is genuinely a different string from ours', wrongSpaceId !== spaceId, wrongSpaceId);
 
   const roomId = await createOrReuseRoom(auth, alice, spaceId, Date.now());
 
@@ -515,11 +577,11 @@ async function main(): Promise<void> {
   const wB = watch(auth, 'B', spaceId);
   // The negative control. To re-verify that this control is genuinely
   // discriminating rather than merely a socket that never worked, change
-  // `spaceHex` to `spaceId` here and re-run: the tally must flip from 0 to
-  // the same count A and B see (measured 2026-07-28: 0 -> 3), and this check
-  // must fail. Nothing else about the watcher changes.
-  const wHex = watch(auth, 'hex-control', spaceHex);
-  log('three live watchers started (A, B, and a hex-space-id negative control); ' +
+  // `wrongSpaceId` to `spaceId` here and re-run: the tally must flip from 0 to
+  // the same count A and B see, and this check must fail. Nothing else about
+  // the watcher changes.
+  const wHex = watch(auth, 'wrong-space-control', wrongSpaceId);
+  log('three live watchers started (A, B, and a wrong-space-id negative control); ' +
       `poll interval ${POLL_INTERVAL_MS} ms, so no tick can fire during this run`);
   // Give the sockets time to connect and send their `subscribe` frame before
   // the first write, or the event we are trying to observe is published
@@ -608,12 +670,12 @@ async function main(): Promise<void> {
       watchWindowMs < POLL_INTERVAL_MS,
       { watchWindowMs, POLL_INTERVAL_MS },
     );
-    check('the hex-space-id watcher never once refetched — the live channel really is ' +
-          'filtering on the node\'s bech32m form, and a hex space id would silently kill it',
+    check('the wrong-space watcher never once refetched — the live channel really is ' +
+          'filtering on the FULL space id the node\'s events carry, not merely on their shape',
       wHex.refetchAtMs.length === 0,
       { refetches: wHex.refetchAtMs.length });
     log(`refetch tallies — A: ${wA.refetchAtMs.length}, B: ${wB.refetchAtMs.length}, ` +
-        `hex-control: ${wHex.refetchAtMs.length}`);
+        `wrong-space-control: ${wHex.refetchAtMs.length}`);
 
     // ── the writes must SURVIVE block formation ─────────────────────────────
     // Not a nicety: unsponsored authors are dropped by the block builder and
