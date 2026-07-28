@@ -128,20 +128,40 @@ export interface Departed {
  * byte-identical checkpoints, and a Map's insertion order cannot leak in.
  *
  * `recent` carries `[id, lastBiteMs, recentBites]` for every swimmer whose
- * `lastBiteMs` fell within `VOID_WINDOW_MS` of the moment the checkpoint was
- * taken — everyone else is correctly reconstructed with `lastBiteMs: -1` and
+ * `lastBiteMs` fell within `VOID_WINDOW_MS` of `epochEndMs(epoch)` —
+ * everyone else is correctly reconstructed with `lastBiteMs: -1` and
  * `recentBites: []` at the seeding site, since a bite older than the void
- * window carries no more protection than a brand-new arrival's. Without this
- * field, seeding always reset a swimmer's cooldown and void-window ledger at
- * the epoch boundary: `Departed`'s own doc comment explains why that must
- * NOT happen for a presence lapse (a free `EAT_COOLDOWN_MS` reset, and a
- * bite laundered out of reach of the next sweep) — a fixed hourly boundary
- * reproduces the exact same two exploits, and is *worse* than a presence
- * lapse because a player can time it deliberately (eat right before the
- * boundary, cross over with a clean ledger). Sorted by id, same canonicality
- * rule as `sizes`. Kept small by construction: at most the handful of
- * swimmers who ate in the last `VOID_WINDOW_MS` of the epoch, never the
- * whole population.
+ * window carries no more protection than a brand-new arrival's. Sorted by
+ * id, same canonicality rule as `sizes`.
+ *
+ * Both halves of the carry are load-bearing, but for different reasons and
+ * with different force —
+ *
+ *  - `lastBiteMs` gates `EAT_COOLDOWN_MS`. Without it, a swimmer who ate
+ *    right before the boundary and claimed again right after read as "never
+ *    bitten" and got a free cooldown reset. That is directly reachable
+ *    (EAT_COOLDOWN_MS is 2_500 ms and the boundary is a public clock) and is
+ *    exercised by shoalEngine.test.ts's cross-boundary cooldown test.
+ *  - `recentBites` gates the scatter void. This one was UNREACHABLE under the
+ *    pre-warm-up fold and is reachable now, which is worth stating precisely
+ *    because the intermediate review concluded — correctly, for the code in
+ *    front of it — that it could never matter. The old argument: tension was
+ *    zeroed at every boundary, so a fresh epoch needed at least 40 ticks to
+ *    reach TENSION_TRIGGER and HUSH_MS more to resolve, putting the earliest
+ *    possible sweep at `epochStart + 17_750` — already past VOID_WINDOW_MS
+ *    (10_000) from anything that happened before the epoch began. The warm-up
+ *    replay (spec 3.9 point 3) removes that floor: tension and an in-flight
+ *    hush now cross the boundary, so a sweep can resolve as little as one
+ *    tick into a new epoch and CAN void a bite credited before it. Pinned by
+ *    shoalEngine.test.ts's "a carried bite is voidable by a sweep that
+ *    resolves just after the boundary".
+ *
+ * Kept small by construction: at most the swimmers who ate in the last
+ * `VOID_WINDOW_MS` of the epoch. That is a bound set BY the population — in
+ * the worst case (everyone eats in the final ten seconds) it is everyone —
+ * not a bound below it. What keeps it small in practice is
+ * `EAT_COOLDOWN_MS` and the fact that a shoal is fifteen to twenty-five fish,
+ * so the payload is at most a few dozen short arrays.
  */
 export interface Checkpoint {
   epoch: number;

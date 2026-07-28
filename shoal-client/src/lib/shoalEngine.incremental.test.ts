@@ -44,6 +44,7 @@
  * with an explicit note that it is a consistency check only.
  */
 import { foldShoal, foldTick, emptyState, orderLog } from './shoalEngine';
+import { richSession, fingerprint } from './shoalFixtures';
 import type { LogEntry, Presence } from './shoalTypes';
 import { cellCentre } from './bloom';
 import {
@@ -197,87 +198,10 @@ function check(name: string, cond: boolean, extra?: unknown) {
     p1.size > MIN_SIZE && p2.size > MIN_SIZE, { p1: p1.size, p2: p2.size, MIN_SIZE });
 }
 
-// =============================================================================
-// richSession() and fingerprint(), copied verbatim from
-// shoalEngine.determinism.test.ts -- rather than imported, deliberately: that
-// file is a runnable script whose own top-level code ends in `process.exit()`,
-// so importing anything from it would execute (and then terminate the process
-// inside) its entire test suite as a side effect of the import. Keep both in
-// sync with the originals by hand if either changes.
-// =============================================================================
-function richSession(): LogEntry[] {
-  const out: LogEntry[] = [];
-  const pres = (id: string, x: number, y: number, ms: number): Presence => ({
-    kind: 'presence', id, ms, hash: `${id}${ms}`, vec: { x, y, heading: 0, speed: 0, t: ms },
-  });
-
-  // The eat cell: col 15, row 11 of the BLOOM_COLS(32) x BLOOM_ROWS(24) grid
-  // -> cell index = row*BLOOM_COLS + col = 11*32 + 15 = 367. cellCentre's own
-  // formula is col*BLOOM_CELL + BLOOM_CELL/2, so its centre is
-  // (15*128+64, 11*128+64) = (1984, 1472) — arithmetic on BLOOM_CELL alone,
-  // independent of anything canEat/markVisits computes.
-  const cell = 367;
-  const centre = cellCentre(cell); // (1984, 1472)
-
-  // --- The sheltered cluster: the eater (e0) plus three buddies, all parked
-  // exactly on the cell centre (distance 0, well inside SHELTER_R and
-  // EAT_R). shelterOf sums SHELTER_BASE(100) + trunc(size/40) (capped) from
-  // every OTHER body within SHELTER_R(340); at distance 0 all three buddies
-  // qualify. Even once hunger has floored a buddy at MIN_SIZE(60), it still
-  // contributes 100 + trunc(60/40) = 101, so three of them sum to 303 —
-  // still >= SHELTER_THRESHOLD(300). So this cluster is sheltered (never
-  // exposed, never swept) for the fish's entire lifetime, regardless of how
-  // far hunger has eaten into their size by the time the sweep fires.
-  out.push(pres('e0', centre.x, centre.y, 0));
-  out.push(pres('c1', centre.x, centre.y, 0));
-  out.push(pres('c2', centre.x, centre.y, 0));
-  out.push(pres('c3', centre.x, centre.y, 0));
-  // e0's own presence must sort before its eat claim within tick 0 so the
-  // fold sees a live fish before it checks the bite, and so the fallow
-  // check runs before this tick's markVisits — same ms, and hash 'e00' <
-  // 'e0e0' (comparing the third character, '0' < 'e'), the identical
-  // convention shoalEngine.test.ts uses for the same reason.
-  out.push({ kind: 'eat', id: 'e0', cell, ms: 0, hash: 'e0e0' });
-
-  // --- Eight outsiders, spread far from the cluster in a pattern chosen so
-  // the median — see coreCentre/medianInt: for an EVEN count, the LOWER of
-  // the two middle sorted values, not an average — lands exactly on the
-  // cluster's own coordinate on both axes independently. That puts the
-  // cluster inside the core (distance 0) and every outsider outside it.
-  // Offsets are multiples of 8 (QUANT) so reckon's quantization is a no-op
-  // and every resulting position is exact.
-  const offsets: Array<[string, number, number]> = [
-    ['o0', -896, 496], ['o1', -704, -304], ['o2', -496, 896], ['o3', -304, -704],
-    ['o4', 304, -896], ['o5', 496, 704], ['o6', 704, -496], ['o7', 896, 304],
-  ];
-  for (const [id, dx, dy] of offsets) out.push(pres(id, centre.x + dx, centre.y + dy, 0));
-
-  return out;
-}
-
-const fingerprint = (s: ReturnType<typeof foldShoal>) =>
-  JSON.stringify({
-    fish: [...s.fish.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([k, v]) => [k, v.size, v.x, v.y, [...v.recentBites].sort((a, b) => a - b)]),
-    departed: [...s.departed.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .map(([k, v]) => [k, v.size, v.lastScatterMs, v.lastBiteMs, [...v.recentBites].sort((a, b) => a - b)]),
-    tension: s.tension,
-    lastTaken: [...s.lastTaken].sort(),
-    lastSweepMs: s.lastSweepMs,
-    bites: [...s.bitesTaken.entries()].sort(([a], [b]) => a - b),
-    lastVisit: [...s.lastVisit.entries()].sort(([a], [b]) => a - b),
-    bloomSince: [...s.bloomSinceMs.entries()].sort(([a], [b]) => a - b),
-    hushStartMs: s.hushStartMs,
-    lockedPositions: s.lockedPositions === null
-      ? null
-      : [...s.lockedPositions.entries()]
-          .sort(([a], [b]) => (a < b ? -1 : 1))
-          .map(([k, p]) => [k, p.x, p.y, p.size]),
-    lockedPreferred: s.lockedPreferred,
-  });
-
+// richSession() and fingerprint() come from shoalFixtures.ts, a non-executing
+// module, rather than from shoalEngine.determinism.test.ts (which would run
+// its whole suite and process.exit inside the import) or from a hand-kept
+// verbatim copy, which is what used to sit here.
 const richLog = richSession();
 // foldTick takes an ALREADY-ORDERED log (it used to call orderLog itself, once
 // per tick: 18ms of a 29ms 801-tick fold, and ~0.3s of pure sorting plus
@@ -348,8 +272,10 @@ check('and the incremental driver starts at the warm-up start, like foldShoal',
   const clone = structuredClone(state);
 
   // Prove the round trip is genuinely structural, not a same-object no-op —
-  // otherwise the comparison below would pass trivially no matter what.
-  check('the clone is a distinct object from the original', (clone as unknown) !== (state as unknown));
+  // otherwise the comparison below would pass trivially no matter what. The
+  // top-level `clone !== state` that used to sit here was dropped: it cannot
+  // fail after a structuredClone, so it asserted nothing. The MAPS are what
+  // matter and what a shallower copy would get wrong.
   check('the clone\'s Maps are distinct instances, not shared references',
     clone.fish !== state.fish && clone.lastVisit !== state.lastVisit &&
     clone.bitesTaken !== state.bitesTaken && clone.bloomSinceMs !== state.bloomSinceMs &&

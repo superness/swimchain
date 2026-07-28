@@ -1,8 +1,12 @@
 /**
  * Checkpoints: the state that crosses an epoch boundary (spec 3.9) — size,
- * plus a bounded tail of recent-bite state (see `Checkpoint`'s doc in
- * shoalTypes.ts for why the latter exists; it closes a real, timeable
- * exploit at the boundary, not a cosmetic gap).
+ * plus a bounded tail of recent-bite state. Everything else a client needs
+ * across a boundary is RECONSTRUCTED by the warm-up replay rather than
+ * transmitted here (see WARMUP_MS in shoalConst.ts): what belongs in a
+ * checkpoint is durable, player-owned value that no bounded replay can
+ * recover. See `Checkpoint`'s doc in shoalTypes.ts for why the recent-bite
+ * tail is part of that — both halves of it are reachable, though the void
+ * ledger only became so once the warm-up let a hush cross the boundary.
  *
  * A joining client adopts the newest checkpoint it can see rather than
  * replaying from genesis, so two honest clients MUST compute byte-identical

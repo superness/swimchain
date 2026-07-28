@@ -1217,25 +1217,16 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
     earlyRoll instanceof RangeError, earlyRoll?.message);
 }
 {
-  // A hand-built seed with a malformed epoch must be refused by foldShoal's
-  // OWN check, not merely by parseCheckpoint's wire-format validation --
-  // some caller could build a Checkpoint object directly (as every test in
-  // this file does) without ever routing it through parseCheckpoint.
-  // undefined !== (epoch - 1) is true for any finite epoch, so this throws
-  // unconditionally regardless of what `epoch` happens to be.
-  const epoch = 4;
-  const start = epochStartMs(epoch);
-  const badSeed = { epoch: undefined as unknown as number, sizes: [] as Array<[string, number]>, recent: [] };
-  let threw = false;
-  let isRangeError = false;
-  try { foldShoal([], start, { epoch, seed: badSeed }); }
-  catch (e) { threw = true; isRangeError = e instanceof RangeError; }
-  check('a seed with an undefined epoch is refused', threw === true && isRangeError === true);
-}
-{
-  // NaN !== anything, including NaN itself (NaN !== NaN is true in JS), so
-  // this also throws unconditionally -- no finite `epoch - 1` can ever equal
-  // NaN.
+  // The undefined-epoch case that used to sit here was dropped: its own
+  // comment observed that `undefined !== (epoch - 1)` holds for every finite
+  // epoch, so it threw unconditionally and could not distinguish a working
+  // check from a broken one. The NaN case below is kept because it pins
+  // something a plausible rewrite would get wrong: a check written with
+  // Math.abs(seed.epoch - (epoch-1)) < 1, or with a `<=` comparison, accepts
+  // NaN silently, while `!==` rejects it. It is a hand-built seed rather
+  // than a parsed one on purpose -- foldShoal's OWN check has to hold,
+  // because a caller can build a Checkpoint object directly (as every test in
+  // this file does) without routing it through parseCheckpoint.
   const epoch = 4;
   const start = epochStartMs(epoch);
   const badSeed: Checkpoint = { epoch: NaN, sizes: [], recent: [] };
@@ -1302,34 +1293,23 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
 }
 {
   // "The arithmetic matches what it would have been without a boundary in
-  // the way" -- checked as directly as this engine's own constants allow.
+  // the way": a bite credited just before the boundary, carried through the
+  // seed, is correctly retained in `recentBites` and correctly interacts with
+  // the SAME on-credit pruning a continuous (non-chopped) fold would apply
+  // when the swimmer bites again after crossing -- not merely present as
+  // inert leftover, but load-bearing in the array the next credit prunes.
   //
-  // A literal reading of that ask ("a sweep resolving just after the
-  // boundary VOIDS a genuinely pre-boundary bite") is impossible under the
-  // current CONSENSUS constants, verified by hand rather than assumed:
-  // stepTension's per-tick delta is capped at spreadPerMille(max 1000) -
-  // TENSION_NEUTRAL(250) = 750 (tension.ts), so reaching TENSION_TRIGGER
-  // (30_000) from a fresh epoch's tension=0 takes at least
-  // ceil(30000/750) = 40 ticks, triggering the hush no earlier than tick 40
-  // (t = epochStart + 39*TICK_MS = epochStart + 9750). The sweep then
-  // resolves HUSH_MS(8000) after the hush starts, so the EARLIEST any sweep
-  // can resolve in a fresh epoch is epochStart + 9750 + 8000 = +17750. Every
-  // pre-boundary bite is, by definition, older than epochStart, so its age
-  // at that earliest possible resolve is AT LEAST 17750ms -- which already
-  // exceeds VOID_WINDOW_MS(10000). Tension does not cross the epoch boundary
-  // (spec 3.9 point 3; emptyState always zeroes it), so there is no way to
-  // shorten this: no sweep in the new epoch can EVER resolve within
-  // VOID_WINDOW_MS of anything that happened before that epoch started. This
-  // is confirmed directly by the existing "headline regression" test
-  // elsewhere in this file, which independently derives the same 9750/17750
-  // figures for a same-epoch, no-boundary-involved hush.
-  //
-  // So the property actually worth proving is narrower, and provable: a bite
-  // credited just before the boundary, carried through the seed, is
-  // correctly retained in `recentBites` and correctly interacts with the
-  // SAME on-credit pruning a continuous (non-chopped) fold would apply when
-  // the swimmer bites again after crossing -- not merely present as inert
-  // leftover, but actually load-bearing in the array the next credit prunes.
+  // A NOTE ON WHAT USED TO BE IMPOSSIBLE HERE. An earlier version of this
+  // comment argued at length that a sweep in a new epoch could never void a
+  // pre-boundary bite: tension was zeroed at every boundary, so a fresh epoch
+  // needed at least ceil(TENSION_TRIGGER(30_000) / 750) = 40 ticks to reach
+  // the trigger and HUSH_MS(8000) more to resolve, putting the earliest
+  // possible resolve at epochStart + 9750 + 8000 = +17750 -- already past
+  // VOID_WINDOW_MS(10_000) from anything before the boundary. That argument
+  // was sound for the code it described and is now FALSE: the warm-up replay
+  // carries tension and an in-flight hush across the boundary, so a sweep can
+  // resolve one tick into a new epoch. The case is exercised directly by the
+  // "a carried bite is voidable" test below.
   const epoch = 10;
   const startE = epochStartMs(epoch);
   const startE1 = epochStartMs(epoch + 1);
@@ -1655,6 +1635,86 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   // statements consistent rather than a tuning coincidence.
   check('a swimmer whose vector had already expired is NOT brought back',
     !s.fish.has('dead'), [...s.fish.keys()]);
+}
+
+// --- A carried bite IS voidable by a sweep just after the boundary ----------
+// The second half of the `recent` carry -- `recentBites`, the scatter-void
+// ledger -- was unreachable before the warm-up existed, for the reason set
+// out above. It is reachable now, and this is the test that says so, because
+// "we keep this field defensively, it can never matter" is exactly the kind
+// of claim that rots into a real hole.
+//
+// Fixture: the boundary-crossing hush from the warm-up section (four
+// swimmers, tension climbing 750/tick from t = epochStart - 15_750, hush at
+// epochStart - 6000, lock at epochStart - 2000, resolution at
+// epochStart + 2000), plus a checkpoint that carries a bite from
+// epochStart - 5000.
+//
+// Hand derivation, epoch 21 (start = 21 * EPOCH_MS = 75_600_000):
+//   The four arrive at W = start - 15_750 as brand-new swimmers (the seed is
+//   not applied until the epoch's own first ms), so through the warm-up they
+//   are on START_SIZE(100) minus hunger. That does not matter to the outcome
+//   because the seed overwrites size at the boundary -- but it is why the
+//   LOCK, at start - 2000, freezes pre-seed sizes. All four are equal there,
+//   so topContributor keeps 'a' and selectTaken gives ['a','b','c'].
+//   At t = start the seed applies: every swimmer to 150, and 'a' alone to
+//   lastBiteMs = start - 5000, recentBites = [start - 5000].
+//   Hunger fires at t = start + 750 + 1000k. Between the boundary and the
+//   resolve tick that is start+750 and start+1750: 2 firings. 'a' is not
+//   exempt (gap from its carried bite is 5750 and 6750, both >= 1000).
+//     150 - 2 = 148 for everyone entering the resolve tick.
+//   t = start + 2000, the resolve tick, is NOT a hunger firing
+//   (2000 mod 1000 = 0), so the only losses there are the sweep's:
+//     'b','c'  148 - SCATTER_COST(30)                        = 118
+//     'a'      148 - 30 = 118, then the void: the carried bite is
+//              (start+2000) - (start-5000) = 7000 ms old, inside
+//              VOID_WINDOW_MS(10_000), so one bite voids:
+//              118 - BITE_GROWTH(12)                          = 106
+//     'd'      untaken                                        = 148
+//   The control -- byte-identical except that `recent` is empty -- must give
+//   'a' 118, exactly BITE_GROWTH more. That difference is the whole claim.
+{
+  const epoch = 21;
+  const start = epochStartMs(epoch);
+  const W = start - 15_750;
+  const spots: Array<[string, number, number]> = [
+    ['a', 0, 1504], ['b', 1600, 0], ['c', 1600, 3000], ['d', 3200, 1504],
+  ];
+  const log: LogEntry[] = [];
+  for (const [id, x, y] of spots) log.push(pres(id, x, y, W));
+  for (const [id, x, y] of spots) log.push(pres(id, x, y, start));
+
+  const biteMs = start - 5_000;
+  const sizes: Array<[string, number]> = spots.map(([id]) => [id, 150] as [string, number]);
+  const carried: Checkpoint = { epoch: epoch - 1, sizes, recent: [['a', biteMs, [biteMs]]] };
+  const dropped: Checkpoint = { epoch: epoch - 1, sizes, recent: [] };
+
+  const resolveAt = start + 2_000;
+  const withCarry = foldShoal(log, resolveAt, { epoch, seed: carried });
+  const without = foldShoal(log, resolveAt, { epoch, seed: dropped });
+
+  check('the sweep resolves two seconds into the new epoch, well inside VOID_WINDOW_MS of the bite',
+    withCarry.lastSweepMs === resolveAt && resolveAt - biteMs === 7_000
+      && resolveAt - biteMs < VOID_WINDOW_MS,
+    { lastSweepMs: withCarry.lastSweepMs, age: resolveAt - biteMs, VOID_WINDOW_MS });
+  check('the sweep takes the hand-derived set in both runs',
+    JSON.stringify(withCarry.lastTaken) === JSON.stringify(['a', 'b', 'c'])
+      && JSON.stringify(without.lastTaken) === JSON.stringify(['a', 'b', 'c']),
+    { withCarry: withCarry.lastTaken, without: without.lastTaken });
+  check('the untaken swimmer is at the hand-derived 148 in both runs',
+    withCarry.fish.get('d')!.size === 148 && without.fish.get('d')!.size === 148,
+    { withCarry: withCarry.fish.get('d')!.size, without: without.fish.get('d')!.size });
+  check('a taken swimmer with nothing to void loses only SCATTER_COST: 148 -> 118',
+    withCarry.fish.get('b')!.size === 118 && withCarry.fish.get('c')!.size === 118,
+    { b: withCarry.fish.get('b')!.size, c: withCarry.fish.get('c')!.size });
+  check('the swimmer whose carried bite is inside the void window loses BITE_GROWTH more: 106',
+    withCarry.fish.get('a')!.size === 106, withCarry.fish.get('a')!.size);
+  check('and the voided entry is removed from the ledger, so a later sweep cannot re-void it',
+    withCarry.fish.get('a')!.recentBites.length === 0, withCarry.fish.get('a')!.recentBites);
+  check('dropping `recent` from the same checkpoint hands that BITE_GROWTH straight back',
+    without.fish.get('a')!.size === 118
+      && without.fish.get('a')!.size - withCarry.fish.get('a')!.size === BITE_GROWTH,
+    { without: without.fish.get('a')!.size, withCarry: withCarry.fish.get('a')!.size });
 }
 
 // --- The checkpoint is canonical across fold endpoints (fix review C1) ------

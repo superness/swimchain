@@ -204,7 +204,14 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
         expiresMs: e.ms + PRESENCE_TTL_MS,
         lastScatterMs: prior ? prior.lastScatterMs : -1,
         lastBiteMs: prior ? prior.lastBiteMs : -1,
-        recentBites: prior ? prior.recentBites : [],
+        // Copied, not aliased. `prior` is either the Fish being replaced or a
+        // Departed record; sharing the array would make three owners of one
+        // object. It happens to be safe today because every write to
+        // recentBites REPLACES the array rather than mutating it in place —
+        // but that is an invariant nobody states and one `push` would break,
+        // and the failure would be a silent cross-record corruption of the
+        // scatter-void ledger. One copy per presence write is nothing.
+        recentBites: prior ? [...prior.recentBites] : [],
       });
       state.touchedIds.add(e.id);
       // Task 2's carry-forward: this revival path reads `departed` but
@@ -285,7 +292,7 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
         size: f.size,
         lastScatterMs: f.lastScatterMs,
         lastBiteMs: f.lastBiteMs,
-        recentBites: f.recentBites,
+        recentBites: [...f.recentBites], // copied, not aliased; see step 1
       });
       state.fish.delete(id);
       state.outsideTicks.delete(id);
