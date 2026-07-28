@@ -38,19 +38,50 @@ import { epochEndMs, epochOf, epochStartMs } from '../lib/epoch';
 import { reckon } from '../lib/fixed';
 import { richSession } from '../lib/shoalFixtures';
 import { HEADING_STEPS, SPEED_CRUISE, SPEED_DART, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
-import type { Checkpoint, LogEntry, ShoalState } from '../lib/shoalTypes';
+import type { Checkpoint, LogEntry, ShoalState, Vec } from '../lib/shoalTypes';
 
 /**
  * A sea the shell can draw. `step` is called once per frame with the wall
  * clock; everything else is internal.
+ *
+ * `publish`/`publishEat` are THE WRITE SEAM (Task 5). `App.tsx` never calls
+ * them directly — `emitDue` (input.ts) does, once `shouldEmit` has agreed —
+ * and the whole substitution needed to put a real room behind them is stated
+ * on `livelySea`'s own implementation below.
  */
 export interface Sea {
   /** Which swimmer the camera follows. */
   readonly selfId: string;
+  /** Where the player's swimmer starts, before it has published anything. */
+  readonly spawn: { readonly x: number; readonly y: number };
   /** Fold forward and return the world at this wall-clock instant. */
   step(wallMs: number): ShoalState;
   /** The sea's own clock at this wall-clock instant. Draw at THIS time. */
   seaMs(wallMs: number): number;
+  /** Publish this client's swim vector, with any word riding along on it. */
+  publish(vec: Vec, say?: string): void;
+  /** Publish an eat claim on `cell`, at the instant `ms`. */
+  publishEat(cell: number, ms: number): void;
+  /** Words spoken recently enough to still be over someone's head. */
+  speechAt(atMs: number): Map<string, string>;
+}
+
+/** How long a word stays over a swimmer's head. Display-side, arbitrary. */
+export const SPEECH_MS = 7_000;
+
+/**
+ * Words currently over swimmers' heads, read straight out of the log the fold
+ * is walking — so this works identically for a scripted sea and for a real
+ * room, and there is no second place speech could live and disagree.
+ */
+function speechFrom(log: readonly LogEntry[], atMs: number): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const e of log) {
+    if (e.kind !== 'presence' || e.say === undefined) continue;
+    if (e.ms > atMs || atMs - e.ms > SPEECH_MS) continue;
+    out.set(e.id, e.say); // later entries win; the log is scanned in order
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,12 +139,23 @@ export function harnessSea(wallStartMs: number): Sea {
   const seaMs = (wallMs: number) => Math.min(H_START + (wallMs - wallStartMs), H_END);
   return {
     selfId: 'e0',
+    // e0 is a FIXTURE swimmer, so this is where the harness puts it (the
+    // centre of bloom cell 367) rather than a spawn the player owns.
+    spawn: { x: 1984, y: 1472 },
     seaMs,
     step(wallMs: number): ShoalState {
       const t = seaMs(wallMs);
       loop = advance(loop, log, t).loop;
       return loop.state;
     },
+    // DELIBERATELY INERT. This sea is the PROOF — it replays the harness's
+    // exact log so the window can be checked against `npm run harness`'s
+    // printed table — and a player writing into it would no longer be
+    // replaying that log. Its clock also stops at H_END, so a write after
+    // that would author a duplicate instant. Play in the lively sea (key 1).
+    publish() { /* the proof sea is not a playground */ },
+    publishEat() { /* as above */ },
+    speechAt: (atMs: number) => speechFrom(log, atMs),
   };
 }
 
@@ -176,7 +218,10 @@ export function livelySea(wallStartMs: number): Sea {
   let serial = 0;
 
   const centre0 = schoolCentre(wallStartMs);
-  const brains: Brain[] = SEED_SIZES.map(([id], i) => {
+  // `you` is not scripted any more — Task 5 hands it to the player's own
+  // input, so the loop below skips it and the only thing that ever writes a
+  // vector for it is `publish`.
+  const brains: Brain[] = SEED_SIZES.filter(([id]) => id !== 'you').map(([id], i) => {
     const loner = i % 6 === 4; // three of sixteen out in open water
     const orbit = (i / SEED_SIZES.length) * Math.PI * 2 + rand() * 0.9;
     const radius = loner ? 1000 + rand() * 750 : 210 + rand() * 560;
@@ -237,9 +282,45 @@ export function livelySea(wallStartMs: number): Sea {
     }
   }
 
+  // The player starts just inside the school, close enough to be sheltered on
+  // the first frame and to have somewhere to swim away from.
+  const spawn = {
+    x: Math.round(Math.max(60, Math.min(WORLD_W - 60, centre0.x + 260))),
+    y: Math.round(Math.max(60, Math.min(WORLD_H - 60, centre0.y - 180))),
+  };
+
   return {
     selfId: 'you',
+    spawn,
     seaMs: (wallMs: number) => wallMs,
+    /**
+     * THE WRITE SEAM. `emitDue` (input.ts) calls this only after `shouldEmit`
+     * has agreed, at most once per frame — never the render loop directly.
+     *
+     * Here it appends to the log this sea's own fold walks, which is exactly
+     * what a local write does before gossip carries it anywhere: the node's
+     * `get_replies` merges the mempool in, so a client sees its own write back
+     * immediately and folds it the same way every other client eventually
+     * will. The real version is one substitution —
+     *
+     *   publish: (vec, say) => void sendPresence(ctx, vec, say)
+     *
+     * — and it is not made HERE because nothing in this plan establishes a
+     * room to write into: the only place a Shoal space and room post are ever
+     * created is `scripts/regtest-smoke.ts`, and Task 7's two-client smoke is
+     * where the shell gets one. See the task report.
+     *
+     * `vec.t` is already `wall + TICK_MS` (App.tsx's authoring clock), which
+     * is what keeps the entry strictly ahead of the last folded tick and off
+     * `advance`'s bounded-replay path.
+     */
+    publish(vec: Vec, say?: string): void {
+      log.push({ kind: 'presence', id: 'you', ms: vec.t, hash: `you-${serial++}`, vec, ...(say !== undefined ? { say } : {}) });
+    },
+    publishEat(cell: number, ms: number): void {
+      log.push({ kind: 'eat', id: 'you', cell, ms, hash: `youe-${serial++}` });
+    },
+    speechAt: (atMs: number) => speechFrom(log, atMs),
     step(wallMs: number): ShoalState {
       emitDue(wallMs);
       loop = advance(loop, log, wallMs).loop;

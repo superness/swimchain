@@ -50,6 +50,16 @@ export interface Swimmer {
   self: boolean;
   /** True while this swimmer is dazed from a scatter (spec 2.9). */
   scattered?: boolean;
+  /**
+   * How full this swimmer's dart is, 0 to 1, or undefined for a swimmer whose
+   * charge this client cannot know — which is everyone but you, since a dart
+   * cooldown is not on the wire. Drawn as a ring around the body.
+   */
+  charge?: number;
+  /** True while the burst itself is running. */
+  darting?: boolean;
+  /** A word over this swimmer's head, if they have just spoken. */
+  say?: string;
 }
 
 export interface Frame {
@@ -58,6 +68,21 @@ export interface Frame {
   /** Display time in ms — the wall clock, passed in, never read here. */
   atMs: number;
   swimmers: readonly Swimmer[];
+  /**
+   * Where the player has asked to go, in world cu, while they are holding a
+   * heading — or null. Drawn as a small disturbance in the water, NOT as a
+   * marker on the fish: a held heading does not reach anyone until it is
+   * written, so turning the body early would be the display disagreeing with
+   * the fold (render.ts's header). This is an intention in the water, and it
+   * is the only honest way to show one.
+   */
+  aim?: { x: number; y: number } | null;
+  /**
+   * The centre of a bloom cell the player could take a bite from RIGHT NOW,
+   * or null. Judged by the fold's own `canEat`, never by a display-side guess
+   * — see App.tsx, and see the report on why there is no map of where food is.
+   */
+  bite?: { x: number; y: number } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +575,182 @@ function paintSelfGlow(ctx: CanvasRenderingContext2D, f: Frame, sw: Swimmer, sx:
   ctx.fill();
 }
 
+/**
+ * THE SECOND SCOREBOARD (spec 2.4: "its cooldown is displayed as prominently
+ * as size").
+ *
+ * Size is worn on the body, so the dart is worn on the body too — a ring of
+ * light around the player's own fish that empties the instant it is spent and
+ * refills over DART_COOLDOWN_MS. Not a bar in a corner, not a number: the two
+ * scoreboards sit on the same object, at the same scale, and are read in the
+ * same glance at the same place on screen. That is what "as prominently as
+ * size" has to mean on a surface with no text on it.
+ *
+ * The three states are meant to be distinguishable at a glance and at speed:
+ *
+ *  - **spent / recharging** — a dim, cold, partial arc that sweeps clockwise
+ *    from the top. Cold on purpose: it is the only cold thing on the player's
+ *    otherwise warm body, so an empty dart reads as something missing.
+ *  - **ready** — a complete warm ring with a slow breath in it. Closed is the
+ *    signal; a player learns "closed means I can run" in one loop.
+ *  - **burning** — while the burst is actually running, the ring flares
+ *    outward and fades, so spending it is an event rather than a state change
+ *    you notice later.
+ *
+ * `charge === 1` is exactly `canDart` (input.ts pins that at every instant
+ * across a whole recharge), so this ring cannot say "ready" about a verb that
+ * would be refused.
+ */
+function paintDartRing(
+  ctx: CanvasRenderingContext2D, f: Frame, sw: Swimmer, sx: number, sy: number,
+): void {
+  const charge = sw.charge;
+  if (charge === undefined) return;
+  const rPx = bodyRadiusCu(sw.size) * f.cam.scale;
+  // A floor in PIXELS as well as a multiple of the body: a small fish still
+  // has to be able to read its own dart, and size already has a scoreboard.
+  const ring = Math.max(rPx * 2.7, 26);
+  if (ring < 6) return;
+  const full = charge >= 1;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+
+  // The seat the arc runs in — always visible, so an empty dart is an empty
+  // ring rather than nothing at all. Kept DIM and THIN, because the whole
+  // legibility of the thing is the contrast between it and the charge.
+  ctx.beginPath();
+  ctx.arc(sx, sy, ring, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(96, 140, 158, 0.13)';
+  ctx.lineWidth = Math.max(1, ring * 0.05);
+  ctx.stroke();
+
+  // The charge itself, from the top, clockwise.
+  if (charge > 0) {
+    const start = -Math.PI / 2;
+    const end = start + Math.PI * 2 * charge;
+    const breath = full ? 0.82 + 0.18 * Math.sin(f.atMs / 520) : 1;
+    ctx.beginPath();
+    ctx.arc(sx, sy, ring, start, end);
+    ctx.strokeStyle = full
+      ? `rgba(255, 206, 138, ${0.94 * breath})`
+      : 'rgba(168, 232, 255, 0.85)';
+    ctx.lineWidth = Math.max(1.8, ring * (full ? 0.11 : 0.1));
+    ctx.stroke();
+    if (!full) {
+      // A bright head at the leading tip. This is what makes the fill LEVEL
+      // unambiguous at a glance — an arc alone on a circle reads as "some of
+      // it", a travelling dot reads as "this far, and climbing".
+      ctx.beginPath();
+      ctx.arc(sx + Math.cos(end) * ring, sy + Math.sin(end) * ring, Math.max(2, ring * 0.1), 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(226, 248, 255, 0.95)';
+      ctx.fill();
+    }
+  }
+
+  if (full) {
+    // A soft outer halo so a charged dart is legible even when the fish is
+    // small on screen or lost in a crowd.
+    const g = ctx.createRadialGradient(sx, sy, ring * 0.86, sx, sy, ring * 1.5);
+    g.addColorStop(0, 'rgba(255, 198, 120, 0.16)');
+    g.addColorStop(1, 'rgba(255, 190, 110, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(sx, sy, ring * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (sw.darting === true) {
+    // Spending it is an event: a wider, brighter ring thrown outward.
+    ctx.beginPath();
+    ctx.arc(sx, sy, ring * 1.28, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 236, 200, 0.5)';
+    ctx.lineWidth = Math.max(1, rPx * 0.12);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * A word over a swimmer's head. The one text in the whole game surface, and it
+ * is the player's own — spec 2.6 makes speech the honest tell that a swimmer
+ * is a person, so it has to be readable as language rather than as an icon.
+ */
+function paintSay(
+  ctx: CanvasRenderingContext2D, f: Frame, sw: Swimmer, sx: number, sy: number,
+): void {
+  if (sw.say === undefined) return;
+  const rPx = bodyRadiusCu(sw.size) * f.cam.scale;
+  const y = sy - rPx * 2.6;
+  ctx.save();
+  ctx.font = '500 13px ui-sans-serif, system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const w = Math.min(260, ctx.measureText(sw.say).width) + 16;
+  ctx.fillStyle = 'rgba(4, 20, 28, 0.66)';
+  ctx.beginPath();
+  ctx.roundRect(sx - w / 2, y - 11, w, 22, 11);
+  ctx.fill();
+  ctx.fillStyle = sw.self ? '#ffdfae' : '#d3edf6';
+  ctx.fillText(sw.say, sx, y, 250);
+  ctx.restore();
+}
+
+/** Where the player has asked to go: a small ring of disturbed water, fading. */
+function paintAim(ctx: CanvasRenderingContext2D, f: Frame): void {
+  if (!f.aim) return;
+  const s = worldToScreen(f.cam, f.view, f.aim.x, f.aim.y);
+  const pulse = 0.5 + 0.5 * Math.sin(f.atMs / 260);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let k = 0; k < 2; k++) {
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, (7 + k * 7) * (0.85 + 0.15 * pulse), 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(190, 232, 246, ${0.2 - k * 0.1})`;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/**
+ * Something to eat, right here, right now — drawn ONLY when the fold's own
+ * `canEat` says a bite would credit at this instant (App.tsx runs the check).
+ *
+ * This is deliberately a near-field cue and not a food map. `isBloomReady` is
+ * true for very nearly every one of the 768 cells at session start ("the sea
+ * starts full", bloom.ts), so anything that claimed to show WHERE food is
+ * would either carpet the whole sea or pick a subset on a rule the game does
+ * not have. What is drawn here is the one thing that is honestly known.
+ */
+function paintBite(ctx: CanvasRenderingContext2D, f: Frame): void {
+  if (!f.bite) return;
+  const s = worldToScreen(f.cam, f.view, f.bite.x, f.bite.y);
+  const r = 26 * f.cam.scale + 10;
+  const breath = 0.55 + 0.45 * Math.sin(f.atMs / 380);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const g = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r * 2.6);
+  g.addColorStop(0, `rgba(178, 255, 206, ${0.3 * breath})`);
+  g.addColorStop(0.4, `rgba(130, 226, 176, ${0.11 * breath})`);
+  g.addColorStop(1, 'rgba(110, 200, 160, 0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(s.x, s.y, r * 2.6, 0, Math.PI * 2);
+  ctx.fill();
+  // A few motes hanging in it, so it reads as something in the water rather
+  // than as a UI ring painted over it.
+  for (let k = 0; k < 7; k++) {
+    const a = unit(k * 31 + 5) * Math.PI * 2 + f.atMs / 2600;
+    const d = r * (0.35 + unit(k * 17 + 3) * 0.8);
+    ctx.fillStyle = `rgba(206, 255, 224, ${0.34 * breath})`;
+    ctx.beginPath();
+    ctx.arc(s.x + Math.cos(a) * d, s.y + Math.sin(a) * d * 0.8, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------------------
 // The frame
 // ---------------------------------------------------------------------------
@@ -582,15 +783,29 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
   // Deepest first, so overlapping fish stack the way the water implies.
   visible.sort((a, b) => a.y - b.y);
 
+  // Under the bodies: what is in the water rather than on it.
+  paintBite(ctx, f);
+  paintAim(ctx, f);
+
   for (const v of visible) {
     if (!v.sw.self) continue;
     const s = worldToScreen(f.cam, f.view, v.x, v.y);
     paintSelfGlow(ctx, f, v.sw, s.x, s.y);
   }
   for (const v of visible) paintWake(ctx, f, v.sw);
+  // The dart ring goes UNDER the body it belongs to, so a charged dart reads
+  // as light coming off the fish rather than as a hoop drawn on top of it.
+  for (const v of visible) {
+    const s = worldToScreen(f.cam, f.view, v.x, v.y);
+    paintDartRing(ctx, f, v.sw, s.x, s.y);
+  }
   for (const v of visible) {
     const s = worldToScreen(f.cam, f.view, v.x, v.y);
     paintFish(ctx, f, v.sw, s.x, s.y);
+  }
+  for (const v of visible) {
+    const s = worldToScreen(f.cam, f.view, v.x, v.y);
+    paintSay(ctx, f, v.sw, s.x, s.y);
   }
 
   paintMurk(ctx, f);

@@ -130,6 +130,42 @@ would tell us if it did.
 Widening the fingerprint is cheap. Do it before plan 3 adds wild fish, which touch both
 fields.
 
+### 10. A swimmer that swims to a bloom can never eat it
+
+**Found by:** the shell's Task 5 (the four verbs), measured against the real fold.
+
+`BLOOM_VISIT_R` (200 cu) is the radius at which a fish marks a cell **visited**; `EAT_R`
+(90 cu) is the radius within which it may take a **bite**. The fold stamps `lastVisit` at
+the end of a tick (`markVisits`, step 3 of `foldTick`) and judges eat claims at the start of
+the next one (step 1). So to take a bite from an **unlatched** bloom, a swimmer must get
+from outside 200 cu to inside 90 cu *within a single tick* — **110 cu in `TICK_MS`**. The
+fastest anything in this game moves is `SPEED_DART`, which covers `220 × 250 / 1000 = 55`
+cu in a tick. The gap needs **twice the top speed in the game**.
+
+Measured, not argued (`shoal-client` Task 5 probe, against `createLoop`/`advance`):
+
+| scenario | result |
+|---|---|
+| swimmer cruises in from 800 cu away and claims on arrival | `bitesTaken = 0`, size **85** (hunger only) |
+| swimmer's **first** presence vector is already on the cell centre, claims at the same ms | `bitesTaken = 1`, latched, size **111** |
+| ...then seven more claims at `EAT_COOLDOWN_MS` spacing | `bitesTaken = 6` (the full bloom), size **148** |
+
+So the eat verb is reachable **only** by a swimmer whose presence begins inside `EAT_R` —
+which no swimmer who is actually swimming can arrange — and by anyone who reaches a bloom
+another swimmer has already latched.
+
+This matters well beyond the verb. Spec §2.2 is *"food grows in the open, safety is in the
+crowd, and they are never in the same place"*; if nobody can open a bloom, nobody peels off,
+tension never rises from foraging, and §2.3's whole 60–90 s loop has no engine.
+
+**Both constants are CONSENSUS** (`shoalConst.ts`), so this cannot be tuned away later
+without a hard fork — it has to be decided before launch. The candidates are `BLOOM_VISIT_R
+< EAT_R`, judging the claim against a `lastVisit` snapshot taken before the claimant's own
+visits, or exempting the claimant from its own stamp. Each is a different game.
+
+Pinned by a tripwire in `shoal-client/src/ui/input.test.ts` §8, which fails the day a
+constant moves, so the fix lands with this item rather than silently.
+
 ### 9. Smaller
 
 - `foldShoal` throws a `RangeError` at every epoch end, so a naive
