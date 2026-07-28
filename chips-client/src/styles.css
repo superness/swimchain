@@ -618,44 +618,45 @@ h1, h2, h3, p { margin: 0; }
 
 /* the multiplier ladder: the summit must be VISIBLE to make holding a
    gamble — x2..x16 rungs, x32 topped in gold */
-/* THE LADDER MUST FIT ITS PLATE. It was a no-wrap flex row, so its rungs
-   overflowed their own box and then the slot: measured at 512px wide, the
-   x2 and x64 rungs each sat 3px OUTSIDE the fryer's column (operator: "the
-   x2 and x64 cards (left)(right) ... extending out past the width of their
-   containers"). The Long Fry's sixth rung is what tipped it over — five fit,
-   six did not, and #175 constrained the PLATE without noticing its contents
-   still spilled.
+/* THE LADDER IS ONE TRACK, NOT SIX BADGES.
+   It began as six bordered pills each carrying its own "x". At five rungs
+   that fit; The Long Fry's sixth did not, and the wrap that stopped them
+   spilling then pushed the plate off the bottom of a phone (operator: "the
+   2 liner issue is pushing other elements off the bottom - we need to keep
+   it on one line").
 
-   `flex-wrap` is the structural half: a rung that cannot fit drops to a
-   second line instead of hanging off the side, so a seventh rung could never
-   reintroduce this. The tighter mobile sizing below is what keeps six on one
-   line where there is room for it. */
+   Six pills cannot hold a ~90px line. Six NUMERALS can, with room to spare —
+   the width was never the numbers, it was the chrome around them: six
+   borders, twelve paddings and six repeated "x" glyphs, none of which
+   carried information the track as a whole does not. One border, one "x",
+   bare numerals. ~160px of content becomes ~75px, and the summit is still
+   visible ahead of you, which is the whole job of the thing. */
 .ladder {
-  display: flex; flex-wrap: wrap; justify-content: center;
+  display: flex; flex-wrap: nowrap; justify-content: center; align-items: baseline;
   gap: 4px; margin-top: 3px; min-width: 0; max-width: 100%;
+  padding: 1px 6px; border-radius: 6px;
+  border: 1px solid rgba(190, 164, 124, .22);
+  background: rgba(0, 0, 0, .28);
+}
+.ladder::before {
+  /* the literal glyph, NOT a ` d7` escape — the escape did not survive the
+     production minifier and shipped as a replacement char followed by "d7",
+     caught in a zoomed screenshot */
+  content: '×'; color: #6f6152; font-size: .62em; margin-right: 1px;
 }
 .ladder .rung {
-  /* Sized so SIX rungs hold one line — five fit comfortably at .78em/5px,
-     six did not, and the wrap that saves them from spilling should be a
-     safety net rather than the normal look. */
-  font-style: normal; font-family: var(--chalk); font-size: .7em;
-  padding: 0 3.5px; border-radius: 4px; color: #6f6152;
-  border: 1px solid rgba(190, 164, 124, .25);
-  white-space: nowrap;
+  font-style: normal; font-family: var(--chalk); font-size: .72em;
+  color: #6f6152; white-space: nowrap;
 }
-.ladder .rung.lit { color: #ffd98e; border-color: rgba(255, 210, 150, .6); background: rgba(60, 40, 18, .8); }
-.ladder .rung.top { border-color: rgba(255, 220, 140, .45); }
-.ladder .rung.top.lit {
-  color: #2a1a04; background: linear-gradient(180deg, #ffe9a8, #f0b93c);
-  border-color: #fff3cf; box-shadow: 0 0 10px rgba(255, 205, 90, .7);
-}
-/* the x64 rung: visibly a different kind of rung even before it lights, so
-   owning The Long Fry is legible on the fryer and not just in the shop */
-.ladder .rung.deep { border-color: rgba(255, 140, 70, .45); color: #b07048; }
-.ladder .rung.deep.lit {
-  color: #ffe6c2; background: linear-gradient(180deg, #a8360d, #521404);
-  border-color: #ffd9a8; box-shadow: 0 0 12px rgba(255, 120, 40, .8);
-}
+.ladder .rung.lit { color: #ffd98e; }
+/* the summit reads as the summit even unlit */
+.ladder .rung.top { color: #8a7454; }
+.ladder .rung.top.lit { color: #ffe9a8; text-shadow: 0 0 8px rgba(255, 205, 90, .95); }
+/* ...and The Long Fry's rung is a different KIND of summit. Declared after
+   `.top` on purpose: at ceiling 6 both classes land on the same rung and
+   this one must win. */
+.ladder .rung.deep { color: #a2643f; }
+.ladder .rung.deep.lit { color: #ffb27a; text-shadow: 0 0 10px rgba(255, 120, 40, .95); }
 
 /* the overflow warning — BEFORE the dip, never after */
 .pot-worth.over { color: #ff9a72; }
@@ -1180,14 +1181,11 @@ h1, h2, h3, p { margin: 0; }
   .rack-2 .basket-slot, .rack-3 .basket-slot, .rack-4 .basket-slot, .basket-slot {
     width: min(clamp(112px, 30vw, 170px), 22vh);
   }
-  /* Tighter again for a phone. MEASURED across a viewport matrix: six rungs
-     hold one line while the slot is >=154px and wrap to two below that (a
-     short viewport narrows the slot through `.basket-slot`'s 22vh cap, down
-     to ~110px in landscape). NO SPILL at any size tested, 390x700 through
-     1920x1080 — the wrap is what guarantees that, and two legible lines beat
-     six unreadable pills crammed into 110px. */
-  .ladder { gap: 2.5px; }
-  .ladder .rung { padding: 0 3px; }
+  /* The narrowest slot the game renders is ~110px (a landscape phone, via
+     `.basket-slot`'s 22vh cap), leaving ~94px of plate once its padding is
+     trimmed below. The track needs ~75px there. One line, everywhere. */
+  .ladder { gap: 3px; padding: 1px 4px; }
+  .worth { padding-left: 8px; padding-right: 8px; }
 
   /* Fryers need air between them on a phone (operator). The desktop gap
      bottoms out at 10px here because 1.6vw is tiny at this width — which is
@@ -1724,11 +1722,30 @@ h1, h2, h3, p { margin: 0; }
 .burner {
   position: absolute; bottom: -13px; left: 50%; translate: -50% 0; z-index: 6;
   width: clamp(26px, 3vw, 34px); height: clamp(26px, 3vw, 34px);
-  border-radius: 999px; line-height: 1;
+  border-radius: 999px;
+  /* THE GLYPH SITS IN THE MIDDLE. Neither of these round buttons ever
+     centred its contents: the reset strips a button's border and background
+     but NOT the UA's default `padding: 1px 6px`, and against a FIXED width
+     that leaves a content box narrower than the glyph — measured, the flame
+     overflowed it and rode 1px right and 0.6px high (operator: "the fire
+     icon is not centered in it's container"). `line-height: 1` alone does
+     not centre anything; it only stops the line box being taller than the
+     text. Grid + `place-items` centres on both axes and `padding: 0` stops
+     the UA deciding otherwise. */
+  display: grid; place-items: center; padding: 0; line-height: 1;
+  font-size: clamp(13px, 1.5vw, 17px);
   background: rgba(14, 10, 7, .9);
   border: 1px solid rgba(236, 228, 214, .3);
   filter: grayscale(1) brightness(.7);
 }
+/* NOTE, verified at 52x with crosshairs: the box is now mathematically
+   centred (measured offset x 0.00), but the 🔥 glyph's INK sits slightly
+   left inside its own em box. That is an emoji font metric, not layout, and
+   it differs by platform — Segoe UI Emoji here, Noto on the operator's
+   phone — so a hand-tuned nudge would correct one and break the other. An
+   inline SVG flame (the way every critter in this game is drawn) is the
+   only fix that is right everywhere; left as a deliberate choice, not an
+   oversight. */
 
 /* THE WHISTLE (A Reason). Shares the top-left corner with `.wing-perch` and
    can never collide with it: the whistle renders only on baskets the wing is
@@ -1736,7 +1753,11 @@ h1, h2, h3, p { margin: 0; }
 .wing-call {
   position: absolute; top: -12px; left: -10px; z-index: 5;
   width: clamp(24px, 2.8vw, 32px); height: clamp(24px, 2.8vw, 32px);
-  border-radius: 999px; line-height: 1;
+  border-radius: 999px;
+  /* same centring as `.burner` above — it had the same defect, and the
+     cooling countdown ("31") is two characters where the ✦ is one, so an
+     off-centre content box shows even more here */
+  display: grid; place-items: center; padding: 0; line-height: 1;
   font-size: clamp(11px, 1.3vw, 14px); color: #ffd08a;
   background: rgba(14, 10, 7, .9);
   border: 1px solid rgba(255, 208, 138, .45);
