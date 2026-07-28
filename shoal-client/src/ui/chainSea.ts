@@ -16,8 +16,8 @@
  *
  * `remote` is what the node last told us. `pending` is what this client has
  * published and the node has not handed back yet. They are folded together,
- * and a pending entry is retired the moment the same (id, ms) shows up in
- * `remote`.
+ * and a pending entry is retired the moment the same (id, ms, KIND) shows up
+ * in `remote`.
  *
  * That is not belt-and-braces, it is the only way the player's own fish moves
  * at all: a write is mined (Argon2id), signed, submitted, gossiped and only
@@ -31,10 +31,52 @@
  * Matching on `(id, ms)` rather than on the content id is deliberate: the
  * content id is `sha256` of the encoded body and is only known once the node
  * answers, whereas `ms` is the authoring instant this client chose and
- * `shoalEmit`'s one-clock rule guarantees no honest client authors two bodies
- * at the same `ms` (see `shouldEmit`'s header). A duplicate would be harmless
- * anyway — two identical presences at one `ms` fold to one world — but
- * retiring them keeps the log from growing without bound.
+ * `shoalEmit`'s one-clock rule guarantees no honest client authors two
+ * PRESENCE bodies at the same `ms` (see `shouldEmit`'s header).
+ *
+ * `kind` HAS TO BE PART OF THAT KEY, and leaving it out was a real defect,
+ * not an over-specification. `shouldEmit`'s one-clock rule covers presences
+ * only: an eat claim is authored from the SAME `authorMs` in the same frame
+ * (App.tsx steps 3 and 5 both use it), which is routine rather than exotic.
+ * Without `kind` the landing vector retires the un-landed eat claim and the
+ * landing eat claim retires the un-landed vector — each one deleting the
+ * other's optimistic row, so the swimmer's own fish snaps back to its
+ * previous vector, or its bite un-credits, for a whole refetch cycle. The
+ * two are different verbs at one instant and nothing about one says anything
+ * about the other.
+ *
+ * ## An optimistic row is a claim, and a claim can be withdrawn
+ *
+ * A pending row is a promise that a write is on its way. THREE THINGS CAN
+ * HAPPEN TO IT, and until this branch only the first was handled:
+ *
+ *  1. it lands — `refetch` sees it and retires it (above);
+ *  2. the write is REJECTED — `sendPresence`/`sendEat` throws (no sponsor, a
+ *     node that has stopped answering, a malformed body). The row is rolled
+ *     back by `withdraw` below;
+ *  3. the write neither lands nor visibly fails — a submission the node
+ *     accepted and then purged (open item 2's "author not authorized in
+ *     space" is exactly this shape, and it is silent). The row is expired by
+ *     `PENDING_TTL_MS`.
+ *
+ * Leaving 2 and 3 unhandled was not cosmetic. A pending row can only ever be
+ * retired by a matching entry in `remote`, so one that will never arrive
+ * stays FOREVER: the client folds a claim nobody else has, its own size grows
+ * on a bite the world did not credit, and because `advance` seeds the next
+ * epoch from its own checkpoint the phantom crosses every hour boundary while
+ * every peer shows the true value.
+ *
+ * WITHDRAWING A ROW ALSO HAS TO UNDO THE FOLD, which is why `withdraw` drops
+ * the loop rather than only splicing the array. By the time a write rejects,
+ * mining and a round trip have gone by and `advance` has long since admitted
+ * the row into `loop.appliedHashes` and `loop.ordered` — removing it from
+ * `pending` alone would leave the phantom in the world and change nothing on
+ * screen. `createLoop(loop.epoch, loop.seed)` re-enters through the same
+ * seeded warm-up path a cold joiner and a rollover both use (shoalLoop.ts
+ * section 4: there is exactly one way to start an epoch), and the next
+ * `step` re-folds the corrected log. It costs one bounded epoch replay —
+ * the same price `advance` already pays for any entry that lands behind its
+ * cursor — and it is paid only when a write actually failed.
  *
  * ## The event races the read
  *
@@ -60,6 +102,7 @@ import { epochOf } from '../lib/epoch';
 import { fetchRoomLog } from '../lib/shoalRoom';
 import { DEFAULT_POLL_INTERVAL_MS, startLive } from '../lib/shoalLive';
 import { powProfileFor, sendEat, sendPresence, type SendCtx, type SignFn } from '../lib/shoalSend';
+import { PRESENCE_TTL_MS } from '../lib/shoalConst';
 import type { RpcAuth } from '../lib/shoalRpc';
 import type { LogEntry, ShoalState, Vec } from '../lib/shoalTypes';
 import { speechFrom, type Sea } from './demoSea';
@@ -82,6 +125,24 @@ export interface ChainSeaConfig {
 /** How long after an event-driven refetch to look again, to cover the gap
  *  between `content_new` and `get_replies` (see the module header). */
 const RECHECK_MS = 600;
+
+/**
+ * How long an optimistic row may sit unretired before this client treats it as
+ * lost and withdraws it. Case 3 in the module header — the write the node took
+ * and then quietly dropped, which raises no error anywhere.
+ *
+ * DERIVED, not chosen. `PRESENCE_TTL_MS` is the exact point past which a
+ * pending row cannot matter even if it were genuine: `foldTick` evicts a
+ * presence once `t > vec.t + PRESENCE_TTL_MS`, so a row older than that has
+ * already stopped keeping its own fish alive, and an eat claim that far behind
+ * the cursor is long since folded or floored. It is also comfortably above
+ * every honest delay in the write path — mining, submission, gossip, the
+ * 74-372 ms `content_new`-to-`get_replies` lag (open item 11), and
+ * `DEFAULT_POLL_INTERVAL_MS` between refetches — so a slow write is never
+ * withdrawn out from under itself. Measured against `PRESENCE_TTL_MS`
+ * directly, never a second hardcoded 90_000.
+ */
+const PENDING_TTL_MS = PRESENCE_TTL_MS;
 
 export interface ChainSea extends Sea {
   /** Tear down the live socket and the timers. */
@@ -131,7 +192,12 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       const next = await fetchRoomLog(cfg.auth, cfg.spaceId, cfg.roomContentId);
       if (stopped) return;
       remote = next;
-      pending = pending.filter((p) => !next.some((r) => r.id === p.id && r.ms === p.ms));
+      // Retire on (id, ms, KIND). See the module header on why `kind` is part
+      // of the key: a vector and an eat claim share one `authorMs` routinely,
+      // and without it each retires the other.
+      pending = pending.filter(
+        (p) => !next.some((r) => r.id === p.id && r.ms === p.ms && r.kind === p.kind),
+      );
     } catch (e) {
       report('fetchRoomLog', e); // keep folding the last good log
     } finally {
@@ -157,37 +223,78 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
     return pending.length === 0 ? remote : [...remote, ...pending];
   }
 
+  /**
+   * Withdraw every pending row `doomed` names, and make the fold forget them.
+   *
+   * The loop is dropped rather than patched because there is no way to patch
+   * it: `advance` has already put the row in `appliedHashes` (so re-offering
+   * the corrected log would change nothing) and in `ordered` (so every replay
+   * would keep re-folding it). `createLoop(epoch, seed)` is the one legal way
+   * to start an epoch — the same call a cold joiner and a rollover both make —
+   * and it carries this loop's own epoch and seed forward, so nothing but the
+   * withdrawn row is lost.
+   *
+   * A no-op when nothing matched, so the ordinary path never pays for it.
+   */
+  function withdraw(doomed: (p: LogEntry) => boolean): void {
+    const kept = pending.filter((p) => !doomed(p));
+    if (kept.length === pending.length) return;
+    pending = kept;
+    if (loop !== null) loop = createLoop(loop.epoch, loop.seed);
+  }
+
   return {
     selfId: cfg.authorIdHex,
     spawn: cfg.spawn,
     seaMs: (wallMs: number) => wallMs,
 
     publish(vec: Vec, say?: string): void {
+      // The synthetic hash is captured, not just minted: it is this row's only
+      // identity until the node answers, and it is what `withdraw` names if
+      // the write never gets there.
+      const hash = `pending-${serial++}`;
       pending.push({
         kind: 'presence',
         id: cfg.authorIdHex,
         ms: vec.t,
-        hash: `pending-${serial++}`,
+        hash,
         vec,
         ...(say !== undefined ? { say } : {}),
       });
       void ctxReady
         .then((c) => sendPresence(c, vec, say))
         .then(() => refetch())
-        .catch((e) => { report('sendPresence', e); });
+        .catch((e) => {
+          // A dart nobody was told about is not a dart. Take the claim back
+          // before reporting, so the sea on screen is the sea that exists.
+          withdraw((p) => p.hash === hash);
+          report('sendPresence', e);
+        });
     },
 
     publishEat(cell: number, ms: number): void {
-      pending.push({ kind: 'eat', id: cfg.authorIdHex, cell, ms, hash: `pending-${serial++}` });
+      const hash = `pending-${serial++}`;
+      pending.push({ kind: 'eat', id: cfg.authorIdHex, cell, ms, hash });
       void ctxReady
         .then((c) => sendEat(c, cell, ms))
         .then(() => refetch())
-        .catch((e) => { report('sendEat', e); });
+        .catch((e) => {
+          // Otherwise this client alone believes it grew.
+          withdraw((p) => p.hash === hash);
+          report('sendEat', e);
+        });
     },
 
     speechAt: (atMs: number) => speechFrom(combined(), atMs),
 
     step(wallMs: number): ShoalState {
+      // Case 3 of the module header: a row the node accepted and then dropped
+      // raises nothing anywhere, so the only thing that can catch it is time.
+      // Done here, before the fold, because this is the one method with a
+      // clock. The comparison is against the authoring instant the row carries,
+      // never a second clock read.
+      withdraw((p) => wallMs - p.ms >= PENDING_TTL_MS);
+
       // The epoch is chosen from the first frame's clock, not at construction,
       // so a sea built a moment before a boundary still starts in the epoch it
       // will actually be folding. `advance` rolls it from there.
