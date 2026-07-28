@@ -27,11 +27,18 @@ const TARGETS: Target[] = [
   { what: 'tier:guac', maxMin: 30 },         // first breakthrough, first session
   { what: 'buy:doubledip1', maxMin: 45 },
   { what: 'buy:season2', maxMin: 30 },
-  { what: 'buy:autodip', maxMin: 60 },       // the Sous Chef inside session two
+  // RETUNED 2026-07-28. The Sous Chef moved from avo (layer 1, 300k) to the
+  // queso angel (layer 3, 2M): you meet the critter who eats golden chips
+  // before you automate away the dipping of them. It is a deep jar now, so
+  // "inside session two" describes a purchase that no longer exists. 3.9h.
+  { what: 'buy:autodip', maxMin: 60 * 5 },
   { what: 'tier:onion', maxMin: 60 * 3 },
   { what: 'buy:detector', maxMin: 60 * 4 },
   { what: 'tier:queso', maxMin: 60 * 9 },    // week one, casual
-  { what: 'buy:fryer3', maxMin: 60 * 7 },
+  // 6.9h -> 7.8h: the Sous Chef's re-price to 2M takes that money out of the
+  // wallet ahead of the Third Fryer's 6M. A real knock-on of a deliberate
+  // price change, not drift — the ladder order is unchanged.
+  { what: 'buy:fryer3', maxMin: 60 * 8 },
   { what: 'tier:seven', maxMin: 60 * 28 },
   // 22h -> 24h with the 10x double-dip nerf (operator 2026-07-27): losing
   // the dd income bonus slows the whole late game slightly, on purpose.

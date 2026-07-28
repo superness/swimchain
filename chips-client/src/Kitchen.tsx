@@ -369,7 +369,11 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
         <span className="prophecy-mark" aria-label="the oracle named this basket">the strings point here</span>
       )}
 
-      {onOvercook && (
+      {/* Not on a golden chip: the haste lives inside `crackles < MAX_CRACKLES`,
+          so a golden gets no benefit while the drain still runs a full tick
+          before the auto-extinguish fires — measured at ~30k crumbs burned
+          per tap, on exactly the chips you are saving for the angel. */}
+      {onOvercook && !golden && (
         <button
           type="button"
           className={`burner${overcooking ? ' lit' : ''}`}
