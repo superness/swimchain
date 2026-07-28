@@ -15,7 +15,10 @@
  * `reconnectDelayMs` itself (it isn't exported, precisely so a test can't
  * accidentally compare the function to itself).
  */
-import { createLiveMachine, nextAction, type LiveEvent, type LiveMachine } from './shoalLive';
+import {
+  createLiveMachine, nextAction, startLive,
+  type LiveEvent, type LiveMachine, type MinimalWebSocket,
+} from './shoalLive';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -184,6 +187,81 @@ function main() {
     // message reset the clock (POLL_MS - 10 -> +50 = 60ms since reset),
     // nowhere near POLL_MS (4000) since the reset — must NOT be silence.
     check('a message resets the silence clock: a tick soon after does not refetch even though it is past the ORIGINAL open+interval', tickAfterContent.refetch === false, tickAfterContent);
+  }
+
+  // --- startLive REFUSES a space id that is not the node's bech32m wire form ------
+  //
+  // The one thing in `startLive` worth a unit test, and the reason it needed one:
+  // this module is the ONLY one a hex space id breaks, and it was for a long time
+  // the only one WITHOUT the format check (the guard lived on the write path, which
+  // a watch-before-you-write client never reaches). The failure it prevents is
+  // invisible by construction — the socket connects, `nextAction` keeps the silence
+  // clock, disconnects demote and back off, and simply zero refetches ever fire,
+  // because `nextAction` compares the event's `space_id` (always bech32m) to this
+  // string with `===`. Nothing in the assertions above could ever have caught it.
+  //
+  // A stub WebSocket constructor is passed so the test cannot depend on a real
+  // socket — and the good-form case below proves the throw comes from the format
+  // check rather than from the stub, since the identical stub connects fine.
+  {
+    let constructed = 0;
+    const StubWs = class {
+      onopen: (() => void) | null = null;
+      onmessage: ((ev: { data: unknown }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(_url: string) { constructed++; }
+      send(_data: string): void {}
+      close(): void {}
+    } as unknown as new (url: string) => MinimalWebSocket;
+
+    // The real form: 'sp1' + 34 bech32 characters = 37 total (16 payload bytes
+    // plus a version byte -> 17 bytes -> 28 data chars + 6 checksum chars = 34).
+    // Counted by hand: 'sp1' (3) + 'qw508d6qejxtdg4y5r3zarvary0c5xw7kv' (34) = 37.
+    const GOOD = 'sp1qw508d6qejxtdg4y5r3zarvary0c5xw7kv';
+    check('setup: the good space id really is 37 characters', GOOD.length === 37, GOOD.length);
+    // The same id in the raw hex form `decode_space_id` also accepts, and that
+    // every node event will never carry: 32 hex characters, no 'sp1' prefix.
+    const HEX = 'a06a93a6c5b1e0f37d2c4b8e91f0a3d7';
+
+    let threw: unknown = null;
+    try {
+      startLive({
+        auth: { endpoint: 'http://127.0.0.1:9736', authHeader: null },
+        spaceId: HEX,
+        pollIntervalMs: POLL_MS,
+        now: () => 0,
+        WebSocketCtor: StubWs,
+        onRefetch: () => {},
+      });
+    } catch (e) { threw = e; }
+    check('startLive throws on a raw-hex space id', threw instanceof RangeError, threw);
+    check('…with the same message the write path throws (naming the bech32m wire form)',
+      threw instanceof Error && threw.message.includes('bech32m wire form')
+      && threw.message.includes('startLive: opts.spaceId'),
+      threw instanceof Error ? threw.message : threw);
+    check('…and it throws BEFORE opening a socket (no timers, no connection attempt)',
+      constructed === 0, { constructed });
+
+    // The positive control: the identical stub, the identical options, a
+    // well-formed space id — proves the throw above is the format check and not
+    // the stub or the options.
+    threw = null;
+    let handle: { stop(): void } | null = null;
+    try {
+      handle = startLive({
+        auth: { endpoint: 'http://127.0.0.1:9736', authHeader: null },
+        spaceId: GOOD,
+        pollIntervalMs: POLL_MS,
+        now: () => 0,
+        WebSocketCtor: StubWs,
+        onRefetch: () => {},
+      });
+    } catch (e) { threw = e; }
+    check('startLive accepts a well-formed bech32m space id (the throw is the format check, not the stub)',
+      threw === null, threw);
+    check('…and that one DID open a socket', constructed === 1, { constructed });
+    handle?.stop(); // clears the heartbeat interval so the test process can exit
   }
 
   // --- stop() from any state reaches stopped, and stopped never schedules again ----

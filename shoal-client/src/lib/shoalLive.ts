@@ -151,7 +151,7 @@
  * fully covered by `shoalLive.test.ts` with an injected clock.
  */
 
-import type { RpcAuth } from './shoalRpc';
+import { assertWireSpaceId, type RpcAuth } from './shoalRpc';
 
 // ---------------------------------------------------------------------------
 // Pure state machine
@@ -418,6 +418,18 @@ function wsUrlFromEndpoint(endpoint: string): string {
  * smoke script in Task 6 exercises it against a real node).
  */
 export function startLive(opts: StartLiveOpts): { stop(): void } {
+  // FIRST, before a socket is opened or a timer is armed. This module is the
+  // ONLY one a hex space id breaks, and it was for a long time the only one
+  // without the check — the guard lived on the write path (shoalSend), which a
+  // watch-before-you-write client never reaches. The failure is otherwise
+  // completely silent AND invisible to every unit test in this package: the
+  // socket connects, `nextAction` keeps the silence clock, disconnects demote
+  // and back off correctly, and not one refetch ever fires from an event,
+  // because `nextAction` compares `event.space_id` (always bech32m) to this
+  // string with `===`. Throwing here costs one comparison and turns an
+  // invisible degradation into a stack trace on the first call.
+  assertWireSpaceId(opts.spaceId, 'startLive: opts.spaceId');
+
   const now = opts.now ?? Date.now;
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const globalWs = (globalThis as { WebSocket?: WebSocketCtor }).WebSocket;

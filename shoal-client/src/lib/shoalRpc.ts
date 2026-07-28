@@ -103,6 +103,75 @@ export async function rpcCall<T>(auth: RpcAuth, method: string, params: unknown)
   return parsed.result as T;
 }
 
+// --- Space-id wire form ----------------------------------------------------------
+//
+// This lives HERE, in the lowest module both the write path (shoalSend) and the
+// live path (shoalLive) already import, because it is a fact about the shapes the
+// NODE speaks — not about either of them. It used to live in shoalSend.ts, which
+// made the module it protects (shoalLive) the one module that could not see it: a
+// watch-before-you-write client never touches the write path, so it never reached
+// the guard, and the failure it guards against is invisible to every unit test.
+
+/** bech32m charset (BIP-173/350). */
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+
+/**
+ * Is `spaceId` in the WIRE form the node speaks — bech32m `sp1…`?
+ *
+ * This looks like a nicety and is not. A space id has two circulating forms:
+ * the bech32m `sp1…` string every RPC and every event emits
+ * (`encode_space_id`, src/rpc/methods.rs:186; `encode_space_id_bech32`,
+ * src/node/router/router.rs:8834), and the raw 32-char hex some callers keep
+ * internally. `decode_space_id` (methods.rs:136) accepts BOTH, so a hex space
+ * id sails through every request a client makes and looks completely healthy.
+ *
+ * What it does NOT sail through is `shoalLive.ts`. That module filters
+ * `content_new` events with a plain string `===` against the caller's
+ * `opts.spaceId`, and the event's own `space_id` is always bech32m. Pass hex
+ * and the socket still connects, still updates its silence clock, still
+ * demotes on real disconnects — and never once yields a refetch from an
+ * event, silently degrading the whole live channel to tick-driven polling.
+ * Correct but slow, never wrong, and invisible to any unit test.
+ *
+ * The form is exact, not heuristic: 16 payload bytes plus a version byte is
+ * 17 bytes -> 28 data characters -> 34 characters after `sp1` including the
+ * 6-character checksum, so a well-formed space id is always exactly 37
+ * characters. (The checksum itself is deliberately NOT verified here — that
+ * would be re-implementing bech32m for a check whose entire job is to
+ * separate `sp1…` from `a06a93a6…`, and the node validates the real thing.)
+ */
+export function isWireSpaceId(spaceId: string): boolean {
+  if (spaceId.length !== 37) return false;
+  if (!spaceId.startsWith('sp1')) return false;
+  for (let i = 3; i < spaceId.length; i++) {
+    if (!BECH32_CHARSET.includes(spaceId[i])) return false;
+  }
+  return true;
+}
+
+/**
+ * Throw unless `spaceId` is in the node's bech32m wire form. `who` names the
+ * calling entry point so the thrown message points at the caller's own
+ * parameter; everything after it is IDENTICAL between call sites on purpose —
+ * `startLive` and `sendPresence`/`sendEat` reject the same input for the same
+ * reason, and a reader who has seen one message should recognise the other
+ * instantly rather than wonder whether two different checks disagree.
+ *
+ * BOTH ends of the bridge call this. The write path rejects it at the first
+ * write (`ctx.spaceId` is otherwise never sent — a reply inherits its
+ * parent's space server-side, verified against `SubmitReplyParams`, which has
+ * no space field at all), and `startLive` rejects it before it opens a socket.
+ */
+export function assertWireSpaceId(spaceId: string, who: string): void {
+  if (isWireSpaceId(spaceId)) return;
+  throw new RangeError(
+    `${who}: spaceId ${JSON.stringify(spaceId)} is not the node's bech32m wire form ` +
+    '(sp1… , 37 chars). shoalLive.ts compares content_new events against this exact ' +
+    'string, so a hex space id would silently disable the live channel. Use the space_id ' +
+    'returned by create_space / list_spaces verbatim.',
+  );
+}
+
 // --- Browser/Tauri auth sources (never touched at module load) ------------------
 
 /** The subset of `Window` this module needs, hand-declared because this project's
