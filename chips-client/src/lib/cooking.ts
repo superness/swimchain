@@ -24,14 +24,35 @@
  * proof left is the network's own per-post anti-spam PoW, background, one
  * per dip.
  *
- * BALANCE MATH (the reason the curve is shaped this way): with crackle k
- * expected at T_k = CRACKLE_BASE * 2^k seconds of cooking, total expected
- * time to k crackles is ~CRACKLE_BASE * 2^(k+1), and the dip value there is
- * potRate * T_total * 2^k — so the VALUE RATE is roughly FLAT across "dip
- * early" and "hold for golden". Holding is a real gamble (variance), never a
- * strictly better strategy, and never a worse one: exactly the feel the spec
- * demands. Crumbs/sec therefore ~= tick rate, which is what flowsim.ts
- * grades against the session targets.
+ * BALANCE MATH — READ THIS BEFORE "FIXING" ANYTHING HERE.
+ *
+ * This note used to claim the value RATE was roughly FLAT across "dip early"
+ * and "hold for golden", so holding was variance and never strictly better.
+ * THAT IS FALSE, and it was false the whole time. Measured over 400h of
+ * steady-state income per policy (scripts/longfrysim.ts — bank, start the
+ * next chip from an empty pot, crumbs/sec):
+ *
+ *   dip at x8 (3)   800.0
+ *   dip at x16 (4) 1599.8
+ *   dip GOLDEN (5) 3198.8
+ *   hold to x64 (6, with The Long Fry) 6389.1
+ *
+ * The rate DOUBLES per crackle level. Total time to k crackles grows ~2x per
+ * level while the value there grows ~4x, so holding wins, always, at every
+ * rung. Selling early is simply bad and it resets your multiplier.
+ *
+ * THIS IS THE GAME'S SECRET, NOT A BUG (operator, 2026-07-28: "holding is
+ * literally the best move always. Selling it bad and resets your multi.
+ * That's just the secret of the game"). It is DELIBERATE and must not be
+ * "rebalanced" back toward flatness — a player working that out for
+ * themselves is the reward. The only forces pushing the other way are the
+ * ones already in the game: the bowl cap spills what you cannot hold, sog
+ * eats what you sit on, and vendors want a chip in hand right now.
+ *
+ * The consequence for flowsim.ts: its model assumes multi drops out of the
+ * expectation, so its crumbs/sec ~= tick rate. That makes its timings a
+ * FLOOR — what a casual dip-on-every-crackle player sees — not a prediction
+ * of an optimal one, who earns multiples of it. Read the targets that way.
  *
  * This module is PURE (no timers, no React, injected RNG) so every rule is
  * unit-testable and the interval driver (useCooking.ts) stays dumb.
