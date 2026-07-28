@@ -60,17 +60,31 @@ must be done with **verbs the game already has** — dip, hold, overcook, feed,
 whistle, lobby, gamble, shoo, bless. No combat system, no new input model.
 
 **MODAL, operator's ruling** (over my recommendation of a background condition).
-It is the right call and it makes the bosses better: a set-piece can be *drawn*,
-and "the bowl cracking above you" or "four table legs splintering one at a time"
-are images, where a background condition is only ever a sentence in a toast.
+It is the right call twice over.
 
-Two rules keep a modal from killing an idle game:
+First, a set-piece can be *drawn*: "the bowl cracking above you" and "four table
+legs splintering one at a time" are images, where a background condition is only
+ever a sentence in a toast.
 
-1. **THE POT KEEPS TICKING BEHIND IT.** The fight is your real rack under a
-   spotlight, not a minigame with borrowed numbers. Nothing pauses, so losing
-   costs real time and winning is the game you already know how to play.
-2. **You choose when it starts.** The boss waits at the band until you take it.
-   An idle player never gets ambushed by a modal on a phone in their pocket.
+Second — and this is where my recommendation was simply built on a false premise
+— **THIS IS NOT AN IDLE GAME.** It is Cookie-Clicker-inspired and actively
+played: `cooking.ts` calls itself "DESIGNER-PACED, COOKIE-CLICKER HONEST" and
+`chipsConst.ts` states flatly that this is "a game with no offline progress". The
+player is at the screen by definition. I argued against modal on the grounds that
+it "stops an idle game dead"; there is no idle game to stop. Presence is
+guaranteed rather than hoped for, which also means the bosses can be genuinely
+demanding.
+
+Two rules, then — not to protect an absent player, but because the fight should
+be the real game rather than a minigame:
+
+1. **THE POT KEEPS TICKING BEHIND IT.** The fight is your actual rack under a
+   spotlight, with your actual pots and your actual multipliers. Nothing pauses.
+   Losing costs real time; winning is the game you already know how to play.
+2. **You choose when it starts.** Not because someone might be away — they are
+   not — but because entering a hard fight with cold pots and a spent blessing
+   is a worse decision than the game should force on you. The boss waits at the
+   band until you take it, so the setup is part of the fight.
 
 Each is losable and retryable. The rule that keeps them honest: a boss should be
 beatable by a player who *understands* the game, not one who has merely idled in
