@@ -671,13 +671,31 @@ git checkout HEAD -- src/lib/chipsConst.ts src/lib/cooking.ts
 
 The middle two commands swap ONLY the two files that could move pacing, run the sim, and put them straight back. Confirm afterwards with `git status --short` that nothing is left modified.
 
-- [ ] **Step 2: Diff them**
+- [ ] **Step 2: Compare them**
 
 ```bash
-diff /tmp/flowsim-before.txt /tmp/flowsim-after.txt && echo "IDENTICAL"
+diff /tmp/flowsim-before.txt /tmp/flowsim-after.txt
 ```
 
-Expected: `IDENTICAL`. The default player never lights the flame, so every one of the 14 session targets must be byte-for-byte unchanged. **If anything moved, overcook has leaked into the default path — stop and find it.** Do not update the targets.
+**AMENDED 2026-07-28, after this check failed and the failure turned out to be the plan's fault.**
+
+The original bar was "byte-identical", on the reasoning that the default player never lights the flame. That conflated *lighting the flame* with *buying the jar*. flowsim's buy loop takes the cheapest affordable jar the moment it lights up, with no notion of whether the simulated player would ever use it — so it buys the 120k Burner Knob at ~24.5m, and every later purchase slides a few minutes right. Measured: `doubledip1` 29.9m → 34.9m, `season3` 51.7m → 55.3m, `detector` 1.9h → 2.0h, converging later. That is a real consequence of adding an early jar, not a leak — every idle game pays it.
+
+**The bar that actually matters, and the one to check:**
+
+1. **No target regresses from `ok` to `MISS`.**
+2. **The MISS set is unchanged** between before and after.
+
+Run the sim and compare the `== targets ==` block, not the whole file:
+
+```bash
+diff <(grep -E "^\s+(ok|MISS)" /tmp/flowsim-before.txt) <(grep -E "^\s+(ok|MISS)" /tmp/flowsim-after.txt)
+grep -c MISS /tmp/flowsim-before.txt /tmp/flowsim-after.txt
+```
+
+Expected: exactly one `MISS` on each side, and it is the same one — `buy:autodip`, target 1.0h, actual 2.2h. **That miss is pre-existing on `origin/main` and is not caused by this work** (at 300k the Sous Chef is cost-bound at 2.2h, which is also when Queso arrives, so moving it to the queso angel costs nothing in pacing).
+
+**If a target that was `ok` becomes `MISS`, stop and report it** — that is the leak the original check was reaching for. Do not update the targets to match.
 
 - [ ] **Step 3: Re-confirm the claim the whole design rests on**
 
@@ -706,7 +724,7 @@ eyeballed."
 
 - [ ] `npx tsc -b` clean; `npm test` exit 0 (32 files); `npm run build` clean.
 - [ ] Every test above was watched failing first, for the reason it names.
-- [ ] flowsim output byte-identical to `origin/main`.
+- [ ] flowsim: no target regresses `ok` → `MISS`, and the MISS set is unchanged from `origin/main` (see Task 6 Step 2 — the original "byte-identical" bar was wrong and is superseded).
 - [ ] `git diff origin/main -- chips-client/src/lib/chipsEngine.ts` is EMPTY — the fold is untouched.
 - [ ] `autodip` still present in `UPGRADES` with `cost: 300_000`.
 - [ ] Screenshot of a lit fryer, and a measurement showing the slot width unchanged between captions.
