@@ -117,6 +117,18 @@ const ticksFor = (s: number) => Math.max(1, Math.round((s * 1000) / TICK_MS));
   check('an idle committee is worth nothing', motionBonus(freshVote()) === 1);
   check('an open floor is worth nothing yet', motionBonus(called) === 1);
 
+  // A FAILED MOTION REMEMBERS WHETHER YOU TURNED UP. Pinned because the UI
+  // now renders two different sentences off this flag — "the olives abstain"
+  // when you argued and lost, "it dies on the floor" when nobody spoke — and
+  // a dropped `lobbied` would silently collapse both into one, taking the
+  // teachable half (lobbying is what carries a motion) with it. This holds
+  // today; it is here so it keeps holding, not because it was broken.
+  check('a failed motion you lobbied remembers that you did', c.lobbied === true, c);
+  check('a failed motion you ignored remembers that too', v.lobbied === false, v);
+  let f = c;
+  for (let i = 0; i < c.ticks - 1; i++) f = voteTick(f, never);
+  check('and it survives the whole failure hold', f.phase === 'failed' && f.lobbied === true, f);
+
   // the motion eventually expires back to idle
   let m = l;
   const motionTicks = m.ticks;   // capture: `m.ticks` shrinks as we step it
