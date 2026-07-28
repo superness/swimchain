@@ -385,6 +385,17 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
             clamped, and the warning has to land BEFORE the press, not after
             (designer review: "punished by information the game withheld").
             On the button is the last possible moment it can still be read. */}
+        {/* THE READOUT, at the TOP of the fryer. It sat at the bottom, where
+            the burner now lives, and a number crowded against a flame is a
+            number you read twice (operator: "move the total expected amount
+            up away from the fire emblem"). Top of the basket is the one
+            large empty region the perches do not use.
+
+            Two lines and no more: what a dip pays, and where the multiplier
+            has got to. The pips are the ladder — the rungs stopped being six
+            numbers you read and became six lamps you glance at, which is all
+            anyone ever did with them. `×32` says where you are; an unlit pip
+            says there is more, and the next one is always double. */}
         <span className="tongs" aria-hidden="true">
           {feedMode !== null && feedable
             ? 'feed it'
@@ -392,6 +403,19 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
               ? <>{compact(Math.max(0, capRoom))}<i>rim — {compact(worth - Math.max(0, capRoom))} spills</i></>
               : compact(worth)}
         </span>
+        {feedMode === null && (
+          <span className="multi-read" aria-hidden="true">
+            <b className={chip.crackles >= LONG_FRY_CRACKLES ? 'deep' : golden ? 'top' : ''}>×{multi}</b>
+            <span className="pips">
+              {Array.from({ length: ceiling }, (_, i) => i + 1).map((k) => (
+                <i
+                  key={k}
+                  className={`pip${chip.crackles >= k ? ' lit' : ''}${k === LONG_FRY_CRACKLES ? ' deep' : ''}`}
+                />
+              ))}
+            </span>
+          </span>
+        )}
       </button>
 
       {/* The cheese rat, latched on. His own button, so a shoo can never be a
@@ -489,37 +513,18 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
         <span className="prophecy-mark" aria-label="the oracle named this basket">the strings point here</span>
       )}
 
-      {/* THE POT, always moving; the ladder shows the summit exists. */}
-      <p className={`worth pot${golden ? ' worth-golden' : ''}`}>
-        <span className="pot-line"><strong>{compact(chip.pot)}</strong> in the pot</span>
-        {/* THE LADDER SHOWS THE SUMMIT EXISTS — and it was hardcoded to five
-            rungs, so The Long Fry's x64 had no rung at all: at six crackles
-            the ladder looked exactly like five. It runs to the PLAYER'S
-            ceiling now. Deliberately not further: dangling a x64 in front of
-            someone who cannot buy it yet is not a tease, it is a rung they
-            will wait for forever. */}
-        {/* ONE `×` FOR THE WHOLE TRACK, not one per rung — see styles.css.
-            The rungs are bare numerals now; six pills could not hold a line
-            on a phone and wrapping pushed the plate off the bottom. */}
-        <span className="ladder" aria-hidden="true">
-          {Array.from({ length: ceiling }, (_, i) => i + 1).map((k) => (
-            <i
-              key={k}
-              className={`rung${chip.crackles >= k ? ' lit' : ''}${k === ceiling ? ' top' : ''}${k === LONG_FRY_CRACKLES ? ' deep' : ''}`}
-            >{2 ** k}</i>
-          ))}
-        </span>
-        {/* ONLY THE EXCEPTIONS LIVE HERE NOW. "dips for X" moved onto the
-            button (above) and the spill warning went with it, so this line
-            renders nothing at all in the ordinary case — which is most of
-            the time, on most fryers. What is left is the two states the
-            player cannot see any other way. */}
-        {rat
-          ? <em className="pot-worth ratted">the rat is eating this — shoo him</em>
-          : overcooking
-            ? <em className="pot-worth burning">burning for speed</em>
-            : null}
-      </p>
+      {/* THE PLATE IS GONE. It carried three things: "N in the pot", the
+          multiplier ladder, and a "dips for N" line. The pot line went
+          because nobody reads a base you never spend (operator: "just drop
+          the 'base in the pot' line who cares"), the payout moved onto the
+          basket itself, and the ladder moved INTO the fryer as a readout
+          rather than a strip of furniture underneath it. What is left of the
+          plate is the two exception states, hanging free under the slot. */}
+      {rat
+        ? <em className="pot-worth ratted">the rat is eating this — shoo him</em>
+        : overcooking
+          ? <em className="pot-worth burning">burning for speed</em>
+          : null}
     </div>
   );
 }
