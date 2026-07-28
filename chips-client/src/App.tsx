@@ -24,6 +24,7 @@ import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useCooking, type CookEvent } from './lib/useCooking';
 import { isGolden, MAX_CRACKLES, type TickMods } from './lib/cooking';
+import { toggleOvercook, overcookOff } from './lib/overcook';
 import { CREW, crewFor, recruitsAt, vendorOf, openJarsOf, type CrewMember } from './lib/crew';
 import {
   freshRat, freshAngel, ratTick, angelTick, ratAbsorb, ratAte, gorgeOf,
@@ -165,6 +166,10 @@ export function App() {
   const [blessFx, setBlessFx] = useState<{ index: number; at: number } | null>(null);
   // Feed mode: a vendor is armed and waiting to be paid in chips.
   const [feeding, setFeeding] = useState<{ vendor: CrewMember; jarKey: string } | null>(null);
+  /** Which fryer is overcooking — client-only, never persisted. */
+  const [overcookAt, setOvercookAt] = useState<number | null>(null);
+  const overcookRef = useRef(overcookAt);
+  overcookRef.current = overcookAt;
   // The open stall sheet (a critter or a stall nameplate was tapped).
   const [sheetId, setSheetId] = useState<string | null>(null);
   // THE BOTTOM OF THE BOWL: the reveal (once, on striking it), the standing
@@ -215,6 +220,7 @@ export function App() {
       mods.eatCrackle = true;
     }
     if (blessRef.current === index) mods.forceCrackle = true;
+    if (overcookRef.current === index) mods.overcook = true;
     return mods;
   }, []);
   const [counting, setCounting] = useState<{ done: number; total: number } | null>(null);
@@ -973,6 +979,17 @@ export function App() {
     ));
   }
 
+  /** Tap a fryer's flame. Refused without the jar, so the button can never
+   *  light something the player has not bought. */
+  function onOvercook(index: number): void {
+    if (!state?.owned.has('overcook')) return;
+    sfx.pop();
+    setOvercookAt((lit) => toggleOvercook(lit, index));
+  }
+  // Not yet wired into JSX — Task 5 passes this to Kitchen as the flame
+  // button's onClick. Keeps noUnusedLocals clean in the meantime.
+  void onOvercook;
+
   function onBless(): void {
     if (!angel.glowing || blessRef.current !== null) return;
     // The fattest pot that can still crackle, skipping the rat's fryer — he
@@ -1076,6 +1093,12 @@ export function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chips, state, host, me, tableId, feeding]);
+
+  // The flame puts itself out at golden — nothing left to hurry, and a lit
+  // fryer past golden is burning the pot for nothing.
+  useEffect(() => {
+    setOvercookAt((lit) => overcookOff(lit, chips));
+  }, [chips]);
 
   /* ── the bottom of the bowl ───────────────────────────────────────────── */
   /**
