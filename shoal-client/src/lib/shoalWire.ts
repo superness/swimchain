@@ -96,14 +96,20 @@
  *    check to a POLICY value would make validity depend on which policy
  *    version a client is running — exactly the divergence this module
  *    exists to prevent. An absurdly large speed does not break `reckon`
- *    either way: `COS`/`SIN` are bounded integers, so the product either
- *    stays an exact, correctly-rounded double or overflows cleanly to
- *    `Infinity`, and `Infinity` compares deterministically in
- *    `clampToWorld` (`Infinity > WORLD_W` is `true`) — it saturates to the
- *    world edge instead of poisoning anything with `NaN`. (Checked
- *    directly: only an out-of-range heading hits the `undefined`-lookup
- *    path; nothing else in `reckon` indexes an array or divides by a
- *    wire-controlled value.)
+ *    either way, and NOT because it overflows to `Infinity` — `parseIntField`
+ *    already caps every field at `Number.isSafeInteger`
+ *    (<= 2^53-1 ~= 9.007e15), and even at that ceiling the largest product
+ *    `reckon` forms (`speed * COS[heading] * dtMs`, with `dtMs` bounded by
+ *    `PRESENCE_TTL_MS` since elapsed time beyond it evicts the swimmer) is
+ *    on the order of 9.007e15 * 4096 * 90_000 ~= 3.3e24 — a large but
+ *    perfectly ordinary finite double, nowhere near `Number.MAX_VALUE`
+ *    (~1.8e308). It is finite, deterministic IEEE-754 arithmetic all the
+ *    way through, and `clampToWorld`'s comparison against a merely-huge `x`
+ *    behaves exactly like its comparison against a huge `Infinity` would —
+ *    `x > WORLD_W` is `true` either way — so it saturates to the world
+ *    edge instead of poisoning anything with `NaN`. (Checked directly: only
+ *    an out-of-range heading hits the `undefined`-lookup path; nothing else
+ *    in `reckon` indexes an array or divides by a wire-controlled value.)
  *  - `cell` in `[0, BLOOM_COLS * BLOOM_ROWS)`. Unlike heading, an
  *    out-of-grid cell does not crash `bloom.ts` either (`cellCentre` is
  *    plain modulo/division arithmetic, and `Map` accepts any key) — but it
@@ -170,23 +176,32 @@ const CELL_COUNT = BLOOM_COLS * BLOOM_ROWS; // 32 * 24 = 768
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a canonical decimal integer literal: optional leading `-`, then
- * either a bare `0` or a nonzero digit with no leading zeros. No `+`, no
+ * Parse a canonical decimal integer literal: a bare `0`, or an optional
+ * leading `-` followed by a nonzero digit with no leading zeros. No `+`, no
  * decimal point, no exponent, no whitespace, no leading zeros on a nonzero
- * value. Returns `null` for anything else, including a literal so large
- * `Number()` cannot represent it exactly (`Number.isSafeInteger`).
+ * value, and — deliberately — no `-0`: zero has exactly one spelling on this
+ * wire, the same reasoning that already rules out `"007"` for `7`. Two byte
+ * sequences for one logical value is exactly the kind of ambiguity a
+ * CONSENSUS format should not carry, even though `-0` and `0` are
+ * indistinguishable under arithmetic, `SameValueZero` and
+ * `JSON.stringify` — this is about the wire having one shape per value, not
+ * about any behavioural difference downstream. Returns `null` for anything
+ * else, including a literal so large `Number()` cannot represent it exactly
+ * (`Number.isSafeInteger`).
  *
- * Deliberately accepts a negative literal even though every field on this
- * wire is domain-checked to be non-negative: the DOMAIN check below is what
- * rejects `-1`, not the lexer refusing to produce a negative number in the
- * first place. That split is load-bearing for the heading mutation test in
+ * Deliberately accepts NEGATIVE literals (other than `-0`) even though every
+ * field on this wire is domain-checked to be non-negative: the DOMAIN check
+ * (in `decodePresenceTail`/`decodeEatTail`) is what rejects `-1`, not the
+ * lexer refusing to produce a negative number in the first place. That
+ * split is load-bearing for the heading mutation test in
  * shoalWire.test.ts — with a non-negative-only lexer, `-1` would already be
  * rejected before the heading bounds check ever ran, and removing that
  * check would then only break the `HEADING_STEPS` (too-high) case, not the
- * `-1` (too-low) case the brief also requires.
+ * `-1` (too-low) case the brief also requires. The same split now applies
+ * to `x`/`y` too (see `decodePresenceTail`).
  */
 function parseIntField(s: string): number | null {
-  if (!/^-?(0|[1-9]\d*)$/.test(s)) return null;
+  if (!/^(0|-?[1-9]\d*)$/.test(s)) return null;
   const n = Number(s);
   return Number.isSafeInteger(n) ? n : null;
 }
@@ -304,8 +319,11 @@ function decodePresenceTail(tail: string, id: string, hash: string): Presence | 
   const msVal = parseIntField(ms);
   if (x === null || y === null || heading === null || speed === null || msVal === null) return null;
 
-  if (x > WORLD_W) return null; // x < 0 already excluded: parseIntField's domain check only rejects non-canonical text, not sign
-  if (y > WORLD_H) return null;
+  // Coordinate domain: [0, WORLD_W] / [0, WORLD_H], both ends checked.
+  // parseIntField accepts negative literals (see its doc) precisely so this
+  // check has real work to do — `x < 0` is not excluded upstream.
+  if (x < 0 || x > WORLD_W) return null;
+  if (y < 0 || y > WORLD_H) return null;
 
   // Heading bounds check (mutation target 1 — see shoalWire.test.ts and the
   // module header for exactly why this is not cosmetic). Both directions

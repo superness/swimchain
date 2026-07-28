@@ -159,6 +159,30 @@ check('a coordinate outside the world (y > WORLD_H) is rejected',
   decodeBody(`v1|presence|100|${WORLD_H + 1}|0|10|1000|`, 'i', 'h') === null);
 check('x === WORLD_W (inclusive boundary) is accepted',
   decodeBody(`v1|presence|${WORLD_W}|100|0|10|1000|`, 'i', 'h') !== null);
+// Review fix: the lower bound was missing entirely (only `x > WORLD_W` /
+// `y > WORLD_H` were checked). `-1` parses fine (parseIntField accepts
+// negative literals by design), so nothing stopped it reaching the
+// constructed Vec. x/y = 0 is the lower boundary and must still be
+// accepted; -1 is one past it and must be rejected, on both axes.
+check('x === 0 (lower boundary) is accepted',
+  decodeBody('v1|presence|0|100|0|10|1000|', 'i', 'h') !== null);
+check('y === 0 (lower boundary) is accepted',
+  decodeBody('v1|presence|100|0|0|10|1000|', 'i', 'h') !== null);
+check('a negative x coordinate is rejected',
+  decodeBody('v1|presence|-1|100|0|10|1000|', 'i', 'h') === null);
+check('a negative y coordinate is rejected',
+  decodeBody('v1|presence|100|-1|0|10|1000|', 'i', 'h') === null);
+// -0 is a second byte sequence for the same logical value 0. Deliberately
+// rejected at the lexer (parseIntField), not accepted-and-normalised: this
+// format has exactly one spelling per value (the same rule that already
+// rejects "007" for 7). Covered for both x and y, plus heading/speed/ms/cell
+// share the same lexer so one check here is representative of all of them.
+check('x = -0 (negative zero) is rejected, not silently accepted as 0',
+  decodeBody('v1|presence|-0|100|0|10|1000|', 'i', 'h') === null);
+check('y = -0 (negative zero) is rejected, not silently accepted as 0',
+  decodeBody('v1|presence|100|-0|0|10|1000|', 'i', 'h') === null);
+check('a bare -0 ms is rejected by the same no-negative-zero rule',
+  decodeBody('v1|presence|100|100|0|10|-0|', 'i', 'h') === null);
 check('a negative speed is rejected',
   decodeBody('v1|presence|100|100|0|-5|1000|', 'i', 'h') === null);
 check('a say exactly MAX_SAY long is accepted (boundary)',
