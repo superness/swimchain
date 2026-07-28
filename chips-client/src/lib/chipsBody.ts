@@ -65,6 +65,22 @@ export function tipBody(ms: number): string {
   return `tip#${ms}~`;
 }
 
+/**
+ * Build a `broke` move body: `broke#<ms>~`.
+ *
+ * NO ARGUMENT, exactly like `tip`. The band is whichever comes next and the
+ * fold works that out from state it can see; the char it pays is permanent,
+ * so a body that could name its own depth could claim the lava on a fresh
+ * table. `parseMove` refuses `broke 5` outright rather than range-checking
+ * it — see chipsEngine.broke.test.ts.
+ */
+export function brokeBody(ms: number): string {
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`brokeBody: ms must be a positive safe integer, got ${ms}`);
+  }
+  return `broke#${ms}~`;
+}
+
 /** Build a `buy` move body: `buy <upgrade-key>#<ms>~`. */
 export function buyBody(key: string, ms: number): string {
   if (!/^[a-z0-9]+$/.test(key)) {
