@@ -972,8 +972,9 @@ function paintTether(
     });
   } else if (read.nearest !== null) {
     // Nothing is holding this swimmer. One long thin streamer toward the
-    // nearest fish, stopping well short of it and fraying: the picture of a
-    // tether that has come loose, not of a longer one.
+    // nearest PERSON (`nearestOf` filters out wild fish, so this never
+    // points at bolting scenery), stopping well short of it and fraying: the
+    // picture of a tether that has come loose, not of a longer one.
     const target = at.get(read.nearest.id)
       ?? worldToScreen(f.cam, f.view, read.nearest.x, read.nearest.y);
     const dx = target.x - selfP.x;

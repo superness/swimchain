@@ -39,6 +39,7 @@
  * and stated before the code is run.
  */
 import { chainSea, type ChainSea } from './chainSea';
+import { wildSeedFrom } from './demoSea';
 import { encodeEat, encodePresence } from '../lib/shoalWire';
 import { cellCentre, cellIndex } from '../lib/bloom';
 import { epochStartMs, epochOf } from '../lib/epoch';
@@ -385,7 +386,40 @@ async function anUnansweredRowExpires(): Promise<void> {
   }
 }
 
+// ===========================================================================
+// wildSeedFrom — the one value a second shell (the launcher, a native
+// client) must derive IDENTICALLY to see the same wild shoal as the browser
+// client (open item 13). Pure and synchronous, so no fetch stub is needed;
+// exercised here rather than in demoSea.test.ts because there isn't one —
+// `chainSea` is `wildSeedFrom`'s one real caller (chainSea.ts:251).
+//
+// FNV-1a over `${spaceId}/${roomContentId}`, folded to 31 bits. Hand-derived
+// for the shortest inputs that still exercise all three characters of the
+// joining slash, spaceId="a", roomContentId="b" -> s = "a/b":
+//
+//   h0 = 2166136261 (0x811c9dc5), the FNV-1a offset basis
+//   'a' (97):  h0 ^ 97      = 2166136228 (0x811c9da4)
+//              * 16777619 mod 2^32 = 3826002220 (0xe40c292c)
+//   '/' (47):  ^ 47         = 3826002179 (0xe40c2903)
+//              * 16777619 mod 2^32 =   35950521 (0x02248fb9)
+//   'b' (98):  ^ 98         =   35950555 (0x02248fdb)
+//              * 16777619 mod 2^32 =  982414785 (0x3a8e75c1)
+//   & 0x7fffffff (already positive, high bit clear) = 982414785
+function wildSeedFromIsPinnedAndAgreesAcrossShells(): void {
+  check('hand-derived: wildSeedFrom("a", "b") = 982414785',
+    wildSeedFrom('a', 'b') === 982414785, wildSeedFrom('a', 'b'));
+  check('the same room derives the same seed every time',
+    wildSeedFrom(SPACE, ROOM) === wildSeedFrom(SPACE, ROOM), wildSeedFrom(SPACE, ROOM));
+  check('two different rooms in the same space derive different seeds',
+    wildSeedFrom(SPACE, ROOM) !== wildSeedFrom(SPACE, ROOM + 'x'),
+    { a: wildSeedFrom(SPACE, ROOM), b: wildSeedFrom(SPACE, ROOM + 'x') });
+  check('the seed is always non-negative (the high bit is always cleared)',
+    wildSeedFrom('a', 'b') >= 0 && wildSeedFrom(SPACE, ROOM) >= 0 && wildSeedFrom('', '') >= 0,
+    { ab: wildSeedFrom('a', 'b'), room: wildSeedFrom(SPACE, ROOM), empty: wildSeedFrom('', '') });
+}
+
 async function main(): Promise<void> {
+  wildSeedFromIsPinnedAndAgreesAcrossShells();
   await landedEatMustNotRetireAPendingVector();
   await landedVectorMustNotRetireAPendingEat();
   await aRejectedWriteIsRolledBack();

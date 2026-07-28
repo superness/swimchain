@@ -134,9 +134,15 @@ export function bodiesOf(state: ShoalState): SwimmerBody[] {
  * `state.nowMs - TICK_MS` does not get an error; it silently gets the
  * swimmers as they stood at tick `k` (`bodiesOf` reads live `state.fish`, not
  * `atMs`) paired with the wild shoal as it stands at tick `k+1`, one tick
- * out of step. This function has zero non-test callers today — the seam is
- * unwired — so get the contract into any future caller's head before wiring
- * it up, rather than adding a runtime check to a path nothing yet exercises.
+ * out of step. This function has exactly one non-test caller today —
+ * `scripts/harness.ts`'s `printSnapshot`, which passes `state.nowMs -
+ * TICK_MS` as documented and feeds the result to nothing but a console line —
+ * so the contract is honoured everywhere it is wired, but get it into any
+ * FUTURE caller's head before wiring one up, rather than adding a runtime
+ * check to a path this one exercises correctly. (`src/ui/wildView.ts`'s
+ * `wildShelterBodies`/`wildViewAt` call `wildAt` directly instead of coming
+ * through here — see that module's header §2 — so they are not callers of
+ * this function and do not bear on this contract.)
  *
  * `wildSeed` must be a value every client in the room agrees on. There is no
  * such value in `ShoalState` yet — deriving one (from the room id) is recorded

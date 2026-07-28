@@ -177,6 +177,20 @@ const CALM: WildClock = {
  * `hushStartMs` and `lastSweepMs` are `ShoalState`'s own fields, with their own
  * -1 sentinels. `atMs` is the instant being DRAWN, which during a scatter
  * replay is deliberately in the past — see the replay case below.
+ *
+ * THE UNSTATED MARGIN. "A live hush always wins" (below) means a hush that
+ * started mid-return would abandon the smooth walk-back and jump straight to
+ * a fresh, full-speed bolt from wherever the shoal had drifted to — the snap
+ * this module exists to avoid, reappearing at the seam between the two
+ * branches. That never happens, but not because this function forbids it: it
+ * is arithmetic borrowed from elsewhere. `WILD_RETURN_MS` is 6_000 and
+ * `state.tension` resets to 0 on every resolve (`shoalEngine.ts`'s
+ * `isResolveTick` branch) and climbs at its fastest, 750/tick, so the
+ * earliest a fresh hush can retrigger is `TENSION_TRIGGER / 750` ticks =
+ * `30_000 / 750 * TICK_MS` = 10_000 ms — always after the 6-second return has
+ * already ended. If either constant ever moves closer together, this
+ * function needs a real case for a hush landing mid-return, not just the
+ * assumption that it cannot.
  */
 export function wildClock(
   atMs: number, hushStartMs: number, lastSweepMs: number,

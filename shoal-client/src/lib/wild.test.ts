@@ -586,11 +586,27 @@ const NO_HUSH = -1;
       JSON.stringify(wildAt(SEED, hushTick, H, H)) === JSON.stringify(before));
   }
 
-  // A hush start that is not on the tick grid still resolves deterministically
-  // — the flight is measured in ms, so it does not need to be.
-  check('an off-grid hush start is still deterministic',
-    JSON.stringify(wildAt(SEED, hushTick + 2, H + 37, H + 537))
-    === JSON.stringify(wildAt(SEED, hushTick + 2, H + 37, H + 537)));
+  // A hush start that is not on the tick grid still resolves via the real
+  // elapsed ms, not via which off-grid instant it happened to be. `hushA` and
+  // `hushB` are both off-grid but floor to the SAME internal ray-tick
+  // (`floor(250_037/250) = floor(250_199/250) = 1000 = hushTick`), so holding
+  // the elapsed time (`nowMs - hushStartMs`) equal between them must produce
+  // the identical shoal — position and ray direction both come out of
+  // `hushTick` and `elapsedMs`, never the raw off-grid value. The second
+  // check is the contrast that makes the first one mean something: the same
+  // two starts under the same wall-clock `nowMs` (so their elapsed times
+  // genuinely differ) must NOT agree, or "identical shoal" would just be
+  // restating that `wildAt` is a pure function, which §3 already covers.
+  {
+    const hushA = H + 37, hushB = H + 199; // both floor to hushTick (1000)
+    const elapsed = 500;
+    check('same elapsed ms from two off-grid hush starts sharing a tick bucket -> identical shoal',
+      JSON.stringify(wildAt(SEED, hushTick + 2, hushA, hushA + elapsed))
+      === JSON.stringify(wildAt(SEED, hushTick + 2, hushB, hushB + elapsed)));
+    check('...but the same wall-clock nowMs against those two starts (different elapsed) -> different shoal',
+      JSON.stringify(wildAt(SEED, hushTick + 2, hushA, H + 600))
+      !== JSON.stringify(wildAt(SEED, hushTick + 2, hushB, H + 600)));
+  }
 }
 
 // ===========================================================================

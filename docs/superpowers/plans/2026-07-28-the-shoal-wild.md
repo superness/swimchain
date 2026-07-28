@@ -64,7 +64,7 @@ Both rulings shrink the consensus surface to almost nothing: the wild shoal is d
 
 `fingerprint` is what every determinism check on this project compares. It deliberately omits `outsideTicks` and `touchedIds` (`shoalFixtures.ts:121-122`). Those are **two of the three fields** spec §3.9 measured a carried epoch continuation diverging on — and `outsideTicks` feeds `topContributor` → `lockedPreferred` → `selectTaken`, i.e. **who the shark eats**.
 
-So a divergence confined to `outsideTicks` is player-visible and invisible to every determinism check we have. This is open item 8, and the shell's review said to close it before wild fish arrive, because wild fish touch both fields.
+So a divergence confined to `outsideTicks` is player-visible and invisible to every determinism check we have. This is open item 8, and the shell's review said to close it before wild fish arrive — not because wild fish touch either field (they touch neither: `outsideTicks` is written in `foldTick` step 4 from `bodiesOf(state)`, swimmers only, and `touchedIds` is written only on an applied presence entry, whose ids are always a swimmer's own public key), but so the fold's existing divergence-detection gap is closed before a second, unrelated feature starts landing on top of it, rather than compounding an open item with a new one.
 
 - [ ] **Step 2: Widen it**
 

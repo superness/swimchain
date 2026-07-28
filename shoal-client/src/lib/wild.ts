@@ -133,9 +133,16 @@ import { HEADING_STEPS, TRIG_SCALE, WORLD_W, WORLD_H, TICK_MS } from './shoalCon
 // fold-rules-are-permanent sense (shoalConst.ts's own CONSENSUS block, or
 // WILD_ID_PREFIX just below): change a number, re-score every session ever
 // played, split clients running different versions. That is NOT true here,
-// checked against every fold-reachable call site: `wildAt` has exactly one
-// non-test caller, `shelterBodiesOf` (shoalEngine.ts), and THAT has zero
-// non-test callers. No wild position, count, weight or bolt timing reaches
+// checked against every fold-reachable call site. `wildAt` has three
+// non-test callers — `shelterBodiesOf` (shoalEngine.ts), and
+// `wildShelterBodies`/`wildViewAt` (both in `src/ui/wildView.ts`, which calls
+// `wildAt` directly rather than through `shelterBodiesOf`; see that module's
+// header §2 for why). `shelterBodiesOf` itself has one non-test caller,
+// `scripts/harness.ts`'s `printSnapshot`, which only ever feeds a console
+// line. Every path terminates in a READ, never a fold input:
+// `wildShelterBodies`'s output reaches `App.tsx`'s tether population
+// (`readTether`) and `wildViewAt`'s reaches the paint (`wildPaint.ts`) — both
+// display-side sinks. No wild position, count, weight or bolt timing reaches
 // `foldTick`, `lockedPositions`, `selectTaken`, `markVisits`, a checkpoint, or
 // any fingerprint — replaying a log with a different `WILD_PER_SCHOOL` or
 // `WILD_SCHOOL_R` re-scores NOTHING; it draws a different picture and reaches
