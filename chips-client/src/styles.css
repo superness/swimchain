@@ -422,6 +422,33 @@ h1, h2, h3, p { margin: 0; }
     0 24px 54px rgba(0,0,0,.5);
   animation: goldpulse 2s ease-in-out infinite;
 }
+/* THE LONG FRY BASKET. Deliberately NOT a stronger goldpulse — the point of
+   the sixth crackle is that the chip has gone somewhere gold does not go, and
+   a hotter version of the same halo would read as "very golden" rather than
+   as a different thing. Slower, redder, heavier: an oil that has been working
+   far too long. Overrides `.golden`, which is still on the element (a x64
+   chip is still golden — see isGolden's note in cooking.ts). */
+.basket.golden.deep {
+  box-shadow:
+    inset 0 2px 0 rgba(255, 226, 190, .55),
+    inset 0 -20px 38px rgba(0, 0, 0, .62),
+    0 0 0 3px rgba(255, 138, 60, .9),
+    0 0 74px rgba(224, 74, 12, .72),
+    0 24px 54px rgba(0, 0, 0, .55);
+  animation: deepfry 3.2s ease-in-out infinite;
+}
+@keyframes deepfry {
+  50% { box-shadow:
+    inset 0 2px 0 rgba(255, 226, 190, .55),
+    inset 0 -20px 38px rgba(0, 0, 0, .62),
+    0 0 0 4px rgba(255, 170, 92, 1),
+    0 0 104px rgba(238, 96, 20, .92),
+    0 24px 54px rgba(0, 0, 0, .55); }
+}
+/* the chip itself gets a slow bloom rather than the golden shimmer */
+.chip.is-deep { filter: drop-shadow(0 0 10px rgba(238, 110, 30, .55)); }
+@media (prefers-reduced-motion: reduce) { .basket.golden.deep { animation: none; } }
+
 @keyframes goldpulse {
   50% { box-shadow:
     inset 0 2px 0 rgba(255,246,214,.7),
@@ -505,21 +532,10 @@ h1, h2, h3, p { margin: 0; }
    small line is the product a dip pays right now. */
 .pot-line { display: block; }
 .pot-line strong { font-family: var(--chalk); font-weight: 700; font-variant-numeric: tabular-nums; font-size: 1.25em; color: #ffe6b8; }
-.multi-badge {
-  display: inline-block; margin-top: 3px; padding: 1px 10px; border-radius: 999px;
-  font-family: var(--sign); letter-spacing: .08em; font-size: 1.15em;
-  color: #ffe2ae; background: rgba(60, 40, 20, .85);
-  border: 1px solid rgba(255, 210, 150, .35);
-  transition: transform .18s, color .2s, border-color .2s;
-}
-/* each crackle level warms the badge — by x16 it is glowing */
-.multi-badge.m2 { color: #ffd98e; border-color: rgba(255, 210, 150, .5); }
-.multi-badge.m3 { color: #ffce6b; border-color: rgba(255, 200, 120, .65); }
-.multi-badge.m4 { color: #ffc147; border-color: rgba(255, 190, 100, .8); box-shadow: 0 0 12px rgba(255, 180, 80, .35); }
-.multi-badge.m5 {
-  color: #2a1a04; background: linear-gradient(180deg, #ffe9a8, #f0b93c);
-  border-color: #fff3cf; box-shadow: 0 0 18px rgba(255, 205, 90, .7);
-}
+/* `.multi-badge` (m1..m6) lived here for a badge NOTHING EVER RENDERED —
+   six rules, dead. Found while adding an m6 tier to it for The Long Fry,
+   which would have been a seventh dead rule. The multiplier's permanent home
+   is `.ladder` (the lit rungs); its loud moment is `.crackle-banner`. */
 .pot-worth { display: block; font-style: normal; font-size: .85em; color: #b3a081; margin-top: 2px; }
 
 /* THE CRACKLE FLASH — a fresh mount per crackle (keyed on its timestamp), so
@@ -561,6 +577,13 @@ h1, h2, h3, p { margin: 0; }
   border-color: #fff6da; box-shadow: 0 0 30px rgba(255, 210, 100, .9);
   font-size: clamp(17px, 1.9vw, 28px);
 }
+/* the sixth crackle is the rarest thing in the game — ~16 minutes past a
+   chip that already looked finished. It gets the loudest banner. */
+.crackle-banner.m6 {
+  color: #ffe6c2; background: linear-gradient(180deg, #c2440f, #4a1103);
+  border-color: #ffd9a8; box-shadow: 0 0 40px rgba(255, 120, 40, .95);
+  font-size: clamp(18px, 2.1vw, 31px);
+}
 @keyframes crackle-banner {
   0%   { opacity: 0; transform: scale(1.7); }
   8%   { opacity: 1; transform: scale(1); }
@@ -594,6 +617,13 @@ h1, h2, h3, p { margin: 0; }
 .ladder .rung.top.lit {
   color: #2a1a04; background: linear-gradient(180deg, #ffe9a8, #f0b93c);
   border-color: #fff3cf; box-shadow: 0 0 10px rgba(255, 205, 90, .7);
+}
+/* the x64 rung: visibly a different kind of rung even before it lights, so
+   owning The Long Fry is legible on the fryer and not just in the shop */
+.ladder .rung.deep { border-color: rgba(255, 140, 70, .45); color: #b07048; }
+.ladder .rung.deep.lit {
+  color: #ffe6c2; background: linear-gradient(180deg, #a8360d, #521404);
+  border-color: #ffd9a8; box-shadow: 0 0 12px rgba(255, 120, 40, .8);
 }
 
 /* the overflow warning — BEFORE the dip, never after */
