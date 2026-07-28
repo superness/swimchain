@@ -130,11 +130,29 @@ export function useCooking(
     return { ms: chip.ms, pot: chip.pot, crackles: chip.crackles };
   }
 
+  /**
+   * EMPTY THE WHOLE RACK. Every slot restarts fresh and NOTHING is credited.
+   *
+   * The rack-resize effect above keeps chips by identity on purpose — a pot
+   * in progress is the player's accumulated watching and a count change must
+   * never reset it. That is right for buying a fryer and WRONG for a tip: a
+   * tip drops the count 4 -> 1, so `slice(0, 1)` carried chip 0 across the
+   * reset with its whole old-run pot and multiplier, into a bowl whose cap
+   * had just gone back to START_BOWL_CAP. The first dip of every new run was
+   * therefore clamped, every time (operator: "the first dip is always
+   * eaten"). Resizing cannot express "start over"; this can.
+   */
+  function resetAll(): void {
+    const next = latest.current.map(() => freshChip(allocRef.current!()));
+    latest.current = next;
+    setChips(next);
+  }
+
   /** The shared authoring-ms allocator — rat payouts need wire identities
    *  from the SAME sequence as dips, or two moves could collide on ms. */
   function allocMs(): number {
     return allocRef.current!();
   }
 
-  return { chips, dip, take, allocMs };
+  return { chips, dip, take, resetAll, allocMs };
 }

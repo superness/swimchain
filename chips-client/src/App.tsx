@@ -48,6 +48,8 @@ import { Boards, useBoards } from './Boards';
 import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
 import { sfx } from './lib/sound';
+import { snapshotText } from './lib/debugSnapshot';
+import { attachErrorRing, entries as ringEntries, note as ringNote } from './lib/errorRing';
 
 const NAME_KEY = 'chips.cookname.v1';
 /** Whether the Sous Chef is on duty. A client-side PREFERENCE, never a fold
@@ -388,6 +390,9 @@ export function App() {
   // skips a re-render when a setState produces the identical value, so this
   // costs one array scan a second and nothing else — no refold, no
   // `saveQueue` write.
+  // The error ring starts collecting before anything else can go wrong.
+  useEffect(() => { attachErrorRing(); }, []);
+
   useEffect(() => {
     const t = setInterval(() => {
       setNowMs(Date.now());
@@ -704,7 +709,7 @@ export function App() {
     }
   }, []);
 
-  const { chips, dip, take, allocMs } = useCooking(
+  const { chips, dip, take, resetAll, allocMs } = useCooking(
     fryerCount, seasoning, crackleHaste,
     Boolean(host && me && tableId && state), onCookEvents, modsFor
   );
@@ -1003,6 +1008,59 @@ export function App() {
     ));
   }
 
+  /**
+   * THE REPORT BUTTON. One press, at the moment it happens, and everything
+   * the client knows goes to the clipboard.
+   *
+   * Built because a 4.1M dip paid nothing on a phone and the chain could only
+   * prove a negative — no such dip was ever submitted. The answer was
+   * client-side (an unsent queue entry, a worth that disagreed with its
+   * payload, a throw in a worker) and every one of those is invisible from
+   * outside and unreachable on a device with no console.
+   *
+   * Clipboard first because on a phone that is the shortest path from "it
+   * happened" to somebody reading it. `VITE_CHIPS_DEBUG_SPACE` posts the same
+   * text to a space as well when one is configured, for the durable version.
+   */
+  async function onReport(): Promise<void> {
+    let text: string;
+    try {
+      text = snapshotText({
+        at: Date.now(),
+        tableId, tableName: cookName || null, author: me?.publicKeyHex ?? null,
+        state: state ?? null, queue, chips,
+        ceiling, seasoning, crackleHaste,
+        errors: ringEntries(),
+        build: {
+          rpc: import.meta.env.VITE_CHIPS_RPC,
+          space: import.meta.env.VITE_CHIPS_SPACE,
+          mode: import.meta.env.MODE,
+        },
+        viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+        ua: navigator.userAgent,
+      });
+    } catch (e) {
+      // A capture that dies during a failure is worse than none — say so
+      // rather than leaving the player pressing a dead button.
+      setNotice('could not build the report');
+      ringNote('note', `snapshot failed: ${String(e)}`);
+      return;
+    }
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch {
+      // Safari/iOS refuse the clipboard outside a trusted gesture chain, and
+      // http origins have no clipboard at all. Fall back to something the
+      // player can still get at rather than failing silently.
+      ringNote('note', 'clipboard refused; falling back to console');
+      console.log(text);
+    }
+    sfx.pop();
+    setNotice(copied ? 'report copied — paste it somewhere' : 'report is in the console (clipboard refused)');
+  }
+
   /** Tap a fryer's flame. Refused without the jar, so the button can never
    *  light something the player has not bought. */
   function onOvercook(index: number): void {
@@ -1235,6 +1293,14 @@ export function App() {
     struckRef.current = false;
     setTipFanfare({ salt: tipSalt, total: state.oldSalt + tipSalt });
     sfx.breakthrough();
+    // THE RACK EMPTIES WITH THE BOWL. Without this the resize effect in
+    // useCooking carries chip 0 across the tip — old pot, old multiplier —
+    // into a bowl whose cap has just reset to 1,000,000, so the first dip of
+    // every run was silently clamped. Scoop takes it instead, which is a
+    // thing the player can SEE, and which the descent already turns out to
+    // be about: one more chip is what empties a bowl.
+    resetAll();
+    window.setTimeout(() => say('scoop', 'thanks for the chip. that is the one i needed. see you at the bottom.', 9000), 1200);
     window.setTimeout(() => setTipFanfare(null), 6200);
     window.setTimeout(() => say('scoop', WELCOME_BACK[3], 9000), 6400);
     setQueue((q) => enqueue(
@@ -1581,6 +1647,15 @@ export function App() {
             <em>+{Math.round((saltBonus - 1) * 100)}% every tick</em>
           </div>
         )}
+        <button
+          type="button"
+          className="report-toggle"
+          title="copy a debug report of everything the client knows"
+          aria-label="copy a debug report"
+          onClick={onReport}
+        >
+          <span aria-hidden="true">⚑</span>
+        </button>
         <button
           type="button"
           className="sound-toggle"
