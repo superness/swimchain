@@ -80,7 +80,19 @@ export const UPGRADES: Record<string, Upgrade> = {
   fryer2: { key: 'fryer2', label: 'Second Fryer', cost: 60_000,     fryers: 2 },
   fryer3: { key: 'fryer3', label: 'Third Fryer',  cost: 6_000_000,  fryers: 3 },
   fryer4: { key: 'fryer4', label: 'Fourth Fryer', cost: 50_000_000, fryers: 4 },
-  autodip: { key: 'autodip', label: 'Sous Chef', cost: 300_000 },
+  /* RE-PRICED 300k -> 2M, 2026-07-28, operator decision, eyes open.
+     The Sous Chef now sells at the queso angel (layer 3), where its
+     neighbours are Cellar Shelf 2M, Seasoning IV 4M and Third Fryer 6M —
+     300k was the price of a layer-1 jar and it no longer sits at layer 1.
+     THIS RE-SCORES HISTORY: 9 purchases across 7 live mainnet tables were
+     folded at the old price, and any of those made below 2M now fold
+     `rejected-cost`, so those tables lose the jar and every balance after
+     it changes. Counted against mainnet before the change, not assumed. */
+  autodip: { key: 'autodip', label: 'Sous Chef', cost: 2_000_000 },
+  /* APPENDED 2026-07-27. A new key is safe: no reply has ever named it, so
+     no history re-folds (same precedent as cellar2). It takes the Sous
+     Chef's old 300k slot at avo — same price, same shelf, different jar. */
+  overcook: { key: 'overcook', label: 'Burner Knob', cost: 300_000 },
   doubledip1: { key: 'doubledip1', label: 'Double Dip',      cost: 250_000,    doubleDipMod: 4 },
   doubledip2: { key: 'doubledip2', label: 'Deep Double Dip', cost: 10_000_000, doubleDipMod: 2 },
   detector: { key: 'detector', label: 'Golden Chip Detector', cost: 1_500_000, goldenBits: 15 },
