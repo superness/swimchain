@@ -47,6 +47,13 @@ Two cautionary notes worth keeping:
 
 ---
 
+### 8. The shared `fingerprint` is not a complete divergence detector *(RESOLVED 2026-07-28)*
+
+Closed by Task 1 of plan 3 (the-shoal-wild), before wild fish landed. Full write-up in place
+below, under Carried items.
+
+---
+
 ## Blockers — decide, don't just build
 
 ### 1. Long-lived rooms need a node change, or the room must rotate
@@ -282,22 +289,56 @@ an app-addressed space, the room post, and a scoped auto-approve sponsorship off
 game-sponsor bot (which auto-renews via `game-offer-keeper-mainnet.service` — adding a game
 is one space id in its `GAME_SPACES` env).
 
-### 8. The shared `fingerprint` is not a complete divergence detector
+### 8. The shared `fingerprint` is not a complete divergence detector — **RESOLVED 2026-07-28**
 
 **Found by:** the shell's Task 2 review.
+**Fixed by:** Task 1 of plan 3 (the-shoal-wild), `shoal-client/src/lib/shoalFixtures.ts`.
 
 `shoalFixtures.ts`'s `fingerprint` — used by every byte-identical check in the suite —
-deliberately omits `touchedIds` and `outsideTicks`. Those are **two of the three fields**
-spec §3.9 measured a carried epoch continuation diverging on (the third, `tension`, is
+deliberately omitted `touchedIds` and `outsideTicks`. Those are **two of the three fields**
+spec §3.9 measured a carried epoch continuation diverging on (the third, `tension`, was
 covered).
 
 `outsideTicks` feeds `topContributor` → `lockedPreferred` → `selectTaken` — i.e. **who the
-shark eats**. So a divergence confined to it is player-visible and yet invisible to every
-determinism check on the project. Nothing has diverged there; the point is that nothing
+shark eats**. So a divergence confined to it was player-visible and yet invisible to every
+determinism check on the project. Nothing had diverged there; the point was that nothing
 would tell us if it did.
 
-Widening the fingerprint is cheap. Do it before plan 3 adds wild fish, which touch both
-fields.
+**Resolved by widening `fingerprint` to include both fields**, sorted canonically like every
+other entry. `cursor`, `tickCount`, `nowMs` and `epoch` stay out — they are
+POSITION-IN-THE-FOLD (which log index, which call, which tick, which epoch a client happens
+to have stopped folding at), not world state, and two honest clients that reach the same
+`toMs` by different call paths (a straight `foldShoal` versus a shell driving `foldTick` one
+tick at a time) legitimately disagree on all four with no divergence in the sea itself.
+`outsideTicks` and `touchedIds` do not have that excuse: both are TRAJECTORY accumulators
+(how a fish's core membership changed tick by tick; which ids ever authored a presence
+write), not final-state values, which is exactly what let a divergence hide in them.
+
+Widening was checked against the concern that a fingerprint field only reachable state can
+vary is decoration — a field that only a hand-mutated `ShoalState` can move is not real
+coverage. `shoalEngine.determinism.test.ts`'s "outsideTicks and touchedIds: reachable, not
+decoration" section builds two REAL fold pairs (via `foldShoal`, never a hand-mutated state):
+
+- **outsideTicks:** two logs where, at every tick, the tension core holds exactly the same
+  COUNT of outside fish (so `tension` — which reads only the count, never the identities —
+  is identical throughout) but a DIFFERENT specific fish is outside during an early window,
+  before both logs converge onto the same trajectory. Every field the old fingerprint covered
+  matches byte-for-byte; only `outsideTicks` differs (189 vs 181 ticks for the fish in
+  question, hand-derived and asserted).
+- **touchedIds:** two folds seeded from an identical checkpoint carrying a phantom `departed`
+  row for `'ghost'`. One log gives `'ghost'` a single presence write, timed to the fold's
+  exact admit floor so it lives for one tick (before hunger's first firing) and is evicted
+  the next, banking the exact values the seed already gave it — so `departed` ends up
+  byte-identical between the two folds, but `touchedIds` does not. Rolling both to the epoch
+  boundary confirms the real, player-visible consequence: `rollEpoch` keeps `'ghost'` in one
+  published checkpoint and prunes it from the other — two honest clients publishing different
+  checkpoints for what the old fingerprint called the same world.
+
+Both constructions were mutation-verified: removing the two new lines from `fingerprint`
+makes exactly those two "the widened fingerprint tells ... apart" checks fail (and nothing
+else), confirming the widening is load-bearing rather than decorative. Full test-driven
+evidence, hand arithmetic and verbatim mutation output in
+`.superpowers/sdd/2026-07-28-the-shoal-wild/task-1-report.md`.
 
 ### 10. A swimmer that swims to a bloom can never eat it — **RESOLVED 2026-07-28**
 
