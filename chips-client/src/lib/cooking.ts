@@ -44,8 +44,41 @@ export const TICK_MS = 2500;
 /** Crackle k (1-based) is expected after CRACKLE_BASE_S * 2^k seconds of
  *  cooking at that level: ~30s, ~60s, ~2m, ~4m, ~8m. */
 export const CRACKLE_BASE_S = 15;
-/** Crackles per chip: x2 each, so the top is x32 — GOLDEN, terminal. */
-export const MAX_CRACKLES = 5;
+/** Crackles that make a chip GOLDEN: x2 each, so golden is x32. This is the
+ *  angel's threshold and the Sous Chef's trigger, and it NEVER moves — see
+ *  `isGolden` below. */
+export const GOLDEN_CRACKLES = 5;
+/** The default top of the ladder. Golden and terminal are the same number
+ *  until The Long Fry is bought. */
+export const MAX_CRACKLES = GOLDEN_CRACKLES;
+/**
+ * THE LONG FRY (chipsConst `longfry`, 1.2B, sold by the first chip) — one
+ * more crackle past golden, to x64.
+ *
+ * MEASURED, not reasoned (scripts/longfrysim.ts, 400h of steady-state income
+ * per policy — bank, start the next chip from an empty pot, crumbs/sec):
+ *
+ *   dip at x8   800.0 -> 800.0    0.0%     the jar is worth NOTHING
+ *   dip at x16 1599.8 -> 1599.8   0.0%     to a player who does not
+ *   dip GOLDEN 3198.8 -> 3198.8   0.0%     change how they play
+ *   hold to the ceiling  3198.8 -> 6389.1  +99.7%
+ *
+ * That shape is the point: it pays nothing passively and doubles you if you
+ * use it. You have to keep holding a chip that already looks finished.
+ *
+ * IT DOES NOT RESCUE OVERCOOK. An earlier draft of this comment claimed the
+ * extra rung finally gave haste something to compound into. It does not —
+ * measured at -18.9% (burn below golden, then ride to the ceiling) in the
+ * same sim. The header note above stands unamended: there is no (haste,
+ * drain) pair that wins, at either ceiling.
+ *
+ * GOLDEN DOES NOT MOVE WITH IT. Raising `isGolden` alongside this would mean
+ * a player who bought a 1.2B "upgrade" suddenly needs six crackles to feed
+ * the queso angel — an upgrade that is really a nerf. The ceiling is passed
+ * per-tick through `TickMods.ceiling`; `isGolden` takes no ceiling at all,
+ * on purpose, so the mistake cannot be made from a call site.
+ */
+export const LONG_FRY_CRACKLES = GOLDEN_CRACKLES + 1;
 
 /**
  * OVERCOOK — burn a fryer's pot to make its crackles come sooner.
@@ -78,7 +111,10 @@ export interface CookingChip {
 }
 
 export const multiOf = (chip: Pick<CookingChip, 'crackles'>): number => 2 ** chip.crackles;
-export const isGolden = (chip: Pick<CookingChip, 'crackles'>): boolean => chip.crackles >= MAX_CRACKLES;
+/** Goldenness is a property of the CHIP, never of what its owner has bought:
+ *  no ceiling parameter here, deliberately, so The Long Fry can never move
+ *  the angel's threshold from a call site. */
+export const isGolden = (chip: Pick<CookingChip, 'crackles'>): boolean => chip.crackles >= GOLDEN_CRACKLES;
 export const worthOf = (chip: Pick<CookingChip, 'pot' | 'crackles'>): number => chip.pot * multiOf(chip);
 
 export function freshChip(ms: number): CookingChip {
@@ -117,6 +153,12 @@ export interface TickMods {
   forceCrackle?: boolean;
   /** This fryer is overcooking: crackles come sooner, the pot bleeds. */
   overcook?: boolean;
+  /** Top of the crackle ladder. Defaults to MAX_CRACKLES; The Long Fry
+   *  raises it to LONG_FRY_CRACKLES. Per-tick rather than a module constant
+   *  because it is a property of the PLAYER (what they own), not of the
+   *  engine — and reading it from a global would make the rule untestable
+   *  in both states at once. */
+  ceiling?: number;
 }
 
 /**
@@ -146,7 +188,7 @@ export function tickChip(
   };
   let crackled = false;
   let crackleEaten = false;
-  if (next.crackles < MAX_CRACKLES) {
+  if (next.crackles < (mods.ceiling ?? MAX_CRACKLES)) {
     // P(crackle this tick) = tick / expected wait at this level. Memoryless,
     // so the drought CAN run long — that's the gamble — but the pot ticked
     // the whole way, so a drought is never a frozen screen.

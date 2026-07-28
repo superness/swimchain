@@ -258,10 +258,23 @@ interface BasketProps {
   overcooking: boolean;
   /** Tap the flame. `null` when overcooking is not owned. */
   onOvercook: (() => void) | null;
+  /** Top of this player's crackle ladder — GOLDEN normally, one higher with
+   *  The Long Fry. Golden and topped-out stopped being the same thing. */
+  ceiling: number;
+  /** Whistle the wing over here. `null` when A Reason is not owned. */
+  onWingCall: (() => void) | null;
+  /** The call is still cooling. The button stays VISIBLE and disabled rather
+   *  than vanishing — a control that disappears reads as broken, and the
+   *  player needs to see that the thing they bought still exists. */
+  wingCooling: boolean;
 }
 
-function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied, overcooking, onOvercook }: BasketProps) {
+function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied, overcooking, onOvercook, ceiling, onWingCall, wingCooling }: BasketProps) {
   const golden = isGolden(chip);
+  /** Nothing left to cook FOR — distinct from `golden` since The Long Fry.
+   *  A golden chip with the jar still has a sixth crackle ahead of it, and
+   *  that stretch is precisely what the burner is for. */
+  const topped = chip.crackles >= ceiling;
   const multi = multiOf(chip);
   const worth = worthOf(chip);
   const spills = worth > capRoom;
@@ -369,11 +382,29 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
         <span className="prophecy-mark" aria-label="the oracle named this basket">the strings point here</span>
       )}
 
-      {/* Not on a golden chip: the haste lives inside `crackles < MAX_CRACKLES`,
-          so a golden gets no benefit while the drain still runs a full tick
-          before the auto-extinguish fires — measured at ~30k crumbs burned
-          per tap, on exactly the chips you are saving for the angel. */}
-      {onOvercook && !golden && (
+      {/* THE WHISTLE (A Reason). Only on baskets the wing is NOT on, so it
+          can never share a corner with the perch above — the two are mutually
+          exclusive by construction rather than by hand-tuned offsets. */}
+      {onWingCall && wingAt === null && (
+        <button
+          type="button"
+          className={`wing-call${wingCooling ? ' cooling' : ''}`}
+          disabled={wingCooling}
+          onClick={(e) => { e.stopPropagation(); onWingCall(); }}
+          title={wingCooling ? 'it is not listening yet' : 'call the wing over — it pays double where it sits'}
+          aria-label={wingCooling ? 'the wing is not listening yet' : 'call the wing to this fryer'}
+        >
+          <span aria-hidden="true">✦</span>
+        </button>
+      )}
+
+      {/* Not on a topped-out chip: the haste lives inside `crackles < ceiling`,
+          so a chip at the top gets no benefit while the drain still runs a
+          full tick before the auto-extinguish fires — measured at ~30k crumbs
+          burned per tap. NOTE this is `topped`, not `golden`: with The Long
+          Fry a golden chip still has one crackle to chase, and burning for it
+          is the decision that jar exists to create. */}
+      {onOvercook && !topped && (
         <button
           type="button"
           className={`burner${overcooking ? ' lit' : ''}`}
@@ -428,9 +459,15 @@ export interface KitchenProps {
   overcookAt: number | null;
   /** Tap a fryer's flame. `null` when overcooking is not owned. */
   onOvercook: ((index: number) => void) | null;
+  /** Top of the crackle ladder for this player (The Long Fry raises it). */
+  ceiling: number;
+  /** Whistle the wing over. `null` when A Reason is not owned. */
+  onWingCall: ((index: number) => void) | null;
+  /** The call is cooling — the whistles render disabled rather than vanish. */
+  wingCooling: boolean;
 }
 
-export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook }: KitchenProps) {
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook, ceiling, onWingCall, wingCooling }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
@@ -450,6 +487,9 @@ export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerc
             prophesied={oracleIndex === i}
             overcooking={overcookAt === i}
             onOvercook={onOvercook ? () => onOvercook(i) : null}
+            ceiling={ceiling}
+            onWingCall={onWingCall ? () => onWingCall(i) : null}
+            wingCooling={wingCooling}
             onDip={() => onDip(i)}
           />
         ))}

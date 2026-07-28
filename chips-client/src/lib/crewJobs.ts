@@ -135,29 +135,60 @@ export const JOB_LAYER = { wing: 5, committee: 4, hermit: 5, oracle: 6 } as cons
 
 export const WING_HOP_EXPECT_S = 45;
 export const WING_PAYS = 2;
+/** A REASON (chipsConst `wingcall`): how long a called wing stays put — and
+ *  how long until you may call it again. Matched to WING_HOP_EXPECT_S so the
+ *  jar buys you AIM at roughly the rate the bird was moving anyway, rather
+ *  than a bird that lives wherever you last tapped. */
+export const WING_CALL_COOLDOWN_S = 45;
 
 export interface WingState {
   /** Basket it is perched on, or null before its first hop. */
   at: number | null;
   /** Hop timestamp — keys the landing animation. */
   since: number;
+  /** Epoch ms until which it neither wanders nor answers another call. 0
+   *  when it has never been called. */
+  readyAt: number;
 }
 
-export const freshWing = (): WingState => ({ at: null, since: 0 });
+export const freshWing = (): WingState => ({ at: null, since: 0, readyAt: 0 });
 
 /** It hops on its own schedule and never leaves — the only "skill" is
- *  noticing where it went, which is the whole point of the mechanic. */
+ *  noticing where it went, which is the whole point of the mechanic.
+ *
+ *  A CALLED WING DOES NOT WANDER. While `readyAt` is in the future the
+ *  natural hop is suppressed: a purchase whose effect the next tick's dice
+ *  could undo is not control, and control is the whole of what `wingcall`
+ *  sells. Rack-bounds corrections still apply — a bird perched off the end
+ *  of a shrunken rack is a rendering bug, not a promise to keep. */
 export function wingTick(w: WingState, fryerCount: number, now: number, rng: () => number): WingState {
   if (fryerCount <= 0) return w.at === null ? w : freshWing();
-  if (w.at !== null && w.at >= fryerCount) return { at: fryerCount - 1, since: now };
-  if (w.at === null) return { at: Math.min(fryerCount - 1, Math.floor(rng() * fryerCount)), since: now };
+  if (w.at !== null && w.at >= fryerCount) return { ...w, at: fryerCount - 1, since: now };
+  if (w.at === null) return { ...w, at: Math.min(fryerCount - 1, Math.floor(rng() * fryerCount)), since: now };
+  if (now < w.readyAt) return w;
   if (rng() >= perTickP(WING_HOP_EXPECT_S)) return w;
   // Never hop onto the basket it is already on — a hop nobody can see is a
   // hop that reads as the mechanic being broken.
   if (fryerCount === 1) return w;
   let next = Math.floor(rng() * (fryerCount - 1));
   if (next >= w.at) next += 1;
-  return { at: next, since: now };
+  return { ...w, at: next, since: now };
+}
+
+/**
+ * A REASON — call the wing onto a basket you choose. Refused while cooling,
+ * refused off the rack, and a NO-OP (cooldown untouched) when it is already
+ * sitting where you tapped: burning 45 seconds of a 300M purchase on a
+ * misfire is a trap, not a mechanic.
+ *
+ * The app gates this on ownership; the rule here is deliberately ignorant of
+ * the catalog so it stays a pure state transition.
+ */
+export function callWing(w: WingState, index: number, fryerCount: number, now: number): WingState {
+  if (index < 0 || index >= fryerCount) return w;
+  if (index === w.at) return w;
+  if (now < w.readyAt) return w;
+  return { at: index, since: now, readyAt: now + WING_CALL_COOLDOWN_S * 1000 };
 }
 
 /* ── the committee: a motion regarding your fryers ─────────────────────── */

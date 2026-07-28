@@ -23,13 +23,13 @@ import { enqueue, loadQueue, saveQueue, clearQueue, nextIdAfter, activeFor, type
 import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useCooking, type CookEvent } from './lib/useCooking';
-import { isGolden, MAX_CRACKLES, type TickMods } from './lib/cooking';
+import { isGolden, MAX_CRACKLES, LONG_FRY_CRACKLES, type TickMods } from './lib/cooking';
 import { toggleOvercook, overcookOff } from './lib/overcook';
 import { CREW, crewFor, recruitsAt, vendorOf, openJarsOf, type CrewMember } from './lib/crew';
 import {
   freshRat, freshAngel, ratTick, angelTick, ratAbsorb, ratAte, gorgeOf,
   shooRat, spendBlessing, JOBS_MIN_DIP_INDEX, type RatState, type AngelState,
-  freshWing, wingTick, freshVote, voteTick, lobby, motionBonus,
+  freshWing, wingTick, callWing, freshVote, voteTick, lobby, motionBonus,
   freshHermit, hermitTick, giveHermit, freshOracle, oracleTick,
   dipBonusFor, JOB_LAYER,
   type WingState, type VoteState, type HermitState, type OracleState,
@@ -188,6 +188,11 @@ export function App() {
    *  tick. A ref, not state — it is read by the cooking interval's modsFor and
    *  consumed the tick it fires; nothing renders from it. */
   const blessRef = useRef<number | null>(null);
+  /** The top of the crackle ladder for THIS player: MAX_CRACKLES normally,
+   *  LONG_FRY_CRACKLES once The Long Fry is bought. A ref for the same reason
+   *  as the others — `modsFor` must keep a stable identity or the cooking
+   *  interval restarts and every fryer's clock resets (see useCooking). */
+  const ceilingRef = useRef(MAX_CRACKLES);
   const fryersRef = useRef(0);
   const dipIndexRef = useRef(0);
   const bubbleTimer = useRef<number | null>(null);
@@ -221,6 +226,7 @@ export function App() {
     }
     if (blessRef.current === index) mods.forceCrackle = true;
     if (overcookRef.current === index) mods.overcook = true;
+    mods.ceiling = ceilingRef.current;
     return mods;
   }, []);
   const [counting, setCounting] = useState<{ done: number; total: number } | null>(null);
@@ -689,6 +695,10 @@ export function App() {
     Boolean(host && me && tableId && state), onCookEvents, modsFor
   );
   fryersRef.current = fryerCount;
+  /** The Long Fry: one more crackle past golden. Ownership only — the fold
+   *  records the jar, the ceiling itself never touches the chain. */
+  const ceiling = state?.owned.has('longfry') ? LONG_FRY_CRACKLES : MAX_CRACKLES;
+  ceilingRef.current = ceiling;
 
   /**
    * The depth the CREW sees — normally the fold's dipIndex, but a dev build
@@ -987,6 +997,21 @@ export function App() {
     setOvercookAt((lit) => toggleOvercook(lit, index));
   }
 
+  /** A REASON: whistle the wing onto a basket. Refused without the jar and
+   *  refused while it is still cooling (callWing owns both rules) — the
+   *  ownership guard is repeated here rather than trusted to the call site,
+   *  because a control that renders for a non-owner has been this client's
+   *  most-repeated bug. */
+  function onWingCall(index: number): void {
+    if (!state?.owned.has('wingcall')) return;
+    const now = Date.now();
+    if (now < wingRef.current.readyAt) return;
+    if (wingRef.current.at === index) return;
+    sfx.pop();
+    setWing((w) => callWing(w, index, fryersRef.current, now));
+    say('wing', pickLine('wing', ['THIS ONE. i have chosen it and i will not be explaining why.']), 5000);
+  }
+
   function onBless(): void {
     if (!angel.glowing || blessRef.current !== null) return;
     // The fattest pot that can still crackle, skipping the rat's fryer — he
@@ -1098,11 +1123,13 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chips, state, host, me, tableId, feeding]);
 
-  // The flame puts itself out at golden — nothing left to hurry, and a lit
-  // fryer past golden is burning the pot for nothing.
+  // The flame puts itself out when the chip tops out — nothing left to hurry,
+  // and a lit fryer at the ceiling is burning the pot for nothing. With The
+  // Long Fry that ceiling is one crackle PAST golden, which is exactly the
+  // stretch the burner is for.
   useEffect(() => {
-    setOvercookAt((lit) => overcookOff(lit, chips));
-  }, [chips]);
+    setOvercookAt((lit) => overcookOff(lit, chips, ceiling));
+  }, [chips, ceiling]);
 
   /* ── the bottom of the bowl ───────────────────────────────────────────── */
   /**
@@ -1531,6 +1558,9 @@ export function App() {
           oracleIndex={oracle.at}
           overcookAt={overcookAt}
           onOvercook={state?.owned.has('overcook') ? onOvercook : null}
+          ceiling={ceiling}
+          onWingCall={state?.owned.has('wingcall') ? onWingCall : null}
+          wingCooling={nowMs < wing.readyAt}
         />
 
         <aside className="counter">
