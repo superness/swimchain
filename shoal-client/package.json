@@ -5,7 +5,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsc --noEmit && tsx src/lib/shoalConst.test.ts && tsx src/lib/fixed.test.ts && tsx src/lib/shelter.test.ts && tsx src/lib/tension.test.ts && tsx src/lib/sweep.test.ts && tsx src/lib/bloom.test.ts && tsx src/lib/epoch.test.ts && tsx src/lib/checkpoint.test.ts && tsx src/lib/shoalEngine.test.ts && tsx src/lib/shoalEngine.determinism.test.ts && tsx src/lib/shoalEngine.incremental.test.ts"
+    "smoke": "tsx scripts/regtest-smoke.ts",
+    "test": "tsc --noEmit && tsx src/lib/shoalConst.test.ts && tsx src/lib/fixed.test.ts && tsx src/lib/shelter.test.ts && tsx src/lib/tension.test.ts && tsx src/lib/sweep.test.ts && tsx src/lib/bloom.test.ts && tsx src/lib/epoch.test.ts && tsx src/lib/checkpoint.test.ts && tsx src/lib/shoalWire.test.ts && tsx src/lib/shoalRpc.test.ts && tsx src/lib/shoalEngine.test.ts && tsx src/lib/shoalEngine.determinism.test.ts && tsx src/lib/shoalEngine.incremental.test.ts && tsx src/lib/shoalRoom.test.ts && tsx src/lib/shoalLive.test.ts && tsx src/lib/shoalEmit.test.ts"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
