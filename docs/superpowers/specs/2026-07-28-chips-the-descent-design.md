@@ -46,7 +46,7 @@ Layers 8+ get real names, palettes and residents. The operator's list, filled in
 | 10 | **the floor** | tile and grout, and a chip that has been down there since 1974 |
 | 11 | **the dirt** | roots, cold, and things that live in it |
 | 12 | **the lava** | the fryer that was always underneath the whole shop |
-| 13 | **???** | deliberately unnamed — see §7 |
+| 13 | **the other side** | you come up through the bottom of another bowl — see §7 |
 
 `BEYOND_LINES` (the seven throwaway labels) is replaced by this table, and the
 generic continuation lines move *below* it for anyone who digs past 13.
@@ -71,7 +71,7 @@ in it longer.
 | 10 | **the chip from 1974** | it has been cooking for fifty years and has a number on it. Beat its worth in a single dip, inside a window | the long fry, and nerve |
 | 11 | **the rat's family** | every fryer latched at once; shoo them all inside a window while still banking | the shoo verb, under pressure |
 | 12 | **the first fryer** | everything overcooks whether you want it to or not — the pot drains constantly and you must still land a ×64 | overcook mastery |
-| 13 | ??? | — | — |
+| 13 | **the other side** | there is no fight — see §7 | — |
 
 **Layer 12 is the keystone.** Overcook is deliberately EV-negative and the code
 says so in three places; its boss is a forced-overcook fight, and its reward
@@ -147,25 +147,94 @@ that right and everything else stays tunable.
 
 ---
 
-## 7. Open, deliberately
+## 7. Layer 13 — THE OTHER SIDE (operator's ruling)
 
-1. **Layer 13.** Left blank on purpose — it should be the operator's, and it is
-   the payoff for the whole descent. The shallow game's last character says "i
-   waited through seven dips to find a friend"; whatever is under the lava
-   should answer that.
-2. **The deep vendor.** Who sells char abilities? A new critter met at the
-   porcelain, or something that has been following you down.
-3. **Char re-earnable or once-only** (§4).
-4. **Does a boss interrupt play, or run in the background?** A modal fight stops
-   the idle game dead; a background condition ("all four at ×32 right now") lets
-   the game keep running and rewards noticing. Leaning background, consistent
-   with how the wing, the oracle and the committee already work.
+You dig through the lava and come **up** through the bottom of another bowl, on
+another table. The tunnel is a circle.
+
+### The game already wrote this
+
+Nothing here is invented. The fourth beat of the porcelain reveal — shipped,
+`Bowl.tsx`, seen by every player at Queso — is:
+
+> you were never digging down. you were emptying a bowl. **someone set it out
+> for you.**
+
+That is a question the game has been asking since layer 3 and has never
+answered. And stamped on the underside, readable only from below:
+
+> `DISHWASHER SAFE. MICROWAVE SAFE. NOT SAFE.`
+
+"NOT SAFE" is a throwaway joke on first read. It is a warning on the second.
+
+So layer 13 is not new lore, it is the **payoff of existing lore**, and the
+whole descent becomes the act of finding out who set the bowl out. The answer
+is: the last person who dug out of it.
+
+### The inversion
+
+The reveal's beats run again as you surface, turned around. Where the first
+read ended *"someone set it out for you"*, this one ends:
+
+> you are not coming up. you are being poured. **somebody is going to find
+> this.**
+
+The player who was the digger becomes the thing at the bottom of the next
+bowl. That is the entire emotional shape of the feature and it costs four
+lines of copy.
+
+### Whose bowl?
+
+**A real one.** `list_space_posts` already enumerates every table on the chain
+(the boards use it), so the bowl you surface through can carry an actual
+player's name chalked on the table above. Read-only, no new consensus, no
+interaction — you never touch their run and they never know. You simply learn
+you were never the only one down here.
+
+That turns the loop social for the price of a read the client already makes.
+If the space is empty of other tables it falls back to an unnamed table, which
+is its own kind of sad and perfectly in voice.
+
+### What breaking it does
+
+It is **THE DEEP TIP**: you reset like a tip, but you keep salt AND char, and a
+**bowl count** goes up — "you have come up through N bowls". The count is the
+one number that only the descent can move, and it is what the deep leaderboard
+should rank on.
+
+Everything the shallow game does on a tip still happens (one fryer, no jars),
+so this needs no new reset machinery — only a new reason to want one.
+
+### What changes on the second bowl
+
+Cheap, escalating, all copy and palette:
+- the crew greet you differently once you have come up through one
+- the strata labels shift ("the porcelain (again)" → and by the third, they
+  stop numbering it)
+- the maker's mark on each new bowl is subtly wrong, and gets worse
 
 ---
 
-## 8. Build order, if approved
+## 8. Still open
 
-1. `broke <band>` fold verb + char accrual — the only permanent decision.
+1. **The deep vendor.** Who sells char abilities? A new critter met at the
+   porcelain, or something that has been following you down. (Layer 13 is no
+   longer a candidate — it is a place now, not a person.)
+2. **Char re-earnable or once-only** (§4).
+3. **Does a boss interrupt play, or run in the background?** A modal fight stops
+   the idle game dead; a background condition ("all four at ×32 right now") lets
+   the game keep running and rewards noticing. Leaning background, consistent
+   with how the wing, the oracle and the committee already work.
+4. **Does the bowl count have a ceiling?** Probably not — but the copy needs an
+   answer for what the tenth bowl reads like, or it degrades into a number.
+
+---
+
+## 9. Build order, if approved
+
+1. `broke <band>` fold verb + char accrual — the only permanent decision. The
+   deep tip (§7) is the same verb at band 13, so design it to carry a band
+   number from the start rather than bolting one on.
 2. Bands 8–12: names, palettes, `BEYOND_LINES` replacement. Cheap, visible, ships alone.
 3. `the magma`, simulated against `overcooksim`/`longfrysim` before anything is priced.
 4. Bosses one at a time, cheapest first (the porcelain is a single comparison).
