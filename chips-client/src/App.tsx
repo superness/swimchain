@@ -31,6 +31,7 @@ import {
   freshRat, freshAngel, ratTick, angelTick, ratAbsorb, ratAte, gorgeOf,
   shooRat, spendBlessing, JOBS_MIN_DIP_INDEX, type RatState, type AngelState,
   freshWing, wingTick, callWing, freshVote, voteTick, lobby, motionBonus,
+  wingAtDepth, oracleAtDepth, voteAtDepth, hermitAtDepth, ratAtDepth, angelAtDepth,
   freshHermit, hermitTick, giveHermit, freshOracle, oracleTick,
   dipBonusFor, JOB_LAYER,
   type WingState, type VoteState, type HermitState, type OracleState,
@@ -652,11 +653,44 @@ export function App() {
 
   /* ── the fryers (designer-paced — lib/cooking.ts holds the locked spec) ── */
   const fryerCount = state?.fryers ?? 0;
+  /**
+   * The depth the CREW sees — normally the fold's dipIndex, but a dev build
+   * honours `?crew=N` so a screen review can meet the queso jobs without six
+   * hours of digging. Display/policy only (roster, stalls, ticker, jobs
+   * gate); the fold, the tutorial and the tier ceremony never read it, and
+   * `import.meta.env.DEV` compiles the whole branch out of production.
+   */
+  const crewDip = ((): number => {
+    const real = state?.dipIndex ?? 0;
+    if (!import.meta.env.DEV) return real;
+    const q = new URLSearchParams(window.location.search).get('crew');
+    if (q === null) return real;
+    const n = Number(q);
+    return Number.isInteger(n) && n >= 0 && n < DIP_TIERS.length ? n : real;
+  })();
+  dipIndexRef.current = crewDip;
+
+  /* ── JOBS, AS THEY APPLY AT THIS DEPTH ──────────────────────────────────
+     Every read of a job's EFFECT goes through these, never through the raw
+     state. The tick gates stop a job advancing too shallow; they do nothing
+     about one already running when the depth drops, and a tip drops it to
+     zero — which left the wing perched and paying x2 four tiers below its
+     layer (see crewJobs.ts `wingAtDepth`). A gate on advance is not a gate
+     on effect, and the effect is what pays. */
+  const wingNow = wingAtDepth(wing, crewDip);
+  const oracleNow = oracleAtDepth(oracle, crewDip);
+  const voteNow = voteAtDepth(vote, crewDip);
+  const hermitNow = hermitAtDepth(hermit, crewDip);
+  const ratNow = ratAtDepth(rat, crewDip);
+  const angelNow = angelAtDepth(angel, crewDip);
+  const wingNowRef = useRef(wingNow); wingNowRef.current = wingNow;
+  const oracleNowRef = useRef(oracleNow); oracleNowRef.current = oracleNow;
+
   // OLD SALT fattens every tick, forever — the one thing a tipped bowl
   // keeps. It multiplies the seasoning rather than the pot so it compounds
   // with everything the run rebuilds.
   const saltBonus = 1 + (state?.oldSalt ?? 0) * SALT_TICK_BONUS;
-  const seasoning = (state ? state.seasoningNum / state.seasoningDen : 1) * saltBonus * motionBonus(vote);
+  const seasoning = (state ? state.seasoningNum / state.seasoningDen : 1) * saltBonus * motionBonus(voteNow);
   // The detector chain, remapped in game terms: crackles come sooner.
   const crackleHaste = state?.owned.has('detector2') ? 0.6 : state?.owned.has('detector') ? 0.75 : 1;
 
@@ -719,22 +753,6 @@ export function App() {
   const ceiling = state?.owned.has('longfry') ? LONG_FRY_CRACKLES : MAX_CRACKLES;
   ceilingRef.current = ceiling;
 
-  /**
-   * The depth the CREW sees — normally the fold's dipIndex, but a dev build
-   * honours `?crew=N` so a screen review can meet the queso jobs without six
-   * hours of digging. Display/policy only (roster, stalls, ticker, jobs
-   * gate); the fold, the tutorial and the tier ceremony never read it, and
-   * `import.meta.env.DEV` compiles the whole branch out of production.
-   */
-  const crewDip = ((): number => {
-    const real = state?.dipIndex ?? 0;
-    if (!import.meta.env.DEV) return real;
-    const q = new URLSearchParams(window.location.search).get('crew');
-    if (q === null) return real;
-    const n = Number(q);
-    return Number.isInteger(n) && n >= 0 && n < DIP_TIERS.length ? n : real;
-  })();
-  dipIndexRef.current = crewDip;
 
   /* ── moves ────────────────────────────────────────────────────────────── */
   /**
@@ -788,11 +806,11 @@ export function App() {
     if (!res) return;
     // The wing sits where it hurts and the strings do not lie: a basket one
     // of them is watching pays more, and both at once STACK.
-    const watchBonus = dipBonusFor(index, wingRef.current, oracleRef.current);
+    const watchBonus = dipBonusFor(index, wingNowRef.current, oracleNowRef.current);
     if (watchBonus > 1) {
       res.amount = Math.floor(res.amount * watchBonus);
-      const who = wingRef.current.at === index && oracleRef.current.at === index ? 'wing'
-        : wingRef.current.at === index ? 'wing' : 'oracle';
+      const who = wingNowRef.current.at === index && oracleNowRef.current.at === index ? 'wing'
+        : wingNowRef.current.at === index ? 'wing' : 'oracle';
       say(who, who === 'wing'
         ? 'DOUBLE. that’s what happens when you listen to a wing.'
         : 'the strings do not lie. take your reward and pretend you decided that.', 6000);
@@ -1083,8 +1101,8 @@ export function App() {
   function onWingCall(index: number): void {
     if (!state?.owned.has('wingcall')) return;
     const now = Date.now();
-    if (now < wingRef.current.readyAt) {
-      const left = Math.ceil((wingRef.current.readyAt - now) / 1000);
+    if (now < wingNowRef.current.readyAt) {
+      const left = Math.ceil((wingNowRef.current.readyAt - now) / 1000);
       sfx.tap();                                   // the dull "no" poke
       setWingNope({ index, at: now });             // keys the shake
       say('wing', `i am NOT listening. ${left}s. there was never a bird and there is never a hurry.`, 4000);
@@ -1092,7 +1110,7 @@ export function App() {
     }
     // Tapping the basket it already sits on is a no-op in callWing, and
     // saying so is friendlier than a shake that implies you did wrong.
-    if (wingRef.current.at === index) {
+    if (wingNowRef.current.at === index) {
       say('wing', 'i am ALREADY here. look at me. LOOK at me.', 4000);
       return;
     }
@@ -1102,7 +1120,7 @@ export function App() {
   }
 
   function onBless(): void {
-    if (!angel.glowing || blessRef.current !== null) return;
+    if (!angelNow.glowing || blessRef.current !== null) return;
     // The fattest pot that can still crackle, skipping the rat's fryer — he
     // eats blessings too (cooking.ts), so she never wastes one on him.
     //
@@ -1148,7 +1166,7 @@ export function App() {
    */
   function onCritterClick(id: string): void {
     if (feeding && feeding.vendor.id === id) { setFeeding(null); setBubble(null); return; }
-    if (id === 'angel' && angel.glowing) { onBless(); return; }
+    if (id === 'angel' && angelNow.glowing) { onBless(); return; }
     // A committee with the floor open wants lobbying, not shopping.
     if (id === 'committee' && vote.phase === 'open' && !vote.lobbied) {
       setVote(lobby);
@@ -1680,19 +1698,19 @@ export function App() {
         <Kitchen
           chips={chips} onDip={onDip} crackles={crackleAt} ticks={tickAt}
           capRoom={state ? Math.max(0, state.bowlCap - crumbsNow) : Number.MAX_SAFE_INTEGER}
-          ratAt={rat.latched}
-          ratPerch={rat.latched !== null ? { gorge: gorgeOf(rat), hoard: rat.hoard, chompKey: ratChomp } : null}
+          ratAt={ratNow.latched}
+          ratPerch={ratNow.latched !== null ? { gorge: gorgeOf(ratNow), hoard: ratNow.hoard, chompKey: ratChomp } : null}
           onShoo={onShoo}
           feedMode={feeding ? feeding.vendor.feed : null}
           blessAt={blessFx}
-          wingIndex={wing.at}
-          wingSince={wing.since}
-          oracleIndex={oracle.at}
+          wingIndex={wingNow.at}
+          wingSince={wingNow.since}
+          oracleIndex={oracleNow.at}
           overcookAt={overcookAt}
           onOvercook={state?.owned.has('overcook') ? onOvercook : null}
           ceiling={ceiling}
           onWingCall={state?.owned.has('wingcall') ? onWingCall : null}
-          wingCoolS={Math.max(0, Math.ceil((wing.readyAt - nowMs) / 1000))}
+          wingCoolS={Math.max(0, Math.ceil((wingNow.readyAt - nowMs) / 1000))}
           wingNope={wingNope}
         />
 
@@ -1803,18 +1821,18 @@ export function App() {
           first, the thing merely happening last. The wrapper is
           click-through; only the buttons inside take pointer events. */}
       <div className="crier">
-      {vote.phase === 'open' && (
+      {voteNow.phase === 'open' && (
         <div className="vote-banner" role="status">
           <span className="vote-text">
             <strong>the committee has called a vote.</strong>{' '}
-            {vote.lobbied ? 'your case is heard. the beans are conferring.' : 'the subject is your fryers. attendance is mandatory.'}
+            {voteNow.lobbied ? 'your case is heard. the beans are conferring.' : 'the subject is your fryers. attendance is mandatory.'}
           </span>
-          {!vote.lobbied && (
+          {!voteNow.lobbied && (
             <button type="button" className="vote-lobby" onClick={() => onCritterClick('committee')}>lobby them</button>
           )}
         </div>
       )}
-      {vote.phase === 'carried' && (
+      {voteNow.phase === 'carried' && (
         <div className="vote-carried" role="status">motion carries — every fryer runs hot</div>
       )}
       {/* A LOST VOTE SAID NOTHING AT ALL. `voteTick` has always produced a
@@ -1823,14 +1841,14 @@ export function App() {
           is what carries a motion" only from the times they won, which is to
           say never. The two failures read differently on purpose: one is the
           dice, the other is you not turning up. */}
-      {vote.phase === 'failed' && (
+      {voteNow.phase === 'failed' && (
         <div className="vote-failed" role="status">
-          {vote.lobbied
+          {voteNow.lobbied
             ? 'motion fails. the olives abstain. they always abstain.'
             : 'nobody spoke for the motion. it dies on the floor. attendance was mandatory.'}
         </div>
       )}
-      {hermit.phase === 'offering' && !feeding && (
+      {hermitNow.phase === 'offering' && !feeding && (
         <div className="hermit-offer" role="status">
           <span className="vote-text">
             <strong>the hermit wants a chip.</strong>{' '}
@@ -1839,7 +1857,7 @@ export function App() {
           <button type="button" className="hermit-take" onClick={onHermitTake}>hand it over</button>
         </div>
       )}
-      {hermit.phase === 'holding' && (
+      {hermitNow.phase === 'holding' && (
         <div className="hermit-holding" role="status">the hermit has your chip. he has gone under the celery.</div>
       )}
       {feeding && (
