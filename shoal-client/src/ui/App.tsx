@@ -93,7 +93,8 @@ import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
 import { fitBodies, fitScale, followCamera, screenToWorld, type Camera, type Viewport } from './render';
 import {
   applyInput, canClaimEat, createInput, dartCharge, eatTarget, emitDue,
-  headingTo, isDarting, markEat, positionAt, type InputEvent, type InputState,
+  headingTo, isDarting, markEat, positionAt, refundOnHush,
+  type InputEvent, type InputState,
 } from './input';
 import {
   hushRead, lockedBodies, premonition, readTether, scatterReplay, tetherOpacity,
@@ -512,6 +513,14 @@ export function App() {
       // here re-derives shelter, exposure or a verdict.
       const bodies = bodiesOf(state);
       const hush = hushRead(state.hushStartMs, atMs);
+
+      // SPEC 2.12, T+0: the hush refunds the action timer, so one action always
+      // suffices to survive a telegraph. Driven off the fold's own
+      // `hushStartMs` rather than off a phase transition this loop watches for,
+      // so a dropped frame cannot lose it and a re-render cannot double it —
+      // `refundOnHush` is idempotent per hush. It is called BEFORE the dart
+      // ring is read below, so the ring and the verb agree on the same frame.
+      input = refundOnHush(input, state.hushStartMs);
 
       // Snapshot the sweep's own arrangement the moment it is frozen.
       const lockedNow = lockedBodies(state);

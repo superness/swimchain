@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createInput, applyInput, intentAt, emitDue, markEmitted,
   headingTo, isDartArmed, isDarting, canDart, dartCharge, positionAt,
-  canClaimEat, markEat, eatTarget,
+  canClaimEat, markEat, eatTarget, refundOnHush,
   type InputState,
 } from './input';
 import { shouldEmit, MIN_EMIT_GAP_MS, MAX_EMIT_GAP_MS } from '../lib/shoalEmit';
@@ -38,7 +38,7 @@ import { reckon } from '../lib/fixed';
 import { cellIndex } from '../lib/bloom';
 import {
   BLOOM_VISIT_R, DART_COOLDOWN_MS, DART_MS, EAT_COOLDOWN_MS, EAT_R,
-  HEADING_STEPS, SHELTER_R, SPEED_CRUISE, SPEED_DART, TICK_MS,
+  HEADING_STEPS, HUSH_MS, LOCK_MS, SHELTER_R, SPEED_CRUISE, SPEED_DART, TICK_MS,
 } from '../lib/shoalConst';
 import type { Vec } from '../lib/shoalTypes';
 
@@ -955,6 +955,92 @@ function main() {
     const reachCu = (SPEED_DART * TICK_MS) / 1000;
     check('the eat gap still exceeds a full tick at top speed, so the claimant exemption is still load-bearing (hand-derived 110 > 55)',
       gapCu === 110 && reachCu === 55 && gapCu > reachCu, { gapCu, reachCu });
+  }
+
+  // =========================================================================
+  // 9. SPEC 2.12'S T+0 REFUND: one action always suffices to survive a hush
+  //
+  // The rule the spec states as hard: "T+0 Hush begins. Your action timer is
+  // REFUNDED." The failure it prevents is arithmetic, not a matter of taste —
+  //
+  //   DART_COOLDOWN_MS = 11_000     the wait after a dart is published
+  //   LOCK_MS          =  4_000     the commit window; after it, nothing counts
+  //
+  // — so a player whose dart went out at any instant in the 7_000 ms before a
+  // hush begins is still on cooldown when the window CLOSES, and has no escape
+  // at all from a hush they were given eight seconds of warning about. The spec
+  // calls that indistinguishable from randomness.
+  //
+  // The clock here is arbitrary but fixed: the dart publishes at 10_000 and the
+  // hush begins at 11_000, i.e. 1_000 ms later — deep inside the dead window
+  // above (11_000 - 10_000 = 1_000 < 11_000).
+  // =========================================================================
+  {
+    const HUSH_A = 11_000;
+    const spent = markEmitted(
+      applyInput(createInput(1000, 1000, 0), { kind: 'dart' }, 10_000),
+      { x: 1000, y: 1000, heading: 0, speed: SPEED_DART, t: 10_000 },
+    );
+
+    // The problem, stated in the state rather than asserted about the fix:
+    // at T+LOCK the dart is still 7_000 ms away (10_000 + 11_000 = 21_000,
+    // against a window that closes at 11_000 + 4_000 = 15_000).
+    check('without a refund the player is dartless for the WHOLE commit window',
+      !canDart(spent, HUSH_A) && !canDart(spent, HUSH_A + LOCK_MS),
+      { readyAt: 10_000 + DART_COOLDOWN_MS, windowClosesAt: HUSH_A + LOCK_MS });
+
+    const refunded = refundOnHush(spent, HUSH_A);
+    check('T+0 refunds it: the dart is available the instant the hush begins',
+      canDart(refunded, HUSH_A));
+    check('...and stays available right up to the input lock',
+      canDart(refunded, HUSH_A + LOCK_MS - 1));
+    // The ring and the verb are one statement (see `dartCharge`'s header), so
+    // a refund that left the ring reading empty would be a lie about the only
+    // trade-off the game turns on.
+    check('...and the ring reads full, not merely the predicate',
+      dartCharge(refunded, HUSH_A) === 1, { charge: dartCharge(refunded, HUSH_A) });
+
+    // ONCE PER HUSH. The frame loop calls this every frame, so idempotence is
+    // the whole of the anti-abuse argument: spend the refunded dart mid-hush
+    // and no further call during the SAME hush hands out another.
+    const spentAgain = markEmitted(
+      applyInput(refunded, { kind: 'dart' }, HUSH_A + 500),
+      { x: 1000, y: 1000, heading: 0, speed: SPEED_DART, t: HUSH_A + 500 },
+    );
+    check('the refunded dart really is spendable', spentAgain.dartStartMs === HUSH_A + 500);
+    let again = spentAgain;
+    for (let t = HUSH_A + 500; t < HUSH_A + HUSH_MS; t += 16) again = refundOnHush(again, HUSH_A);
+    check('...and 469 more frames of the same hush do not refund it a second time',
+      again.dartStartMs === HUSH_A + 500 && !canDart(again, HUSH_A + 600),
+      { dartStartMs: again.dartStartMs });
+
+    // A DIFFERENT hush is a different telegraph and earns its own refund. The
+    // key is the hush's start, so this needs no frame counting on either side.
+    const HUSH_B = HUSH_A + 60_000;
+    const nextHush = refundOnHush(again, HUSH_B);
+    check('a later hush refunds again (its start is its identity)',
+      canDart(nextHush, HUSH_B) && nextHush.refundedHushMs === HUSH_B);
+
+    // No hush running is the ordinary case, every frame, forever. It must cost
+    // nothing and change nothing — including not resurrecting a spent dart.
+    const calm = refundOnHush(spent, -1);
+    check('no hush running refunds nothing (and returns the same object)',
+      calm === spent && !canDart(calm, HUSH_A));
+
+    // The refund is the DART. Refunding the eat cooldown would hand out free
+    // size at a publicly predictable instant, every time the shark came.
+    const fed = markEat(spent, 10_500);
+    const fedRefunded = refundOnHush(fed, HUSH_A);
+    check('the eat cooldown is NOT refunded — only the survival verb is',
+      fedRefunded.lastEatMs === 10_500 && !canClaimEat(fedRefunded, 10_500 + EAT_COOLDOWN_MS - 1),
+      { lastEatMs: fedRefunded.lastEatMs });
+
+    // An ARMED dart is free and unspent (see `canDart`'s header), so a refund
+    // arriving while one waits must not disturb it — the press still goes out
+    // on the next legal vector.
+    const armedThenHushed = refundOnHush(
+      applyInput(createInput(1000, 1000, 0), { kind: 'dart' }, HUSH_A - 1), HUSH_A);
+    check('a refund leaves an already-armed press armed', isDartArmed(armedThenHushed));
   }
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

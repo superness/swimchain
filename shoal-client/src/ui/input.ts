@@ -117,6 +117,13 @@
  *    `isDartArmed` exists for a display that wants to say so; what it should
  *    look like is a question about the dart ring's visual language.
  *
+ * 5. **The hush refunds it.** Spec 2.12's first hard rule — "T+0 Hush begins.
+ *    Your action timer is REFUNDED" — lives in `refundOnHush` below, which the
+ *    frame loop calls once a frame with the fold's own `hushStartMs`. It is
+ *    what makes the telegraph a telegraph: without it a player who spent their
+ *    dart a second before the hush had no escape for the whole commit window,
+ *    through no decision of their own.
+ *
  * =============================================================================
  * EAT: THE VERB IS WIRED, AND THE WORLD NOW CREDITS IT (open item 10, resolved)
  * =============================================================================
@@ -208,6 +215,15 @@ export interface InputState {
   readonly pendingSay: string | null;
   /** Ms of the last eat claim this client sent, or -1. */
   readonly lastEatMs: number;
+  /**
+   * The `hushStartMs` whose T+0 refund has already been taken, or -1.
+   *
+   * A hush's start is its identity — every hush has a distinct one, and the
+   * fold hands the same value out for every frame of that hush — so this makes
+   * `refundOnHush` idempotent per hush without either side counting frames.
+   * See `refundOnHush`.
+   */
+  readonly refundedHushMs: number;
   /** Where this swimmer sits, and faces, before it has published anything. */
   readonly spawn: { readonly x: number; readonly y: number; readonly heading: number };
 }
@@ -234,8 +250,50 @@ export function createInput(x: number, y: number, heading: number = 0): InputSta
     dartHeading: heading,
     pendingSay: null,
     lastEatMs: -1,
+    refundedHushMs: -1,
     spawn: { x, y, heading },
   };
+}
+
+/**
+ * SPEC 2.12'S FIRST HARD RULE: *"T+0 Hush begins. Your action timer is
+ * REFUNDED."* Call it once a frame with the fold's own `state.hushStartMs`.
+ *
+ * Without it the game's central promise is false. The hush is a TELEGRAPH —
+ * eight seconds of warning, of which the first `LOCK_MS` are yours to act in —
+ * and the whole point of telegraphing is that the answer is always available.
+ * A player who spent their dart one second before the hush began had a
+ * `DART_COOLDOWN_MS` of 11_000 against a commit window that closes at `LOCK_MS`,
+ * so they had NO escape for the entire window through no decision of their own.
+ * The spec names that failure exactly: indistinguishable from randomness. It
+ * existed here only as a line in `sweep.ts`'s timeline comment; nothing
+ * implemented it.
+ *
+ * The refund is the dart and nothing else. The dart is the game's one
+ * survival verb — spec 2.4 calls it "how you save your life" — while the eat
+ * cooldown buys food, not escape, and refunding it would hand out free size at
+ * a predictable instant every time the shark came, which is the shape of
+ * exploit spec 3.9's checkpoint reasoning already rejects.
+ *
+ * IDEMPOTENT PER HUSH, and that is what stops the obvious abuse: the refund is
+ * keyed on `hushStartMs`, so calling this every frame of a hush refunds ONCE.
+ * A player therefore gets exactly one guaranteed dart per hush — not a dart
+ * banked and re-banked for the ~8_000 ms the hush lasts, and not a way to
+ * out-run the cooldown by holding the key down. Between hushes the ordinary
+ * `DART_COOLDOWN_MS` is the only clock.
+ *
+ * PURE, AND NOT A CLOCK READ. It takes the hush's start rather than "the
+ * current phase" so the rule is a function of the fold's own number and can be
+ * driven at a fixed step in a test, like everything else in this module. It is
+ * also why a dropped frame cannot lose the refund: the identity is the hush,
+ * not the instant this client first noticed it.
+ */
+export function refundOnHush(s: InputState, hushStartMs: number): InputState {
+  if (hushStartMs < 0) return s; // no hush running
+  if (s.refundedHushMs === hushStartMs) return s; // this one is already paid
+  // -1 is "has never darted", which is exactly what a refund means: `canDart`
+  // is true and `dartCharge` reads 1, the invariant the ring is drawn from.
+  return { ...s, dartStartMs: -1, refundedHushMs: hushStartMs };
 }
 
 // ---------------------------------------------------------------------------
