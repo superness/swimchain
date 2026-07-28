@@ -340,6 +340,41 @@ comment. That is the entire third-bowl-onward presentation.
 
 ---
 
+## 8b. Pacing — measured, and it is fine
+
+The bands inherit the tunnel's existing doubling: 2M / 4M / 8M / 16M / 32M /
+64M lifetime chips, against an Abyss at 1M. Lifetime RESETS on a tip
+(`chipsEngine.ts`: `state.lifetimeChips = 0`), so those are per-run figures,
+reached from one fryer each time with only salt carried across.
+
+I first read 64x the Abyss off flowsim's ~101h and called it a career. That
+was wrong, and wrong in a specific way worth recording: **flowsim models a
+player who dips instantly and never holds** — it drops `2^crackles` out of the
+expectation entirely, so its rate is the ×1 rate. Measured against
+longfrysim's real numbers that is 8-32x pessimistic. Time to a band is also
+not linear in its threshold, because the rate climbs as the ladder is rebought
+and salt multiplies it from the first second.
+
+Simulated properly (greedy ladder, salt applied, hold-to-golden = 32x the
+flowsim rate):
+
+  fresh table, dip instantly   Abyss 101.7h  ...  Other Side 2609.9h
+  fresh table, hold to golden  Abyss   3.2h  ...  Other Side   81.6h
+  464 salt, hold to golden     Abyss    19m  ...  Other Side    7.9h
+  2000 salt, hold to golden    Abyss     5m  ...  Other Side    2.0h
+
+Operator, playing at 464 salt one day into a restart: "I am very fine with
+progression... if it can take me a week of grinding all day to beat then
+that's fine." A cold start at ~82h is inside that; a salted run is an evening.
+
+**No change needed.** The live risk is the OPPOSITE of the one I raised: past
+~2000 salt the whole descent collapses toward two hours. Not urgent — the
+bosses add their own time and char is once-per-boss so it cannot inflate — but
+if anything ever needs a curve of its own it will be for being too SHORT at
+deep salt, not too long from cold.
+
+---
+
 ## 9. ENLIGHTENMENT — the comedy the loop unlocks
 
 Operator: *"otherwise they are now 'enlightened' :D for more jokes / 'you were
