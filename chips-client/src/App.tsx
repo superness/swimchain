@@ -25,6 +25,7 @@ import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useCooking, type CookEvent } from './lib/useCooking';
 import { isGolden, MAX_CRACKLES, LONG_FRY_CRACKLES, type TickMods } from './lib/cooking';
 import { toggleOvercook, overcookOff } from './lib/overcook';
+import { sousTakes } from './lib/souschef';
 import { CREW, crewFor, recruitsAt, vendorOf, openJarsOf, type CrewMember } from './lib/crew';
 import {
   freshRat, freshAngel, ratTick, angelTick, ratAbsorb, ratAte, gorgeOf,
@@ -1046,10 +1047,18 @@ export function App() {
     if (!angel.glowing || blessRef.current !== null) return;
     // The fattest pot that can still crackle, skipping the rat's fryer — he
     // eats blessings too (cooking.ts), so she never wastes one on him.
+    //
+    // "CAN STILL CRACKLE" IS THE CEILING, NOT GOLDEN. This read `isGolden(c)`,
+    // which was the same number until The Long Fry shipped; after it, she
+    // refused to bless the one chip in the rack with a x64 still ahead of it
+    // and spent the blessing on a shallower pot instead. Same golden-vs-
+    // ceiling confusion as the Sous Chef's (lib/souschef.ts), found by
+    // following it — a forced crackle at the ceiling would be wasted, one
+    // below it never is.
     let best = -1;
     let bestPot = -1;
     chips.forEach((c, i) => {
-      if (isGolden(c)) return;
+      if (c.crackles >= ceiling) return;
       if (ratRef.current.latched === i) return;
       if (c.pot > bestPot) { bestPot = c.pot; best = i; }
     });
@@ -1142,29 +1151,34 @@ export function App() {
   }, [feeding, sheetId]);
 
   /* ── the Sous Chef: bought automation, never default, now switchable ──── */
-  // Owning 'autodip' dips GOLDEN chips automatically. The original rationale
-  // — "a golden chip's multi can no longer grow, so cashing it is pure
-  // upside" — WAS true and STOPPED BEING TRUE the day The Long Fry shipped:
-  // `isGolden` is five crackles, the raised ceiling is six, so for anyone
-  // holding both jars the Sous Chef cashes out at x32 milliseconds before the
-  // x64 they paid 1.2B for could ever land. He does not steal the chip, but
-  // he does quietly cancel the deeper upgrade (operator: "sous chef is
-  // probably just taking them from me").
+  // Owning 'autodip' cashes a finished chip for you. He used to fire on
+  // `isGolden` — five crackles — on the rationale that "a golden chip's multi
+  // can no longer grow, so cashing it is pure upside". That was true until
+  // The Long Fry raised the ceiling to six, at which point he was cashing out
+  // at x32 immediately before the x64 the player had paid 1.2B for could
+  // land: a 2M automation quietly vetoing the deepest jar in the game
+  // (operator: "sous chef is probably just taking them from me").
   //
-  // Rather than have one jar silently veto another, he gets an OFF switch, on
-  // the queso angel's stall where he was bought. `dip()` returning null on an
-  // empty pot guards the re-entry case. He still stands down entirely while a
-  // vendor is armed (the angel may be waiting for exactly the golden he would
-  // take) and still REFUSES to touch a fryer with a rat on it — house rule.
+  // FIXED AT THE SOURCE (operator: "did you increase their limit to 6 to
+  // auto-cull it when it is unlocked? we should do that"). He now cashes at
+  // the player's CEILING (`sousTakes`, lib/souschef.ts) rather than at
+  // golden, so buying The Long Fry moves him up with it instead of leaving
+  // two jars fighting. The off switch stays — it is now a preference about
+  // automation, not a workaround for a rule that was wrong.
+  //
+  // The stand-down rules that concern the whole screen rather than one chip
+  // stay here, out of the pure predicate: he pauses entirely while a vendor
+  // is armed (the angel may be waiting for exactly the chip he would take)
+  // and REFUSES to touch a fryer with a rat on it — house rule.
   useEffect(() => {
     if (!sousOn) return;
     if (!state?.owned.has('autodip') || !host || !me || !tableId || feeding) return;
     for (let i = 0; i < chips.length; i++) {
       if (ratRef.current.latched === i) continue;
-      if (chips[i] && isGolden(chips[i]) && chips[i].pot > 0) onDip(i);
+      if (sousTakes(chips[i], ceiling)) onDip(i);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chips, state, host, me, tableId, feeding, sousOn]);
+  }, [chips, state, host, me, tableId, feeding, sousOn, ceiling]);
 
   // The flame puts itself out when the chip tops out — nothing left to hurry,
   // and a lit fryer at the ceiling is burning the pot for nothing. With The
@@ -1677,7 +1691,7 @@ export function App() {
             // player owns the jar it conflicts with. Telling everyone else
             // about a x64 they cannot reach yet would just be noise.
             hint: state.owned.has('longfry')
-              ? 'dips your golden chips at ×32 — off is how a chip lives to ×64'
+              ? 'dips a chip the moment it tops out at ×64 — he waits for the long fry now'
               : 'dips your golden chips for you, the moment they turn',
             on: sousOn,
             onToggle: () => setSousOn((v) => {
