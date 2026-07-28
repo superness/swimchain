@@ -1598,6 +1598,23 @@ h1, h2, h3, p { margin: 0; }
   animation: rat-gnaw .9s ease-in-out infinite;
 }
 @keyframes rat-gnaw { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(4deg) translateY(1px); } }
+/* The burner knob. Absolute like the rat's perch: nothing on a basket may
+   take part in layout, or it moves the fryers (see the .basket-slot note). */
+.burner {
+  position: absolute; top: -12px; left: -10px; z-index: 5;
+  width: clamp(26px, 3vw, 34px); height: clamp(26px, 3vw, 34px);
+  border-radius: 999px; line-height: 1;
+  background: rgba(14, 10, 7, .9);
+  border: 1px solid rgba(236, 228, 214, .3);
+  filter: grayscale(1) brightness(.7);
+}
+.burner.lit {
+  filter: none;
+  border-color: rgba(255, 170, 70, .8);
+  box-shadow: 0 0 14px rgba(255, 150, 50, .65);
+  animation: rat-gnaw .7s ease-in-out infinite;
+}
+.pot-worth.burning { color: #ffb066; }
 .rat-hoard {
   display: block; font-family: var(--chalk); font-size: 9.5px;
   font-variant-numeric: tabular-nums; text-align: center;

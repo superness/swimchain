@@ -254,9 +254,13 @@ interface BasketProps {
   wingAt: number | null;
   /** The strings are pointing here (pays extra while the window is open). */
   prophesied: boolean;
+  /** This fryer's flame is lit — its pot burns for faster crackles. */
+  overcooking: boolean;
+  /** Tap the flame. `null` when overcooking is not owned. */
+  onOvercook: (() => void) | null;
 }
 
-function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied }: BasketProps) {
+function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied, overcooking, onOvercook }: BasketProps) {
   const golden = isGolden(chip);
   const multi = multiOf(chip);
   const worth = worthOf(chip);
@@ -365,6 +369,19 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
         <span className="prophecy-mark" aria-label="the oracle named this basket">the strings point here</span>
       )}
 
+      {onOvercook && (
+        <button
+          type="button"
+          className={`burner${overcooking ? ' lit' : ''}`}
+          onClick={(e) => { e.stopPropagation(); onOvercook(); }}
+          title={overcooking ? 'stop overcooking' : 'overcook this fryer — burns the pot, crackles sooner'}
+          aria-label={overcooking ? 'stop overcooking this fryer' : 'overcook this fryer'}
+          aria-pressed={overcooking}
+        >
+          <span aria-hidden="true">🔥</span>
+        </button>
+      )}
+
       {/* THE POT, always moving; the ladder shows the summit exists. */}
       <p className={`worth pot${golden ? ' worth-golden' : ''}`}>
         <span className="pot-line"><strong>{compact(chip.pot)}</strong> in the pot</span>
@@ -375,9 +392,11 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
         </span>
         {rat
           ? <em className="pot-worth ratted">the rat is eating this fryer&apos;s crumbs — shoo him</em>
-          : spills
-            ? <em className="pot-worth over">dips for {compact(Math.max(0, capRoom))} — bowl full, {compact(worth - Math.max(0, capRoom))} would spill</em>
-            : <em className="pot-worth">dips for {compact(worth)}</em>}
+          : overcooking
+            ? <em className="pot-worth burning">overcooking — the pot pays for the hurry</em>
+            : spills
+              ? <em className="pot-worth over">dips for {compact(Math.max(0, capRoom))} — bowl full, {compact(worth - Math.max(0, capRoom))} would spill</em>
+              : <em className="pot-worth">dips for {compact(worth)}</em>}
       </p>
     </div>
   );
@@ -401,9 +420,13 @@ export interface KitchenProps {
   wingIndex: number | null;
   wingSince: number;
   oracleIndex: number | null;
+  /** The lit fryer, if any — its pot burns for faster crackles. */
+  overcookAt: number | null;
+  /** Tap a fryer's flame. `null` when overcooking is not owned. */
+  onOvercook: ((index: number) => void) | null;
 }
 
-export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex }: KitchenProps) {
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
@@ -421,6 +444,8 @@ export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerc
             blessedAt={blessAt && blessAt.index === i ? blessAt.at : null}
             wingAt={wingIndex === i ? wingSince : null}
             prophesied={oracleIndex === i}
+            overcooking={overcookAt === i}
+            onOvercook={onOvercook ? () => onOvercook(i) : null}
             onDip={() => onDip(i)}
           />
         ))}

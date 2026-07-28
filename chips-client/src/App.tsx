@@ -986,9 +986,6 @@ export function App() {
     sfx.pop();
     setOvercookAt((lit) => toggleOvercook(lit, index));
   }
-  // Not yet wired into JSX — Task 5 passes this to Kitchen as the flame
-  // button's onClick. Keeps noUnusedLocals clean in the meantime.
-  void onOvercook;
 
   function onBless(): void {
     if (!angel.glowing || blessRef.current !== null) return;
@@ -1525,6 +1522,8 @@ export function App() {
           wingIndex={wing.at}
           wingSince={wing.since}
           oracleIndex={oracle.at}
+          overcookAt={overcookAt}
+          onOvercook={onOvercook}
         />
 
         <aside className="counter">
