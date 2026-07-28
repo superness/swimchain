@@ -456,15 +456,62 @@ this fussy.
 
 ---
 
-## 11. Still open
+## 11. Retries are free — if you are PREPARED (operator's ruling)
 
-1. **Boss retry cost.** Free retries make a modal a slot machine; a cost makes it
-   a decision. Leaning free, but the boss does not re-offer until you have dug a
-   little further — so the cost is time rather than a resource.
+No cost, no cooldown, no resource. **The gate is readiness.** Every boss has an
+entry condition, it is stated up front, and the fight will not start until you
+meet it. Retry as often as you like; getting back into fighting shape is the
+price.
+
+This is better than a cost for three reasons:
+
+- **It cannot be farmed.** A modal you can spam is a slot machine. A modal that
+  demands you arrive with a hot rack is a decision every single time.
+- **The cost is real but never arbitrary.** No invented cooldown timer, no
+  currency sink. You pay in the only thing the game actually trades in — a rack
+  that took time to build.
+- **It is self-enforcing after a loss.** The pot keeps ticking through the
+  fight (§3) and a real attempt spends it, so **losing leaves you unprepared by
+  definition.** Nothing has to punish you. You simply are not ready yet.
+
+### What "prepared" means, per boss
+
+The rule underneath all of them: **you must bring the game to the fight.** No
+entering with a cold rack.
+
+| band | boss | prepared means |
+|---|---|---|
+| 8 | the porcelain | a chip at ×8 or better in the oil — something real to hit it with |
+| 9 | the table | four fryers owned, and all four cooking |
+| 10 | the chip from 1974 | a chip at ×16 or better; you do not duel it with a fresh one |
+| 11 | the rat's family | every fryer running — no empty basket to hide behind |
+| 12 | the first fryer | **you own The Long Fry.** The win condition is a ×64 and it is arithmetically unreachable without it |
+
+Band 12's requirement is the one that ties the halves of the game together: the
+deepest jar in the *shallow* game is the door to the *deep* one. A player who
+skipped it cannot pass, and the reason is not a gate — it is that the fight
+literally cannot be won at a ×32 ceiling.
+
+### Refusal is a joke, not an error
+
+The boss does not show a validation message. It declines to notice you, each in
+its own way, and the reason is legible from what it says:
+
+- the porcelain: *nothing happens. it is a bowl. you are holding a crisp.*
+- the table: *three legs is not a table problem. it is a you problem.*
+- the 1974 chip: *it has been here fifty years. it can wait for a better one.*
+- the rat's family: *they count the baskets. they are not impressed.*
+- the first fryer: *the heat looks at what you brought and goes out.*
 
 ---
 
-## 12. Build order, if approved
+## 12. Nothing open
+
+Every design question is ruled. What remains is build order (§13).
+
+---
+
+## 13. Build order, if approved
 
 1. `broke <band>` fold verb + char accrual — the only permanent decision. The
    deep tip (§7) is the same verb at band 13, so design it to carry a band
