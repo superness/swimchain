@@ -53,24 +53,36 @@ generic continuation lines move *below* it for anyone who digs past 13.
 
 ---
 
-## 3. The boss is an ACT, not a threshold
+## 3. The boss is an ACT, not a threshold — and it TAKES THE SCREEN
 
 Reaching a band's lifetime does not break it. Something has to be *done*, and it
 must be done with **verbs the game already has** — dip, hold, overcook, feed,
 whistle, lobby, gamble, shoo, bless. No combat system, no new input model.
 
-Each boss is a **timed condition that tests the mechanic its layer is about**,
-and each is losable and retryable. The rule that keeps them honest: a boss should
-be beatable by a player who *understands* the game, not one who has merely idled
-in it longer.
+**MODAL, operator's ruling** (over my recommendation of a background condition).
+It is the right call and it makes the bosses better: a set-piece can be *drawn*,
+and "the bowl cracking above you" or "four table legs splintering one at a time"
+are images, where a background condition is only ever a sentence in a toast.
 
-| band | the boss | how you beat it | what it tests |
+Two rules keep a modal from killing an idle game:
+
+1. **THE POT KEEPS TICKING BEHIND IT.** The fight is your real rack under a
+   spotlight, not a minigame with borrowed numbers. Nothing pauses, so losing
+   costs real time and winning is the game you already know how to play.
+2. **You choose when it starts.** The boss waits at the band until you take it.
+   An idle player never gets ambushed by a modal on a phone in their pocket.
+
+Each is losable and retryable. The rule that keeps them honest: a boss should be
+beatable by a player who *understands* the game, not one who has merely idled in
+it longer.
+
+| band | the boss | how you beat it | what the takeover shows |
 |---|---|---|---|
-| 8 | **the porcelain** | land ONE dip worth more than everything else you have banked this run | holding to the ceiling instead of cashing early |
-| 9 | **the table** | hold all four fryers at ×32 or better *simultaneously* | parallel management, the thing four fryers were always for |
-| 10 | **the chip from 1974** | it has been cooking for fifty years and has a number on it. Beat its worth in a single dip, inside a window | the long fry, and nerve |
-| 11 | **the rat's family** | every fryer latched at once; shoo them all inside a window while still banking | the shoo verb, under pressure |
-| 12 | **the first fryer** | everything overcooks whether you want it to or not — the pot drains constantly and you must still land a ×64 | overcook mastery |
+| 8 | **the porcelain** | land ONE dip worth more than everything else you have banked this run | the bowl from beneath, filling the screen. Every dip puts a hairline in it. The last one goes through. |
+| 9 | **the table** | hold all four fryers at ×32 or better | four legs above you. Each fryer that reaches ×32 splinters one; drop below and it grows back. |
+| 10 | **the chip from 1974** | beat its worth in a single dip, inside a window | it and your best fryer side by side, its number sitting there the whole time |
+| 11 | **the rat's family** | shoo them all inside a window while still banking | they come in from the edges of the screen and keep coming |
+| 12 | **the first fryer** | everything overcooks whether you want it to or not — the pot drains constantly and you must still land a ×64 | the whole view lit red, every pot visibly bleeding |
 | 13 | **the other side** | there is no fight — see §7 | — |
 
 **Layer 12 is the keystone.** Overcook is deliberately EV-negative and the code
@@ -91,9 +103,11 @@ poor deep one pay different currencies and neither is strictly better.
   bosses is not dead time.
 - Char survives a tip, like salt. That is the entire point.
 
-Open number: whether char is also re-earnable on later runs (diminishing), or
-strictly once per boss. Once-per-boss is cleaner and makes the descent a
-*campaign* rather than a farm; it also means char cannot inflate.
+**ONCE PER BOSS, operator's ruling.** Not re-earnable. The descent is a campaign,
+not a farm: char cannot inflate, ability pricing stays stable forever, and the
+five abilities are a finite set you eventually own outright. It also gives the
+deep game a real END to its power curve, which is what stops it swallowing the
+shallow one.
 
 ---
 
@@ -111,9 +125,32 @@ the layer it came from:
 | **the burrow** | dirt | the rat works FOR you — his hoard pays out instead of siphoning |
 | **the magma** | lava | **overcook feeds the multiplier instead of draining the pot** |
 
-Bought in any order, so char is a real choice rather than a track. Sold by a new
-deep vendor (§7), not by the first chip — the first chip is the end of the
-*shallow* game and should stay that.
+Bought in any order, so char is a real choice rather than a track.
+
+### The vendor is SCOOP (operator: "something that followed you down")
+
+The small dog. Layer 0. The **first character in the game** — and the writing set
+this up long before anybody planned a descent:
+
+> small dog seen guarding empty stool for **eleven months**; declines to explain;
+> calls it "a business meeting."
+
+> scoop announces retirement from begging, **effective after one more chip**.
+> sources confirm this is the ninth retirement.
+
+> i've done the math. you can't eat all of them. **i've done the math twice.**
+
+He was never begging. He was waiting for somebody to dig. He has been asking for
+one more chip since the first minute of the game, and at the bottom you find out
+what for.
+
+**How he plays:** he appears at the porcelain, sits a little further down each
+band, and **says nothing** — no lines, no price tags — until the lava. Everything
+before that is simply him being there, which is worse. His art already exists
+(`CritterArt id="scoop"`), so the cost is copy and one placement rule.
+
+The descent's character arc is therefore the shallow game's oldest running joke,
+paid off. Nothing had to be invented for it.
 
 **`the magma` is the design's centre of gravity** and everything else is
 calibrated against it. It should be built and simulated first (`scripts/` has the
@@ -217,16 +254,15 @@ Cheap, escalating, all copy and palette:
 
 ## 8. Still open
 
-1. **The deep vendor.** Who sells char abilities? A new critter met at the
-   porcelain, or something that has been following you down. (Layer 13 is no
-   longer a candidate — it is a place now, not a person.)
-2. **Char re-earnable or once-only** (§4).
-3. **Does a boss interrupt play, or run in the background?** A modal fight stops
-   the idle game dead; a background condition ("all four at ×32 right now") lets
-   the game keep running and rewards noticing. Leaning background, consistent
-   with how the wing, the oracle and the committee already work.
-4. **Does the bowl count have a ceiling?** Probably not — but the copy needs an
+All three previous opens are ruled (§3 modal, §4 once-per-boss, §5 scoop). Left:
+
+1. **Does the bowl count have a ceiling?** Probably not — but the copy needs an
    answer for what the tenth bowl reads like, or it degrades into a number.
+2. **What scoop finally says at the lava.** The single most important line in the
+   feature, and it should not be written in a hurry.
+3. **Boss retry cost.** Free retries make a modal a slot machine; a cost makes it
+   a decision. Leaning free, but the boss does not re-offer until you have dug a
+   little further — so the cost is time rather than a resource.
 
 ---
 
