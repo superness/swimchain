@@ -198,6 +198,46 @@ export const DIP_TIERS: DipTier[] = [
   { key: 'abyss',   label: 'The Abyssal Dip', minLifetime: 1_000_000 },
 ];
 
+/* ── THE DESCENT ───────────────────────────────────────────────────────────
+   Below the last dip tier the bowl runs out and the world starts. These are
+   CONSENSUS numbers — the fold reads them to decide whether a `broke` is
+   allowed and what char it pays — so they sit here with the rest of the
+   catalog rather than beside the band NAMES, which are display and live in
+   lib/tunnelDepth.ts. Design: docs/superpowers/specs/
+   2026-07-28-chips-the-descent-design.md */
+
+/** How many strata there are below the dip. Band i (0-based) is tunnel
+ *  ordinal DIP_TIERS.length + i. */
+export const DEEP_BAND_COUNT = 6;
+
+/**
+ * Lifetime chips needed, IN ONE RUN, to stand at the foot of band `i` and
+ * break it. Each band spans twice the lifetime of the one above, matching the
+ * tunnel's existing doubling — the visual and the rule cannot drift because
+ * there is one formula.
+ *
+ * Lifetime resets on a tip, so these are per-run figures reached from one
+ * fryer, with only salt carried across. Measured pacing (and why it is fine)
+ * is in the design doc.
+ */
+export function deepBandFloor(i: number): number {
+  const last = DIP_TIERS[DIP_TIERS.length - 1].minLifetime;
+  return last * 2 ** (i + 1);
+}
+
+/**
+ * CHAR, per band, the FIRST time it is ever broken. Rising with depth: the
+ * lava should be worth more than the porcelain.
+ *
+ * Once-per-band forever (operator's ruling), so this table is the entire char
+ * supply in the game — 32 grains, and no amount of replaying can mint a
+ * thirty-third. That is what keeps ability pricing stable permanently.
+ */
+export const CHAR_PER_BAND = [1, 2, 3, 5, 8, 13] as const;
+
+/** Every grain there will ever be. */
+export const CHAR_TOTAL = CHAR_PER_BAND.reduce((a, b) => a + b, 0);
+
 /** Congeal gap threshold, in ms. */
 export const CONGEAL_GAP_MS = 12 * 60 * 60 * 1000;
 

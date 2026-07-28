@@ -7,7 +7,7 @@
  * Dependency-free (chipsConst only) — no RPC/PoW/WASM in this test's import
  * chain, unlike host.ts.
  */
-import { bankBody, buyBody, bankBatchBody } from './chipsBody';
+import { bankBody, buyBody, bankBatchBody, brokeBody } from './chipsBody';
 import { parseMove } from './chipsEngine';
 import { BANK_MIN_BITS, MAX_BITS, MAX_BATCH } from './chipsConst';
 
@@ -140,6 +140,21 @@ for (const bits of [BANK_MIN_BITS, MAX_BITS]) {
   const full = Array.from({ length: MAX_BATCH }, (_, i) => ({ ms: 1_785_000_000_000 + i, bits: 20, nonce: 2n ** 64n - 1n }));
   const body = bankBatchBody(full, 1_785_000_000_099);
   check('full batch stays inline (<1024 bytes)', new TextEncoder().encode(body).length < 1024, new TextEncoder().encode(body).length);
+}
+
+/* ── `broke` — the descent's verb ─────────────────────────────────────── */
+{
+  check('brokeBody carries only the ms', brokeBody(12345) === 'broke#12345~', brokeBody(12345));
+  // The anti-forgery property, from the other end: what we BUILD must be what
+  // the fold will accept, and it must be impossible to build one that names a
+  // band. There is no parameter to pass.
+  check('what brokeBody builds parses as broke', parseMove(brokeBody(7))?.kind === 'broke');
+  check('a broke that names a band does not parse', parseMove('broke 5#7~')?.kind !== 'broke');
+  for (const bad of [0, -1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 2]) {
+    let threw = false;
+    try { brokeBody(bad); } catch { threw = true; }
+    check(`brokeBody rejects ${bad}`, threw);
+  }
 }
 
 if (failures > 0) {

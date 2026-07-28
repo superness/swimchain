@@ -25,6 +25,7 @@ import {
   SOG_BASE_NUM, SOG_DEN, AIRTIGHT_BONUS, SOG_MAX_HOURS, START_BOWL_CAP,
   TIP_FLOOR, SALT_PER_TIP,
   DIP_TIERS, CONGEAL_GAP_MS, UPGRADES, UPGRADE_CHAINS, MAX_BATCH,
+  DEEP_BAND_COUNT, CHAR_PER_BAND, deepBandFloor,
 } from './chipsConst';
 import { proofKey } from './proofKey';
 
@@ -49,6 +50,7 @@ export type Outcome =
   | 'rejected-oversize'
   | 'dipped'
   | 'tipped' | 'rejected-shallow'
+  | 'broke'
   | 'bought' | 'rejected-cost' | 'rejected-owned' | 'rejected-order' | 'rejected-parse';
 
 export interface MoveResult {
@@ -75,6 +77,21 @@ export interface ChipsState {
   oldSalt: number;
   /** How many times this bowl has gone back over. */
   tips: number;
+  /* ── THE DESCENT ────────────────────────────────────────────────────────
+     Below the dip the bowl runs out and the world starts. `broken` is this
+     bowl's progress and resets with the run; `deepest`, `char` and `bowls`
+     are prestige and never do. Splitting them is what makes char
+     ONCE-PER-BAND-EVER: a second descent re-walks the same bands and mints
+     nothing, because char is paid only on a new personal best. */
+  /** Bands broken in THIS run. Resets on a tip and on coming up through a
+   *  bowl — you are in a new bowl and you dig out of it again. */
+  broken: number;
+  /** The most bands ever broken in one run. Permanent. The char watermark. */
+  deepest: number;
+  /** Grains of char. Permanent, and capped forever at CHAR_TOTAL. */
+  char: number;
+  /** Bowls come up through — the one number only the descent can move. */
+  bowls: number;
   crispest: number;
   owned: Set<string>;
   bowlCap: number;
@@ -118,6 +135,7 @@ export type ParsedMove =
   /** The bowl goes back over: everything resets except OLD SALT, which the
    *  FOLD computes from lifetime — never the client (see parseMove). */
   | { kind: 'tip'; ms: number }
+  | { kind: 'broke'; ms: number }
   /** Declared more than MAX_BATCH entries. Carried as a distinct kind so the
    *  fold can reject it whole WITHOUT verifying anything — see chipsConst. */
   | { kind: 'oversize'; count: number; ms: number };
@@ -193,6 +211,13 @@ export function parseMove(body: string): ParsedMove | null {
   // dip verb is self-declared because its ceiling is one chip's pot; salt
   // is permanent and compounds across every future run.)
   if (/^tip$/.test(head)) return { kind: 'tip', ms };
+
+  // `broke` — one band of the descent. NO ARGUMENT, for exactly the reason
+  // `tip` has none: the band is whichever comes next, which the fold can see,
+  // and the char it pays is permanent prestige. A client that could name its
+  // own depth could name the lava on a fresh table and mint the whole supply.
+  // `broke 5` must therefore FAIL to parse rather than be range-checked.
+  if (/^broke$/.test(head)) return { kind: 'broke', ms };
 
   // `dip <amount>` — see ParsedMove's doc for why this is unverified by
   // design. The bound stops a typo'd or hostile body from overflowing safe
@@ -336,6 +361,7 @@ function initialState(): ChipsState {
     crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, crispest: 0,
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
+    broken: 0, deepest: 0, char: 0, bowls: 0,
     goldenBits: GOLDEN_BITS, airtight: false,
     sogBonus: 0, doubleDipMod: 0,
     dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
@@ -459,6 +485,10 @@ export function foldChips(
       }
       state.oldSalt += earned;
       state.tips += 1;
+      // The descent belongs to THE BOWL. Tipping it empties the bowl, so any
+      // bands broken in it are gone with it — you are back at the surface of
+      // a new one. `deepest` and `char` are prestige and stay (see `broke`).
+      state.broken = 0;
       state.crumbs = 0;
       state.lifetimeChips = 0;
       state.crispest = 0;
@@ -473,6 +503,68 @@ export function foldChips(
       state.dipIndex = 0;
       if (confirmed) state.lastBankAt = at;
       state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'tipped', salt: earned });
+      continue;
+    }
+
+    if (parsed.kind === 'broke') {
+      /* ── ONE BAND OF THE DESCENT ────────────────────────────────────────
+         The band is `state.broken` — whichever comes next — never anything
+         the body said. Three refusals, in the order that makes the reason
+         legible:
+
+           1. past the end. The last band is a tip, so reaching it resets the
+              run; a further `broke` has nothing under it.
+           2. not deep enough. The floor doubles per band and lifetime is
+              per-run, so this is the whole difficulty of the descent.
+           3. (there is no third — sequence is structural, because the band
+              IS the counter. Out-of-order is not a state that can be
+              expressed.)
+
+         CHAR IS PAID ONLY ON A NEW PERSONAL BEST. `deepest` is the
+         watermark; a second descent walks the same bands and mints nothing.
+         That is what fixes the supply at CHAR_TOTAL forever and lets ability
+         prices stay put for the life of the game. */
+      const band = state.broken;
+      if (band >= DEEP_BAND_COUNT) {
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-order' });
+        continue;
+      }
+      if (state.lifetimeChips < deepBandFloor(band)) {
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-shallow' });
+        continue;
+      }
+      state.broken = band + 1;
+      if (state.broken > state.deepest) {
+        state.deepest = state.broken;
+        state.char += CHAR_PER_BAND[band];
+      }
+      state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'broke' });
+
+      // THE LAST BAND IS A TIP. You do not arrive somewhere new; you come up
+      // through the bottom of another bowl, which is a fresh run by every
+      // measure the fold has. Salt is earned exactly as a tip earns it — the
+      // lifetime was real — while char, the watermark and the bowl count are
+      // prestige and ride across. `broken` resets because the NEXT bowl has
+      // its own porcelain to get through.
+      if (state.broken >= DEEP_BAND_COUNT) {
+        state.oldSalt += saltFor(state.lifetimeChips);
+        state.bowls += 1;
+        state.tips += 1;
+        state.broken = 0;
+        state.crumbs = 0;
+        state.lifetimeChips = 0;
+        state.crispest = 0;
+        state.owned = new Set();
+        state.bowlCap = START_BOWL_CAP;
+        state.seasoningNum = 1; state.seasoningDen = 1;
+        state.fryers = 1;
+        state.goldenBits = GOLDEN_BITS;
+        state.airtight = false;
+        state.sogBonus = 0;
+        state.doubleDipMod = 0;
+        state.dipIndex = 0;
+        if (confirmed) state.lastBankAt = at;
+      }
       continue;
     }
 
