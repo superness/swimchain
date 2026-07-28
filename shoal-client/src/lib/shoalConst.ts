@@ -98,14 +98,31 @@ export const EPOCH_MS = 3_600_000;
  * live presence, accumulated tension, and any in-flight hush. State a bounded
  * replay can rebuild does not belong in a checkpoint.
  *
- * The value is PRESENCE_TTL_MS (90_000) because that is the longest window
- * any reconstructible rule depends on, and no rule can depend on anything
- * older: a presence vector authored more than PRESENCE_TTL_MS before the
- * origin has already expired, so replaying it would change nothing. It
- * comfortably exceeds every shorter window it also has to cover —
- * BLOOM_READY_MS (45_000, the fallow clock), the 40-tick / 10_000 ms minimum
- * for tension to climb from 0 to TENSION_TRIGGER at its fastest possible rate
- * of 750/tick, and HUSH_MS (8_000, a committed sweep in flight).
+ * The bound is derived from WHEN AN ENTRY STOPS MATTERING, not from when it
+ * was authored, and the reference point is the fold's OWN EARLIEST TICK —
+ * `warmStartMs` — never the epoch's origin. An earlier version of this
+ * comment argued "a presence vector authored more than PRESENCE_TTL_MS
+ * before the origin has already expired, so replaying it would change
+ * nothing." That is true AT THE ORIGIN, and it is the exact argument that
+ * (twice) narrowed the log-entry cursor in shoalEngine.ts's `foldShoal` down
+ * to `warmStartMs` itself — which is false for every one of the 360 warm-up
+ * ticks the replay actually runs: a presence vector authored at
+ * `warmStartMs - 1` is live for all of them (liveness reach is exactly
+ * PRESENCE_TTL_MS, evicted only once `t > expiresMs`), so skipping it
+ * reconstructs an incomplete sea. The correct statement — the one that
+ * cannot be used to re-narrow anything — is: an entry matters to the fold
+ * iff it is still live at the fold's earliest tick, i.e.
+ * `ms + PRESENCE_TTL_MS >= warmStartMs`, equivalently `ms >= warmStartMs -
+ * PRESENCE_TTL_MS`. That is why `foldShoal`'s log cursor reaches back an
+ * additional PRESENCE_TTL_MS past `warmStartMs` (see its doc there); WARMUP_MS
+ * below governs only where TICKING starts, not which log entries are read.
+ *
+ * WARMUP_MS itself is set to PRESENCE_TTL_MS because that is the longest
+ * window any OTHER reconstructible rule depends on. It comfortably exceeds
+ * every shorter window it also has to cover — BLOOM_READY_MS (45_000, the
+ * fallow clock), the 40-tick / 10_000 ms minimum for tension to climb from 0
+ * to TENSION_TRIGGER at its fastest possible rate of 750/tick, and HUSH_MS
+ * (8_000, a committed sweep in flight).
  *
  * Without it, `emptyState` IS the epoch boundary: everything outside the
  * checkpoint reads as zero at a predictable, publicly-readable instant. That
@@ -121,15 +138,25 @@ export const EPOCH_MS = 3_600_000;
  * CONSENSUS: every client replays the same window from the same absolute
  * origin, so all of them reconstruct identically.
  *
- * WHAT THE WARM-UP DOES NOT FIX, stated plainly. Its own first tick is a
- * boundary of the same kind, 90 s earlier: at `epochWarmStartMs` the bloom
- * map is empty again, so a fish that had been parked on a cell since before
- * then reads it as fallow for one tick. What survives that into the epoch is
- * only `bitesTaken`/`bloomSinceMs` for such a cell — the size, cooldown and
- * void-ledger consequences are all overwritten by the checkpoint at the
- * origin (see foldShoal), and the cell's own state clears on its next fallow
- * window. It is bounded, it decays, and every client computes it identically,
- * so it is a small inaccuracy rather than a divergence or a free lunch. The
+ * WHAT THE WARM-UP DOES NOT FIX, stated plainly, and its real magnitude. Its
+ * own first tick is a boundary of the same kind, 90 s earlier: at
+ * `epochWarmStartMs` the bloom map is empty again, so any cell that had gone
+ * fallow before then reads it as fallow for exactly one tick — "the sea
+ * starts full" applied to the warm-up's own start. With the wider log cursor
+ * (`warmStartMs - PRESENCE_TTL_MS`, see foldShoal), this is not "one tick of
+ * one parked fish": up to 90 s of BACKLOGGED eat claims — every entry the
+ * cursor admits from before `warmStartMs` — are all judged on that single
+ * tick, against a map that has not yet seen a single `markVisits` call.
+ * Measured on an UNSEEDED fold: 37 claims credited on that one tick, +355 net
+ * size. What survives that into the epoch is only `bitesTaken`/`bloomSinceMs`
+ * for the affected cells — the size, cooldown and void-ledger consequences
+ * are overwritten by the checkpoint at the origin (see foldShoal) — BUT ONLY
+ * FOR A SEEDED FOLD. `opts.seed` in `foldShoal` is OPTIONAL, and a seedless
+ * call is accepted silently (no error, no warning), so a caller that folds
+ * without a seed gets no such overwrite and the +355 stands as real,
+ * uncorrected size. It is still bounded, and every client computes it
+ * identically, so it is not a divergence between honest clients — but for an
+ * unseeded fold it is a real artifact, not a small inaccuracy. The
  * alternative — an unbounded replay — is the ~69 h lifetime ceiling spec 3.9
  * point 2 exists to remove.
  */
@@ -146,11 +173,17 @@ export const BLOOM_VISIT_R2 = BLOOM_VISIT_R * BLOOM_VISIT_R; // 40_000
 /** A cell unvisited for this long carries a bloom. Arbitrary-but-practical. */
 export const BLOOM_READY_MS = 45_000;
 /**
- * How far back the bloom map is reconstructed from. This IS now enforced, by
- * construction rather than by a check: the fold builds `lastVisit` from
- * scratch starting at `epochWarmStartMs`, so no stamp in it can ever derive
- * from a log entry older than WARMUP_MS before the epoch's origin, and
- * WARMUP_MS (90_000) >= BLOOM_WINDOW_MS.
+ * How far back the bloom map is reconstructed from. This governs the ABSENCE
+ * half of the map's guarantee, which is by construction rather than by a
+ * check: the fold builds `lastVisit` from scratch starting at
+ * `epochWarmStartMs`, so a cell absent from it has had no visit for the
+ * WHOLE warm-up, i.e. at least WARMUP_MS (90_000) >= BLOOM_WINDOW_MS. (A cell
+ * PRESENT in the map is a different story: its stamp can derive from a log
+ * entry as old as WARMUP_MS + PRESENCE_TTL_MS before the origin, because the
+ * fold's log cursor reaches back that far — see bloom.ts's module doc and
+ * `foldShoal` in shoalEngine.ts. That does not weaken the absence guarantee
+ * below, which only ever needs a LOWER bound on how long an absent cell has
+ * been fallow.)
  *
  * The relationship that makes the reconstruction CORRECT rather than merely
  * bounded is WARMUP_MS > BLOOM_READY_MS: a cell nobody visited during the

@@ -54,6 +54,18 @@ import { epochEndMs } from './epoch';
  * now depends on `epoch`, checkpointing a mid-epoch-3 state as epoch 7 would
  * silently produce a `recent` tail measured against the wrong hour — a wrong
  * answer rather than a detectable error.
+ *
+ * AT AN EPOCH BOUNDARY, CALLERS MUST USE `rollEpoch`, NEVER THIS FUNCTION
+ * DIRECTLY. This function does not prune `departed` — only `rollEpoch` does,
+ * immediately before it calls this one (spec 3.9 point 6; see `rollEpoch`'s
+ * doc in shoalEngine.ts). A checkpoint built here at a boundary without going
+ * through `rollEpoch` first still carries every `departed` record the epoch
+ * collected, including ones that should have aged out (measured: a lapsed
+ * swimmer `ghost` survives at size 300 through this function where
+ * `rollEpoch` correctly drops it). That is not a harmless superset — it is a
+ * DIFFERENT canonical payload for the same epoch, so a client that calls this
+ * function directly at a boundary publishes a checkpoint no honest peer
+ * agrees with.
  */
 export function checkpointFrom(state: ShoalState, epoch: number): Checkpoint {
   if (state.epoch !== epoch) {

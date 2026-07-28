@@ -122,8 +122,18 @@ check('hunger ticks at most once per second', HUNGER_TICK_INTERVAL * TICK_MS >= 
 {
   // 1. It must cover the longest window any reconstructible rule depends on.
   //    Presence liveness IS that window, so equality is the exact answer, not
-  //    a generous margin: a vector older than PRESENCE_TTL_MS has already
-  //    expired at the origin, so replaying it could not change anything.
+  //    a generous margin. The bound is derived from WHEN A VECTOR STOPS
+  //    MATTERING, not from when it was authored, and the reference point is
+  //    the fold's own earliest tick (`warmStartMs`), never the epoch's
+  //    origin. (An earlier form of this argument — "a vector older than
+  //    PRESENCE_TTL_MS has already expired at the origin, so replaying it
+  //    could not change anything" — is true at the origin and false for the
+  //    warm-up ticks themselves; it is what, applied to the log-entry cursor
+  //    in shoalEngine.ts, twice narrowed that cursor down to `warmStartMs`
+  //    and silently dropped up to 90 s of still-live entries. That cursor now
+  //    reaches one further PRESENCE_TTL_MS back, to `warmStartMs -
+  //    PRESENCE_TTL_MS`; see `foldShoal`'s doc. Do not cite "expired at the
+  //    origin" to justify narrowing anything again.)
   check('the warm-up is exactly the presence TTL', WARMUP_MS === PRESENCE_TTL_MS,
     { WARMUP_MS, PRESENCE_TTL_MS });
   // 2. It must comfortably exceed every shorter reconstructible window: the

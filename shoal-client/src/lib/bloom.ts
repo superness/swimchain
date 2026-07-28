@@ -8,15 +8,23 @@
  * would never rise, and the core tension of the game would stop existing.
  *
  * THE LOOKBACK IS BOUNDED BY THE FOLD, NOT BY THIS MODULE. isBloomReady still
- * reads whatever `lastVisit` holds, however old — but the fold builds that map
- * from scratch starting at `epochWarmStartMs`, so nothing in it can derive
- * from a log entry more than WARMUP_MS(90_000) before the epoch's origin
- * (shoalEngine.ts's foldShoal, spec 3.9 point 3). Since WARMUP_MS exceeds
- * BLOOM_READY_MS(45_000), a cell absent from the reconstructed map has
- * provably been fallow longer than the fallow clock, so "the sea starts full"
- * below is a correct reading rather than a convenient fiction. Do not add a
- * window check here: the bound belongs to the replay, and a second one here
- * would be a consensus rule with no test behind it.
+ * reads whatever `lastVisit` holds, however old. A STAMP PRESENT in the map
+ * can derive from a log entry as old as WARMUP_MS + PRESENCE_TTL_MS
+ * (180_000) before the epoch's origin: the fold's log cursor admits entries
+ * back to `warmStartMs - PRESENCE_TTL_MS` (shoalEngine.ts's foldShoal, spec
+ * 3.9 point 3), because a presence vector authored that early can still be
+ * live during the warm-up — and an exhausting bite applied during replay
+ * stamps `lastVisit` with THAT ENTRY'S OWN (old) `ms`, not with the tick it
+ * was replayed on (measured: `lastVisit(700)` landing at `origin - 167_500`).
+ * A cell ABSENT from the reconstructed map is a different, unaffected claim:
+ * it has had no visit for the entire warm-up, i.e. at least WARMUP_MS
+ * (90_000), which still exceeds BLOOM_READY_MS(45_000), so "absent from
+ * lastVisit" and "genuinely fallow" still coincide at every tick from the
+ * origin onward and "the sea starts full" below remains a correct reading.
+ * What changed is only how old a PRESENT stamp may be, never what an ABSENT
+ * one proves. Do not add a window check here: the bound belongs to the
+ * replay, and a second one here would be a consensus rule with no test
+ * behind it.
  */
 import { dist2 } from './fixed';
 import {

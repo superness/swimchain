@@ -673,8 +673,9 @@ export function foldShoal(
   // actually applied during this fold, INCLUDING during the warm-up. It is
   // consulted once, after the tick loop, to prune seed entries nobody
   // returned to claim. Warm-up writes count as a claim on purpose: a swimmer
-  // whose vector is still live at the boundary has been in the water within
-  // the last WARMUP_MS, which is nothing like "absent for a full epoch."
+  // whose vector is still live at the boundary authored it no earlier than
+  // the admitted cursor, i.e. within the last WARMUP_MS + PRESENCE_TTL_MS
+  // (180 s), which is nothing like "absent for a full epoch."
   if (opts?.seed) {
     const recentById = new Map<string, { lastBiteMs: number; recentBites: number[] }>();
     for (const [id, lastBiteMs, recentBites] of opts.seed.recent) {
