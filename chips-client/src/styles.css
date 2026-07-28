@@ -203,6 +203,22 @@ h1, h2, h3, p { margin: 0; }
   transition: color .2s, border-color .2s;
 }
 .sound-toggle:hover { color: #f2e3c8; border-color: rgba(210, 184, 144, .6); }
+
+/* THE REPORT FLAG. Sits beside the sound switch in the hood, deliberately
+   always present rather than behind a `?debug=1` — a bug you have to predict
+   in order to capture is a bug you never capture. Quiet enough to ignore,
+   findable in one press when something has just gone wrong. */
+.report-toggle {
+  position: absolute; top: clamp(8px, 1.1vh, 16px);
+  right: calc(clamp(10px, 1.4vw, 22px) + 40px);
+  display: grid; place-items: center; padding: 0;
+  width: 28px; height: 28px; border-radius: 999px; line-height: 1;
+  font-size: 13px; color: #8d7f6b;
+  border: 1px solid rgba(210, 184, 144, .28);
+  background: rgba(14, 10, 7, .55);
+  transition: color .2s, border-color .2s;
+}
+.report-toggle:hover { color: #f2e3c8; border-color: rgba(210, 184, 144, .6); }
 .sound-toggle[aria-pressed="false"] { opacity: .65; }
 /* `.autodip-toggle` lived here for a hood control that NOTHING EVER
    RENDERED — dead style with a comment describing a layout that did not
