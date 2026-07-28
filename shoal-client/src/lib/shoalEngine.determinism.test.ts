@@ -374,7 +374,17 @@ const resolveAtMs = triggerAtMs + HUSH_MS;
     mutate(s);
     check(`the fingerprint notices a change to ${field}`, fingerprint(s) !== baseline, field);
   };
-  perturb('lastVisit', (s) => { s.lastVisit.set(1, 1); });
+  perturb('lastVisit', (s) => { s.lastVisit.set(1, new Map([['zz', 1]])); });
+  // ...and the INNER level too. `lastVisit` is a Map of Maps since the
+  // claimant-exemption rule (bloom.ts), and a fingerprint that serialised only
+  // the outer keys would pass the check above while missing a divergence in
+  // WHO visited a cell — which is precisely what decides whether a claim
+  // credits. Perturbing an existing cell rather than adding one keeps the
+  // outer level byte-identical, so only the inner serialisation can catch it.
+  perturb('lastVisit (a visitor added to an EXISTING cell)', (s) => {
+    const cell = [...s.lastVisit.keys()].sort((a, b) => a - b)[0];
+    s.lastVisit.get(cell)!.set('zz', 1);
+  });
   perturb('bloomSinceMs', (s) => { s.bloomSinceMs.set(1, 1); });
   perturb('hushStartMs', (s) => { s.hushStartMs = 12_345; });
   perturb('lockedPositions', (s) => { s.lockedPositions!.set('zz', { x: 1, y: 2, size: 3 }); });

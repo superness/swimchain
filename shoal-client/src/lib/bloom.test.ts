@@ -9,6 +9,7 @@
  */
 import { cellIndex, cellCentre, markVisits, isBloomReady, bitesLeft, canEat } from './bloom';
 import type { Body } from './shelter';
+import type { VisitMap } from './shoalTypes';
 import {
   BLOOM_CELL, BLOOM_COLS, BLOOM_ROWS, BLOOM_READY_MS, BLOOM_BITES,
   EAT_R, EAT_COOLDOWN_MS,
@@ -62,31 +63,122 @@ check('centre round-trips to its own index', cellIndex(cellCentre(70).x, cellCen
 
 // --- Visits ----------------------------------------------------------------
 {
-  const lastVisit = new Map<number, number>();
-  // A fish at a cell centre marks that cell.
+  const lastVisit: VisitMap = new Map();
+  // A fish at a cell centre marks that cell, UNDER ITS OWN ID.
   const c = cellCentre(100);
   markVisits(lastVisit, [at('a', c.x, c.y)], 10_000);
-  check('a fish marks the cell it is in', lastVisit.get(100) === 10_000, lastVisit.get(100));
+  check('a fish marks the cell it is in', lastVisit.get(100)?.get('a') === 10_000,
+    [...(lastVisit.get(100) ?? [])]);
+  check('...and the stamp is recorded against the visitor, not the cell alone',
+    lastVisit.get(100)?.size === 1 && lastVisit.get(100)?.has('a') === true,
+    [...(lastVisit.get(100) ?? [])]);
 
   // A fish marks nearby cells too, out to BLOOM_VISIT_R.
   check('a fish marks more than one cell', lastVisit.size > 1, lastVisit.size);
 
+  // Two fish on the same cell are two entries, not one overwriting the other:
+  // that is the whole point of the shape.
+  markVisits(lastVisit, [at('b', c.x, c.y)], 10_000);
+  check('a second fish is a second stamp on the same cell',
+    lastVisit.get(100)?.size === 2 && lastVisit.get(100)?.get('b') === 10_000,
+    [...(lastVisit.get(100) ?? [])]);
+
   // A fish far away marks nothing near cell 100... verified by an independent
   // count over the visit radius rather than by trusting markVisits twice.
-  const far = new Map<number, number>();
+  const far: VisitMap = new Map();
   markVisits(far, [at('a', 3_000, 2_500)], 10_000);
   check('a distant fish does not mark cell 100', !far.has(100), [...far.keys()].slice(0, 5));
 }
 
 // --- Readiness -------------------------------------------------------------
 {
-  const lastVisit = new Map<number, number>([[7, 1_000]]);
+  const lastVisit: VisitMap = new Map([[7, new Map([['a', 1_000]])]]);
   // By hand: ready when now - lastVisit >= BLOOM_READY_MS.
   check('a just-visited cell is not ready', isBloomReady(lastVisit, 7, 1_000) === false);
   check('a cell one ms short is not ready', isBloomReady(lastVisit, 7, 1_000 + BLOOM_READY_MS - 1) === false);
   check('a cell exactly at readiness is ready', isBloomReady(lastVisit, 7, 1_000 + BLOOM_READY_MS) === true);
   // A never-visited cell is ready — the sea starts full.
   check('a never-visited cell is ready', isBloomReady(lastVisit, 999, 0) === true);
+}
+
+// --- A claim ignores the CLAIMANT's own visits, and nobody else's -----------
+// The ruling in bloom.ts's header, at its smallest. Same cell, same instant,
+// same single stamp — only the `exceptId` differs, so nothing else can explain
+// the difference in answer.
+{
+  const cell = 7;
+  const visitedAt = 1_000;
+  const now = visitedAt + 1; // one ms later: nowhere near BLOOM_READY_MS(45_000)
+  const onlyA: VisitMap = new Map([[cell, new Map([['a', visitedAt]])]]);
+  check('the fixture really is inside the fallow window (so "ready" cannot be a timeout)',
+    now - visitedAt < BLOOM_READY_MS, { age: now - visitedAt, BLOOM_READY_MS });
+
+  check("a cell 'a' just trampled is READY to 'a' itself",
+    isBloomReady(onlyA, cell, now, 'a') === true);
+  check("...and NOT ready to 'b', who did not trample it",
+    isBloomReady(onlyA, cell, now, 'b') === false);
+  check('...and not ready with no claimant named at all (the regrowth form)',
+    isBloomReady(onlyA, cell, now) === false);
+
+  // The school shadow: one OTHER visitor is enough to deny the claimant, even
+  // when the claimant has also been there.
+  const both: VisitMap = new Map([[cell, new Map([['a', visitedAt], ['b', visitedAt]])]]);
+  check("a cell 'a' AND 'b' trampled is denied to 'a'",
+    isBloomReady(both, cell, now, 'a') === false);
+  check('...and denied to b too — the exemption never covers more than one fish',
+    isBloomReady(both, cell, now, 'b') === false);
+
+  // The other fish's stamp ages out on exactly the same clock as anyone's.
+  const aged: VisitMap = new Map([[cell, new Map([['a', visitedAt], ['b', visitedAt]])]]);
+  check("...until b's stamp is BLOOM_READY_MS old, at which point a may eat",
+    isBloomReady(aged, cell, visitedAt + BLOOM_READY_MS, 'a') === true);
+}
+
+// --- The prune keeps the map bounded, and changes no answer -----------------
+// markVisits drops every stamp that has aged past BLOOM_READY_MS. It is a size
+// bound, not a rule: an aged-out stamp and an absent one both read "ready", so
+// this can only ever remove entries isBloomReady was already ignoring.
+{
+  const c = cellCentre(100);
+  const lastVisit: VisitMap = new Map();
+  markVisits(lastVisit, [at('a', c.x, c.y)], 0);
+  const cellsAfterA = lastVisit.size;
+  check("'a' really did stamp cell 100 at ms 0", lastVisit.get(100)?.get('a') === 0);
+
+  // 'b' passes the same place one ms BEFORE a's stamp would age out. Both
+  // stamps must survive: a's age is exactly BLOOM_READY_MS - 1.
+  markVisits(lastVisit, [at('b', c.x, c.y)], BLOOM_READY_MS - 1);
+  check("one ms early, 'a's stamp survives alongside 'b's",
+    lastVisit.get(100)?.size === 2 && lastVisit.get(100)?.get('a') === 0,
+    [...(lastVisit.get(100) ?? [])]);
+
+  // One more ms and a's stamp is exactly BLOOM_READY_MS old — the same
+  // threshold isBloomReady uses — so it goes, and b's (age 1) stays.
+  markVisits(lastVisit, [at('b', c.x, c.y)], BLOOM_READY_MS);
+  check("at exactly BLOOM_READY_MS, 'a's stamp is pruned and 'b's is not",
+    lastVisit.get(100)?.size === 1 && lastVisit.get(100)?.has('a') === false
+      && lastVisit.get(100)?.get('b') === BLOOM_READY_MS,
+    [...(lastVisit.get(100) ?? [])]);
+
+  // A cell nobody has been near for BLOOM_READY_MS leaves the map entirely,
+  // rather than surviving as an empty shell: the bound is on cells too. 'z' is
+  // far away, so no cell it marks overlaps the ones above.
+  markVisits(lastVisit, [at('z', 3_000, 2_500)], BLOOM_READY_MS * 2);
+  check('every cell from the earlier passes is gone once nobody has been near for the window',
+    !lastVisit.has(100) && lastVisit.size > 0 && lastVisit.size < cellsAfterA + 1,
+    { size: lastVisit.size, cellsAfterA });
+
+  // And the postcondition, stated as an invariant over whatever is left: after
+  // markVisits(now), no stamp is BLOOM_READY_MS or older, and no cell is empty.
+  const now = BLOOM_READY_MS * 2;
+  let oldest = 0;
+  let emptyCells = 0;
+  for (const [, by] of lastVisit) {
+    if (by.size === 0) emptyCells++;
+    for (const [, ms] of by) oldest = Math.max(oldest, now - ms);
+  }
+  check('after markVisits every surviving stamp is inside the fallow window, and no cell is empty',
+    oldest < BLOOM_READY_MS && emptyCells === 0, { oldest, emptyCells, BLOOM_READY_MS });
 }
 
 // --- Rivalry ---------------------------------------------------------------
@@ -106,9 +198,10 @@ check('centre round-trips to its own index', cellIndex(cellCentre(70).x, cellCen
   const cell = 100;
   const c = cellCentre(cell);
   const base = {
-    lastVisit: new Map<number, number>(),
+    lastVisit: new Map() as VisitMap,
     bitesTaken: new Map<number, number>(),
     cell,
+    id: 'a',
     fishX: c.x,
     fishY: c.y,
     lastBiteMs: -1,
@@ -122,9 +215,14 @@ check('centre round-trips to its own index', cellIndex(cellCentre(70).x, cellCen
   check('a bite past the eat radius does not',
     canEat({ ...base, fishX: c.x + EAT_R + 1, fishY: c.y }) === false);
 
-  // Not ready: cell visited recently.
-  check('a bite at a recently visited cell does not credit',
-    canEat({ ...base, lastVisit: new Map([[cell, 99_000]]) }) === false);
+  // Not ready: cell visited recently BY SOMEONE ELSE. 99_000 is 1_000 ms
+  // before base.nowMs, far inside BLOOM_READY_MS(45_000).
+  check('a bite at a cell another fish visited recently does not credit',
+    canEat({ ...base, lastVisit: new Map([[cell, new Map([['b', 99_000]])]]) }) === false);
+  // ...but the claimant's OWN visit at the same instant does not deny it. Same
+  // map, same time, only the visitor's id differs.
+  check("a bite at a cell only the claimant visited recently DOES credit",
+    canEat({ ...base, lastVisit: new Map([[cell, new Map([['a', 99_000]])]]) }) === true);
 
   // Exhausted.
   check('a bite at an exhausted bloom does not credit',

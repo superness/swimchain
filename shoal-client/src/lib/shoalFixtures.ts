@@ -135,7 +135,15 @@ export function fingerprint(s: ShoalState): string {
     lastTaken: [...s.lastTaken].sort(),
     lastSweepMs: s.lastSweepMs,
     bites: [...s.bitesTaken.entries()].sort(([a], [b]) => a - b),
-    lastVisit: [...s.lastVisit.entries()].sort(([a], [b]) => a - b),
+    // Two levels, BOTH sorted — cells numerically, then each cell's visitors
+    // by id. `lastVisit` is a Map of Maps since the claimant-exemption rule
+    // (bloom.ts), and an inner Map's insertion order is decided by the order
+    // `markVisits` happened to walk `bodies`, which is not something two
+    // clients owe each other. Sorting both levels is what keeps this
+    // byte-identical across delivery orders.
+    lastVisit: [...s.lastVisit.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([cell, by]) => [cell, [...by.entries()].sort(([a], [b]) => (a < b ? -1 : 1))]),
     bloomSince: [...s.bloomSinceMs.entries()].sort(([a], [b]) => a - b),
     hushStartMs: s.hushStartMs,
     lockedPositions: s.lockedPositions === null

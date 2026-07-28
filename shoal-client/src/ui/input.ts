@@ -96,25 +96,33 @@
  *    reachable later without a fork.
  *
  * =============================================================================
- * EAT: THE VERB IS WIRED, THE WORLD WILL NOT CREDIT IT (open item 10)
+ * EAT: THE VERB IS WIRED, AND THE WORLD NOW CREDITS IT (open item 10, resolved)
  * =============================================================================
  *
  * `eatTarget`/`canClaimEat` are correct and App.tsx runs the fold's own
- * `canEat` before offering a bite, so nothing here lies. But a swimmer marks
- * every cell within BLOOM_VISIT_R (200 cu) visited while it may only bite
- * within EAT_R (90 cu), and the fold stamps `lastVisit` at the end of a tick
- * and judges claims at the start of the next — so opening an UNLATCHED bloom
- * needs 110 cu of closing inside one TICK_MS, against a top speed that covers
- * 55. Measured against the real fold: a swimmer who cruises in from 800 cu
- * away and claims on arrival is credited nothing at all, while a swimmer whose
- * FIRST presence vector is already on the cell centre opens it and takes the
- * whole six-bite bloom.
+ * `canEat` before offering a bite, so nothing here lies. It used to lie by
+ * omission, though: a swimmer marks every cell within BLOOM_VISIT_R (200 cu)
+ * visited while it may only bite within EAT_R (90 cu), and the fold stamps
+ * `lastVisit` at the end of a tick and judges claims at the start of the next
+ * — so opening an UNLATCHED bloom needed 110 cu of closing inside one TICK_MS
+ * against a top speed that covers 55. Measured against the real fold: a
+ * swimmer swimming in from 600 cu away and claiming on the EAT_COOLDOWN_MS
+ * cadence was credited NOTHING, at cruise and at dart alike, while a swimmer
+ * whose FIRST presence vector already sat on the cell centre took the whole
+ * six-bite bloom. The eat verb was reachable only by a swimmer who never swam.
  *
- * That is why nothing on screen points at food. It is not a missing feature of
- * this module: there is no honest thing to point at, because a swimming player
- * cannot take an unlatched bloom. Both constants are CONSENSUS, so the fix is
- * a pre-launch decision, not a tuning pass — recorded as open item 10 in
- * docs/THE_SHOAL_OPEN_ITEMS.md and pinned by input.test.ts section 8.
+ * The fold's fix is the claimant-exemption rule: a claim ignores the
+ * CLAIMANT'S own visits and honours everyone else's in full (bloom.ts's
+ * header states it, and why the two alternatives both measured zero). The same
+ * swim-in now takes the full bloom. Both radii are still CONSENSUS and
+ * unchanged, so the relationship above is still real — see input.test.ts
+ * section 8, which keeps a tripwire on it.
+ *
+ * What has NOT changed is that nothing on screen points at food beyond the
+ * near field. That was never a consequence of the defect: `isBloomReady` is
+ * true for very nearly every one of the 768 cells at session start ("the sea
+ * starts full"), so a food map would either carpet the sea or invent a rule
+ * the game does not have. The bite cue stays the one honestly knowable thing.
  *
  * =============================================================================
  * SPEECH RIDES ALONG

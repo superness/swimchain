@@ -130,41 +130,58 @@ would tell us if it did.
 Widening the fingerprint is cheap. Do it before plan 3 adds wild fish, which touch both
 fields.
 
-### 10. A swimmer that swims to a bloom can never eat it
+### 10. A swimmer that swims to a bloom can never eat it — **RESOLVED 2026-07-28**
 
 **Found by:** the shell's Task 5 (the four verbs), measured against the real fold.
+**Fixed by:** the claimant-exemption rule (`shoal-client/src/lib/bloom.ts`).
 
 `BLOOM_VISIT_R` (200 cu) is the radius at which a fish marks a cell **visited**; `EAT_R`
 (90 cu) is the radius within which it may take a **bite**. The fold stamps `lastVisit` at
 the end of a tick (`markVisits`, step 3 of `foldTick`) and judges eat claims at the start of
-the next one (step 1). So to take a bite from an **unlatched** bloom, a swimmer must get
+the next one (step 1). So to take a bite from an **unlatched** bloom, a swimmer had to get
 from outside 200 cu to inside 90 cu *within a single tick* — **110 cu in `TICK_MS`**. The
-fastest anything in this game moves is `SPEED_DART`, which covers `220 × 250 / 1000 = 55`
-cu in a tick. The gap needs **twice the top speed in the game**.
+fastest anything in this game moves is `SPEED_DART`, which covers `220 x 250 / 1000 = 55`
+cu in a tick. The gap needed **twice the top speed in the game**.
 
-Measured, not argued (`shoal-client` Task 5 probe, against `createLoop`/`advance`):
+Measured against the real fold, before and after:
 
-| scenario | result |
-|---|---|
-| swimmer cruises in from 800 cu away and claims on arrival | `bitesTaken = 0`, size **85** (hunger only) |
-| swimmer's **first** presence vector is already on the cell centre, claims at the same ms | `bitesTaken = 1`, latched, size **111** |
-| ...then seven more claims at `EAT_COOLDOWN_MS` spacing | `bitesTaken = 6` (the full bloom), size **148** |
+| scenario | before | after |
+|---|---|---|
+| swims in from 600 cu away at **dart**, claims on the `EAT_COOLDOWN_MS` cadence | `bitesTaken = 0`, size 77 | **`bitesTaken = 6`**, size 155 |
+| swims in from 600 cu away at **cruise**, same cadence | `bitesTaken = 0`, size 70 | **`bitesTaken = 6`**, size 148 |
+| first presence vector already on the cell centre | `bitesTaken = 6` | `bitesTaken = 6` (unchanged) |
+| swims in while **another fish** sits on the cell | `bitesTaken = 0` | **`bitesTaken = 0`** (school shadow intact) |
 
-So the eat verb is reachable **only** by a swimmer whose presence begins inside `EAT_R` —
-which no swimmer who is actually swimming can arrange — and by anyone who reaches a bloom
-another swimmer has already latched.
+**The ruling: a claim ignores the claimant's own visits.** Another fish trampling a bloom
+still kills it; *you* trampling it by arriving does not. Chosen over shrinking
+`BLOOM_VISIT_R` because it preserves the design intent exactly — the full 200-cu school
+shadow survives, so §2.2's *"food grows in the open, safety is in the crowd, and they are
+never in the same place"* still holds — and it needs no exact-tick timing from the client.
 
-This matters well beyond the verb. Spec §2.2 is *"food grows in the open, safety is in the
-crowd, and they are never in the same place"*; if nobody can open a bloom, nobody peels off,
-tension never rises from foraging, and §2.3's whole 60–90 s loop has no engine.
+Two other candidates were **tried and measured at 0 bites**, and are recorded here so they
+are not retried: raising `EAT_R` to 200 (matching the radii), and exempting cells within
+`EAT_R` from `markVisits`. Both fail identically — the trample is stamped by *proximity*
+and the claim is judged ticks later, so the approach crosses the ring wherever the ring is.
 
-**Both constants are CONSENSUS** (`shoalConst.ts`), so this cannot be tuned away later
-without a hard fork — it has to be decided before launch. The candidates are `BLOOM_VISIT_R
-< EAT_R`, judging the claim against a `lastVisit` snapshot taken before the claimant's own
-visits, or exempting the claimant from its own stamp. Each is a different game.
+**The exemption is for claims only.** The regrowth reset (`foldTick` step 3) asks
+`isBloomReady` with **no** claimant, so a bloom comes back only once the cell has lain
+fallow to *everyone*, the last eater included. A lone fish parked on a cell it emptied still
+gets exactly one bloom out of it, however long it sits there.
 
-Pinned by a tripwire in `shoal-client/src/ui/input.test.ts` §8, which fails the day a
-constant moves, so the fix lands with this item rather than silently.
+**Shape.** `lastVisit` became `Map<cell, Map<swimmerId, ms>>` (`VisitMap` in
+`shoalTypes.ts`). `markVisits` prunes every stamp older than `BLOOM_READY_MS` on the tick it
+runs, so the map holds only the last 45 s of cells and swimmers rather than one entry per id
+that ever passed a cell. `Checkpoint`'s shape is **unchanged** — `lastVisit` is still
+reconstructed by the warm-up replay, never carried.
+
+This was a **consensus** change, free only because nobody has played yet.
+
+Pinned by: `shoalEngine.test.ts` (swim-in at both speeds, the school shadow A/B, the
+lone-fish farming case, and the 36-vs-432 pruning bound over 48 swimmers), `bloom.test.ts`
+(the rule and the prune at unit level), `shoalEngine.determinism.test.ts` (the fingerprint
+reaches both levels of the map), and the arithmetic tripwire in `src/ui/input.test.ts` §8,
+which still fails the day either constant moves — that is the day to re-examine whether the
+exemption is still load-bearing.
 
 ### 9. Smaller
 

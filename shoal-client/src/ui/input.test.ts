@@ -590,30 +590,38 @@ function main() {
 
   // =========================================================================
   // 8. THE EAT GAP — a tripwire on an engine relationship, not a rule of this
-  //    module. Open item 10 in docs/THE_SHOAL_OPEN_ITEMS.md.
+  //    module. Open item 10 in docs/THE_SHOAL_OPEN_ITEMS.md, RESOLVED by the
+  //    claimant-exemption rule in bloom.ts; this check is what keeps the
+  //    resolution honest.
   // =========================================================================
   //
   // A swimmer marks every cell within BLOOM_VISIT_R (200 cu) of itself as
   // visited, but may only take a bite within EAT_R (90 cu) of the cell's
   // centre. The fold stamps `lastVisit` at the END of each tick and judges
-  // claims at the START of the next, so to eat an UNLATCHED bloom a swimmer
-  // must go from outside 200 cu to inside 90 cu inside ONE tick — 110 cu in
-  // TICK_MS. The fastest anything in this game moves is SPEED_DART, which
-  // covers 220 * 250 / 1000 = 55 cu in a tick. It is not close: the gap needs
-  // twice the top speed in the game.
+  // claims at the START of the next, so closing that ring from outside to
+  // inside without ever being stamped in between would take 110 cu in TICK_MS.
+  // The fastest anything in this game moves is SPEED_DART, which covers
+  // 220 * 250 / 1000 = 55 cu in a tick. It is not close: the gap needs twice
+  // the top speed in the game.
   //
-  // Consequence, measured against the real fold rather than argued (see the
-  // task report): a swimmer that SWIMS to a bloom can never open it. Only a
-  // swimmer whose first presence vector already sits inside EAT_R can, and
-  // once that first bite latches the cell the remaining five credit normally.
+  // That arithmetic is WHY the fold exempts a claimant from its own visits
+  // (bloom.ts's header): without the exemption, measured against the real
+  // fold, a swimmer swimming in from 600 cu away was credited ZERO bites at
+  // dart AND cruise speed, and the eat verb was reachable only by a swimmer
+  // whose first presence vector already sat inside EAT_R. With it, the same
+  // swimmer takes the whole six-bite bloom — pinned in
+  // shoalEngine.test.ts ("a swimmer that swims in at ... speed takes the whole
+  // bloom").
   //
-  // This check is here to FAIL THE DAY SOMEONE CHANGES ONE OF THE CONSTANTS,
-  // so the fix lands with its open item rather than silently. It asserts the
-  // arithmetic, not the desirability.
+  // The check is kept, and still asserts the arithmetic rather than its
+  // desirability, because the exemption is only LOAD-BEARING while the gap is
+  // wider than a tick's travel. It fails the day someone moves one of the
+  // constants, which is the day to re-examine whether the rule is still
+  // earning its place — not a day to discover the relationship by accident.
   {
     const gapCu = BLOOM_VISIT_R - EAT_R;
     const reachCu = (SPEED_DART * TICK_MS) / 1000;
-    check('the eat gap still exceeds a full tick at top speed (open item 10; hand-derived 110 > 55)',
+    check('the eat gap still exceeds a full tick at top speed, so the claimant exemption is still load-bearing (hand-derived 110 > 55)',
       gapCu === 110 && reachCu === 55 && gapCu > reachCu, { gapCu, reachCu });
   }
 

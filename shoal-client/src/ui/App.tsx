@@ -70,6 +70,7 @@ import {
   headingTo, isDarting, markEat, positionAt, type InputEvent, type InputState,
 } from './input';
 import { canEat, cellCentre } from '../lib/bloom';
+import type { ReadonlyVisitMap } from '../lib/shoalTypes';
 import { reckon } from '../lib/fixed';
 import { TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
 
@@ -88,7 +89,7 @@ const SAY_MAX = 60;
  * don't re-run the fallow test". Mirrored here so the on-screen cue agrees
  * with the fold about whether a bite would credit. EMPTY FOREVER.
  */
-const NEVER_VISITED: ReadonlyMap<number, number> = new Map();
+const NEVER_VISITED: ReadonlyVisitMap = new Map();
 
 export function App() {
   const [showDiag, setShowDiag] = useState(false);
@@ -253,6 +254,9 @@ export function App() {
           lastVisit: latched ? NEVER_VISITED : state.lastVisit,
           bitesTaken: state.bitesTaken,
           cell,
+          // The claimant is this client's own swimmer: the fold judges the
+          // real claim the same way, so the cue and the credit still agree.
+          id: sea.selfId,
           fishX: at.x,
           fishY: at.y,
           lastBiteMs: me.lastBiteMs,
