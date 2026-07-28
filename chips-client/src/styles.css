@@ -2288,8 +2288,20 @@ h1, h2, h3, p { margin: 0; }
   top: clamp(64px, 11vh, 110px);
   display: flex; flex-direction: column; align-items: center;
   gap: 8px; width: min(92vw, 560px);
-  pointer-events: none;          /* only the buttons inside take taps */
+  pointer-events: none;
 }
+/* EVERY BUTTON IN HERE TAKES TAPS, BY DEFAULT.
+   `pointer-events` INHERITS, so the `none` above silently kills every control
+   inside unless each one opts back in individually — which is a rule you have
+   to remember, and I did not: `.vote-lobby` and `.hermit-take` got it and
+   `.feed-cancel` did not, so "never mind" could not be pressed at all
+   (operator, 2026-07-28: "im not able to press 'nevermind' ... I have to tap
+   the critter to knock it down").
+
+   Opting in per-button is the bug. One rule for the container's descendants
+   means a banner added next month cannot ship a dead control, which is the
+   fifth time this client has rendered something that could not be acted on. */
+.crier button { pointer-events: auto; }
 
 .vote-banner, .vote-carried, .vote-failed, .hermit-holding, .hermit-offer {
   position: static; translate: none; width: 100%;
@@ -2307,7 +2319,6 @@ h1, h2, h3, p { margin: 0; }
   flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .08em;
   color: #2a1a04; background: linear-gradient(180deg, #ffd88e, #e79f30);
   border-radius: 999px; padding: 5px 14px;
-  pointer-events: auto;   /* the one clickable thing in a click-through panel */
 }
 .vote-carried {
   order: 3; color: #cdeec2;
@@ -2333,7 +2344,7 @@ h1, h2, h3, p { margin: 0; }
 .hermit-take {
   flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .08em;
   color: #2a1a04; background: linear-gradient(180deg, #cfe0f2, #7fa6c8);
-  border-radius: 999px; padding: 5px 14px; pointer-events: auto;
+  border-radius: 999px; padding: 5px 14px;
 }
 
 @media (max-width: 940px), (max-height: 620px) {
