@@ -8,6 +8,29 @@ says what is broken, how it was found, and what it costs to leave.
 
 ---
 
+## Resolved
+
+### 10. The core loop was unreachable — a swimmer could never eat *(RESOLVED 2026-07-28)*
+
+To eat you must be within `EAT_R` (90) of a cell centre, but you stamp it visited — killing
+the bloom for 45 s — at `BLOOM_VISIT_R` (200), and the fastest travel is 55 cu/tick. **Any
+approach crossed the trample radius many ticks before reaching the bite radius**, so the
+bloom was always dead on arrival. Measured: swim-in 0 bites, spawn-on-cell 6.
+
+Two fixes were tried and measured at 0 bites before the right one was found: matching the
+radii, and exempting the bite radius from trampling. Both fail because the approach crosses
+the ring regardless of how it is sized.
+
+**Resolved by: a claim ignores the claimant's own visits.** Another fish trampling a bloom
+still kills it; you trampling it by arriving does not.  became
+, pruned to .  is unchanged —
+ is rebuilt by the warm-up replay, not carried.
+
+Verified: swim-in-stop-feed credits the full  at both dart and cruise speed,
+and a different fish squatting on the cell still denies it entirely.
+
+---
+
 ## Blockers — decide, don't just build
 
 ### 1. Long-lived rooms need a node change, or the room must rotate
