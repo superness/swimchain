@@ -481,12 +481,15 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
             ceiling now. Deliberately not further: dangling a x64 in front of
             someone who cannot buy it yet is not a tease, it is a rung they
             will wait for forever. */}
+        {/* ONE `×` FOR THE WHOLE TRACK, not one per rung — see styles.css.
+            The rungs are bare numerals now; six pills could not hold a line
+            on a phone and wrapping pushed the plate off the bottom. */}
         <span className="ladder" aria-hidden="true">
           {Array.from({ length: ceiling }, (_, i) => i + 1).map((k) => (
             <i
               key={k}
               className={`rung${chip.crackles >= k ? ' lit' : ''}${k === ceiling ? ' top' : ''}${k === LONG_FRY_CRACKLES ? ' deep' : ''}`}
-            >×{2 ** k}</i>
+            >{2 ** k}</i>
           ))}
         </span>
         {rat
