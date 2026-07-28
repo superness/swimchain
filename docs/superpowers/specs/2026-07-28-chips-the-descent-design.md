@@ -277,10 +277,55 @@ exactly once. So:
 | bowl | what the game does |
 |---|---|
 | 1st | the full inversion — every beat, the maker's mark, all of it |
-| 2nd | one short beat. "it happened again" is a different feeling from both "it happened" and "it happens", and it is the last time the game will say anything |
+| 2nd | **THE SECOND REVEAL** (below). Not a smaller beat — a bigger one. |
 | 3rd+ | **a nod.** You surface. The count goes up. No ceremony, no copy. |
 
-The nod is the whole design: **they know they did it.** A game that keeps
+### The second reveal — escaping the dip was part of the dip
+
+Operator: *"hit em with the double-escape-the-matrix reveal / escaping the dip
+was part of the dip."*
+
+The first breakthrough tells you somebody set the bowl out. The second tells you
+what for.
+
+**And it is mechanically true, which is what makes it land.** A bowl empties
+because it gets eaten. Digging down through it was never an escape route — it is
+how a dip *finishes*. The player is not a person who got out. The player is the
+mechanism by which a bowl is emptied, and the descent is that mechanism working
+exactly as designed.
+
+Which retroactively arms the maker's mark that has been on the underside since
+the first playthrough:
+
+> `DISHWASHER SAFE. MICROWAVE SAFE. NOT SAFE.`
+
+The bowl is emptied, cleaned, and set out again. It has always said so. "NOT
+SAFE" was the joke, then the warning, and now it is a *specification*.
+
+Four beats, mirroring the shipped reveal's four, ending on a direct inversion of
+its most-quoted line:
+
+1. *you have been here before. not this bowl. this part.*
+2. *the one you left was empty when you left it. they always are. that is what
+   they are for.*
+3. *you did not escape the dip. being eaten from the inside is how a dip ends —
+   you were the way it ends.*
+4. *nobody set the bowl out for you. somebody set YOU out for the bowl.*
+
+Beat 4 against the original beat 4 — *"someone set it out for you"* — is the
+whole feature in one sentence, and it only works because the first line shipped
+months earlier and meant something else at the time.
+
+**It also makes scoop retroactively sinister.** He has been asking for one more
+chip since the first minute of the game, and waiting eleven months on an empty
+stool. One more chip is what empties a bowl. He was never begging and he was
+never waiting for a friend — he was waiting for the cycle to come round, and he
+knew you would do it because that is what you are for. He still says nothing
+until the lava. He does not have to.
+
+After that, the nod is the whole design: **they know they did it.** Two reveals
+is the budget — one to turn the game over, one to turn it over again — and a
+third would be a game that cannot stop explaining itself. A game that keeps
 congratulating you for a thing you now do routinely is a game that has stopped
 believing you. The horror became your commute, and saying nothing about that says
 more than any amount of copy would.
