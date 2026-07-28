@@ -7,9 +7,12 @@
  * then corrupting the result — a hostile client never calls our encoder, so
  * `decodeBody` has to be tested against text nobody here ever validated.
  */
-import { encodePresence, encodeEat, decodeBody, saltFor, MAX_SAY, SALT_HEX_CHARS } from './shoalWire';
+import {
+  encodePresence, encodeEat, encodeCheckpoint,
+  decodeBody, decodeCheckpointBody, saltFor, MAX_SAY, SALT_HEX_CHARS,
+} from './shoalWire';
 import { HEADING_STEPS, WORLD_W, WORLD_H, BLOOM_COLS, BLOOM_ROWS } from './shoalConst';
-import type { Vec, Presence, EatClaim } from './shoalTypes';
+import type { Vec, Presence, EatClaim, Checkpoint } from './shoalTypes';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -329,6 +332,284 @@ check('an unrecognized kind tag is rejected',
   let threw = false;
   try { encodeEat(CELL_COUNT, 0, AUTHOR_HEX); } catch { threw = true; }
   check('encodeEat throws on an out-of-grid cell', threw);
+}
+
+// =========================================================================
+// The checkpoint kind
+// =========================================================================
+// A checkpoint travels as a reply body alongside vectors and eat claims:
+//   v1|checkpoint|salt|<canonical checkpoint JSON>
+// Every wire string below is hand-written from that grammar. The JSON tails
+// are hand-derived from `serialiseCheckpoint`'s documented fixed key order
+// (`epoch`, `sizes`, `recent`) and JSON.stringify's no-whitespace output —
+// never produced by calling the code under test.
+
+// The checkpoint every case below builds on. Two swimmers, one of whom ate
+// recently enough to carry a `recent` row. Ids kept short and readable so the
+// JSON can be checked by eye; the wire places no constraint on an id's shape.
+const CP: Checkpoint = {
+  epoch: 7,
+  sizes: [['alice', 112], ['bob', 88]],
+  recent: [['alice', 1_700_000_000_123, [1_700_000_000_123]]],
+};
+// Hand-assembled, brace by brace, from {epoch, sizes, recent} in that order:
+//   {  "epoch":7  ,  "sizes":[["alice",112],["bob",88]]
+//                 ,  "recent":[["alice",1700000000123,[1700000000123]]]  }
+const CP_JSON =
+  '{"epoch":7,"sizes":[["alice",112],["bob",88]],"recent":[["alice",1700000000123,[1700000000123]]]}';
+const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
+
+// --- Round trip ------------------------------------------------------------
+{
+  const wire = encodeCheckpoint(CP, AUTHOR_HEX);
+  check('encodeCheckpoint matches the hand-derived wire string', wire === CP_WIRE, wire);
+
+  const decoded = decodeCheckpointBody(CP_WIRE, 'author-c', 'hash-c');
+  check('a checkpoint body decodes to a checkpoint entry',
+    decoded !== null && decoded.kind === 'checkpoint', decoded);
+  check('…carrying the id and hash from the ENVELOPE, not the body',
+    decoded !== null && decoded.id === 'author-c' && decoded.hash === 'hash-c', decoded);
+  check('…and every field of the checkpoint round-trips exactly',
+    decoded !== null
+      && decoded.cp.epoch === 7
+      && decoded.cp.sizes.length === 2
+      && decoded.cp.sizes[0][0] === 'alice' && decoded.cp.sizes[0][1] === 112
+      && decoded.cp.sizes[1][0] === 'bob' && decoded.cp.sizes[1][1] === 88
+      && decoded.cp.recent.length === 1
+      && decoded.cp.recent[0][0] === 'alice'
+      && decoded.cp.recent[0][1] === 1_700_000_000_123
+      && decoded.cp.recent[0][2].length === 1
+      && decoded.cp.recent[0][2][0] === 1_700_000_000_123,
+    decoded);
+  check('…and the salt does not leak onto the decoded entry in any form',
+    decoded !== null && !JSON.stringify(decoded).includes(SALT), decoded);
+}
+{
+  // The empty checkpoint — an epoch nobody swam. `recent` is written even
+  // when empty (see the "recent is not optional on this wire" case below).
+  const empty: Checkpoint = { epoch: 0, sizes: [], recent: [] };
+  const expected = `v1|checkpoint|${SALT}|{"epoch":0,"sizes":[],"recent":[]}`;
+  check('an empty checkpoint matches its hand-derived wire string',
+    encodeCheckpoint(empty, AUTHOR_HEX) === expected, encodeCheckpoint(empty, AUTHOR_HEX));
+  const d = decodeCheckpointBody(expected, 'i', 'h');
+  check('an empty checkpoint round-trips',
+    d !== null && d.cp.epoch === 0 && d.cp.sizes.length === 0 && d.cp.recent.length === 0, d);
+}
+{
+  const w1 = encodeCheckpoint(CP, AUTHOR_HEX);
+  const w2 = encodeCheckpoint(CP, AUTHOR_HEX);
+  check('encoding the same checkpoint twice is byte-identical', w1 === w2, { w1, w2 });
+}
+
+// --- The salt decision -----------------------------------------------------
+// A checkpoint carries a salt (see shoalWire.ts's "A checkpoint is a third
+// kind, and it carries a salt"). Two swimmers who AGREE about an epoch
+// produce the same canonical payload but DIFFERENT bodies, so both writes
+// land as distinct on-chain objects instead of the second being silently
+// dropped and its author credited to the first.
+{
+  const mine = encodeCheckpoint(CP, AUTHOR_HEX);
+  const theirs = encodeCheckpoint(CP, OTHER_AUTHOR_HEX);
+  check('two swimmers publishing the SAME epoch produce different bodies',
+    mine !== theirs, { mine, theirs });
+  check('…each exactly the hand-derived string for its own salt',
+    mine === `v1|checkpoint|${SALT}|${CP_JSON}`
+    && theirs === `v1|checkpoint|${OTHER_SALT}|${CP_JSON}`, { mine, theirs });
+  // …and yet they agree, because agreement is judged on the PAYLOAD.
+  const a = decodeCheckpointBody(mine, 'author-a', 'hash-a');
+  const b = decodeCheckpointBody(theirs, 'author-b', 'hash-b');
+  check('…and both decode to the identical canonical payload (they agree)',
+    a !== null && b !== null && JSON.stringify(a.cp) === JSON.stringify(b.cp), { a, b });
+  check('…while remaining distinguishable as two different publishers',
+    a !== null && b !== null && a.id !== b.id, { a, b });
+}
+{
+  // A body salted with someone ELSE's key still decodes, with the envelope's
+  // id — exactly as for a move. The decoder never adjudicates authorship.
+  const foreign = `v1|checkpoint|${OTHER_SALT}|${CP_JSON}`;
+  const d = decodeCheckpointBody(foreign, AUTHOR_HEX, 'hash-q');
+  check('a checkpoint whose salt disagrees with the envelope author still decodes', d !== null, d);
+  check('…and decodes with the ENVELOPE\'s id, never the salt\'s owner',
+    d !== null && d.id === AUTHOR_HEX, d?.id);
+}
+
+// --- A checkpoint is not a move, and a move is not a checkpoint ------------
+// The two decoders are disjoint by the kind tag. Note that a REAL move body
+// is also rejected by decodeCheckpointBody on its salt field (a move's third
+// field is a coordinate or a cell, not 16 hex characters), so the cases that
+// actually exercise the kind tag ALONE are the mis-tagged ones below.
+{
+  const presenceWire = `v1|presence|1234|567|77|42|999983|${SALT}|`;
+  const eatWire = `v1|eat|5|1000|${SALT}`;
+
+  check('decodeBody rejects a checkpoint body (a checkpoint is not a log entry)',
+    decodeBody(CP_WIRE, 'i', 'h') === null, decodeBody(CP_WIRE, 'i', 'h'));
+  check('decodeCheckpointBody rejects a presence body',
+    decodeCheckpointBody(presenceWire, 'i', 'h') === null);
+  check('decodeCheckpointBody rejects an eat body',
+    decodeCheckpointBody(eatWire, 'i', 'h') === null);
+
+  // Mis-tagged: a well-formed checkpoint payload wearing a MOVE's kind tag.
+  // Everything after the kind tag is a valid checkpoint body's tail, so the
+  // kind tag is the only thing that can reject it.
+  const cpUnderEat = `v1|eat|${SALT}|${CP_JSON}`;
+  const cpUnderPresence = `v1|presence|${SALT}|${CP_JSON}`;
+  check('a checkpoint payload wearing the `eat` kind tag is rejected by decodeCheckpointBody',
+    decodeCheckpointBody(cpUnderEat, 'i', 'h') === null, decodeCheckpointBody(cpUnderEat, 'i', 'h'));
+  check('…and by decodeBody too',
+    decodeBody(cpUnderEat, 'i', 'h') === null, decodeBody(cpUnderEat, 'i', 'h'));
+  check('a checkpoint payload wearing the `presence` kind tag is rejected by decodeCheckpointBody',
+    decodeCheckpointBody(cpUnderPresence, 'i', 'h') === null,
+    decodeCheckpointBody(cpUnderPresence, 'i', 'h'));
+  check('…and by decodeBody too',
+    decodeBody(cpUnderPresence, 'i', 'h') === null, decodeBody(cpUnderPresence, 'i', 'h'));
+
+  // Mis-tagged the other way: a well-formed eat body wearing `checkpoint`.
+  const eatUnderCheckpoint = `v1|checkpoint|5|1000|${SALT}`;
+  check('an eat body wearing the `checkpoint` kind tag is rejected by both decoders',
+    decodeCheckpointBody(eatUnderCheckpoint, 'i', 'h') === null
+    && decodeBody(eatUnderCheckpoint, 'i', 'h') === null);
+
+  check('an unknown version tag on a checkpoint is rejected',
+    decodeCheckpointBody(`v2|checkpoint|${SALT}|${CP_JSON}`, 'i', 'h') === null);
+}
+
+// --- Rejection, exhaustively ----------------------------------------------
+// Hand-written bodies throughout; the encoder would refuse to produce most of
+// these in the first place, which is the point.
+{
+  const cp = (json: string) => decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h');
+
+  // sizes must already be sorted strictly ascending by id — sorting it here
+  // would let two serialisations of one world both parse, which is the whole
+  // reason the checkpoint is canonical.
+  check('an unsorted `sizes` is rejected',
+    cp('{"epoch":7,"sizes":[["bob",88],["alice",112]],"recent":[]}') === null);
+  check('a duplicated id in `sizes` is rejected (strictly ascending, no dupes)',
+    cp('{"epoch":7,"sizes":[["alice",112],["alice",88]],"recent":[]}') === null);
+  check('an unsorted `recent` is rejected too',
+    cp('{"epoch":7,"sizes":[],"recent":[["bob",1,[1]],["alice",1,[1]]]}') === null);
+
+  check('a non-integer size is rejected',
+    cp('{"epoch":7,"sizes":[["alice",112.5]],"recent":[]}') === null);
+  check('a non-integer lastBiteMs is rejected',
+    cp('{"epoch":7,"sizes":[],"recent":[["alice",1.5,[1]]]}') === null);
+  check('a non-integer bite ms is rejected',
+    cp('{"epoch":7,"sizes":[],"recent":[["alice",1,[1.5]]]}') === null);
+  check('a non-string id is rejected',
+    cp('{"epoch":7,"sizes":[[5,112]],"recent":[]}') === null);
+  check('a two-element `recent` row is rejected',
+    cp('{"epoch":7,"sizes":[],"recent":[["alice",1]]}') === null);
+
+  // The epoch's own domain. `epoch` is NOT duplicated as a head field — it
+  // lives once, inside the payload — so this is the only place it is checked.
+  check('a non-integer epoch is rejected', cp('{"epoch":7.5,"sizes":[],"recent":[]}') === null);
+  check('a missing epoch is rejected', cp('{"sizes":[],"recent":[]}') === null);
+  check('a string epoch is rejected', cp('{"epoch":"7","sizes":[],"recent":[]}') === null);
+  check('a negative epoch is rejected', cp('{"epoch":-1,"sizes":[],"recent":[]}') === null);
+  check('epoch 0 (the lower boundary) is accepted', cp('{"epoch":0,"sizes":[],"recent":[]}') !== null);
+  // 1e+21 is an integer to `Number.isInteger` and survives a JSON round trip
+  // verbatim (JSON.stringify(1e21) === '1e+21'), so ONLY the safe-integer rule
+  // rejects it. Anything past 2^53-1 has lost the exact-integer arithmetic the
+  // rest of this game is built on.
+  check('an epoch past Number.MAX_SAFE_INTEGER is rejected (1e+21 survives the canonical-form check)',
+    cp('{"epoch":1e+21,"sizes":[],"recent":[]}') === null);
+  check('a size past Number.MAX_SAFE_INTEGER is rejected',
+    cp('{"epoch":7,"sizes":[["alice",1e+21]],"recent":[]}') === null);
+  check('a negative size is rejected', cp('{"epoch":7,"sizes":[["alice",-5]],"recent":[]}') === null);
+  check('a negative lastBiteMs is rejected',
+    cp('{"epoch":7,"sizes":[],"recent":[["alice",-1,[]]]}') === null);
+  check('a negative bite ms is rejected',
+    cp('{"epoch":7,"sizes":[],"recent":[["alice",1,[-1]]]}') === null);
+
+  // Exactly one spelling per value — the same rule that already rejects
+  // "007" for 7 in a move's integer fields. `-0` and `1E21` both parse to a
+  // legitimate number and are caught by the canonical-form check alone.
+  check('a size of -0 is rejected (JSON.stringify(-0) is "0", so this is a second spelling)',
+    cp('{"epoch":7,"sizes":[["alice",-0]],"recent":[]}') === null);
+  check('an exponent spelling of a small integer is rejected (1E2 for 100)',
+    cp('{"epoch":7,"sizes":[["alice",1E2]],"recent":[]}') === null);
+  check('whitespace inside the payload is rejected (a second spelling of one world)',
+    cp('{"epoch": 7, "sizes": [], "recent": []}') === null);
+  check('a different key order is rejected (a second spelling of one world)',
+    cp('{"sizes":[],"epoch":7,"recent":[]}') === null);
+  check('an unknown extra key is rejected',
+    cp('{"epoch":7,"sizes":[],"recent":[],"extra":1}') === null);
+  // `parseCheckpoint` tolerates an absent `recent` for checkpoints serialised
+  // before that field existed. Nothing has ever been published on THIS wire,
+  // so the canonical form always carries it and the lenient spelling must not
+  // become a second body for one world.
+  check('an absent `recent` is rejected on the wire (the canonical form always writes it)',
+    cp('{"epoch":7,"sizes":[]}') === null);
+
+  check('a truncated payload (unterminated JSON) is rejected',
+    cp('{"epoch":7,"sizes":[["alice",112]],"recent":[]') === null);
+  check('an empty payload is rejected', cp('') === null);
+  check('a non-object payload is rejected', cp('7') === null);
+  check('a null payload is rejected', cp('null') === null);
+  check('an array payload is rejected', cp('[]') === null);
+
+  // Truncation of the BODY rather than the payload: no payload field at all.
+  check('a body truncated before the payload field is rejected',
+    decodeCheckpointBody(`v1|checkpoint|${SALT}`, 'i', 'h') === null);
+  check('a body truncated to version|kind is rejected',
+    decodeCheckpointBody('v1|checkpoint', 'i', 'h') === null);
+  check('an empty body is rejected', decodeCheckpointBody('', 'i', 'h') === null);
+
+  // The salt's shape, exactly as for a move.
+  check('a checkpoint with a 15-character salt is rejected',
+    decodeCheckpointBody(`v1|checkpoint|${SALT.slice(0, 15)}|${CP_JSON}`, 'i', 'h') === null);
+  check('a checkpoint with a 17-character salt is rejected',
+    decodeCheckpointBody(`v1|checkpoint|${SALT}a|${CP_JSON}`, 'i', 'h') === null);
+  check('a checkpoint with an UPPERCASE salt is rejected',
+    decodeCheckpointBody(`v1|checkpoint|${SALT.toUpperCase()}|${CP_JSON}`, 'i', 'h') === null);
+  check('a checkpoint with an empty salt field is rejected',
+    decodeCheckpointBody(`v1|checkpoint||${CP_JSON}`, 'i', 'h') === null);
+  check('a checkpoint with a non-hex salt is rejected',
+    decodeCheckpointBody(`v1|checkpoint|zzzzzzzzzzzzzzzz|${CP_JSON}`, 'i', 'h') === null);
+}
+
+// --- The payload is LAST, so a delimiter inside it is not a field boundary --
+// Unlike `say`, the payload is not delimiter-checked: it is taken as
+// everything after the third `|` and then validated in full by
+// `parseCheckpoint`, which is a far stronger check than "contains no `|`".
+{
+  const json = '{"epoch":0,"sizes":[["a|b",100]],"recent":[]}';
+  const d = decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h');
+  check('an id containing the field delimiter still decodes (the payload is the whole tail)',
+    d !== null && d.cp.sizes.length === 1 && d.cp.sizes[0][0] === 'a|b', d);
+}
+
+// --- Encode-side validation (defensive, not the hostile-input boundary) ----
+{
+  const throws = (name: string, f: () => unknown) => {
+    let threw = false;
+    try { f(); } catch { threw = true; }
+    check(name, threw);
+  };
+  throws('encodeCheckpoint throws on an unsorted `sizes`',
+    () => encodeCheckpoint({ epoch: 7, sizes: [['bob', 88], ['alice', 112]], recent: [] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a duplicated id',
+    () => encodeCheckpoint({ epoch: 7, sizes: [['alice', 1], ['alice', 2]], recent: [] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on an unsorted `recent`',
+    () => encodeCheckpoint(
+      { epoch: 7, sizes: [], recent: [['bob', 1, [1]], ['alice', 1, [1]]] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a non-integer size',
+    () => encodeCheckpoint({ epoch: 7, sizes: [['alice', 1.5]], recent: [] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a negative epoch',
+    () => encodeCheckpoint({ epoch: -1, sizes: [], recent: [] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a size past Number.MAX_SAFE_INTEGER',
+    () => encodeCheckpoint({ epoch: 7, sizes: [['alice', 1e21]], recent: [] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a bech32m address instead of a pubkey hex',
+    () => encodeCheckpoint(CP, 'sw1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'));
+  // A caller that never went through `checkpointFrom` can hand over an object
+  // whose `recent` is missing entirely. JSON.stringify DROPS an undefined
+  // value, so the body would decode as the lenient no-`recent` form on a peer
+  // — a second spelling of one world, authored by us. Caught before it costs
+  // a PoW mine.
+  throws('encodeCheckpoint throws when `recent` is absent (JSON.stringify would drop it)',
+    () => encodeCheckpoint(
+      { epoch: 7, sizes: [] } as unknown as Checkpoint, AUTHOR_HEX));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

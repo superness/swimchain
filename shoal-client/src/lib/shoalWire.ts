@@ -1,6 +1,6 @@
 /**
- * Wire format for a swim vector or an eat claim, written into a reply body
- * on chain (spec §3.3, §3.7, §4). CONSENSUS — permanent, per
+ * Wire format for a swim vector, an eat claim, or a checkpoint, written into
+ * a reply body on chain (spec §3.3, §3.7, §3.9, §4). CONSENSUS — permanent, per
  * project_fold_rules_are_permanent: changing anything below (the delimiter,
  * the field order, a domain bound, MAX_SAY) re-scores every session already
  * played and splits clients running different versions. Get it right once.
@@ -12,14 +12,20 @@
  * one), and JSON's key order is a canonicality hazard this format does not
  * need to take on.
  *
- *   presence: v1|presence|x|y|heading|speed|ms|salt|say
- *   eat:      v1|eat|cell|ms|salt
+ *   presence:   v1|presence|x|y|heading|speed|ms|salt|say
+ *   eat:        v1|eat|cell|ms|salt
+ *   checkpoint: v1|checkpoint|salt|<canonical checkpoint JSON>
  *
  * `v1` is a version tag, always the first field, so a future format is a
  * `null` (a version this decoder doesn't recognise) rather than silently
- * misparsed against the wrong grammar. `presence`/`eat` is a second, kind
- * tag right after it, since `decodeBody` returns the `LogEntry` union and
- * has to know which grammar the rest of the body follows.
+ * misparsed against the wrong grammar. `presence`/`eat`/`checkpoint` is a
+ * second, kind tag right after it, since `decodeBody` returns the `LogEntry`
+ * union and has to know which grammar the rest of the body follows.
+ *
+ * The checkpoint kind is the one place JSON appears, and only because
+ * `serialiseCheckpoint` (checkpoint.ts) already defines the canonical text of
+ * a checkpoint and that definition is not this module's to re-make — see
+ * "A checkpoint is a third kind" below.
  *
  * `say` is last specifically so it cannot contain a field boundary by
  * construction — but the decoder does not trust position alone. It is
@@ -96,6 +102,182 @@
  * checkpoint says. It is nonetheless CONSENSUS in the one sense that matters
  * here: a client that omitted it would author bodies every other client
  * rejects. `v1` is not bumped because `v1` has never been played.
+ *
+ * ## A checkpoint is a third kind — and it carries a salt
+ *
+ * A checkpoint (spec §3.9 points 4 and 5) is the state that crosses an epoch
+ * boundary: every honest client computes the identical one, publishes it
+ * unprivileged, and a cold joiner adopts the newest it can see rather than
+ * replaying from genesis. `serialiseCheckpoint`/`parseCheckpoint`
+ * (checkpoint.ts) already define its CANONICAL TEXT — sorted by id,
+ * rejection-not-repair on parse. This module defines only how that text
+ * TRAVELS, and it does not re-implement or re-decide any of it: `encodeCheckpoint`
+ * calls `serialiseCheckpoint`, `decodeCheckpointBody` calls `parseCheckpoint`.
+ * Two definitions of one canonical form is exactly the divergence a canonical
+ * form exists to prevent.
+ *
+ * ### THE DECISION: a checkpoint carries a salt. Here is why, and what it costs.
+ *
+ * Two swimmers publishing the same epoch's checkpoint compute, BY DESIGN,
+ * byte-identical payloads — that is what canonicality means and it is the
+ * property the whole scheme rests on. But `content_id = sha256(body)`
+ * (methods.rs:2921-2923), so identical bodies are ONE OBJECT on chain: the
+ * node accepts both actions, silently drops the second content-store write
+ * while returning success ("Reply already exists in content store",
+ * methods.rs:3373-3375), and the later-indexed action overwrites the earlier
+ * one's metadata — `content_metadata_index` is keyed by `content_hash` alone
+ * (chain.rs:482-483), and that metadata carries the AUTHOR.
+ *
+ * The argument for NO salt is real and was weighed: two agreeing checkpoints
+ * *are* the same fact, one object is arguably the honest representation of
+ * that, and it is far cheaper (see the cost paragraph below, which is the
+ * price actually paid for the other answer).
+ *
+ * It loses on three counts, in increasing order of how much they hurt:
+ *
+ *  1. **You cannot tell "everyone agrees" from "one client published."** With
+ *     no salt the number of distinct checkpoint objects for an epoch is the
+ *     number of distinct OPINIONS, never the number of publishers. Task 2 has
+ *     to decide what a client does when two checkpoints for one epoch differ,
+ *     and the natural evidence — how many independent swimmers computed each —
+ *     is not merely hidden, it does not exist on chain. A lone griefer's
+ *     fabricated checkpoint and twenty honest clients' agreed one are one
+ *     object each: a 1-1 tie, breakable only by an arbitrary deterministic
+ *     rule (lowest content_id, earliest block height) that the griefer can
+ *     grind offline. With a salt, that same comparison is 1 against 20, and
+ *     it is computed from data the chain actually holds.
+ *  2. **Every honest publisher after the first burns a PoW mine for a write
+ *     the node discards.** The client cannot even detect this: `submit_reply`
+ *     returns success with the same `content_id` either way.
+ *  3. **The decisive one: the surviving object's AUTHOR is nondeterministic
+ *     across clients.** Because the metadata index is keyed by hash and
+ *     overwritten by whoever indexes last, the `author_id` a peer reports for
+ *     a collapsed checkpoint depends on that peer's own indexing order — and
+ *     the pending path reports the true actor while the finalized path
+ *     reports the surviving metadata author (methods.rs:9548-9551 vs :9446),
+ *     so one client's view of "who published this checkpoint" disagrees with
+ *     another's for the length of that window. `CheckpointEntry.id` comes
+ *     from that envelope. Any rule Task 2 writes that so much as looks at a
+ *     checkpoint's publisher would therefore fold differently on two honest
+ *     clients — a divergence in the one mechanism whose entire job is to make
+ *     divergence detectable. A salt makes each published checkpoint a
+ *     distinct object with exactly one true author, and closes it.
+ *
+ * WHAT IS GIVEN UP, stated plainly rather than minimised:
+ *
+ *  - **Cost, and it is not the 17 bytes a move pays.** A checkpoint body is
+ *    KB-scale (see "How large a checkpoint gets" below), so N publishers now
+ *    store and gossip N full copies of one fact instead of one. At the
+ *    design's 25-swimmer ceiling, with all 25 publishing, that is up to
+ *    ~141 KB an epoch rather than ~5.6 KB (measured: 5_768 bytes a body).
+ *    PoW and mempool eviction are priced per ACTION, not per byte
+ *    (builder.rs:92), so this buys nothing away from anyone's writes — it is
+ *    storage and bandwidth, paid once an hour. How many clients publish at
+ *    all is POLICY (Task 2's), and that is where the cost is properly
+ *    managed; it is not something the wire format should decide by making
+ *    publication impossible for all but the first.
+ *  - **Agreement is no longer a byte comparison.** Two agreeing checkpoints
+ *    are no longer identical BODIES, so a reader must decode both and compare
+ *    the canonical PAYLOADS (`serialiseCheckpoint(a.cp) === serialiseCheckpoint(b.cp)`,
+ *    or equivalently the body's tail). That is one more step and one more
+ *    place to get it wrong, and it is the honest price of point 1 above. It
+ *    is mitigated structurally: the salt sits BEFORE the payload, so the
+ *    payload is a literal suffix of the body, not something interleaved.
+ *  - **A salt is still not authentication**, exactly as for a move: a hostile
+ *    client can write any 16 hex characters there, so counting publishers
+ *    means counting ENVELOPE authors (`CheckpointEntry.id`), never salts.
+ *    The decoder checks the salt's shape and never its value.
+ *
+ * ### `epoch` is NOT duplicated as a head field
+ *
+ * A checkpoint's epoch is already inside its canonical payload, and it is
+ * tempting to hoist it onto the wire so a reader can filter without parsing.
+ * That would be a SECOND source for a value the payload already carries, free
+ * to disagree with it — the same defect "One timestamp, not two" (below)
+ * removes from a presence write, and the same one shoalTypes.ts's `EatClaim`
+ * doc rejects a self-reported position for. The epoch lives once. A reader
+ * decodes and reads `cp.epoch`.
+ *
+ * ### The payload is last, and is validated rather than delimiter-checked
+ *
+ * The JSON tail is taken as "everything after the third `|`" and is NOT
+ * rejected for containing a delimiter (unlike `say`). It does not need to be:
+ * `parseCheckpoint` validates the whole thing structurally, which is a far
+ * stronger check than "contains no `|`", and because the tail is the rest of
+ * the string there is no field boundary left to be ambiguous about. An id
+ * containing a `|` is therefore a legitimate — if odd — checkpoint.
+ *
+ * ### The exact-canonical-form check
+ *
+ * `parseCheckpoint` rejects an unsorted or malformed checkpoint, but it does
+ * NOT reject a differently-SPELLED one: `{"epoch": 7, ...}` with whitespace,
+ * a different key order, `1E2` for `100`, `-0` for `0`, an unknown extra key,
+ * or the lenient no-`recent` form it accepts for checkpoints serialised
+ * before that field existed. Each of those parses to the same in-memory
+ * `Checkpoint` from a different body — i.e. a second content_id for one
+ * world, which is precisely what makes "these two clients disagree"
+ * unanswerable. `decodeCheckpointBody` therefore requires the tail to be
+ * EXACTLY `serialiseCheckpoint` of what it parsed to. Reject, never repair,
+ * applied to the payload as a whole.
+ *
+ * On top of that, every number in a checkpoint — `epoch`, each size, each
+ * `lastBiteMs`, each bite ms — must be a NON-NEGATIVE SAFE INTEGER.
+ * `parseCheckpoint` only asks for `Number.isInteger`, which admits `1e+21`;
+ * that spelling survives a JSON round trip verbatim, so the canonical-form
+ * check cannot catch it, and a value past `2^53-1` has lost the exact-integer
+ * arithmetic every other rule in this game depends on. Non-negativity is a
+ * structural property of all four (a count, a magnitude, and two unix
+ * instants), not a tuned constant — no POLICY value (MIN_SIZE, START_SIZE) is
+ * consulted here, for the same reason `speed` is not bounded by SPEED_DART.
+ *
+ * ### A checkpoint is NOT a `LogEntry`
+ *
+ * `decodeBody` returns `null` for a checkpoint body, and `decodeCheckpointBody`
+ * returns `null` for a move body — the two are disjoint on the kind tag, and
+ * `CheckpointEntry` is deliberately declared here rather than joining the
+ * `LogEntry` union in shoalTypes.ts. A checkpoint is what SEEDS a fold, not
+ * something the fold consumes; letting one into `LogEntry` would put it in
+ * `repliesToLog`'s output and hand it to `foldShoal`, where every existing
+ * "if the kind is presence do this, otherwise it is an eat claim" branch
+ * would silently mis-handle it as an eat claim.
+ * `repliesToLog` drops what `decodeBody` rejects, so checkpoints stay out of
+ * the log by construction rather than by everyone remembering to filter.
+ *
+ * ### How large a checkpoint gets, and what bounds it (measured, not estimated)
+ *
+ * `sizes` carries every swimmer the closing epoch knew (live plus `departed`,
+ * which `rollEpoch` prunes at one epoch of absence), and `recent` adds a row
+ * for everyone who ate within `VOID_WINDOW_MS` of the epoch end. Per swimmer:
+ * a `sizes` row with a 64-hex id is 73 bytes with its separator; a `recent`
+ * row with the maximum 5 bites (the prune keeps `e.ms - ms <= VOID_WINDOW_MS`,
+ * so 10_000 / `EAT_COOLDOWN_MS` 2_500 plus the boundary one) and 13-digit
+ * unix-ms values is 155. That is 228 bytes per swimmer. MEASURED at the
+ * design's 25-swimmer ceiling, worst case — everyone live, everyone having
+ * eaten five times in the last ten seconds — the whole BODY is 5_768 bytes;
+ * one swimmer alone is 296.
+ *
+ * NOTHING BOUNDS IT. Not the population (any sponsored identity can write a
+ * presence into a room; 15-25 is a design intent, not a rule anything
+ * enforces), and not the node. That was checked rather than assumed:
+ * `submit_reply` performs NO length validation on `body` at all;
+ * `MAX_BODY_SIZE` (4096, SPEC_02 §3.1, constants.rs:38) and
+ * `INLINE_CONTENT_THRESHOLD` (1024, constants.rs:35) are both DEAD — the
+ * former has no reader anywhere in the node, and the latter is only read by
+ * `content/lifecycle.rs`'s `create_content`, which the reply path never
+ * calls. The limits that do bite are far away: 7 MB on the RPC request
+ * (rpc/server.rs:88) and 4 MB per transport payload (constants.rs:160), which
+ * at 228 bytes a swimmer a checkpoint would not reach until ~18_400 swimmers
+ * were in one room in one hour.
+ *
+ * So a checkpoint fits comfortably today and is not at risk of silent
+ * truncation. TWO THINGS TO CARRY FORWARD, both findings rather than
+ * problems to solve here: (a) SPEC_02's declared `MAX_BODY_SIZE` of 4096 is
+ * already exceeded at 18 swimmers in the worst case (56 if nobody has a
+ * `recent` row), i.e. WELL INSIDE the design's own 25-swimmer ceiling — if
+ * that dead constant is ever wired up, checkpoints break first and every
+ * other body in this game keeps working; (b) the salt decision above
+ * multiplies the on-chain cost by the number of publishers, so how many
+ * clients publish is a policy question that now has real weight behind it.
  *
  * ## One timestamp, not two
  *
@@ -204,10 +386,11 @@
  * the two prior plans found one); Task 6's `sendEat(ctx, cell)` will need
  * the same fix when that task is implemented.
  */
-import type { Vec, LogEntry, Presence, EatClaim } from './shoalTypes';
+import type { Vec, LogEntry, Presence, EatClaim, Checkpoint } from './shoalTypes';
 import {
   HEADING_STEPS, WORLD_W, WORLD_H, BLOOM_COLS, BLOOM_ROWS,
 } from './shoalConst';
+import { serialiseCheckpoint, parseCheckpoint } from './checkpoint';
 
 // ---------------------------------------------------------------------------
 // CONSENSUS — permanent. See module header.
@@ -313,6 +496,27 @@ function parseIntField(s: string): number | null {
 }
 
 /**
+ * Every number a checkpoint carries — `epoch`, each size, each `lastBiteMs`,
+ * each bite ms — must be a non-negative safe integer. `parseCheckpoint` only
+ * asks for `Number.isInteger`, which admits `1e+21`; that spelling survives a
+ * JSON round trip verbatim, so the canonical-form check cannot catch it, and
+ * a value past `2^53-1` has lost the exact-integer arithmetic every other
+ * rule in this game depends on. See the module header ("The exact-canonical-form
+ * check") for why non-negativity is structural here and no POLICY constant
+ * (MIN_SIZE, START_SIZE) is consulted.
+ */
+function checkpointNumbersInDomain(cp: Checkpoint): boolean {
+  const ok = (n: number) => Number.isSafeInteger(n) && n >= 0;
+  if (!ok(cp.epoch)) return false;
+  for (const [, size] of cp.sizes) if (!ok(size)) return false;
+  for (const [, lastBiteMs, bites] of cp.recent) {
+    if (!ok(lastBiteMs)) return false;
+    for (const b of bites) if (!ok(b)) return false;
+  }
+  return true;
+}
+
+/**
  * Take exactly `n` `DELIM`-terminated fields off the front of `s`, plus
  * whatever text remains after the nth delimiter (which may itself contain
  * further delimiters — the caller decides what that means). `null` if
@@ -387,6 +591,52 @@ export function encodePresence(vec: Vec, authorIdHex: string, say?: string): str
  * hashed to one `content_id` and the node kept only one of them. See the
  * module header.
  */
+/**
+ * Encode a checkpoint write (spec §3.9). The body is
+ * `v1|checkpoint|salt|<canonical checkpoint JSON>` — see the module header's
+ * "A checkpoint is a third kind" for why the salt is there, what it costs,
+ * why `epoch` is not hoisted out of the payload, and why the payload sits
+ * last.
+ *
+ * Throws `RangeError` on anything `decodeCheckpointBody` would then reject,
+ * which for a checkpoint is worth more than the equivalent check on a move:
+ * a checkpoint published in a form its peers reject is not just a wasted PoW
+ * mine, it is this client failing to register its agreement with an epoch it
+ * folded correctly. The realistic caller bug is a `Checkpoint` that never
+ * came from `checkpointFrom` and so was never sorted — or, worse, one whose
+ * `recent` is missing entirely, since `JSON.stringify` DROPS an undefined
+ * value and the resulting body would decode on a peer as the lenient
+ * no-`recent` spelling: a second body for one world, authored by us.
+ */
+export function encodeCheckpoint(cp: Checkpoint, authorIdHex: string): string {
+  const salt = saltFor(authorIdHex);
+  const payload = serialiseCheckpoint(cp);
+  // Round-tripped through the canonical parser rather than spot-checked, so
+  // this cannot drift from what a peer's decoder will actually accept.
+  const reparsed = parseCheckpoint(payload);
+  if (reparsed === null) {
+    throw new RangeError(
+      `encodeCheckpoint: ${JSON.stringify(payload)} is not a well-formed checkpoint. ` +
+      'The usual cause is a `sizes`/`recent` array that is not sorted strictly ascending by ' +
+      'id, or a non-integer size — build checkpoints with checkpointFrom.',
+    );
+  }
+  if (serialiseCheckpoint(reparsed) !== payload) {
+    throw new RangeError(
+      `encodeCheckpoint: ${JSON.stringify(payload)} is not the CANONICAL spelling of the ` +
+      'checkpoint it parses to (an absent `recent`, or a value with a second JSON spelling). ' +
+      'Every peer would reject it.',
+    );
+  }
+  if (!checkpointNumbersInDomain(reparsed)) {
+    throw new RangeError(
+      'encodeCheckpoint: a checkpoint number (epoch, a size, a lastBiteMs or a bite ms) is ' +
+      'negative or past Number.MAX_SAFE_INTEGER.',
+    );
+  }
+  return [WIRE_VERSION, 'checkpoint', salt, payload].join(DELIM);
+}
+
 export function encodeEat(cell: number, ms: number, authorIdHex: string): string {
   const salt = saltFor(authorIdHex);
   if (!Number.isSafeInteger(cell) || cell < 0 || cell >= CELL_COUNT) {
@@ -422,7 +672,12 @@ export function decodeBody(body: string, id: string, hash: string): LogEntry | n
 
   if (kind === 'presence') return decodePresenceTail(head.rest, id, hash);
   if (kind === 'eat') return decodeEatTail(head.rest, id, hash);
-  return null; // unrecognised kind
+  // Unrecognised kind — INCLUDING `checkpoint`, which is a real kind on this
+  // wire and is deliberately not one of the two above. A checkpoint seeds a
+  // fold, it is never folded; `decodeCheckpointBody` is its decoder. There is
+  // no explicit branch for it here because a redundant branch returning the
+  // same `null` would only look like a check while being unable to fail.
+  return null;
 }
 
 function decodePresenceTail(tail: string, id: string, hash: string): Presence | null {
@@ -482,6 +737,68 @@ function decodePresenceTail(tail: string, id: string, hash: string): Presence | 
     ...(sayRaw.length > 0 ? { say: sayRaw } : {}),
   };
   return presence;
+}
+
+/**
+ * One published checkpoint, as it arrived: the canonical payload plus the
+ * envelope facts about who published it and under what content id.
+ *
+ * Deliberately NOT a member of the `LogEntry` union, and deliberately declared
+ * here rather than in shoalTypes.ts — a checkpoint SEEDS a fold, it is never
+ * folded. See the module header's "A checkpoint is NOT a `LogEntry`".
+ *
+ * There is no `ms`. A checkpoint's time is its epoch, which is inside `cp`;
+ * a second timestamp would be a value free to disagree with it (the same
+ * reasoning as "One timestamp, not two"). `hash` is the reply's content id,
+ * available as a deterministic tiebreak exactly as it is on a `LogEntry`.
+ */
+export interface CheckpointEntry {
+  kind: 'checkpoint';
+  /** Publisher, from the reply envelope (`author_id`) — never from the body. */
+  id: string;
+  cp: Checkpoint;
+  /** Content hash from the envelope, for deterministic ordering. */
+  hash: string;
+}
+
+/**
+ * Decode a reply body into a published `CheckpointEntry`, or `null` for
+ * anything that is not already a well-formed, in-domain, CANONICALLY SPELLED
+ * checkpoint body of a version this decoder recognises. Never throws.
+ *
+ * Separate from `decodeBody` on purpose: the two are disjoint on the kind tag,
+ * so a move can never arrive here and a checkpoint can never reach the fold's
+ * log. `id` and `hash` come from the reply envelope, never from `body`, for
+ * the same reason they do in `decodeBody`.
+ */
+export function decodeCheckpointBody(body: string, id: string, hash: string): CheckpointEntry | null {
+  if (body.length === 0) return null;
+
+  const head = takeFields(body, 3); // version, kind, salt
+  if (head === null) return null; // too few fields — nothing for the payload
+  const [version, kind, salt] = head.fields;
+  if (version !== WIRE_VERSION) return null;
+  // Kind discrimination (mutation target 4). This is the ONLY thing that stops
+  // a checkpoint payload wearing a move's kind tag from decoding here; a real
+  // move body is separately rejected on its salt field, so removing this check
+  // is only visible against a mis-tagged body. See shoalWire.test.ts.
+  if (kind !== 'checkpoint') return null;
+  // Shape only, never compared against `id` — see decodePresenceTail.
+  if (!SALT_RE.test(salt)) return null;
+
+  // The payload is the whole remaining tail: it may contain DELIM (an id is
+  // an arbitrary string) and is not delimiter-checked, because parseCheckpoint
+  // validates it structurally instead. See the module header.
+  const cp = parseCheckpoint(head.rest);
+  if (cp === null) return null;
+  if (!checkpointNumbersInDomain(cp)) return null;
+  // Exact canonical spelling (mutation target 5). parseCheckpoint accepts
+  // whitespace, a different key order, an extra key, `1E2` for 100, `-0` for
+  // 0, and the lenient no-`recent` form — each of which is a SECOND body, and
+  // therefore a second content_id, for one world. Reject, never repair.
+  if (serialiseCheckpoint(cp) !== head.rest) return null;
+
+  return { kind: 'checkpoint', id, cp, hash };
 }
 
 function decodeEatTail(tail: string, id: string, hash: string): EatClaim | null {
