@@ -27,6 +27,7 @@ import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
   BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS, EPOCH_MS, WARMUP_MS,
+  SCATTER_COST,
 } from './shoalConst';
 import { cellCentre, bitesLeft } from './bloom';
 import { epochOf, epochStartMs, epochEndMs, epochFoldEndMs } from './epoch';
@@ -659,6 +660,118 @@ check('orderLog does not mutate its input', (() => {
   check('recentBites never grows past floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1',
     s.fish.get('a')!.recentBites.length === Math.floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1,
     s.fish.get('a')!.recentBites);
+}
+
+// --- Scatter, void and hunger on ONE tick, with clampSize binding ----------
+// Fix review C6 asked for a test that pins the CONSENSUS order of step 5 (the
+// hush) and step 6 (hunger) by putting a fish near MIN_SIZE and having a
+// sweep and a hunger firing land on the same tick, so the two orderings
+// produce different final sizes.
+//
+// THEY CANNOT. This is stated here, in the test file, because the claim is
+// load-bearing and was wrong in foldTick's own doc comment for a while.
+// Every size mutation in either step is a CLAMPED SUBTRACTION against the
+// same floor: clampSize(n) is max(n, MIN_SIZE), and step 5 applies
+// max(.-SCATTER_COST, F) then max(.-voided*BITE_GROWTH, F) while step 6
+// applies max(.-HUNGER_AMOUNT, F). For any positive a, b and any x:
+//   max(max(x-a, F) - b, F) = max(x-a-b, F) = max(max(x-b, F) - a, F)
+// (if x-a >= F both sides are max(x-a-b, F); if x-a < F the left is
+// max(F-b, F) = F and x-a-b < F so the right is F too). Composition of
+// clamped subtractions against one floor is symmetric in the subtrahends, so
+// no arrangement of scatter, void and hunger can distinguish the orders.
+//
+// Nor can anything else: the two steps share exactly one piece of state,
+// `f.size`. Step 5 additionally writes lastScatterMs, recentBites,
+// lastTaken, lastSweepMs and tension, none of which step 6 reads; step 6
+// writes tickCount, which step 5 does not read. And `lockedPositions` — the
+// one place a size is COPIED for later use — is built from `bodies`, which
+// is snapshotted back at step 2, before either step runs.
+//
+// So the honest state of affairs is: at the current CONSENSUS constants the
+// 5/6 order is unobservable, and foldTick's doc no longer claims otherwise.
+// This test is still worth having — it pins the TOTAL loss and the clamp on
+// the hardest tick this engine has (scatter + void + hunger at once) — but
+// it is not, and cannot be, a pin on the ordering.
+//
+// Geometry and timing are the same as the scatter-voiding tests above: 'a' on
+// cellCentre(31) = (4032, 64) and 'anchor' on cellCentre(736) = (64, 3008),
+// coreCentre (64, 64), both outside the core from tick 1, so tension climbs
+// 750/tick, the hush fires at start+9750 and resolves at start+17750 — which
+// is itself a hunger firing time (17750 mod 1000 = 750).
+//
+// Hand trace for 'a', seeded at 76 so the floor genuinely binds:
+//   t=start        seed 76, then the ms=start bite (same tick as its own
+//                  presence, hash 'a7200000' < 'ae7200000') credits and
+//                  latches: 76 + BITE_GROWTH(12) = 88
+//   hunger firings at start+750+1000k. start+750 is skipped (gap 750 < 1000).
+//   start+1750 .. start+14750 all apply: 14 firings          88 -> 74
+//   t=start+15250  second bite (gap 15250 >= EAT_COOLDOWN_MS) 74 -> 86
+//                  recentBites prunes to [start+15250]: the ms=start entry is
+//                  15250 old, past VOID_WINDOW_MS(10_000)
+//   start+15750    skipped (gap 500 < 1000)
+//   start+16750    applies                                    86 -> 85
+//   t=start+17750  THE RESOLVE TICK, and a hunger firing:
+//                    scatter  clamp(85 - 30) = clamp(55) = 60
+//                    void     clamp(60 - 1*12) = clamp(48) = 60
+//                    hunger   clamp(60 - 1) = clamp(59) = 60
+//                  Unclamped the tick would end at 85 - 43 = 42, so the floor
+//                  is doing real work here rather than being a formality.
+//   Final: MIN_SIZE(60).
+{
+  const epoch = 2;
+  const start = epochStartMs(epoch);
+  const cellA = 31;
+  const a = cellCentre(cellA);
+  const anchor = cellCentre(736);
+  check('the two fixture cells are centred where BLOOM_CELL arithmetic says',
+    a.x === 4032 && a.y === 64 && anchor.x === 64 && anchor.y === 3008, { a, anchor });
+
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['a', 76], ['anchor', 100]], recent: [] };
+  const log: LogEntry[] = [
+    pres('anchor', anchor.x, anchor.y, start),
+    pres('a', a.x, a.y, start),
+    eat('a', cellA, start),
+    eat('a', cellA, start + 15_250),
+  ];
+
+  // One tick before the resolve: the hand-derived 85, well clear of the floor.
+  const before = foldShoal(log, start + 17_500, { epoch, seed });
+  check('going into the resolve tick the fish is at the hand-derived 85, not already floored',
+    before.fish.get('a')!.size === 85 && before.fish.get('a')!.size > MIN_SIZE,
+    { got: before.fish.get('a')!.size, MIN_SIZE });
+  check('and it carries exactly one voidable bite',
+    JSON.stringify(before.fish.get('a')!.recentBites) === JSON.stringify([start + 15_250]),
+    before.fish.get('a')!.recentBites);
+
+  const s = foldShoal(log, start + 17_750, { epoch, seed });
+  check('the sweep resolves on the hand-derived tick, which is also a hunger firing',
+    s.lastSweepMs === start + 17_750 && (start + 17_750) % 1_000 === 750,
+    { lastSweepMs: s.lastSweepMs, expected: start + 17_750 });
+  check('the fish is taken', s.lastTaken.includes('a'), s.lastTaken);
+  check('scatter, void and hunger on one tick land the fish exactly on the floor',
+    s.fish.get('a')!.size === MIN_SIZE, s.fish.get('a')!.size);
+  check('and the floor genuinely binds: the unclamped arithmetic is 42, not 60',
+    85 - SCATTER_COST - BITE_GROWTH - HUNGER_AMOUNT === 42 && 42 < MIN_SIZE,
+    { unclamped: 85 - SCATTER_COST - BITE_GROWTH - HUNGER_AMOUNT, MIN_SIZE });
+
+  // The commutativity above, exercised against the real constants rather than
+  // asserted in prose. If a future size mutation stops being a plain clamped
+  // subtraction — a percentage scatter, a different floor, a multiplier —
+  // this check flips and foldTick's doc has to be revisited, because the 5/6
+  // order would then be observable and would need a real pin.
+  {
+    const clamp = (n: number) => (n < MIN_SIZE ? MIN_SIZE : n);
+    let asymmetric = 0;
+    for (let x = MIN_SIZE; x <= 400; x++) {
+      for (let voided = 0; voided <= 5; voided++) {
+        const sweepThenHunger = clamp(clamp(clamp(x - SCATTER_COST) - voided * BITE_GROWTH) - HUNGER_AMOUNT);
+        const hungerThenSweep = clamp(clamp(clamp(x - HUNGER_AMOUNT) - SCATTER_COST) - voided * BITE_GROWTH);
+        if (sweepThenHunger !== hungerThenSweep) asymmetric++;
+      }
+    }
+    check('every size mutation is a clamped subtraction, so steps 5 and 6 provably commute',
+      asymmetric === 0, { asymmetric });
+  }
 }
 
 // --- The tick origin is absolute, not log-relative --------------------------

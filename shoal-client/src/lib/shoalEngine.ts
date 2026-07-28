@@ -97,15 +97,44 @@ function clampSize(n: number): number {
  * hungry and still calms down.
  *
  * `foldShoal` is defined as a loop over this function (see below) so the two
- * can never drift apart: there is exactly one tick body in this file. The
- * numbered steps inside are CONSENSUS ordering, not incidental structure —
- * step 1 (apply entries) runs before step 2's reckon pass, which is what
- * makes a same-tick eat claim judged against the position the claimant WAS
- * at, not a stale one; step 5 (the hush) runs before step 6 (hunger), which
- * is what makes a scatter's clamped size loss and that same tick's hunger
- * loss compose in the order the hand-derived arithmetic in
- * shoalEngine.test.ts and shoalEngine.determinism.test.ts assumes. Do not
- * reorder them.
+ * can never drift apart: there is exactly one tick body in this file.
+ *
+ * THE STEP ORDER, and exactly how much of it is actually pinned. An earlier
+ * version of this comment claimed two things that were not true; both are
+ * corrected here rather than deleted, because the false versions are the ones
+ * a reader would otherwise reconstruct.
+ *
+ *  - Step 1 (apply entries) before steps 2 and 3 IS observable, but not for
+ *    the reason once given. The old rationale was that a same-tick eat claim
+ *    would otherwise be judged against a stale position; that stopped being
+ *    true when the eat branch started computing `claimedAt = reckon(f.vec,
+ *    e.ms)` explicitly, which no longer depends on when `f.x/f.y` were last
+ *    written. What the order still decides is membership: a presence write
+ *    applied in step 1 puts its swimmer into `bodies`, so it marks bloom
+ *    cells (step 3), counts toward the median and the spread (step 4) and
+ *    can be swept (step 5) on the very tick it arrives — and step 1 running
+ *    before step 3's `markVisits` is what lets a bite land on a cell that is
+ *    still genuinely fallow, which several tests in shoalEngine.test.ts turn
+ *    on directly.
+ *  - Step 5 (the hush) before step 6 (hunger) is NOT observable at the
+ *    current CONSENSUS constants, and no test can pin it. The two steps share
+ *    exactly one piece of state, `f.size`, and every mutation either makes to
+ *    it is a clamped subtraction against the same floor —
+ *    `max(max(x-a, F) - b, F) = max(x-a-b, F) = max(max(x-b, F) - a, F)` for
+ *    any positive a, b — so scatter, void and hunger commute however they are
+ *    arranged, including when `clampSize` binds. `lockedPositions`, the one
+ *    place a size is copied for later use, is built from `bodies`, which is
+ *    snapshotted back at step 2, before either step. This was verified by
+ *    actually performing the swap: the whole suite still passes. See
+ *    shoalEngine.test.ts's "Scatter, void and hunger on ONE tick" section,
+ *    which states the proof and pins the commutativity itself, so that a
+ *    future size mutation which is NOT a plain clamped subtraction (a
+ *    percentage scatter, a different floor, a multiplier) makes the ordering
+ *    observable again and fails there.
+ *
+ * Do not reorder any of them regardless: the order is CONSENSUS, and "no
+ * current test can see the difference" is a fact about today's constants, not
+ * a licence.
  *
  * `ordered` MUST ALREADY BE `orderLog(entries)`, and MUST be the same log —
  * same content, same order — across every `foldTick` call within one fold;
