@@ -517,6 +517,13 @@ ruling).
 
 ---
 
+## 5b. Open items
+
+Live tracker at `docs/THE_SHOAL_OPEN_ITEMS.md` — blockers and carried items surfaced by
+code review or live runs, with what each costs to leave. Read it before starting a plan.
+
+---
+
 ## 6. Verification
 
 1. **Determinism.** A recorded session replays byte-identically on a fresh client. Divergence
