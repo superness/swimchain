@@ -12,8 +12,8 @@
  * one), and JSON's key order is a canonicality hazard this format does not
  * need to take on.
  *
- *   presence: v1|presence|x|y|heading|speed|ms|say
- *   eat:      v1|eat|cell|ms
+ *   presence: v1|presence|x|y|heading|speed|ms|salt|say
+ *   eat:      v1|eat|cell|ms|salt
  *
  * `v1` is a version tag, always the first field, so a future format is a
  * `null` (a version this decoder doesn't recognise) rather than silently
@@ -23,12 +23,79 @@
  *
  * `say` is last specifically so it cannot contain a field boundary by
  * construction — but the decoder does not trust position alone. It is
- * extracted as "everything after the 7th `|`" and then explicitly checked
+ * extracted as "everything after the 8th `|`" and then explicitly checked
  * for an embedded delimiter, rather than relying on the split to fail on
  * its own. Removing that check is exactly the third mandatory mutation in
  * this module's test file, and it is a distinct line from the length check
  * and from the generic field-count check on the head fields — see
  * `decodePresenceTail` below.
+ *
+ * ## `salt`: a uniqueness field THE FOLD NEVER READS
+ *
+ * THE DEFECT IT EXISTS TO CLOSE. The node derives a reply's identity as
+ * `content_id = sha256(body)` and nothing else (src/rpc/methods.rs:2921-2923).
+ * Before this field existed, an eat claim's entire body was `v1|eat|cell|ms`,
+ * so **two swimmers biting the same bloom cell in the same millisecond
+ * produced the same `content_id`**. The node accepts both actions, silently
+ * drops the second content-store write while still returning success
+ * (methods.rs:3373-3375, :3482), and lets whichever author is indexed later
+ * overwrite the earlier one's metadata (src/storage/chain.rs:482-483). One
+ * player's bite disappears and the other is credited to the wrong fish —
+ * and, worse, the pending path reports the true actor while the finalized
+ * path reports the surviving metadata author (methods.rs:9548-9551 vs
+ * :9446), so the two clients disagree for the length of that window.
+ *
+ * WHAT IT IS. The first `SALT_HEX_CHARS` (16) characters of the author's own
+ * 32-byte ed25519 public key, in lowercase hex — 64 bits of the author's
+ * identity, carried verbatim. `saltFor` is the single derivation; both
+ * encoders call it and neither takes a salt directly, so an honest client
+ * cannot author a body salted with anything but its own key.
+ *
+ * WHY 16 HEX CHARACTERS (64 BITS), specifically:
+ *
+ *  - **Accidental cross-player collision is gone at any realistic scale.**
+ *    Two DIFFERENT swimmers collide only if their pubkey prefixes collide.
+ *    Birthday bound `n^2 / (2 * 16^16)` = `n^2 / 3.69e19`: at the design's
+ *    stated 25-swimmer ceiling that is `625 / 3.69e19 ~= 1.7e-17`, and even
+ *    at a million distinct identities ever to play it is `~2.7e-8`.
+ *  - **Deliberate grinding is infeasible too**, which a shorter prefix would
+ *    not achieve. Matching a chosen victim's prefix costs ~`2^63` keypair
+ *    generations. At 8 hex characters (32 bits) it would cost ~`2^31` — a
+ *    few CPU-hours — so 8 would defend against chance and not against an
+ *    opponent, and "impossible in practice" is the bar this field is for.
+ *  - **It costs 17 bytes a write** (the field plus its delimiter) on a body
+ *    that is otherwise ~35-50 bytes. PoW and mempool eviction are priced per
+ *    ACTION, not per byte (src/blocks/builder.rs:92), so this buys nothing
+ *    away from anyone: a full 25-swimmer shoal at the keep-alive cadence
+ *    spends `25 * 21 * 17 = 8_925` extra bytes per minute across the whole
+ *    space.
+ *
+ * WHAT IT DOES *NOT* DO, stated plainly rather than overclaimed. It does not
+ * authenticate anything. A hostile client can put ANY 16 hex characters in
+ * this field, including a victim's; the decoder checks the field's SHAPE and
+ * never compares it to `id`, and `decodeBody`'s `id` keeps coming from the
+ * reply envelope (`author_id`) exactly as before — see "Reject, never
+ * repair" and shoalRoom.ts's module header. So a determined attacker who can
+ * predict a victim's exact authoring millisecond AND cell can still author a
+ * byte-identical body deliberately. That was equally true before this field
+ * existed; what changes is that HONEST play can no longer collide by
+ * accident, which is the failure this closes. Pinned by the
+ * "salt disagreeing with the envelope author" case in shoalWire.test.ts.
+ *
+ * The same-swimmer case needs no separate argument: one swimmer's two bodies
+ * differ unless their `ms` is identical, and `ms` is the authoring instant a
+ * caller reads from its own clock exactly once per write (shoalEmit's
+ * `shouldEmit` now gates on `intent.t`, the very value that reaches the
+ * wire — there is no longer a second clock that could stamp two writes with
+ * one millisecond).
+ *
+ * THE FOLD NEVER READS IT. `salt` is validated and then discarded: it is not
+ * on `Presence`, not on `EatClaim`, and no engine rule consults it. That is
+ * deliberate — it adds no consensus surface beyond its own presence in the
+ * grammar, so it can never change who eats, who is swept, or what a
+ * checkpoint says. It is nonetheless CONSENSUS in the one sense that matters
+ * here: a client that omitted it would author bodies every other client
+ * rejects. `v1` is not bumped because `v1` has never been played.
  *
  * ## One timestamp, not two
  *
@@ -171,6 +238,45 @@ export const MAX_SAY = 240;
 /** Total addressable bloom cells — the real domain of an eat claim's `cell`. */
 const CELL_COUNT = BLOOM_COLS * BLOOM_ROWS; // 32 * 24 = 768
 
+/**
+ * Length of the `salt` field, in lowercase hex characters — 64 bits of the
+ * author's own public key. CONSENSUS: decode enforces it exactly, so two
+ * clients checking different lengths would accept different sets of writes.
+ * See the module header for the full length justification (birthday bound at
+ * shoal scale, grinding cost, byte cost).
+ */
+export const SALT_HEX_CHARS = 16;
+
+/** A 32-byte ed25519 public key as this codebase spells it everywhere: 64
+ *  lowercase hex characters (the exact form the node reports as a reply's
+ *  `author_id`, src/rpc/methods.rs:9446). */
+const PUBKEY_HEX_RE = /^[0-9a-f]{64}$/;
+
+/** The `salt` field's real domain: exactly `SALT_HEX_CHARS` lowercase hex. */
+const SALT_RE = new RegExp(`^[0-9a-f]{${SALT_HEX_CHARS}}$`);
+
+/**
+ * The salt an author's writes carry: the first `SALT_HEX_CHARS` characters of
+ * their public key hex. The ONLY derivation — `encodePresence`/`encodeEat`
+ * both call it and neither accepts a caller-supplied salt, so an honest
+ * client cannot author a body salted with someone else's key.
+ *
+ * Throws on anything that is not a 64-character lowercase-hex public key: the
+ * usual caller bug here is handing over a bech32m ADDRESS (`sw1…`) instead of
+ * the pubkey, which would silently produce a salt from address characters and
+ * then fail `decodeBody`'s shape check on every peer.
+ */
+export function saltFor(authorIdHex: string): string {
+  if (!PUBKEY_HEX_RE.test(authorIdHex)) {
+    throw new RangeError(
+      `saltFor: ${JSON.stringify(authorIdHex)} is not a 64-character lowercase-hex ed25519 ` +
+      'public key. Pass the same value the node reports as a reply\'s author_id (SendCtx.authorIdHex), ' +
+      'not a bech32m address.',
+    );
+  }
+  return authorIdHex.slice(0, SALT_HEX_CHARS);
+}
+
 // ---------------------------------------------------------------------------
 // Parsing helpers
 // ---------------------------------------------------------------------------
@@ -229,15 +335,21 @@ function takeFields(s: string, n: number): { fields: string[]; rest: string } | 
 // ---------------------------------------------------------------------------
 
 /**
- * Encode a presence write. Throws `RangeError` if `vec` or `say` is outside
- * its real domain — this is a defensive check against a caller bug (an
- * honest client accidentally trying to author something the format cannot
- * carry), not the hostile-input boundary. That boundary is `decodeBody`,
- * which every peer runs against text nobody here validated; see the module
- * header's "reject, never repair".
+ * Encode a presence write. Throws `RangeError` if `vec`, `authorIdHex` or
+ * `say` is outside its real domain — this is a defensive check against a
+ * caller bug (an honest client accidentally trying to author something the
+ * format cannot carry), not the hostile-input boundary. That boundary is
+ * `decodeBody`, which every peer runs against text nobody here validated;
+ * see the module header's "reject, never repair".
+ *
+ * `authorIdHex` is the author's own 64-character public key hex. It is NOT
+ * written to the wire whole — only `saltFor`'s 16-character prefix is, as the
+ * `salt` field, whose entire job is to keep two different swimmers from ever
+ * hashing to the same `content_id`. See the module header.
  */
-export function encodePresence(vec: Vec, say?: string): string {
+export function encodePresence(vec: Vec, authorIdHex: string, say?: string): string {
   const s = say ?? '';
+  const salt = saltFor(authorIdHex);
   if (!Number.isSafeInteger(vec.x) || vec.x < 0 || vec.x > WORLD_W) {
     throw new RangeError(`encodePresence: x ${vec.x} outside [0, ${WORLD_W}]`);
   }
@@ -259,7 +371,7 @@ export function encodePresence(vec: Vec, say?: string): string {
   if (s.length > MAX_SAY) {
     throw new RangeError(`encodePresence: say is ${s.length} chars, over MAX_SAY (${MAX_SAY})`);
   }
-  return [WIRE_VERSION, 'presence', vec.x, vec.y, vec.heading, vec.speed, vec.t, s].join(DELIM);
+  return [WIRE_VERSION, 'presence', vec.x, vec.y, vec.heading, vec.speed, vec.t, salt, s].join(DELIM);
 }
 
 /**
@@ -268,15 +380,22 @@ export function encodePresence(vec: Vec, say?: string): string {
  * signature did not: it is the instant the fold judges the bite against
  * (`canEat`, via `reckon(fish.vec, claim.ms)`), it must travel somewhere,
  * and nothing in this plan supplies it except the wire.
+ *
+ * `authorIdHex` supplies the `salt` field via `saltFor`. THIS IS THE CLAIM
+ * THAT MOST NEEDED IT: before the salt existed an eat body was exactly
+ * `v1|eat|cell|ms`, so two swimmers biting one cell in one millisecond
+ * hashed to one `content_id` and the node kept only one of them. See the
+ * module header.
  */
-export function encodeEat(cell: number, ms: number): string {
+export function encodeEat(cell: number, ms: number, authorIdHex: string): string {
+  const salt = saltFor(authorIdHex);
   if (!Number.isSafeInteger(cell) || cell < 0 || cell >= CELL_COUNT) {
     throw new RangeError(`encodeEat: cell ${cell} outside [0, ${CELL_COUNT})`);
   }
   if (!Number.isSafeInteger(ms) || ms < 0) {
     throw new RangeError(`encodeEat: ms ${ms} is negative`);
   }
-  return [WIRE_VERSION, 'eat', cell, ms].join(DELIM);
+  return [WIRE_VERSION, 'eat', cell, ms, salt].join(DELIM);
 }
 
 // ---------------------------------------------------------------------------
@@ -307,10 +426,19 @@ export function decodeBody(body: string, id: string, hash: string): LogEntry | n
 }
 
 function decodePresenceTail(tail: string, id: string, hash: string): Presence | null {
-  const parsed = takeFields(tail, 5); // x, y, heading, speed, ms — say is everything left over
+  // x, y, heading, speed, ms, salt — say is everything left over
+  const parsed = takeFields(tail, 6);
   if (parsed === null) return null; // too few fields
-  const [xs, ys, hs, ss, ms] = parsed.fields;
+  const [xs, ys, hs, ss, ms, salt] = parsed.fields;
   const sayRaw = parsed.rest;
+
+  // `salt` is checked for SHAPE and never for VALUE. It is deliberately NOT
+  // compared against `id`: a body's own claims about its author are exactly
+  // what this decoder must not trust (see the module header and
+  // shoalRoom.ts's), and `id` already comes from the reply envelope. Its only
+  // job is to perturb `sha256(body)` so two different swimmers cannot hash to
+  // one content_id; a mismatching salt is a valid — if pointless — body.
+  if (!SALT_RE.test(salt)) return null;
 
   const x = parseIntField(xs);
   const y = parseIntField(ys);
@@ -358,12 +486,14 @@ function decodePresenceTail(tail: string, id: string, hash: string): Presence | 
 
 function decodeEatTail(tail: string, id: string, hash: string): EatClaim | null {
   const parts = tail.split(DELIM);
-  if (parts.length !== 2) return null; // too few or too many fields (cell, ms)
-  const [cs, ms] = parts;
+  if (parts.length !== 3) return null; // too few or too many fields (cell, ms, salt)
+  const [cs, ms, salt] = parts;
   const cell = parseIntField(cs);
   const msVal = parseIntField(ms);
   if (cell === null || msVal === null) return null;
   if (cell < 0 || cell >= CELL_COUNT) return null;
   if (msVal < 0) return null;
+  // Shape only, never compared against `id` — see decodePresenceTail.
+  if (!SALT_RE.test(salt)) return null;
   return { kind: 'eat', id, cell, ms: msVal, hash };
 }

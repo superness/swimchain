@@ -88,13 +88,26 @@
  * keys on it, the cooldown is measured from it) and this module may not read
  * a clock to invent one. See shoalWire.ts's module header for the full
  * argument. `sendEat(ctx, cell, ms)` supplies it.
+ *
+ * ## The body's `salt` comes from `ctx.authorIdHex`, not from a parameter
+ *
+ * Every body this module writes carries a `salt` field — the first 16
+ * characters of the author's public key hex — so that two swimmers cannot
+ * author byte-identical bodies and collide on `content_id = sha256(body)`
+ * (see shoalWire.ts's module header for the whole defect and the length
+ * justification). `sendPresence`/`sendEat` pass `ctx.authorIdHex` straight
+ * into `encodePresence`/`encodeEat`, which derive the salt themselves; there
+ * is no salt parameter anywhere, so a caller cannot author a body salted with
+ * anyone else's key by accident. The SIGNATURE still binds the same body via
+ * `content_hash = sha256(body)`, so the salt is inside everything already
+ * signed and mined — it is not a second, unauthenticated channel.
  */
 
 import { argon2id, createSHA256 } from 'hash-wasm';
 
 import type { Vec } from './shoalTypes';
 import { encodeEat, encodePresence } from './shoalWire';
-import { rpcCall, type RpcAuth } from './shoalRpc';
+import { assertWireSpaceId, rpcCall, type RpcAuth } from './shoalRpc';
 
 // ---------------------------------------------------------------------------
 // Action PoW — byte layouts verified against src/crypto/action_pow.rs
@@ -448,50 +461,13 @@ export async function mineAndSignAction(
 // The room a client writes into
 // ---------------------------------------------------------------------------
 
-/** bech32m charset (BIP-173/350). */
-const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
-
 /**
- * Is `spaceId` in the WIRE form the node speaks — bech32m `sp1…`?
- *
- * This looks like a nicety and is not. A space id has two circulating forms:
- * the bech32m `sp1…` string every RPC and every event emits
- * (`encode_space_id`, src/rpc/methods.rs:186; `encode_space_id_bech32`,
- * src/node/router/router.rs:8834), and the raw 32-char hex some callers keep
- * internally. `decode_space_id` (methods.rs:136) accepts BOTH, so a hex space
- * id sails through every request a client makes and looks completely healthy.
- *
- * What it does NOT sail through is `shoalLive.ts`. That module filters
- * `content_new` events with a plain string `===` against the caller's
- * `opts.spaceId`, and the event's own `space_id` is always bech32m. Pass hex
- * and the socket still connects, still updates its silence clock, still
- * demotes on real disconnects — and never once yields a refetch from an
- * event, silently degrading the whole live channel to tick-driven polling.
- * Correct but slow, never wrong, and invisible to any unit test.
- *
- * `sendPresence`/`sendEat` therefore reject a non-wire-form `ctx.spaceId` at
- * the FIRST write, loudly, even though `submit_reply` itself never sends the
- * field (a reply inherits its parent's space server-side, verified against
- * `SubmitReplyParams` — there is no space field on it at all). `ctx.spaceId`
- * exists precisely so the same string a client hands `startLive` is
- * format-checked somewhere, and the write path is the earliest place a
- * client is guaranteed to touch it.
- *
- * The form is exact, not heuristic: 16 payload bytes plus a version byte is
- * 17 bytes -> 28 data characters -> 34 characters after `sp1` including the
- * 6-character checksum, so a well-formed space id is always exactly 37
- * characters. (The checksum itself is deliberately NOT verified here — that
- * would be re-implementing bech32m for a check whose entire job is to
- * separate `sp1…` from `a06a93a6…`, and the node validates the real thing.)
+ * Re-exported from `shoalRpc.ts`, which is where these now live so that
+ * `shoalLive.ts` — the ONE module a hex space id actually breaks — can reach
+ * them without importing the write path. Kept exported here because callers
+ * (and the regtest smoke) already import them from this module.
  */
-export function isWireSpaceId(spaceId: string): boolean {
-  if (spaceId.length !== 37) return false;
-  if (!spaceId.startsWith('sp1')) return false;
-  for (let i = 3; i < spaceId.length; i++) {
-    if (!BECH32_CHARSET.includes(spaceId[i])) return false;
-  }
-  return true;
-}
+export { isWireSpaceId, assertWireSpaceId } from './shoalRpc';
 
 /** Everything one client needs to write a move into one room. */
 export interface SendCtx {
@@ -529,14 +505,7 @@ interface SubmitReplyResult {
  * write in the next fetched log.
  */
 async function submitMove(ctx: SendCtx, body: string, ms: number): Promise<string> {
-  if (!isWireSpaceId(ctx.spaceId)) {
-    throw new RangeError(
-      `shoalSend: ctx.spaceId ${JSON.stringify(ctx.spaceId)} is not the node's bech32m wire ` +
-      'form (sp1… , 37 chars). shoalLive.ts compares content_new events against this exact ' +
-      'string, so a hex space id would silently disable the live channel. Use the space_id ' +
-      'returned by create_space / list_spaces verbatim.',
-    );
-  }
+  assertWireSpaceId(ctx.spaceId, 'shoalSend: ctx.spaceId');
 
   const profile = ctx.powProfile ?? (await powProfileFor(ctx.auth));
 
@@ -570,7 +539,7 @@ async function submitMove(ctx: SendCtx, body: string, ms: number): Promise<strin
  * so a caller bug costs nothing but the exception.
  */
 export async function sendPresence(ctx: SendCtx, vec: Vec, say?: string): Promise<string> {
-  return submitMove(ctx, encodePresence(vec, say), vec.t);
+  return submitMove(ctx, encodePresence(vec, ctx.authorIdHex, say), vec.t);
 }
 
 /**
@@ -581,5 +550,5 @@ export async function sendPresence(ctx: SendCtx, vec: Vec, say?: string): Promis
  * and nothing in `src/lib/` may read a clock. See the module header.
  */
 export async function sendEat(ctx: SendCtx, cell: number, ms: number): Promise<string> {
-  return submitMove(ctx, encodeEat(cell, ms), ms);
+  return submitMove(ctx, encodeEat(cell, ms, ctx.authorIdHex), ms);
 }
