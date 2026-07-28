@@ -226,6 +226,34 @@ Related, and worth stating in the spec: at the emitter's floor gap, **~10 contin
 turning swimmers** already saturate the per-space budget for a block window — not 25. The
 15–25 ceiling is load-dependent, not hard.
 
+**Corrected 2026-07-28 (final whole-branch review): 10 is the figure for a shoal that never
+eats.** The derivation above counted presence writes only, and the eat verb only became
+reachable on plan 2c's branch — before item 10's claimant-exemption rule a swimmer that swam
+to a bloom was credited nothing, so nobody sent claims. Per swimmer, per 600 s block window:
+
+| what the swimmer is doing | writes per window |
+|---|---|
+| idle (keep-alives, `MAX_EMIT_GAP_MS` 8_000) | 600_000 / 8_000 = **75** |
+| turning at the floor (`MIN_EMIT_GAP_MS` 3_000) | 600_000 / 3_000 = **200** |
+| feeding (`EAT_COOLDOWN_MS` 2_500) | 600_000 / 2_500 = **240** |
+
+So against `MAX_ACTIONS_PER_SPACE` = 2_000: **10** turning swimmers saturate it, **6** that
+idle and feed, **4** that turn and feed. Feeding is the largest single contributor, and it is
+the one rate nothing governs — `shouldEmit` is never consulted for an eat claim. App.tsx asks
+`canClaimEat`, which mirrors the FOLD's cooldown so a doomed claim is never mined; that is a
+correctness mirror, not a budget policy.
+
+The old sum in `shoalEmit.ts` and `shoalEmit.test.ts` concluded that a 25-swimmer idle shoal
+fits `25 × (600_000 / 8_000) = 1_875 ≤ 2_000` "with margin left over for eat-claims sharing
+the same budget." The leftover is **125 actions for the whole shoal**, and a *single* feeder
+emits 240 — `1_875 + 240 = 2_115 > 2_000`. Both files now carry the corrected arithmetic as
+real assertions.
+
+**So eat needs its own emit-side floor, and it does not have one.** Not added on this branch:
+it is a policy change with a play-feel cost (a bite refused for a reason the fold would have
+allowed) and it belongs with the differential-PoW decision above rather than being slipped in
+alongside a comment fix.
+
 ### 5. The body's `ms` has no sanity bound
 
 A hostile `ms` is checked against nothing the node knows — not `created_at`, not the action
