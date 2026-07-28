@@ -204,9 +204,42 @@ h1, h2, h3, p { margin: 0; }
 }
 .sound-toggle:hover { color: #f2e3c8; border-color: rgba(210, 184, 144, .6); }
 .sound-toggle[aria-pressed="false"] { opacity: .65; }
-/* auto-dip sits to the LEFT of the sound switch (both are absolute in the
-   hood's top-right corner and would otherwise stack on each other) */
-.autodip-toggle { right: calc(clamp(10px, 1.4vw, 22px) + 64px); }
+/* `.autodip-toggle` lived here for a hood control that NOTHING EVER
+   RENDERED — dead style with a comment describing a layout that did not
+   exist. The Sous Chef's switch now lives on the queso angel's stall, where
+   he was bought; see `.stall-switch` below. */
+
+/* SWITCHES FOR JARS YOU ALREADY OWN. A bought jar leaves the shelf, so the
+   stall is the only place a player thinks to look for it again. Reads as a
+   line on the vendor's counter, not a settings row. */
+.stall-switches { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.stall-switch {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px; border-radius: 10px; text-align: left;
+  background: rgba(20, 14, 9, .85);
+  border: 1px solid rgba(236, 228, 214, .18);
+  transition: border-color .2s, background .2s;
+}
+.stall-switch:hover { border-color: rgba(236, 228, 214, .42); }
+.switch-copy { flex: 1; min-width: 0; }
+.switch-copy strong {
+  display: block; font-family: var(--chalk); font-size: 12px;
+  letter-spacing: .04em; color: #f2ece0;
+}
+.switch-copy em {
+  display: block; font-style: normal; font-family: var(--chalk);
+  font-size: 10.5px; line-height: 1.35; color: #b9ab93;
+}
+.switch-state {
+  flex: none; font-family: var(--chalk); font-size: 10px; letter-spacing: .12em;
+  padding: 4px 10px; border-radius: 999px;
+  color: #b9ab93; background: rgba(0, 0, 0, .35);
+  border: 1px solid rgba(185, 171, 147, .3);
+}
+.stall-switch.on .switch-state {
+  color: #2a1a04; background: linear-gradient(180deg, #ffd88e, #e79f30);
+  border-color: transparent;
+}
 
 .stage {
   position: relative; z-index: 2; min-height: 0;

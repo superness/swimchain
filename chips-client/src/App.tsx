@@ -49,6 +49,10 @@ import { compact } from './lib/format';
 import { sfx } from './lib/sound';
 
 const NAME_KEY = 'chips.cookname.v1';
+/** Whether the Sous Chef is on duty. A client-side PREFERENCE, never a fold
+ *  fact — the chain records that the jar was bought and nothing else, so this
+ *  can flip freely without re-scoring a thing. */
+const SOUS_KEY = 'chips.souschef.v1';
 /** The Sous Chef upgrade (catalog key 'autodip') dips GOLDEN chips for its
  *  owner — automation is bought, never default (operator decision). */
 /** Module-scope so the expiry tick below passes a referentially stable empty
@@ -170,6 +174,11 @@ export function App() {
    *  by nothing; a stale value is harmless because the key only ever replays
    *  an animation, and the next refusal supersedes it. */
   const [wingNope, setWingNope] = useState<{ index: number; at: number } | null>(null);
+  /** Is the Sous Chef on duty? Defaults ON, so nobody who bought him loses
+   *  him to this change. */
+  const [sousOn, setSousOn] = useState(() => {
+    try { return localStorage.getItem(SOUS_KEY) !== 'off'; } catch { return true; }
+  });
   /** Which fryer is overcooking — client-only, never persisted. */
   const [overcookAt, setOvercookAt] = useState<number | null>(null);
   const overcookRef = useRef(overcookAt);
@@ -1132,22 +1141,30 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [feeding, sheetId]);
 
-  /* ── the Sous Chef: bought automation, never default ──────────────────── */
-  // Owning 'autodip' dips GOLDEN (terminal) chips automatically — a golden
-  // chip's multi can no longer grow, so holding it earns only pot ticks and
-  // the Sous Chef cashing it is pure upside for an idle player. `dip()`
-  // returning null on an empty pot guards the re-entry case.
-  // He stands down entirely while a vendor is armed (the angel may be
-  // waiting for exactly the golden he would take) and he REFUSES to touch a
-  // fryer with a rat on it — house rule.
+  /* ── the Sous Chef: bought automation, never default, now switchable ──── */
+  // Owning 'autodip' dips GOLDEN chips automatically. The original rationale
+  // — "a golden chip's multi can no longer grow, so cashing it is pure
+  // upside" — WAS true and STOPPED BEING TRUE the day The Long Fry shipped:
+  // `isGolden` is five crackles, the raised ceiling is six, so for anyone
+  // holding both jars the Sous Chef cashes out at x32 milliseconds before the
+  // x64 they paid 1.2B for could ever land. He does not steal the chip, but
+  // he does quietly cancel the deeper upgrade (operator: "sous chef is
+  // probably just taking them from me").
+  //
+  // Rather than have one jar silently veto another, he gets an OFF switch, on
+  // the queso angel's stall where he was bought. `dip()` returning null on an
+  // empty pot guards the re-entry case. He still stands down entirely while a
+  // vendor is armed (the angel may be waiting for exactly the golden he would
+  // take) and still REFUSES to touch a fryer with a rat on it — house rule.
   useEffect(() => {
+    if (!sousOn) return;
     if (!state?.owned.has('autodip') || !host || !me || !tableId || feeding) return;
     for (let i = 0; i < chips.length; i++) {
       if (ratRef.current.latched === i) continue;
       if (chips[i] && isGolden(chips[i]) && chips[i].pot > 0) onDip(i);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chips, state, host, me, tableId, feeding]);
+  }, [chips, state, host, me, tableId, feeding, sousOn]);
 
   // The flame puts itself out when the chip tops out — nothing left to hurry,
   // and a lit fryer at the ceiling is burning the pot for nothing. With The
@@ -1653,6 +1670,26 @@ export function App() {
           armedKey={feeding?.jarKey ?? null}
           onJar={onJar}
           onClose={() => setSheetId(null)}
+          switches={sheetVendor.id === 'angel' && state.owned.has('autodip') ? [{
+            key: 'autodip',
+            label: 'Sous Chef',
+            // The hint names the actual conflict when — and only when — the
+            // player owns the jar it conflicts with. Telling everyone else
+            // about a x64 they cannot reach yet would just be noise.
+            hint: state.owned.has('longfry')
+              ? 'dips your golden chips at ×32 — off is how a chip lives to ×64'
+              : 'dips your golden chips for you, the moment they turn',
+            on: sousOn,
+            onToggle: () => setSousOn((v) => {
+              const next = !v;
+              try { localStorage.setItem(SOUS_KEY, next ? 'on' : 'off'); } catch { /* private mode */ }
+              sfx.pop();
+              say('angel', next
+                ? 'he returns to the pass. nothing is unwitnessed.'
+                : 'he sets down the tongs. the waiting is yours again, child.', 6000);
+              return next;
+            }),
+          }] : undefined}
         />
       )}
       {/* THE COMMITTEE SAYS WHAT IT IS DOING AT EVERY STAGE. It used to say

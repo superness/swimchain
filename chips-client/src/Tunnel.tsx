@@ -633,7 +633,7 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
  * shelf renders, so the two entry points can never drift; arming feed mode
  * closes the sheet so the fryers are visible for the feeding.
  */
-export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose }: {
+export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches }: {
   vendor: CrewMember;
   jars: Upgrade[];
   owned: Set<string>;
@@ -644,6 +644,13 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
   armedKey: string | null;
   onJar: (key: string) => void;
   onClose: () => void;
+  /** SWITCHES FOR JARS YOU ALREADY OWN. A bought jar leaves the shelf
+   *  (`openJarsOf` skips owned keys), so before this there was nowhere in the
+   *  game to reach an owned upgrade again — the Sous Chef ran forever with no
+   *  off. The stall you bought it from is the one place a player will think
+   *  to look for it. App decides which vendor gets which; an empty list
+   *  renders nothing. */
+  switches?: { key: string; label: string; hint: string; on: boolean; onToggle: () => void }[];
 }) {
   const status = stallStatus(vendor.id, owned, dipIndex);
   return (
@@ -683,6 +690,27 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
               : status.kind === 'locked' ? `nothing for you yet — bring ${status.needs.label} first.`
               : ''}
           </p>
+        )}
+        {switches && switches.length > 0 && (
+          <ul className="stall-switches">
+            {switches.map((sw) => (
+              <li key={sw.key}>
+                <button
+                  type="button"
+                  className={`stall-switch${sw.on ? ' on' : ''}`}
+                  role="switch"
+                  aria-checked={sw.on}
+                  onClick={sw.onToggle}
+                >
+                  <span className="switch-copy">
+                    <strong>{sw.label}</strong>
+                    <em>{sw.hint}</em>
+                  </span>
+                  <span className="switch-state" aria-hidden="true">{sw.on ? 'ON' : 'OFF'}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
         <button type="button" className="sheet-close" onClick={onClose}>done</button>
       </div>
