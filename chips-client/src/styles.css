@@ -618,11 +618,30 @@ h1, h2, h3, p { margin: 0; }
 
 /* the multiplier ladder: the summit must be VISIBLE to make holding a
    gamble — x2..x16 rungs, x32 topped in gold */
-.ladder { display: flex; justify-content: center; gap: 4px; margin-top: 3px; }
+/* THE LADDER MUST FIT ITS PLATE. It was a no-wrap flex row, so its rungs
+   overflowed their own box and then the slot: measured at 512px wide, the
+   x2 and x64 rungs each sat 3px OUTSIDE the fryer's column (operator: "the
+   x2 and x64 cards (left)(right) ... extending out past the width of their
+   containers"). The Long Fry's sixth rung is what tipped it over — five fit,
+   six did not, and #175 constrained the PLATE without noticing its contents
+   still spilled.
+
+   `flex-wrap` is the structural half: a rung that cannot fit drops to a
+   second line instead of hanging off the side, so a seventh rung could never
+   reintroduce this. The tighter mobile sizing below is what keeps six on one
+   line where there is room for it. */
+.ladder {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 4px; margin-top: 3px; min-width: 0; max-width: 100%;
+}
 .ladder .rung {
-  font-style: normal; font-family: var(--chalk); font-size: .78em;
-  padding: 0 5px; border-radius: 4px; color: #6f6152;
+  /* Sized so SIX rungs hold one line — five fit comfortably at .78em/5px,
+     six did not, and the wrap that saves them from spilling should be a
+     safety net rather than the normal look. */
+  font-style: normal; font-family: var(--chalk); font-size: .7em;
+  padding: 0 3.5px; border-radius: 4px; color: #6f6152;
   border: 1px solid rgba(190, 164, 124, .25);
+  white-space: nowrap;
 }
 .ladder .rung.lit { color: #ffd98e; border-color: rgba(255, 210, 150, .6); background: rgba(60, 40, 18, .8); }
 .ladder .rung.top { border-color: rgba(255, 220, 140, .45); }
@@ -1161,6 +1180,15 @@ h1, h2, h3, p { margin: 0; }
   .rack-2 .basket-slot, .rack-3 .basket-slot, .rack-4 .basket-slot, .basket-slot {
     width: min(clamp(112px, 30vw, 170px), 22vh);
   }
+  /* Tighter again for a phone. MEASURED across a viewport matrix: six rungs
+     hold one line while the slot is >=154px and wrap to two below that (a
+     short viewport narrows the slot through `.basket-slot`'s 22vh cap, down
+     to ~110px in landscape). NO SPILL at any size tested, 390x700 through
+     1920x1080 — the wrap is what guarantees that, and two legible lines beat
+     six unreadable pills crammed into 110px. */
+  .ladder { gap: 2.5px; }
+  .ladder .rung { padding: 0 3px; }
+
   /* Fryers need air between them on a phone (operator). The desktop gap
      bottoms out at 10px here because 1.6vw is tiny at this width — which is
      the least room exactly where the plates are widest relative to their
