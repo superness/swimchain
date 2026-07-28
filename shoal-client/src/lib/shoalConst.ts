@@ -151,14 +151,20 @@ export const EPOCH_MS = 3_600_000;
  * size. What survives that into the epoch is only `bitesTaken`/`bloomSinceMs`
  * for the affected cells — the size, cooldown and void-ledger consequences
  * are overwritten by the checkpoint at the origin (see foldShoal) — BUT ONLY
- * FOR A SEEDED FOLD. `opts.seed` in `foldShoal` is OPTIONAL, and a seedless
- * call is accepted silently (no error, no warning), so a caller that folds
- * without a seed gets no such overwrite and the +355 stands as real,
- * uncorrected size. It is still bounded, and every client computes it
- * identically, so it is not a divergence between honest clients — but for an
- * unseeded fold it is a real artifact, not a small inaccuracy. The
- * alternative — an unbounded replay — is the ~69 h lifetime ceiling spec 3.9
- * point 2 exists to remove.
+ * FOR A SEEDED FOLD, AND WITHIN ONE ONLY FOR THE IDS THE CHECKPOINT NAMES.
+ * The seed is a table of swimmers, not a reset of the world: `foldShoal`
+ * overwrites the size of every id the checkpoint carries and touches nothing
+ * else. A swimmer whose FIRST presence in this client's log falls inside the
+ * warm-up window — a joiner, a returning player, anyone the previous epoch's
+ * boundary did not see — is not in that table, so the whole of its warm-up
+ * gain stands uncorrected even on a properly seeded fold. Bounded, and every
+ * client computes it identically, so it is not a divergence between honest
+ * clients; it is not the "the checkpoint fixes this" the earlier wording
+ * implied either. `opts.seed` is also OPTIONAL and a seedless call is
+ * accepted silently (no error, no warning), so a caller that folds without
+ * one gets no overwrite at all and the +355 stands whole. The alternative —
+ * an unbounded replay — is the ~69 h lifetime ceiling spec 3.9 point 2 exists
+ * to remove.
  */
 export const WARMUP_MS = PRESENCE_TTL_MS; // 90_000
 

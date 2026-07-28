@@ -478,7 +478,17 @@ export function App() {
 
       // --- 5. Eating. The claim is judged by the FOLD's own `canEat` against
       // the fold's own vector for this swimmer — never a display-side guess —
-      // so the cue on screen and the credit the world gives cannot disagree.
+      // so the cue on screen and the credit the world gives are computed from
+      // the same rule and the same numbers.
+      //
+      // NOT "cannot disagree", which is one tick too strong. `canEat` is asked
+      // here at `authorMs` against `state`, the world folded to `wall`; the
+      // real claim is judged by `foldTick` at the tick covering `authorMs`,
+      // which is one tick LATER and has had another `markVisits` pass run over
+      // it. Another fish crossing into BLOOM_VISIT_R in that window, or the
+      // bloom's sixth bite landing from someone else, flips the answer between
+      // the cue and the credit. The window is exactly TICK_MS, the cue is the
+      // best prediction available, and it is honest about being a prediction.
       // Only the near field is knowable: see the report on why there is no map
       // of where food is.
       let bite: { x: number; y: number } | null = null;

@@ -28,10 +28,25 @@
  *    faked: those sizes are adopted by `foldShoal` at the epoch origin and
  *    then decay under hunger like everyone else's.
  *
- * Both are temporary in the same way: Task 5 replaces the scripted writers
- * with the player's own input, and Task 7 replaces them with a second real
- * client. The seam is deliberately narrow — a `Sea` hands back a `ShoalState`
- * and nothing else.
+ * WHAT REPLACED THEM, corrected — the earlier wording ("Task 5 replaces the
+ * scripted writers with the player's own input, and Task 7 replaces them with
+ * a second real client") is no longer true, and reading it as a plan for the
+ * future would be reading it backwards. Both tasks have landed and NEITHER
+ * replaced these seas:
+ *
+ *  - Task 5 added the player's own fish to `livelySea` alongside the scripted
+ *    sixteen. `publish` below is the seam it uses, and the scripted writers
+ *    are still there — they are what makes the sea a shoal.
+ *  - Task 7 added a THIRD sea, `chainSea.ts`, backed by a real room on a real
+ *    node. It is selected only by the `?rpc=` dev parameters and is gated on
+ *    `import.meta.env.DEV`, so it is not what a shipped build shows. These two
+ *    are still the only seas a player can reach.
+ *
+ * So this file is not scaffolding awaiting demolition; it is the offline sea,
+ * and it stays until there is a mainnet room to point at (open item 7). The
+ * seam is deliberately narrow — a `Sea` hands back a `ShoalState` and nothing
+ * else — which is exactly why `chainSea` could be added beside it rather than
+ * in place of it.
  */
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
 import { epochEndMs, epochOf, epochStartMs } from '../lib/epoch';
@@ -318,14 +333,17 @@ export function livelySea(wallStartMs: number): Sea {
      * what a local write does before gossip carries it anywhere: the node's
      * `get_replies` merges the mempool in, so a client sees its own write back
      * immediately and folds it the same way every other client eventually
-     * will. The real version is one substitution —
+     * will.
      *
-     *   publish: (vec, say) => void sendPresence(ctx, vec, say)
-     *
-     * — and it is not made HERE because nothing in this plan establishes a
-     * room to write into: the only place a Shoal space and room post are ever
-     * created is `scripts/regtest-smoke.ts`, and Task 7's two-client smoke is
-     * where the shell gets one. See the task report.
+     * THE REAL VERSION EXISTS AND IS NOT A SUBSTITUTION FOR THIS ONE. This
+     * comment used to say the chain writer was one line away and "not made
+     * HERE because nothing in this plan establishes a room to write into".
+     * Task 7 established one: `chainSea.ts` is a third `Sea` with
+     * `publish: (vec, say) => void sendPresence(ctx, vec, say)` behind an
+     * optimistic pending log, selected by the `?rpc=` dev parameters. It sits
+     * BESIDE this sea rather than replacing it — a player with no room to
+     * join still needs a sea to be in — so this local-append `publish` is the
+     * offline one on purpose, not a placeholder.
      *
      * `vec.t` is already `wall + TICK_MS` (App.tsx's authoring clock), which
      * is what keeps the entry strictly ahead of the last folded tick and off

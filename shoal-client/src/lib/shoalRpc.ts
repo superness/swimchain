@@ -19,18 +19,28 @@
  * (unlike trench-client/ui's, which lists `DOM`/`DOM.Iterable`), so referencing
  * `window` directly does not type-check here at all, DOM guard or not.
  *
- * Two adaptations from the reference, both because shoal-client has no Vite build
- * (no `vite.config`, no `vite` in package.json, no `import.meta.env` typings):
- *   - The env-var fallback step reads `process.env.SHOAL_RPC_ENDPOINT` instead of
- *     `import.meta.env.VITE_RPC_ENDPOINT`. `process` is real under Node/tsx (where
- *     this fallback actually gets exercised today) and is guarded with `typeof
- *     process !== 'undefined'` for a hypothetical future browser build the way the
- *     reference guards `window`.
+ * Two adaptations from the reference, both written when shoal-client had no Vite
+ * build. **IT HAS ONE NOW** — `vite.config.ts` and `vite` in package.json both exist
+ * (Task 1 added them for the Tauri shell), and `tsconfig.ui.json` lists `vite/client`,
+ * so `import.meta.env` is typed and real for anything under `src/ui/`. What follows is
+ * therefore recorded as history plus one live consequence, not as a description of the
+ * project:
+ *   - The env-var step reads `process.env.SHOAL_RPC_ENDPOINT` instead of
+ *     `import.meta.env.VITE_RPC_ENDPOINT`. `process` is real under Node/tsx and is
+ *     guarded with `typeof process !== 'undefined'`. **THE LIVE CONSEQUENCE: that
+ *     override is dead in the browser and in the Tauri webview.** There is no
+ *     `process` there and this module is deliberately Vite-free (it is imported by
+ *     plain-`tsx` scripts, which `import.meta.env` would break), so `SHOAL_RPC_ENDPOINT`
+ *     works ONLY under Node — the smoke scripts and the harness. It is not a way to
+ *     point a shipped shell at another node, and nothing should document it as one.
+ *     Giving the browser an override means a `VITE_`-prefixed constant read in
+ *     `src/ui/`, not here.
  *   - `tauriConfig` skips the reference's dynamic-`import('@tauri-apps/api/core')`
  *     workaround — that dance exists solely to dodge a Vite bare-specifier bundling
- *     trap (see the reference's own doc comment); with no Vite in this project there
- *     is nothing to dodge, so this goes straight to the `window.__TAURI__.core.invoke`
- *     global Tauri v2 injects.
+ *     trap (see the reference's own doc comment). This module imports nothing from
+ *     `@tauri-apps/api` at all, so there is still nothing to dodge, and it goes
+ *     straight to the `window.__TAURI__.core.invoke` global Tauri v2 injects (which is
+ *     why `app.withGlobalTauri` must stay `true`).
  */
 
 /** Where the node is and how to authenticate to it. `authHeader`, when present, is a

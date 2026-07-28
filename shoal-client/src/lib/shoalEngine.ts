@@ -287,12 +287,27 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
       // The stamp is attributed to the CLAIMANT, which is both honest (it is
       // the fish that was there) and sufficient: the reset below runs
       // isBloomReady with NO exceptId, so it sees this stamp and holds the
-      // cell spent for the full BLOOM_READY_MS even if the claimant is the
-      // only fish that has ever been near it. A claimant-exempt re-claim
-      // inside that window is separately impossible — bitesLeft is 0 until
-      // the reset clears the count — so attributing it to the claimant and
-      // attributing it to nobody are behaviourally identical, and this way
-      // needs no reserved id in the consensus rules.
+      // cell spent even if the claimant is the only fish that has ever been
+      // near it. A claimant-exempt re-claim inside that window is separately
+      // impossible — bitesLeft is 0 until the reset clears the count — so
+      // attributing it to the claimant and attributing it to nobody are
+      // behaviourally identical, and this way needs no reserved id in the
+      // consensus rules.
+      //
+      // "FOR THE FULL BLOOM_READY_MS" IS ONLY TRUE WHEN `e.ms` IS ABOUT `t`,
+      // which is the ordinary case and not the only one. The stamp carries the
+      // CLAIM's instant, not this tick's, and `isBloomReady` measures from the
+      // stamp — so a BACK-DATED claim (a late gossip delivery, or the bounded
+      // replay in shoalLoop section 2 re-folding one) writes a stamp already
+      // `t - e.ms` old, and the cell is held for `BLOOM_READY_MS - (t - e.ms)`
+      // rather than the full window. A claim more than BLOOM_READY_MS behind
+      // the tick that judges it holds the cell for no time at all. That is
+      // consistent — every client folding the same entry computes the same
+      // stamp, so it is not a divergence — and it is the correct reading:
+      // fallowness is measured from when the fish was there, not from when we
+      // heard about it. Only the "full window" phrasing was wrong. Bounding it
+      // is open item 5's `ms` sanity rule, a consensus change with its own
+      // design.
       if (count >= BLOOM_BITES) {
         state.bloomSinceMs.delete(e.cell);
         stampVisit(state.lastVisit, e.cell, e.id, e.ms);

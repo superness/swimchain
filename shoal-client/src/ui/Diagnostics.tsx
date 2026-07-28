@@ -65,8 +65,11 @@ export function Diagnostics() {
   const [handoff, setHandoff] = useState<string | null>(null);
 
   // `resolveAuth` is not idempotent-cheap — inside Tauri it invokes `get_rpc_config`,
-  // which itself polls the node's handoff files for up to 10s. Resolving once and
-  // holding the answer keeps the 2s poll from stacking those.
+  // which itself polls the node's handoff files for up to HANDOFF_WAIT
+  // (src-tauri/src/main.rs), and that is 120 s, not the 10 s this comment used to
+  // claim: the reference shell's flat 10 s cap was measured too short on a cold
+  // mainnet start and raised. Resolving once and holding the answer is what keeps the
+  // 2 s poll from stacking twelve of those on top of each other.
   const authRef = useRef<RpcAuth | null>(null);
   const resolving = useRef(false);
 
