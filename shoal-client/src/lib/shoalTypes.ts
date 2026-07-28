@@ -4,6 +4,27 @@
  * anywhere in this engine — see the Global Constraints in the plan.
  */
 
+/**
+ * The bloom map: for each cell, WHEN EACH SWIMMER last visited it.
+ *
+ * Two levels rather than one number per cell, because a claim ignores the
+ * CLAIMANT'S OWN visits and honours everyone else's (bloom.ts's header states
+ * the ruling and why). A flat `Map<"cell:id", ms>` would carry the same
+ * information, but answering "who else has been at this cell" — the question
+ * every claim asks — would mean scanning every entry in the map, since a
+ * cell's visitor ids cannot be enumerated from a flat key. Nested keeps that
+ * lookup proportional to the visitors of ONE cell.
+ *
+ * BOUNDED BY `markVisits`, which drops every stamp older than BLOOM_READY_MS
+ * on the tick it runs, so the map only ever holds the cells and swimmers of
+ * the last 45 s. Without that, one entry per (cell, swimmer) pair would
+ * accumulate for every id that ever passed a cell — which over an epoch is not
+ * the population, it is everyone who ever swam.
+ */
+export type VisitMap = Map<number, Map<string, number>>;
+/** Read-only view of a VisitMap, both levels. */
+export type ReadonlyVisitMap = ReadonlyMap<number, ReadonlyMap<string, number>>;
+
 /** A swim vector: "from here, at this instant, I am heading that way." */
 export interface Vec {
   /** Position at time `t`, in cu. */
@@ -210,8 +231,12 @@ export interface ShoalState {
   lastTaken: string[];
   /** Ms of the most recent resolved sweep, or -1. */
   lastSweepMs: number;
-  /** Per-cell ms of last visit by any fish. Absent means never visited. */
-  lastVisit: Map<number, number>;
+  /**
+   * Per-cell, per-swimmer ms of last visit. A cell absent from the outer map
+   * has been visited by nobody within BLOOM_READY_MS; a swimmer absent from a
+   * cell's inner map has not been there within BLOOM_READY_MS. See VisitMap.
+   */
+  lastVisit: VisitMap;
   /** Per-cell bites already consumed from the current bloom. */
   bitesTaken: Map<number, number>;
   /**

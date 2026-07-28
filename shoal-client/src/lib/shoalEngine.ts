@@ -13,8 +13,8 @@ import { epochOf, epochStartMs, epochEndMs, epochWarmStartMs } from './epoch';
 import { type Body } from './shelter';
 import { stepTension, topContributor, outsideCore } from './tension';
 import { shouldStartHush, isResolveTick, selectTaken } from './sweep';
-import { markVisits, canEat, isBloomReady } from './bloom';
-import type { LogEntry, ShoalState, Checkpoint } from './shoalTypes';
+import { markVisits, canEat, isBloomReady, stampVisit } from './bloom';
+import type { LogEntry, ShoalState, Checkpoint, ReadonlyVisitMap } from './shoalTypes';
 import { checkpointFrom } from './checkpoint';
 import {
   TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST,
@@ -41,7 +41,7 @@ import {
  * a frozen empty Map cannot be expressed in TypeScript any more strongly than
  * this, so the invariant has to live in a comment.
  */
-const NEVER_VISITED: ReadonlyMap<number, number> = new Map();
+const NEVER_VISITED: ReadonlyVisitMap = new Map();
 
 /**
  * Total order over the log: authoring ms, then content hash.
@@ -262,6 +262,11 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
         lastVisit: latched ? NEVER_VISITED : state.lastVisit,
         bitesTaken: state.bitesTaken,
         cell: e.cell,
+        // The claimant, so the fallow test can ignore this fish's OWN visits
+        // and honour everyone else's. Without it a swimmer's approach kills
+        // the bloom it is approaching and nobody can ever eat — see bloom.ts's
+        // header.
+        id: e.id,
         fishX: claimedAt.x,
         fishY: claimedAt.y,
         lastBiteMs: f.lastBiteMs,
@@ -278,9 +283,34 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
       // restart the fallow clock from this exact moment so the existing
       // exhausted-cell reset below (and any later isBloomReady check) sees
       // a genuinely fresh "last visited" stamp rather than a stale one.
+      //
+      // The stamp is attributed to the CLAIMANT, which is both honest (it is
+      // the fish that was there) and sufficient: the reset below runs
+      // isBloomReady with NO exceptId, so it sees this stamp and holds the
+      // cell spent even if the claimant is the only fish that has ever been
+      // near it. A claimant-exempt re-claim inside that window is separately
+      // impossible — bitesLeft is 0 until the reset clears the count — so
+      // attributing it to the claimant and attributing it to nobody are
+      // behaviourally identical, and this way needs no reserved id in the
+      // consensus rules.
+      //
+      // "FOR THE FULL BLOOM_READY_MS" IS ONLY TRUE WHEN `e.ms` IS ABOUT `t`,
+      // which is the ordinary case and not the only one. The stamp carries the
+      // CLAIM's instant, not this tick's, and `isBloomReady` measures from the
+      // stamp — so a BACK-DATED claim (a late gossip delivery, or the bounded
+      // replay in shoalLoop section 2 re-folding one) writes a stamp already
+      // `t - e.ms` old, and the cell is held for `BLOOM_READY_MS - (t - e.ms)`
+      // rather than the full window. A claim more than BLOOM_READY_MS behind
+      // the tick that judges it holds the cell for no time at all. That is
+      // consistent — every client folding the same entry computes the same
+      // stamp, so it is not a divergence — and it is the correct reading:
+      // fallowness is measured from when the fish was there, not from when we
+      // heard about it. Only the "full window" phrasing was wrong. Bounding it
+      // is open item 5's `ms` sanity rule, a consensus change with its own
+      // design.
       if (count >= BLOOM_BITES) {
         state.bloomSinceMs.delete(e.cell);
-        state.lastVisit.set(e.cell, e.ms);
+        stampVisit(state.lastVisit, e.cell, e.id, e.ms);
       }
       f.size = f.size + BITE_GROWTH;
       f.lastBiteMs = e.ms;
@@ -345,6 +375,13 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
   // spent cell reading as it stands for the whole dormant window, and
   // clears it exactly when the cell becomes ready again — the same instant
   // a fresh claim's own isBloomReady check would also pass — not early.
+  //
+  // NO `exceptId` HERE, and that is the load-bearing half of the
+  // claimant-exemption rule (bloom.ts's header). Regrowth asks whether the
+  // cell has lain fallow to EVERYONE; only a CLAIM ignores the claimant's own
+  // visits. Passing a claimant here would let a lone fish parked on a cell
+  // empty it, wait out the clock without moving, and empty it again forever —
+  // the parked-blob feed with one fish instead of six.
   markVisits(state.lastVisit, bodies, t);
   for (const [cell] of [...state.bitesTaken]) {
     if (isBloomReady(state.lastVisit, cell, t)) {

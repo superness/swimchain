@@ -84,8 +84,8 @@
  *    it is a budget SHARED by every swimmer in the space, not a per-client
  *    allowance. A 25-swimmer shoal (the design's own stated ceiling) idling
  *    at the MAX_EMIT_GAP_MS keep-alive rate for one whole block window
- *    uses `25 * (600_000 / 8_000) = 1_875 <= 2_000` — fits, with margin
- *    left over for eat-claims sharing the same budget. The SAME shoal, all
+ *    uses `25 * (600_000 / 8_000) = 1_875 <= 2_000` — it fits, but the
+ *    headroom is 125 slots, not "margin". The SAME shoal, all
  *    25 continuously turning at the MIN_EMIT_GAP_MS floor for the whole
  *    window, would need `25 * (600_000 / 3_000) = 5_000 > 2_000` — over
  *    budget. That is not a defect in these constants: past capacity the
@@ -98,6 +98,51 @@
  *    engages under genuinely heavy simultaneous activity, not on every
  *    render frame. Full arithmetic, including the RPC-cap and per-space
  *    checks run as real assertions, lives in shoalEmit.test.ts.
+ *
+ *    ### THE EAT VERB FALSIFIES THE OLD READING OF THAT SUM
+ *
+ *    This paragraph used to end "fits, with margin left over for eat-claims
+ *    sharing the same budget." **That conclusion was true when it was
+ *    written and is false now** — not because a number moved, but because
+ *    the eat verb only became REACHABLE on plan 2c's branch (open item 10:
+ *    before the claimant-exemption rule, a swimmer that swam to a bloom was
+ *    credited zero bites, so nobody had any reason to send a claim).
+ *
+ *    The "margin" is 125 actions for the WHOLE SHOAL per block window. One
+ *    swimmer feeding at the eat floor emits
+ *    `600_000 / EAT_COOLDOWN_MS = 600_000 / 2_500 = 240` claims in the same
+ *    window — so a **single** feeding swimmer overruns the entire remainder
+ *    twice over, and 25 idle swimmers plus one feeder is already
+ *    `1_875 + 240 = 2_115 > 2_000`.
+ *
+ *    **Eat claims are not governed by this module at all.** `shouldEmit` is
+ *    never consulted for one: App.tsx asks `canClaimEat` (input.ts), which
+ *    mirrors the FOLD's `EAT_COOLDOWN_MS` so a claim the fold would refuse is
+ *    never mined — a correctness mirror, not a budget policy. It happens to
+ *    be the tightest per-swimmer rate in the game (240/window against
+ *    presence's 200 at the turning floor and 75 at the keep-alive) and it is
+ *    the one rate nothing here bounds.
+ *
+ *    **So yes, eat needs its own floor**, and it does not have one. The
+ *    honest reading of the whole budget, recomputed and asserted in
+ *    shoalEmit.test.ts:
+ *
+ *      per swimmer, per 600 s block window
+ *        keep-alive presence   600_000 / 8_000 =  75
+ *        turning presence      600_000 / 3_000 = 200
+ *        feeding eat claims    600_000 / 2_500 = 240   <- ungoverned
+ *
+ *      swimmers that saturate MAX_ACTIONS_PER_SPACE (2_000)
+ *        turning only            2_000 / 200 = 10
+ *        idle and feeding        2_000 / 315 =  6
+ *        turning and feeding     2_000 / 440 =  4
+ *
+ *    The 15-25 shoal ceiling is load-dependent, not hard, and the load that
+ *    binds it hardest is FEEDING — which is what the game asks a swimmer to
+ *    do. Recorded rather than fixed: a floor on eat claims is a policy
+ *    change with a play-feel cost (it makes a bite refusable for a reason
+ *    the fold would have allowed), and it belongs with open item 4's
+ *    differential-PoW decision rather than being slipped in here.
  *  - `PRESENCE_TTL_MS = 90_000` (shoalConst.ts) — MAX_EMIT_GAP_MS=8_000
  *    gives `2 * MAX_EMIT_GAP_MS = 16_000 < 90_000`, with 74_000 ms (~74 s,
  *    5.6x) of margin — comfortably enough to survive one entirely missed

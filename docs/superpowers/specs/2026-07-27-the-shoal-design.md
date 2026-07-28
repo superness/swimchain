@@ -160,12 +160,25 @@ that works at this cadence.
 
 One tether object collapses four legibility problems: what danger is (the tether thinning),
 what the telegraph is (it goes red as the water hushes), what shielding is (big fish anchor
-several tethers), and why you were scattered (yours was the longest).
+several tethers), and why you were scattered (**yours was among the longest — you were one of
+the exposed**).
 
 **On scatter, the moment freezes for two seconds** — desaturated, every fish's tether drawn
-at once, yours the long one. Non-verbal, geometric, unarguable. *"You were furthest from your
-neighbours"* is an abstract cause of death, and unexplained punishment in the first two
-minutes is the most reliable quit trigger there is.
+at once, **yours among the long ones**. Non-verbal, geometric, unarguable. *"You were
+furthest from your neighbours"* is an abstract cause of death, and unexplained punishment in
+the first two minutes is the most reliable quit trigger there is.
+
+> **Corrected 2026-07-28.** Both sentences used to promise "yours was the longest" / "yours
+> the long one", singular. **The implementation cannot honour that, and it is right not to.**
+> `selectTaken` (§2.11) orders candidates by *preferred-then-size*, not by tether length, and
+> it takes up to `MAX_TAKE` of them — so the fish that is taken is routinely not the single
+> most exposed one. The harness makes this concrete: its eight outsiders all tie at shelter
+> **0**, and three of them are taken on the **id tiebreak**. A replay that pointed at one
+> fish and said "yours was the longest" would be telling a player something the fold did not
+> decide, which is the one thing §2.10's whole argument rests on not doing. The replay draws
+> every fish's tether and marks the taken ones — the honest claim is *you were out in the
+> open with these others, and the shark took some of you*. Ruled on and pinned in
+> `shoal-client/src/ui/tether.test.ts`.
 
 The tether **fades with accumulated playtime** and the hush carries it from then on.
 Legibility beats mystique in the first ten minutes; mystique wins afterwards. Since every
@@ -514,6 +527,13 @@ currency; combat or targeting; levels and skill trees; chain-derived terrain; a 
 **Not cut:** wild fish are in (§2.6) — as permanent ecosystem, never as a population patch.
 Designing around our current size rather than the game at scale is the wrong trade (operator
 ruling).
+
+---
+
+## 5b. Open items
+
+Live tracker at `docs/THE_SHOAL_OPEN_ITEMS.md` — blockers and carried items surfaced by
+code review or live runs, with what each costs to leave. Read it before starting a plan.
 
 ---
 

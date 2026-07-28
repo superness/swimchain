@@ -19,18 +19,28 @@
  * (unlike trench-client/ui's, which lists `DOM`/`DOM.Iterable`), so referencing
  * `window` directly does not type-check here at all, DOM guard or not.
  *
- * Two adaptations from the reference, both because shoal-client has no Vite build
- * (no `vite.config`, no `vite` in package.json, no `import.meta.env` typings):
- *   - The env-var fallback step reads `process.env.SHOAL_RPC_ENDPOINT` instead of
- *     `import.meta.env.VITE_RPC_ENDPOINT`. `process` is real under Node/tsx (where
- *     this fallback actually gets exercised today) and is guarded with `typeof
- *     process !== 'undefined'` for a hypothetical future browser build the way the
- *     reference guards `window`.
+ * Two adaptations from the reference, both written when shoal-client had no Vite
+ * build. **IT HAS ONE NOW** — `vite.config.ts` and `vite` in package.json both exist
+ * (Task 1 added them for the Tauri shell), and `tsconfig.ui.json` lists `vite/client`,
+ * so `import.meta.env` is typed and real for anything under `src/ui/`. What follows is
+ * therefore recorded as history plus one live consequence, not as a description of the
+ * project:
+ *   - The env-var step reads `process.env.SHOAL_RPC_ENDPOINT` instead of
+ *     `import.meta.env.VITE_RPC_ENDPOINT`. `process` is real under Node/tsx and is
+ *     guarded with `typeof process !== 'undefined'`. **THE LIVE CONSEQUENCE: that
+ *     override is dead in the browser and in the Tauri webview.** There is no
+ *     `process` there and this module is deliberately Vite-free (it is imported by
+ *     plain-`tsx` scripts, which `import.meta.env` would break), so `SHOAL_RPC_ENDPOINT`
+ *     works ONLY under Node — the smoke scripts and the harness. It is not a way to
+ *     point a shipped shell at another node, and nothing should document it as one.
+ *     Giving the browser an override means a `VITE_`-prefixed constant read in
+ *     `src/ui/`, not here.
  *   - `tauriConfig` skips the reference's dynamic-`import('@tauri-apps/api/core')`
  *     workaround — that dance exists solely to dodge a Vite bare-specifier bundling
- *     trap (see the reference's own doc comment); with no Vite in this project there
- *     is nothing to dodge, so this goes straight to the `window.__TAURI__.core.invoke`
- *     global Tauri v2 injects.
+ *     trap (see the reference's own doc comment). This module imports nothing from
+ *     `@tauri-apps/api` at all, so there is still nothing to dodge, and it goes
+ *     straight to the `window.__TAURI__.core.invoke` global Tauri v2 injects (which is
+ *     why `app.withGlobalTauri` must stay `true`).
  */
 
 /** Where the node is and how to authenticate to it. `authHeader`, when present, is a
@@ -279,13 +289,27 @@ function envEndpoint(): string | undefined {
  * Resolve where/how to reach the node, in the order the game's shells offer it:
  *   1. app-shell embed: `SWIMCHAIN_RPC_CONFIG` postMessage (10s window)
  *   2. Tauri desktop shell: `get_rpc_config` command
- *   3. `SHOAL_RPC_ENDPOINT` env (no auth — dev nodes are usually unauthenticated, or
- *      the caller layers its own auth on top)
- *   4. `http://127.0.0.1:9736` — bare local-node fallback (mainnet's default RPC
- *      port: p2p 9735 + 1)
+ *   3. `SHOAL_RPC_ENDPOINT` env (no auth — an explicit operator opt-in, and only
+ *      reachable under Node/tsx; see `envEndpoint`)
+ *   4. **`null`.** There is no fourth source.
  *
  * Steps 1-2 are browser/Tauri-only and no-op (resolve `null`) under Node, so calling
- * this from a plain-tsx context just falls through to steps 3-4.
+ * this from a plain-tsx context just falls through to step 3.
+ *
+ * ## WHY THERE IS NO BARE-LOCALHOST FALLBACK
+ *
+ * This used to end `return { endpoint: 'http://127.0.0.1:9736', authHeader: null }` —
+ * mainnet's default RPC port, unauthenticated, baked into every bundle. It is the exact
+ * class of value this project's standing bundle rule exists to keep out
+ * (`scripts/deploy-web-clients.sh`, project memory "verify client bundle endpoints"),
+ * and it caused real harm here rather than hypothetical: a node answers READ methods
+ * without auth, so the shell looked completely healthy — green lamp, live block height —
+ * right up until the first write. That is what cost Task 1 an hour and what
+ * `HANDOFF_WAIT`'s 120 s (src-tauri/src/main.rs) was raised to work around.
+ *
+ * A silent unauthenticated fallback is worse than no answer, because no answer is
+ * diagnosable and this was not. `null` means "nothing told me where the node is", and a
+ * caller has to say so. Diagnostics.tsx is the only caller and does exactly that.
  *
  * Order of operations mirrors nodeRpc.ts's `resolveAuth` exactly, including why:
  * `__TAURI__` being present is not proof IPC will answer (the launcher's app-shell
@@ -293,7 +317,7 @@ function envEndpoint(): string | undefined {
  * IPC), so when it IS present we try IPC first and fall back to the parent-envelope
  * wait; when it's absent we go straight to the parent wait.
  */
-export async function resolveAuth(): Promise<RpcAuth> {
+export async function resolveAuth(): Promise<RpcAuth | null> {
   const inTauri = Boolean(getWindow()?.__TAURI__);
 
   if (inTauri) {
@@ -311,7 +335,7 @@ export async function resolveAuth(): Promise<RpcAuth> {
   const env = envEndpoint();
   if (env) return { endpoint: env, authHeader: null };
 
-  return { endpoint: 'http://127.0.0.1:9736', authHeader: null };
+  return null;
 }
 
 // --- Node identity, adopted as the player's --------------------------------------

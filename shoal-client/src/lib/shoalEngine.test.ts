@@ -27,7 +27,7 @@ import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
   BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS, EPOCH_MS, WARMUP_MS,
-  SCATTER_COST,
+  SCATTER_COST, SPEED_DART, SPEED_CRUISE, BLOOM_VISIT_R, BLOOM_READY_MS,
 } from './shoalConst';
 import { cellCentre, bitesLeft } from './bloom';
 import { epochOf, epochStartMs, epochEndMs, epochFoldEndMs } from './epoch';
@@ -317,30 +317,320 @@ check('orderLog does not mutate its input', (() => {
     { bitesTaken: leaving.bitesTaken.get(cell), lastBiteMs: leaving.fish.get('m')!.lastBiteMs });
 }
 
+// --- A LONE fish cannot farm the cell it is sitting on ----------------------
+// The claimant exemption applies to CLAIMS ONLY. The regrowth reset (step 3)
+// asks isBloomReady with NO exceptId, so a bloom comes back only once the cell
+// has lain fallow to EVERYONE — the last eater included. Without that half,
+// the exemption would read "a single fish's stamps never count", the reset
+// would fire on every tick a lone fish sat on an emptied cell, and one swimmer
+// parked on one cell would out-eat the entire rest of the sea forever: the
+// parked-blob feed rivalry exists to prevent, with a blob of one.
+//
+// Hand derivation. 'a' parks on cell 700's centre (3648, 2752) at ms=0 and
+// claims every EAT_COOLDOWN_MS(2500) from ms=0 to ms=120_000 — 49 claims, so
+// there is nothing stopping it from eating except the rules.
+//   claims 1..6 (ms 0, 2500, 5000, 7500, 10_000, 12_500) credit: the first
+//     lands in the same tick as its own presence, before that tick's
+//     markVisits, and the next five ride the latch. The 6th empties the bloom
+//     (count reaches BLOOM_BITES) and unlatches it.
+//   every claim after that is refused by bitesLeft, because bitesTaken(700)
+//     is never cleared: 'a' is still parked, so its own stamp on the cell is
+//     refreshed on every single tick and the no-exceptId reset never once
+//     reads the cell as fallow — for the full 120 s, which is nearly THREE
+//     BLOOM_READY_MS windows.
+// So bitesTaken(700) is exactly BLOOM_BITES and lastBiteMs is the 6th claim,
+// 5 * EAT_COOLDOWN_MS = 12_500, however long the fish sits there.
+{
+  const cell = 700;
+  const c = cellCentre(cell);
+  const SIT_MS = 120_000;
+  const log: LogEntry[] = [pres('a', c.x, c.y, 0)];
+  for (let ms = 0; ms <= SIT_MS; ms += EAT_COOLDOWN_MS) log.push(eat('a', cell, ms));
+  check('the fixture gives it far more chances than a bloom has bites, over ~3 fallow windows',
+    log.length - 1 === 49 && SIT_MS > 2 * BLOOM_READY_MS,
+    { claims: log.length - 1, SIT_MS, BLOOM_READY_MS });
+  // Presence is refreshed inside PRESENCE_TTL_MS so the fish never lapses;
+  // a lapse would evict it and stop its stamps, which is not what is on trial.
+  for (let ms = 60_000; ms <= SIT_MS; ms += 60_000) log.push(pres('a', c.x, c.y, ms, `a-stay${ms}`));
+
+  const s = foldShoal(log, SIT_MS);
+  check('a lone fish parked on a cell still gets exactly one bloom out of it, ever',
+    s.bitesTaken.get(cell) === BLOOM_BITES && s.fish.get('a')!.lastBiteMs === 5 * EAT_COOLDOWN_MS,
+    { bitesTaken: s.bitesTaken.get(cell), lastBiteMs: s.fish.get('a')!.lastBiteMs,
+      expectedLastBiteMs: 5 * EAT_COOLDOWN_MS });
+  check('...and the cell never regrew under it: still spent, still unlatched',
+    !s.bloomSinceMs.has(cell) && s.lastVisit.get(cell)!.get('a') === SIT_MS,
+    { latched: s.bloomSinceMs.has(cell), stamp: s.lastVisit.get(cell)!.get('a') });
+}
+
+// --- The bloom map stays bounded across a long fold -------------------------
+// `lastVisit` is keyed by (cell, SWIMMER) since the claimant-exemption rule, so
+// its natural growth mode is not the population of the sea — it is EVERYONE WHO
+// EVER SWAM IN IT. One entry per id that ever came within BLOOM_VISIT_R of a
+// cell would accumulate for the whole epoch. markVisits therefore drops every
+// stamp older than BLOOM_READY_MS, and this pins that the bound really holds
+// over a long fold with heavy turnover, not just in the unit test.
+//
+// THE FIXTURE, built so the expected size is an exact hand-derived number.
+//
+// Twelve COHORTS of four swimmers each — 48 distinct ids — arriving 100_000 ms
+// apart. PRESENCE_TTL_MS is 90_000, so a cohort is fully evicted before the
+// next one writes and at most one cohort is ever live. EVERY COHORT PARKS ON
+// THE SAME FOUR CELL CENTRES, which is what makes this discriminating: the
+// cells are identical run to run, so anything that accumulates can only be the
+// ids.
+//
+// The four parking cells, by (col, row) -> row*BLOOM_COLS(32)+col, and centres
+// by col*BLOOM_CELL(128)+64:
+//   (3,3)  -> 99   (448, 448)      (13,3) -> 109  (1728, 448)
+//   (23,3) -> 119  (3008, 448)     (13,15)-> 493  (1728, 1984)
+// No two are within 3 cells of each other on both axes, so their marked blocks
+// are disjoint.
+//
+// A fish parked exactly on a cell centre marks exactly NINE cells. markVisits
+// scans dc, dr in [-2, 2] (reach = ceil(BLOOM_VISIT_R(200)/BLOOM_CELL(128)) =
+// 2) and keeps a cell when 128^2*(dc^2+dr^2) <= BLOOM_VISIT_R2(40_000), i.e.
+// dc^2+dr^2 <= 2.44: the cell itself (0), the four orthogonal neighbours (1)
+// and the four diagonals (2). Nine, and 3^2 = 9 confirms the block is the
+// 3x3 square.
+//
+// So with four parked fish on disjoint blocks the map holds EXACTLY 4*9 = 36
+// entries across 36 cells — no matter how many cohorts have been and gone.
+// Without the prune it would hold 36 per cohort: 36*12 = 432 entries on 36
+// cells (the cells are shared, the ids are not).
+//
+// THE FOLD END. Cohort 11 writes at 11*100_000 = 1_100_000. Fold to
+// 1_100_000 + 45_000 = 1_145_000 (1_145_000/250 = 4580, a real tick, and
+// inside epoch 0, which spans [0, 3_600_000)):
+//   - cohort 11 is still live (it expires at 1_100_000 + 90_000 = 1_190_000),
+//     and being parked it re-stamps every tick, so every surviving stamp reads
+//     exactly the fold's last tick.
+//   - cohort 10's last stamp was on the last tick it was in `bodies`, its own
+//     expiry at 1_000_000 + 90_000 = 1_090_000. At the fold end that is
+//     55_000 ms old — past BLOOM_READY_MS(45_000) — so it is gone. That 10_000
+//     ms of margin is why the fold end is +45_000 and not, say, +1_000, where
+//     cohort 10's stamps would still legitimately be inside the window.
+{
+  const COHORTS = 12;
+  const SPACING = 100_000;
+  const PARK: Array<[number, number, number]> = [
+    [99, 448, 448], [109, 1_728, 448], [119, 3_008, 448], [493, 1_728, 1_984],
+  ];
+  check('the four parking cells are centred where BLOOM_CELL arithmetic says',
+    PARK.every(([cell, x, y]) => cellCentre(cell).x === x && cellCentre(cell).y === y), PARK);
+  check('a cohort is fully evicted before the next one arrives',
+    SPACING > PRESENCE_TTL_MS, { SPACING, PRESENCE_TTL_MS });
+
+  const log: LogEntry[] = [];
+  for (let k = 0; k < COHORTS; k++) {
+    for (let i = 0; i < PARK.length; i++) {
+      const [, x, y] = PARK[i];
+      log.push(pres(`c${k}_${i}`, x, y, k * SPACING));
+    }
+  }
+  const idsEverSeen = COHORTS * PARK.length;
+  check('the fixture really does churn the sea: 48 distinct swimmers over the fold',
+    log.length === idsEverSeen && idsEverSeen === 48, { entries: log.length, idsEverSeen });
+
+  const END = (COHORTS - 1) * SPACING + 45_000;
+  check('the fold end is a real tick inside epoch 0, and clears the previous cohort by 10_000 ms',
+    END === 1_145_000 && END % TICK_MS === 0 && END < EPOCH_MS
+      && END - ((COHORTS - 2) * SPACING + PRESENCE_TTL_MS) === BLOOM_READY_MS + 10_000,
+    { END, prevCohortLastStamp: (COHORTS - 2) * SPACING + PRESENCE_TTL_MS });
+
+  const s = foldShoal(log, END);
+
+  check('only the last cohort is still in the water',
+    s.fish.size === PARK.length && [...s.fish.keys()].every((id) => id.startsWith(`c${COHORTS - 1}_`)),
+    [...s.fish.keys()]);
+
+  let entries = 0;
+  let stampsOutsideWindow = 0;
+  let stampsNotOnTheLastTick = 0;
+  const ids = new Set<string>();
+  for (const [, by] of s.lastVisit) {
+    for (const [id, ms] of by) {
+      entries++;
+      ids.add(id);
+      if (END - ms >= BLOOM_READY_MS) stampsOutsideWindow++;
+      if (ms !== END) stampsNotOnTheLastTick++;
+    }
+  }
+
+  check('the bloom map holds the hand-derived 36 entries — nine cells per parked fish, one cohort',
+    entries === PARK.length * 9 && entries === 36 && s.lastVisit.size === 36,
+    { entries, cells: s.lastVisit.size, expected: 36 });
+  check('...and 36 is a TWELFTH of what 12 cohorts would leave unpruned',
+    entries * COHORTS === 432, { unpruned: entries * COHORTS });
+  check('every stamp belongs to a swimmer still in the water — 4 ids, not the 48 ever seen',
+    ids.size === PARK.length && idsEverSeen === 48, { inMap: ids.size, idsEverSeen });
+  check('no stamp has aged past BLOOM_READY_MS, which is the bound the prune enforces',
+    stampsOutsideWindow === 0 && stampsNotOnTheLastTick === 0,
+    { stampsOutsideWindow, stampsNotOnTheLastTick });
+
+  // Length-independence, stated as a comparison rather than inferred from the
+  // number above: fold a THIRD of the way in, at the same phase of a cohort's
+  // life, and the map is the same size. Growth with fold length is exactly
+  // what the prune exists to prevent.
+  const EARLY = 3 * SPACING + 45_000;
+  const early = foldShoal(log, EARLY);
+  let earlyEntries = 0;
+  for (const [, by] of early.lastVisit) earlyEntries += by.size;
+  check('the map is the same size a third of the way through the fold as at the end',
+    earlyEntries === entries, { earlyEntries, entries, EARLY, END });
+}
+
 // --- The bloom latch --------------------------------------------------------
 // bloomSinceMs makes a bloom RIVALROUS: once a cell has earned its first
 // credited bite while genuinely fallow, it stays edible for BLOOM_BITES
 // total bites regardless of who keeps swimming over it, because markVisits
 // would otherwise re-mark the cell "recently visited" on every subsequent
 // tick a fish stands there and permanently block bites 2 through 6.
+// --- THE SCHOOL SHADOW: another fish's trample still denies the bloom -------
+// The half of the claimant-exemption rule (bloom.ts's header) that stops the
+// fix from becoming "everyone can always eat everything". A claim ignores the
+// CLAIMANT'S own visits; it honours everybody else's in full, which is what
+// keeps spec 2.2's "food grows in the open, safety is in the crowd, and they
+// are never in the same place" true.
+//
+// One fixture, one difference. 'a' parks on cell 700's centre at ms=0 and
+// claims at ms=500, both runs identical. In the DENIED run a second fish 'b'
+// parks on the same centre, also at ms=0; in the ALONE run it does not exist.
+// Nothing else differs — same cell, same claimant, same instants — so the
+// difference in outcome can only be b's trample.
+//
+// Hand derivation. markVisits (step 3) stamps every cell within
+// BLOOM_VISIT_R(200) of a fish under THAT FISH'S id, on every tick it is
+// there. Both fish sit at distance 0 from the centre. So by the time step 1 of
+// tick t=500 judges the claim (step 1 runs before that tick's own markVisits),
+// lastVisit(700) already holds stamps written at t=0 and refreshed at t=250:
+//   denied run: { a: 250, b: 250 }
+//   alone  run: { a: 250 }
+// isBloomReady(cell, nowMs=500, exceptId='a') skips a's own stamp and reads
+// what is left:
+//   denied: b's stamp is 500 - 250 = 250 ms old, far short of
+//           BLOOM_READY_MS(45_000) -> NOT ready -> refused.
+//   alone : nothing is left -> ready -> credited, and it latches (1 of 6).
+// untilMs is 500 (ticks t=0, 250, 500 — none of them a t = 750 + 1000k hunger
+// firing), so no hunger fires in either run and size moves only by the bite:
+//   denied: START_SIZE(100)
+//   alone : START_SIZE + BITE_GROWTH = 112
 {
-  // Eating requires genuine fallow FIRST: an unlatched cell that a fish has
-  // been parked on is NOT ready, because that fish's own presence re-marks
-  // the cell as visited on every tick it occupies it (see markVisits). The
-  // presence lands at ms=0 (tick t=0) and marks the cell again at t=250; by
-  // the time the eat claim at ms=500 (tick t=500) is checked, lastVisit(700)
-  // reads 250, and 500-250=250 is far short of BLOOM_READY_MS (45000), so
-  // isBloomReady is false and the bite must NOT credit. untilMs is kept at
-  // 500 (ticks t=0,250,500, none of which is a t = 750 + 1000k firing) so no
-  // hunger tick fires and this test is not contaminated by hunger arithmetic.
   const cell = 700;
   const c = cellCentre(cell);
-  const log: LogEntry[] = [pres('a', c.x, c.y, 0), eat('a', cell, 500)];
-  const s = foldShoal(log, 500);
-  check('an unlatched, recently-visited cell still refuses the bite',
-    s.fish.get('a')!.size === START_SIZE && (s.bitesTaken.get(cell) ?? 0) === 0
-      && !s.bloomSinceMs.has(cell),
-    { size: s.fish.get('a')!.size, bitesTaken: s.bitesTaken.get(cell), latched: s.bloomSinceMs.has(cell) });
+  const claim: LogEntry[] = [pres('a', c.x, c.y, 0), eat('a', cell, 500)];
+
+  const denied = foldShoal([...claim, pres('b', c.x, c.y, 0)], 500);
+  const alone = foldShoal(claim, 500);
+
+  // The control first: without the other fish this exact claim DOES credit, so
+  // the denial below cannot be some unrelated refusal (range, cooldown, an
+  // empty bloom) wearing the school shadow's clothes.
+  check("the control: the same claim, with nobody else there, credits and latches",
+    alone.fish.get('a')!.size === START_SIZE + BITE_GROWTH
+      && alone.bitesTaken.get(cell) === 1 && alone.bloomSinceMs.has(cell),
+    { size: alone.fish.get('a')!.size, bitesTaken: alone.bitesTaken.get(cell),
+      latched: alone.bloomSinceMs.has(cell) });
+
+  // The rule itself.
+  check('ANOTHER fish trampling the cell denies the bloom to the claimant',
+    denied.fish.get('a')!.size === START_SIZE && (denied.bitesTaken.get(cell) ?? 0) === 0
+      && !denied.bloomSinceMs.has(cell),
+    { size: denied.fish.get('a')!.size, bitesTaken: denied.bitesTaken.get(cell),
+      latched: denied.bloomSinceMs.has(cell) });
+
+  // And the reason, observed directly rather than inferred from the outcome:
+  // BOTH fish are stamped against cell 700 in their own names, and the
+  // exemption covers exactly one of them. The RETURNED state is the world
+  // after tick t=500 has finished, so the stamps read 500 — step 3's markVisits
+  // re-stamped them after step 1 had already judged the claim against the
+  // t=250 values derived above. (That one-tick lag is the whole reason the
+  // claim is judged before the trample, and it is pinned by the step-order
+  // tests further down.)
+  check("both fish are stamped on the cell in their own names, at the hand-derived 500",
+    denied.lastVisit.get(cell)!.get('a') === 500 && denied.lastVisit.get(cell)!.get('b') === 500
+      && denied.lastVisit.get(cell)!.size === 2
+      && alone.lastVisit.get(cell)!.size === 1,
+    { denied: [...denied.lastVisit.get(cell)!], alone: [...alone.lastVisit.get(cell)!] });
+}
+{
+  // A SWIMMER THAT SWIMS IN CAN EAT — the defect this rule exists to fix, on
+  // the fold, at both speeds the game has. (Open item 10: measured at ZERO
+  // bites before the rule, at dart AND cruise, which is what made the game's
+  // core loop unreachable — spec 2.3's whole 60-90 s foraging loop had no
+  // engine.)
+  //
+  // 'a' starts 600 cu west of cell 367's centre (1984, 1472) on heading 0
+  // (+x). COS[0] is exactly TRIG_SCALE, so reckon's dx is trunc(speed*dtMs /
+  // 1000) with the trig factor cancelling, and QUANT(8) divides every position
+  // below exactly.
+  //
+  //   DART, speed 220 cu/s: 600 cu takes ceil(600*1000/220) = 2728 ms, so the
+  //     arrival write is at the next tick boundary, 2750. It crosses
+  //     BLOOM_VISIT_R(200) of the target — 400 cu travelled — at 1819 ms, and
+  //     reaches EAT_R(90) — 510 cu — at 2319 ms. Those are FOUR ticks apart
+  //     (t=2000 vs t=2500 stamps): the old rule's whole problem, and the
+  //     reason "raise EAT_R" and "don't stamp inside EAT_R" both measured 0.
+  //   CRUISE, speed 60 cu/s: 600 cu takes 10_000 ms exactly; the trample ring
+  //     is crossed at 6667 ms, the bite radius at 8500 ms — 8 ticks of dead
+  //     bloom under the old rule.
+  //
+  // On arrival 'a' parks (speed 0) on the centre and claims BLOOM_BITES times
+  // at EAT_COOLDOWN_MS(2500) spacing starting one tick after arrival, plus two
+  // extra claims that must find the bloom empty. Nobody else is in the sea, so
+  // every stamp on the cell is a's own and the exemption covers all of them:
+  // all six credit, the seventh and eighth do not (bitesLeft is 0, and the
+  // regrowth reset cannot fire while 'a' is still standing there refreshing
+  // its own stamp — the reset uses the no-exceptId form).
+  //
+  // Size, by hand, for the dart run: START_SIZE(100) + 6*BITE_GROWTH(12) = 172
+  // before hunger. Hunger fires at t = 750 + 1000k and is skipped when the
+  // fish ate within HUNGER_TICK_INTERVAL*TICK_MS (1000 ms). Rather than derive
+  // 20-odd firings here, the discriminating assertion is the BITE COUNT; size
+  // is checked only for the direction that matters (it must exceed START_SIZE,
+  // i.e. the fish grew, which under the old rule it never did).
+  const cell = 367;
+  const c = cellCentre(cell);
+  check('cell 367 is centred where BLOOM_CELL arithmetic says', c.x === 1984 && c.y === 1472, c);
+
+  const swimIn = (speed: number, arriveMs: number): LogEntry[] => {
+    const out: LogEntry[] = [
+      { kind: 'presence', id: 'a', ms: 0, hash: 'a0',
+        vec: { x: c.x - 600, y: c.y, heading: 0, speed, t: 0 } },
+      pres('a', c.x, c.y, arriveMs, 'a-arrive'),
+    ];
+    for (let i = 0; i < BLOOM_BITES + 2; i++) {
+      out.push(eat('a', cell, arriveMs + TICK_MS + i * EAT_COOLDOWN_MS));
+    }
+    return out;
+  };
+
+  // Both arrival times are real ticks, and both are AFTER the swimmer has
+  // already trampled the cell for several ticks — the condition that made the
+  // whole thing unreachable.
+  const DART_ARRIVE = 2_750;
+  const CRUISE_ARRIVE = 10_000;
+  check('both arrivals land on the absolute tick grid, several ticks after the trample ring',
+    DART_ARRIVE % TICK_MS === 0 && CRUISE_ARRIVE % TICK_MS === 0
+      && DART_ARRIVE - 1_819 > TICK_MS && CRUISE_ARRIVE - 6_667 > TICK_MS,
+    { DART_ARRIVE, CRUISE_ARRIVE });
+
+  for (const [name, speed, arriveMs] of [
+    ['dart', SPEED_DART, DART_ARRIVE], ['cruise', SPEED_CRUISE, CRUISE_ARRIVE],
+  ] as const) {
+    const log = swimIn(speed, arriveMs);
+    const until = arriveMs + TICK_MS + (BLOOM_BITES + 2) * EAT_COOLDOWN_MS;
+    const s = foldShoal(log, until);
+    check(`a swimmer that swims in at ${name} speed takes the whole bloom, and no more`,
+      s.bitesTaken.get(cell) === BLOOM_BITES && s.fish.get('a')!.size > START_SIZE,
+      { bites: s.bitesTaken.get(cell), size: s.fish.get('a')!.size, expected: BLOOM_BITES });
+    // Non-degeneracy: it really did approach from outside, so this is not the
+    // spawn-on case in disguise. Its FIRST vector puts it 600 cu out — far
+    // past BLOOM_VISIT_R, let alone EAT_R.
+    check(`...having genuinely approached from outside the trample ring (${name})`,
+      600 > BLOOM_VISIT_R && log[0].kind === 'presence' && log[0].vec.x === c.x - 600,
+      { startX: log[0].kind === 'presence' ? log[0].vec.x : null, BLOOM_VISIT_R });
+  }
 }
 {
   // The six-bite test: mirrors the coordinator's probe (one fish parked on a
@@ -1479,9 +1769,16 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
     ids.every((id) => parked.fish.get(id)!.size === 70),
     ids.map((id) => [id, parked.fish.get(id)!.size]));
   // And the reason is the reconstructed bloom map, observed directly.
-  check('the warm-up reconstructed the fallow clock: cell 700 was last visited one tick ago',
-    parked.lastVisit.get(700) === start && arrived.lastVisit.get(700) === start,
-    { parked: parked.lastVisit.get(700), arrived: arrived.lastVisit.get(700) });
+  // Per-visitor since the claimant-exemption rule (bloom.ts): every one of the
+  // six stamped the cell in its own name, and the newest stamp is `start`
+  // itself (the tick they all refreshed on). All six must be present — a
+  // single stamp would mean the map had collapsed them, and it is exactly the
+  // other five that deny each claimant its bite.
+  check('the warm-up reconstructed the fallow clock: all six stamped cell 700, most recently at start',
+    ids.every((id) => parked.lastVisit.get(700)!.get(id) === start)
+      && parked.lastVisit.get(700)!.size === ids.length
+      && ids.every((id) => arrived.lastVisit.get(700)!.get(id) === start),
+    { parked: [...(parked.lastVisit.get(700) ?? [])], arrived: [...(arrived.lastVisit.get(700) ?? [])] });
 }
 
 // --- 1b. ...and the blob cannot dodge it by stopping 90 s early -------------
@@ -1590,7 +1887,9 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
     parked.fish.size === 6 && ids.every((id) => parked.fish.get(id)!.size === MIN_SIZE),
     ids.map((id) => [id, parked.fish.get(id)!.size]));
   check('the warm-up reconstructed the fallow clock from a pre-warm-up write',
-    parked.lastVisit.get(700) === start, parked.lastVisit.get(700));
+    ids.every((id) => parked.lastVisit.get(700)!.get(id) === start)
+      && parked.lastVisit.get(700)!.size === ids.length,
+    [...(parked.lastVisit.get(700) ?? [])]);
 
   // The far edge, and the reason it is not a hole: a swimmer whose last write
   // is 180 s old was OUT OF THE SEA for the whole warm-up (PRESENCE_TTL_MS is

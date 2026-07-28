@@ -1,0 +1,21 @@
+{
+  // The UI project: `src/ui/` plus this repo's Vite config. Extends the library
+  // project's settings and only ADDS what a browser view needs — `DOM`/`DOM.Iterable`
+  // and JSX.
+  //
+  // It also type-checks the `src/lib/` modules the UI imports, but a second, laxer pass
+  // over them cannot weaken anything: `tsconfig.json` still compiles all of `src/lib/`
+  // with no DOM, and `npm test` runs BOTH compilers, so a library module that started
+  // reaching for `window` would still fail there by name.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "useDefineForClassFields": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node", "vite/client"]
+  },
+  "include": ["src/ui", "vite.config.ts"]
+}

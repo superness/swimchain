@@ -1,0 +1,16 @@
+node_modules
+dist
+*.local
+*.tsbuildinfo
+
+# The repo root ignores `*.png` wholesale (.gitignore:44). Two sets here are not
+# incidental screenshots and must be tracked:
+#   - src-tauri/icons/*.png  — build INPUTS. tauri.conf.json's `bundle.icon` names
+#     32x32.png / 128x128.png / 128x128@2x.png, so a clean checkout cannot bundle the
+#     app without them. (trench-client has this same gap; its PNG icons are untracked.)
+#   - docs/*.png             — the run evidence a task report points at, which is
+#     worthless if it only exists on the machine that produced it.
+# A negation works here because the root pattern excludes FILES (`*.png`), not a parent
+# directory — git cannot re-include a file underneath an excluded directory.
+!src-tauri/icons/*.png
+!docs/*.png

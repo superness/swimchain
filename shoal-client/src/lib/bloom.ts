@@ -22,9 +22,51 @@
  * lastVisit" and "genuinely fallow" still coincide at every tick from the
  * origin onward and "the sea starts full" below remains a correct reading.
  * What changed is only how old a PRESENT stamp may be, never what an ABSENT
- * one proves. Do not add a window check here: the bound belongs to the
- * replay, and a second one here would be a consensus rule with no test
- * behind it.
+ * one proves. Do not add a window check to `isBloomReady`: the bound belongs
+ * to the replay, and a second one there would be a consensus rule with no test
+ * behind it. (`markVisits` DOES prune, but only stamps `isBloomReady` already
+ * ignores — see its doc.)
+ *
+ * ===========================================================================
+ * A CLAIM IGNORES THE CLAIMANT'S OWN VISITS
+ * ===========================================================================
+ *
+ * This is the rule that makes the game's core loop reachable at all, and it is
+ * CONSENSUS. Stated plainly: another fish trampling a bloom still kills it;
+ * YOU trampling it by arriving does not.
+ *
+ * Without it nobody could ever eat. A fish stamps a cell visited at
+ * BLOOM_VISIT_R (200 cu) but may only bite within EAT_R (90 cu), and the
+ * fastest anything travels is SPEED_DART's 55 cu per TICK_MS. So any approach
+ * path crosses the trample radius several ticks before it reaches the bite
+ * radius, and the bloom is already dead when you arrive. Measured against this
+ * fold before the rule: a swimmer cruising OR darting in from 600 cu away and
+ * claiming on the EAT_COOLDOWN_MS cadence was credited ZERO bites, while one
+ * whose first presence vector already sat on the cell centre took the full
+ * BLOOM_BITES — the verb was reachable only by a swimmer who never swam.
+ *
+ * Two other fixes were tried against the real fold and BOTH measured 0 bites,
+ * so neither is worth re-attempting: raising EAT_R to 200 (matching the two
+ * radii), and exempting cells within EAT_R from `markVisits`. They fail for
+ * the same reason — the trample is stamped by PROXIMITY and the claim is
+ * judged ticks later, so the approach crosses the ring wherever the ring is.
+ *
+ * Why this rule and not a smaller BLOOM_VISIT_R:
+ *  - It preserves the design intent exactly. The full 200-cu school shadow
+ *    survives, so spec 2.2's "food grows in the open, safety is in the crowd,
+ *    and they are never in the same place" still holds. Shrinking
+ *    BLOOM_VISIT_R would have weakened that core tension instead.
+ *  - It needs no exact-tick timing from the client, which the alternative of
+ *    judging a claim against a pre-arrival snapshot would have.
+ *  - It is what a player would intuit: your own arrival should not be the
+ *    thing that stops you eating.
+ *
+ * THE EXEMPTION IS FOR CLAIMS ONLY. `isBloomReady` with `exceptId` omitted
+ * considers EVERY visitor, the claimant included, and that is the form the
+ * fallow/regrowth reset uses (shoalEngine.ts step 3). So a fish parked on a
+ * cell it has emptied cannot farm it: the bloom regrows only once the cell has
+ * lain fallow to EVERYONE — itself included — for BLOOM_READY_MS. The
+ * exemption buys a swimmer the bloom it SWAM TO, never one it is sitting on.
  */
 import { dist2 } from './fixed';
 import {
@@ -32,6 +74,7 @@ import {
   BLOOM_READY_MS, BLOOM_BITES, EAT_R2, EAT_COOLDOWN_MS,
 } from './shoalConst';
 import type { Body } from './shelter';
+import type { VisitMap, ReadonlyVisitMap } from './shoalTypes';
 
 /** Grid cell containing a point. Clamped, so out-of-world points stay in range. */
 export function cellIndex(x: number, y: number): number {
@@ -51,11 +94,43 @@ export function cellCentre(cell: number): { x: number; y: number } {
 }
 
 /**
- * Stamp every cell within BLOOM_VISIT_R of any fish as visited at `nowMs`.
+ * Record that `id` was at `cell` at `ms`. THE ONLY WRITE SITE for the two-level
+ * shape, so nothing else has to know it is two levels.
+ *
+ * Last-write-wins per (cell, swimmer), which is all `isBloomReady` reads —
+ * an older stamp from the same swimmer can never make a cell less ready than
+ * its newest one.
+ */
+export function stampVisit(lastVisit: VisitMap, cell: number, id: string, ms: number): void {
+  const by = lastVisit.get(cell);
+  if (by === undefined) lastVisit.set(cell, new Map([[id, ms]]));
+  else by.set(id, ms);
+}
+
+/**
+ * Stamp every cell within BLOOM_VISIT_R of any fish as visited BY THAT FISH at
+ * `nowMs`, then drop every stamp that has aged out.
+ *
  * Mutates `lastVisit` in place — this is called once per fold tick.
+ *
+ * THE PRUNE IS A SIZE BOUND, NOT A GAME RULE, and it is deliberately exactly
+ * the complement of what `isBloomReady` reads: a stamp matters iff
+ * `nowMs - ms < BLOOM_READY_MS`, so dropping the rest changes no answer this
+ * module can give — an aged-out stamp and an absent one both read "ready".
+ * (Verified by mutation: removing the prune leaves every behavioural test
+ * green and fails only the bound test.) It is not optional, though: the map is
+ * keyed by (cell, SWIMMER), and without it one entry would survive for every
+ * id that ever came within 200 cu of a cell — over an epoch that is not the
+ * population of the sea, it is everyone who ever swam in it.
+ *
+ * Pruning AFTER marking rather than before is what makes the postcondition
+ * clean: on return, every stamp in the map is strictly newer than
+ * `nowMs - BLOOM_READY_MS`. (The two orders are otherwise equivalent, since
+ * every stamp written here is stamped at `nowMs` itself and so can never be
+ * the one pruned.)
  */
 export function markVisits(
-  lastVisit: Map<number, number>,
+  lastVisit: VisitMap,
   bodies: readonly Body[],
   nowMs: number,
 ): void {
@@ -71,22 +146,48 @@ export function markVisits(
         const cell = r * BLOOM_COLS + c;
         const centre = cellCentre(cell);
         if (dist2(b.x, b.y, centre.x, centre.y) <= BLOOM_VISIT_R2) {
-          lastVisit.set(cell, nowMs);
+          stampVisit(lastVisit, cell, b.id, nowMs);
         }
       }
     }
   }
+  for (const [cell, by] of lastVisit) {
+    for (const [id, ms] of by) {
+      if (nowMs - ms >= BLOOM_READY_MS) by.delete(id);
+    }
+    // A cell whose every visitor has aged out is indistinguishable from one
+    // nobody has ever been to, so it must not survive as an empty shell — the
+    // bound is on ENTRIES and on CELLS.
+    if (by.size === 0) lastVisit.delete(cell);
+  }
 }
 
-/** True when a cell has been left alone long enough to bloom. */
+/**
+ * True when a cell has been left alone long enough to bloom.
+ *
+ * `exceptId`, when given, is the CLAIMANT: its own visits are ignored, so a
+ * swimmer's approach cannot be the thing that denies it the bloom it swam to.
+ * Everyone else's visits still count in full — that is the school shadow, and
+ * it is the half of this rule that keeps blooms rivalrous. Omit `exceptId` and
+ * every visitor counts; that is the form the fallow/regrowth reset uses. See
+ * this module's header for the ruling and why the alternatives fail.
+ *
+ * Order-independent by construction: the answer is an AND over the cell's
+ * visitors, so a Map's iteration order cannot leak into it.
+ */
 export function isBloomReady(
-  lastVisit: ReadonlyMap<number, number>,
+  lastVisit: ReadonlyVisitMap,
   cell: number,
   nowMs: number,
+  exceptId?: string,
 ): boolean {
-  const seen = lastVisit.get(cell);
-  if (seen === undefined) return true; // never visited: the sea starts full
-  return nowMs - seen >= BLOOM_READY_MS;
+  const by = lastVisit.get(cell);
+  if (by === undefined) return true; // never visited: the sea starts full
+  for (const [id, seen] of by) {
+    if (id === exceptId) continue;
+    if (nowMs - seen < BLOOM_READY_MS) return false;
+  }
+  return true;
 }
 
 /** Bites remaining in a cell's current bloom. Never negative. */
@@ -98,9 +199,16 @@ export function bitesLeft(bitesTaken: ReadonlyMap<number, number>, cell: number)
 
 /** Everything a bite must satisfy to be credited. */
 export interface EatCheck {
-  lastVisit: ReadonlyMap<number, number>;
+  lastVisit: ReadonlyVisitMap;
   bitesTaken: ReadonlyMap<number, number>;
   cell: number;
+  /**
+   * The claimant. Its own visits are ignored by the fallow test — see this
+   * module's header. Carried here rather than derived because the fold judges
+   * a claim against the CLAIMANT's dead-reckoned position, and the same
+   * identity has to name both.
+   */
+  id: string;
   fishX: number;
   fishY: number;
   /** Ms of this fish's last credited bite, or -1. */
@@ -122,7 +230,7 @@ export interface EatCheck {
  * fork — anyone touching either constant should know it exists.
  */
 export function canEat(a: EatCheck): boolean {
-  if (!isBloomReady(a.lastVisit, a.cell, a.nowMs)) return false;
+  if (!isBloomReady(a.lastVisit, a.cell, a.nowMs, a.id)) return false;
   if (bitesLeft(a.bitesTaken, a.cell) <= 0) return false;
   const centre = cellCentre(a.cell);
   if (dist2(a.fishX, a.fishY, centre.x, centre.y) > EAT_R2) return false;

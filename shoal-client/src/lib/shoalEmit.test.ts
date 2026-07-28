@@ -17,7 +17,7 @@
  * function to itself.
  */
 import { shouldEmit, MIN_EMIT_GAP_MS, MAX_EMIT_GAP_MS, HEADING_CHANGE_THRESHOLD_BRADS } from './shoalEmit';
-import { PRESENCE_TTL_MS, SPEED_CRUISE, SPEED_DART } from './shoalConst';
+import { EAT_COOLDOWN_MS, PRESENCE_TTL_MS, SPEED_CRUISE, SPEED_DART } from './shoalConst';
 import type { Vec } from './shoalTypes';
 
 let failures = 0;
@@ -219,11 +219,72 @@ function main() {
   const SHOAL_SIZE = 25;
 
   // A full shoal, ALL idling (nothing but keep-alives) for one whole block
-  // window: 25 * (600_000 / 8_000) = 25 * 75 = 1_875 <= 2_000 — fits, with
-  // 125 slots (~6%) of margin left for eat-claims sharing the same budget.
+  // window: 25 * (600_000 / 8_000) = 25 * 75 = 1_875 <= 2_000 — it fits, and
+  // 2_000 - 1_875 = 125 slots are left for EVERYTHING ELSE the shoal does.
+  const IDLE_TOTAL = SHOAL_SIZE * (BLOCK_WINDOW_MS / MAX_EMIT_GAP_MS);
   check('a full shoal of idle keep-alives fits the per-space budget',
-    SHOAL_SIZE * (BLOCK_WINDOW_MS / MAX_EMIT_GAP_MS) <= MAX_ACTIONS_PER_SPACE,
-    { idleTotal: SHOAL_SIZE * (BLOCK_WINDOW_MS / MAX_EMIT_GAP_MS), MAX_ACTIONS_PER_SPACE });
+    IDLE_TOTAL <= MAX_ACTIONS_PER_SPACE, { idleTotal: IDLE_TOTAL, MAX_ACTIONS_PER_SPACE });
+  check('...and what is left over is exactly 125 actions for the WHOLE shoal (hand-derived 2_000 - 1_875)',
+    MAX_ACTIONS_PER_SPACE - IDLE_TOTAL === 125,
+    { headroom: MAX_ACTIONS_PER_SPACE - IDLE_TOTAL });
+
+  // ---------------------------------------------------------------------
+  // THE EAT VERB, WHICH FALSIFIES WHAT THAT HEADROOM USED TO BE CALLED
+  //
+  // This block used to conclude the 125 slots were "margin left for
+  // eat-claims sharing the same budget." That was TRUE WHEN IT WAS WRITTEN
+  // and is false now — the eat verb only became reachable on plan 2c's
+  // branch (open item 10: before the claimant-exemption rule a swimmer that
+  // swam to a bloom was credited zero bites, so nobody sent claims).
+  //
+  // Every number below is derived by hand from the imported constants, in
+  // the comment, before the assertion:
+  //
+  //   per swimmer, per 600_000 ms block window
+  //     keep-alive presence   600_000 / MAX_EMIT_GAP_MS (8_000) =  75
+  //     turning presence      600_000 / MIN_EMIT_GAP_MS (3_000) = 200
+  //     feeding eat claims    600_000 / EAT_COOLDOWN_MS (2_500) = 240
+  //
+  // 240 is the LARGEST of the three, and it is the one rate shoalEmit does
+  // not govern: App.tsx never asks `shouldEmit` about a claim, it asks
+  // `canClaimEat`, which mirrors the FOLD's cooldown so a claim the fold
+  // would refuse is never mined. That is a correctness mirror, not a budget.
+  // ---------------------------------------------------------------------
+  const EAT_PER_WINDOW = BLOCK_WINDOW_MS / EAT_COOLDOWN_MS;
+  const IDLE_PER_WINDOW = BLOCK_WINDOW_MS / MAX_EMIT_GAP_MS;
+  const TURN_PER_WINDOW = BLOCK_WINDOW_MS / MIN_EMIT_GAP_MS;
+  check('one feeding swimmer emits 240 claims in a block window (hand-derived 600_000 / 2_500)',
+    EAT_PER_WINDOW === 240, { EAT_PER_WINDOW });
+  check('...which is more than any presence rate: 240 > 200 > 75',
+    EAT_PER_WINDOW > TURN_PER_WINDOW && TURN_PER_WINDOW > IDLE_PER_WINDOW,
+    { EAT_PER_WINDOW, TURN_PER_WINDOW, IDLE_PER_WINDOW });
+
+  // THE FALSIFICATION, stated as the assertion the old comment implied and
+  // would have failed: a SINGLE feeder overruns the whole leftover, and
+  // 25 idle swimmers plus one feeder is 1_875 + 240 = 2_115 > 2_000.
+  check('a SINGLE feeding swimmer does not fit in the leftover (240 > 125)',
+    EAT_PER_WINDOW > MAX_ACTIONS_PER_SPACE - IDLE_TOTAL,
+    { EAT_PER_WINDOW, headroom: MAX_ACTIONS_PER_SPACE - IDLE_TOTAL });
+  check('...so an idle shoal of 25 plus one feeder is already over budget (hand-derived 2_115)',
+    IDLE_TOTAL + EAT_PER_WINDOW === 2_115 && IDLE_TOTAL + EAT_PER_WINDOW > MAX_ACTIONS_PER_SPACE,
+    { total: IDLE_TOTAL + EAT_PER_WINDOW, MAX_ACTIONS_PER_SPACE });
+
+  // How many swimmers actually saturate the budget, by what they are doing.
+  // Hand-derived, all three:
+  //   turning only         2_000 / 200 = 10
+  //   idle and feeding     2_000 / (75 + 240) = 2_000 / 315 = 6.35 -> 6
+  //   turning and feeding  2_000 / (200 + 240) = 2_000 / 440 = 4.54 -> 4
+  // Open item 4's "~10 swimmers saturate the budget" is the FIRST of these
+  // and is only right for a shoal that never eats.
+  const saturating = (perSwimmer: number) => Math.floor(MAX_ACTIONS_PER_SPACE / perSwimmer);
+  check('10 continuously turning swimmers saturate the budget (open item 4\'s figure, presence only)',
+    saturating(TURN_PER_WINDOW) === 10, { n: saturating(TURN_PER_WINDOW) });
+  check('but only 6 idle-and-feeding swimmers do (hand-derived 2_000 / 315)',
+    saturating(IDLE_PER_WINDOW + EAT_PER_WINDOW) === 6,
+    { n: saturating(IDLE_PER_WINDOW + EAT_PER_WINDOW) });
+  check('and only 4 that both turn and feed (hand-derived 2_000 / 440)',
+    saturating(TURN_PER_WINDOW + EAT_PER_WINDOW) === 4,
+    { n: saturating(TURN_PER_WINDOW + EAT_PER_WINDOW) });
 
   // A full shoal, ALL simultaneously and continuously turning at the floor
   // for the WHOLE window, would NOT fit:
