@@ -113,7 +113,24 @@ an app-addressed space, the room post, and a scoped auto-approve sponsorship off
 game-sponsor bot (which auto-renews via `game-offer-keeper-mainnet.service` — adding a game
 is one space id in its `GAME_SPACES` env).
 
-### 8. Smaller
+### 8. The shared `fingerprint` is not a complete divergence detector
+
+**Found by:** the shell's Task 2 review.
+
+`shoalFixtures.ts`'s `fingerprint` — used by every byte-identical check in the suite —
+deliberately omits `touchedIds` and `outsideTicks`. Those are **two of the three fields**
+spec §3.9 measured a carried epoch continuation diverging on (the third, `tension`, is
+covered).
+
+`outsideTicks` feeds `topContributor` → `lockedPreferred` → `selectTaken` — i.e. **who the
+shark eats**. So a divergence confined to it is player-visible and yet invisible to every
+determinism check on the project. Nothing has diverged there; the point is that nothing
+would tell us if it did.
+
+Widening the fingerprint is cheap. Do it before plan 3 adds wild fish, which touch both
+fields.
+
+### 9. Smaller
 
 - `foldShoal` throws a `RangeError` at every epoch end, so a naive
   `foldShoal(log, Date.now())` in the shell hard-throws once an hour until `rollEpoch` is
@@ -123,3 +140,8 @@ is one space id in its `GAME_SPACES` env).
 - `onRefetch` is synchronous, returns `void`, and swallows throws, so a shell has no way to
   surface a failed fetch.
 - Dart-end (`dart → cruise`) is handled correctly but untested.
+- `shoalLoop.advance` is O(|entries|) per call even when nothing is new, so a shell
+  calling it from `requestAnimationFrame` with the last-fetched array does up to 100,000
+  `Set.has` calls per frame to fold zero ticks. A reference-equality guard fixes it.
+- A back-dating writer can force one full-epoch replay per poll — a frame-rate cost, never
+  a divergence. The real fix is item 5's `ms` bound.
