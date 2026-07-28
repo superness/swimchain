@@ -263,13 +263,20 @@ interface BasketProps {
   ceiling: number;
   /** Whistle the wing over here. `null` when A Reason is not owned. */
   onWingCall: (() => void) | null;
-  /** The call is still cooling. The button stays VISIBLE and disabled rather
-   *  than vanishing — a control that disappears reads as broken, and the
-   *  player needs to see that the thing they bought still exists. */
-  wingCooling: boolean;
+  /** Seconds left on the call cooldown; 0 when it will answer.
+   *
+   *  THIS WAS A BOOLEAN AND THE BUTTON WAS `disabled` (operator, 2026-07-28:
+   *  "no sound or visuals - just nothing happens"). A disabled control eats
+   *  the tap silently — the browser fires no click, so there was nowhere to
+   *  put feedback even if we had wanted to. Worse, the only cue was opacity
+   *  .35 on a 12px glyph, which is not a cue. The number is now ON the
+   *  button, so the answer is visible without tapping at all. */
+  wingCoolS: number;
+  /** Timestamp of a REFUSED tap on this basket's whistle — keys the shake. */
+  wingNope: number | null;
 }
 
-function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied, overcooking, onOvercook, ceiling, onWingCall, wingCooling }: BasketProps) {
+function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied, overcooking, onOvercook, ceiling, onWingCall, wingCoolS, wingNope }: BasketProps) {
   const golden = isGolden(chip);
   /** Nothing left to cook FOR — distinct from `golden` since The Long Fry.
    *  A golden chip with the jar still has a sixth crackle ahead of it, and
@@ -292,6 +299,15 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
 
   return (
     <div className="basket-slot">
+      {/* THE WELL. Every overlay below is trying to sit on the FRYER, but they
+          were absolutely positioned against `.basket-slot`, which is the fryer
+          PLUS the worth caption under it. Top-anchored ones worked by accident
+          (the basket starts at the slot's top edge); anything bottom-anchored
+          measured from below the caption and could only be placed by
+          hand-tuned offsets — which is how the burner ended up in the wing's
+          corner. The well is exactly the button's box, so `bottom: 0` means
+          the bottom of the fryer and nothing has to be guessed. */}
+      <div className="basket-well">
       <button
         type="button"
         className={`basket ready${golden ? ' golden' : ''}${feedMode !== null ? (feedable ? ' feed-target' : ' feed-dim') : ''}`}
@@ -378,9 +394,6 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
           <i>pays double</i>
         </span>
       )}
-      {prophesied && (
-        <span className="prophecy-mark" aria-label="the oracle named this basket">the strings point here</span>
-      )}
 
       {/* THE WHISTLE (A Reason). Only on baskets the wing is NOT on, so it
           can never share a corner with the perch above — the two are mutually
@@ -388,13 +401,19 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
       {onWingCall && wingAt === null && (
         <button
           type="button"
-          className={`wing-call${wingCooling ? ' cooling' : ''}`}
-          disabled={wingCooling}
+          // Re-keyed on every refusal so the shake animation replays; a class
+          // toggle alone would only ever animate the first rejected tap.
+          key={wingNope ?? 'ready'}
+          className={`wing-call${wingCoolS > 0 ? ' cooling' : ''}${wingNope !== null ? ' nope' : ''}`}
           onClick={(e) => { e.stopPropagation(); onWingCall(); }}
-          title={wingCooling ? 'it is not listening yet' : 'call the wing over — it pays double where it sits'}
-          aria-label={wingCooling ? 'the wing is not listening yet' : 'call the wing to this fryer'}
+          title={wingCoolS > 0
+            ? `it is not listening yet — ${wingCoolS}s`
+            : 'call the wing over — it pays double where it sits'}
+          aria-label={wingCoolS > 0
+            ? `the wing will not answer for another ${wingCoolS} seconds`
+            : 'call the wing to this fryer'}
         >
-          <span aria-hidden="true">✦</span>
+          <span aria-hidden="true">{wingCoolS > 0 ? wingCoolS : '✦'}</span>
         </button>
       )}
 
@@ -415,6 +434,15 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
         >
           <span aria-hidden="true">🔥</span>
         </button>
+      )}
+
+      </div>
+
+      {/* Deliberately OUTSIDE the well: the strings' label is a wide pill and
+          the burner now owns the fryer's bottom centre. Anchored to the slot,
+          it hangs below the caption exactly where it always has. */}
+      {prophesied && (
+        <span className="prophecy-mark" aria-label="the oracle named this basket">the strings point here</span>
       )}
 
       {/* THE POT, always moving; the ladder shows the summit exists. */}
@@ -463,11 +491,13 @@ export interface KitchenProps {
   ceiling: number;
   /** Whistle the wing over. `null` when A Reason is not owned. */
   onWingCall: ((index: number) => void) | null;
-  /** The call is cooling — the whistles render disabled rather than vanish. */
-  wingCooling: boolean;
+  /** Seconds left on the call cooldown; 0 when it will answer. */
+  wingCoolS: number;
+  /** The basket whose whistle was last tapped-and-refused, and when. */
+  wingNope: { index: number; at: number } | null;
 }
 
-export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook, ceiling, onWingCall, wingCooling }: KitchenProps) {
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook, ceiling, onWingCall, wingCoolS, wingNope }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
@@ -489,7 +519,8 @@ export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerc
             onOvercook={onOvercook ? () => onOvercook(i) : null}
             ceiling={ceiling}
             onWingCall={onWingCall ? () => onWingCall(i) : null}
-            wingCooling={wingCooling}
+            wingCoolS={wingCoolS}
+            wingNope={wingNope && wingNope.index === i ? wingNope.at : null}
             onDip={() => onDip(i)}
           />
         ))}

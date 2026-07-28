@@ -166,6 +166,10 @@ export function App() {
   const [blessFx, setBlessFx] = useState<{ index: number; at: number } | null>(null);
   // Feed mode: a vendor is armed and waiting to be paid in chips.
   const [feeding, setFeeding] = useState<{ vendor: CrewMember; jarKey: string } | null>(null);
+  /** A refused whistle tap: which basket, and when — keys the shake. Cleared
+   *  by nothing; a stale value is harmless because the key only ever replays
+   *  an animation, and the next refusal supersedes it. */
+  const [wingNope, setWingNope] = useState<{ index: number; at: number } | null>(null);
   /** Which fryer is overcooking — client-only, never persisted. */
   const [overcookAt, setOvercookAt] = useState<number | null>(null);
   const overcookRef = useRef(overcookAt);
@@ -1001,12 +1005,29 @@ export function App() {
    *  refused while it is still cooling (callWing owns both rules) — the
    *  ownership guard is repeated here rather than trusted to the call site,
    *  because a control that renders for a non-owner has been this client's
-   *  most-repeated bug. */
+   *  most-repeated bug.
+   *
+   *  EVERY REFUSAL ANSWERS. The first cut returned silently on the cooldown
+   *  branch and the button was `disabled` on top of that, so a tap produced
+   *  nothing at all — no sound, no motion, no words (operator: "just nothing
+   *  happens"). A rule the player cannot perceive is indistinguishable from a
+   *  broken control, and they will conclude the 300M jar does not work. */
   function onWingCall(index: number): void {
     if (!state?.owned.has('wingcall')) return;
     const now = Date.now();
-    if (now < wingRef.current.readyAt) return;
-    if (wingRef.current.at === index) return;
+    if (now < wingRef.current.readyAt) {
+      const left = Math.ceil((wingRef.current.readyAt - now) / 1000);
+      sfx.tap();                                   // the dull "no" poke
+      setWingNope({ index, at: now });             // keys the shake
+      say('wing', `i am NOT listening. ${left}s. there was never a bird and there is never a hurry.`, 4000);
+      return;
+    }
+    // Tapping the basket it already sits on is a no-op in callWing, and
+    // saying so is friendlier than a shake that implies you did wrong.
+    if (wingRef.current.at === index) {
+      say('wing', 'i am ALREADY here. look at me. LOOK at me.', 4000);
+      return;
+    }
     sfx.pop();
     setWing((w) => callWing(w, index, fryersRef.current, now));
     say('wing', pickLine('wing', ['THIS ONE. i have chosen it and i will not be explaining why.']), 5000);
@@ -1560,7 +1581,8 @@ export function App() {
           onOvercook={state?.owned.has('overcook') ? onOvercook : null}
           ceiling={ceiling}
           onWingCall={state?.owned.has('wingcall') ? onWingCall : null}
-          wingCooling={nowMs < wing.readyAt}
+          wingCoolS={Math.max(0, Math.ceil((wing.readyAt - nowMs) / 1000))}
+          wingNope={wingNope}
         />
 
         <aside className="counter">

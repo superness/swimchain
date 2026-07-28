@@ -1600,14 +1600,21 @@ h1, h2, h3, p { margin: 0; }
 @keyframes rat-gnaw { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(4deg) translateY(1px); } }
 /* The burner knob. Absolute like the rat's perch: nothing on a basket may
    take part in layout, or it moves the fryers (see the .basket-slot note). */
-/* THE KNOB SITS LOW. It used to be at `top: -12px; left: -10px` — the exact
-   corner `.wing-perch` occupies — so the moment the wing landed on a fryer
-   you were overcooking, the bird and the burner drew on top of each other.
-   A knob belongs at the bottom of a fryer anyway; this is where it should
-   always have been, and it frees the top-left corner for the wing and its
-   whistle (which are themselves mutually exclusive — see `.wing-call`). */
+/* THE WELL: exactly the fryer's box, so the controls hung off it measure
+   from the FRYER and not from the fryer-plus-caption. Every bottom-anchored
+   overlay before this had to be placed by hand-tuned guesswork, which is how
+   the burner ended up in the wing's corner in the first place. */
+.basket-well { position: relative; width: 100%; }
+.basket { display: block; }
+
+/* THE KNOB SITS BOTTOM CENTRE, ON the fryer (operator, 2026-07-28). It was
+   at `top: -12px; left: -10px` — the exact corner `.wing-perch` occupies —
+   so the bird and the burner drew on top of each other the moment the wing
+   landed on a fryer you were overcooking. Centre-bottom is clear of the
+   whistle (top-left), the rat (top-right) and the blessing (top-centre),
+   and the strings' label stays outside the well entirely. */
 .burner {
-  position: absolute; bottom: -10px; left: -10px; z-index: 5;
+  position: absolute; bottom: -13px; left: 50%; translate: -50% 0; z-index: 6;
   width: clamp(26px, 3vw, 34px); height: clamp(26px, 3vw, 34px);
   border-radius: 999px; line-height: 1;
   background: rgba(14, 10, 7, .9);
@@ -1627,11 +1634,28 @@ h1, h2, h3, p { margin: 0; }
   border: 1px solid rgba(255, 208, 138, .45);
   transition: transform .18s, box-shadow .18s, opacity .18s;
 }
-.wing-call:hover:not(:disabled) {
+.wing-call:hover:not(.cooling) {
   transform: translateY(-2px) scale(1.08);
   box-shadow: 0 0 14px rgba(255, 208, 138, .55);
 }
-.wing-call.cooling { opacity: .35; filter: grayscale(1); }
+/* COOLING STILL READS AS A CONTROL. It used to be `disabled` at opacity .35,
+   which both swallowed the tap and looked like nothing — the whole reason a
+   player reported the jar as broken. It stays clickable (the refusal has
+   sound, a shake and a line now) and it WEARS THE COUNT, so the answer is
+   there without tapping. */
+.wing-call.cooling {
+  color: #b9ab93; border-color: rgba(185, 171, 147, .35);
+  font-family: var(--chalk); font-size: clamp(9px, 1.1vw, 11px); letter-spacing: 0;
+  cursor: default;
+}
+.wing-call.nope { animation: wing-nope .42s ease-out; }
+@keyframes wing-nope {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-4px) rotate(-7deg); }
+  40% { transform: translateX(4px) rotate(7deg); }
+  70% { transform: translateX(-2px) rotate(-3deg); }
+}
+@media (prefers-reduced-motion: reduce) { .wing-call.nope { animation: none; } }
 .burner.lit {
   filter: none;
   border-color: rgba(255, 170, 70, .8);
