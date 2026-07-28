@@ -148,7 +148,13 @@ export const CREW: CrewMember[] = [
     job: 'hermit',
     armLines: ['WHO SENT YOU. fine. FINE. one chip. slide it under the celery. NO SUDDEN CRUNCHING.'],
     munchLines: ['GOOD CHIP. ACCEPTABLE CHIP. take your jar and forget my roof exists. GO.'],
-    sells: ['season5'],
+    // `bowl3` moved here from the oracle (layer 6) on 2026-07-28. It was the
+    // only bowl big enough to hold the wing's baskets, and the wing arrives a
+    // full tier SHALLOWER than the oracle did — so Buffalo was a hard wall
+    // with nothing on any stall to buy. A hoarder living under the celery is
+    // where you'd find a bowl you had to widen a doorway for anyway. Client
+    // policy: the fold does not know vendors exist, so no history re-folds.
+    sells: ['bowl3', 'season5'],
     feed: 'any',
   },
   {
@@ -174,7 +180,7 @@ export const CREW: CrewMember[] = [
     job: 'oracle',
     armLines: ['bring it to me undipped. the dip would only confuse the strings. this chip was always going to end here.'],
     munchLines: ['it is done. the strings accept. take what you came for. i watched you take it before you arrived.'],
-    sells: ['bowl3', 'season6', 'detector3'],
+    sells: ['season6', 'detector3'],
     feed: 'any',
   },
   {
