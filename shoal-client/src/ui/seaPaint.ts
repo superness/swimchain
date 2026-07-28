@@ -33,8 +33,9 @@
  */
 import {
   bodyRadiusCu, cullBodies, headingRad, reckonSmooth, worldToScreen,
-  type Camera, type Viewport,
+  type Camera, type Point, type Viewport,
 } from './render';
+import { TETHER_MIN_CU, type HushRead, type TetherRead } from './tether';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
 import type { Vec } from '../lib/shoalTypes';
 
@@ -83,6 +84,45 @@ export interface Frame {
    * — see App.tsx, and see the report on why there is no map of where food is.
    */
   bite?: { x: number; y: number } | null;
+
+  // -------------------------------------------------------------------------
+  // The tether, the hush and the scatter (Task 6). Every number below is a
+  // reading produced by `tether.ts` from the ENGINE's `shelterOf`/`isExposed`
+  // /`hushPhase`/`lastTaken`. Nothing in this file re-derives any of them; it
+  // decides what they LOOK like and nothing else.
+  // -------------------------------------------------------------------------
+
+  /**
+   * The player's own tether, or null. Drawn in the ambient and hush moments;
+   * during the scatter every fish's is drawn instead (`scatter` below).
+   */
+  tether?: TetherRead | null;
+  /**
+   * How strongly to draw it: `tetherOpacity` — the accumulated-playtime fade
+   * in the ambient moment, and 1 during a hush or a replay, which is spec
+   * 2.10's "the hush carries it from then on".
+   */
+  tetherAlpha?: number;
+  /** The hush, or null while the water is calm. */
+  hush?: HushRead | null;
+  /**
+   * 0..1: how strongly THIS player senses a hush that has not begun yet
+   * (spec 2.8 — a larger fish feels it a beat earlier). Read off the public
+   * tension number, so it is a sense and not a secret.
+   */
+  premonition?: number;
+  /** The frozen replay after a scatter, or null. */
+  scatter?: ScatterPaint | null;
+}
+
+/** Everything the frozen replay needs. Built by the shell from `scatterReplay`. */
+export interface ScatterPaint {
+  /** 0..1 through the two-second freeze. */
+  progress: number;
+  /** Who the ENGINE took. Copied from `state.lastTaken`; never re-derived. */
+  taken: readonly string[];
+  /** One reading per fish in the frozen frame — taken and untaken alike. */
+  tethers: readonly TetherRead[];
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +792,411 @@ function paintBite(ctx: CanvasRenderingContext2D, f: Frame): void {
 }
 
 // ---------------------------------------------------------------------------
+// THE TETHER (spec 2.10)
+//
+// "A tether to your nearest neighbours, short and taut and warm when tucked
+// in, long and thin and cold as you drift."
+//
+// WHAT EACH PART OF THE PICTURE MEANS, and where the number comes from:
+//
+//  - **One strand per neighbour who is actually sheltering you.** The set is
+//    `TetherRead.strands`, which is `shelterOf`'s own summands — a strand
+//    exists exactly when that neighbour is inside SHELTER_R and counts. So
+//    "big fish anchor several tethers" is literally what is drawn.
+//  - **How far each strand SAGS is your total shelter**, not that strand's
+//    length. Slack is danger: a fully sheltered swimmer's strands are dead
+//    straight, and one at the survival line has them hanging. That is why the
+//    sag is driven by `lengthCu` (a function of `shelterOf`) rather than by
+//    the distance to the anchor, which spec 2.11 is explicit is the WRONG
+//    quantity — under a nearest-neighbour reading a pair is nearly as safe as
+//    a school.
+//  - **Warm or cold** is `mood`, which is `isExposed` exactly.
+//  - **With no strands left**, one long frayed streamer trailing toward the
+//    nearest fish, deliberately stopping well short of it: nothing is holding
+//    this swimmer and the picture must not suggest otherwise.
+// ---------------------------------------------------------------------------
+
+/** A strand shorter than this is still drawn this long, in cu (floored in px). */
+const STRAND_STUB_CU = 44;
+/** How much of the drift-to-nearest distance a loose streamer covers. */
+const STREAMER_REACH = 0.62;
+
+/** How the tether is being drawn right now. */
+interface TetherStyle {
+  /** Overall opacity, 0..1. */
+  alpha: number;
+  /** 0 calm, 1 the hush at its loudest. Drives the red. */
+  alarm: number;
+  /** True after the input lock: no sway, no tremor, nothing responds. */
+  rigid: boolean;
+  /** 0..1 shiver from a premonition, before the hush. */
+  tremor: number;
+  /** This fish was taken by the sweep — draw the tether snapped. */
+  snapped: boolean;
+  /** Drain the colour out of it (the replay). */
+  drained: boolean;
+}
+
+/** The colour a tether is drawn in, given its mood and how loud the hush is. */
+function tetherInk(read: TetherRead, st: TetherStyle): { r: number; g: number; b: number } {
+  if (st.drained && !st.snapped) return { r: 150, g: 164, b: 172 };
+  if (st.snapped) return { r: 255, g: 78, b: 66 };
+  const adrift = read.mood === 'adrift';
+  // Ambient: warm amber when held, cold pale blue when adrift.
+  const base = adrift ? { r: 156, g: 200, b: 220 } : { r: 255, g: 206, b: 146 };
+  if (st.alarm <= 0) return base;
+  // The hush. An ADRIFT tether goes red; a HELD one does not — see the
+  // module header of tether.ts on why the water's warning is shared and the
+  // verdict is personal. A held tether brightens to near-white instead: the
+  // player is being told "this is happening, and it is not about you."
+  const to = adrift ? { r: 255, g: 74, b: 58 } : { r: 255, g: 240, b: 208 };
+  const k = st.alarm;
+  return {
+    r: base.r + (to.r - base.r) * k,
+    g: base.g + (to.g - base.g) * k,
+    b: base.b + (to.b - base.b) * k,
+  };
+}
+
+/**
+ * A single strand or streamer: a sagging curve from `a` toward `b`.
+ *
+ * `sagPx` is the perpendicular droop at the midpoint and always hangs
+ * DOWNWARD in world space, which is what makes slack read as slack rather
+ * than as a decorative bow. `frayed` ends it in three diverging hairs instead
+ * of a clean stop — the picture of something that is not tied to anything.
+ */
+function paintStrandLine(
+  ctx: CanvasRenderingContext2D, a: Point, b: Point,
+  sagPx: number, widthPx: number, ink: string, frayed: boolean,
+): void {
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2 + sagPx;
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = widthPx;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.quadraticCurveTo(mx, my * 2 - (a.y + b.y) / 2, b.x, b.y);
+  ctx.stroke();
+  if (!frayed) return;
+  // The loose end: three short hairs off the tip, on the tangent.
+  const tx = b.x - mx;
+  const ty = b.y - my;
+  const tl = Math.hypot(tx, ty) || 1;
+  const ux = tx / tl;
+  const uy = ty / tl;
+  const hair = Math.max(5, widthPx * 5);
+  ctx.lineWidth = Math.max(0.6, widthPx * 0.5);
+  for (const spread of [-0.5, 0, 0.5]) {
+    const c = Math.cos(spread);
+    const s = Math.sin(spread);
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y);
+    ctx.lineTo(b.x + (ux * c - uy * s) * hair, b.y + (uy * c + ux * s) * hair);
+    ctx.stroke();
+  }
+}
+
+/**
+ * Where a strand is drawn to. Normally the anchor itself; but a strand to a
+ * swimmer sitting on top of you would be zero pixels long and invisible, so
+ * it is drawn out to at least STRAND_STUB_PX in the anchor's direction.
+ *
+ * When the two are on EXACTLY the same point — reachable, and not rare:
+ * positions quantize to an 8 cu lattice, and the harness's own fixture stacks
+ * four fish on one coordinate — the direction comes from the strand's INDEX,
+ * spread evenly around the body with a per-swimmer offset. Index rather than
+ * a hash, deliberately: hashed directions produced a tangle of whiskers that
+ * read as a rendering fault, and an even rosette reads as what it is, which
+ * is a swimmer held on every side at once.
+ */
+function strandEnd(
+  selfP: Point, anchorP: Point, stubPx: number, index: number, total: number, selfId: string,
+): Point {
+  const dx = anchorP.x - selfP.x;
+  const dy = anchorP.y - selfP.y;
+  const d = Math.hypot(dx, dy);
+  if (d >= stubPx) return anchorP;
+  if (d < 0.001) {
+    const a = (index / Math.max(total, 1)) * Math.PI * 2 + unit(hashStr(selfId)) * Math.PI * 2;
+    return { x: selfP.x + Math.cos(a) * stubPx, y: selfP.y + Math.sin(a) * stubPx };
+  }
+  return { x: selfP.x + (dx / d) * stubPx, y: selfP.y + (dy / d) * stubPx };
+}
+
+/**
+ * One swimmer's whole tether.
+ *
+ * `at` resolves an id to where that swimmer is being DRAWN this frame, so a
+ * strand lands on the body it belongs to rather than on the fold's last tick
+ * position — the two differ by up to a tick of travel between engine steps.
+ * Anything not in the map falls back to the reading's own world coordinates,
+ * which is what the frozen replay uses (its bodies are the locked ones).
+ *
+ * WIDTHS AND ALPHAS ARE IN PIXELS, not in scaled world units. The tether is
+ * the thing the whole game is read off, and a line whose weight fell with the
+ * zoom would be at its faintest in exactly the frame that pulls back to show
+ * the whole arrangement. The first version of this scaled with `cam.scale`
+ * and measured 1.4 px at the default window: present in a screenshot, absent
+ * to a player.
+ */
+function paintTether(
+  ctx: CanvasRenderingContext2D, f: Frame, read: TetherRead,
+  at: ReadonlyMap<string, Point>, st: TetherStyle,
+): void {
+  if (st.alpha <= 0.004) return;
+  const selfP = at.get(read.self.id)
+    ?? worldToScreen(f.cam, f.view, read.self.x, read.self.y);
+  const ink = tetherInk(read, st);
+  const rgba = (a: number) => `rgba(${Math.round(ink.r)}, ${Math.round(ink.g)}, ${Math.round(ink.b)}, ${a})`;
+
+  // Slack, in pixels. Zero at full shelter; heavy at the survival line.
+  const sagAll = (read.lengthCu - TETHER_MIN_CU) * 0.5 * f.cam.scale;
+  // The hush pulse. Held tethers do NOT pulse — a steady tether in a hushed
+  // sea is the whole "not about you" reading — and after the lock nothing
+  // pulses at all, because nothing responds any more.
+  const beat = st.rigid || st.alarm <= 0 || read.mood !== 'adrift'
+    ? 1
+    : 0.68 + 0.32 * Math.abs(Math.sin((f.atMs / 1000) * Math.PI * (1.2 + st.alarm * 2.2)));
+  // The shiver of a premonition, before the hush. Big fish shiver first.
+  const shiver = st.rigid ? 0 : st.tremor * 3.2 * Math.sin(f.atMs / 46);
+  const stubPx = Math.max(STRAND_STUB_CU * f.cam.scale, 18);
+
+  // Where each strand ends, and how taut it looks.
+  const ends: Array<{ p: Point; taut: number; frayed: boolean }> = [];
+  if (read.strands.length > 0) {
+    read.strands.forEach((s, i) => {
+      const anchor = at.get(s.id) ?? worldToScreen(f.cam, f.view, s.x, s.y);
+      ends.push({
+        p: strandEnd(selfP, anchor, stubPx, i, read.strands.length, read.self.id),
+        taut: s.taut,
+        frayed: false,
+      });
+    });
+  } else if (read.nearest !== null) {
+    // Nothing is holding this swimmer. One long thin streamer toward the
+    // nearest fish, stopping well short of it and fraying: the picture of a
+    // tether that has come loose, not of a longer one.
+    const target = at.get(read.nearest.id)
+      ?? worldToScreen(f.cam, f.view, read.nearest.x, read.nearest.y);
+    const dx = target.x - selfP.x;
+    const dy = target.y - selfP.y;
+    const reach = Math.min(STREAMER_REACH, (read.lengthCu * f.cam.scale) / (Math.hypot(dx, dy) || 1));
+    ends.push({ p: { x: selfP.x + dx * reach, y: selfP.y + dy * reach }, taut: 0.1, frayed: true });
+  }
+
+  ctx.save();
+  ctx.globalAlpha = st.alpha;
+  for (const e of ends) {
+    const end = { x: e.p.x + shiver, y: e.p.y + shiver * 0.4 };
+    const runPx = Math.hypot(end.x - selfP.x, end.y - selfP.y);
+    // Slack cannot droop further than the strand is long, or a short strand
+    // on an exposed swimmer draws a loop below the body instead of a line.
+    const sag = Math.min(sagAll, runPx * 0.34);
+    // A loose streamer is THIN — that is the whole reading of it — but not
+    // hairline: at 1.5 px it disappeared into the water in exactly the frame
+    // where it is the only thing telling the player they are about to be
+    // taken. Thin relative to a taut strand, present in absolute terms.
+    const w = e.frayed ? 2.7 : 1.6 + 4.4 * e.taut;
+
+    // A wide, dim, additive pass under the line: in water this dark a hairline
+    // simply is not there, and the glow is what carries it at a glance.
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    paintStrandLine(ctx, selfP, end, sag, w * 3.6, rgba(0.055 + 0.06 * e.taut), false);
+    ctx.restore();
+    // A dark under-stroke so a bright strand still separates from pale water.
+    paintStrandLine(ctx, selfP, end, sag, w + 2.6, 'rgba(2, 12, 18, 0.5)', false);
+    paintStrandLine(ctx, selfP, end, sag, w, rgba((0.6 + 0.35 * e.taut) * beat), e.frayed);
+
+    if (st.snapped) {
+      // A break, a third of the way out, with the far part left hanging: the
+      // one fish-specific mark in the replay, and it is only ever drawn for
+      // an id the ENGINE recorded in `lastTaken`.
+      const bx = selfP.x + (end.x - selfP.x) * 0.34;
+      const by = selfP.y + (end.y - selfP.y) * 0.34 + sag * 0.5;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, 11);
+      g.addColorStop(0, 'rgba(255, 240, 232, 0.9)');
+      g.addColorStop(0.4, 'rgba(255, 110, 86, 0.4)');
+      g.addColorStop(1, 'rgba(255, 80, 60, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(bx, by, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// THE HUSH (spec 2.12)
+//
+// T+0 the water goes quiet; T+LOCK nothing you do counts any more; T+8 it
+// resolves. The pall below is the SHARED half — identical for a fish deep in
+// the crowd and one out in the open, because it is the water that hushes.
+// The personal half is the tether, which goes red only for a swimmer the
+// sweep could actually take.
+// ---------------------------------------------------------------------------
+
+/**
+ * A faint tightening of the frame BEFORE the hush, for a swimmer big enough
+ * to feel it coming. Wordless and easy to miss on purpose: it is a sense, not
+ * an alarm, and the alarm is four seconds behind it.
+ */
+function paintPremonition(ctx: CanvasRenderingContext2D, f: Frame): void {
+  const p = f.premonition ?? 0;
+  if (p <= 0.01 || (f.hush !== null && f.hush !== undefined)) return;
+  const cx = f.view.w / 2;
+  const cy = f.view.h / 2;
+  const r = Math.hypot(cx, cy);
+  const g = ctx.createRadialGradient(cx, cy, r * (0.66 - p * 0.16), cx, cy, r);
+  g.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  g.addColorStop(1, `rgba(2, 10, 16, ${0.3 * p})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, f.view.w, f.view.h);
+}
+
+/**
+ * The water going quiet, then the lock, then four seconds of watching.
+ *
+ * Three things carry it, and each is doing a specific job:
+ *
+ *  1. **Colour drains** as the pall closes in. The sea is the only colourful
+ *     thing in the frame, so taking its colour away is the cheapest possible
+ *     "something is wrong" that costs no text and no icon.
+ *  2. **The frame breathes during the commit window and STOPS DEAD AT THE
+ *     LOCK.** That is how LOCK_MS is felt rather than merely enforced: the
+ *     one moving thing on screen halts, there is a single hard flash, and
+ *     from then on the picture only tightens. The player has four seconds in
+ *     which the game is visibly no longer listening.
+ *  3. **The vignette closes** with `dread`, so resolution arrives at the end
+ *     of a movement rather than out of nowhere.
+ */
+function paintHush(ctx: CanvasRenderingContext2D, f: Frame): void {
+  const h = f.hush;
+  if (!h || h.phase === 'calm') return;
+
+  // 1. The colour drains out of the water.
+  ctx.save();
+  ctx.globalCompositeOperation = 'saturation';
+  ctx.globalAlpha = 0.55 * h.pall;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, f.view.w, f.view.h);
+  ctx.restore();
+
+  // 2. The breath — and its absence.
+  const breath = h.locked ? 0 : 0.5 + 0.5 * Math.sin((f.atMs / 1000) * Math.PI * 1.15);
+  const cx = f.view.w / 2;
+  const cy = f.view.h / 2;
+  const r = Math.hypot(cx, cy);
+  const close = 0.58 - 0.2 * h.dread - 0.05 * breath;
+  const g = ctx.createRadialGradient(cx, cy, r * close, cx, cy, r);
+  g.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  g.addColorStop(0.6, `rgba(8, 4, 6, ${0.3 * h.pall * (0.6 + 0.4 * h.dread)})`);
+  g.addColorStop(1, `rgba(14, 2, 4, ${(0.5 + 0.34 * h.dread) * h.pall})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, f.view.w, f.view.h);
+
+  // 3. The lock. One hard flash, once, at the instant the game stops
+  // listening — and a thin hard edge left behind it.
+  if (h.lockFlash > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(255, 208, 190, ${0.2 * h.lockFlash * h.lockFlash})`;
+    ctx.fillRect(0, 0, f.view.w, f.view.h);
+    ctx.restore();
+  }
+  if (h.locked) {
+    // A hard edge around the whole window, tightening with the dread. It is
+    // the one part of the lock a STILL frame can carry: the rest of it is
+    // that the breathing stopped, which only exists in motion.
+    const edge = 7 + 5 * h.dread;
+    ctx.strokeStyle = `rgba(255, 92, 74, ${0.17 + 0.22 * h.dread})`;
+    ctx.lineWidth = edge;
+    ctx.strokeRect(edge / 2, edge / 2, f.view.w - edge, f.view.h - edge);
+  }
+}
+
+/**
+ * THE SCATTER (spec 2.10): "the moment freezes for two seconds — desaturated,
+ * every fish's tether drawn at once, yours the long one."
+ *
+ * Two things are worth being exact about, because both were easy to get
+ * wrong and both matter more than how it looks:
+ *
+ *  - **Whose tethers.** Every fish in the frozen frame, taken or not. A
+ *    replay that drew only the victims would be an accusation; drawing all of
+ *    them is an argument, and the argument is the whole point — the taken
+ *    ones are the ones with nothing holding them.
+ *  - **Who was taken.** `ScatterPaint.taken` is `state.lastTaken`, copied.
+ *    This function has no opinion and no way to form one. On the harness's
+ *    own session, re-deriving the set one instant after the sweep names three
+ *    DIFFERENT fish (tether.test.ts pins it), and disagreeing about who died
+ *    is the worst thing this game can do.
+ *
+ * What is deliberately NOT claimed: that the taken fish's tether is the
+ * LONGEST. It is not, in general, and it is not in the harness's own
+ * scenario — all eight of its outsiders sit at shelter 0 and only three are
+ * taken, because `selectTaken` orders exposed candidates by the preferred
+ * target and then by SIZE. What is true, always and by construction, is that
+ * every taken fish was ADRIFT, so the honest mark is the snapped tether
+ * rather than a longest-one contest.
+ */
+function paintScatter(
+  ctx: CanvasRenderingContext2D, f: Frame, at: ReadonlyMap<string, Point>,
+): void {
+  const s = f.scatter;
+  if (!s) return;
+  // Ramp in over the first fifth so the freeze lands rather than blinks.
+  const k = Math.min(1, s.progress / 0.2);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'saturation';
+  ctx.globalAlpha = 0.88 * k;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, f.view.w, f.view.h);
+  ctx.restore();
+  // Only a little extra dark: the colour is already gone, and a heavy black
+  // pass on top of that took the fish out of the picture along with it.
+  ctx.fillStyle = `rgba(3, 8, 12, ${0.09 * k})`;
+  ctx.fillRect(0, 0, f.view.w, f.view.h);
+
+  const taken = new Set(s.taken);
+  for (const read of s.tethers) {
+    const wasTaken = taken.has(read.self.id);
+    if (wasTaken) {
+      // A red bloom around a fish the sweep took, so the eye finds all three
+      // before it starts reading the geometry.
+      const p = at.get(read.self.id) ?? worldToScreen(f.cam, f.view, read.self.x, read.self.y);
+      const rr = Math.max(40, bodyRadiusCu(read.self.size) * f.cam.scale * 4.6);
+      // A RING of light rather than a filled blob: a blob at the alpha this
+      // needs to be found at a glance swallowed the fish inside it, and the
+      // body being legible is half of what the replay is showing.
+      const g = ctx.createRadialGradient(p.x, p.y, rr * 0.3, p.x, p.y, rr);
+      g.addColorStop(0, 'rgba(255, 96, 76, 0)');
+      g.addColorStop(0.42, `rgba(255, 88, 68, ${0.3 * k})`);
+      g.addColorStop(1, 'rgba(190, 40, 34, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, rr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    paintTether(ctx, f, read, at, {
+      alpha: k * (wasTaken ? 1 : 0.72),
+      alarm: 0,
+      rigid: true,
+      tremor: 0,
+      snapped: wasTaken,
+      drained: true,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The frame
 // ---------------------------------------------------------------------------
 
@@ -762,6 +1207,12 @@ function paintBite(ctx: CanvasRenderingContext2D, f: Frame): void {
  * then the far parallax snow, then the swimmers, then the near murk and
  * vignette OVER them — so a fish at the edge of the water is dimmed by the
  * same murk the water is, instead of floating on top of it.
+ *
+ * The tether sits in two different places for a reason. In the ambient and
+ * hush moments it goes UNDER the bodies, so it reads as line in water
+ * attached to a fish. In the frozen replay it goes OVER everything, after the
+ * colour has been drained — because that moment is not a scene any more, it
+ * is a diagram, and the diagram is the whole point of it.
  */
 export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
   ctx.save();
@@ -780,12 +1231,24 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
   });
   const visible = cullBodies(f.cam, f.view, placed);
 
+  // Where every swimmer is being DRAWN this frame, so a tether lands on the
+  // body it belongs to. Built from `placed` (not `visible`): a strand may
+  // reach an anchor just outside the window, and it should still point at it.
+  const at = new Map<string, Point>();
+  for (const p of placed) at.set(p.id, worldToScreen(f.cam, f.view, p.x, p.y));
+
   // Deepest first, so overlapping fish stack the way the water implies.
   visible.sort((a, b) => a.y - b.y);
 
-  // Under the bodies: what is in the water rather than on it.
-  paintBite(ctx, f);
-  paintAim(ctx, f);
+  const frozen = f.scatter !== null && f.scatter !== undefined;
+
+  // Under the bodies: what is in the water rather than on it. Neither belongs
+  // in a frozen replay — a bite cue during a scatter would be inviting the
+  // player to act inside a moment that has already happened.
+  if (!frozen) {
+    paintBite(ctx, f);
+    paintAim(ctx, f);
+  }
 
   for (const v of visible) {
     if (!v.sw.self) continue;
@@ -793,6 +1256,7 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
     paintSelfGlow(ctx, f, v.sw, s.x, s.y);
   }
   for (const v of visible) paintWake(ctx, f, v.sw);
+
   // The dart ring goes UNDER the body it belongs to, so a charged dart reads
   // as light coming off the fish rather than as a hoop drawn on top of it.
   for (const v of visible) {
@@ -807,6 +1271,37 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
     const s = worldToScreen(f.cam, f.view, v.x, v.y);
     paintSay(ctx, f, v.sw, s.x, s.y);
   }
+
+  paintPremonition(ctx, f);
+  paintHush(ctx, f);
+
+  // THE AMBIENT AND HUSH TETHER — the player's own, over the bodies AND over
+  // the hush's own pall. Both of those positions were arrived at by looking:
+  //
+  //  - OVER THE BODIES, because a swimmer deep in a tight school is exactly
+  //    when the tether is most worth reading, and it is also exactly when
+  //    every one of its strands runs behind a neighbour. Drawn underneath,
+  //    the readout the whole game turns on disappeared in the one situation
+  //    it exists to describe.
+  //  - OVER THE PALL, because the pall drains the colour out of the frame
+  //    and the tether's colour IS the personal half of the warning. Drawn
+  //    under it, an exposed swimmer's red came out a muddy brown at the
+  //    instant it had four seconds left to mean something.
+  if (!frozen && f.tether) {
+    const h = f.hush;
+    const hushing = h !== null && h !== undefined && h.phase !== 'calm';
+    paintTether(ctx, f, f.tether, at, {
+      alpha: f.tetherAlpha ?? 1,
+      alarm: hushing ? h.pall : 0,
+      rigid: hushing ? h.locked : false,
+      tremor: hushing ? 0 : (f.premonition ?? 0),
+      snapped: false,
+      drained: false,
+    });
+  }
+
+  // ...and the replay last, over the top of everything, drained.
+  paintScatter(ctx, f, at);
 
   paintMurk(ctx, f);
   paintGrain(ctx, f);

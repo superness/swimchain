@@ -132,15 +132,32 @@ function harnessLog(): LogEntry[] {
 /**
  * The harness scenario, played at 1x from its own start and then held at its
  * end so the post-sweep world stays on screen to be read.
+ *
+ * `fromMs` skips that many ms INTO the scenario before the clock starts
+ * running at 1x. It is a developer affordance and nothing else — the whole
+ * log is still folded tick by tick by the real engine, so the world at
+ * `fromMs` is bit-identical to the world a viewer who sat and watched for
+ * `fromMs` would have reached. It exists because the two moments worth
+ * looking at arrive 18.25 s and 26.25 s in, and the second of them lasts two
+ * seconds; capturing those repeatably is not something a screenshot should
+ * have to gamble on. See App.tsx's `?at=` note.
  */
-export function harnessSea(wallStartMs: number): Sea {
+export function harnessSea(wallStartMs: number, fromMs: number = 0, selfId: string = 'e0'): Sea {
   const log = harnessLog();
   let loop: LoopState = createLoop(H_EPOCH, null);
-  const seaMs = (wallMs: number) => Math.min(H_START + (wallMs - wallStartMs), H_END);
+  const seaMs = (wallMs: number) => Math.min(H_START + fromMs + (wallMs - wallStartMs), H_END);
   return {
-    selfId: 'e0',
+    // Which of the fixture's twelve swimmers the camera follows. `e0` is the
+    // one in the sheltered cluster; passing an outsider (`o0`) is how the
+    // hush is looked at from the point of view of a swimmer the sweep is
+    // about to take, which is the whole subject of spec 2.10 and cannot be
+    // reached any other way in a scripted log. See App.tsx's `?me=`.
+    selfId,
     // e0 is a FIXTURE swimmer, so this is where the harness puts it (the
-    // centre of bloom cell 367) rather than a spawn the player owns.
+    // centre of bloom cell 367) rather than a spawn the player owns. It is
+    // read only before this client's first publish, and `publish` here is
+    // inert, so it stays e0's spot even when `selfId` names another fixture
+    // swimmer — nothing downstream can act on it.
     spawn: { x: 1984, y: 1472 },
     seaMs,
     step(wallMs: number): ShoalState {

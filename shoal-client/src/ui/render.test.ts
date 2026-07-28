@@ -24,7 +24,7 @@
 import {
   VIEW_SPAN_W, VIEW_SPAN_H, CAMERA_BAND, BODY_R0, BODY_R_EXP, BODY_EXTENT,
   fitScale, bandPx, worldToScreen, screenToWorld, isVisible, cullBodies,
-  followCamera, bodyRadiusCu, bodyExtentCu, reckonSmooth,
+  followCamera, bodyRadiusCu, bodyExtentCu, reckonSmooth, fitBodies,
   type Camera, type Viewport,
 } from './render';
 import { reckon } from '../lib/fixed';
@@ -461,6 +461,78 @@ check('even the smallest swimmer has a body worth drawing', bodyRadiusCu(60) > 1
 check('extent is the stated multiple of radius',
   Math.abs(bodyExtentCu(START_SIZE) - BODY_R0 * BODY_EXTENT) < 1e-12, bodyExtentCu(START_SIZE));
 check('a fish is longer than it is round', BODY_EXTENT > 1, BODY_EXTENT);
+
+// ===========================================================================
+// 6. Framing a whole arrangement (`fitBodies`, used by the scatter replay)
+//
+// The ordinary camera cannot show one: VIEW_SPAN_H caps the visible water at
+// 1600 cu tall on ANY window, and the harness's twelve fish span 1792 cu of
+// y, so at least one of the three the sweep takes is always off the frame
+// under `followCamera`. Every expected value below is derived by hand.
+// ===========================================================================
+
+// One point, no margin: nothing to pull back for, so the ordinary scale.
+{
+  const cam = fitBodies([{ x: 2000, y: 1500 }], VIEW, 0);
+  check('a single swimmer is framed at the ordinary scale, centred on it',
+    cam.scale === fitScale(VIEW) && cam.x === 2000 && cam.y === 1500, cam);
+}
+// A tight pair: 200 cu apart with 100 cu of margin needs 400 cu of width,
+// which 1200 px covers at 3 px/cu — far past fitScale (0.5), so fitScale wins
+// and the camera does NOT zoom in.
+{
+  const cam = fitBodies([{ x: 1900, y: 1500 }, { x: 2100, y: 1500 }], VIEW, 100);
+  check('fitBodies never zooms in past the ordinary framing', cam.scale === fitScale(VIEW), cam.scale);
+}
+// A wide pair. By hand: x spans 1000..3400 = 2400 cu, plus 2 x 100 margin =
+// 2600; y spans 0 + 200 = 200. scale = min(0.5, 1200/2600, 800/200)
+//   = min(0.5, 0.46153846..., 4) = 0.46153846...  centre = (2200, 1500).
+{
+  const cam = fitBodies([{ x: 1000, y: 1500 }, { x: 3400, y: 1500 }], VIEW, 100);
+  check('a spread-out arrangement pulls back to the width it needs (hand-derived 1200/2600)',
+    Math.abs(cam.scale - 1200 / 2600) < 1e-12 && cam.x === 2200 && cam.y === 1500, cam);
+}
+// Bound by HEIGHT instead. By hand: y spans 500..2500 = 2000, +200 = 2200;
+// x spans 0 + 200 = 200. scale = min(0.5, 1200/200, 800/2200)
+//   = min(0.5, 6, 0.363636...) = 0.363636...
+{
+  const cam = fitBodies([{ x: 2000, y: 500 }, { x: 2000, y: 2500 }], VIEW, 100);
+  check('...or to the height, whichever binds (hand-derived 800/2200)',
+    Math.abs(cam.scale - 800 / 2200) < 1e-12 && cam.x === 2000 && cam.y === 1500, cam);
+}
+// The property the replay actually needs: EVERYONE is on screen. Checked on
+// the harness's own twelve swimmers — the arrangement `followCamera` provably
+// cannot frame — and on a scatter of random ones.
+{
+  const harnessSpread = [
+    { x: 1984, y: 1472 }, { x: 1088, y: 1968 }, { x: 1280, y: 1168 }, { x: 1488, y: 2368 },
+    { x: 1680, y: 768 }, { x: 2288, y: 576 }, { x: 2480, y: 2176 }, { x: 2688, y: 976 },
+    { x: 2880, y: 1776 },
+  ];
+  const cam = fitBodies(harnessSpread, VIEW, 120);
+  let off = 0;
+  for (const p of harnessSpread) if (!isVisible(cam, VIEW, p.x, p.y, 0)) off++;
+  check('every one of the harness\'s swimmers is inside the framed replay', off === 0, { off });
+  // ...and the ordinary camera genuinely cannot do it: 2368 - 1472 = 896 cu
+  // below the followed fish, against a visible half-height of at most
+  // VIEW_SPAN_H / 2 = 800 cu.
+  const follow = followCamera({ x: 1984, y: 1472, scale: 0.5 }, 1984, 1472, VIEW);
+  check('...while the ordinary camera leaves one of them off the frame',
+    !isVisible(follow, VIEW, 1488, 2368, 0), follow);
+}
+{
+  let off = 0;
+  let seed = 99;
+  const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 4294967296; };
+  for (let trial = 0; trial < 200; trial++) {
+    const pts = [];
+    const n = 1 + Math.floor(rnd() * 20);
+    for (let i = 0; i < n; i++) pts.push({ x: rnd() * 4096, y: rnd() * 3072 });
+    const cam = fitBodies(pts, VIEW, 60);
+    for (const p of pts) if (!isVisible(cam, VIEW, p.x, p.y, 0)) off++;
+  }
+  check('every point of 200 random arrangements lands inside the frame', off === 0, { off });
+}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

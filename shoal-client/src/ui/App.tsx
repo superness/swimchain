@@ -24,6 +24,23 @@
  *     alive, so it stays reachable — just not visible enough to be part of the
  *     game.
  *   - `1` and `2` switch which sea is being folded (see demoSea.ts).
+ *   - three query parameters — `?at=`, `?played=`, `?me=` — documented on
+ *     `devParam` below. None of them is reachable from inside the game.
+ *
+ * =============================================================================
+ * THE TETHER, THE HUSH AND THE SCATTER (Task 6)
+ * =============================================================================
+ *
+ * All three are readings produced by `tether.ts` from the fold's own numbers,
+ * painted by `seaPaint.ts`, and wired together in step 6 of the frame loop
+ * below. The one thing this file OWNS rather than passes through is the
+ * snapshot of `state.lockedPositions` — the fold clears it the instant it has
+ * used it, and the replay that follows needs exactly those bodies, because
+ * the world one tick later is a different frame with three smaller fish in
+ * it. See the comment on `lockedSnap`.
+ *
+ * There is still no text anywhere. The tether is geometry, the hush is
+ * colour draining out of the water, and the scatter is a frozen diagram.
  *
  * =============================================================================
  * THE VERBS, AND THE ONE RULE ABOUT THEM (Task 5)
@@ -63,21 +80,30 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
-import { paintFrame, type Swimmer } from './seaPaint';
-import { fitScale, followCamera, screenToWorld, type Camera, type Viewport } from './render';
+import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
+import { fitBodies, fitScale, followCamera, screenToWorld, type Camera, type Viewport } from './render';
 import {
   applyInput, canClaimEat, createInput, dartCharge, eatTarget, emitDue,
   headingTo, isDarting, markEat, positionAt, type InputEvent, type InputState,
 } from './input';
+import {
+  hushRead, lockedBodies, premonition, readTether, scatterReplay, tetherOpacity,
+  type TetherRead,
+} from './tether';
 import { canEat, cellCentre } from '../lib/bloom';
+import { bodiesOf } from '../lib/shoalEngine';
+import type { Body } from '../lib/shelter';
 import type { ReadonlyVisitMap } from '../lib/shoalTypes';
 import { reckon } from '../lib/fixed';
-import { TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
+import { HUSH_MS, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
 
 type SceneKind = 'lively' | 'harness';
 
 /** How long a swept swimmer is drawn dazed. Spec 2.9's "a few seconds". */
 const DAZED_MS = 2_500;
+
+/** How much open water the frozen replay leaves around the outermost fish. */
+const REPLAY_MARGIN_CU = 220;
 
 /** A word is at most this long. Long enough for a warning, short enough that
  *  it fits over a fish. */
@@ -91,9 +117,66 @@ const SAY_MAX = 60;
  */
 const NEVER_VISITED: ReadonlyVisitMap = new Map();
 
+/**
+ * ACCUMULATED PLAYTIME, for the tether's fade (spec 2.10).
+ *
+ * "The tether fades with accumulated playtime" — accumulated, not per
+ * session, because it is a measure of how much this player has learned and
+ * learning does not reset when a window closes. So it is persisted, and the
+ * only thing on hand to persist it in is the browser's own store. It carries
+ * no identity, no world state and nothing another client ever reads; a
+ * failure to read or write it costs a returning player nothing worse than
+ * their tether staying legible for longer.
+ */
+const PLAYED_KEY = 'shoal.playedMs';
+
+function readPlayed(): number {
+  try {
+    const v = Number(window.localStorage.getItem(PLAYED_KEY));
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  } catch {
+    return 0; // private mode, or no store at all. A newcomer, then.
+  }
+}
+
+function writePlayed(ms: number): void {
+  try {
+    window.localStorage.setItem(PLAYED_KEY, String(Math.round(ms)));
+  } catch { /* as above: losing this is not worth a broken frame */ }
+}
+
+/**
+ * Two wordless developer affordances, both read once from the address bar and
+ * neither reachable in the app itself:
+ *
+ *  - `?at=<ms>` starts the harness replay that many ms into its own scenario,
+ *    which is the only practical way to capture the hush (18.25 s in) and the
+ *    two-second scatter freeze (26.25 s in) repeatably.
+ *  - `?played=<ms>` overrides the accumulated playtime, so the fade can be
+ *    looked at without waiting ten minutes for it.
+ *  - `?me=<id>` follows a different one of the harness fixture's twelve
+ *    swimmers. The fixture's own `e0` sits in the sheltered cluster, so it is
+ *    the only way to see the hush from inside a swimmer the sweep is about to
+ *    take — which is the moment spec 2.10 is entirely about.
+ */
+function devParam(name: string): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get(name);
+  } catch {
+    return null;
+  }
+}
+
+function devNumber(name: string): number | null {
+  const raw = devParam(name);
+  if (raw === null) return null;
+  const v = Number(raw);
+  return Number.isFinite(v) ? v : null;
+}
+
 export function App() {
   const [showDiag, setShowDiag] = useState(false);
-  const [scene, setScene] = useState<SceneKind>('lively');
+  const [scene, setScene] = useState<SceneKind>(() => (devNumber('at') !== null ? 'harness' : 'lively'));
   /** The line being typed, or null when not speaking. */
   const [typing, setTyping] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -160,7 +243,32 @@ export function App() {
     if (!ctx) return;
 
     const startWall = Date.now();
-    const sea: Sea = scene === 'harness' ? harnessSea(startWall) : livelySea(startWall);
+    const at = devNumber('at');
+    const sea: Sea = scene === 'harness'
+      ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
+      : livelySea(startWall);
+
+    // The tether's fade clock. `?played=` overrides it for a screenshot.
+    const playedOverride = devNumber('played');
+    const playedBase = playedOverride ?? readPlayed();
+    let playedSavedAt = startWall;
+
+    /**
+     * THE LOCKED ARRANGEMENT, kept across frames.
+     *
+     * `state.lockedPositions` exists only between the input lock and the
+     * resolve tick — the fold clears it the instant it has used it — but the
+     * replay that follows needs exactly those bodies, because they are the
+     * ones the sweep judged. The world one instant later is NOT the same
+     * frame: three fish have just paid SCATTER_COST. So it is snapshotted the
+     * first frame it appears (the dread window is four seconds, sixteen folded
+     * ticks, so a rendering loop cannot miss it), and the replay checks the
+     * snapshot belongs to the hush that produced this sweep before trusting
+     * it — a lock is always exactly HUSH_MS - LOCK_MS before its own
+     * resolution.
+     */
+    let lockedSnap: Body[] | null = null;
+    let lockedAtMs = -1;
 
     let input: InputState = createInput(sea.spawn.x, sea.spawn.y, 0);
     // The pointer, in CSS pixels, while it is held — or null. Held state lives
@@ -271,33 +379,116 @@ export function App() {
         }
       }
 
+      // --- 6. THE TETHER, THE HUSH AND THE SCATTER (Task 6). Every number
+      // below is read out of the fold — `bodiesOf`, `hushStartMs`, `tension`,
+      // `lockedPositions`, `lastTaken` — and shaped by `tether.ts`. Nothing
+      // here re-derives shelter, exposure or a verdict.
+      const bodies = bodiesOf(state);
+      const hush = hushRead(state.hushStartMs, atMs);
+
+      // Snapshot the sweep's own arrangement the moment it is frozen.
+      const lockedNow = lockedBodies(state);
+      if (lockedNow !== null) { lockedSnap = lockedNow; lockedAtMs = atMs; }
+
+      // The replay reads the locked frame if that frame belongs to THIS
+      // sweep; otherwise the live one, which is honest about being second
+      // best rather than silently showing the wrong moment.
+      const freshLock = lockedSnap !== null
+        && state.lastSweepMs - lockedAtMs > 0 && state.lastSweepMs - lockedAtMs <= HUSH_MS;
+      const replayBodies = freshLock && lockedSnap ? lockedSnap : bodies;
+      const replay = scatterReplay(state, atMs, replayBodies);
+      // The frozen frame is drawn at the instant the sweep JUDGED, so the
+      // arrangement on screen is the one that decided it — see render.ts's
+      // header on the display never disagreeing with the fold.
+      const drawMs = replay === null ? atMs : (freshLock ? lockedAtMs : replay.atMs);
+
+      // AFTER THE LOCK THE TETHER STOPS LISTENING. It is read off the frozen
+      // bodies, so it hangs where the player was and no longer answers to
+      // them — which is what makes spec 2.12's input lock a thing you feel
+      // rather than a rule you are told about.
+      const tetherBodies = hush.locked && lockedNow !== null ? lockedNow : bodies;
+      const meBody = tetherBodies.find((b) => b.id === sea.selfId) ?? null;
+      const tether: TetherRead | null = meBody === null ? null : readTether(meBody, tetherBodies);
+
+      const scatter: ScatterPaint | null = replay === null ? null : {
+        progress: replay.progress,
+        taken: replay.taken,
+        // Every fish's tether, taken or not: a replay that drew only the
+        // victims would be an accusation instead of an argument.
+        tethers: replay.bodies.map((b) => readTether(b, replay.bodies)),
+      };
+
+      const moment = replay !== null ? 'scatter' : hush.phase !== 'calm' ? 'hush' : 'ambient';
+      const playedMs = playedBase + (wall - startWall);
+      if (playedOverride === null && wall - playedSavedAt > 5_000) {
+        playedSavedAt = wall;
+        writePlayed(playedMs);
+      }
+
       const swimmers: Swimmer[] = [];
-      for (const f of state.fish.values()) {
-        const self = f.id === sea.selfId;
-        swimmers.push({
-          id: f.id,
-          size: f.size,
-          vec: f.vec,
-          self,
-          scattered: state.lastTaken.includes(f.id) && atMs - state.lastSweepMs < DAZED_MS,
-          // A dart cooldown is not on the wire, so this client knows only its
-          // own. Everyone else's ring is simply absent rather than guessed.
-          charge: self ? dartCharge(input, authorMs) : undefined,
-          darting: self ? isDarting(input, authorMs) : undefined,
-          say: said.get(f.id),
-        });
+      if (replay !== null) {
+        // The frozen frame is drawn from the bodies the sweep judged. Speed 0
+        // so `reckonSmooth` returns those exact coordinates; the heading is
+        // cosmetic and comes from whatever vector the fish last published.
+        for (const b of replay.bodies) {
+          swimmers.push({
+            id: b.id,
+            size: b.size,
+            vec: { x: b.x, y: b.y, heading: state.fish.get(b.id)?.vec.heading ?? 0, speed: 0, t: drawMs },
+            self: b.id === sea.selfId,
+            scattered: replay.taken.includes(b.id),
+          });
+        }
+      } else {
+        for (const f of state.fish.values()) {
+          const self = f.id === sea.selfId;
+          swimmers.push({
+            id: f.id,
+            size: f.size,
+            vec: f.vec,
+            self,
+            scattered: state.lastTaken.includes(f.id) && atMs - state.lastSweepMs < DAZED_MS,
+            // A dart cooldown is not on the wire, so this client knows only its
+            // own. Everyone else's ring is simply absent rather than guessed.
+            charge: self ? dartCharge(input, authorMs) : undefined,
+            darting: self ? isDarting(input, authorMs) : undefined,
+            say: said.get(f.id),
+          });
+        }
       }
 
       // Follow the player. Before their first vector arrives — and in the
       // harness scenario for its first fold — there is nobody to follow, so
       // the camera sits on the middle of the water rather than at the origin,
-      // which would open on empty black.
+      // which would open on empty black. During a replay the camera holds on
+      // the frozen frame with everything else in it.
       const tx = me ? me.x : WORLD_W / 2;
       const ty = me ? me.y : WORLD_H / 2;
       if (cam === null) cam = { x: tx, y: ty, scale: fitScale(view) };
       cam = followCamera(cam, tx, ty, view);
+      // ...except during the replay, which is a diagram and needs every
+      // participant inside it. The ordinary framing provably cannot manage
+      // that (render.ts's `fitBodies`), and an argument with one of its three
+      // subjects off the edge of the window is not an argument.
+      const shownCam = replay === null
+        ? cam
+        : fitBodies(replay.bodies, view, REPLAY_MARGIN_CU);
 
-      paintFrame(ctx, { view, cam, atMs, swimmers, aim, bite });
+      paintFrame(ctx, {
+        view,
+        cam: shownCam,
+        atMs: drawMs,
+        swimmers,
+        aim,
+        bite,
+        tether,
+        tetherAlpha: tetherOpacity(playedMs, moment),
+        hush,
+        // A premonition is a sense of a hush that has NOT started; once one
+        // has, the hush itself is the signal.
+        premonition: hush.phase === 'calm' && me ? premonition(state.tension, me.size) : 0,
+        scatter,
+      });
     };
     raf = requestAnimationFrame(frame);
 

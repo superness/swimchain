@@ -256,6 +256,44 @@ export function followCamera(
   };
 }
 
+/**
+ * A camera that frames EVERY one of `points`, with `marginCu` of sea around
+ * the outermost of them on each side.
+ *
+ * Used by the scatter replay (spec 2.10: "every fish's tether drawn at
+ * once"), which is an argument rather than a scene — an argument with a
+ * participant off the edge of the window is not one. The ordinary framing
+ * cannot show it: `VIEW_SPAN_H` caps the visible water at 1600 cu tall on any
+ * window shape, and the harness's own session spreads its twelve fish over
+ * 1792 cu, so at least one of the three fish the sweep took is always outside
+ * the frame under `followCamera`.
+ *
+ * It never zooms IN past `fitScale`, so a tight school is framed exactly as
+ * it was a frame earlier and only a spread-out one pulls back. An empty list
+ * has nothing to frame and returns the ordinary scale at the origin; callers
+ * with a world to fall back on should not call it with one.
+ */
+export function fitBodies(points: readonly Point[], view: Viewport, marginCu: number): Camera {
+  if (points.length === 0) return { x: 0, y: 0, scale: fitScale(view) };
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const needW = maxX - minX + 2 * marginCu;
+  const needH = maxY - minY + 2 * marginCu;
+  // `needW`/`needH` are zero for a single point with no margin; dividing by
+  // zero gives Infinity, which `min` discards in favour of `fitScale` — the
+  // right answer, and the reason there is no special case for it.
+  return {
+    x: (minX + maxX) / 2,
+    y: (minY + maxY) / 2,
+    scale: Math.min(fitScale(view), view.w / needW, view.h / needH),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Dead reckoning at display time
 // ---------------------------------------------------------------------------
