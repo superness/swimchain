@@ -458,14 +458,27 @@ h1, h2, h3, p { margin: 0; }
     0 24px 54px rgba(0,0,0,.5); }
 }
 .tongs {
+  /* It carries the DIP'S VALUE now, not the word "dip it" — so it is type
+     you read rather than a hint you notice once. Bigger, and always fully
+     legible rather than the .38 ghost the label could get away with. */
   position: absolute; left: 0; right: 0; bottom: 6px;
-  font-family: var(--chalk); font-size: 13px; letter-spacing: .04em;
-  color: #ffe0a8; text-shadow: 0 1px 4px #000;
+  font-family: var(--sign); font-size: clamp(13px, 1.6vw, 17px); letter-spacing: .03em;
+  color: #ffe8bd; text-shadow: 0 1px 5px #000, 0 0 14px rgba(0, 0, 0, .8);
+  line-height: 1.05;
   opacity: 0; transition: opacity .2s;
 }
-/* Faintly visible ALWAYS — the review's first minute had no idea the basket
-   was clickable; the hint must exist before the first dip, not after. */
-.tongs { opacity: .38; }
+/* the spill case rides underneath it, small — the warning has to be on the
+   control, because the control is the last thing you touch before it costs
+   you (designer review: never punish with withheld information) */
+.tongs i {
+  display: block; font-style: normal; font-family: var(--chalk);
+  font-size: 9.5px; letter-spacing: .04em; color: #ff9a72;
+  text-shadow: 0 1px 3px #000;
+}
+/* Visible ALWAYS — the review's first minute had no idea the basket was
+   clickable. It was .38 when it read "dip it"; a NUMBER has to be readable at
+   rest, so it sits at .82 and goes full on hover. */
+.tongs { opacity: .82; }
 .basket.ready:hover .tongs, .basket.golden .tongs { opacity: .95; }
 
 /* Out of flow ON PURPOSE: the kitchen column is vertically centred, so a
@@ -498,14 +511,21 @@ h1, h2, h3, p { margin: 0; }
   min-width: 0;
 }
 .worth {
-  /* Must cover the TALLEST state with room to spare, not approximately: the
-     kitchen column is vertically centred, so if the live state (big worth
-     figure + doubling tag + ticker) renders taller than this floor while
-     the pale state sits exactly at it, the whole rack shifts the moment a
-     chip becomes bankable. 4.4em > the live stack's real height (the worth
-     line alone is 1.25em type on a 1.25 line-height), so every state rests
-     on the same floor and the baskets never move. */
-  min-height: 4.4em;
+  /* THE PLATE IS ONE HEIGHT, ALWAYS — and it was not.
+     This carried `min-height: 4.4em` and a comment claiming "every state
+     rests on the same floor and the baskets never move". MEASURED with the
+     floor forced off, at 512px: normal 42.6px, burning 55.3px, ratted
+     65.9px, against a 44px floor. The rat state has been overshooting by
+     22px and recentring the whole kitchen column every time he latches.
+     A reserve only works if it actually covers the tallest state, and the
+     tallest state grew past it at some point without anyone measuring.
+
+     Fixed by taking the exception line OUT OF FLOW (`.pot-worth` below)
+     rather than by picking a bigger number — a reserve tuned to today's
+     longest sentence is a bug waiting for tomorrow's. What is left in flow
+     is the pot line and the ladder, which are fixed, so the plate cannot
+     change height at all and there is nothing to reserve against. */
+  position: relative;
   /* THE PLATE MAY NOT BE WIDER THAN ITS FRYER. It sized to its own content —
      a `<p>` centred in a flex column with no width of its own — so a long
      number pushed it past the slot on BOTH sides and straight into the
@@ -548,7 +568,17 @@ h1, h2, h3, p { margin: 0; }
    six rules, dead. Found while adding an m6 tier to it for The Long Fry,
    which would have been a seventh dead rule. The multiplier's permanent home
    is `.ladder` (the lit rungs); its loud moment is `.crackle-banner`. */
-.pot-worth { display: block; font-style: normal; font-size: .85em; color: #b3a081; margin-top: 2px; }
+/* OUT OF FLOW. It is only ever the rat or the burner now — both of which
+   already shout from the basket itself (the perch badge, the lit knob), so
+   this is a caption on a state you can already see, and it must not be able
+   to resize the plate it hangs under. Floats just below the plate; nothing
+   is reserved for it because nothing needs to be. */
+.pot-worth {
+  position: absolute; left: 0; right: 0; top: 100%;
+  margin-top: 3px; padding: 0 6px;
+  display: block; font-style: normal; font-size: .85em; color: #b3a081;
+  pointer-events: none;
+}
 
 /* THE CRACKLE FLASH — a fresh mount per crackle (keyed on its timestamp), so
    consecutive crackles each land their own hit. */
