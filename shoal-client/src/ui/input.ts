@@ -63,7 +63,7 @@
  * makes it the currency.
  *
  * =============================================================================
- * THE DART, AND THE TWO THINGS THAT ARE NOT OBVIOUS ABOUT IT
+ * THE DART: A PRESS ARMS, A PUBLISH SPENDS
  * =============================================================================
  *
  * 1. **A dart has a start AND an end, and both are speed changes**, so both are
@@ -71,29 +71,51 @@
  *    leave every other client reckoning this swimmer at SPEED_DART until the
  *    next keep-alive — up to MAX_EMIT_GAP_MS of phantom travel.
  *
- * 2. **The end cannot be published when it happens.** DART_MS (900) is far
- *    below MIN_EMIT_GAP_MS (3_000) and the floor is absolute — shoalEmit.ts's
- *    header is explicit that it has no change-of-mind exception, because such
- *    an exception is precisely what a 60fps loop would exploit. So the burst
- *    the WORLD sees lasts MIN_EMIT_GAP_MS, not DART_MS: measured in
- *    input.test.ts at 2_100 ms of extra dart-speed travel, 464 cu. The 900 ms
- *    governs only when this module stops calling itself darting (and therefore
- *    when the ring on screen stops showing a burst).
+ * 2. **A press cannot always be published when it happens, so it WAITS —
+ *    unspent.** `applyInput` sets `dartArmedMs` and nothing else: no burst is
+ *    stamped and no cooldown starts. `intentAt` reports SPEED_DART from that
+ *    instant, which makes the armed dart a change of mind against the last
+ *    published vector, so `shouldEmit` carries it at the first legal instant.
+ *    `markEmitted` — the moment a vector at SPEED_DART actually reaches the
+ *    writer — is the only place `dartStartMs` is set and therefore the only
+ *    place a dart is spent.
  *
- *    Worse, and also pinned by a test: a dart pressed while the floor is down
- *    is never announced AT ALL — by the time a write is legal the burst is
- *    over, so what goes out is the cruise that followed it. Since the local
- *    fish also reckons off the last published vector, nothing happens on
- *    screen either; it is consistent, not a desync. But "dart is how you save
- *    your life" (spec 2.4) does not survive a verb that silently does nothing
- *    for up to MIN_EMIT_GAP_MS - DART_MS after the key is pressed.
+ *    THE DEFECT THIS REPLACES, because it should never be reintroduced: the
+ *    press used to stamp `dartStartMs` and start the 11 s cooldown
+ *    immediately. `shouldEmit`'s floor then refused for up to MIN_EMIT_GAP_MS,
+ *    and with DART_MS at 900 the burst was over before a write was ever legal,
+ *    so for any press landing in the first 2_100 ms of the floor NOTHING
+ *    ANNOUNCING THE DART WAS EVER WRITTEN. The player paid the full cooldown
+ *    and no other client saw a thing; on a swimmer steering at the floor that
+ *    was ~70% of presses, and on one writing at the keep-alive ~26%. Spec 2.4
+ *    calls the dart "how you save your life", and it did nothing at all at
+ *    exactly the moment the hush fires.
  *
- *    BOTH are reported rather than fixed here. The candidate fixes — arming
- *    the dart until the first legal write, or raising DART_MS to
- *    MIN_EMIT_GAP_MS — are game-design decisions about the game's single most
- *    important verb, not implementation details, and DART_MS /
- *    DART_COOLDOWN_MS / MIN_EMIT_GAP_MS are all POLICY constants so either is
- *    reachable later without a fork.
+ *    The floor is NOT what was wrong and is untouched: it is the only thing
+ *    standing between one client and the shared per-space mempool budget
+ *    (shoalEmit.ts's header), and it can never get a change-of-mind exception
+ *    because that exception is what a 60fps loop would exploit. Arming does not
+ *    ask for one — it queues behind it. Nor can arming raise the write rate:
+ *    `shouldEmit` decides WHEN a write may happen from (last, intent.t,
+ *    lastEmitMs) alone and arming only changes WHAT the intent says, so a
+ *    player firing the instant the floor opens reaches the same 21 writes a
+ *    minute that per-frame steering already reaches. Both are measured against
+ *    each other in input.test.ts §5b.
+ *
+ * 3. **DART_MS === MIN_EMIT_GAP_MS**, so the burst the world reckons is the
+ *    burst this module claims. The wire cannot represent a shorter one — a
+ *    start and an end are two writes and no two writes may be closer than the
+ *    floor — so a 900 ms DART_MS was a duration no client could ever observe.
+ *    Now the end of the burst becomes legal on the very frame it happens, and
+ *    `isDarting` is true for exactly as long as the published vector reads
+ *    SPEED_DART. The cost is stated in shoalConst.ts: 660 cu per dart, 1.94 *
+ *    SHELTER_R, flagged for playtesting rather than papered over by retuning
+ *    SPEED_DART.
+ *
+ * 4. **What is still missing**: nothing on screen acknowledges an ARMED dart,
+ *    so a press can be silent for up to MIN_EMIT_GAP_MS before the fish moves.
+ *    `isDartArmed` exists for a display that wants to say so; what it should
+ *    look like is a question about the dart ring's visual language.
  *
  * =============================================================================
  * EAT: THE VERB IS WIRED, AND THE WORLD NOW CREDITS IT (open item 10, resolved)
@@ -168,9 +190,19 @@ export interface InputState {
   readonly lastEmitMs: number;
   /** The heading being held, in brads, or null when nothing is held. */
   readonly steer: number | null;
-  /** Ms the most recent dart began, or -1 if this swimmer has never darted. */
+  /**
+   * Ms of a press that has not yet reached the writer, or -1 when no dart is
+   * waiting. THE ARMED STATE: the player has committed to a burst and it is
+   * queued behind the emit floor. It costs nothing while it waits.
+   */
+  readonly dartArmedMs: number;
+  /**
+   * Ms the most recent dart was PUBLISHED — not pressed — or -1 if this
+   * swimmer has never had one go out. This is what the cooldown is measured
+   * from, and the only thing that spends a dart.
+   */
   readonly dartStartMs: number;
-  /** The heading frozen at the moment that dart began. */
+  /** The heading frozen at the moment of the press. */
   readonly dartHeading: number;
   /** A word waiting for a vector to ride out on, or null. */
   readonly pendingSay: string | null;
@@ -197,6 +229,7 @@ export function createInput(x: number, y: number, heading: number = 0): InputSta
     last: null,
     lastEmitMs: 0,
     steer: null,
+    dartArmedMs: -1,
     dartStartMs: -1,
     dartHeading: heading,
     pendingSay: null,
@@ -233,16 +266,50 @@ export function headingTo(dx: number, dy: number): number {
 // Dart
 // ---------------------------------------------------------------------------
 
-/** True while the burst itself is running: `[dartStartMs, +DART_MS)`. */
+/**
+ * True while a press is waiting for a vector to leave on — pressed, committed
+ * to, and not yet announced to anybody.
+ *
+ * NOT the same as `isDarting`, deliberately. An armed dart has not happened
+ * yet: the swimmer is still reckoned off its last published vector, at whatever
+ * speed that vector says, on this client and on every other. Reporting it as a
+ * burst would be the display disagreeing with the fold, which is the one thing
+ * render.ts forbids outright.
+ *
+ * Exported for a display that wants to acknowledge the press before the water
+ * carries it. NOTHING DRAWS IT TODAY, so a press is currently silent for up to
+ * MIN_EMIT_GAP_MS — the same latency steering already has ("a turn takes effect
+ * when it is WRITTEN", above), but on a verb pressed in a panic. A cue is
+ * wanted; what it should look like is a question about the dart ring's visual
+ * language (seaPaint.ts's three states) rather than about this module.
+ */
+export function isDartArmed(s: InputState): boolean {
+  return s.dartArmedMs >= 0;
+}
+
+/**
+ * True while the burst itself is running: `[dartStartMs, +DART_MS)`, measured
+ * from the instant the burst was PUBLISHED.
+ *
+ * This is exactly the window in which the last vector this client published
+ * reads SPEED_DART, and it is exact rather than approximate because DART_MS ===
+ * MIN_EMIT_GAP_MS: the end of the burst is a speed change that becomes legal on
+ * the very frame it happens, so the ring stops flaring on the same frame the
+ * world stops reckoning a burst.
+ */
 export function isDarting(s: InputState, nowMs: number): boolean {
   return s.dartStartMs >= 0 && nowMs - s.dartStartMs < DART_MS;
 }
 
 /**
- * True when a dart is available. Measured from the last dart's PRESS, not from
- * the end of its burst, so the interval between two darts is exactly
- * DART_COOLDOWN_MS and a player can read the ring as "time until the next
- * dart" with nothing added on.
+ * True when a dart is available. Measured from the last dart's PUBLISH, not
+ * from its press and not from the end of its burst.
+ *
+ * ARMING IS FREE, so this deliberately ignores `dartArmedMs`: a press that has
+ * not gone out yet has cost nothing, the ring still reads full, and pressing
+ * again simply re-aims the dart that is already waiting. That is what keeps
+ * `dartCharge(...) === 1` and `canDart(...)` the same statement at every
+ * instant — the invariant the whole second scoreboard rests on.
  */
 export function canDart(s: InputState, nowMs: number): boolean {
   return s.dartStartMs < 0 || nowMs - s.dartStartMs >= DART_COOLDOWN_MS;
@@ -334,7 +401,11 @@ function heldHeading(s: InputState): number {
  */
 export function intentAt(s: InputState, nowMs: number): Vec {
   const p = positionAt(s, nowMs);
-  const darting = isDarting(s, nowMs);
+  // An ARMED dart is part of the intent from the instant it is pressed, and
+  // that is the whole mechanism: the intent says SPEED_DART, so it is a change
+  // of mind against the last published vector, so `shouldEmit` carries it at
+  // the first legal instant instead of the floor quietly eating it.
+  const darting = s.dartArmedMs >= 0 || isDarting(s, nowMs);
   return {
     x: p.x,
     y: p.y,
@@ -353,8 +424,10 @@ export function intentAt(s: InputState, nowMs: number): Vec {
  *
  * A refused event returns the SAME OBJECT, which is the whole of the refusal
  * protocol — a dart on cooldown, or an empty word, leaves nothing behind. That
- * matters more than it looks for the dart: if a refused press moved
- * `dartStartMs`, holding the key down would push the cooldown out forever.
+ * matters more than it looks for the dart: if a refused press moved the
+ * cooldown's own reference instant, holding the key down would push the
+ * cooldown out forever. It cannot now, because the only thing that moves that
+ * instant is a publish, and a publish is not something a key can force.
  */
 export function applyInput(s: InputState, e: InputEvent, nowMs: number): InputState {
   switch (e.kind) {
@@ -363,8 +436,13 @@ export function applyInput(s: InputState, e: InputEvent, nowMs: number): InputSt
     case 'release':
       return s.steer === null ? s : { ...s, steer: null };
     case 'dart':
+      // A PRESS ARMS. It does not stamp the burst and it does not start the
+      // cooldown — `markEmitted` does both, and only once the burst has
+      // actually been published. Pressing again while one is already armed
+      // re-aims it rather than queueing a second: there is one pending dart or
+      // none.
       if (!canDart(s, nowMs)) return s;
-      return { ...s, dartStartMs: nowMs, dartHeading: heldHeading(s) };
+      return { ...s, dartArmedMs: nowMs, dartHeading: heldHeading(s) };
     case 'say': {
       const text = e.text.trim();
       return text.length === 0 ? s : { ...s, pendingSay: text };
@@ -372,10 +450,32 @@ export function applyInput(s: InputState, e: InputEvent, nowMs: number): InputSt
   }
 }
 
-/** Record that `vec` was published: it becomes the vector everything is
- *  reckoned from, and any pending word left with it. */
+/**
+ * Record that `vec` was published: it becomes the vector everything is
+ * reckoned from, any pending word left with it — and an armed dart is SPENT,
+ * here and nowhere else.
+ *
+ * The commit is conditioned on `vec.speed === SPEED_DART` rather than on the
+ * arm alone, which is the literal statement of the rule: the cooldown is
+ * charged when a vector announcing the burst reaches the writer. A publish that
+ * somehow did not carry the burst would leave the dart armed and free, which is
+ * the safe direction to fail in — the player keeps a dart they were not heard
+ * to spend, and it goes out on the next vector.
+ *
+ * The burst therefore runs from the PUBLISH instant, `vec.t`, not from the
+ * press: the world starts reckoning SPEED_DART when it receives the vector, and
+ * `isDarting` has to mean the same window or the ring on the player's own body
+ * is describing a different fish from the one everyone else can see.
+ */
 export function markEmitted(s: InputState, vec: Vec): InputState {
-  return { ...s, last: vec, lastEmitMs: vec.t, pendingSay: null };
+  const spends = s.dartArmedMs >= 0 && vec.speed === SPEED_DART;
+  return {
+    ...s,
+    ...(spends ? { dartArmedMs: -1, dartStartMs: vec.t } : {}),
+    last: vec,
+    lastEmitMs: vec.t,
+    pendingSay: null,
+  };
 }
 
 /**

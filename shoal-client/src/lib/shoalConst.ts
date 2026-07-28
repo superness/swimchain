@@ -255,6 +255,40 @@ export const MAX_FOLD_TICKS = 1_000_000;
 /** Cruise and dart speeds in cu per second. */
 export const SPEED_CRUISE = 60;
 export const SPEED_DART = 220;
-/** Dart burst duration and cooldown. */
-export const DART_MS = 900;
+
+/**
+ * Dart burst duration. EQUAL TO MIN_EMIT_GAP_MS (shoalEmit.ts, 3_000) — not by
+ * coincidence, and the equality is asserted in input.test.ts §2 rather than
+ * imported, because shoalEmit.ts imports this module and a back-import would
+ * close a cycle.
+ *
+ * WHY THE TWO MUST MATCH. A burst has a start and an end and both are writes,
+ * and no two writes may be closer together than MIN_EMIT_GAP_MS — the floor is
+ * absolute and has no change-of-mind exception (shoalEmit.ts's header explains
+ * why it can never get one). So the WIRE CANNOT REPRESENT a burst shorter than
+ * the floor. At the old value of 900 the world reckoned every published dart at
+ * SPEED_DART for the full 3_000 ms anyway, while `isDarting` (input.ts) called
+ * the burst over after 900 — a 2_100 ms window, 464 cu of travel, in which this
+ * client's own display disagreed with the vector it had published. Equal is the
+ * only value that cannot lie about that, and it makes `isDarting` agree with
+ * the published vector by construction.
+ *
+ * WHAT IT COSTS, stated rather than compensated for: SPEED_DART * DART_MS /
+ * 1000 = 660 cu per dart, which is 1.94 * SHELTER_R (340) — nearly two shelter
+ * radii, and enough to cross from exposed into a ball inside the hush's LOCK_MS
+ * commit window. That number is NOT new (a published dart always travelled it);
+ * what is new is that it is now also true of the darts that used to be
+ * swallowed whole. Whether 660 cu is too generous is a PLAYTEST question, and
+ * the honest lever is SPEED_DART, not a DART_MS that misreports the burst.
+ *
+ * POLICY: nothing folds this, so a tuning pass may move it freely — but move it
+ * WITH MIN_EMIT_GAP_MS, or the tripwire in input.test.ts will say so.
+ */
+export const DART_MS = 3_000;
+
+/**
+ * Minimum gap between one swimmer's darts, measured from the instant a burst is
+ * PUBLISHED (input.ts: a press arms, a publish spends) — never from the press,
+ * so a dart the emit floor could not carry costs nothing.
+ */
 export const DART_COOLDOWN_MS = 11_000;

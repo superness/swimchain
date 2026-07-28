@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   createInput, applyInput, intentAt, emitDue, markEmitted,
-  headingTo, isDarting, canDart, dartCharge, positionAt,
+  headingTo, isDartArmed, isDarting, canDart, dartCharge, positionAt,
   canClaimEat, markEat, eatTarget,
   type InputState,
 } from './input';
@@ -38,7 +38,7 @@ import { reckon } from '../lib/fixed';
 import { cellIndex } from '../lib/bloom';
 import {
   BLOOM_VISIT_R, DART_COOLDOWN_MS, DART_MS, EAT_COOLDOWN_MS, EAT_R,
-  HEADING_STEPS, SPEED_CRUISE, SPEED_DART, TICK_MS,
+  HEADING_STEPS, SHELTER_R, SPEED_CRUISE, SPEED_DART, TICK_MS,
 } from '../lib/shoalConst';
 import type { Vec } from '../lib/shoalTypes';
 
@@ -165,15 +165,37 @@ function main() {
       DART_COOLDOWN_MS >= 10_000 && DART_COOLDOWN_MS <= 12_000, { DART_COOLDOWN_MS });
     check('the burst is shorter than the cooldown', DART_MS < DART_COOLDOWN_MS,
       { DART_MS, DART_COOLDOWN_MS });
+    // THE RELATIONSHIP THAT MAKES THE BURST HONEST. The wire cannot represent
+    // a burst shorter than the emit floor: a start and an end are both writes,
+    // and no two writes may be closer together than MIN_EMIT_GAP_MS. A DART_MS
+    // below the floor is therefore a duration no client can ever observe — the
+    // world would see MIN_EMIT_GAP_MS of dart travel while this module called
+    // the burst over. Equal is the only value that cannot lie, and it is what
+    // makes `isDarting` agree with the published vector by construction.
+    check('DART_MS is exactly the emit floor, so the burst the world sees is the burst this module claims',
+      DART_MS === MIN_EMIT_GAP_MS, { DART_MS, MIN_EMIT_GAP_MS });
 
     const fresh = createInput(1000, 1000, 0);
     check('a swimmer who has never darted may dart', canDart(fresh, 0) === true);
     check('...and reads as fully charged', dartCharge(fresh, 0) === 1, { got: dartCharge(fresh, 0) });
     check('...and is not darting', isDarting(fresh, 0) === false);
 
+    // A PRESS ARMS; A PUBLISH SPENDS. The whole of the dart's cost is deferred
+    // to the instant the burst actually reaches the writer — see section 5b for
+    // why, and for the phase sweep that proves an armed dart always gets there.
+    // Here the two are the same instant, because a swimmer with no `last` emits
+    // its very first vector unconditionally (shoalEmit: `last === null` ->
+    // always), so this section can go on measuring the cooldown from T0.
     const T0 = 4_000;
-    const darted = applyInput(fresh, { kind: 'dart' }, T0);
-    check('the dart is accepted and stamped at the press', darted.dartStartMs === T0,
+    const armed = applyInput(fresh, { kind: 'dart' }, T0);
+    check('the press is accepted', armed !== fresh);
+    check('...but arming stamps no burst — nothing has been spent yet',
+      armed.dartStartMs === -1, { got: armed.dartStartMs });
+    check('...and the intent it produces is the burst, so the first legal write carries it',
+      intentAt(armed, T0).speed === SPEED_DART, intentAt(armed, T0));
+
+    const darted = markEmitted(armed, intentAt(armed, T0));
+    check('publishing the burst is what stamps it', darted.dartStartMs === T0,
       { got: darted.dartStartMs });
 
     // The burst itself: [T0, T0 + DART_MS).
@@ -199,10 +221,21 @@ function main() {
     check('...so holding the key down cannot extend the cooldown',
       refused.dartStartMs === T0, { got: refused.dartStartMs });
 
-    // And the second dart, once permitted, restarts the clock.
-    const again = applyInput(darted, { kind: 'dart' }, T0 + DART_COOLDOWN_MS);
-    check('a permitted dart restarts the cooldown from its own press',
-      again.dartStartMs === T0 + DART_COOLDOWN_MS && canDart(again, T0 + DART_COOLDOWN_MS + 1) === false,
+    // And the second dart, once permitted, restarts the clock — from its own
+    // PUBLISH. Pressing it only arms it, and an armed dart is still free: the
+    // player who pressed and has not been heard yet has spent nothing, so
+    // `canDart` must still say yes. (This check used to read "restarts the
+    // cooldown from its own press" and assert `canDart` had gone false on the
+    // press alone. That is precisely the behaviour that let a dart be spent
+    // without ever being announced, so it is the check that was wrong.)
+    const againArmed = applyInput(darted, { kind: 'dart' }, T0 + DART_COOLDOWN_MS);
+    check('a second press only arms — it does not restart the cooldown by itself',
+      againArmed.dartStartMs === T0 && canDart(againArmed, T0 + DART_COOLDOWN_MS + 1) === true,
+      { got: againArmed.dartStartMs });
+    const again = markEmitted(againArmed, intentAt(againArmed, T0 + DART_COOLDOWN_MS + 500));
+    check('publishing it is what restarts the cooldown, from the publish',
+      again.dartStartMs === T0 + DART_COOLDOWN_MS + 500
+        && canDart(again, T0 + DART_COOLDOWN_MS + 501) === false,
       { got: again.dartStartMs });
 
     // The charge — the second scoreboard. Linear from 0 at the press to 1 at
@@ -247,7 +280,16 @@ function main() {
       const during = intentAt(d, 500);
       check('a dart intends the dart speed', during.speed === SPEED_DART, during);
       check('...on the heading held at the press', during.heading === 64, during);
-      const turned = applyInput(d, { kind: 'steer', heading: 192 }, 600);
+      // Steering while the dart is still ARMED must not swing it either: the
+      // heading is frozen at the press, and the press is what the player
+      // committed to, not the frame the water happened to carry it on.
+      const swung = applyInput(d, { kind: 'steer', heading: 192 }, 200);
+      check('...which stays frozen while the dart is only armed',
+        intentAt(swung, 300).heading === 64, intentAt(swung, 300));
+      // Published at t = 100 (a swimmer with no `last` emits unconditionally),
+      // so the burst runs [100, 100 + DART_MS).
+      const started = markEmitted(d, intentAt(d, 100));
+      const turned = applyInput(started, { kind: 'steer', heading: 192 }, 600);
       check('...and steering mid-burst does not swing the burst',
         intentAt(turned, 700).heading === 64, intentAt(turned, 700));
       check('...but the new heading takes over once the burst ends',
@@ -399,10 +441,11 @@ function main() {
   //   t = 5_000 speed CRUISE -> DART, gap 5_000
   //             (>= MIN_EMIT_GAP_MS, < MAX_EMIT_GAP_MS, change of mind)
   //                                                 -> write #2, SPEED_DART
-  //   t = 5_900 burst ends (5_000 + DART_MS), speed DART -> CRUISE,
-  //             but gap = 900 < MIN_EMIT_GAP_MS     -> REFUSED
-  //   t = 8_000 gap = 3_000 = MIN_EMIT_GAP_MS, still a change of mind
-  //                                                 -> write #3, SPEED_CRUISE
+  //   t = 8_000 burst ends (5_000 + DART_MS), speed DART -> CRUISE, and
+  //             gap = 3_000 = MIN_EMIT_GAP_MS exactly, so the end is legal AT
+  //             THE INSTANT IT HAPPENS                -> write #3, SPEED_CRUISE
+  // That coincidence is not luck: DART_MS === MIN_EMIT_GAP_MS, so the burst
+  // can only end on a frame where a write is already permitted.
   {
     const s0 = applyInput(createInput(1000, 1000, 0), { kind: 'steer', heading: 0 }, 0);
     const { writes } = play(s0, 0, 15_000, 20, new Map([
@@ -420,31 +463,29 @@ function main() {
     check('the dart END is written, and it is back to cruising',
       writes[2].vec.speed === SPEED_CRUISE, writes[2].vec);
 
-    // THE MEASUREMENT. The end cannot be published when it happens, because
-    // MIN_EMIT_GAP_MS is absolute (shoalEmit.ts's own header: no change-of-mind
-    // exception). The delay is exactly the difference of the two constants.
+    // THE MEASUREMENT. The end lands on the very frame the burst stops, with no
+    // delay at all — which is only true because DART_MS === MIN_EMIT_GAP_MS.
+    // (This check was written when DART_MS was 900 and measured 2_100 ms of
+    // phantom dart travel here; the expression is unchanged, its value is now
+    // zero, and the 464 cu it used to cost is gone.)
     const endedAt = 5_000 + DART_MS;
-    check('the dart end is delayed by exactly MIN_EMIT_GAP_MS - DART_MS (hand-derived 2100 ms)',
-      writes[2].vec.t - endedAt === MIN_EMIT_GAP_MS - DART_MS,
+    check('the dart end is published at the instant the burst ends, with no delay',
+      writes[2].vec.t === endedAt && writes[2].vec.t - endedAt === MIN_EMIT_GAP_MS - DART_MS,
       { late: writes[2].vec.t - endedAt, expected: MIN_EMIT_GAP_MS - DART_MS });
 
-    // ...and what that delay COSTS, in the game's own units. Everyone,
-    // including this client, reckons the swimmer at SPEED_DART for the whole
-    // gap, so the burst the WORLD sees lasts MIN_EMIT_GAP_MS, not DART_MS.
-    // Hand-derived from the vector written at t = 5_000
+    // ...so the burst the WORLD reckons is exactly the burst this module
+    // claims. Hand-derived from the vector written at t = 5_000
     // ({x: 1296, y: 1000, heading: 0, speed: 220}):
-    //   at t = 5_900: dx = trunc(220*4096*900/4096000)  = trunc(198) = 198
-    //                 x  = 1296 + 198 = 1494 -> floor(1494/8)*8 = 186*8 = 1488
     //   at t = 8_000: dx = trunc(220*4096*3000/4096000) = trunc(660) = 660
     //                 x  = 1296 + 660 = 1956 -> floor(1956/8)*8 = 244*8 = 1952
     check('the dart-start vector is authored from the hand-derived (1296, 1000)',
       writes[1].vec.x === 1296 && writes[1].vec.y === 1000, writes[1].vec);
     {
       const atEnd = reckon(writes[1].vec, endedAt);
-      check('the swimmer is at the hand-derived 1488 when the burst ends',
-        atEnd.x === 1488, atEnd);
-      check('but the end vector is authored 464 cu further on (hand-derived)',
-        writes[2].vec.x === 1952 && writes[2].vec.x - atEnd.x === 464,
+      check('the swimmer is at the hand-derived 1952 when the burst ends',
+        atEnd.x === 1952, atEnd);
+      check('and the end vector is authored from exactly there — no phantom travel',
+        writes[2].vec.x === 1952 && writes[2].vec.x - atEnd.x === 0,
         { end: writes[2].vec.x, atEnd: atEnd.x });
     }
 
@@ -455,9 +496,13 @@ function main() {
       writes.slice(2).map((w) => w.vec.speed));
   }
 
-  // A dart pressed while the floor is down is still a dart — it just cannot be
-  // announced yet. This is the worst case for "dart is how you save your life"
-  // and it is asserted rather than left implicit.
+  // A dart pressed while the floor is down is still a dart. It cannot be
+  // announced YET — the floor has no change-of-mind exception and never will —
+  // so it WAITS, and goes out whole at the first legal instant. This is the
+  // worst case for "dart is how you save your life", and it used to be the
+  // case where the verb did nothing at all: the burst expired inside the floor
+  // and no vector this swimmer ever published mentioned it, while the press
+  // had already spent an 11 s cooldown.
   {
     const s0 = applyInput(createInput(1000, 1000, 0), { kind: 'steer', heading: 0 }, 0);
     // Turn hard at t = 3_000 (a change of mind, emitted), then dart 500 ms
@@ -466,26 +511,313 @@ function main() {
       [3_000, (s, t) => applyInput(s, { kind: 'steer', heading: 64 }, t)],
       [3_500, (s, t) => applyInput(s, { kind: 'dart' }, t)],
     ]));
-    // Hand-derived, and worse than "delayed" — the dart is SWALLOWED WHOLE:
-    //   t = 0      opening write, heading 0, SPEED_CRUISE
+    // Hand-derived:
+    //   t = 0      opening write, heading 0, SPEED_CRUISE, from (1000, 1000)
     //   t = 3_000  the turn. gap = MIN_EMIT_GAP_MS and headingDelta(0, 64) = 64,
-    //              well past the change-of-mind threshold -> written
-    //   t = 3_500  the dart. The floor has 2_500 ms left to run, so nothing can
-    //              be written while the burst is on
-    //   t = 4_400  the burst ends (3_500 + DART_MS), still inside the floor
-    //   t = 6_000  a write is finally legal — but the intent is now
-    //              byte-identical to what was written at 3_000 (heading 64,
-    //              SPEED_CRUISE), so there is nothing to say
-    //   t = 11_000 the keep-alive, 3_000 + MAX_EMIT_GAP_MS
-    // So no vector this swimmer ever publishes mentions the dart, and the
-    // player's own fish never moves any faster either (it reckons off the same
-    // published vector). Consistent, and completely inert.
-    check('a dart pressed inside the floor is never announced at all',
-      writes.every((w) => w.vec.speed !== SPEED_DART),
+    //              well past the change-of-mind threshold -> written.
+    //              dx = trunc(60*4096*3000/4096000) = 180 -> x = 1180
+    //              -> floor(1180/8)*8 = 147*8 = 1176; y = 1000
+    //   t = 3_500  the dart is ARMED. The floor has 2_500 ms left to run, so it
+    //              cannot be announced, and it is not spent either
+    //   t = 6_000  the first legal instant. The intent is the burst, which is a
+    //              speed change against the cruise written at 3_000 -> written,
+    //              SPEED_DART, and the cooldown starts HERE. Heading 64 is
+    //              straight down: COS[64] = 0, SIN[64] = 4096, so
+    //              dy = trunc(60*4096*3000/4096000) = 180 -> y = 1176, x = 1176
+    //   t = 9_000  the burst ends (6_000 + DART_MS) and the end is legal on the
+    //              same frame -> written, SPEED_CRUISE.
+    //              dy = trunc(220*4096*3000/4096000) = 660 -> y = 1176 + 660
+    //              = 1836 -> floor(1836/8)*8 = 229*8 = 1832
+    //   t = 12_000 gap = 3_000 but nothing has changed since 9_000, and the
+    //              keep-alive is not due until 17_000 -> nothing
+    const dart = writes.find((w) => w.vec.speed === SPEED_DART);
+    check('a dart pressed inside the floor IS announced — it waits, it is not swallowed',
+      dart !== undefined,
       { speeds: writes.map((w) => `${w.vec.t}:${w.vec.speed}`) });
-    check('...and no extra write happens either: 0, 3000, then the keep-alive at 11000',
-      writes.map((w) => w.vec.t).join(',') === '0,3000,11000',
+    check('...at the hand-derived first legal instant, 2500 ms after the press',
+      dart !== undefined && dart.vec.t === 6_000 && dart.vec.t - 3_500 === MIN_EMIT_GAP_MS - 500,
+      { at: dart?.vec.t });
+    check('...on the heading held at the press, from the hand-derived (1176, 1176)',
+      dart !== undefined && dart.vec.heading === 64 && dart.vec.x === 1176 && dart.vec.y === 1176,
+      dart?.vec);
+    check('...and the writes are the hand-derived 0, 3000, 6000, 9000',
+      writes.map((w) => w.vec.t).join(',') === '0,3000,6000,9000',
       { times: writes.map((w) => w.vec.t) });
+    check('...ending back at cruise, from the hand-derived (1176, 1832)',
+      writes.length === 4 && writes[3].vec.speed === SPEED_CRUISE
+        && writes[3].vec.x === 1176 && writes[3].vec.y === 1832,
+      writes[3]?.vec);
+  }
+
+  // =========================================================================
+  // 5b. ARMING — a dart that cannot be announced is not spent
+  // =========================================================================
+  //
+  // THE RULE, in one line: **a press arms; a publish spends.** The cooldown is
+  // charged at the instant the burst reaches the writer, never at the instant
+  // the key went down, so a dart the wire could not carry costs nothing and the
+  // player keeps it.
+  //
+  // What it replaces: `applyInput` used to stamp the burst on the press and
+  // start the 11 s cooldown there. `shouldEmit`'s floor then refused for up to
+  // MIN_EMIT_GAP_MS, by which time a DART_MS burst was over and the intent had
+  // reverted to cruise — so for any press landing in the first
+  // MIN_EMIT_GAP_MS - DART_MS of the floor, NOTHING announcing the dart was
+  // ever written. The player paid the whole cooldown and no other client saw a
+  // thing. On a swimmer steering at the floor that was ~70% of presses.
+  //
+  // The floor itself is untouched, and must be: it is the only thing standing
+  // between one client and the shared per-space mempool budget (shoalEmit.ts's
+  // header). Arming does not ask for an exception to it — it waits for it.
+
+  // --- The phase sweep. Not one offset: every offset. ------------------------
+  //
+  // A dart is pressed at each 20 ms phase of the whole emit window, from the
+  // instant after a write to the keep-alive ceiling, and must be published in
+  // every single case. The expected instant is derived here from the floor
+  // alone, never read back off the loop: the opening write is at t = 0, so the
+  // first legal instant is MIN_EMIT_GAP_MS, and a press after that is carried
+  // on its own frame (`play` folds the event before it calls `emitDue`). Both
+  // land on the frame grid because MIN_EMIT_GAP_MS / 20 = 150 is exact.
+  //
+  // ONE PHASE IS ITS OWN CASE, and this sweep found it rather than assuming
+  // it: a press at t = 0 lands on the same frame as the opening write, and a
+  // swimmer with no `last` emits unconditionally (shoalEmit: `last === null`
+  // -> always), so that dart goes out AT ONCE, with no floor to wait behind.
+  // The first vector of a session is free, and a dart is allowed to be it.
+  {
+    const STEP = 20;
+    const s0 = applyInput(createInput(1000, 1000, 0), { kind: 'steer', heading: 0 }, 0);
+    let unannounced = 0;
+    let wrongInstant = 0;
+    let waitedTooLong = 0;
+    let spentWhileWaiting = 0;
+    const bad: unknown[] = [];
+    for (let press = 0; press <= MAX_EMIT_GAP_MS; press += STEP) {
+      const { writes } = play(s0, 0, press + MAX_EMIT_GAP_MS * 2, STEP,
+        new Map([[press, (s: InputState, t: number) => applyInput(s, { kind: 'dart' }, t)]]));
+      const burst = writes.find((w) => w.vec.speed === SPEED_DART);
+      if (burst === undefined) {
+        unannounced++;
+        if (bad.length < 3) bad.push({ press, published: 'never' });
+        continue;
+      }
+      const want = press === 0 ? 0 : press < MIN_EMIT_GAP_MS ? MIN_EMIT_GAP_MS : press;
+      if (burst.vec.t !== want) {
+        wrongInstant++;
+        if (bad.length < 3) bad.push({ press, got: burst.vec.t, want });
+      }
+      // The wait is bounded by the floor itself — an armed dart is always a
+      // speed change against `last` (a swimmer can only be armed when its last
+      // published vector is NOT at dart speed: the cooldown is longer than the
+      // burst, so the end is always out before another press is permitted), so
+      // it can never be held back past the first legal instant.
+      if (burst.vec.t - press > MIN_EMIT_GAP_MS) waitedTooLong++;
+      // ...and every frame it spent waiting, it was still the player's to keep.
+      const held = applyInput(s0, { kind: 'dart' }, press);
+      for (let t = press; t < burst.vec.t; t += 20) if (!canDart(held, t)) spentWhileWaiting++;
+    }
+    check('a dart pressed at EVERY phase of the emit floor is published',
+      unannounced === 0, { unannounced, bad });
+    check('...each at the hand-derived first legal instant', wrongInstant === 0,
+      { wrongInstant, bad });
+    check('...so no press ever waits longer than the floor itself',
+      waitedTooLong === 0, { waitedTooLong });
+    check('...and none of them is spent while it waits',
+      spentWhileWaiting === 0, { spentWhileWaiting });
+  }
+
+  // --- Not published, not spent ---------------------------------------------
+  {
+    const s0 = applyInput(createInput(1000, 1000, 0), { kind: 'steer', heading: 0 }, 0);
+    const opened = markEmitted(s0, intentAt(s0, 0));
+    const armedAt = 100;
+    const arm = applyInput(opened, { kind: 'dart' }, armedAt);
+
+    check('the press is accepted rather than refused', arm !== opened);
+    check('...and reads as armed', isDartArmed(arm) === true);
+    check('...but NOT as darting: nothing has happened in the world yet',
+      isDarting(arm, armedAt + 1) === false);
+    check('an unpublished dart has not been spent: the ring still reads full',
+      dartCharge(arm, armedAt) === 1, { got: dartCharge(arm, armedAt) });
+    check('...so the verb is still available at the very next instant',
+      canDart(arm, armedAt + 1) === true);
+    check('...and a second press is accepted, not refused',
+      applyInput(arm, { kind: 'dart' }, armedAt + 100) !== arm);
+    // For the whole time it waits — the entire remaining floor — it stays the
+    // player's. This is the assertion the old behaviour cannot survive.
+    {
+      let refused = 0;
+      for (let t = armedAt; t < MIN_EMIT_GAP_MS; t += 7) if (!canDart(arm, t)) refused++;
+      check('an unpublished dart is free for every instant it waits',
+        refused === 0, { refused });
+    }
+    // A second press RE-AIMS the pending dart rather than queueing a second
+    // one: there is one armed dart or none, and it leaves on the next vector.
+    {
+      const aimed = applyInput(
+        applyInput(arm, { kind: 'steer', heading: 128 }, 200), { kind: 'dart' }, 200);
+      check('a second press re-aims the pending dart', intentAt(aimed, 300).heading === 128,
+        intentAt(aimed, 300));
+      check('...and still produces exactly one burst', (() => {
+        let s = aimed;
+        const w: Vec[] = [];
+        for (let t = 200; t <= 30_000; t += 20) s = emitDue(s, t, (v) => { w.push(v); });
+        return w.filter((v) => v.speed === SPEED_DART).length === 1;
+      })());
+    }
+  }
+
+  // --- Published, and now it IS spent ---------------------------------------
+  //
+  // Hand-derived, frames every 20 ms, heading 0 held, opening write at t = 0,
+  // dart pressed at t = 100:
+  //   t = 3_000  first legal instant -> the burst is published AND CHARGED
+  //   t = 6_000  the burst ends (3_000 + DART_MS) -> back to cruise
+  //   t = 14_000 3_000 + DART_COOLDOWN_MS: the next dart is permitted
+  // The cooldown runs from the PUBLISH, not the press, so at 100 +
+  // DART_COOLDOWN_MS = 11_100 only 8_100 ms of it has run and a press is still
+  // refused. That is the price of not spending a dart that could not be sent.
+  {
+    let s = applyInput(createInput(1000, 1000, 0), { kind: 'steer', heading: 0 }, 0);
+    const writes: Vec[] = [];
+    let atCommit: InputState | null = null;
+    for (let t = 0; t <= 30_000; t += 20) {
+      if (t === 100) s = applyInput(s, { kind: 'dart' }, t);
+      const before = writes.length;
+      s = emitDue(s, t, (vec) => { writes.push(vec); });
+      if (writes.length > before && writes[writes.length - 1].speed === SPEED_DART) atCommit = s;
+    }
+    const burst = writes.find((w) => w.speed === SPEED_DART);
+    check('the armed dart is published at the hand-derived first legal instant',
+      burst !== undefined && burst.t === MIN_EMIT_GAP_MS, { at: burst?.t });
+    check('...after which nothing is armed any more, and the burst IS running',
+      atCommit !== null && isDartArmed(atCommit) === false
+        && isDarting(atCommit, MIN_EMIT_GAP_MS) === true);
+    // The two now describe the same window by construction: `isDarting` is true
+    // for exactly as long as the last published vector reads SPEED_DART.
+    check('...for exactly as long as the published vector reads the dart speed',
+      atCommit !== null
+        && isDarting(atCommit, MIN_EMIT_GAP_MS + DART_MS - 1) === true
+        && isDarting(atCommit, MIN_EMIT_GAP_MS + DART_MS) === false);
+    check('the publish is what spends it: the ring empties at that instant',
+      atCommit !== null && dartCharge(atCommit, MIN_EMIT_GAP_MS) === 0,
+      { got: atCommit === null ? 'never published' : dartCharge(atCommit, MIN_EMIT_GAP_MS) });
+    check('...and a second press is refused from that instant on',
+      atCommit !== null && canDart(atCommit, MIN_EMIT_GAP_MS) === false
+        && applyInput(atCommit, { kind: 'dart' }, MIN_EMIT_GAP_MS + 1) === atCommit);
+    check('...until exactly DART_COOLDOWN_MS after the PUBLISH (hand-derived 14000)',
+      atCommit !== null
+        && canDart(atCommit, MIN_EMIT_GAP_MS + DART_COOLDOWN_MS - 1) === false
+        && canDart(atCommit, MIN_EMIT_GAP_MS + DART_COOLDOWN_MS) === true
+        && MIN_EMIT_GAP_MS + DART_COOLDOWN_MS === 14_000);
+    check('...which is later than DART_COOLDOWN_MS after the press, by exactly the wait',
+      atCommit !== null && canDart(atCommit, 100 + DART_COOLDOWN_MS) === false,
+      { pressPlusCooldown: 100 + DART_COOLDOWN_MS });
+
+    // --- The world's view of the burst duration ------------------------------
+    //
+    // The end write follows the start by exactly DART_MS, so no other client
+    // ever reckons this swimmer at dart speed for a moment longer than the
+    // burst lasted. Hand-derived from the vectors above: the burst starts at
+    // t = 3_000 from x = 1000 + trunc(60*4096*3000/4096000) = 1180 ->
+    // floor(1180/8)*8 = 1176, and ends at 1176 + trunc(220*4096*3000/4096000)
+    // = 1176 + 660 = 1836 -> floor(1836/8)*8 = 1832.
+    const i = writes.findIndex((w) => w.speed === SPEED_DART);
+    const after = i < 0 ? undefined : writes[i + 1];
+    check('the world sees a burst exactly DART_MS long',
+      i >= 0 && after !== undefined && after.t - writes[i].t === DART_MS,
+      { start: writes[i]?.t, end: after?.t });
+    check('...and nothing is left reckoning at dart speed afterwards',
+      i >= 0 && writes.slice(i + 1).every((w) => w.speed !== SPEED_DART));
+    check('the burst is authored from the hand-derived 1176 and ends at 1832',
+      i >= 0 && after !== undefined && writes[i].x === 1176 && after.x === 1832,
+      { start: writes[i]?.x, end: after?.x });
+
+    // THE DISTANCE A DART NOW COVERS, stated as a number rather than a feeling.
+    // SPEED_DART * DART_MS / 1000 = 220 * 3 = 660 cu, or 656 on the 8 cu
+    // lattice after quantisation. SHELTER_R is 340, so one dart is 1.94 shelter
+    // radii — nearly enough to cross from fully exposed into a ball, inside the
+    // hush's LOCK_MS commit window. That is exactly the escape spec 2.4 calls
+    // "how you save your life", and it may well be too much of one. It is
+    // FLAGGED FOR PLAYTESTING, not silently compensated for by retuning
+    // SPEED_DART: this check exists so that any future retune has to face the
+    // number rather than discover it.
+    check('a dart covers the hand-derived 660 cu — nearly two shelter radii, flagged for playtesting',
+      (SPEED_DART * DART_MS) / 1000 === 660
+        && i >= 0 && after !== undefined && after.x - writes[i].x === 656
+        && 660 > SHELTER_R * 1.9 && 660 < SHELTER_R * 2,
+      { cu: (SPEED_DART * DART_MS) / 1000, quantised: after === undefined ? null : after.x - writes[i].x, SHELTER_R });
+  }
+
+  // --- Arming must not buy a single extra write -----------------------------
+  //
+  // The worry this answers: a player who holds a dart armed and fires it the
+  // instant the floor opens is, by construction, writing at the maximum rate.
+  // That is TRUE and it is fine — the maximum rate is the floor, and the floor
+  // is enforced in `shouldEmit` against nothing but (last, intent.t,
+  // lastEmitMs). Arming changes only WHAT the intent says, never WHEN a write
+  // is permitted, so the ceiling it reaches is the same ceiling per-frame
+  // steering already reaches. Both are measured below, against each other.
+  //
+  // (a) Dart spammed on every one of a minute's frames, with no steering at
+  //     all. Hand-derived from DART_COOLDOWN_MS(11_000), DART_MS(3_000) and
+  //     MAX_EMIT_GAP_MS(8_000), frames every 20 ms:
+  //       t = 0      first press, `last` is null -> published, charged
+  //       t = 3_000  burst ends -> speed 0 written
+  //       t = 11_000 the cooldown expires; the press is armed, and the
+  //                  keep-alive (3_000 + 8_000) is due on the same frame ->
+  //                  published
+  //       t = 14_000 burst ends
+  //       ...and the cycle repeats every 11_000 ms, each dart landing exactly
+  //       on the keep-alive that follows its predecessor's end (3_000 + 8_000
+  //       = 11_000 is why). So: 0, 3_000, 11_000, 14_000, 22_000, 25_000,
+  //       33_000, 36_000, 44_000, 47_000, 55_000, 58_000 — twelve writes, well
+  //       under the 21 the floor allows.
+  {
+    const STEP = 20;
+    const events = new Map<number, (s: InputState, t: number) => InputState>();
+    for (let t = 0; t <= 60_000; t += STEP) events.set(t, (s) => applyInput(s, { kind: 'dart' }, t));
+    const { writes } = play(createInput(1000, 1000, 0), 0, 60_000, STEP, events);
+    check('a minute of dart spam writes the hand-derived twelve times',
+      writes.length === 12, { count: writes.length, times: writes.map((w) => w.vec.t) });
+    check('...at the hand-derived instants',
+      writes.map((w) => w.vec.t).join(',')
+        === '0,3000,11000,14000,22000,25000,33000,36000,44000,47000,55000,58000',
+      { times: writes.map((w) => w.vec.t) });
+    check('...which is under the 21 writes a minute the floor permits',
+      writes.length <= 60_000 / MIN_EMIT_GAP_MS + 1, { count: writes.length });
+  }
+  //
+  // (b) The real adversary: per-frame steering AND per-frame dart pressing at
+  //     once, on the same 24 ms grid section 6 uses. A change of mind is
+  //     pending at every single floor boundary either way, so the answer is the
+  //     floor's own ceiling — 60_000 / 3_000 + 1 = 21 — and it must be exactly
+  //     the number steering alone already produces. Arming buys nothing.
+  {
+    const STEP = 24;
+    const both = new Map<number, (s: InputState, t: number) => InputState>();
+    const steerOnly = new Map<number, (s: InputState, t: number) => InputState>();
+    for (let t = 0; t <= 60_000; t += STEP) {
+      const heading = (t / STEP) % HEADING_STEPS;
+      steerOnly.set(t, (s) => applyInput(s, { kind: 'steer', heading }, t));
+      both.set(t, (s) => applyInput(
+        applyInput(s, { kind: 'steer', heading }, t), { kind: 'dart' }, t));
+    }
+    const spam = play(createInput(1000, 1000, 0), 0, 60_000, STEP, both).writes;
+    const plain = play(createInput(1000, 1000, 0), 0, 60_000, STEP, steerOnly).writes;
+    check('a minute of steering AND dart spam still writes exactly the hand-derived 21 times',
+      spam.length === 21, { count: spam.length });
+    check('...exactly as many as steering alone: arming buys not one extra write',
+      spam.length === plain.length, { spam: spam.length, plain: plain.length });
+    let tooClose = 0;
+    for (let j = 1; j < spam.length; j++) {
+      if (spam[j].vec.t - spam[j - 1].vec.t < MIN_EMIT_GAP_MS) tooClose++;
+    }
+    check('...and no two of them are closer together than the floor', tooClose === 0, { tooClose });
+    check('...while the darts themselves still get through',
+      spam.some((w) => w.vec.speed === SPEED_DART),
+      { speeds: spam.map((w) => w.vec.speed) });
   }
 
   // =========================================================================
