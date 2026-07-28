@@ -256,14 +256,23 @@ h1, h2, h3, p { margin: 0; }
 /* Every fryer you buy has to fit in the same room. Each size carries a `vh`
    term as well as a `vw` one, because four baskets at the one-basket size
    overflow the stage vertically long before they run out of width. */
-.rack-2 .basket { width: min(clamp(150px, 19vw, 292px), 46vh); }
-.rack-3 .basket { width: min(clamp(122px, 14.5vw, 224px), 42vh); }
-.rack-4 .basket { width: min(clamp(112px, 13vw, 202px), 29vh); }
+/* THE SLOT OWNS THE WIDTH, NOT THE BUTTON. `.basket-slot` is the flex item
+   the rack lays out, and it used to have no width at all — so it sized to
+   whichever child was intrinsically widest. The button is fixed, but the
+   caption under it is text: the moment the cheese rat latched on, "dips for
+   29.0k" became "the rat is eating this fryer's crumbs — shoo him", the slot
+   grew to fit that line, and every other fryer slid sideways. Exactly the
+   bug `.worth`'s min-height already prevents on the vertical axis, on the
+   axis nobody had pinned. Size the slot and let the button fill it, and no
+   caption — present or future — can move a fryer. */
+.rack-2 .basket-slot { width: min(clamp(150px, 19vw, 292px), 46vh); }
+.rack-3 .basket-slot { width: min(clamp(122px, 14.5vw, 224px), 42vh); }
+.rack-4 .basket-slot { width: min(clamp(112px, 13vw, 202px), 29vh); }
 .rack-4 { max-width: 470px; }
 
 .basket {
   position: relative;
-  width: min(clamp(190px, 26vw, 380px), 52vh);
+  width: 100%;
   aspect-ratio: 1 / 1.04;
   padding: 0;
   border-radius: 10px 10px 26px 26px / 10px 10px 34px 34px;
@@ -418,7 +427,16 @@ h1, h2, h3, p { margin: 0; }
    number. Kept as plain and small as a price chalked on a board — no border,
    no pill, no icon — so it reads as one more diegetic label, not a stat card
    bolted onto the fryer. */
-.basket-slot { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.basket-slot {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  /* The rack's default one-fryer size; `.rack-N .basket-slot` above overrides
+     it. Lives here rather than on `.basket` so the caption can never widen
+     the slot — see the note by the rack sizes. */
+  width: min(clamp(190px, 26vw, 380px), 52vh);
+  /* A long caption wraps inside the slot instead of stretching it; the words
+     may not spill over the neighbouring fryer either. */
+  min-width: 0;
+}
 .worth {
   /* Must cover the TALLEST state with room to spare, not approximately: the
      kitchen column is vertically centred, so if the live state (big worth
@@ -1065,7 +1083,7 @@ h1, h2, h3, p { margin: 0; }
      matches specificity and lets this line actually win, and the vh term is
      cut down to fit a rack that now has to leave room for a whole counter
      underneath it, not the rest of the stage to itself. */
-  .rack-2 .basket, .rack-3 .basket, .rack-4 .basket, .basket {
+  .rack-2 .basket-slot, .rack-3 .basket-slot, .rack-4 .basket-slot, .basket-slot {
     width: min(clamp(112px, 30vw, 170px), 22vh);
   }
 
