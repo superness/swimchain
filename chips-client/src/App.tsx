@@ -1508,6 +1508,17 @@ export function App() {
           {state && (
             <TunnelRead state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
           )}
+          {/* The standing offer sits ON THE COUNTER, in the column's flow,
+              directly under the readout — not floated over it. It was a
+              `position: fixed` overlay with hand-tuned offsets, which put it
+              on top of the depth/crumbs panel it was supposed to sit beside
+              (measured live: ticket 103-144px over a counter starting at
+              120px, and clipping the ticker above). The third hand-tuned
+              bottom-stack offset in two days (#155, #156) was the tell: a
+              column child cannot collide with its own column. */}
+          {state && struck && !bowlOpen && tipFanfare === null && (
+            <BowlTicket salt={tipSalt} onOpen={() => setBowlOpen(true)} />
+          )}
           {/* NO SHELF COLUMN. Operator 2026-07-27: "just remove the upgrade
               button / bowls sections in the main view and only use the
               popups from tapping the critters." The crew ARE the shop now —
@@ -1532,9 +1543,6 @@ export function App() {
           angel={angel} ratAway={rat.latched !== null}
           onCritterClick={onCritterClick}
         />
-      )}
-      {state && struck && !bowlOpen && tipFanfare === null && (
-        <BowlTicket salt={tipSalt} onOpen={() => setBowlOpen(true)} />
       )}
       {state && bowlOpen && (
         <BowlReveal
