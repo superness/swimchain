@@ -506,6 +506,18 @@ h1, h2, h3, p { margin: 0; }
      line alone is 1.25em type on a 1.25 line-height), so every state rests
      on the same floor and the baskets never move. */
   min-height: 4.4em;
+  /* THE PLATE MAY NOT BE WIDER THAN ITS FRYER. It sized to its own content —
+     a `<p>` centred in a flex column with no width of its own — so a long
+     number pushed it past the slot on BOTH sides and straight into the
+     neighbouring plate. Measured on a phone-width rack: a 155px plate inside
+     a 143px slot, spilling 6px each way and overlapping the next plate by
+     2px through a 10px gap (operator: "their info plates overlay").
+
+     Widening the gap alone would only postpone this — the numbers grow all
+     game, and a 128,400,000 pot spills further than a 1,284,000 one. The
+     slot owns the width; the plate lives inside it and wraps. Exactly the
+     rule `.basket-slot` already enforces for the basket and its captions. */
+  max-width: 100%;
   font-family: var(--chalk); font-size: clamp(10px, 1.5vw, 13px);
   color: #d8c6a6; text-align: center; line-height: 1.25;
   /* Same rule as .tunnel-read: this caption floats over whatever band is
@@ -1149,6 +1161,11 @@ h1, h2, h3, p { margin: 0; }
   .rack-2 .basket-slot, .rack-3 .basket-slot, .rack-4 .basket-slot, .basket-slot {
     width: min(clamp(112px, 30vw, 170px), 22vh);
   }
+  /* Fryers need air between them on a phone (operator). The desktop gap
+     bottoms out at 10px here because 1.6vw is tiny at this width — which is
+     the least room exactly where the plates are widest relative to their
+     slots. `4vw` scales with the screen instead of collapsing on it. */
+  .rack { gap: clamp(14px, 4vw, 30px); }
 
   /* Inside-the-tunnel adjustments for a phone: the floor drops lower so the
      pile hangs under most of the scrolling content, the pile centres (there
