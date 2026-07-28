@@ -57,6 +57,24 @@ h1, h2, h3, p { margin: 0; }
 [data-dip="fondue"]  { --d1:#5a3a08; --d2:#bd8c1c; --d3:#ffd97a; --dglow:#ffeeb4; --chunk:#fff3c8; --chunk-o:.34; }
 [data-dip="abyss"]   { --d1:#05030b; --d2:#1d0f31; --d3:#4a2470; --dglow:#9d6bff; --chunk:#c9a6ff; --chunk-o:.2; }
 
+/* ── THE DESCENT: below the Abyss the bowl runs out and the world starts ──
+   Each of these is a real band with a palette of its own (lib/tunnelDepth.ts
+   DEEP_BANDS). They read as a journey OUT of food and into the room the bowl
+   was standing in, so the sequence deliberately drains of colour at the
+   porcelain, warms through wood and earth, and then catches fire. */
+/* the bowl from beneath: cold, clean, and far too large */
+[data-dip="porcelain"] { --d1:#2b3138; --d2:#8d9aa4; --d3:#e8eef2; --dglow:#ffffff; --chunk:#ffffff; --chunk-o:.18; }
+/* varnished wood, a glass ring, somebody's initials */
+[data-dip="table"]     { --d1:#2a170a; --d2:#7a4718; --d3:#c98a44; --dglow:#e8b877; --chunk:#f0d3a4; --chunk-o:.2; }
+/* tile and grout — the one band with no warmth in it at all */
+[data-dip="floor"]     { --d1:#14181a; --d2:#3f4d4c; --d3:#7d918c; --dglow:#a8bcb4; --chunk:#c4d2cc; --chunk-o:.16; }
+/* under the shop: roots, cold, things that live in it */
+[data-dip="dirt"]      { --d1:#140d07; --d2:#3d2a15; --d3:#6b4c26; --dglow:#9a7440; --chunk:#c4a06a; --chunk-o:.22; }
+/* the fryer that was always underneath the whole shop */
+[data-dip="lava"]      { --d1:#180200; --d2:#8c1c02; --d3:#ff5a12; --dglow:#ffab4a; --chunk:#ffd08a; --chunk-o:.34; }
+/* you are not going down any more. something is lit above you. */
+[data-dip="otherside"] { --d1:#3a2a18; --d2:#9a7a44; --d3:#f0dcae; --dglow:#fff3d2; --chunk:#fffaf0; --chunk-o:.26; }
+
 .dip { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
 .dip-base {
   position: absolute; inset: -12%;

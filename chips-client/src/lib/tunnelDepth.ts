@@ -48,7 +48,30 @@ export interface TunnelDepth {
 const LAST = DIP_TIERS.length - 1;
 const LAST_MIN = DIP_TIERS[LAST].minLifetime;
 
-/** What the chalk says once the ladder runs out and the dip keeps going. */
+/**
+ * THE DESCENT. Below the Abyssal Dip the ladder stops being dip and starts
+ * being the world the bowl was sitting in — you break the porcelain, then the
+ * table, then the floor, then the earth under the shop, and then something
+ * that was always under the shop. Design: docs/superpowers/specs/
+ * 2026-07-28-chips-the-descent-design.md.
+ *
+ * These are REAL bands, not the continuation filler they replace: each has its
+ * own palette (styles.css `[data-dip=…]`) and its own resident. Ordinal 8 is
+ * the first, immediately below `DIP_TIERS`' last entry.
+ *
+ * The thresholds are already handled — a band spans twice the lifetime of the
+ * one above it, forever, and that maths does not care what the band is called.
+ */
+export const DEEP_BANDS: { key: string; label: string }[] = [
+  { key: 'porcelain', label: 'The Porcelain' },
+  { key: 'table',     label: 'The Table' },
+  { key: 'floor',     label: 'The Floor' },
+  { key: 'dirt',      label: 'The Dirt' },
+  { key: 'lava',      label: 'The Lava' },
+  { key: 'otherside', label: 'The Other Side' },
+];
+
+/** And once even the descent runs out, the chalk gives up gracefully. */
 const BEYOND_LINES = [
   'the dip goes on',
   'and on',
@@ -88,8 +111,16 @@ export function bandAt(ordinal: number): TunnelBand {
     const t = DIP_TIERS[o];
     return { ordinal: o, key: t.key, label: t.label, beyond: false };
   }
-  const line = BEYOND_LINES[Math.min(BEYOND_LINES.length - 1, o - DIP_TIERS.length)];
-  return { ordinal: o, key: DIP_TIERS[LAST].key, label: line, beyond: true };
+  // THE DESCENT — named strata with their own palettes. `beyond` stays FALSE
+  // for these: it is the flag that dims a band's chalk into scenery, and
+  // these are places, not filler.
+  const d = o - DIP_TIERS.length;
+  if (d < DEEP_BANDS.length) {
+    return { ordinal: o, key: DEEP_BANDS[d].key, label: DEEP_BANDS[d].label, beyond: false };
+  }
+  // Past the descent, the endless continuation as before.
+  const line = BEYOND_LINES[Math.min(BEYOND_LINES.length - 1, d - DEEP_BANDS.length)];
+  return { ordinal: o, key: DEEP_BANDS[DEEP_BANDS.length - 1].key, label: line, beyond: true };
 }
 
 /**
