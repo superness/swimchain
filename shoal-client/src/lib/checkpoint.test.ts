@@ -8,6 +8,7 @@
 import { checkpointFrom, serialiseCheckpoint, parseCheckpoint } from './checkpoint';
 import { emptyState } from './shoalEngine';
 import type { ShoalState, Fish } from './shoalTypes';
+import { VOID_WINDOW_MS } from './shoalConst';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -69,6 +70,59 @@ check('the checkpoint records its epoch', checkpointFrom(stateWith([]), 42).epoc
   check('the round trip preserves the epoch', back!.epoch === 5, back!.epoch);
   check('the round trip preserves sizes',
     JSON.stringify(back!.sizes) === JSON.stringify(cp.sizes), back!.sizes);
+  check('a checkpoint with no recent bites still has a concrete (empty) recent array',
+    Array.isArray(cp.recent) && cp.recent.length === 0, cp.recent);
+}
+
+// --- recent: a bounded tail of cooldown/void-window state (fix review) -----
+// Spec 3.9 point 3 originally read "only size crosses an epoch boundary."
+// That was wrong: it reset every seeded swimmer's lastBiteMs to -1 and
+// recentBites to [], reproducing exactly the two exploits Departed's own doc
+// comment says a presence LAPSE must never cause (a free EAT_COOLDOWN_MS
+// reset, and a bite laundered out of reach of the next sweep) -- and worse,
+// on a schedule ("eat right before the hourly boundary") a player can time
+// deliberately. `recent` carries lastBiteMs/recentBites for swimmers whose
+// last bite is still within VOID_WINDOW_MS of the checkpoint; see
+// shoalEngine.test.ts's "the boundary reset was a real, timeable exploit"
+// section for the fold-level tests (cooldown refusal across a real epoch
+// boundary, and a recentBites value matching a continuous, non-boundary
+// fold's own arithmetic). These are the checkpointFrom-level unit tests: the
+// payload's bound (only recent bites qualify) and its canonicality.
+{
+  const s = emptyState(50_000); // state.nowMs = 50_000
+  s.fish.set('fresh', { ...fish('fresh', 120), lastBiteMs: 40_000, recentBites: [40_000] });
+  s.fish.set('old', { ...fish('old', 120), lastBiteMs: 39_999, recentBites: [39_999] });
+  // Hand arithmetic: age = nowMs - lastBiteMs. 'fresh': 50_000 - 40_000 =
+  // VOID_WINDOW_MS(10_000) exactly -- the boundary is inclusive (`<=`, same
+  // as the scatter-void filter's own convention in shoalEngine.ts), so this
+  // MUST qualify. 'old': 50_000 - 39_999 = 10_001, one ms past the window --
+  // this must NOT qualify.
+  check('VOID_WINDOW_MS really is 10_000, matching the hand arithmetic above',
+    VOID_WINDOW_MS === 10_000, VOID_WINDOW_MS);
+  const cp = checkpointFrom(s, 1);
+  const recentIds = cp.recent.map((r) => r[0]);
+  check('a bite exactly VOID_WINDOW_MS old still qualifies (inclusive boundary)',
+    recentIds.includes('fresh'), cp.recent);
+  check('a bite one ms older than VOID_WINDOW_MS does not qualify',
+    !recentIds.includes('old'), cp.recent);
+  check('both swimmers are still checkpointed on size regardless of recent-tail eligibility',
+    cp.sizes.map((p) => p[0]).sort().join(',') === 'fresh,old', cp.sizes);
+  check("'fresh's carried recentBites value is exactly what was on the fish",
+    JSON.stringify(cp.recent.find((r) => r[0] === 'fresh')) === JSON.stringify(['fresh', 40_000, [40_000]]),
+    cp.recent);
+}
+
+// --- Round trip with a nonempty recent --------------------------------------
+{
+  const s = emptyState(1_000);
+  s.fish.set('a', { ...fish('a', 130), lastBiteMs: 500, recentBites: [200, 500] });
+  const cp = checkpointFrom(s, 9);
+  const text = serialiseCheckpoint(cp);
+  const back = parseCheckpoint(text);
+  check('a checkpoint with a nonempty recent round-trips',
+    back !== null && serialiseCheckpoint(back) === text, text);
+  check('the round trip preserves recent',
+    back !== null && JSON.stringify(back.recent) === JSON.stringify(cp.recent), back?.recent);
 }
 
 // --- Malformed input -------------------------------------------------------
@@ -79,6 +133,26 @@ check('valid JSON of the wrong shape parses to null', parseCheckpoint('{"epoch":
 check('a non-integer size is rejected', parseCheckpoint('{"epoch":1,"sizes":[["a",1.5]]}') === null);
 check('an unsorted checkpoint is rejected',
   parseCheckpoint('{"epoch":1,"sizes":[["b",100],["a",100]]}') === null);
+
+// --- Malformed / absent `recent` --------------------------------------------
+check('a checkpoint with no recent field at all still parses (pre-fix backward compatibility)', (() => {
+  const back = parseCheckpoint('{"epoch":1,"sizes":[["a",100]]}');
+  return back !== null && Array.isArray(back.recent) && back.recent.length === 0;
+})());
+check('an unsorted recent is rejected, same rule as sizes',
+  parseCheckpoint('{"epoch":1,"sizes":[],"recent":[["b",100,[]],["a",100,[]]]}') === null);
+check('a non-integer lastBiteMs in recent is rejected',
+  parseCheckpoint('{"epoch":1,"sizes":[],"recent":[["a",1.5,[]]]}') === null);
+check('a non-integer entry inside a recentBites array is rejected',
+  parseCheckpoint('{"epoch":1,"sizes":[],"recent":[["a",100,[1.5]]]}') === null);
+check('a recent entry with the wrong arity is rejected',
+  parseCheckpoint('{"epoch":1,"sizes":[],"recent":[["a",100]]}') === null);
+check('a recent field that is not an array at all is rejected',
+  parseCheckpoint('{"epoch":1,"sizes":[],"recent":"nope"}') === null);
+check('a well-formed nonempty recent parses correctly', (() => {
+  const back = parseCheckpoint('{"epoch":1,"sizes":[["a",100]],"recent":[["a",50,[10,50]]]}');
+  return back !== null && JSON.stringify(back.recent) === JSON.stringify([['a', 50, [10, 50]]]);
+})());
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

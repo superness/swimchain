@@ -1,52 +1,67 @@
 /**
- * Checkpoints: the only state that crosses an epoch boundary (spec 3.9).
+ * Checkpoints: the state that crosses an epoch boundary (spec 3.9) — size,
+ * plus a bounded tail of recent-bite state (see `Checkpoint`'s doc in
+ * shoalTypes.ts for why the latter exists; it closes a real, timeable
+ * exploit at the boundary, not a cosmetic gap).
  *
  * A joining client adopts the newest checkpoint it can see rather than
  * replaying from genesis, so two honest clients MUST compute byte-identical
  * checkpoints for the same world, or they cannot tell agreement from
- * disagreement. Everything here exists in service of that: `sizes` is a
- * sorted array rather than a Map (see shoalTypes.ts's `Checkpoint` doc), and
- * `parseCheckpoint` rejects rather than repairs anything that is not already
- * canonical — accepting two different serialisations of the same world would
- * defeat the point of publishing one.
+ * disagreement. Everything here exists in service of that: `sizes` and
+ * `recent` are sorted arrays rather than Maps (see shoalTypes.ts's
+ * `Checkpoint` doc), and `parseCheckpoint` rejects rather than repairs
+ * anything that is not already canonical — accepting two different
+ * serialisations of the same world would defeat the point of publishing one.
  */
 import type { ShoalState, Checkpoint } from './shoalTypes';
+import { VOID_WINDOW_MS } from './shoalConst';
 
 /**
  * Build the checkpoint for `state` at `epoch`.
  *
  * Merges live `fish` sizes with `departed` sizes into one sorted array. A
- * live fish and a departed record are documented as mutually exclusive
- * (eviction moves one to the other — shoalTypes.ts's comment on `departed`:
- * "A swimmer who is currently live has no entry that is authoritative;
- * `fish` always wins while it exists"), but checked against shoalEngine.ts
- * directly: the presence branch that revives a departed swimmer
- * (`state.fish.set(e.id, ...)`) never calls `state.departed.delete(e.id)`.
- * So a stale `departed` row CAN survive alongside a freshly-live `fish` row
- * for the same id. This function follows the documented policy and treats
- * `fish` as authoritative: a live entry always wins over a departed one for
- * the same id.
+ * live fish and a departed record are mutually exclusive by construction:
+ * shoalEngine.ts's revival path (in `foldTick`'s step 1) deletes a
+ * swimmer's `departed` record the moment it revives them, specifically so no
+ * stale row can coexist with (or be read behind) the now-live `fish` entry.
+ * This function still treats `fish` as authoritative over `departed` for the
+ * same id — belt-and-braces against a state built by some other caller (e.g.
+ * a hand-built `ShoalState` in a test) that never went through that revival
+ * path and so was never guaranteed to have made the same cleanup.
+ *
+ * `recent` includes `[id, lastBiteMs, recentBites]` only for swimmers whose
+ * `lastBiteMs` is within `VOID_WINDOW_MS` of `state.nowMs` (the moment this
+ * checkpoint is taken) — see shoalTypes.ts's `Checkpoint` doc for why this
+ * exists and why the cutoff keeps the payload small.
  */
 export function checkpointFrom(state: ShoalState, epoch: number): Checkpoint {
   const sizes: Array<[string, number]> = [];
-  for (const f of state.fish.values()) sizes.push([f.id, f.size]);
+  const recent: Array<[string, number, number[]]> = [];
+  const record = (id: string, size: number, lastBiteMs: number, recentBites: number[]) => {
+    sizes.push([id, size]);
+    if (lastBiteMs >= 0 && state.nowMs - lastBiteMs <= VOID_WINDOW_MS) {
+      recent.push([id, lastBiteMs, recentBites]);
+    }
+  };
+  for (const f of state.fish.values()) record(f.id, f.size, f.lastBiteMs, f.recentBites);
   for (const [id, d] of state.departed) {
     if (state.fish.has(id)) continue; // live wins; see doc comment above
-    sizes.push([id, d.size]);
+    record(id, d.size, d.lastBiteMs, d.recentBites);
   }
   sizes.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  return { epoch, sizes };
+  recent.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return { epoch, sizes, recent };
 }
 
 /**
- * Canonical text form. `sizes` is already sorted by `checkpointFrom`, and
- * both fields are written in a fixed order (`epoch` then `sizes`), so plain
- * `JSON.stringify` is deterministic across clients — no key-order ambiguity
- * to worry about since the object literal always has the same two keys in
- * the same order.
+ * Canonical text form. `sizes` and `recent` are already sorted by
+ * `checkpointFrom`, and all three fields are written in a fixed order
+ * (`epoch`, `sizes`, `recent`), so plain `JSON.stringify` is deterministic
+ * across clients — no key-order ambiguity to worry about since the object
+ * literal always has the same keys in the same order.
  */
 export function serialiseCheckpoint(cp: Checkpoint): string {
-  return JSON.stringify({ epoch: cp.epoch, sizes: cp.sizes });
+  return JSON.stringify({ epoch: cp.epoch, sizes: cp.sizes, recent: cp.recent });
 }
 
 function isInt(n: unknown): n is number {
@@ -57,14 +72,24 @@ function isInt(n: unknown): n is number {
  * Parse text into a Checkpoint, or return null for anything that is not a
  * well-formed, already-canonical checkpoint. Never throws.
  *
- * Rejected, not repaired: bad JSON, missing fields, a non-integer epoch or
- * size, a non-string id, and — the one that matters most — an array that is
- * not already sorted ascending by id. Sorting it here instead of rejecting
- * it would let two different serialisations of the same world both parse to
- * the same in-memory Checkpoint, which defeats the reason `sizes` is an
- * array in the first place: a client could publish an unsorted checkpoint
- * and every peer would silently normalise it instead of detecting the
- * disagreement.
+ * Rejected, not repaired: bad JSON, missing required fields, a non-integer
+ * epoch or size, a non-string id, and — the one that matters most — an array
+ * that is not already sorted ascending by id (this applies to `recent` too,
+ * exactly as it does to `sizes`). Sorting it here instead of rejecting it
+ * would let two different serialisations of the same world both parse to the
+ * same in-memory Checkpoint, which defeats the reason these are arrays in
+ * the first place: a client could publish an unsorted checkpoint and every
+ * peer would silently normalise it instead of detecting the disagreement.
+ *
+ * `recent` is OPTIONAL on the wire — a checkpoint serialised before this
+ * field existed still parses. An absent `recent` means exactly the same
+ * thing as an explicitly empty one: "nobody had a bite recent enough to be
+ * worth carrying," never "unknown, treat with suspicion." A pre-this-field
+ * checkpoint predates any client that could have produced a nonempty
+ * `recent` in the first place, so treating its absence as empty loses
+ * nothing that was ever actually there. Every in-memory `Checkpoint` this
+ * function returns always has a concrete `recent` array (possibly `[]`),
+ * never `undefined`, so callers never need an `?? []` of their own.
  */
 export function parseCheckpoint(text: string): Checkpoint | null {
   let raw: unknown;
@@ -90,5 +115,21 @@ export function parseCheckpoint(text: string): Checkpoint | null {
     sizes.push([id, size]);
   }
 
-  return { epoch: obj.epoch, sizes };
+  const recent: Array<[string, number, number[]]> = [];
+  if (obj.recent !== undefined) {
+    if (!Array.isArray(obj.recent)) return null;
+    let prevRecentId: string | null = null;
+    for (const entry of obj.recent) {
+      if (!Array.isArray(entry) || entry.length !== 3) return null;
+      const [id, lastBiteMs, recentBites] = entry;
+      if (typeof id !== 'string') return null;
+      if (!isInt(lastBiteMs)) return null;
+      if (!Array.isArray(recentBites) || !recentBites.every(isInt)) return null;
+      if (prevRecentId !== null && !(prevRecentId < id)) return null; // strictly ascending, no dupes
+      prevRecentId = id;
+      recent.push([id, lastBiteMs, recentBites]);
+    }
+  }
+
+  return { epoch: obj.epoch, sizes, recent };
 }

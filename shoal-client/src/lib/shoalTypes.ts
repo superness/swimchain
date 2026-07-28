@@ -120,15 +120,33 @@ export interface Departed {
 }
 
 /**
- * The only state that crosses an epoch boundary (spec section 3.9).
+ * The state that crosses an epoch boundary (spec section 3.9): size, plus a
+ * bounded tail of recent-bite state.
  *
  * `sizes` is an array of [id, size] pairs sorted by id rather than a Map, so
  * the structure is canonical: two clients that agree on the world produce
  * byte-identical checkpoints, and a Map's insertion order cannot leak in.
+ *
+ * `recent` carries `[id, lastBiteMs, recentBites]` for every swimmer whose
+ * `lastBiteMs` fell within `VOID_WINDOW_MS` of the moment the checkpoint was
+ * taken — everyone else is correctly reconstructed with `lastBiteMs: -1` and
+ * `recentBites: []` at the seeding site, since a bite older than the void
+ * window carries no more protection than a brand-new arrival's. Without this
+ * field, seeding always reset a swimmer's cooldown and void-window ledger at
+ * the epoch boundary: `Departed`'s own doc comment explains why that must
+ * NOT happen for a presence lapse (a free `EAT_COOLDOWN_MS` reset, and a
+ * bite laundered out of reach of the next sweep) — a fixed hourly boundary
+ * reproduces the exact same two exploits, and is *worse* than a presence
+ * lapse because a player can time it deliberately (eat right before the
+ * boundary, cross over with a clean ledger). Sorted by id, same canonicality
+ * rule as `sizes`. Kept small by construction: at most the handful of
+ * swimmers who ate in the last `VOID_WINDOW_MS` of the epoch, never the
+ * whole population.
  */
 export interface Checkpoint {
   epoch: number;
   sizes: Array<[string, number]>;
+  recent: Array<[string, number, number[]]>;
 }
 
 /** The folded world at a given tick. */

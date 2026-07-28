@@ -365,15 +365,26 @@ export function foldTick(state: ShoalState, entries: readonly LogEntry[]): Shoal
  * `opts.epoch` defaults to `epochOf(untilMs)` — the epoch `untilMs` itself
  * falls in. `opts.seed` is the previous epoch's checkpoint (spec 3.9 point
  * 5): a cold joiner adopts the newest checkpoint it can see and verifies
- * forward from there, rather than replaying from genesis. Each `[id, size]`
- * in the seed is loaded as a `departed` record before the tick loop runs, so
- * a swimmer who writes presence during this epoch is picked up by the
+ * forward from there, rather than replaying from genesis. Each swimmer in
+ * the seed is loaded as a `departed` record before the tick loop runs, so a
+ * swimmer who writes presence during this epoch is picked up by the
  * existing `existing ?? departed.get` revival path inside `foldTick` and
- * keeps the size they banked. `opts.seed.epoch` MUST be exactly `epoch - 1`
- * — see the check immediately below. `departed` also prunes here (spec 3.9
- * point 6): a seeded swimmer who writes no presence at all during this
- * epoch is dropped, not carried into the checkpoint this fold's result
- * feeds into.
+ * keeps the size they banked — AND, for a swimmer whose `opts.seed.recent`
+ * entry says they ate within VOID_WINDOW_MS of the checkpoint, their
+ * `lastBiteMs`/`recentBites` too. Carrying the latter is not optional
+ * polish: without it, a swimmer who ate right before the boundary and
+ * writes again right after gets a free `EAT_COOLDOWN_MS` reset (their
+ * cooldown silently reads as "never bitten"), and any bite still inside its
+ * void window at the boundary becomes permanently unvoidable — the exact
+ * two things `Departed`'s own doc comment says a presence lapse must never
+ * cause, now reachable on a schedule a player can time deliberately. Every
+ * OTHER seeded swimmer (no `recent` entry) correctly seeds with
+ * `lastBiteMs: -1, recentBites: []`, same as before: a bite already outside
+ * the void window carries no more protection than a brand-new arrival's.
+ * `opts.seed.epoch` MUST be exactly `epoch - 1` — see the check immediately
+ * below. `departed` also prunes here (spec 3.9 point 6): a seeded swimmer
+ * who writes no presence at all during this epoch is dropped, not carried
+ * into the checkpoint this fold's result feeds into.
  *
  * This function is now a thin wrapper: it builds the seeded empty state,
  * then loops `foldTick` from the epoch's start up to `untilMs`. The tick
@@ -407,15 +418,36 @@ export function foldShoal(
   // presence this epoch stays exactly here (and is pruned below); one who
   // does write presence is picked up by the ordinary
   // `existing ?? state.departed.get(e.id)` revival path in foldTick's step
-  // 1, which reads their banked size same as any other lapsed swimmer.
+  // 1, which reads their banked size (and, if carried, their cooldown/void
+  // ledger) same as any other lapsed swimmer.
+  //
+  // `opts.seed.recent` is looked up by id here, once, into a Map — cheaper
+  // than a linear scan of `recent` per swimmer in `sizes`, and it keeps the
+  // "does this id have carried bite state" check obviously O(1) rather than
+  // relying on `recent` staying small (it does, by construction — see
+  // shoalTypes.ts's `Checkpoint` doc — but this shouldn't depend on that).
+  // A swimmer absent from `recent` seeds with `lastBiteMs: -1,
+  // recentBites: []`, same as before this fix: their last bite (if any) is
+  // already outside VOID_WINDOW_MS, so it carries no more protection than a
+  // brand-new arrival's — there is nothing to lose by not carrying it.
   //
   // `state.touchedIds` records every id that authors a presence entry
   // actually applied during this fold (foldTick's step 1). It is consulted
   // only once, after the tick loop, to prune seed entries nobody returned
   // to claim.
   if (opts?.seed) {
+    const recentById = new Map<string, { lastBiteMs: number; recentBites: number[] }>();
+    for (const [id, lastBiteMs, recentBites] of opts.seed.recent) {
+      recentById.set(id, { lastBiteMs, recentBites });
+    }
     for (const [id, size] of opts.seed.sizes) {
-      state.departed.set(id, { size, lastScatterMs: -1, lastBiteMs: -1, recentBites: [] });
+      const r = recentById.get(id);
+      state.departed.set(id, {
+        size,
+        lastScatterMs: -1,
+        lastBiteMs: r ? r.lastBiteMs : -1,
+        recentBites: r ? r.recentBites : [],
+      });
     }
   }
 

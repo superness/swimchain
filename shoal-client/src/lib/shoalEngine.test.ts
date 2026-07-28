@@ -846,7 +846,7 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
 {
   const epoch = 4;
   const start = epochStartMs(epoch);
-  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['vet', 175]] };
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['vet', 175]], recent: [] };
   const s = foldShoal([pres('vet', 1000, 1000, start + 500)], start + 1000, { epoch, seed });
   // Hand-derived independently of the brief's own comment (which turns out to
   // agree, but is re-derived here rather than trusted). state.nowMs starts at
@@ -859,11 +859,12 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   // 'vet's presence is authored at ms=start+500, which is applied in step 1
   // of the tick at t=start+500 (log[cursor].ms<=t), i.e. tickCount=3 -- so
   // 'vet' already exists by tickCount=4 and is eligible for that hunger tick.
-  // The seed is applied as a `departed` record with lastBiteMs=-1 (a
-  // Checkpoint carries only size), so at tickCount=4 the hunger skip
-  // condition (f.lastBiteMs>=0 && t-f.lastBiteMs<1000) is false and hunger
-  // DOES apply: exactly one tick, -HUNGER_AMOUNT(1). tickCount=5 is not a
-  // multiple of 4, so there is no second hunger tick.
+  // The seed's `recent` is empty here, so the seed is applied as a
+  // `departed` record with lastBiteMs=-1 (no carried bite state), so at
+  // tickCount=4 the hunger skip condition (f.lastBiteMs>=0 &&
+  // t-f.lastBiteMs<1000) is false and hunger DOES apply: exactly one tick,
+  // -HUNGER_AMOUNT(1). tickCount=5 is not a multiple of 4, so there is no
+  // second hunger tick.
   //   175 (seeded) - 1 (one hunger tick) = 174
   check('a seeded swimmer starts at their banked size', s.fish.get('vet')!.size === 174,
     s.fish.get('vet')!.size);
@@ -879,7 +880,7 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   // tickCount=4. START_SIZE(100) - HUNGER_AMOUNT(1) = 99.
   const epoch = 4;
   const start = epochStartMs(epoch);
-  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['other', 900]] };
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['other', 900]], recent: [] };
   const s = foldShoal([pres('new', 1000, 1000, start + 500)], start + 1000, { epoch, seed });
   check('an unseeded swimmer starts fresh', s.fish.get('new')!.size === START_SIZE - 1,
     s.fish.get('new')!.size);
@@ -890,7 +891,7 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   // everyone else.
   const epoch = 4;
   const start = epochStartMs(epoch);
-  const stale: Checkpoint = { epoch: epoch - 5, sizes: [['vet', 900]] };
+  const stale: Checkpoint = { epoch: epoch - 5, sizes: [['vet', 900]], recent: [] };
   let threw = false;
   let isRangeError = false;
   try { foldShoal([pres('vet', 1, 1, start)], start + 250, { epoch, seed: stale }); }
@@ -929,7 +930,7 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   // result at MIN_SIZE(60), so 50-1 actually reads 60, not 49. 150 is
   // comfortably clear of that floor, so the same one-hunger-tick arithmetic
   // as the seeding tests above applies cleanly: 150 - 1 = 149.
-  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['ghost', 175], ['toucher', 150]] };
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['ghost', 175], ['toucher', 150]], recent: [] };
   const log: LogEntry[] = [pres('toucher', 1000, 1000, start + 500)];
   const s = foldShoal(log, start + 1000, { epoch, seed });
 
@@ -939,7 +940,7 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
 
   // The discriminating assertion: checkpointFrom on the RESULT of the fold
   // must not see 'ghost'.
-  const cp = checkpointFrom(s, epoch + 1);
+  const cp = checkpointFrom(s, epoch);
   const ids = cp.sizes.map((p) => p[0]);
   check('a swimmer absent the whole epoch is pruned from the next checkpoint',
     !ids.includes('ghost'), cp.sizes);
@@ -962,9 +963,189 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   check('a swimmer evicted mid-epoch (no seed involved) is genuinely departed',
     !s.fish.has('brief') && s.departed.has('brief'),
     { fish: s.fish.has('brief'), departed: s.departed.has('brief') });
-  const cp = checkpointFrom(s, epoch + 1);
+  const cp = checkpointFrom(s, epoch);
   check('a swimmer departed only within this epoch survives to the next checkpoint',
     cp.sizes.some((p) => p[0] === 'brief'), cp.sizes);
+}
+{
+  // Prune exemption, exercised directly (a fix-review request, not the
+  // original brief): a swimmer seeded, revived (touched), and then evicted
+  // AGAIN before this epoch's fold ends must still survive to the next
+  // checkpoint. This is distinct from both cases above: "an untouched seeded
+  // swimmer" (pruned) never gets revived at all, and "departed only within
+  // this epoch" (survives) was never seeded in the first place. This test
+  // routes a SEEDED id through an actual revival AND a second eviction in
+  // the same fold, proving `touchedIds` -- not "is this id currently absent
+  // from `fish`" -- is what gates the prune.
+  const epoch = 7;
+  const start = epochStartMs(epoch);
+  const seed: Checkpoint = { epoch: epoch - 1, sizes: [['ronin', 120]], recent: [] };
+  const log: LogEntry[] = [pres('ronin', 1000, 1000, start)];
+  // Evicted again the first tick with t > expiresMs = start + PRESENCE_TTL_MS
+  // (90_000), i.e. t = start + 90_250 (90250/250 = 361, a real tick). Folded
+  // well past that but still inside the epoch (EPOCH_MS = 3_600_000).
+  const s = foldShoal(log, start + 200_000, { epoch, seed });
+  check('a swimmer touched then re-evicted this epoch is genuinely departed again',
+    !s.fish.has('ronin') && s.departed.has('ronin'),
+    { fish: s.fish.has('ronin'), departed: s.departed.has('ronin') });
+  const cp = checkpointFrom(s, epoch);
+  check('being touched once this epoch exempts a swimmer from pruning even if departed again',
+    cp.sizes.some((p) => p[0] === 'ronin'), cp.sizes);
+}
+{
+  // A hand-built seed with a malformed epoch must be refused by foldShoal's
+  // OWN check, not merely by parseCheckpoint's wire-format validation --
+  // some caller could build a Checkpoint object directly (as every test in
+  // this file does) without ever routing it through parseCheckpoint.
+  // undefined !== (epoch - 1) is true for any finite epoch, so this throws
+  // unconditionally regardless of what `epoch` happens to be.
+  const epoch = 4;
+  const start = epochStartMs(epoch);
+  const badSeed = { epoch: undefined as unknown as number, sizes: [] as Array<[string, number]>, recent: [] };
+  let threw = false;
+  let isRangeError = false;
+  try { foldShoal([], start, { epoch, seed: badSeed }); }
+  catch (e) { threw = true; isRangeError = e instanceof RangeError; }
+  check('a seed with an undefined epoch is refused', threw === true && isRangeError === true);
+}
+{
+  // NaN !== anything, including NaN itself (NaN !== NaN is true in JS), so
+  // this also throws unconditionally -- no finite `epoch - 1` can ever equal
+  // NaN.
+  const epoch = 4;
+  const start = epochStartMs(epoch);
+  const badSeed: Checkpoint = { epoch: NaN, sizes: [], recent: [] };
+  let threw = false;
+  let isRangeError = false;
+  try { foldShoal([], start, { epoch, seed: badSeed }); }
+  catch (e) { threw = true; isRangeError = e instanceof RangeError; }
+  check('a seed with a NaN epoch is refused', threw === true && isRangeError === true);
+}
+
+// --- The boundary reset was a real, timeable exploit (fix-review) ----------
+// A fixed hourly checkpoint boundary reset lastBiteMs to -1 and recentBites
+// to [] for every seeded swimmer, unconditionally. Departed's own doc
+// comment (shoalTypes.ts) explains exactly why that must never happen for a
+// PRESENCE LAPSE: it hands the swimmer a free EAT_COOLDOWN_MS reset, and
+// launders any bite still inside its void window out of reach of the next
+// sweep. A fixed epoch boundary reproduces both, and is WORSE than a
+// presence lapse: a player can time it deliberately (eat right before the
+// boundary, cross over with a clean ledger). The fix carries `recent` --
+// lastBiteMs and recentBites for swimmers who ate within VOID_WINDOW_MS of
+// the checkpoint -- through the seed.
+{
+  // Cooldown: a fish that eats immediately before the epoch end and claims
+  // again immediately after must be REFUSED by EAT_COOLDOWN_MS, not treated
+  // as a first-ever bite.
+  const epoch = 8;
+  const startE = epochStartMs(epoch);
+  // The last real tick of epoch 8's fold: startE + EPOCH_MS - TICK_MS, i.e.
+  // one tick short of epoch 9's start (EPOCH_MS/TICK_MS = 14_400 is exact,
+  // so this lands on the grid).
+  const untilMsE = startE + EPOCH_MS - TICK_MS;
+  const startE1 = epochStartMs(epoch + 1);
+  check('untilMsE is exactly one tick before the next epoch starts',
+    untilMsE + TICK_MS === startE1, { untilMsE, startE1 });
+
+  const cell = 700;
+  const c = cellCentre(cell);
+  // 'a' eats at the very last tick of epoch 8 (fresh cell, first bite: no
+  // cooldown issue -- lastBiteMs starts at -1).
+  const logE: LogEntry[] = [pres('a', c.x, c.y, untilMsE), eat('a', cell, untilMsE)];
+  const sE = foldShoal(logE, untilMsE, { epoch });
+  check('the pre-boundary bite actually credited', sE.fish.get('a')!.lastBiteMs === untilMsE,
+    sE.fish.get('a')!.lastBiteMs);
+
+  // Checkpoint at epoch 9: state.nowMs is reset to untilMsE by foldShoal's
+  // own last line, so age = untilMsE - untilMsE = 0 <= VOID_WINDOW_MS ->
+  // 'a' is carried in `recent`.
+  const cp = checkpointFrom(sE, epoch);
+  check("'a' is carried in the checkpoint's recent tail", cp.recent.some((r) => r[0] === 'a'), cp.recent);
+
+  // Epoch 9: 'a' claims again at the epoch's very first tick. Gap from the
+  // pre-boundary bite: startE1 - untilMsE = TICK_MS(250), far under
+  // EAT_COOLDOWN_MS(2500) -- this MUST be refused. Bloom state (lastVisit,
+  // bitesTaken) does NOT cross the boundary (spec 3.9 point 3), so the cell
+  // is fresh in epoch 9's fold; cooldown is the only thing that can still
+  // gate this claim, which is exactly what is under test.
+  check('the cross-boundary gap is under EAT_COOLDOWN_MS', startE1 - untilMsE < EAT_COOLDOWN_MS,
+    { gap: startE1 - untilMsE, EAT_COOLDOWN_MS });
+  const logE1: LogEntry[] = [pres('a', c.x, c.y, startE1), eat('a', cell, startE1)];
+  const sE1 = foldShoal(logE1, startE1, { epoch: epoch + 1, seed: cp });
+  check('the cross-boundary claim is refused by the cooldown, not credited',
+    (sE1.bitesTaken.get(cell) ?? 0) === 0 && sE1.fish.get('a')!.lastBiteMs === untilMsE,
+    { bitesTaken: sE1.bitesTaken.get(cell), lastBiteMs: sE1.fish.get('a')!.lastBiteMs, expected: untilMsE });
+}
+{
+  // "The arithmetic matches what it would have been without a boundary in
+  // the way" -- checked as directly as this engine's own constants allow.
+  //
+  // A literal reading of that ask ("a sweep resolving just after the
+  // boundary VOIDS a genuinely pre-boundary bite") is impossible under the
+  // current CONSENSUS constants, verified by hand rather than assumed:
+  // stepTension's per-tick delta is capped at spreadPerMille(max 1000) -
+  // TENSION_NEUTRAL(250) = 750 (tension.ts), so reaching TENSION_TRIGGER
+  // (30_000) from a fresh epoch's tension=0 takes at least
+  // ceil(30000/750) = 40 ticks, triggering the hush no earlier than tick 40
+  // (t = epochStart + 39*TICK_MS = epochStart + 9750). The sweep then
+  // resolves HUSH_MS(8000) after the hush starts, so the EARLIEST any sweep
+  // can resolve in a fresh epoch is epochStart + 9750 + 8000 = +17750. Every
+  // pre-boundary bite is, by definition, older than epochStart, so its age
+  // at that earliest possible resolve is AT LEAST 17750ms -- which already
+  // exceeds VOID_WINDOW_MS(10000). Tension does not cross the epoch boundary
+  // (spec 3.9 point 3; emptyState always zeroes it), so there is no way to
+  // shorten this: no sweep in the new epoch can EVER resolve within
+  // VOID_WINDOW_MS of anything that happened before that epoch started. This
+  // is confirmed directly by the existing "headline regression" test
+  // elsewhere in this file, which independently derives the same 9750/17750
+  // figures for a same-epoch, no-boundary-involved hush.
+  //
+  // So the property actually worth proving is narrower, and provable: a bite
+  // credited just before the boundary, carried through the seed, is
+  // correctly retained in `recentBites` and correctly interacts with the
+  // SAME on-credit pruning a continuous (non-chopped) fold would apply when
+  // the swimmer bites again after crossing -- not merely present as inert
+  // leftover, but actually load-bearing in the array the next credit prunes.
+  const epoch = 10;
+  const startE = epochStartMs(epoch);
+  const startE1 = epochStartMs(epoch + 1);
+  const cell = 700;
+  const c = cellCentre(cell);
+
+  // Pre-boundary bite, 500ms before the boundary (a real tick: 3_599_500 /
+  // 250 = 14_398 exact ticks after startE).
+  const preMs = startE1 - 500;
+  const logE: LogEntry[] = [pres('a', c.x, c.y, preMs), eat('a', cell, preMs)];
+  const untilMsE = startE + EPOCH_MS - TICK_MS;
+  const sE = foldShoal(logE, untilMsE, { epoch });
+  const cp = checkpointFrom(sE, epoch);
+
+  // Post-boundary bite, 2500ms after the boundary. Gap from the pre-boundary
+  // bite: (startE1+2500) - (startE1-500) = 3000ms >= EAT_COOLDOWN_MS(2500),
+  // so this credits (this test is not about the cooldown -- that's the
+  // block above).
+  const postMs = startE1 + 2_500;
+  check('the post-boundary claim clears the cooldown', postMs - preMs >= EAT_COOLDOWN_MS,
+    { gap: postMs - preMs, EAT_COOLDOWN_MS });
+  const logE1: LogEntry[] = [pres('a', c.x, c.y, postMs), eat('a', cell, postMs)];
+  const sE1 = foldShoal(logE1, postMs, { epoch: epoch + 1, seed: cp });
+
+  // Hand-derived expectation, identical to what the eat branch's own pruning
+  // rule (shoalEngine.ts: `[...recentBites, e.ms].filter(ms => e.ms - ms <=
+  // VOID_WINDOW_MS)`) would produce in ONE continuous fold spanning both
+  // bites with no boundary in the way at all: starting from recentBites=[]
+  // before either bite, crediting preMs gives [preMs]; crediting postMs
+  // gives [preMs, postMs].filter(ms => postMs - ms <= 10_000). postMs-preMs
+  // = 3000 <= 10_000, so preMs survives; postMs-postMs = 0 <= 10_000. Result:
+  // [preMs, postMs]. The two-epoch, checkpoint-seeded version must match
+  // this EXACTLY -- if the seed had not carried recentBites, the array would
+  // have started at [] after crossing and this would read [postMs] only.
+  const expected = JSON.stringify([preMs, postMs]);
+  check("the post-boundary credit's recentBites matches the continuous-fold derivation",
+    JSON.stringify(sE1.fish.get('a')!.recentBites) === expected,
+    { got: sE1.fish.get('a')!.recentBites, expected: [preMs, postMs] });
+  check('lastBiteMs also reflects the new credit', sE1.fish.get('a')!.lastBiteMs === postMs,
+    sE1.fish.get('a')!.lastBiteMs);
 }
 
 // --- bodiesOf --------------------------------------------------------------
