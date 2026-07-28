@@ -22,12 +22,21 @@ radii, and exempting the bite radius from trampling. Both fail because the appro
 the ring regardless of how it is sized.
 
 **Resolved by: a claim ignores the claimant's own visits.** Another fish trampling a bloom
-still kills it; you trampling it by arriving does not.  became
-, pruned to .  is unchanged —
- is rebuilt by the warm-up replay, not carried.
+still kills it; you trampling it by arriving does not. `lastVisit` became
+`Map<cell, Map<swimmerId, ms>>`, pruned to `BLOOM_READY_MS`. `Checkpoint` is unchanged —
+`lastVisit` is rebuilt by the warm-up replay, not carried.
 
-Verified: swim-in-stop-feed credits the full  at both dart and cruise speed,
+Verified: swim-in-stop-feed credits the full `BLOOM_BITES` at both dart and cruise speed,
 and a different fish squatting on the cell still denies it entirely.
+
+Two cautionary notes worth keeping:
+
+- The controller's *own* first probe reported 0 bites and nearly rejected this correct fix.
+  Its fish darted straight **through** the bloom into the world edge, in range for a single
+  frame. A probe that does not model real behaviour manufactures a bug that is not there —
+  the mirror image of one that misses a real bug.
+- Pruning `lastVisit` made a full-epoch fold **6× faster** (1.0 s vs 6.0 s; 1,821 stamps vs
+  19,199). The bound was added for correctness and paid for itself in speed.
 
 ---
 
