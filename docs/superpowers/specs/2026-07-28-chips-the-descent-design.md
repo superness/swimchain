@@ -405,17 +405,113 @@ do — the jokes are the reason to go round again, not the multipliers.
 
 ---
 
-## 10. Still open
+## 10. What scoop says at the lava
 
-1. **What scoop finally says at the lava.** The single most important line in the
-   feature, and it should not be written in a hurry.
-2. **Boss retry cost.** Free retries make a modal a slot machine; a cost makes it
-   a decision. Leaning free, but the boss does not re-offer until you have dug a
-   little further — so the cost is time rather than a resource.
+He has followed you down five bands without a word. At the lava he speaks, and
+**not one word of it is new.**
+
+### Before the fight — the ask
+
+> *i'm not begging.*
+>
+> *i have never been begging.*
+>
+> *one more chip.*
+
+That is the whole thing. Line one is his oldest joke (`"i'm not begging. this is
+a business meeting."`). Line two is the same joke with the punchline removed,
+which is what turns it into a statement. Line three is what he has asked for
+since the first minute of the game — the ticker has him *"retiring from begging,
+effective after one more chip"* and calls it his ninth retirement.
+
+The horror is not that he says something shocking. It is that **he says exactly
+what he always said** and the player realises it was never a bit. A small dog
+has been asking them to finish the bowl since the first frame, and they have
+been laughing at him for it.
+
+It also sets up the second reveal (§8) without spending it: *one more chip is
+what empties a bowl.* You do not understand the ask here. You understand it one
+bowl later, and then you remember he asked nicely.
+
+**Restraint is the design.** He does not explain, does not gloat, does not have
+a revelation scene. He is a dog with a business meeting. Anything longer would
+be the game explaining its own twist through a character who has never once
+explained anything.
+
+### After the fight — the shop opens
+
+His last catchphrase is `"sit. stay. good. now fry."` — commands given to the
+player, funny because a dog is giving them. At the lava, having been obeyed:
+
+> *sit. stay. good. now dig.*
+
+The char shop opens on that line. The joke was that he was ordering you around.
+He was ordering you around.
+
+### His shop voice stays transactional
+
+Nothing softens. He sells char abilities the way he begged: rates are
+reasonable, the terms are not negotiable, and he is not fussy — he is exactly
+this fussy.
 
 ---
 
-## 11. Build order, if approved
+## 11. Retries are free — if you are PREPARED (operator's ruling)
+
+No cost, no cooldown, no resource. **The gate is readiness.** Every boss has an
+entry condition, it is stated up front, and the fight will not start until you
+meet it. Retry as often as you like; getting back into fighting shape is the
+price.
+
+This is better than a cost for three reasons:
+
+- **It cannot be farmed.** A modal you can spam is a slot machine. A modal that
+  demands you arrive with a hot rack is a decision every single time.
+- **The cost is real but never arbitrary.** No invented cooldown timer, no
+  currency sink. You pay in the only thing the game actually trades in — a rack
+  that took time to build.
+- **It is self-enforcing after a loss.** The pot keeps ticking through the
+  fight (§3) and a real attempt spends it, so **losing leaves you unprepared by
+  definition.** Nothing has to punish you. You simply are not ready yet.
+
+### What "prepared" means, per boss
+
+The rule underneath all of them: **you must bring the game to the fight.** No
+entering with a cold rack.
+
+| band | boss | prepared means |
+|---|---|---|
+| 8 | the porcelain | a chip at ×8 or better in the oil — something real to hit it with |
+| 9 | the table | four fryers owned, and all four cooking |
+| 10 | the chip from 1974 | a chip at ×16 or better; you do not duel it with a fresh one |
+| 11 | the rat's family | every fryer running — no empty basket to hide behind |
+| 12 | the first fryer | **you own The Long Fry.** The win condition is a ×64 and it is arithmetically unreachable without it |
+
+Band 12's requirement is the one that ties the halves of the game together: the
+deepest jar in the *shallow* game is the door to the *deep* one. A player who
+skipped it cannot pass, and the reason is not a gate — it is that the fight
+literally cannot be won at a ×32 ceiling.
+
+### Refusal is a joke, not an error
+
+The boss does not show a validation message. It declines to notice you, each in
+its own way, and the reason is legible from what it says:
+
+- the porcelain: *nothing happens. it is a bowl. you are holding a crisp.*
+- the table: *three legs is not a table problem. it is a you problem.*
+- the 1974 chip: *it has been here fifty years. it can wait for a better one.*
+- the rat's family: *they count the baskets. they are not impressed.*
+- the first fryer: *the heat looks at what you brought and goes out.*
+
+---
+
+## 12. Nothing open
+
+Every design question is ruled. What remains is build order (§13).
+
+---
+
+## 13. Build order, if approved
 
 1. `broke <band>` fold verb + char accrual — the only permanent decision. The
    deep tip (§7) is the same verb at band 13, so design it to carry a band
