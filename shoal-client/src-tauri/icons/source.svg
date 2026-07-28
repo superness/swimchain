@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0d3b52"/>
+      <stop offset="55%" stop-color="#062434"/>
+      <stop offset="100%" stop-color="#01121c"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="50%" cy="30%" r="62%">
+      <stop offset="0%" stop-color="#7fe3ff" stop-opacity="0.30"/>
+      <stop offset="55%" stop-color="#2aa7cf" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#2aa7cf" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="scale" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#bff3ff"/>
+      <stop offset="100%" stop-color="#4fc3e8"/>
+    </linearGradient>
+    <!-- one fish, reused: nose at +48, tail at -44 -->
+    <g id="fish">
+      <path d="M -44 -18 L -16 0 L -44 18 Z" fill="url(#scale)"/>
+      <path d="M -20 0 C -20 -22 6 -30 30 -12 L 48 0 L 30 12 C 6 30 -20 22 -20 0 Z" fill="url(#scale)"/>
+    </g>
+  </defs>
+
+  <!-- the sea -->
+  <rect x="0" y="0" width="1024" height="1024" rx="188" fill="url(#water)"/>
+  <circle cx="512" cy="330" r="470" fill="url(#shine)"/>
+
+  <!-- the shoal: many small fish, all heading the same way, tight in the middle
+       and thinning at the edges — safety is the crowd -->
+  <g opacity="0.30">
+    <use href="#fish" transform="translate(220 250) scale(0.52) rotate(-8)"/>
+    <use href="#fish" transform="translate(806 300) scale(0.50) rotate(6)"/>
+    <use href="#fish" transform="translate(196 742) scale(0.50) rotate(9)"/>
+    <use href="#fish" transform="translate(824 726) scale(0.48) rotate(-7)"/>
+  </g>
+  <g opacity="0.62">
+    <use href="#fish" transform="translate(330 372) scale(0.70) rotate(-6)"/>
+    <use href="#fish" transform="translate(700 380) scale(0.68) rotate(5)"/>
+    <use href="#fish" transform="translate(322 656) scale(0.68) rotate(7)"/>
+    <use href="#fish" transform="translate(706 648) scale(0.70) rotate(-5)"/>
+    <use href="#fish" transform="translate(512 250) scale(0.66) rotate(0)"/>
+    <use href="#fish" transform="translate(512 786) scale(0.66) rotate(0)"/>
+  </g>
+  <g opacity="0.95">
+    <use href="#fish" transform="translate(430 470) scale(0.92) rotate(-4)"/>
+    <use href="#fish" transform="translate(614 466) scale(0.90) rotate(3)"/>
+    <use href="#fish" transform="translate(430 566) scale(0.90) rotate(4)"/>
+    <use href="#fish" transform="translate(614 570) scale(0.92) rotate(-3)"/>
+  </g>
+
+  <!-- the one at the centre, larger: you -->
+  <use href="#fish" transform="translate(512 518) scale(1.35)"/>
+</svg>
