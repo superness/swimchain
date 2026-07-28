@@ -2,7 +2,7 @@
  * The reveal gate: the bottom of the bowl opens on CHAIN-CONFIRMED depth only.
  * Run: npx tsx src/lib/bowlGate.test.ts
  */
-import { bowlReady, bowlOfferVisible } from './bowlGate';
+import { bowlReady, bowlOfferVisible, REVEAL_FLOOR } from './bowlGate';
 import { withPending } from './chipsPending';
 import { foldChips, saltFor, type ChipsHeader, type ChipsReply } from './chipsEngine';
 import { proofKey } from './proofKey';
@@ -51,22 +51,25 @@ const queuedBank = (id: number, ms: number, bits: number, nonce: bigint): Queued
 //    puts the chain's shallower truth back), which leaves the one showing of
 //    the game's twist sitting on a dead "not deep enough yet" button.
 {
-  // 2048 + 1024 + 512 + 256 + 128 = 3968 lifetime — just under the 4,000 floor.
-  const banks = [19, 18, 17, 16, 15].map((bits, i) => confirmedBank(bits, BigInt(i + 1), 1_000 + i, i + 1));
+  // 8192 + 1024 = 9,216 confirmed — deliberately just UNDER the reveal floor,
+  // so this case turns on pending-vs-confirmed and not on the floor being far
+  // away. Straddle the line the gate actually draws or the test proves nothing.
+  const banks = [21, 18].map((bits, i) => confirmedBank(bits, BigInt(i + 1), 1_000 + i, i + 1));
   const confirmed = chain(banks);
   const confirmedLifetime = banks.reduce((n, b) => n + lifetimeOf(b.bits), 0);
-  check('the chain alone is below the floor', confirmedLifetime === 3_968 && confirmedLifetime < TIP_FLOOR, confirmedLifetime);
+  check('the chain alone is below the reveal floor',
+    confirmedLifetime === 9_216 && confirmedLifetime < REVEAL_FLOOR, confirmedLifetime);
 
-  // One more bank, mined and queued but not yet on the chain: +256 -> 4,224.
-  const queue: QueuedMove[] = [queuedBank(1, 9_000, 16, 99n)];
+  // One more bank, mined and queued but not yet on the chain: +8192 -> 17,408.
+  const queue: QueuedMove[] = [queuedBank(1, 9_000, 21, 99n)];
 
   // CONTROL: the optimistic fold — the one the counter and the buttons read —
   // really does clear the floor here. Without this the assertion below could
   // pass for the trivial reason that nothing crosses at all.
   const merged = withPending(confirmed.replies, confirmed.verified, queue, ME, TABLE);
   const optimistic = foldChips(H, TABLE, merged.replies, merged.verified);
-  check('the optimistic fold DOES clear the floor (control)',
-    optimistic.lifetimeChips >= TIP_FLOOR && saltFor(optimistic.lifetimeChips) > 0,
+  check('the optimistic fold DOES clear the reveal floor (control)',
+    optimistic.lifetimeChips >= REVEAL_FLOOR,
     { lifetime: optimistic.lifetimeChips, salt: saltFor(optimistic.lifetimeChips) });
 
   check('the reveal stays shut while only the pending credit clears the floor',
@@ -75,10 +78,10 @@ const queuedBank = (id: number, ms: number, bits: number, nonce: bigint): Queued
 
 // 2) Once the CHAIN says so, it opens — the gate is a delay, not a wall.
 {
-  const banks = [20, 15].map((bits, i) => confirmedBank(bits, BigInt(i + 1), 2_000 + i, i + 1));
+  const banks = [22, 15].map((bits, i) => confirmedBank(bits, BigInt(i + 1), 2_000 + i, i + 1));
   const confirmed = chain(banks);
-  const lifetime = banks.reduce((n, b) => n + lifetimeOf(b.bits), 0); // 4096 + 128
-  check('the chain alone is over the floor', lifetime >= TIP_FLOOR, lifetime);
+  const lifetime = banks.reduce((n, b) => n + lifetimeOf(b.bits), 0); // 16384 + 128
+  check('the chain alone is over the floor', lifetime >= REVEAL_FLOOR, lifetime);
   check('the reveal opens on confirmed depth', bowlReady(H, TABLE, confirmed.replies, confirmed.verified, [], ME) === true);
   check('and it stays open with a pending move alongside it',
     bowlReady(H, TABLE, confirmed.replies, confirmed.verified, [queuedBank(1, 9_000, 16, 99n)], ME) === true);
@@ -89,6 +92,40 @@ const queuedBank = (id: number, ms: number, bits: number, nonce: bigint): Queued
   check('an empty table is not ready', bowlReady(H, TABLE, [], new Map(), [], ME) === false);
   check('an empty table with a big pending bank is still not ready',
     bowlReady(H, TABLE, [], new Map(), [queuedBank(1, 9_000, 22, 7n)], ME) === false);
+}
+
+// 3b) THE OFFER FLOOR IS POLICY, NOT CONSENSUS. The game withholds the offer
+//     until REVEAL_FLOOR (10,000) so the twist lands deeper, but TIP_FLOOR
+//     stays 4,000 — raising the fold constant would re-score the tips already
+//     on mainnet (measured 2026-07-27: two real tables, one losing its salt
+//     outright). A table between the two numbers is therefore NOT offered the
+//     bowl while the fold would still happily pay it.
+{
+  // 8192 + 1024 = 9,216 lifetime: past TIP_FLOOR, short of REVEAL_FLOOR.
+  const banks = [21, 18].map((bits, i) => confirmedBank(bits, BigInt(i + 1), 3_000 + i, i + 1));
+  const confirmed = chain(banks);
+  const lifetime = banks.reduce((n, b) => n + lifetimeOf(b.bits), 0);
+  check('the fixture sits between the two floors',
+    lifetime === 9_216 && lifetime >= TIP_FLOOR && lifetime < REVEAL_FLOOR, lifetime);
+
+  // CONTROL: consensus still pays this run. If someone "simplifies" the gate
+  // by raising TIP_FLOOR instead, this assertion is what breaks.
+  check('the FOLD would still pay salt here (consensus untouched)', saltFor(lifetime) > 0, saltFor(lifetime));
+
+  check('but the offer is withheld below the reveal floor',
+    bowlReady(H, TABLE, confirmed.replies, confirmed.verified, [], ME) === false);
+}
+
+// 3c) At the reveal floor it opens, and the run is worth more than it would
+//     have been at the old 4,000 offer — the point of moving it.
+{
+  const banks = [22, 19].map((bits, i) => confirmedBank(bits, BigInt(i + 1), 4_000 + i, i + 1));
+  const confirmed = chain(banks);
+  const lifetime = banks.reduce((n, b) => n + lifetimeOf(b.bits), 0); // 16384 + 2048
+  check('at/above the reveal floor the offer stands', lifetime >= REVEAL_FLOOR &&
+    bowlReady(H, TABLE, confirmed.replies, confirmed.verified, [], ME) === true, lifetime);
+  check('a run offered at the reveal floor beats one offered at the old floor',
+    saltFor(REVEAL_FLOOR) > saltFor(TIP_FLOOR), { atReveal: saltFor(REVEAL_FLOOR), atTip: saltFor(TIP_FLOOR) });
 }
 
 // 4) THE OTHER DIRECTION. Once the player has actually asked to tip, the move
