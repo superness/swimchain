@@ -47,6 +47,25 @@ export const CRACKLE_BASE_S = 15;
 /** Crackles per chip: x2 each, so the top is x32 — GOLDEN, terminal. */
 export const MAX_CRACKLES = 5;
 
+/**
+ * OVERCOOK — burn a fryer's pot to make its crackles come sooner.
+ *
+ * DELIBERATELY EV-NEGATIVE, and it cannot be otherwise. Value is
+ * `potRate x total_time x 2^k`; haste shrinks `total_time` in exact
+ * proportion to how much sooner the multiplier lands, and MAX_CRACKLES makes
+ * the multiplier terminal — so speed has nothing to compound into. Measured
+ * over this very curve in scripts/overcooksim.ts and overcooksim2.ts: pure
+ * haste scores 100.0% of base at every dip target, and any drain scores
+ * strictly less. There is no (haste, drain) pair that wins.
+ *
+ * It is a TOOL, not income: it manufactures a golden chip on demand for the
+ * queso angel, who takes nothing else. A chip fed to a vendor forfeits its
+ * whole pot anyway (App.tsx onFeed), so burning one you have already
+ * committed to her costs nothing real. Do not "fix" the numbers below.
+ */
+export const OVERCOOK_HASTE = 1 / 3;
+export const OVERCOOK_DRAIN = 0.03;
+
 export interface CookingChip {
   /** Identity for React keys and the on-chain authoring ms. */
   ms: number;
@@ -77,6 +96,8 @@ export interface TickResult {
   crackleEaten: boolean;
   /** The tick's gain went to whoever latched the fryer, not the pot. */
   diverted: boolean;
+  /** Crumbs the overcook burned off this tick (0 when not lit). */
+  burned: number;
 }
 
 /**
@@ -94,6 +115,8 @@ export interface TickMods {
    *  ALSO here — he eats ANY crackle, even hers (the app's targeting avoids
    *  wasting a blessing on a latched fryer; the rule stays absolute). */
   forceCrackle?: boolean;
+  /** This fryer is overcooking: crackles come sooner, the pot bleeds. */
+  overcook?: boolean;
 }
 
 /**
@@ -111,9 +134,14 @@ export function tickChip(
 ): TickResult {
   const gained = Math.max(1, Math.floor(TICK_CRUMBS * seasoning));
   const diverted = mods.divertPot === true;
+  const lit = mods.overcook === true;
+  const grown = chip.pot + (diverted ? 0 : gained);
+  // The burn takes its cut AFTER the tick lands, so a lit fryer still shows
+  // the pot moving — it just keeps less of it.
+  const burned = lit ? grown * OVERCOOK_DRAIN : 0;
   const next: CookingChip = {
     ...chip,
-    pot: chip.pot + (diverted ? 0 : gained),
+    pot: Math.max(0, grown - burned),
     cookedMs: chip.cookedMs + TICK_MS,
   };
   let crackled = false;
@@ -122,7 +150,8 @@ export function tickChip(
     // P(crackle this tick) = tick / expected wait at this level. Memoryless,
     // so the drought CAN run long — that's the gamble — but the pot ticked
     // the whole way, so a drought is never a frozen screen.
-    const expectedWaitS = CRACKLE_BASE_S * 2 ** (next.crackles + 1) * Math.max(0.05, crackleHaste);
+    const haste = Math.max(0.05, crackleHaste) * (lit ? OVERCOOK_HASTE : 1);
+    const expectedWaitS = CRACKLE_BASE_S * 2 ** (next.crackles + 1) * haste;
     const p = TICK_MS / 1000 / expectedWaitS;
     if (mods.forceCrackle === true || rng() < p) {
       if (mods.eatCrackle === true) {
@@ -133,7 +162,7 @@ export function tickChip(
       }
     }
   }
-  return { chip: next, gained, crackled, crackleEaten, diverted };
+  return { chip: next, gained, crackled, crackleEaten, diverted, burned };
 }
 
 export interface DipResult {
