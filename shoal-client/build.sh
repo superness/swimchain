@@ -2,7 +2,7 @@
 # Build script for The Shoal desktop shell.
 #
 # Mirrors trench-client/build.sh, trimmed to what this shell needs. Without steps 1-2
-# the build dies inside tauri_build with "glob pattern binaries/*.exe path not found",
+# the build dies inside tauri_build with "glob pattern binaries/sw* path not found",
 # which reads like a config bug rather than "the sidecar was never staged" —
 # src-tauri/build.rs catches that case up front, and this script is what prevents it.
 
@@ -19,9 +19,14 @@ echo "Step 1: Building swimchain node (sw)..."
 cd "$PROJECT_ROOT"
 cargo build --release
 
-# Step 2: Stage the sidecar where tauri.windows.conf.json's resource glob
-# ("binaries/*.exe") expects it. src-tauri/build.rs hashes this against the fresh build
-# and fails if it is stale, so a rebuilt node never ships behind a stale bundled copy.
+# Step 2: Stage the sidecar where tauri.conf.json's BASE resource glob ("binaries/sw*",
+# so it matches `sw` and `sw.exe` alike and does NOT sweep up binaries/.gitignore)
+# expects it. src-tauri/build.rs hashes this
+# against the fresh build and fails if it is stale OR if it cannot check — so a rebuilt
+# node never ships behind a stale bundled copy, and a build with nothing to compare
+# against stops rather than shipping an unverified one. The one deliberate escape is
+# SHOAL_ALLOW_UNVERIFIED_SIDECAR=1, for a downstream packager that stages a prebuilt
+# binary and never checks out target/release at all.
 #
 # NOTE: this is a Tauri *resource*, not a Tauri `externalBin` sidecar — which is why the
 # file keeps its plain name. `externalBin` is the mechanism that demands a

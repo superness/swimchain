@@ -32,6 +32,29 @@ pub fn default_rpc_port(network: &str) -> u16 {
     }
 }
 
+/// Does this stderr tail say "the chain database is already locked by another process"?
+///
+/// Sled reports the same condition three different ways depending on platform and code
+/// path, and the node's OWN sniff (`src/cli/commands/block.rs:232-234`) tests all three.
+/// This shell tested only the first two, and the missing one —
+/// `"another process has locked"` — is sled's own message and the one most likely to be
+/// what a second Shoal window sees on Windows, where the POSIX `flock` errno text
+/// ("Resource temporarily unavailable") does not appear at all.
+///
+/// The consequence of missing it is not a vaguer message, it is a WRONG one: a real
+/// lock falls through to the exit-code table below, where `sw`'s exit code 5 prints
+/// **"Incorrect password."** — telling a player their correct password is wrong while
+/// an orphaned sidecar holds the lock. That is `project_desktop_login_lock_orphan`
+/// reproduced exactly, in a fresh shell, from the same two lines of code.
+///
+/// Extracted as a free function purely so it can be tested: the call site is inside
+/// `start_with_password`, which needs a spawned process to reach.
+pub fn is_sled_lock(stderr_tail: &str) -> bool {
+    stderr_tail.contains("could not acquire lock")
+        || stderr_tail.contains("Resource temporarily unavailable")
+        || stderr_tail.contains("another process has locked")
+}
+
 /// Find a free port pair `(p2p, p2p+1)` for the node, preferring `preferred_p2p` (the
 /// network default). The node derives its RPC port as P2P+1 and binds RPC on
 /// 127.0.0.1, so if the default RPC port is already taken (a second Shoal window, a
@@ -252,8 +275,7 @@ impl NodeManager {
             Ok(Some(status)) => {
                 let exit_code = status.code().unwrap_or(-1);
                 let stderr_tail = self.stderr_tail.lock().await.clone();
-                let sled_locked = stderr_tail.contains("could not acquire lock")
-                    || stderr_tail.contains("Resource temporarily unavailable");
+                let sled_locked = is_sled_lock(&stderr_tail);
 
                 let error_msg = if sled_locked {
                     "The sea is already open in another window (or an orphaned process holds it). Close it and retry.".to_string()
@@ -306,10 +328,23 @@ impl NodeManager {
 
 impl Drop for NodeManager {
     fn drop(&mut self) {
-        // `kill_on_drop(true)` (set at spawn time) is the actual safety net that
-        // guarantees no orphaned sw.exe survives the shell process dying (panic, forced
-        // close, ...) — dropping `process` here just triggers it explicitly rather than
-        // waiting for AppState's own drop.
+        // WHAT `kill_on_drop(true)` (set at spawn time) ACTUALLY BUYS, corrected: it is
+        // NOT a safety net against the shell process dying. It is a `Drop` impl on
+        // tokio's `Child`, and a `Drop` impl runs only if the process unwinds or exits
+        // normally through Rust. Neither happens here:
+        //
+        //   - `[profile.release] panic = "abort"` (Cargo.toml) — a panic aborts, it
+        //     does not unwind, so no destructor anywhere in the program runs.
+        //   - tao's event loop terminates the process with `std::process::exit`, which
+        //     runs no destructors either.
+        //   - A forced close (Task Manager, SIGKILL) obviously runs nothing.
+        //
+        // So the only paths on which this `Drop` fires are ones where the shell is
+        // already tearing down in an orderly way — and on Windows tokio's own
+        // `kill_on_drop` is what does the killing there, which is why this impl only
+        // signals on unix. `main.rs`'s `WindowEvent::Destroyed` handler is therefore the
+        // REAL stop, and it now blocks on it rather than spawning it into a race with
+        // process exit. This impl is a last-resort tidy-up, not the guarantee.
         if let Some(process) = self.process.take() {
             #[cfg(unix)]
             {
@@ -377,5 +412,45 @@ mod tests {
         let mut buf = String::from("short");
         trim_stderr_tail(&mut buf, 100);
         assert_eq!(buf, "short");
+    }
+
+    /// All THREE substrings the node's own sniff tests
+    /// (`src/cli/commands/block.rs:232-234`). The third was missing here, and it is the
+    /// one sled itself emits — so on Windows, where the POSIX errno text never appears,
+    /// a real lock was falling through to the exit-code table and printing "Incorrect
+    /// password." at a player who had typed it correctly.
+    #[test]
+    fn is_sled_lock_matches_all_three_reported_forms() {
+        assert!(is_sled_lock(
+            "Error: could not acquire lock on \"C:\\\\Users\\\\p\\\\shoal\\\\chain/db\""
+        ));
+        assert!(is_sled_lock(
+            "Error: os error 11: Resource temporarily unavailable"
+        ));
+        assert!(is_sled_lock(
+            "Error: another process has locked this database"
+        ));
+    }
+
+    /// The tail is a rolling buffer of many lines, so the match has to survive the lock
+    /// line being surrounded by ordinary startup chatter rather than being the whole
+    /// string.
+    #[test]
+    fn is_sled_lock_finds_the_line_inside_a_full_stderr_tail() {
+        let tail = "[NODE] loading config\n\
+                    [NODE] opening chain store\n\
+                    Error: another process has locked this database\n\
+                    [NODE] shutting down\n";
+        assert!(is_sled_lock(tail));
+    }
+
+    /// The failure this must NOT produce: a genuine bad password is exit code 5, and it
+    /// has to stay reachable. A sniff that matched everything would swap one wrong
+    /// message for another.
+    #[test]
+    fn is_sled_lock_does_not_claim_an_ordinary_failure() {
+        assert!(!is_sled_lock("Error: incorrect password"));
+        assert!(!is_sled_lock("Error: address already in use"));
+        assert!(!is_sled_lock(""));
     }
 }

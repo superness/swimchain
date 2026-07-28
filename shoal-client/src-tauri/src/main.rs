@@ -5,9 +5,16 @@
 //!
 //! Copied from `trench-client/src-tauri/src/main.rs`, which is the reference this plan
 //! names: a Tauri 2 app that bundles `sw` as a **resource** (not a Tauri `externalBin`
-//! sidecar — see tauri.windows.conf.json for why the distinction matters), mints an
-//! identity on first run, starts the node, and hands the webview a ready-built
+//! sidecar — see `build.sh` step 2 for why the distinction matters: a resource keeps
+//! its plain name and is looked up by `resource_dir().join("binaries")` below, while an
+//! `externalBin` would demand a `-<target-triple>` suffix and break that lookup), mints
+//! an identity on first run, starts the node, and hands the webview a ready-built
 //! `Authorization` header through `get_rpc_config`.
+//!
+//! The resource glob lives in `tauri.conf.json`'s BASE `bundle.resources`, deliberately.
+//! It used to live in a Windows-only `tauri.windows.conf.json` overlay while
+//! `bundle.targets` was `"all"` — so a macOS or Linux build produced a bundle with no
+//! node in it at all, and nothing said so.
 //!
 //! The webview end of that contract is `shoal-client/src/lib/shoalRpc.ts`'s
 //! `resolveAuth`, which reaches this command through `window.__TAURI__.core.invoke` —
@@ -326,13 +333,30 @@ fn main() {
             restart_node,
         ])
         .on_window_event(|window, event| {
-            // Stop the sidecar the moment the window closes — kill_on_drop(true) at
-            // spawn time is the real safety net (it survives a panic too), this just
-            // makes the common case prompt.
+            // THIS IS THE ONLY THING THAT RELIABLY STOPS THE SIDECAR, so it BLOCKS.
+            //
+            // The comment that used to sit here said `kill_on_drop(true)` was the real
+            // safety net and "survives a panic too". Both halves were false.
+            // `kill_on_drop` is a `Drop` impl on tokio's `Child`, and this binary is
+            // built with `panic = "abort"` (src-tauri/Cargo.toml) — a panic therefore
+            // runs no destructors at all — while tao's event loop ends the process with
+            // `std::process::exit`, which runs none either. There is no path on which
+            // that net catches anything this handler does not.
+            //
+            // Which is why the old `async_runtime::spawn` was a bug and not a style
+            // choice: it returned immediately, and the spawned task then raced the
+            // process exit that follows window destruction. Losing that race leaves an
+            // orphaned `sw` holding the sled lock — and the next launch reports
+            // "Incorrect password." at a player who typed it correctly
+            // (`project_desktop_login_lock_orphan`, and see `is_sled_lock`).
+            //
+            // `block_on` is safe here: `on_window_event` is called synchronously on the
+            // main thread, outside any async context, and `NodeManager::stop` is bounded
+            // by its own 5 s wait-then-kill timeout.
             if let tauri::WindowEvent::Destroyed = event {
                 let state = window.state::<AppState>();
                 let manager = state.node_manager.clone();
-                tauri::async_runtime::spawn(async move {
+                tauri::async_runtime::block_on(async move {
                     let mut manager = manager.lock().await;
                     let _ = manager.stop().await;
                 });

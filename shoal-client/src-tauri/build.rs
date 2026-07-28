@@ -13,6 +13,24 @@ fn hash_file(path: &PathBuf) -> Option<[u8; 32]> {
     Some(hasher.finalize().into())
 }
 
+/// The one way to opt out of a hard failure in this file. Set it and the two checks
+/// below degrade to warnings; leave it unset and a missing or unverifiable sidecar
+/// stops the build.
+///
+/// It exists for exactly one real case — a downstream packager that stages an
+/// already-built `binaries/sw` and never checks out `target/release/` at all — and it
+/// has to be a DELIBERATE act, because the alternative it replaces was a silent one:
+/// this file used to `cargo:warning` and return whenever the fresh binary was absent,
+/// and cargo warnings from a build script are not even printed by default for a
+/// non-path dependency. A release could therefore ship whatever `binaries/` happened
+/// to hold, arbitrarily old, and say so only in output nobody reads.
+const OPT_OUT_ENV: &str = "SHOAL_ALLOW_UNVERIFIED_SIDECAR";
+
+fn opted_out() -> bool {
+    println!("cargo:rerun-if-env-changed={OPT_OUT_ENV}");
+    matches!(std::env::var(OPT_OUT_ENV), Ok(v) if !v.is_empty() && v != "0")
+}
+
 fn check_bundled_sw() {
     let bin_name = if cfg!(target_os = "windows") {
         "sw.exe"
@@ -28,41 +46,57 @@ fn check_bundled_sw() {
     let bundled_hash = match hash_file(&bundled) {
         Some(h) => h,
         None => {
-            // This build is about to fail anyway: tauri.windows.conf.json globs
-            // `binaries/*.exe` as a bundle resource, and Tauri validates that in EVERY
-            // profile (`cargo build`, `cargo test` and `tauri dev` all die, not just
-            // `tauri build`) with "glob pattern binaries/*.exe path not found" — which
-            // reads like a config bug rather than "nobody staged the sidecar". Fail
-            // here instead, naming the fix. Only the Windows config references the
-            // sidecar, so other targets build fine without it and just get a warning.
+            // This build is about to fail anyway: tauri.conf.json globs `binaries/sw*` as
+            // a bundle resource, and Tauri validates that in EVERY profile (`cargo
+            // build`, `cargo test` and `tauri dev` all die, not just `tauri build`)
+            // with "glob pattern binaries/sw* path not found" — which reads like a config
+            // bug rather than "nobody staged the sidecar". Fail here instead, naming
+            // the fix.
+            //
+            // This is now a hard failure on EVERY target, not only Windows. The glob
+            // moved from tauri.windows.conf.json to the base config precisely because
+            // `bundle.targets` is "all": with the glob in the Windows-only overlay, a
+            // macOS or Linux `tauri build` produced a perfectly valid-looking bundle
+            // WITH NO NODE INSIDE IT, and nothing anywhere said so.
             let msg = format!(
                 "Bundled sw binary not found at {}.\n         \
                  Stage it with:  cargo build --release && cp {} {}\n         \
-                 Or run shoal-client/build.sh, which does the whole sequence.",
+                 Or run shoal-client/build.sh, which does the whole sequence.\n         \
+                 (Deliberate downstream packager build? Set {}=1.)",
                 bundled.display(),
                 fresh.display(),
-                bundled.display()
+                bundled.display(),
+                OPT_OUT_ENV
             );
-            if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-                panic!("{msg}");
+            if opted_out() {
+                println!("cargo:warning={msg}");
+                return;
             }
-            println!("cargo:warning={msg}");
-            return;
+            panic!("{msg}");
         }
     };
 
     let fresh_hash = match hash_file(&fresh) {
         Some(h) => h,
         None => {
-            println!(
-                "cargo:warning=No fresh sw binary at {} — skipping freshness check (downstream packager build?)",
-                fresh.display()
+            // NOT a warning any more. A missing fresh binary means the freshness check
+            // — the only thing standing between a release and a silently stale node —
+            // cannot run at all, and "cannot verify" is not "verified".
+            let msg = format!(
+                "No fresh sw binary at {}, so the bundled one at {} (SHA256 {}) CANNOT BE VERIFIED as current.\n         \
+                 Build it with:  cargo build --release   (from the repo root)\n         \
+                 Or run shoal-client/build.sh, which does the whole sequence.\n         \
+                 (Deliberate downstream packager build? Set {}=1.)",
+                fresh.display(),
+                bundled.display(),
+                hex::encode(bundled_hash),
+                OPT_OUT_ENV
             );
-            println!(
-                "cargo:warning=Bundled sw SHA256: {}",
-                hex::encode(bundled_hash)
-            );
-            return;
+            if opted_out() {
+                println!("cargo:warning={msg}");
+                return;
+            }
+            panic!("{msg}");
         }
     };
 

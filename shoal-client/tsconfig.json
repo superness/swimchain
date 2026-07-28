@@ -9,6 +9,14 @@
   // `src/ui/` needs DOM and JSX, so it is a SEPARATE project (`tsconfig.ui.json`)
   // rather than a widened `lib` here. `npm test` runs both compilers; adding a UI can
   // therefore never relax what the library is checked against.
+  //
+  // `npm run build` runs BOTH COMPILERS TOO, ahead of `vite build`, and that is not
+  // belt-and-braces: `tauri.conf.json`'s `beforeBuildCommand` is `npm run build`, so it
+  // is the ONLY path that produces a shippable artifact. esbuild (what Vite transforms
+  // TypeScript with) STRIPS types without checking them, so a `build` of bare
+  // `vite build` would have left this whole two-config wall un-enforced on exactly the
+  // path where it matters most — green `npm test`, shipped type error. The reference
+  // shell does the same thing (`trench-client/ui/package.json`: `tsc -b && vite build`).
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
