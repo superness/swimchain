@@ -1523,7 +1523,7 @@ export function App() {
           wingSince={wing.since}
           oracleIndex={oracle.at}
           overcookAt={overcookAt}
-          onOvercook={onOvercook}
+          onOvercook={state?.owned.has('overcook') ? onOvercook : null}
         />
 
         <aside className="counter">
