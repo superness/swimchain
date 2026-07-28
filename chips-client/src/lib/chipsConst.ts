@@ -108,8 +108,28 @@ export const UPGRADES: Record<string, Upgrade> = {
      (Buffalo), the fondue oracle (Fondue), and the first chip (Abyss).   */
   season7: { key: 'season7', label: 'Hot Sauce VII',  cost: 200_000_000,   seasoningNum: 12, seasoningDen: 1 },
   season8: { key: 'season8', label: 'Seasoning VIII', cost: 600_000_000,   seasoningNum: 16, seasoningDen: 1 },
-  fryer5:  { key: 'fryer5',  label: 'Fifth Basket',   cost: 300_000_000,   fryers: 5 },
-  fryer6:  { key: 'fryer6',  label: 'Sixth Basket',   cost: 1_200_000_000, fryers: 6 },
+  /* ── THE RACK STOPS AT FOUR (operator, 2026-07-28) ─────────────────────
+     `fryer5` (300M) and `fryer6` (1.2B) are REMOVED. A basket is a linear
+     rate multiplier, but it is also linear ATTENTION — another pot to watch
+     and pull — so five and six added more of the same decision in parallel
+     rather than a new one, at superlinear screen cost (the rack is already
+     two rows on a phone at four; the fifth wrapped and shoved the counter
+     below the fold, which is how this surfaced).
+
+     Removing a key is normally forbidden — a historical buy of a key that
+     no longer exists folds `rejected-parse`. It is safe HERE, and only
+     here, because the whole mainnet was scanned first: `fryer5` had been
+     bought exactly ONCE (Corner Rail 684) and `fryer6` never. That one buy
+     now folds as a refund — its 300M is never deducted — which is the right
+     outcome for a jar being withdrawn. Do not read this as precedent; count
+     the rows before ever doing it again.
+
+     Their price points are kept, with jars that add a DECISION instead of
+     another basket. Both are pure-ownership keys (no effect field), so the
+     fold needs no change at all: it records that they were bought and the
+     client does the rest. */
+  wingcall: { key: 'wingcall', label: 'A Reason',     cost: 300_000_000 },
+  longfry:  { key: 'longfry',  label: 'The Long Fry', cost: 1_200_000_000 },
   bowl4:   { key: 'bowl4',   label: 'The Trough',     cost: 800_000_000,   bowlCap: 100_000_000_000 },
   doubledip3: { key: 'doubledip3', label: 'Shameless Dip', cost: 400_000_000, doubleDipMod: 1 },
   detector3:  { key: 'detector3',  label: 'The Long Spoon', cost: 500_000_000, goldenBits: 13 },
@@ -132,7 +152,10 @@ export const UPGRADES: Record<string, Upgrade> = {
 export const UPGRADE_CHAINS: string[][] = [
   ['season1', 'season2', 'season3', 'season4', 'season5', 'season6', 'season7', 'season8'],
   ['bowl1', 'bowl2', 'bowl3', 'bowl4'],
-  ['fryer2', 'fryer3', 'fryer4', 'fryer5', 'fryer6'],
+  // Truncated at four (2026-07-28). Removing TAIL rungs is the mirror of
+  // appending them: the surviving rungs validate against an unchanged
+  // prefix, so no historical fryer2/3/4 buy re-scores.
+  ['fryer2', 'fryer3', 'fryer4'],
   ['doubledip1', 'doubledip2', 'doubledip3'],
   ['detector', 'detector2', 'detector3'],
   // `cellar` was previously unchained; making it the HEAD of a new chain is

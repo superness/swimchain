@@ -166,7 +166,10 @@ export const CREW: CrewMember[] = [
     ],
     armLines: ['i have landed. the bird did not land. THERE WAS NEVER A BIRD.'],
     munchLines: ['DOUBLE. that’s what happens when you listen to a wing.'],
-    sells: ['fryer5', 'doubledip3'],
+    // `fryer5` retired with the four-fryer cap (2026-07-28); `wingcall` takes
+    // its price point. Fitting: the jar that sells you a say in where he sits
+    // is sold by the thing that would not explain why it sat there.
+    sells: ['wingcall', 'doubledip3'],
     feed: 'any',
     job: 'wing',
   },
@@ -192,7 +195,10 @@ export const CREW: CrewMember[] = [
     ],
     armLines: ['bring it here. i have not eaten since the beginning. i can wait longer. i would rather not.'],
     munchLines: ['it is taken. down here nothing goes anywhere, including gratitude. take your jar.'],
-    sells: ['season7', 'season8', 'bowl4', 'fryer6', 'cellar2'],
+    // `fryer6` retired with the four-fryer cap (2026-07-28); `longfry` takes
+    // its price point — the deepest lever in the game, from the one who was
+    // in the bowl before you got here.
+    sells: ['season7', 'season8', 'bowl4', 'longfry', 'cellar2'],
     feed: 'any',
   },
 ];

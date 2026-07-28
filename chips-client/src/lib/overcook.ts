@@ -16,12 +16,22 @@ export function toggleOvercook(lit: number | null, index: number): number | null
 
 /**
  * The flame goes out on its own when there is nothing left to hurry — the
- * chip is golden, or the rack shrank out from under it. Called every tick,
- * so it must be cheap and total.
+ * chip has topped out, or the rack shrank out from under it. Called every
+ * tick, so it must be cheap and total.
+ *
+ * NOTHING LEFT TO HURRY IS THE CEILING, NOT GOLDEN. With The Long Fry bought
+ * there is still a sixth crackle to chase after a chip goes golden, and that
+ * is exactly the window the burner exists to shorten — a flame that died at
+ * five would switch itself off at the precise moment the new decision starts,
+ * with no explanation the player could see.
  */
-export function overcookOff(lit: number | null, chips: { crackles: number }[]): number | null {
+export function overcookOff(
+  lit: number | null,
+  chips: { crackles: number }[],
+  ceiling: number = MAX_CRACKLES
+): number | null {
   if (lit === null) return null;
   const chip = chips[lit];
   if (!chip) return null;
-  return chip.crackles >= MAX_CRACKLES ? null : lit;
+  return chip.crackles >= ceiling ? null : lit;
 }
