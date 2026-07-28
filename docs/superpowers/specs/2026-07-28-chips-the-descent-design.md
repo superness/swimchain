@@ -266,21 +266,46 @@ Cheap, escalating, all copy and palette:
 
 ---
 
-## 8. Still open
+## 8. The bowl count: no ceiling, and a nod (operator's ruling)
 
-All three previous opens are ruled (§3 modal, §4 once-per-boss, §5 scoop). Left:
+The count never stops. What stops is the ceremony.
 
-1. **Does the bowl count have a ceiling?** Probably not — but the copy needs an
-   answer for what the tenth bowl reads like, or it degrades into a number.
-2. **What scoop finally says at the lava.** The single most important line in the
+The descent's payoff is narrative, and a revelation does not repeat. Salt and char
+are numbers and numbers repeat fine, but "you were never digging down" lands
+exactly once. So:
+
+| bowl | what the game does |
+|---|---|
+| 1st | the full inversion — every beat, the maker's mark, all of it |
+| 2nd | one short beat. "it happened again" is a different feeling from both "it happened" and "it happens", and it is the last time the game will say anything |
+| 3rd+ | **a nod.** You surface. The count goes up. No ceremony, no copy. |
+
+The nod is the whole design: **they know they did it.** A game that keeps
+congratulating you for a thing you now do routinely is a game that has stopped
+believing you. The horror became your commute, and saying nothing about that says
+more than any amount of copy would.
+
+Mechanically it is a restart they *choose*: char and salt both survive, so
+everything permanent they have earned comes with them and the numbers only ever
+go up. The count itself is the one thing the deep leaderboard ranks on, which is
+a second argument against a ceiling — it has to still mean something at ten.
+
+Concretely, the nod is the count sitting in the hood beside old salt, without
+comment. That is the entire third-bowl-onward presentation.
+
+---
+
+## 9. Still open
+
+1. **What scoop finally says at the lava.** The single most important line in the
    feature, and it should not be written in a hurry.
-3. **Boss retry cost.** Free retries make a modal a slot machine; a cost makes it
+2. **Boss retry cost.** Free retries make a modal a slot machine; a cost makes it
    a decision. Leaning free, but the boss does not re-offer until you have dug a
    little further — so the cost is time rather than a resource.
 
 ---
 
-## 9. Build order, if approved
+## 10. Build order, if approved
 
 1. `broke <band>` fold verb + char accrual — the only permanent decision. The
    deep tip (§7) is the same verb at band 13, so design it to carry a band
