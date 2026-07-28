@@ -5,8 +5,10 @@
  * to the first entry a client happened to hold is what made two clients fold
  * different worlds from the same live entries (spec section 3.9).
  */
-import { epochOf, epochStartMs, epochEndMs, isEpochBoundary } from './epoch';
-import { EPOCH_MS, TICK_MS } from './shoalConst';
+import {
+  epochOf, epochStartMs, epochEndMs, epochWarmStartMs, epochFoldEndMs, isEpochBoundary,
+} from './epoch';
+import { EPOCH_MS, TICK_MS, WARMUP_MS, PRESENCE_TTL_MS } from './shoalConst';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -40,6 +42,54 @@ check('end of one epoch is the start of the next', epochEndMs(3) === epochStartM
 // By hand: 3_600_000 / 250 = 14_400, an exact integer.
 check('an epoch is a whole number of ticks', EPOCH_MS % TICK_MS === 0, { EPOCH_MS, TICK_MS });
 check('an epoch is 14400 ticks', EPOCH_MS / TICK_MS === 14_400, EPOCH_MS / TICK_MS);
+
+// --- epochWarmStartMs -------------------------------------------------------
+// Where an epoch's fold actually starts ticking: WARMUP_MS before its own
+// first ms (spec 3.9 point 3). By hand, epoch 3:
+//   epochStartMs(3) = 3 * 3_600_000            = 10_800_000
+//   epochWarmStartMs(3) = 10_800_000 - 90_000  = 10_710_000
+check('the warm-up start is the hand-derived absolute ms', epochWarmStartMs(3) === 10_710_000,
+  epochWarmStartMs(3));
+check('it is exactly WARMUP_MS before the epoch it belongs to',
+  epochStartMs(3) - epochWarmStartMs(3) === WARMUP_MS, epochStartMs(3) - epochWarmStartMs(3));
+// It must stay on the absolute tick grid, or the warm-up shifts an epoch's
+// tick PHASE — the exact divergence the absolute origin exists to remove.
+// 90_000 / 250 = 360, an exact integer.
+check('the warm-up is a whole number of ticks, so it cannot shift the tick phase',
+  WARMUP_MS % TICK_MS === 0 && epochWarmStartMs(3) % TICK_MS === 0, WARMUP_MS / TICK_MS);
+check('and that number is 360', (epochStartMs(3) - epochWarmStartMs(3)) / TICK_MS === 360,
+  (epochStartMs(3) - epochWarmStartMs(3)) / TICK_MS);
+// The warm-up ticks belong to the PREVIOUS epoch by construction, which is why
+// emptyState has to be told which epoch is being folded rather than inferring
+// it from the first tick's timestamp.
+check('the warm-up start lies in the previous epoch', epochOf(epochWarmStartMs(3)) === 2,
+  epochOf(epochWarmStartMs(3)));
+// And the entry window the fold reads reaches a further PRESENCE_TTL_MS back —
+// 180 s of the prior epoch's log — because a vector authored just before the
+// warm-up start is live for every one of its 360 ticks. It must still land
+// inside the single preceding epoch, or a fold would need two epochs of log.
+check('the replay window opens 180 s before the origin and still inside the previous epoch',
+  epochStartMs(3) - (epochWarmStartMs(3) - PRESENCE_TTL_MS) === 180_000
+    && epochOf(epochWarmStartMs(3) - PRESENCE_TTL_MS) === 2,
+  { windowStart: epochWarmStartMs(3) - PRESENCE_TTL_MS });
+check('the warm-up start goes negative below epoch zero rather than clamping',
+  epochWarmStartMs(0) === -90_000, epochWarmStartMs(0));
+
+// --- epochFoldEndMs ---------------------------------------------------------
+// The canonical LAST TICK an epoch owns: one TICK_MS short of its end, so a
+// fold to it leaves nowMs sitting exactly on epochEndMs — what rollEpoch
+// requires. By hand, epoch 3: 10_800_000 + 3_600_000 - 250 = 14_399_750.
+check('the fold end is the hand-derived absolute ms', epochFoldEndMs(3) === 14_399_750,
+  epochFoldEndMs(3));
+check('one more tick lands exactly on the epoch end', epochFoldEndMs(3) + TICK_MS === epochEndMs(3),
+  { foldEnd: epochFoldEndMs(3), end: epochEndMs(3) });
+check('the fold end is itself inside the epoch, and on the grid',
+  epochOf(epochFoldEndMs(3)) === 3 && epochFoldEndMs(3) % TICK_MS === 0, epochFoldEndMs(3));
+// The whole bounded-cost claim in one line: warm-up plus epoch is 360 + 14_400
+// ticks, no matter how old the sea is.
+check('a full fold is exactly 14_760 ticks: 360 of warm-up and 14_400 of epoch',
+  (epochFoldEndMs(3) - epochWarmStartMs(3)) / TICK_MS + 1 === 14_760,
+  (epochFoldEndMs(3) - epochWarmStartMs(3)) / TICK_MS + 1);
 
 check('a multiple of EPOCH_MS is a boundary', isEpochBoundary(2 * EPOCH_MS) === true);
 check('a non-multiple is not a boundary', isEpochBoundary(2 * EPOCH_MS + 1) === false);
