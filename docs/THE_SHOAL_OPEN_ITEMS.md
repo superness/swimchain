@@ -414,6 +414,45 @@ schedules a second refetch 600 ms after each event-driven one. **Not fixed, acco
 the node-side answer would be to publish after the merge rather than before, and that is a
 node change nobody has costed.
 
+### 13. The wild shoal's seed is a parameter with no agreed source
+
+`wildAt(seed, tick, hush, now)` and `shelterBodiesOf(state, wildSeed, atMs)` both take a
+seed, and **every client in a room must pass the same one** or two players standing in the
+same water read different shelter. Nothing in `ShoalState` carries it today, so it is a
+parameter every caller supplies (the harness defaults to `--wild-seed 1`).
+
+The obvious source is the room itself — the space id is a value every client already agrees
+on, and hashing it to a 32-bit integer would make the sea a property of the place rather
+than of whoever wired the call. That is a small change, but it is a **consensus** one (it
+decides which sea everyone sees, permanently), so it is recorded rather than slipped in as
+part of Task 3.
+
+Nothing depends on it yet: no shipped client draws or counts wild fish, because the paint
+is Task 5 of the same plan. Whoever wires the first real consumer must resolve this first,
+and the launcher and the browser client must resolve it the *same* way.
+
+### 14. Wild cover is not scarce, and the shelter weight cannot make it so
+
+`WILD_SHELTER_WEIGHT` (shoalConst.ts) prices a wild fish at half a person, so six of them
+do what three people do. That fixes the *ratio* — the old size-weighted reading made three
+wild fish worth 303 against a threshold of 300, i.e. exactly as good as three people — but
+it does not make wild cover rare, and the numbers say so plainly: a school is
+`WILD_PER_SCHOOL` (12) fish inside `WILD_SCHOOL_R` (200), against a `SHELTER_R` of 340, so a
+swimmer at the middle of any school holds 12 × 50 = **600**, twice the threshold. It held
+1212 before. Both are "completely safe".
+
+Measured on the harness's own session (`--wild-seed 1`), two of the eight outsiders were
+sheltered by scenery alone right up to the hush, at 550 and 350. Sampling three hundred
+seeds against that fixture's twelve swimmers, it is rare for *no* swimmer to have six wild
+fish in range.
+
+This is not obviously wrong — the bolt means wild cover is never worth anything at the
+verdict, so what it buys is a *false* sense of safety, which is exactly what the design
+wants to sell. But if the operator wants wild cover to be something a player has to seek
+out rather than something they are usually standing in, the lever is `WILD_PER_SCHOOL` or
+`WILD_SCHOOL_R` in wild.ts, not the weight. Both are CONSENSUS and both are cheap **now**
+and never again.
+
 ### 9. Smaller
 
 - `foldShoal` throws a `RangeError` at every epoch end, so a naive

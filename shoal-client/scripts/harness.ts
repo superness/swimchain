@@ -48,12 +48,26 @@
  * `foldShoal` past an epoch boundary without ever rolling it — to prove that
  * path is wired up, not merely asserted in a comment.
  *
- * Run: npx tsx scripts/harness.ts [--seed N] [--throw-demo]
+ * WILD FISH. Since plan 3 the shelter column counts the wild shoal as well as
+ * the people, at WILD_SHELTER_WEIGHT (half a person) each, and the `wild`
+ * column breaks out how much of the total is scenery. `--wild-seed` picks
+ * which sea; it is a CONSENSUS input in a real room (every client must draw
+ * the same shoal from it) and, like `--seed`, it introduces no randomness of
+ * its own — the wild shoal is a pure function of (seed, tick, hush).
+ *
+ * WATCH THE BOLT. `wild` goes to zero exactly WILD_BOLT_MS (2_000 ms) into the
+ * hush, two seconds before the input lock, and `shelter` falls by whatever the
+ * wild column was holding up. A swimmer whose cover was scenery reads
+ * `exposed=no` and then `exposed=yes` with the hush still running — which is
+ * the design's central moment printed as two lines of text.
+ *
+ * Run: npx tsx scripts/harness.ts [--seed N] [--wild-seed N] [--throw-demo]
  */
 import { advance, createLoop, type LoopState } from '../src/lib/shoalLoop';
-import { foldShoal, bodiesOf } from '../src/lib/shoalEngine';
+import { foldShoal, bodiesOf, shelterBodiesOf } from '../src/lib/shoalEngine';
 import { richSession } from '../src/lib/shoalFixtures';
 import { shelterOf, isExposed } from '../src/lib/shelter';
+import { isWildId } from '../src/lib/wild';
 import { reckon } from '../src/lib/fixed';
 import { hushPhase } from '../src/lib/sweep';
 import { serialiseCheckpoint } from '../src/lib/checkpoint';
@@ -67,11 +81,13 @@ import type { LogEntry } from '../src/lib/shoalTypes';
 
 interface Args {
   seed: number;
+  wildSeed: number;
   throwDemo: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Args {
   let seed = 1;
+  let wildSeed = 1;
   let throwDemo = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -83,16 +99,24 @@ function parseArgs(argv: readonly string[]): Args {
       const v = a.slice('--seed='.length);
       seed = Number(v);
       if (!Number.isFinite(seed)) throw new Error(`--seed expects a number, got ${JSON.stringify(v)}`);
+    } else if (a === '--wild-seed') {
+      const v = argv[++i];
+      wildSeed = Number(v);
+      if (v === undefined || !Number.isFinite(wildSeed)) throw new Error(`--wild-seed expects a number, got ${JSON.stringify(v)}`);
+    } else if (a.startsWith('--wild-seed=')) {
+      const v = a.slice('--wild-seed='.length);
+      wildSeed = Number(v);
+      if (!Number.isFinite(wildSeed)) throw new Error(`--wild-seed expects a number, got ${JSON.stringify(v)}`);
     } else if (a === '--throw-demo') {
       throwDemo = true;
     } else if (a === '--help' || a === '-h') {
-      console.log('usage: harness.ts [--seed N] [--throw-demo]');
+      console.log('usage: harness.ts [--seed N] [--wild-seed N] [--throw-demo]');
       process.exit(0);
     } else {
       throw new Error(`unknown argument: ${a}`);
     }
   }
-  return { seed, throwDemo };
+  return { seed, wildSeed, throwDemo };
 }
 
 // =============================================================================
@@ -158,11 +182,18 @@ function padEnd(s: string, n: number): string {
   return s.length >= n ? s : s + ' '.repeat(n - s.length);
 }
 
-function printSnapshot(loop: LoopState, label: string): void {
+function printSnapshot(loop: LoopState, label: string, wildSeed: number): void {
   const state = loop.state;
   const atMs = state.nowMs - TICK_MS; // the tick this state actually reflects
   const phase = hushPhase(state.hushStartMs, atMs);
   const bodies = bodiesOf(state);
+  // The shelter population: the swimmers PLUS the wild shoal as it stands on
+  // this very tick. `shelterBodiesOf` reads the state's own `hushStartMs`, so
+  // the bolt needs no wiring here — the wild column simply goes to zero two
+  // seconds into the hush, and the shelter column drops with it. That is the
+  // whole point of this print: cover that was solid a moment ago, gone.
+  const shelterPop = shelterBodiesOf(state, wildSeed, atMs);
+  const wildHere = shelterPop.filter((b) => isWildId(b.id)).length;
 
   const hushInfo = state.hushStartMs >= 0
     ? ` hush-started=${state.hushStartMs} (+${atMs - state.hushStartMs}ms)`
@@ -173,7 +204,8 @@ function printSnapshot(loop: LoopState, label: string): void {
 
   console.log('');
   console.log(`== ${label} == t=${atMs} epoch=${state.epoch} tension=${state.tension} phase=${phase}${hushInfo}${sweepInfo}`);
-  console.log(`${padEnd('id', 6)} ${pad('x', 6)} ${pad('y', 6)} ${pad('size', 5)} ${pad('shelter', 7)} exposed`);
+  console.log(`wild in the sea: ${wildHere}`);
+  console.log(`${padEnd('id', 6)} ${pad('x', 6)} ${pad('y', 6)} ${pad('size', 5)} ${pad('people', 6)} ${pad('wild', 4)} ${pad('shelter', 7)} exposed`);
   for (const b of bodies) {
     const f = state.fish.get(b.id);
     if (!f) throw new Error(`harness: bodiesOf returned ${b.id} but state.fish has no entry for it`);
@@ -188,11 +220,16 @@ function printSnapshot(loop: LoopState, label: string): void {
         `harness: reckon(${b.id}, ${atMs}) = (${pos.x},${pos.y}) disagrees with the fold's own Fish.x/Fish.y (${b.x},${b.y})`,
       );
     }
-    const shelter = shelterOf(b, bodies);
-    const exposed = isExposed(b, bodies);
+    // Both numbers come from the engine's own `shelterOf`, differing only in
+    // the population handed to it: people alone, then people and wild fish.
+    // The difference IS the wild cover, and it is never a display-side sum.
+    const people = shelterOf(b, bodies);
+    const shelter = shelterOf(b, shelterPop);
+    const exposed = isExposed(b, shelterPop);
     console.log(
       `${padEnd(b.id, 6)} ${pad(String(pos.x), 6)} ${pad(String(pos.y), 6)} ` +
-      `${pad(String(b.size), 5)} ${pad(String(shelter), 7)} ${exposed ? 'yes' : 'no'}`,
+      `${pad(String(b.size), 5)} ${pad(String(people), 6)} ${pad(String(shelter - people), 4)} ` +
+      `${pad(String(shelter), 7)} ${exposed ? 'yes' : 'no'}`,
     );
   }
   if (state.departed.size > 0) {
@@ -210,14 +247,14 @@ function printSnapshot(loop: LoopState, label: string): void {
 
 const MAX_STEP_TICKS = 8; // up to 2s per poll
 
-function runScenario(seed: number): void {
+function runScenario(seed: number, wildSeed: number): void {
   const log = buildLog();
   const rand = mulberry32(seed);
 
-  console.log(`[harness] seed=${seed} epoch=${EPOCH} offset=${OFFSET} toMs=${TO_MS} entries=${log.length}`);
+  console.log(`[harness] seed=${seed} wild-seed=${wildSeed} epoch=${EPOCH} offset=${OFFSET} toMs=${TO_MS} entries=${log.length}`);
 
   let loop: LoopState = createLoop(EPOCH, null);
-  printSnapshot(loop, 'start (cold, warm-up folded)');
+  printSnapshot(loop, 'start (cold, warm-up folded)', wildSeed);
   const coldMs = loop.state.nowMs;
 
   // Nothing in the log has an ms before OFFSET, so every tick between the
@@ -229,7 +266,7 @@ function runScenario(seed: number): void {
   {
     const { loop: next } = advance(loop, log, ARRIVAL_MS);
     loop = next;
-    printSnapshot(loop, `fast-forward (empty sea, ${((ARRIVAL_MS - coldMs) / 1000).toFixed(1)}s of warm epoch)`);
+    printSnapshot(loop, `fast-forward (empty sea, ${((ARRIVAL_MS - coldMs) / 1000).toFixed(1)}s of warm epoch)`, wildSeed);
   }
 
   let cursorMs = loop.state.nowMs;
@@ -240,7 +277,7 @@ function runScenario(seed: number): void {
     cursorMs = Math.min(cursorMs + stepTicks * TICK_MS, TO_MS);
     const { loop: next, rolled } = advance(loop, log, cursorMs);
     loop = next;
-    printSnapshot(loop, `poll ${poll} (+${stepTicks} tick${stepTicks === 1 ? '' : 's'})`);
+    printSnapshot(loop, `poll ${poll} (+${stepTicks} tick${stepTicks === 1 ? '' : 's'})`, wildSeed);
     if (rolled !== null) {
       console.log(`   >>> EPOCH ROLLOVER: now folding epoch ${loop.epoch}. checkpoint = ${serialiseCheckpoint(rolled)}`);
     }
@@ -293,7 +330,7 @@ function main(): void {
     runThrowDemo();
     return;
   }
-  runScenario(args.seed);
+  runScenario(args.seed, args.wildSeed);
 }
 
 try {

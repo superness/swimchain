@@ -73,7 +73,8 @@ import {
   BLOOM_CELL, BLOOM_COLS, BLOOM_ROWS, BLOOM_VISIT_R, BLOOM_VISIT_R2,
   BLOOM_READY_MS, BLOOM_BITES, EAT_R2, EAT_COOLDOWN_MS,
 } from './shoalConst';
-import type { Body } from './shelter';
+import type { SwimmerBody } from './shelter';
+import { isWildId } from './wild';
 import type { VisitMap, ReadonlyVisitMap } from './shoalTypes';
 
 /** Grid cell containing a point. Clamped, so out-of-world points stay in range. */
@@ -131,11 +132,18 @@ export function stampVisit(lastVisit: VisitMap, cell: number, id: string, ms: nu
  */
 export function markVisits(
   lastVisit: VisitMap,
-  bodies: readonly Body[],
+  bodies: readonly SwimmerBody[],
   nowMs: number,
 ): void {
   const reach = Math.ceil(BLOOM_VISIT_R / BLOOM_CELL);
   for (const b of bodies) {
+    // WILD FISH DO NOT TRAMPLE. They do not eat, so the bloom map stays a pure
+    // function of PLAYER behaviour — which is what "food grows where the
+    // school isn't" means. Counting them would let the scenery hold a bloom
+    // fallow, i.e. deny a player food by drifting overhead. The type already
+    // forbids handing them over; this is the half that survives a cast (see
+    // shelter.ts's header on why the guard reads the id, not the flag).
+    if (isWildId(b.id)) continue;
     const col = Math.floor(b.x / BLOOM_CELL);
     const row = Math.floor(b.y / BLOOM_CELL);
     for (let dr = -reach; dr <= reach; dr++) {

@@ -106,7 +106,9 @@
  */
 import { dist2 } from '../lib/fixed';
 import { hushPhase, type HushPhase } from '../lib/sweep';
-import { shelterOf, isExposed, shelterWeight, type Body } from '../lib/shelter';
+import {
+  shelterOf, isExposed, bodyShelterWeight, type Body, type SwimmerBody, type ShelterBody,
+} from '../lib/shelter';
 import {
   HUSH_MS, LOCK_MS, MIN_SIZE, SHELTER_R, SHELTER_R2, SHELTER_THRESHOLD, TENSION_TRIGGER,
 } from '../lib/shoalConst';
@@ -330,12 +332,18 @@ export function tetherMood(shelter: number): TetherMood {
  *
  * The membership test is the engine's — `dist2 <= SHELTER_R2`, the identical
  * comparison `shelterOf` makes — and the weight is the engine's
- * `shelterWeight`, so the strand weights sum to `shelterOf(self, others)`
+ * `bodyShelterWeight`, so the strand weights sum to `shelterOf(self, others)`
  * exactly. Not capped: a shoal is fifteen to twenty-five fish, so this is at
  * most a couple of dozen short lines, and capping it would break the one
  * property that makes the picture trustworthy.
+ *
+ * `bodyShelterWeight` rather than `shelterWeight` because `others` may hold
+ * wild fish, which are worth a flat WILD_SHELTER_WEIGHT (half a person). Using
+ * the person weight here would draw a strand heavier than the shelter it
+ * actually bought, and the sum would stop being `shelterOf` — which is the one
+ * property that makes the picture trustworthy.
  */
-export function strandsOf(self: Body, others: readonly Body[]): Strand[] {
+export function strandsOf(self: Body, others: readonly ShelterBody[]): Strand[] {
   const out: Strand[] = [];
   for (const o of others) {
     if (o.id === self.id) continue;
@@ -347,7 +355,7 @@ export function strandsOf(self: Body, others: readonly Body[]): Strand[] {
       x: o.x,
       y: o.y,
       distCu,
-      weight: shelterWeight(o.size),
+      weight: bodyShelterWeight(o),
       taut: 1 - clamp01(distCu / SHELTER_R),
     });
   }
@@ -356,7 +364,7 @@ export function strandsOf(self: Body, others: readonly Body[]): Strand[] {
 }
 
 /** The nearest other swimmer at any distance, or null when nobody is there. */
-function nearestOf(self: Body, others: readonly Body[]): TetherRead['nearest'] {
+function nearestOf(self: Body, others: readonly ShelterBody[]): TetherRead['nearest'] {
   let best: TetherRead['nearest'] = null;
   let bestD2 = Infinity;
   for (const o of others) {
@@ -378,7 +386,7 @@ function nearestOf(self: Body, others: readonly Body[]): TetherRead['nearest'] {
  * `others` may include `self`; both engine functions skip a body with the
  * caller's own id, and so do the two loops here.
  */
-export function readTether(self: Body, others: readonly Body[]): TetherRead {
+export function readTether(self: Body, others: readonly ShelterBody[]): TetherRead {
   const shelter = shelterOf(self, others);
   return {
     self,
@@ -472,7 +480,7 @@ export function hushRead(hushStartMs: number, atMs: number): HushRead {
  * verdict the fold is going to reach, which is what makes the dread window
  * honest rather than theatrical.
  */
-export function lockedBodies(state: LockEcho): Body[] | null {
+export function lockedBodies(state: LockEcho): SwimmerBody[] | null {
   const locked = state.lockedPositions;
   if (locked === null) return null;
   return [...locked.entries()]

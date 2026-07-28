@@ -13,7 +13,8 @@
  * are close — and in a bunched school they are always close. "The shark ate
  * the wrong fish" is the most trust-destroying bug this game can have.
  */
-import { isExposed, type Body } from './shelter';
+import { isExposed, type SwimmerBody } from './shelter';
+import { isWildId } from './wild';
 import { HUSH_MS, LOCK_MS, MAX_TAKE, TENSION_TRIGGER } from './shoalConst';
 
 export type HushPhase = 'calm' | 'commit' | 'dread';
@@ -45,9 +46,22 @@ export function isResolveTick(hushStartMs: number, nowMs: number, tickMs: number
  * exposed, so a tight school loses nobody and a loose one may lose up to
  * MAX_TAKE. Ordering is total — preferred target, then descending size, then
  * ascending id — so every client returns the identical list.
+ *
+ * THE SWEEP JUDGES PEOPLE, AGAINST PEOPLE. A wild fish (wild.ts) is neither a
+ * candidate nor cover here, in BOTH roles, and the two exclusions are the same
+ * one line: `school`. It cannot arise in practice — wild fish are absent from
+ * the returned array from `hushStart + WILD_BOLT_MS` (2_000 ms) onward, and
+ * `lockedPositions` is captured at LOCK_MS (4_000), so the bolt has completed
+ * two full seconds before this function's input exists, and that input is
+ * built from `bodiesOf`, which reads `state.fish` and holds only swimmers. It
+ * is asserted rather than relied upon because `lockedPositions` is a Map of
+ * `{x, y, size}` and rebuilding bodies out of it drops any object brand, so
+ * the id prefix is the only thing that still identifies a wild body by then.
+ * "The shark ate the wrong fish" gets a defence that survives a cast.
  */
-export function selectTaken(locked: readonly Body[], preferred: string | null): string[] {
-  const candidates = locked.filter((b) => isExposed(b, locked));
+export function selectTaken(locked: readonly SwimmerBody[], preferred: string | null): string[] {
+  const school = locked.filter((b) => !isWildId(b.id));
+  const candidates = school.filter((b) => isExposed(b, school));
   candidates.sort((a, b) => {
     const ap = a.id === preferred ? 1 : 0;
     const bp = b.id === preferred ? 1 : 0;
