@@ -1,13 +1,15 @@
 # Surf — design spec
 
 **Date:** 2026-07-28
-**Status:** Draft for operator review — **rev 2**, rewritten against a 28-agent
-adversarial review (22 confirmed findings, 7 of them blockers). Rev 1 is in
-git history; every change below is traceable to a verified finding.
+**Status:** **rev 3 — decisions locked, ready for an implementation plan.**
+Rev 2 rewrote rev 1 against a 28-agent adversarial review (22 confirmed
+findings, 7 blockers); rev 3 records the operator's calls (§10). Every
+correction is traceable to a verified finding.
 **Name:** **Surf** (decided)
 
-> Read §1 for what we're building. Three operator decisions are blocking;
-> they're at the back, in §10, where decisions belong.
+> §1 is what we're building. §10 is what was decided and why.
+> **Scope:** Android; baked core + the on-chain dial; the dial's security
+> gates are v1, not an appendix.
 
 ## 1. What it is
 
