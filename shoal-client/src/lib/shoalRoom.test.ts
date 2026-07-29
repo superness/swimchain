@@ -14,11 +14,11 @@
  * `orderLog` twice and comparing the result to itself.
  */
 import {
-  repliesToLog, narrowRoomReplies, ROOM_FETCH_LIMIT,
+  repliesToLog, splitRoomReplies, narrowRoomReplies, ROOM_FETCH_LIMIT,
   type RawReply, type NodeReply, type GetRepliesResult,
 } from './shoalRoom';
-import { encodePresence, encodeEat } from './shoalWire';
-import type { EatClaim } from './shoalTypes';
+import { encodePresence, encodeEat, encodeCheckpoint } from './shoalWire';
+import type { Checkpoint, EatClaim } from './shoalTypes';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -295,6 +295,59 @@ function result(replies: NodeReply[]): GetRepliesResult {
   const insane = repliesToLog([reply('sha256:x', A, encodeEat(4, 5000, A), 1, 99_999_999_999)]);
   check('created_at does not reach the fold: the same body decodes identically either way',
     JSON.stringify(sane) === JSON.stringify(insane), { sane, insane });
+}
+
+// --- A CHECKPOINT IS NOT A MOVE, AND NEVER ENTERS THE FOLD ------------------------
+// A checkpoint travels as a reply to the same room post as every move, so it arrives
+// in the very same `get_replies` array. It SEEDS a fold; it is never folded. If one
+// reached `repliesToLog`'s output it would be handed to `foldShoal`, where every
+// "if the kind is presence do this, otherwise it is an eat claim" branch would
+// mis-handle it as a bite.
+//
+// The entry COUNT is the assertion, because it is the one a leak cannot survive:
+// three moves plus one checkpoint must fold to exactly the same three entries the
+// three moves alone fold to.
+{
+  const cp: Checkpoint = { epoch: 7, sizes: [[A, 112], [B, 100]], recent: [] };
+  const cpBody = encodeCheckpoint(cp, C);
+  const moves: RawReply[] = [
+    reply('sha256:m1', A, encodePresence({ x: 10, y: 20, heading: 5, speed: 7, t: 1000 }, A)),
+    reply('sha256:m2', B, encodeEat(9, 2000, B)),
+    reply('sha256:m3', C, encodePresence({ x: 30, y: 40, heading: 6, speed: 8, t: 3000 }, C)),
+  ];
+  // Hand-derived: three decodable move bodies -> three entries, checkpoint or no
+  // checkpoint. Nothing else in this batch can be dropped or duplicated.
+  const withoutCp = repliesToLog(moves);
+  const withCp = repliesToLog([...moves, reply('sha256:cp1', C, cpBody)]);
+  check('hand-derived: three moves fold to three entries', withoutCp.length === 3, withoutCp.length);
+  check('adding a checkpoint reply leaves the fold\'s entry count UNCHANGED at three',
+    withCp.length === 3, withCp.length);
+  check('...and the three entries are byte-identical to the checkpoint-free fold',
+    JSON.stringify(withCp) === JSON.stringify(withoutCp), { withCp, withoutCp });
+
+  // The same batch, split: the moves go one way and the checkpoint the other, in
+  // ONE pass over the replies (a room's log and its checkpoints arrive together).
+  const split = splitRoomReplies([...moves, reply('sha256:cp1', C, cpBody)]);
+  check('splitRoomReplies returns the same three log entries',
+    JSON.stringify(split.log) === JSON.stringify(withoutCp), split.log.length);
+  check('...and exactly one checkpoint', split.checkpoints.length === 1, split.checkpoints.length);
+  check('the checkpoint\'s publisher is the reply\'s author_id, from the envelope',
+    split.checkpoints[0]?.id === C, split.checkpoints[0]?.id);
+  check('...its hash is the reply\'s content_id, from the envelope',
+    split.checkpoints[0]?.hash === 'sha256:cp1', split.checkpoints[0]?.hash);
+  check('...and it carries epoch 7 with both swimmers',
+    split.checkpoints[0]?.cp.epoch === 7 && split.checkpoints[0]?.cp.sizes.length === 2,
+    split.checkpoints[0]?.cp);
+
+  // A checkpoint body that is NOT canonically spelled (a space after the colon —
+  // `parseCheckpoint` tolerates it, `decodeCheckpointBody` must not) is dropped from
+  // BOTH halves rather than landing in either.
+  const sloppy = 'v1|checkpoint|' + C.slice(0, 16) + '|{"epoch": 7,"sizes":[],"recent":[]}';
+  const withSloppy = splitRoomReplies([...moves, reply('sha256:cp2', C, sloppy)]);
+  check('a non-canonically-spelled checkpoint is dropped from the checkpoints',
+    withSloppy.checkpoints.length === 0, withSloppy.checkpoints.length);
+  check('...and does not leak into the log either', withSloppy.log.length === 3,
+    withSloppy.log.length);
 }
 
 // --- ROOM_FETCH_LIMIT itself -------------------------------------------------------

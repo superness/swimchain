@@ -80,6 +80,14 @@
  * `encodePresence`/`encodeEat` before it gets here, so floor and trunc agree);
  * no fractional quantity is ever stored or compared.
  *
+ * A CHECKPOINT is the one write whose action timestamp is NOT the instant its
+ * body describes. `sendCheckpoint(ctx, cp, nowMs)` takes the publisher's own
+ * clock for the envelope only: the body's time is the epoch inside the payload,
+ * and if a publisher's clock reached the body then two honest clients rolling
+ * the same boundary milliseconds apart would compute different payloads for one
+ * world — turning every honest pair into a detected divergence. See
+ * `sendCheckpoint` below.
+ *
  * ## `sendEat` takes `(cell, ms)`, not `(cell)`
  *
  * Carried forward from Task 1: the plan brief listed `encodeEat(cell)` and
@@ -105,8 +113,8 @@
 
 import { argon2id, createSHA256 } from 'hash-wasm';
 
-import type { Vec } from './shoalTypes';
-import { encodeEat, encodePresence } from './shoalWire';
+import type { Checkpoint, Vec } from './shoalTypes';
+import { encodeCheckpoint, encodeEat, encodePresence } from './shoalWire';
 import { assertWireSpaceId, rpcCall, type RpcAuth } from './shoalRpc';
 
 // ---------------------------------------------------------------------------
@@ -499,12 +507,13 @@ interface SubmitReplyResult {
 }
 
 /**
- * Mine, sign and submit one already-encoded move body. Returns the new
- * reply's `content_id` — the same `sha256:…` string that comes back as a
- * `LogEntry.hash` from `repliesToLog`, so a caller can recognise its own
- * write in the next fetched log.
+ * Mine, sign and submit one already-encoded body — a move or a checkpoint, both
+ * of which are replies to the room post. Returns the new reply's `content_id`
+ * — the same `sha256:…` string that comes back as a `LogEntry.hash` (or a
+ * `CheckpointEntry.hash`) from `splitRoomReplies`, so a caller can recognise
+ * its own write in the next fetched room.
  */
-async function submitMove(ctx: SendCtx, body: string, ms: number): Promise<string> {
+async function submitToRoom(ctx: SendCtx, body: string, ms: number): Promise<string> {
   assertWireSpaceId(ctx.spaceId, 'shoalSend: ctx.spaceId');
 
   const profile = ctx.powProfile ?? (await powProfileFor(ctx.auth));
@@ -539,7 +548,37 @@ async function submitMove(ctx: SendCtx, body: string, ms: number): Promise<strin
  * so a caller bug costs nothing but the exception.
  */
 export async function sendPresence(ctx: SendCtx, vec: Vec, say?: string): Promise<string> {
-  return submitMove(ctx, encodePresence(vec, ctx.authorIdHex, say), vec.t);
+  return submitToRoom(ctx, encodePresence(vec, ctx.authorIdHex, say), vec.t);
+}
+
+/**
+ * Publish this client's checkpoint for a closed epoch (spec §3.9 point 4) into
+ * the same room every move goes to. `cp` is what `advance` returned as
+ * `rolled` — never one built by hand, and never `checkpointFrom` called
+ * directly (see its own doc: only `rollEpoch` prunes `departed` first, and a
+ * checkpoint taken without that prune is a different payload for the same
+ * world, which no honest peer agrees with).
+ *
+ * `nowMs` IS NOT PART OF THE CHECKPOINT and never reaches the wire body. It is
+ * the publisher's own clock, used only for the action envelope's `timestamp`,
+ * which the node checks against a window (600 s back, 60 s forward —
+ * action_pow.rs:79-82) and which is not covered by `content_hash =
+ * sha256(body)`. That separation is deliberate and load-bearing: two honest
+ * publishers roll the same boundary milliseconds apart, so if their clocks
+ * reached the BODY they would compute different payloads for one world and
+ * every joiner would read an honest pair as a divergence. The body's only time
+ * is the epoch inside the payload.
+ *
+ * This module still reads no clock of its own — `nowMs` is passed in, exactly
+ * as `ms` is for an eat claim.
+ *
+ * A checkpoint body is KB-scale rather than the ~50 bytes a move costs (see
+ * shoalWire.ts's size measurements), but PoW and mempool eviction are priced
+ * per ACTION, not per byte (builder.rs:92), so publishing one costs the same
+ * mine as a single vector — once an hour.
+ */
+export async function sendCheckpoint(ctx: SendCtx, cp: Checkpoint, nowMs: number): Promise<string> {
+  return submitToRoom(ctx, encodeCheckpoint(cp, ctx.authorIdHex), nowMs);
 }
 
 /**
@@ -550,5 +589,5 @@ export async function sendPresence(ctx: SendCtx, vec: Vec, say?: string): Promis
  * and nothing in `src/lib/` may read a clock. See the module header.
  */
 export async function sendEat(ctx: SendCtx, cell: number, ms: number): Promise<string> {
-  return submitMove(ctx, encodeEat(cell, ms, ctx.authorIdHex), ms);
+  return submitToRoom(ctx, encodeEat(cell, ms, ctx.authorIdHex), ms);
 }

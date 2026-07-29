@@ -10,6 +10,15 @@ says what is broken, how it was found, and what it costs to leave.
 
 ## Resolved
 
+### 12. The shell computes a checkpoint every hour and throws it away *(RESOLVED 2026-07-28)*
+
+Closed on branch `feat/the-shoal-shallows`. A checkpoint now travels as a third wire kind
+(`v1|checkpoint|salt|<canonical payload>`, plan task 1), `chainSea.ts` publishes `rolled`
+at every boundary, and a joining client adopts the newest one it can see before its first
+fold. Full write-up in place below, under Blockers, with a RESOLUTION note.
+
+---
+
 ### 3. Gossip is unproven end to end *(RESOLVED 2026-07-28)*
 
 Closed by two real peered regtest nodes and `shoal-client/scripts/two-client-smoke.ts`.
@@ -102,7 +111,10 @@ Related: the bridge has no way to distinguish "you have no sponsor" from "the no
 down" without string-matching an error message. A typed classification in `shoalSend` is a
 small addition and belongs with this work.
 
-### 12. The shell computes a checkpoint every hour and throws it away
+### 12. The shell computes a checkpoint every hour and throws it away — **RESOLVED 2026-07-28**
+
+**Closed by** `feat/the-shoal-shallows`, tasks 1 and 2. The description below is left as
+written; what changed follows it under **RESOLUTION**.
 
 **Found by:** the final whole-branch review of the Shoal shell (plan 2c), reading
 `chainSea.ts`'s frame step against `shoalLoop.advance`'s return type. Not a live run — it
@@ -175,6 +187,54 @@ corrected in `docs/superpowers/plans/2026-07-28-the-shoal-shell.md`.
 deliberately, what it costs, and points here. Until this is built, the shell is safe only in
 a session that never crosses an hour boundary, and any two clients that do cross one together
 agree only because they crossed it together.
+
+**RESOLUTION (2026-07-28).** All five points above are built.
+
+1. **Wire form** — `v1|checkpoint|salt|<canonical checkpoint JSON>` in `shoalWire.ts`,
+   calling `serialiseCheckpoint`/`parseCheckpoint` rather than re-deciding canonical text.
+   A checkpoint carries an author SALT, so two agreeing publishers are two chain objects
+   rather than one (`content_id = sha256(body)` would otherwise collapse them and make the
+   surviving object's author nondeterministic). **The consequence for point 3 below: two
+   honest clients emit different BODIES with identical PAYLOADS, so agreement is a payload
+   comparison, never a byte comparison.**
+2. **Publish** — `sendCheckpoint(ctx, cp, nowMs)` in `shoalSend.ts`, mined and signed like
+   any other reply, into the same room. `nowMs` reaches only the action envelope, never the
+   body, so two clients rolling milliseconds apart still author identical payloads. **Every
+   client publishes, every hour**: PoW is priced per action, so a checkpoint costs one mine
+   however many KB it carries, and one-publisher-per-opinion is exactly what makes the
+   evidence in point 3 mean anything.
+3. **Adopt, by evidence** — `adopt.ts`. Candidates are only those for exactly `epoch - 1`
+   (`foldShoal` refuses any other seed). Group by canonical payload; a publisher that
+   published two payloads for one epoch votes for neither; adopt the payload with the most
+   independent publishers, lowest content hash breaking a tie. Any epoch with more than one
+   payload is REPORTED through the shell's `onError` — a difference does not prove
+   dishonesty (a bite still in flight when one client rolls is enough), and the message says
+   so. The `k`-of-agreement threshold this item asked for was deliberately NOT made a hard
+   floor: it would have left a two-player room permanently unseeded, which is the very
+   failure being fixed. Plurality gives the same sybil cost without that.
+4. **The seam** — `chainSea.ts` adopts before its first fold AND again on every refetch
+   until it succeeds, because the constructor's own fetch has not answered by the first
+   frame; a one-shot at startup would miss the checkpoint almost every time.
+5. **Ordering against item 1** — unchanged and still open. Checkpoints are replies too, so
+   they accumulate in the same log that is heading for `ROOM_FETCH_LIMIT`; whatever rotates
+   a room must decide where checkpoints live at the same time. `fetchRoom` reads both halves
+   in ONE `get_replies`, so nothing here doubles the fetch cost.
+
+**Proved, not asserted.** `shoal-client/scripts/two-client-checkpoint.ts` (`npm run
+smoke:checkpoint`) runs two peered regtest nodes, two identities, real mined writes and real
+gossip: both clients compute the identical payload for a real epoch on the absolute grid,
+publish it as two distinct chain objects, and a joiner reading the OTHER node adopts it and
+folds to a fingerprint identical to the client that crossed the hour — with an unseeded
+control alongside that remembers nobody. The hour itself is compressed by passing the sea
+clock as the parameter it already is (`advance(loop, entries, toMs)` reads no clock); every
+timestamp the node validates stays real. Run 2026-07-28 against epoch 495912: ALL PASS.
+
+**One thing carried forward.** A checkpoint body does not name its ROOM, and `content_id`
+is `sha256(body)` alone — so the same publisher publishing the same payload into two
+different rooms produces ONE chain object (observed across two runs of the proof script).
+It is benign today: the two are the same fact by the same author, and reply indexing is
+per-parent, so each room still serves it. It would stop being benign if a rule ever read a
+checkpoint's own provenance rather than the room it was fetched from.
 
 ### 3. Gossip is unproven end to end — **RESOLVED 2026-07-28**
 
