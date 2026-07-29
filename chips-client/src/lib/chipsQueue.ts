@@ -76,7 +76,10 @@ export type QueuedMove =
    *  it becomes the body's authoring ms, which is how the confirmed reply is
    *  matched back to this entry (chipsSettling.moveKey). */
   | { id: number; tableId: string; author: string; kind: 'dip'; amount: number; ms: number; sentAt?: number }
-  | { id: number; tableId: string; author: string; kind: 'tip'; ms: number; sentAt?: number };
+  | { id: number; tableId: string; author: string; kind: 'tip'; ms: number; sentAt?: number }
+  /** One band of the descent. No argument — the fold works out WHICH band
+   *  from state it can see, so there is nothing here to forge. */
+  | { id: number; tableId: string; author: string; kind: 'broke'; ms: number; sentAt?: number };
 
 /** What a caller supplies to `enqueue` — everything but the id, which the
  *  queue itself assigns, and `sentAt`, which only a successful submission may
@@ -115,13 +118,14 @@ export function activeFor(q: QueuedMove[], tableId: string, author: string): Que
  * action PoW — it can only fold `rejected-bits` there) or let a stale entry
  * block a live one behind it forever.
  */
-export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' | 'tip' | 'burn' } | null {
+export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' | 'tip' | 'burn' | 'broke' } | null {
   if (q.length === 0) return null;
   if (q[0].kind === 'buy') return { moves: [q[0]], kind: 'buy' };
   if (q[0].kind === 'burn') return { moves: [q[0]], kind: 'burn' };
   // One dip per reply — the verb carries a single amount.
   if (q[0].kind === 'dip') return { moves: [q[0]], kind: 'dip' };
   if (q[0].kind === 'tip') return { moves: [q[0]], kind: 'tip' };
+  if (q[0].kind === 'broke') return { moves: [q[0]], kind: 'broke' };
 
   const moves: QueuedMove[] = [];
   for (const m of q) {
@@ -235,6 +239,11 @@ export function loadQueue(): QueuedMove[] {
       if (r.kind === 'buy' && typeof r.key === 'string') {
         out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'buy', key: r.key, ...sentAt });
       } else if (
+        r.kind === 'broke'
+        && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
+      ) {
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'broke', ms: r.ms, ...sentAt });
+      } else if (
         r.kind === 'burn' && typeof r.key === 'string'
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
       ) {
@@ -284,7 +293,11 @@ export function saveQueue(q: QueuedMove[]): void {
           ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'dip', amount: m.amount, ms: m.ms, ...mark }
           : m.kind === 'tip'
             ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'tip', ms: m.ms, ...mark }
-            : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };
+            : m.kind === 'broke'
+              ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'broke', ms: m.ms, ...mark }
+              : m.kind === 'burn'
+                ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'burn', key: m.key, ms: m.ms, ...mark }
+                : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };
     })));
   } catch { /* quota or private mode — the in-memory queue still works */ }
 }

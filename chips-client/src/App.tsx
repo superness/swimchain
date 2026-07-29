@@ -38,6 +38,8 @@ import {
 } from './lib/crewJobs';
 import { CrewRow, FeedBanner, DipTicker, CritterArt, type CrewBubble } from './Crew';
 import { BowlReveal, TipCeremony, BowlTicket, BOWL_LINES, WELCOME_BACK } from './Bowl';
+import { PorcelainFight } from './Porcelain';
+import { porcelainInReach, readiness, cracks } from './lib/porcelain';
 import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
 import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
@@ -184,6 +186,9 @@ export function App() {
   const [sousOn, setSousOn] = useState(() => {
     try { return localStorage.getItem(SOUS_KEY) !== 'off'; } catch { return true; }
   });
+  /** The porcelain takeover is open. Client-only: you choose when it starts. */
+  const [porcOpen, setPorcOpen] = useState(false);
+  const [porcBroke, setPorcBroke] = useState(false);
   /** Which fryer is overcooking — client-only, never persisted. */
   const [overcookAt, setOvercookAt] = useState<number | null>(null);
   const overcookRef = useRef(overcookAt);
@@ -755,6 +760,10 @@ export function App() {
     Boolean(host && me && tableId && state), onCookEvents, modsFor, rackKey
   );
   fryersRef.current = fryerCount;
+  /* ── THE PORCELAIN ──────────────────────────────────────────────────── */
+  const porcReach = state ? porcelainInReach(state.lifetimeChips, state.broken) : false;
+  const porcReady = readiness(chips, state?.lifetimeChips ?? 0);
+
   /** The Long Fry: one more crackle past golden. Ownership only — the fold
    *  records the jar, the ceiling itself never touches the chain. */
   const ceiling = state?.owned.has('longfry') ? LONG_FRY_CRACKLES : MAX_CRACKLES;
@@ -1086,12 +1095,53 @@ export function App() {
     setNotice(copied ? 'report copied — paste it somewhere' : 'report is in the console (clipboard refused)');
   }
 
+  /**
+   * SWING IT. The porcelain has one move and it is the move you already know:
+   * an ordinary dip. If it clears the bar the band breaks, which is a `broke`
+   * on the chain and the char that comes with it.
+   *
+   * The dip is enqueued FIRST. It has to land before the break for the fold
+   * to agree with what the player saw — `broke` checks lifetime, and the dip
+   * is what pushes lifetime over.
+   */
+  function onPorcelainSwing(index: number): void {
+    if (!host || !me || !tableId || !state) return;
+    const chip = chips[index];
+    if (!chip || chip.pot <= 0) return;
+    const willCrack = cracks(worthOf(chip), state.lifetimeChips);
+    onDip(index);
+    if (!willCrack) return;
+    setPorcBroke(true);
+    sfx.breakthrough();
+    setQueue((q) => enqueue(
+      q, { tableId, author: me.publicKeyHex, kind: 'broke', ms: allocMs() },
+      nextId.current++
+    ));
+    window.setTimeout(() => { setPorcOpen(false); setPorcBroke(false); }, 5200);
+  }
+
   /** Tap a fryer's flame. Refused without the jar, so the button can never
    *  light something the player has not bought. */
   function onOvercook(index: number): void {
     if (!state?.owned.has('overcook')) return;
     sfx.pop();
     setOvercookAt((lit) => toggleOvercook(lit, index));
+  }
+
+  /**
+   * Can the armed jar be refused, and for how much? Null when it cannot —
+   * the hermit's trade is not a jar at all, and a chain rung whose prefix is
+   * unowned is something the fold would reject anyway.
+   */
+  function refusableNow(jarKey: string): { crumbs: string; onRefuse: () => void } | null {
+    const jar = UPGRADES[jarKey];
+    if (!jar || !state || state.owned.has(jarKey) || state.declined.has(jarKey)) return null;
+    const chain = UPGRADE_CHAINS.find((c) => c.includes(jarKey));
+    if (chain && chain.slice(0, chain.indexOf(jarKey)).some((p) => !state.owned.has(p))) return null;
+    return {
+      crumbs: compact(Math.floor(jar.cost * BURN_REFUND_NUM / BURN_REFUND_DEN)),
+      onRefuse: () => { setFeeding(null); setBubble(null); onDecline(jarKey); },
+    };
   }
 
   /**
@@ -1108,7 +1158,6 @@ export function App() {
     const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
     if (chain && chain.slice(0, chain.indexOf(key)).some((p) => !state.owned.has(p))) return;
     sfx.pop();
-    setSheetId(null);
     setNotice(`refused — ${compact(Math.floor(UPGRADES[key].cost * BURN_REFUND_NUM / BURN_REFUND_DEN))} crumbs, and it is gone for this bowl`);
     setQueue((q) => enqueue(
       q, { tableId, author: me.publicKeyHex, kind: 'burn', key, ms: allocMs() },
@@ -1803,6 +1852,16 @@ export function App() {
           onClose={() => setBowlOpen(false)}
         />
       )}
+      {porcOpen && (
+        <PorcelainFight
+          ready={porcReady.ready}
+          bar={porcReady.bar}
+          best={porcReady.best}
+          broken={porcBroke}
+          onDip={onPorcelainSwing}
+          onLeave={() => setPorcOpen(false)}
+        />
+      )}
       {tipFanfare && <TipCeremony salt={tipFanfare.salt} total={tipFanfare.total} taken={tipFanfare.taken} />}
       {sheetVendor && state && (
         <StallSheet
@@ -1816,7 +1875,6 @@ export function App() {
           armedKey={feeding?.jarKey ?? null}
           onJar={onJar}
           onClose={() => setSheetId(null)}
-          onDecline={onDecline}
           switches={sheetVendor.id === 'angel' && state.owned.has('autodip') ? [{
             key: 'autodip',
             label: 'Sous Chef',
@@ -1897,6 +1955,18 @@ export function App() {
           <button type="button" className="hermit-take" onClick={onHermitTake}>hand it over</button>
         </div>
       )}
+      {/* THE WAY IN. It waits at the band until you take it — nobody is
+          ambushed by a takeover, and arriving with cold pots is a worse
+          decision than the game should force on you (design doc, 3). */}
+      {porcReach && !porcOpen && (
+        <div className="porc-call" role="status">
+          <span className="vote-text">
+            <strong>there is something under the dip.</strong>{' '}
+            it is smooth, and it is cold, and it goes on in every direction.
+          </span>
+          <button type="button" className="porc-go" onClick={() => setPorcOpen(true)}>go down</button>
+        </div>
+      )}
       {hermitNow.phase === 'holding' && (
         <div className="hermit-holding" role="status">the hermit has your chip. he has gone under the celery.</div>
       )}
@@ -1905,6 +1975,7 @@ export function App() {
           vendor={feeding.vendor}
           jarLabel={UPGRADES[feeding.jarKey]?.label ?? 'jar'}
           onCancel={() => { setFeeding(null); setBubble(null); }}
+          refuse={refusableNow(feeding.jarKey)}
         />
       )}
       </div>

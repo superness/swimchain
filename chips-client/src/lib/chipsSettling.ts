@@ -73,6 +73,7 @@ export function moveKey(m: QueuedMove): string {
   if (m.kind === 'dip') return `dip:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
   if (m.kind === 'tip') return `tip:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
   // Keyed on ms, not key: the same jar can be burned more than once a run.
+  if (m.kind === 'broke') return `broke:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
   if (m.kind === 'burn') return `burn:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
   return `buy:${m.tableId}:${m.author.toLowerCase()}:${m.key}`;
 }

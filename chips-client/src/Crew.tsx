@@ -251,8 +251,11 @@ export function CrewRow({ crew, bubble, feedingId, angel, ratAway, dealIds, onCr
 
 /* ── feed mode banner ────────────────────────────────────────────────────── */
 
-export function FeedBanner({ vendor, jarLabel, onCancel }: {
+export function FeedBanner({ vendor, jarLabel, onCancel, refuse }: {
   vendor: CrewMember; jarLabel: string; onCancel: () => void;
+  /** Refuse THIS jar instead and take the crumbs. Absent when the jar cannot
+   *  be refused, or when the armed thing is not a jar at all (the hermit). */
+  refuse?: { crumbs: string; onRefuse: () => void } | null;
 }) {
   return (
     <div className="feed-banner" role="status">
@@ -261,6 +264,17 @@ export function FeedBanner({ vendor, jarLabel, onCancel }: {
         {vendor.feed === 'golden' ? 'click a GOLDEN chip on the fryer' : 'click a chip on the fryer'}.
         {' '}it goes to them, pot and all.
       </span>
+      {/* THE CHOICE, AT THE MOMENT OF CHOOSING. This was a second button under
+          every jar in the shop, which cluttered the grid and — because `.jars`
+          is a wrapping flex row that sizes to its widest child — physically
+          blew the layout out. It belongs here: you have picked a jar, the
+          vendor is waiting, and refusing is the other answer to that exact
+          question rather than a permanent fixture on a card. */}
+      {refuse && (
+        <button type="button" className="feed-refuse" onClick={refuse.onRefuse}>
+          <span>refuse</span><b>+{refuse.crumbs}</b>
+        </button>
+      )}
       <button type="button" className="feed-cancel" onClick={onCancel}>never mind</button>
     </div>
   );
