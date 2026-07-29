@@ -9,16 +9,35 @@
  * reads no clock, and like the rest of `src/ui/` it is free to use floats
  * (the `Math.sqrt` in `placeDistance` below is exactly that).
  *
- * WHAT THIS FILE DELIBERATELY DOES NOT DO. Spec 2.13 says terrain "gives
- * blooms legible places to appear" — biasing bloom placement toward a named
- * place. That is a CONSENSUS rule (it would change which cells the fold
- * makes ready, and therefore what every client agrees is edible) and it
- * needs its own design and its own review; it is not attempted here.
- * Recorded as an open question in docs/THE_SHOAL_OPEN_ITEMS.md rather than
- * left implied. The same goes for sweep lanes or any other gameplay use of
- * these coordinates: this module hands back geometry and a name, and
- * nothing downstream consumes it yet — Task 5 owns painting it, and paints
- * only, per its own brief.
+ * WHAT THIS FILE DELIBERATELY DOES NOT DO, NOW VERIFIED RATHER THAN
+ * ASSERTED. Spec 2.13 says terrain "gives blooms legible places to appear" —
+ * i.e. blooms should be sited AT places rather than uniformly. Bloom siting
+ * is CONSENSUS, and here is exactly where:
+ *
+ *   src/lib/bloom.ts:186    isBloomReady — is this cell fallow?
+ *   src/lib/bloom.ts:240    canEat       — does this claimed bite credit?
+ *   src/lib/shoalEngine.ts:349  foldTick calls canEat to judge every eat
+ *   src/lib/shoalEngine.ts:478  foldTick calls isBloomReady to regrow
+ *
+ * Both live inside `foldTick`, so any rule that made a cell inside the Kelp
+ * Stand likelier to carry a bloom would change which bites credit, would
+ * change every client's `bitesTaken` and every fish's size, and would
+ * re-score all of history. It is a hard fork, not a decoration, and it is
+ * not attempted here or anywhere on the display side. Recorded as an open
+ * question rather than left implied.
+ *
+ * There is a second consequence worth stating plainly, because it is the
+ * one place the spec and the fold currently disagree: under the fold's
+ * actual rule food grows where the school ISN'T (bloom.ts's header), and
+ * places are where the school IS. So today a named place is, if anything,
+ * slightly food-POORER than open water. Making 2.13's sentence true needs a
+ * consensus change; nothing on this side can fake it, and nothing here
+ * pretends to.
+ *
+ * The same goes for sweep lanes (`src/lib/sweep.ts` is folded too). What
+ * this module hands downstream is geometry, a name, and — since plan 4b —
+ * which of them you are standing in, for the sole purpose of saying its
+ * name out loud once when you get there.
  *
  * WHY A PLACE IS A REGION, NOT A POINT. The job (spec 2.13) is to give a
  * player something to swim TO and something to shout — "kelp!" has to mean
@@ -178,4 +197,133 @@ export function nearestPlace(
     }
   }
   return best;
+}
+
+// ---------------------------------------------------------------------------
+// ARRIVING SOMEWHERE
+//
+// A name is only worth having if a player learns it, and the only way anyone
+// ever learns the name of a place is by being told it once, when they get
+// there. Spec 2.13's own example — *"kelp!" is a complete rally call in one
+// word* — is a claim about two players sharing a WORD, and a word that lives
+// only in this file's source is not shared with anybody.
+//
+// THIS REVERSES `terrainPaint.ts`'s "NO TEXT" RULING, DELIBERATELY AND ONLY
+// THIS FAR. That ruling's reasoning was sound about the thing it was
+// rejecting: a caption floating permanently over the kelp is chrome, it
+// makes the landmark redundant, and it would put the first standing piece of
+// UI on a surface that has held out against one for four plans. None of that
+// is true of an announcement. What is added here is not a label but a
+// MOMENT — the place names itself as you arrive, for four and a half seconds,
+// and then the sea is wordless again. A player who has been to the kelp once
+// can shout "kelp!"; a player who has not still has nothing on their screen.
+//
+// It is still terrain, so it is still purely a game object: nothing below
+// derives from, refers to, or is named after anything on the network
+// (spec 2.13 and the diegetic rule, 1.1), and nothing below is consensus —
+// two clients with different values for any constant here see the same sea
+// and agree about every position, every bloom and every sweep.
+// ---------------------------------------------------------------------------
+
+/**
+ * How far past a place's edge you must get before you have LEFT it, in cu.
+ *
+ * This is hysteresis and it is not cosmetic. Without it a swimmer idling on
+ * the boundary — which is exactly what a swimmer holding station at the edge
+ * of a stand of kelp is doing — crosses in and out several times a second,
+ * and every crossing is a fresh arrival, so the place's name strobes in their
+ * face. With it, arriving and leaving are different distances and neither can
+ * chatter.
+ *
+ * 120 cu is two dart-lengths short of nothing and well under a shelter radius
+ * (340), so the ring never reaches out far enough to hold you at one place
+ * while you are visibly at another — the two closest places in the sea are
+ * ~1553 cu apart (see the header) against a worst-case hold of 320 + 120.
+ */
+export const PLACE_EXIT_MARGIN = 120;
+
+/** How long the name takes to surface, hold, and go, in ms. */
+export const NAME_FADE_IN_MS = 800;
+export const NAME_HOLD_MS = 2_600;
+export const NAME_FADE_OUT_MS = 1_200;
+/** The whole announcement, arrival to silence. */
+export const NAME_TOTAL_MS = NAME_FADE_IN_MS + NAME_HOLD_MS + NAME_FADE_OUT_MS;
+
+/**
+ * Where a swimmer is, in the only sense terrain has an opinion about: the
+ * place they are at, and when they got there.
+ *
+ * `sinceMs` is stamped on CHANGE and on nothing else, which is what makes it
+ * usable as the start of an announcement. `NOWHERE`'s -1 is a stamp that has
+ * never happened; `nameAlpha` never reads it, because a `null` place is
+ * silent whatever the clock says.
+ */
+export interface Arrival {
+  readonly at: Place | null;
+  readonly sinceMs: number;
+}
+
+/** Open water, never having been anywhere. */
+export const NOWHERE: Arrival = Object.freeze({ at: null, sinceMs: -1 });
+
+/**
+ * Advance an arrival by one frame.
+ *
+ * Pure, and pure in the strong sense the display side needs: given the same
+ * `prev` and the same point it returns the IDENTICAL object when nothing has
+ * changed, so a frame loop calling this sixty times a second allocates
+ * nothing and — more importantly — cannot restart an announcement by
+ * accident. Every new `Arrival` it does build is frozen.
+ *
+ * Two rules, in this order:
+ *
+ *  1. IF YOU WERE SOMEWHERE, you are still there until you get past that
+ *     place's own hold ring (`r + PLACE_EXIT_MARGIN`, inclusive — the ring
+ *     itself still counts as here, matching `placeAt`'s inclusive edge).
+ *  2. OTHERWISE it is `placeAt` and nothing cleverer, so crossing straight
+ *     from one place into another names the new one on the same call rather
+ *     than a frame later.
+ *
+ * `nowMs` is the display clock, passed in — this module reads no clock.
+ */
+export function trackArrival(
+  prev: Arrival, x: number, y: number, nowMs: number, places: readonly Place[] = PLACES,
+): Arrival {
+  if (prev.at !== null) {
+    const hold = prev.at.r + PLACE_EXIT_MARGIN;
+    if (dist2(x, y, prev.at.x, prev.at.y) <= hold * hold) return prev;
+  }
+  const now = placeAt(x, y, places);
+  if (now === prev.at) return prev;
+  return Object.freeze({ at: now, sinceMs: nowMs });
+}
+
+/**
+ * How strongly the place's name is being said right now, 0..1: up over
+ * NAME_FADE_IN_MS, level for NAME_HOLD_MS, away over NAME_FADE_OUT_MS, then
+ * silent forever.
+ *
+ * Zero in open water whatever the clock reads, and zero for a `nowMs` BEFORE
+ * the stamp — the caller's clock is a display clock and a fold time arriving
+ * out of order must read as silence, never as a negative alpha.
+ */
+export function nameAlpha(a: Arrival, nowMs: number): number {
+  if (a.at === null) return 0;
+  const t = nowMs - a.sinceMs;
+  if (t <= 0 || t >= NAME_TOTAL_MS) return 0;
+  if (t < NAME_FADE_IN_MS) return t / NAME_FADE_IN_MS;
+  if (t < NAME_FADE_IN_MS + NAME_HOLD_MS) return 1;
+  return 1 - (t - NAME_FADE_IN_MS - NAME_HOLD_MS) / NAME_FADE_OUT_MS;
+}
+
+/**
+ * The whole announcement, or null when the sea has nothing to say — the one
+ * call a painter needs, so no painter has to know the shape of `Arrival`.
+ */
+export function announcedName(
+  a: Arrival, nowMs: number,
+): { place: Place; name: string; alpha: number } | null {
+  const alpha = nameAlpha(a, nowMs);
+  if (a.at === null || alpha <= 0) return null;
+  return { place: a.at, name: a.at.name, alpha };
 }

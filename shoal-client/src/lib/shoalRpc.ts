@@ -199,6 +199,14 @@ export async function rpcCall<T>(auth: RpcAuth, method: string, params: unknown)
 /** bech32m charset (BIP-173/350). */
 const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 
+/** The human-readable part every space id carries (`encode_space_id`,
+ *  src/rpc/methods.rs:186-194 — `SPACE_HRP`). */
+const SPACE_HRP = 'sp';
+
+/** bech32m's checksum constant (BIP-350). bech32 (the older one) uses 1; using
+ *  the wrong one produces a string that LOOKS right and fails the node's decode. */
+const BECH32M_CONST = 0x2bc830a3;
+
 /**
  * Is `spaceId` in the WIRE form the node speaks — bech32m `sp1…`?
  *
@@ -254,6 +262,103 @@ export function assertWireSpaceId(spaceId: string, who: string): void {
     'string, so a hex space id would silently disable the live channel. Use the space_id ' +
     'returned by create_space / list_spaces verbatim.',
   );
+}
+
+/**
+ * bech32's checksum polynomial (BIP-173). Integer-only, no clock, no float —
+ * this module is imported by `src/lib/`, and everything here is exact 32-bit
+ * arithmetic on values below 2^31, so no intermediate can go negative or lose
+ * precision.
+ */
+function bech32Polymod(values: readonly number[]): number {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >>> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) {
+      if ((top >>> i) & 1) chk ^= GEN[i];
+    }
+  }
+  return chk >>> 0;
+}
+
+/** The hrp, expanded the way the checksum wants it (BIP-173). */
+function hrpExpand(hrp: string): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < hrp.length; i++) out.push(hrp.charCodeAt(i) >>> 5);
+  out.push(0);
+  for (let i = 0; i < hrp.length; i++) out.push(hrp.charCodeAt(i) & 31);
+  return out;
+}
+
+/**
+ * Regroup 8-bit bytes into 5-bit groups, padding the last one.
+ *
+ * `acc` is masked down to its leftover bits each iteration, which keeps the
+ * loop invariant simple (`acc` holds exactly `bits` bits) and matches BIP-173's
+ * reference implementation.
+ *
+ * IT IS NOT LOAD-BEARING, AND THE COMMENT HERE USED TO CLAIM IT WAS — that it
+ * stopped `acc` overflowing 32 bits partway through a 17-byte space id. That is
+ * false, and a mutation run is what said so: deleting the mask changes nothing.
+ * JavaScript's `<<`, `>>>` and `&` all truncate to 32 bits already, and the five
+ * bits read out each step live below bit 13, so the high junk can never reach
+ * them. Measured: identical output on the real payload and on 20 000 random
+ * 17-byte inputs. Kept for readability; do not write a check that pretends to
+ * cover it.
+ */
+function toFiveBit(bytes: Uint8Array): number[] {
+  const out: number[] = [];
+  let acc = 0;
+  let bits = 0;
+  for (const b of bytes) {
+    acc = (acc << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out.push((acc >>> bits) & 31);
+    }
+    acc &= (1 << bits) - 1;
+  }
+  if (bits > 0) out.push((acc << (5 - bits)) & 31);
+  return out;
+}
+
+/**
+ * Encode a 16-byte space id into the node's bech32m wire form (`sp1…`).
+ *
+ * THE INVERSE OF `isWireSpaceId`, and it lives beside it for the same reason:
+ * this is a fact about the shape the NODE speaks, not about any one caller.
+ * It mirrors `encode_space_id` (src/rpc/methods.rs:186-194) exactly — hrp
+ * `sp`, a leading zero VERSION byte, then the 16 payload bytes, bech32m.
+ *
+ * WHY A CLIENT NEEDS TO ENCODE ONE AT ALL. An app-namespaced space's id is a
+ * pure function of its `(app, display)` name — `sha256("app:<app>:v1:<display>")[..16]`
+ * with the App class byte in front (`app_space_id_16`, src/types/space_class.rs:70-73)
+ * — so a client that knows the name can compute the id without asking anybody.
+ * `shellConfig.waterSpaceId` does exactly that, and the reason it must is in
+ * that function's own comment: asking the node instead cannot work on a fresh
+ * install.
+ */
+export function encodeWireSpaceId(id16: Uint8Array): string {
+  if (id16.length !== 16) {
+    throw new RangeError(
+      `encodeWireSpaceId: a space id is 16 bytes, got ${id16.length}`,
+    );
+  }
+  // Version byte first, then the payload — methods.rs:190-192.
+  const payload = new Uint8Array(17);
+  payload[0] = 0;
+  payload.set(id16, 1);
+
+  const data = toFiveBit(payload);
+  const checksumInput = hrpExpand(SPACE_HRP).concat(data, [0, 0, 0, 0, 0, 0]);
+  const pm = bech32Polymod(checksumInput) ^ BECH32M_CONST;
+  const checksum: number[] = [];
+  for (let i = 0; i < 6; i++) checksum.push((pm >>> (5 * (5 - i))) & 31);
+
+  return `${SPACE_HRP}1${data.concat(checksum).map((v) => BECH32_CHARSET[v]).join('')}`;
 }
 
 // --- Browser/Tauri auth sources (never touched at module load) ------------------

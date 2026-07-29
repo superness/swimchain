@@ -329,9 +329,35 @@ function watch(auth: RpcAuth, name: string, spaceId: string): Watcher {
 // Room setup (idempotent)
 // ---------------------------------------------------------------------------
 
+/**
+ * A SMOKE RUN MUST NOT WRITE INTO THE WATER PEOPLE PLAY IN, and neither half of
+ * that is achieved by the space name alone.
+ *
+ * The space is `@shoal:smoke` rather than `shellConfig.ts`'s `WATER_SPACE_NAME`
+ * on purpose — this file is not the minter, `scripts/mint-water.ts` is, and it
+ * imports that constant so the real water's name lives in exactly one place.
+ *
+ * THE ROOM TEXT HAD TO CHANGE TOO, and this is the part that was quietly wrong.
+ * `submit_post` derives a post's content id from `sha256("{title}\n\n{body}")`
+ * with NO space in the preimage (src/rpc/methods.rs:2086-2089), and
+ * `get_replies` is keyed on that parent content id alone (src/rpc/types.rs:644)
+ * — so a smoke room whose title and body matched the real water's WOULD BE the
+ * real water's room, in a different space, sharing one reply set. This file's
+ * title and body were character-for-character `shellConfig.ts`'s until now, so
+ * the first node to run this smoke and then mint `@shoal:main` would have had
+ * every smoke move show up in the real sea. `two-client-smoke.ts` avoids the
+ * same trap by having its own text; now so does this.
+ *
+ * THAT IS THE NODE BEING CONTENT-ADDRESSED, NOT THE NODE BEING WRONG. Identical
+ * bytes are one object, uniformly across `submit_post`, `submit_reply` and
+ * `submit_edit`; salting the preimage with a space id would re-score every
+ * content id ever minted. The obligation is entirely on this side of the wire:
+ * a room that must stay separate needs separate TEXT, not just a separate
+ * space. Do not go looking for a node fix for this.
+ */
 const SPACE_NAME = '@shoal:smoke';
-const ROOM_TITLE = 'The Shoal';
-const ROOM_BODY = 'the room every swimmer replies into';
+const ROOM_TITLE = 'The Shoal (smoke)';
+const ROOM_BODY = 'a room for one node to talk to itself in';
 
 function sha256Hex(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');

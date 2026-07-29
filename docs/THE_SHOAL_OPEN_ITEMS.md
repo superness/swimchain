@@ -151,12 +151,37 @@ mining path, and a sponsor-side gesture. Deliberately **not** attempted in plan 
 a grant flow that looks like it works and silently does not is worse than a clear
 "someone already swimming has to bring you through".
 
+#### THE GRANTING HALF IS NOT THIS GAME'S JOB — operator ruling, 2026-07-29
+
+The costing above is still an accurate description of what granting a vouch *from inside
+the game* would cost, and it is now moot, because **the game is not going to do it**.
+
+The Shoal is played from your own node. **Being let into the water is part of being on the
+network; it is not something the game grants.** A build that claimed the mainnet game
+sponsor's standing auto-approve offer on the player's behalf existed for two commits
+(`shoal-client/src/ui/passage.ts`, 725a8c06, five lines around `@swimchain/react`'s
+`ensureSponsored` — the same wrapper reef, chess, chips and the trench use) and was removed
+in full on that ruling: the module, its checks, the `@swimchain/react` dependency, and the
+three-beat progress copy the boundary showed while it ran. The production bundle went
+285.80 kB → 276.00 kB and lost the `pow.worker` chunk and its 214 kB WASM with it.
+
+**Nothing in this client reads or changes anyone's standing except to RECOGNISE a
+refusal.** That is `classifySendFailure`'s `-32015` → `wayIn.afterWrite` → `TheEdge`, and
+it is the whole of it. `App.test.ts` section 6 holds the ruling on the wire: the window
+with the strongest possible reason to ask — one being refused on every single write —
+calls no method whose name contains `sponsor`.
+
+**What an unsponsored player gets is therefore the complete experience it was always
+described as:** real water, the live sea folding underneath, every verb, writes really
+mined and really sent and really refused, and the edge of the water drawn over the top
+saying who could change it. The item below is what it costs; nobody is paying it.
+
 **Also still true:** the way-in surface is only reachable where a chain sea is, and
 `buildChainSea` is gated on `import.meta.env.DEV` (`App.tsx`, deliberately — it reads a
-cookie and a weak key derivation out of the address bar). A shipped build folds a demo sea
-and never writes, so it never sees -32015 either. Whatever eventually gives the shipped
-shell a real room (open item 7, mainnet provisioning) is what makes this surface reachable
-by a real downloader; the recognition logic itself is shell-agnostic and needs no change.
+cookie and a weak key derivation out of the address bar). Plan 4b Task 2 added the second,
+ungated path (`shellConfig.ts`, the desktop shell's own `get_rpc_config`), so a shipped
+build does now reach a real room and does see -32015; the DEV gate is unchanged and still
+does its own separate job of keeping `browserIdentity.ts` out of the bundle.
 
 ### 12. The shell computes a checkpoint every hour and throws it away — **RESOLVED 2026-07-28**
 
@@ -652,6 +677,39 @@ good spot") still lands from making places somewhere to shelter and rally, but "
 spot" is not yet also *the place food is more likely to be*, which is the other half of the
 same sentence. Whoever picks this up should also decide whether wild-fish schools (`wild.ts`)
 ought to loiter near named places, which is the same shape of question one level up.
+
+**Re-verified 2026-07-29 (plan 4b, Task 5), with the call sites named.** The consensus claim
+above was checked rather than trusted, and it holds. The two functions that decide where food
+is, and the two lines inside the fold that call them:
+
+| what | where |
+|---|---|
+| `isBloomReady` — is this cell fallow? | `shoal-client/src/lib/bloom.ts:186` |
+| `canEat` — does this claimed bite credit? | `shoal-client/src/lib/bloom.ts:240` |
+| `foldTick` judging every eat claim | `shoal-client/src/lib/shoalEngine.ts:349` |
+| `foldTick` regrowing every fallow cell | `shoal-client/src/lib/shoalEngine.ts:478` |
+
+Both call sites are inside `foldTick`, so siting really is permanent: a place-biased bloom
+rule changes which bites credit, therefore every client's `bitesTaken`, therefore every
+fish's size, therefore all of history. Task 5 was explicitly told to make places matter by
+siting blooms at them **unless** siting was consensus; it is, so Task 5 changed nothing about
+it and the siting stands exactly where it was.
+
+**And one thing nobody had written down: today the rule runs the other way.** Food grows
+where the school ISN'T (`bloom.ts`'s header — a fish within `BLOOM_VISIT_R` resets a cell),
+and a named place is precisely where the school IS. So a popular place is, if anything,
+slightly food-*poorer* than open water. That is not a bug in either module — it is the exact
+tension spec 2.2 asks for — but it does mean 2.13's sentence cannot be made true by any
+amount of display work, and it puts a real design question in front of whoever takes this on:
+a place that is both the safe spot and the food spot dissolves the tension the game is built
+on. "Blooms appear at places" may want to become "blooms appear at places *between* sweeps,
+and the school cannot sit on them" rather than a flat bias.
+
+What Task 5 did instead, entirely on the display side: **a place says its name once, as you
+arrive** (`terrain.ts`'s `trackArrival` / `nameAlpha`, painted by
+`terrainPaint.paintPlaceName`). The gap it closes is that the names existed only in a
+TypeScript constant — spec 2.13's rally call ("*kelp!*") needs two players to share a WORD,
+and no player had ever been shown one.
 
 ### 9. Smaller
 

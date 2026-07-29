@@ -255,10 +255,25 @@ Two hard rules, each fixing a specific defect:
 ### 2.13 Terrain
 
 The sea has a handful of named places — a kelp stand, a wreck, a drop-off, a shelf. This is
-the cheapest fix on the list and it repairs the most: it gives blooms legible places to
-appear, gives the sweep lanes to come down, gives speech something worth saying (*"kelp!"* is
-a complete rally call in one word), gives griefing victims somewhere to run, and gives the
-space memory so returning feels like returning *somewhere*.
+the cheapest fix on the list and it repairs the most: it gives the sweep lanes to come down,
+gives speech something worth saying (*"kelp!"* is a complete rally call in one word), gives
+griefing victims somewhere to run, and gives the space memory so returning feels like
+returning *somewhere*.
+
+**RESOLVED 2026-07-29 — places do not site food, and this sentence used to say they did.**
+The original wording claimed terrain "gives blooms legible places to appear". It cannot:
+bloom siting is CONSENSUS (`bloom.ts:186` `isBloomReady`, `bloom.ts:240` `canEat`, both
+called from inside `foldTick` at `shoalEngine.ts:349` and `:478`), and the fold's actual rule
+grows food **where the school is not** — so a popular place is, if anything, food-*poorer*
+than open water. Biasing blooms toward terrain would take a permanent fold change that
+re-scores all history, and it would dissolve §2.2's central tension: food in the open, safety
+in the crowd, never in the same place. Operator ruling: leave the fold alone. **Places matter
+for shelter, rallying and orientation — never food.**
+
+**Places say their names.** A place names itself once as you arrive, briefly, then fades.
+This narrows plan 3's "no text" ruling to "no *standing* text", and it is deliberate: the
+names lived only in a TypeScript constant, and *"kelp!"* is only a rally call if two players
+share the word. A vocabulary nobody can learn is not a vocabulary.
 
 Without it the minute between sweeps is "hold a heading", which is waiting. With it, that
 minute is *be near people, at the good spot, before the others get there.*

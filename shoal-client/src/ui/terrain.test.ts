@@ -9,7 +9,11 @@
  * (bounded between two perfect squares, so no decimal sqrt precision is
  * needed) or plain axis-aligned distances (exact integers, no sqrt at all).
  */
-import { PLACES, placeAt, placeDistance, nearestPlace, type Place } from './terrain';
+import {
+  PLACES, placeAt, placeDistance, nearestPlace, type Place,
+  NOWHERE, trackArrival, nameAlpha, announcedName,
+  PLACE_EXIT_MARGIN, NAME_FADE_IN_MS, NAME_HOLD_MS, NAME_FADE_OUT_MS, NAME_TOTAL_MS,
+} from './terrain';
 import { WORLD_W, WORLD_H, SHELTER_R, BLOOM_CELL } from '../lib/shoalConst';
 
 let failures = 0;
@@ -262,6 +266,203 @@ check('every place is frozen', PLACES.every((p) => Object.isFrozen(p)));
   const first = placeAt(kelp.x, kelp.y);
   const second = placeAt(kelp.x, kelp.y);
   check('placeAt returns the identical object on repeated calls', first === second);
+}
+
+// ---------------------------------------------------------------------------
+// 6. Arrival: which place you are AT, with hysteresis at the boundary.
+//
+//    Every offset below is a scaled 3-4-5 triple against the Kelp Stand's
+//    r=320 and PLACE_EXIT_MARGIN, so each distance is an exact integer and
+//    no sqrt precision is involved:
+//      (192, 256) -> 320  exactly r          (inside)
+//      (240, 320) -> 400  past r, inside the hold ring (320+120=440)
+//      (264, 352) -> 440  exactly the hold ring         (still inside)
+//      (265, 352) -> 265^2+352^2 = 194_129 > 440^2 = 193_600   (outside)
+//    The first three are 64/80/88 x (3,4); the last is one cu further out.
+// ---------------------------------------------------------------------------
+
+check('PLACE_EXIT_MARGIN is 120 cu', PLACE_EXIT_MARGIN === 120, PLACE_EXIT_MARGIN);
+
+{
+  // Open water leaves the arrival exactly as it was — the same object, so a
+  // frame loop calling this sixty times a second allocates nothing and
+  // restamps nothing.
+  const a = trackArrival(NOWHERE, 50, 50, 1_000);
+  check('trackArrival: open water from nowhere is still nowhere', a === NOWHERE, a);
+}
+
+{
+  const a = trackArrival(NOWHERE, kelp.x, kelp.y, 1_000);
+  check('trackArrival: entering a place records it', a.at?.id === 'kelp', a.at);
+  check('trackArrival: entering a place stamps the instant', a.sinceMs === 1_000, a.sinceMs);
+}
+
+{
+  // You are AT the place you are inside, never at the one that merely happens
+  // to be nearest. A point 10 cu outside kelp's edge, straight below its
+  // centre (kelp.y + 330 against r = 320), is open water — even though kelp is
+  // by far the nearest place to it.
+  const a = trackArrival(NOWHERE, kelp.x, kelp.y + 330, 1_000);
+  check('trackArrival: just outside a place is open water, not "at" the nearest one',
+    a.at === null, a.at);
+  check('trackArrival: and the nearest place to that same point really is kelp',
+    nearestPlace(kelp.x, kelp.y + 330)?.id === 'kelp');
+}
+
+{
+  const at = trackArrival(NOWHERE, kelp.x, kelp.y, 1_000);
+  // Still inside: same place, and NOT restamped — a name announces an
+  // arrival, so it must not restart while you are simply swimming about in
+  // the place you already arrived at.
+  const still = trackArrival(at, kelp.x + 192, kelp.y + 256, 5_000);
+  check('trackArrival: moving within a place does not restamp it', still === at, still);
+}
+
+{
+  const at = trackArrival(NOWHERE, kelp.x, kelp.y, 1_000);
+  // 400 cu out: past r (320) but inside the hold ring (440). Still here.
+  const held = trackArrival(at, kelp.x + 240, kelp.y + 320, 5_000);
+  check('trackArrival: a step past the edge but inside the margin still counts as here',
+    held === at, held);
+  // Exactly on the hold ring: inclusive, same as placeAt's own boundary.
+  const onRing = trackArrival(at, kelp.x + 264, kelp.y + 352, 6_000);
+  check('trackArrival: the hold ring itself still counts as here', onRing === at, onRing);
+  // One cu further out: gone.
+  const gone = trackArrival(at, kelp.x + 265, kelp.y + 352, 7_000);
+  check('trackArrival: past the hold ring is open water', gone.at === null, gone.at);
+  check('trackArrival: leaving stamps the instant it happened', gone.sinceMs === 7_000, gone.sinceMs);
+}
+
+{
+  // THE HYSTERESIS, as behaviour rather than as a constant. A swimmer idling
+  // on the boundary — alternately 320 cu in and 400 cu out, twenty times —
+  // must arrive exactly ONCE. Without the hold ring every second step is a
+  // fresh arrival and the name flashes on and off in the player's face.
+  let a = trackArrival(NOWHERE, kelp.x, kelp.y, 1_000);
+  const stamps = new Set<number>([a.sinceMs]);
+  for (let i = 0; i < 20; i++) {
+    a = trackArrival(a, kelp.x + (i % 2 === 0 ? 240 : 192), kelp.y + (i % 2 === 0 ? 320 : 256),
+      2_000 + i * 100);
+    stamps.add(a.sinceMs);
+    if (a.at === null) break;
+  }
+  check('trackArrival: idling on the boundary arrives exactly once',
+    a.at?.id === 'kelp' && stamps.size === 1, { at: a.at?.id, stamps: [...stamps] });
+}
+
+{
+  // Leaving and coming back IS a second arrival — the name should greet you
+  // again, which is the other half of the same rule.
+  const first = trackArrival(NOWHERE, kelp.x, kelp.y, 1_000);
+  const left = trackArrival(first, 50, 50, 20_000);
+  const again = trackArrival(left, kelp.x, kelp.y, 40_000);
+  check('trackArrival: returning to a place is a fresh arrival',
+    again.at?.id === 'kelp' && again.sinceMs === 40_000, again);
+}
+
+{
+  // Straight from one place into another, with no open water in between —
+  // the new place is picked up on the same call rather than a frame later.
+  // Synthetic, so the numbers are exact: A at (0,0) r=100, B at (1000,0)
+  // r=100. From A's centre to B's centre is 1000, past A's hold ring (220).
+  const A = synth('a', 'A', 0, 0, 100);
+  const B = synth('b', 'B', 1000, 0, 100);
+  const pair = [A, B];
+  const inA = trackArrival(NOWHERE, 0, 0, 1_000, pair);
+  const inB = trackArrival(inA, 1000, 0, 2_000, pair);
+  check('trackArrival: crossing straight into another place names the new one',
+    inB.at?.id === 'b' && inB.sinceMs === 2_000, inB);
+}
+
+{
+  const before = JSON.stringify(PLACES);
+  const a = trackArrival(NOWHERE, kelp.x, kelp.y, 1_000);
+  trackArrival(a, wreck.x, wreck.y, 2_000);
+  check('trackArrival does not move any place', JSON.stringify(PLACES) === before);
+  check('an arrival is frozen', Object.isFrozen(a));
+  check('NOWHERE is frozen and is nowhere', Object.isFrozen(NOWHERE) && NOWHERE.at === null);
+}
+
+// ---------------------------------------------------------------------------
+// 7. The announcement: a place says its name when you get there, then stops.
+//
+//    Hand-computed against NAME_FADE_IN_MS(800) / NAME_HOLD_MS(2600) /
+//    NAME_FADE_OUT_MS(1200), total 4600. Every value below is worked out from
+//    those three numbers by hand, not read back off the function.
+// ---------------------------------------------------------------------------
+
+check('the announcement lasts fade-in + hold + fade-out',
+  NAME_TOTAL_MS === NAME_FADE_IN_MS + NAME_HOLD_MS + NAME_FADE_OUT_MS,
+  { NAME_TOTAL_MS, NAME_FADE_IN_MS, NAME_HOLD_MS, NAME_FADE_OUT_MS });
+
+{
+  const at = trackArrival(NOWHERE, kelp.x, kelp.y, 10_000);
+  // fade in: 800 ms. 10_000 + 200 -> 200/800 = 0.25; +400 -> 0.5; +800 -> 1.
+  check('nameAlpha: nothing at the instant of arrival', nameAlpha(at, 10_000) === 0, nameAlpha(at, 10_000));
+  check('nameAlpha: a quarter of the way in', nameAlpha(at, 10_200) === 0.25, nameAlpha(at, 10_200));
+  check('nameAlpha: half way in', nameAlpha(at, 10_400) === 0.5, nameAlpha(at, 10_400));
+  check('nameAlpha: full at the end of the fade-in', nameAlpha(at, 10_800) === 1, nameAlpha(at, 10_800));
+  // hold: 800..3400 after arrival.
+  check('nameAlpha: still full in the middle of the hold', nameAlpha(at, 12_000) === 1, nameAlpha(at, 12_000));
+  check('nameAlpha: still full at the last instant of the hold',
+    nameAlpha(at, 13_400) === 1, nameAlpha(at, 13_400));
+  // fade out: 3400..4600. +300 -> 1 - 300/1200 = 0.75; +600 -> 0.5.
+  check('nameAlpha: three quarters through the fade-out\'s first act',
+    nameAlpha(at, 13_700) === 0.75, nameAlpha(at, 13_700));
+  check('nameAlpha: half way out', nameAlpha(at, 14_000) === 0.5, nameAlpha(at, 14_000));
+  check('nameAlpha: gone at the end', nameAlpha(at, 14_600) === 0, nameAlpha(at, 14_600));
+  check('nameAlpha: still gone long after', nameAlpha(at, 99_999) === 0, nameAlpha(at, 99_999));
+}
+
+{
+  // Shape, sampled — independent of the three constants' values: it rises,
+  // it plateaus at exactly 1, it falls, and it never leaves [0, 1].
+  const at = trackArrival(NOWHERE, kelp.x, kelp.y, 0);
+  let inRange = true;
+  let rises = true;
+  let falls = true;
+  let plateau = 0;
+  let prev = -1;
+  for (let t = 0; t <= NAME_TOTAL_MS; t += 25) {
+    const v = nameAlpha(at, t);
+    if (v < 0 || v > 1) inRange = false;
+    if (t <= NAME_FADE_IN_MS && v < prev) rises = false;
+    if (t >= NAME_FADE_IN_MS + NAME_HOLD_MS && v > prev) falls = false;
+    if (v === 1) plateau += 25;
+    prev = v;
+  }
+  check('nameAlpha never leaves [0, 1]', inRange);
+  check('nameAlpha rises to the plateau', rises);
+  check('nameAlpha falls away from the plateau', falls);
+  // A plateau at all — a pure triangle ramp would sample 1 exactly once.
+  check('nameAlpha holds at full for a readable stretch, not an instant',
+    plateau > 1_000, plateau);
+}
+
+{
+  // Open water says nothing, whatever the clock is doing.
+  let silent = true;
+  for (let t = 0; t < 20_000; t += 137) if (nameAlpha(NOWHERE, t) !== 0) silent = false;
+  check('nameAlpha: open water never announces anything', silent);
+}
+
+{
+  // A clock that has gone backwards (a fold time behind the stamp) must read
+  // as silence, never as a negative alpha or a wrapped-around one.
+  const at = trackArrival(NOWHERE, kelp.x, kelp.y, 10_000);
+  check('nameAlpha: a time before the arrival is silence', nameAlpha(at, 9_000) === 0,
+    nameAlpha(at, 9_000));
+}
+
+{
+  const at = trackArrival(NOWHERE, wreck.x, wreck.y, 500);
+  const said = announcedName(at, 1_300);
+  check('announcedName: gives the place, its name and how strongly to say it',
+    said !== null && said.place.id === 'wreck' && said.name === 'The Wreck' && said.alpha === 1,
+    said);
+  check('announcedName: says nothing once the announcement is over',
+    announcedName(at, 500 + NAME_TOTAL_MS) === null);
+  check('announcedName: says nothing in open water', announcedName(NOWHERE, 1_000) === null);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

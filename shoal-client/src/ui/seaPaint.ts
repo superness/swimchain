@@ -38,7 +38,8 @@ import {
 import { TETHER_MIN_CU, type HushRead, type TetherRead } from './tether';
 import { ABYSS, DEEP, MID, SURFACE, UPPER, hashStr, unit } from './paintKit';
 import { paintBoltWash, paintWildShoal } from './wildPaint';
-import { paintPlacesFar, paintPlacesNear } from './terrainPaint';
+import { paintPlacesFar, paintPlacesNear, paintPlaceName } from './terrainPaint';
+import type { Arrival } from './terrain';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
 import type { WildView } from './wildView';
 import type { Vec } from '../lib/shoalTypes';
@@ -137,6 +138,15 @@ export interface Frame {
    * shell; this file has no opinion about WHEN a bolt happens.
    */
   bolt?: number;
+
+  /**
+   * Which named place the player is at, and when they got there (spec 2.13).
+   * Tracked by the shell with `trackArrival` off the player's own DRAWN
+   * position, and used for one thing only: the place says its name as you
+   * arrive. Terrain is a pure game object — nothing about this reaches the
+   * fold, and nothing in the fold reaches it.
+   */
+  place?: Arrival | null;
 }
 
 /** Everything the frozen replay needs. Built by the shell from `scatterReplay`. */
@@ -1294,6 +1304,11 @@ export function paintFrame(ctx: CanvasRenderingContext2D, f: Frame): void {
 
   // The near half of every landmark, over the swimmers: fish pass behind it.
   paintPlacesNear(ctx, f);
+
+  // ...and, if the player has just arrived somewhere, what that somewhere is
+  // called. Over the landmark it names and under everything that follows, so
+  // the murk, the pall and the vignette all run across it.
+  paintPlaceName(ctx, f, f.place);
 
   // The bolt's wash, over the fish and under the pall — so a player standing
   // in water that happened to hold no wild fish still sees the sea react.

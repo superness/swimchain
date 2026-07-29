@@ -6,12 +6,23 @@
  * like, and like `seaPaint.ts` it is verified by screenshot rather than by a
  * mocked canvas.
  *
- * NO TEXT. Not a label, not a name, not a marker. A place is recognised the
- * way a place is recognised — by looking like itself — and the name exists so
- * that a player can SAY it ("kelp!"), which is spec 2.13's whole example. A
- * caption floating over the kelp would make the rally call redundant and would
- * put the first piece of chrome on a surface that has held out against it for
- * three plans.
+ * NO STANDING TEXT. Not a label, not a marker, nothing that is on screen a
+ * second longer than it has to be. A place is recognised the way a place is
+ * recognised — by looking like itself — and a caption floating permanently
+ * over the kelp would put the first piece of standing chrome on a surface
+ * that has held out against one for four plans.
+ *
+ * THE ONE EXCEPTION, ADDED KNOWINGLY: `paintPlaceName` at the bottom of this
+ * file says the place's name once, as you arrive, and then stops. The
+ * original ruling here was "no text at all", on the reasoning that a caption
+ * would make the rally call redundant. That reasoning holds against a
+ * caption and fails against an announcement, for a reason that took a plan to
+ * notice: a name nobody is ever shown is a name nobody can shout. Spec 2.13's
+ * example — *"kelp!" is a complete rally call in one word* — is a claim about
+ * two players sharing a WORD, and the word was living in a TypeScript
+ * constant. See `terrain.ts`'s ARRIVING SOMEWHERE section for the full
+ * argument and for why the announcement is bounded to four and a half
+ * seconds.
  *
  * =============================================================================
  * SITTING *IN* THE SEA RATHER THAN ON TOP OF IT
@@ -67,7 +78,7 @@
  * kelp stand hanging in open water is not. The Drop-off and the Shelf, which
  * genuinely are deep, get the same treatment and lose nothing by it.
  */
-import { PLACES, type Place } from './terrain';
+import { PLACES, announcedName, type Arrival, type Place } from './terrain';
 import { isVisible, worldToScreen, type Camera, type Viewport } from './render';
 import { rgba, span, unit, waterAt } from './paintKit';
 
@@ -746,4 +757,63 @@ export function paintPlacesNear(
     paintPlace(ctx, f, p, true);
     ctx.restore();
   }
+}
+
+// ---------------------------------------------------------------------------
+// The name, said once
+// ---------------------------------------------------------------------------
+
+/**
+ * The place's name, while it is arriving — see this module's header for why
+ * there is text here at all, and `terrain.ts` for when.
+ *
+ * IN THE WATER, NOT ON THE WINDOW. It is drawn at a fixed WORLD point, so it
+ * belongs to the landmark rather than to the screen: swim on and it slides
+ * past with the kelp it names, which is the difference between "this place is
+ * called that" and "you have entered a zone". The anchor is the place's own
+ * centre lifted by 0.55 of its radius, which lands at the crest of every one
+ * of the four (they are drawn standing on outcrops whose tops sit between
+ * 0.4r and 0.6r above centre) — and, because the lift is a fraction of the
+ * radius, it is always well inside the region, so a player anywhere in the
+ * place has the name on screen. An absolute offset would not survive a place
+ * with a different radius.
+ *
+ * The colour is mixed against `waterAt` like everything else here (rule 3 in
+ * the header), so a name in the deep is dimmer and bluer than one near the
+ * surface. The dark blur behind it is the only concession to legibility, and
+ * it is needed: the Shelf is deliberately PALER than the water, so a name
+ * that relied on contrast with the sea would vanish over exactly one of the
+ * four places.
+ *
+ * Drawn under the murk, the grain, the vignette and the hush's pall (see
+ * `paintFrame`'s order), which is deliberate — during a hush the player has
+ * something more urgent to read and the name should fade back with the rest
+ * of the world rather than shout over it.
+ */
+export function paintPlaceName(
+  ctx: CanvasRenderingContext2D, f: TerrainFrame, arrival: Arrival | null | undefined,
+): void {
+  if (!arrival) return;
+  const said = announcedName(arrival, f.atMs);
+  if (said === null) return;
+  const p = said.place;
+  const s = worldToScreen(f.cam, f.view, p.x, p.y - p.r * 0.55);
+  // Sized off the window, not off the world: a name is read, so it keeps a
+  // legible size on a small laptop screen and does not become a billboard on
+  // a large one. Clamped at both ends.
+  const size = Math.max(15, Math.min(26, f.view.h * 0.026));
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `600 ${size.toFixed(1)}px ui-sans-serif, system-ui, sans-serif`;
+  // Letter spacing is what makes short caps read as a place rather than as a
+  // notification. Assigned through a cast because it is newer than this
+  // project's DOM typings; a canvas without it simply draws unspaced text,
+  // which is why nothing below depends on it having taken.
+  (ctx as unknown as { letterSpacing?: string }).letterSpacing = `${(size * 0.24).toFixed(1)}px`;
+  ctx.shadowColor = 'rgba(3, 11, 18, 0.95)';
+  ctx.shadowBlur = size;
+  ctx.fillStyle = siltAt(p.y, [236, 244, 240], 0.93, said.alpha * 0.88);
+  ctx.fillText(p.name.toUpperCase(), s.x, s.y);
+  ctx.restore();
 }
