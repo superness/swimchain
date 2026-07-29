@@ -45,7 +45,7 @@ function verifiedExact(rs: ChipsReply[]): Map<string, number> {
 }
 
 const baseState = (over: Partial<ChipsState> = {}): ChipsState => ({
-  crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, declined: new Set(), crispest: 0, owned: new Set(),
+  crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, charOwned: new Set(), declined: new Set(), crispest: 0, owned: new Set(),
   bowlCap: START_BOWL_CAP, seasoningNum: 1, seasoningDen: 1, fryers: 1,
   goldenBits: GOLDEN_BITS, airtight: false, sogBonus: 0, doubleDipMod: 0, dipIndex: 0,
   lastConfirmedAt: 0, lastBankAt: 0, unverifiedBanks: 0, moves: [],

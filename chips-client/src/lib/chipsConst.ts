@@ -319,3 +319,57 @@ export function forfeitsOnRefuse(key: string, owned: ReadonlySet<string>): strin
     .filter((k) => !owned.has(k))       // an already-owned rung above is not lost
     .map((k) => UPGRADES[k].label);
 }
+
+/* ── CHAR ABILITIES — what the descent pays for ────────────────────────────
+   Salt already owns "+N% every tick". Char must not be a second multiplier or
+   the two collapse into one stat, so char buys RULE CHANGES and each is
+   thematically the band it came from (design doc §5).
+
+   PRICES ARE POLICY, NOT CONSENSUS. The cost travels in the `spend` body the
+   way a dip's amount does — the same self-declared, Cookie-Clicker-honest
+   precedent the game already runs on — so the fold only keeps char from going
+   negative and these numbers stay retunable forever. Freezing them into the
+   fold would have been the one irreversible decision in the whole feature.
+
+   They sum to 31 of the 32 grains a complete descent mints, so a full run
+   affords all five and the real choice is ORDER: what you take first, with
+   four bands still under you. */
+export interface CharAbility {
+  key: string;
+  label: string;
+  cost: number;
+  /** The band that pays for it — flavour, and the order they unlock in. */
+  from: string;
+  blurb: string;
+}
+
+export const CHAR_ABILITIES: Record<string, CharAbility> = {
+  crack: {
+    // ONE, because the porcelain mints exactly one grain (CHAR_PER_BAND[0]).
+    // Priced at 2 it was unaffordable the moment you earned it, so the first
+    // boss in the game paid you a currency you could not spend — the same
+    // "I got nothing from that" this whole feature exists to fix.
+    key: 'crack', label: 'The Crack', cost: 1, from: 'the porcelain',
+    blurb: 'a tip keeps ONE jar of your choosing.',
+  },
+  grain: {
+    key: 'grain', label: 'The Grain', cost: 3, from: 'the table',
+    blurb: 'a second chip cooks in every fryer.',
+  },
+  tile: {
+    key: 'tile', label: 'The Tile', cost: 5, from: 'the floor',
+    blurb: 'crumbs stop going soft. entirely.',
+  },
+  burrow: {
+    key: 'burrow', label: 'The Burrow', cost: 8, from: 'the dirt',
+    blurb: 'the rat works for you — his hoard pays out instead of siphoning.',
+  },
+  magma: {
+    key: 'magma', label: 'The Magma', cost: 13, from: 'the lava',
+    blurb: 'overcook stops draining the pot. the burn just makes it faster.',
+  },
+};
+
+/** Total char a complete descent mints, and what the five abilities cost. */
+export const CHAR_ABILITY_TOTAL = Object.values(CHAR_ABILITIES)
+  .reduce((n, a) => n + a.cost, 0);

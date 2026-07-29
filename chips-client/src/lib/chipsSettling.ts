@@ -75,6 +75,8 @@ export function moveKey(m: QueuedMove): string {
   // Keyed on ms, not key: the same jar can be burned more than once a run.
   if (m.kind === 'broke') return `broke:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
   if (m.kind === 'burn') return `burn:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
+  // Keyed on ability, not ms: an ability is bought at most once, ever.
+  if (m.kind === 'spend') return `spend:${m.tableId}:${m.author.toLowerCase()}:${m.ability}`;
   return `buy:${m.tableId}:${m.author.toLowerCase()}:${m.key}`;
 }
 

@@ -77,9 +77,13 @@ export type QueuedMove =
    *  matched back to this entry (chipsSettling.moveKey). */
   | { id: number; tableId: string; author: string; kind: 'dip'; amount: number; ms: number; sentAt?: number }
   | { id: number; tableId: string; author: string; kind: 'tip'; ms: number; sentAt?: number }
-  /** One band of the descent. No argument — the fold works out WHICH band
-   *  from state it can see, so there is nothing here to forge. */
-  | { id: number; tableId: string; author: string; kind: 'broke'; paid: number; ms: number; sentAt?: number };
+  /** One band of the descent. `paid` is the chip FED to the boss — it buys the
+   *  band and pays nothing. The fold works out WHICH band from state it can
+   *  see, so there is nothing here to forge. */
+  | { id: number; tableId: string; author: string; kind: 'broke'; paid: number; ms: number; sentAt?: number }
+  /** Char spent at scoop's for a rule change. The cost rides along because
+   *  prices are policy — the fold only refuses to let char go negative. */
+  | { id: number; tableId: string; author: string; kind: 'spend'; ability: string; cost: number; ms: number; sentAt?: number };
 
 /** What a caller supplies to `enqueue` — everything but the id, which the
  *  queue itself assigns, and `sentAt`, which only a successful submission may
@@ -118,7 +122,7 @@ export function activeFor(q: QueuedMove[], tableId: string, author: string): Que
  * action PoW — it can only fold `rejected-bits` there) or let a stale entry
  * block a live one behind it forever.
  */
-export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' | 'tip' | 'burn' | 'broke' } | null {
+export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' | 'tip' | 'burn' | 'broke' | 'spend' } | null {
   if (q.length === 0) return null;
   if (q[0].kind === 'buy') return { moves: [q[0]], kind: 'buy' };
   if (q[0].kind === 'burn') return { moves: [q[0]], kind: 'burn' };
@@ -126,6 +130,7 @@ export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' 
   if (q[0].kind === 'dip') return { moves: [q[0]], kind: 'dip' };
   if (q[0].kind === 'tip') return { moves: [q[0]], kind: 'tip' };
   if (q[0].kind === 'broke') return { moves: [q[0]], kind: 'broke' };
+  if (q[0].kind === 'spend') return { moves: [q[0]], kind: 'spend' };
 
   const moves: QueuedMove[] = [];
   for (const m of q) {
@@ -208,6 +213,7 @@ export function loadQueue(): QueuedMove[] {
     const rows = JSON.parse(raw) as {
       id: unknown; tableId: unknown; author: unknown; kind: unknown; sentAt?: unknown;
       key?: unknown; amount?: unknown; ms?: unknown; paid?: unknown;
+      ability?: unknown; cost?: unknown;
       chip?: { ms: unknown; bits: unknown; nonce: unknown };
     }[];
     if (!Array.isArray(rows)) return [];
@@ -243,6 +249,12 @@ export function loadQueue(): QueuedMove[] {
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
       ) {
         out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'broke', paid: typeof r.paid === 'number' ? r.paid : 0, ms: r.ms, ...sentAt });
+      } else if (
+        r.kind === 'spend' && typeof r.ability === 'string' && typeof r.cost === 'number'
+        && Number.isSafeInteger(r.cost) && r.cost > 0
+        && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
+      ) {
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'spend', ability: r.ability, cost: r.cost, ms: r.ms, ...sentAt });
       } else if (
         r.kind === 'burn' && typeof r.key === 'string'
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
@@ -293,6 +305,8 @@ export function saveQueue(q: QueuedMove[]): void {
           ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'dip', amount: m.amount, ms: m.ms, ...mark }
           : m.kind === 'tip'
             ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'tip', ms: m.ms, ...mark }
+            : m.kind === 'spend'
+              ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'spend', ability: m.ability, cost: m.cost, ms: m.ms, ...mark }
             : m.kind === 'broke'
               ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'broke', paid: m.paid, ms: m.ms, ...mark }
               : m.kind === 'burn'
