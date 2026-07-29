@@ -2923,3 +2923,24 @@ h1, h2, h3, p { margin: 0; }
   border-radius: 999px; padding: 5px 12px;
 }
 .scoop-done:hover { color: #f4e9d8; border-color: rgba(210, 184, 144, .7); }
+
+
+/* THE CRACK's picker, inside the bowl reveal. Ember-toned like char and
+   scoop's, so it reads as descent kit rather than another shop control. */
+.bowl-keep { margin: 10px 0 6px; }
+.bowl-keep-head {
+  display: block; font-family: var(--chalk); font-size: 10.5px;
+  letter-spacing: .05em; color: #c08a63; margin-bottom: 6px;
+}
+.bowl-keep-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.bowl-keep-row button {
+  font-family: var(--chalk); font-size: 10.5px; letter-spacing: .04em;
+  color: #b6a385; background: rgba(0, 0, 0, .3);
+  border: 1px solid rgba(190, 130, 90, .35);
+  border-radius: 999px; padding: 4px 10px;
+  transition: color .18s, border-color .18s, background .18s;
+}
+.bowl-keep-row button:hover { color: #f4e2cc; border-color: rgba(255, 170, 110, .6); }
+.bowl-keep-row button.on {
+  color: #1b110c; background: #ffb27a; border-color: #ffb27a;
+}

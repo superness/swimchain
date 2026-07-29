@@ -76,7 +76,8 @@ export type QueuedMove =
    *  it becomes the body's authoring ms, which is how the confirmed reply is
    *  matched back to this entry (chipsSettling.moveKey). */
   | { id: number; tableId: string; author: string; kind: 'dip'; amount: number; ms: number; sentAt?: number }
-  | { id: number; tableId: string; author: string; kind: 'tip'; ms: number; sentAt?: number }
+  /** `keep` is the jar THE CRACK saves; absent for a plain tip. */
+  | { id: number; tableId: string; author: string; kind: 'tip'; keep?: string; ms: number; sentAt?: number }
   /** One band of the descent. `paid` is the chip FED to the boss — it buys the
    *  band and pays nothing. The fold works out WHICH band from state it can
    *  see, so there is nothing here to forge. */
@@ -212,7 +213,7 @@ export function loadQueue(): QueuedMove[] {
     if (!raw) return [];
     const rows = JSON.parse(raw) as {
       id: unknown; tableId: unknown; author: unknown; kind: unknown; sentAt?: unknown;
-      key?: unknown; amount?: unknown; ms?: unknown; paid?: unknown;
+      key?: unknown; amount?: unknown; ms?: unknown; paid?: unknown; keep?: unknown;
       ability?: unknown; cost?: unknown;
       chip?: { ms: unknown; bits: unknown; nonce: unknown };
     }[];
@@ -270,7 +271,7 @@ export function loadQueue(): QueuedMove[] {
         r.kind === 'tip'
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
       ) {
-        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'tip', ms: r.ms, ...sentAt });
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'tip', ...(typeof r.keep === 'string' ? { keep: r.keep } : {}), ms: r.ms, ...sentAt });
       } else if (
         r.kind === 'bank' && r.chip
         && typeof r.chip.ms === 'number' && Number.isSafeInteger(r.chip.ms)
@@ -304,7 +305,7 @@ export function saveQueue(q: QueuedMove[]): void {
         : m.kind === 'dip'
           ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'dip', amount: m.amount, ms: m.ms, ...mark }
           : m.kind === 'tip'
-            ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'tip', ms: m.ms, ...mark }
+            ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'tip', ...(m.keep ? { keep: m.keep } : {}), ms: m.ms, ...mark }
             : m.kind === 'spend'
               ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'spend', ability: m.ability, cost: m.cost, ms: m.ms, ...mark }
             : m.kind === 'broke'

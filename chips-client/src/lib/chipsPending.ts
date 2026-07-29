@@ -66,7 +66,7 @@ export function withPending(
         // pending -> confirmed swap, exactly like a bank chip's ms.
         extra.push({ author_id: me, body: dipBody(m.amount, m.ms), block_height: null, content_id: cid, created_at: at });
       } else if (m.kind === 'tip') {
-        extra.push({ author_id: me, body: tipBody(m.ms), block_height: null, content_id: cid, created_at: at });
+        extra.push({ author_id: me, body: tipBody(m.ms, m.keep ?? null), block_height: null, content_id: cid, created_at: at });
       } else if (m.kind === 'broke') {
         extra.push({ author_id: me, body: brokeBody(m.paid, m.ms), block_height: null, content_id: cid, created_at: at });
       } else if (m.kind === 'spend') {
