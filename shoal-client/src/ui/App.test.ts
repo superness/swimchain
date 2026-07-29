@@ -87,6 +87,11 @@ async function buildHarness(dev: boolean): Promise<{ observe: (s: Scenario) => P
  *  it — `roomContentId` is not reachable from here without importing the module
  *  under test's neighbour, so it is imported directly. */
 import { roomContentId } from './shellConfig';
+/** The copy, imported rather than retyped — it has exactly one home, and this
+ *  file compares the rendered DOM against it. */
+import { EDGE_BODY, PASSAGE_BODY } from './wayIn';
+
+const PASSAGE_BODY_LINES: string[] = Object.values(PASSAGE_BODY);
 
 const NODE_PUBKEY = 'c7'.repeat(32);
 
@@ -250,6 +255,98 @@ async function main(): Promise<void> {
     check('NON-DEGENERACY: a node that was ready is asked exactly once',
       clean.rpcCalls.filter((m) => m === 'list_spaces').length === 1,
       clean.rpcCalls.filter((m) => m === 'list_spaces').length);
+  }
+
+  // =======================================================================
+  console.log('\n6. THE WAY THROUGH runs once, and it runs BEFORE the first write');
+  // =======================================================================
+  //
+  // Plan 4b Task 3b. The claim is made from the same place `setShell` is, and
+  // the ORDER is the whole point: a vector mined at mainnet's Argon2id cost and
+  // then refused for want of a voucher is work spent on nothing, and the
+  // boundary the player is shown while the claim runs is only honest if no
+  // write has already been refused underneath it.
+  //
+  // `rpcCalls` is an ordered list of every method this window called, so the
+  // claim landing before the first `submit_reply` is a fact about the wire and
+  // not about React state.
+  {
+    // (a) The first launch of a fresh install: nobody has vouched for this
+    //     node's identity, and the game's sponsor has a standing offer open.
+    //
+    //     THE 1.2 s HOLD IS LOAD-BEARING, not padding. Without it the order
+    //     check below passed even for a version that built the sea FIRST — a
+    //     local node answers three sponsorship calls faster than one Argon2id
+    //     mine finishes, so the claim landed first by accident. See
+    //     `Scenario.sponsorshipDelayMs`.
+    const granted = await observe({
+      sponsorship: 'granted', sponsorshipDelayMs: 1_200, awaitWrite: true, settleMs: 200,
+    });
+    const claimAt = granted.rpcCalls.indexOf('claim_sponsorship_offer');
+    const writeAt = granted.rpcCalls.indexOf('submit_reply');
+    check('a newcomer nobody has vouched for claims the standing offer',
+      claimAt >= 0, granted.rpcCalls);
+    check('NON-DEGENERACY: and the window really did go on to write',
+      writeAt >= 0 && reachedWater(granted, room), granted.submitted);
+    check('THE ORDER: the claim is made BEFORE the first write, not after it',
+      claimAt >= 0 && writeAt >= 0 && claimAt < writeAt, { claimAt, writeAt });
+    check('...exactly once, however many writes follow',
+      granted.rpcCalls.filter((m) => m === 'claim_sponsorship_offer').length === 1,
+      granted.rpcCalls.filter((m) => m === 'claim_sponsorship_offer').length);
+
+    // WHAT THE PLAYER ACTUALLY SEES, off the rendered DOM. Every other check in
+    // this section is about the wire; this is the one that fails if `App.tsx`
+    // never wires the helper's progress into the standing — a boundary saying
+    // one sentence for a minute, which is the "sits there" this task exists to
+    // remove. The lines are compared against `wayIn.PASSAGE_BODY` rather than
+    // retyped, so the copy has exactly one home.
+    check('the boundary was drawn while the claim ran',
+      granted.edgeLines.length > 0, granted.edgeLines);
+    check('...and it MOVED — more than one line was shown, in the beats\' own order',
+      granted.edgeLines.length >= 2, granted.edgeLines);
+    check('...each of them a line this client owns, never the helper\'s own words',
+      granted.edgeLines.every((l) => PASSAGE_BODY_LINES.includes(l) || l === EDGE_BODY),
+      granted.edgeLines);
+    check('...ending on the beat that says someone is bringing them through',
+      granted.edgeLines.includes(PASSAGE_BODY.turning), granted.edgeLines);
+    check('...and the boundary is GONE once they are swimming',
+      granted.edgeAtEnd === false, granted.edgeAtEnd);
+
+    // (b) A returning player. The node reports a vouch on the first ask, so
+    //     `ensureSponsored` returns before reporting a phase and nothing is
+    //     claimed — which is what keeps a boundary from flashing at every
+    //     launch. (This is also the default every scenario above ran under.)
+    // The same 1.2 s hold, for the same reason: without it the flash a version
+    // that raised the boundary UP FRONT would produce is shorter than one 10 ms
+    // sample, and the check below passed for exactly that mutation.
+    const already = await observe({
+      sponsorship: 'already', sponsorshipDelayMs: 1_200, awaitWrite: true, settleMs: 200,
+    });
+    check('a swimmer the water already holds a vouch for claims nothing',
+      !already.rpcCalls.includes('claim_sponsorship_offer'), already.rpcCalls);
+    // THE FLICKER CHECK. `App.tsx` enters the passage from the helper's own
+    // progress reports rather than setting it before the call, precisely so
+    // that a returning player — every launch after the first — is never shown a
+    // boundary for the length of one RPC.
+    check('...and is never shown a boundary at all, not even for an instant',
+      already.edgeLines.length === 0 && already.edgeAtEnd === false,
+      { lines: already.edgeLines, atEnd: already.edgeAtEnd });
+    check('...and it cost them exactly one question',
+      already.rpcCalls.filter((m) => m === 'get_sponsorship_status').length === 1,
+      already.rpcCalls.filter((m) => m === 'get_sponsorship_status').length);
+    check('...and they are in the water', reachedWater(already, room), already.submitted);
+
+    // (c) THE ONE THAT MUST NOT COST A PLAYER THE GAME. Nothing is open, so the
+    //     claim fails. The window must still reach the water — the writes will
+    //     be refused and `wayIn.ts` will say so, which is exactly the state this
+    //     client shipped in before the claim existed. A failure here that
+    //     stopped the window would have traded a partial game for none.
+    const none = await observe({ sponsorship: 'none', awaitWrite: true, settleMs: 200 });
+    check('with no offer open the window STILL reaches the water',
+      reachedWater(none, room), none.submitted);
+    check('...having looked for one and found nothing to claim',
+      none.rpcCalls.includes('list_sponsorship_offers')
+      && !none.rpcCalls.includes('claim_sponsorship_offer'), none.rpcCalls);
   }
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

@@ -40,7 +40,7 @@
  */
 import { chainSea, type ChainSea } from './chainSea';
 import { wildSeedFrom } from './demoSea';
-import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
+import { afterWrite, AT_THE_EDGE, OPEN_WATER, type Standing } from './wayIn';
 import type { SendFailure } from '../lib/shoalSend';
 import { encodeCheckpoint, encodeEat, encodePresence } from '../lib/shoalWire';
 import { cellCentre, cellIndex } from '../lib/bloom';
@@ -937,7 +937,7 @@ async function anAcceptedWriteReportsAcceptance(): Promise<void> {
   // case that matters is a player who WAS at the edge and has just been let in
   // by someone in the water, which is the whole point of spec §2.16's "letting
   // one in is an in-game act". Folded from the edge, the same report lifts it.
-  let letIn = afterWrite({ atTheEdge: true }, seen[0] ?? null);
+  let letIn = afterWrite(AT_THE_EDGE, seen[0] ?? null);
   for (const f of seen.slice(1)) letIn = afterWrite(letIn, f);
   check('a client that was at the edge is in the water the moment a write lands',
     letIn.atTheEdge === false, letIn);

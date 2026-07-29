@@ -122,6 +122,38 @@ the edge of the water for `'not-sponsored'` and for nothing else. A write that i
 *accepted* clears the standing, so a player vouched in mid-session is simply let in.
 Verified against a real local testnet node answering a real -32015.
 
+**The granting half now exists, and it cost almost none of what this section
+predicted.** Plan 4b Task 3b: `src/ui/passage.ts`, five lines around
+`@swimchain/react`'s `ensureSponsored` — the same wrapper reef
+(`reefEngine.ts:950`), chess (`chessGame.ts:97`), the trench (`trenchNet.ts:254`) and
+chips (`host.ts:301`) already are. `App.tsx` calls it once, after a configuration
+exists and before the sea is built, so no vector is mined at mainnet cost only to be
+refused. The helper's three progress phases are folded by `wayIn.passageFor` into
+three beats, and the boundary's second line follows them — so a newcomer watches the
+edge RESOLVE rather than sit still. **No wire kind, no new preimage, no second mining
+path, no consensus change of any kind.**
+
+THE COSTING BELOW WAS WRONG AND IS KEPT ONLY SO NOBODY RE-DERIVES IT. It described
+the heavy in-game "open hand" design — a swimmer already in the water publishing an
+offer as a Shoal message — which really would need all five of those things. That is
+a legitimate future mechanic and it is not what onboarding needs: the standing
+auto-approve offer minted in advance by the game-sponsor node is machinery this repo
+already ships, and it is what every other game here uses. What actually had to be
+decided was smaller and is recorded in `passage.ts`: `ensureSponsored` takes a
+`SwimchainRpc` (a class with private fields, so a duck-typed adapter does not
+compile), and this client deliberately does not use that class — resolved the way the
+trench resolves it, by rebuilding one from the shell's decoded header.
+
+Point 4 below is the one that stayed true and is now load-bearing: mainnet refuses
+auto-approve offers from everyone except the operator-designated game sponsor
+(`methods.rs:17176-17194`, allowlist at `src/sponsorship/genesis_list.rs:121-124`), so
+`passage.GAME_SPONSOR` defaults to that key rather than to a testnet root, and
+`passage.test.ts` section 1 reads the Rust file and fails if the two ever disagree.
+
+<details><summary>The original costing (superseded — describes the "open hand"
+mechanic, not onboarding)</summary>
+
+
 **What is still missing: actually granting a vouch.** The node side exists in full —
 `create_sponsorship_offer` / `list_sponsorship_offers` / `claim_sponsorship_offer` /
 `approve_sponsorship_claim` (`src/rpc/methods.rs:1197-1204`), with params in
@@ -151,12 +183,15 @@ mining path, and a sponsor-side gesture. Deliberately **not** attempted in plan 
 a grant flow that looks like it works and silently does not is worse than a clear
 "someone already swimming has to bring you through".
 
-**Also still true:** the way-in surface is only reachable where a chain sea is, and
-`buildChainSea` is gated on `import.meta.env.DEV` (`App.tsx`, deliberately — it reads a
-cookie and a weak key derivation out of the address bar). A shipped build folds a demo sea
-and never writes, so it never sees -32015 either. Whatever eventually gives the shipped
-shell a real room (open item 7, mainnet provisioning) is what makes this surface reachable
-by a real downloader; the recognition logic itself is shell-agnostic and needs no change.
+</details>
+
+
+**No longer true, and recorded because the paragraph here used to say it:** the way-in
+surface was once reachable only in a dev build, because the only configuration path was
+the DEV-gated query parameters. Plan 4b Task 2 added the shell path (`shellConfig.ts`) and
+Task 3b the grant, so a shipped build now reaches real water, claims a vouch, and sees
+both halves of §2.16 without an address bar. The DEV gate is unchanged and still does its
+own separate job — keeping `browserIdentity.ts` out of the bundle.
 
 ### 12. The shell computes a checkpoint every hour and throws it away — **RESOLVED 2026-07-28**
 
@@ -388,6 +423,17 @@ diverged (this one adds an event-loop yield and encodes regtest's flat-4-bit rul
 others do not carry), so extraction means reconciling five implementations against the Rust.
 
 **Do it before plan 2c adds a sixth caller**, as its own change with its own review.
+
+**A sixth copy was nearly added and was not** (plan 4b Task 3b). The obvious way to give
+the Shoal a sponsorship claim was to port `ensureSponsored` into `src/ui/` — which would
+have duplicated the claim PoW and the claim signature preimage a sixth time, in the one
+client that has no `@swimchain/react` dependency. Instead the dependency was added and the
+helper called, the way the trench does: `src/ui/passage.ts`. The cost of that choice,
+measured: the production bundle grew 275.16 kB → 285.80 kB, plus a `pow.worker` chunk and
+its 214 kB WASM that Vite emits from the package's barrel and **nothing in the Shoal ever
+fetches** (the main bundle contains no reference to it; verified by grep). Cheap for a
+desktop app that already ships a node binary, and the alternative was making this item
+worse.
 
 ### 7. Mainnet provisioning
 

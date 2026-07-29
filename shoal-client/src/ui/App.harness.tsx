@@ -25,12 +25,16 @@
  *                    THE CALLER CHOOSES — this is the whole point. A real cold
  *                    start waits on `get_rpc_config` for as long as the node
  *                    takes to bind RPC, up to 120 s.
- *   `fetch`          a node that answers JSON-RPC.
+ *   `fetch`          a node that answers JSON-RPC — INCLUDING the three
+ *                    sponsorship methods, so a window can be watched trying to
+ *                    have its swimmer brought through (`Scenario.sponsorship`).
  *   `WebSocket`      a socket that opens and then says nothing.
  *
  * Everything between them is shipping code: the real `App`, the real
  * `shellConfig`, `chooseSeaSource`, `seaFrom`, `chainSea`, `shoalSend` (real
- * Argon2id, at the node's own regtest difficulty), and the real React.
+ * Argon2id, at the node's own regtest difficulty), the real `openTheWay` and
+ * through it the real `ensureSponsored` out of `@swimchain/react`, and the real
+ * React.
  *
  * ## WHAT IS OBSERVED, AND WHY IT IS NOT "the scene state"
  *
@@ -73,6 +77,24 @@ export interface Observation {
    * from somewhere that is not the shell — shows up here as a non-empty list.
    */
   readonly rpcCalls: string[];
+  /**
+   * EVERY DISTINCT SECOND LINE THE BOUNDARY DREW, in the order it drew them —
+   * sampled straight off the rendered DOM, not read out of React state.
+   *
+   * This is the only observation in this file that is about what a PLAYER sees.
+   * It exists because the rest of the way-in is proved in pieces that cannot
+   * touch each other: `passage.test.ts` proves the helper reports three phases,
+   * `wayIn.test.ts` proves each phase folds to a line — and neither of them can
+   * fail if `App.tsx` never wires the one to the other, which would leave a
+   * player staring at a boundary that says the same sentence for a minute.
+   *
+   * Empty when no boundary was ever drawn, which is the correct and common case
+   * for a swimmer the water already holds a vouch for.
+   */
+  readonly edgeLines: string[];
+  /** Whether the boundary was still on screen when the window was torn down.
+   *  A swimmer who was brought through must not be looking at one. */
+  readonly edgeAtEnd: boolean;
 }
 
 export interface Scenario {
@@ -114,6 +136,41 @@ export interface Scenario {
   /** A node that fails `get_identity_info` this many times before answering —
    *  a transient hiccup on a node that is also busy starting up. */
   readonly identityFailsTimes?: number;
+  /**
+   * WHAT THE WATER ALREADY THINKS OF THIS SWIMMER, and what is open for them.
+   *
+   *   `'already'`  the node reports a vouch on the first ask. `ensureSponsored`
+   *                returns before reporting a phase, nothing is claimed. THE
+   *                DEFAULT, because it is what every launch after the first
+   *                looks like and it leaves the scenarios in this file about
+   *                what they were about.
+   *   `'granted'`  not vouched for, one open offer from this game's sponsor,
+   *                scoped to this water. Claimed, then the node reports the
+   *                vouch. Costs one real 4 s poll — `ensureSponsored` sleeps
+   *                before its first re-ask — so it is used in one scenario.
+   *   `'none'`     not vouched for and nothing open. The claim fails; the
+   *                window must still reach the water.
+   */
+  readonly sponsorship?: 'already' | 'granted' | 'none';
+  /**
+   * HOLD THE FIRST SPONSORSHIP QUESTION OPEN FOR THIS LONG, so the window
+   * spends a measurable interval mid-claim.
+   *
+   * NOT DECORATION — two checks in `App.test.ts` section 6 were VACUOUS without
+   * it, and both survived a deliberate mutation until it existed:
+   *
+   *  - "the claim is made BEFORE the first write" passed even for a version
+   *    that built the sea FIRST, because a local node answers three sponsorship
+   *    calls faster than one Argon2id mine finishes. The order was right by
+   *    accident, on this machine, and would not have been on a slower one.
+   *  - "a returning player is never shown a boundary" passed even for a version
+   *    that raised one up front, because the flash was shorter than one 10 ms
+   *    sample.
+   *
+   * With a real delay, the wrong order and the flash both last long enough to
+   * be observed, and both mutations die.
+   */
+  readonly sponsorshipDelayMs?: number;
 }
 
 /** Nothing here mines for longer than this even on a slow machine; a scenario
@@ -130,6 +187,9 @@ const SIG_HEX = Array.from({ length: 64 }, (_, i) => (i * 5 + 11) & 0xff)
 
 /** The water's display name and namespace, imported rather than retyped. */
 import { WATER_APP, WATER_NAME } from './shellConfig';
+/** The sponsor this client pins — imported, so an offer this harness invents
+ *  cannot be one the shipping code would never have claimed. */
+import { GAME_SPONSOR } from './passage';
 import { App } from './App';
 
 function sleep(ms: number): Promise<void> {
@@ -187,6 +247,12 @@ export async function observe(s: Scenario): Promise<Observation> {
   let askedShell = false;
   let listings = 0;
   let identityAsks = 0;
+  const sponsorship = s.sponsorship ?? 'already';
+  /** Flips true once a claim has been accepted, which is what makes the node's
+   *  answer to the NEXT `get_sponsorship_status` change — so "let in" is
+   *  something the window had to earn here, not a constant. */
+  let vouched = sponsorship === 'already';
+  let statusAsks = 0;
 
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: `http://localhost/${s.search ?? ''}`,
@@ -251,6 +317,27 @@ export async function observe(s: Scenario): Promise<Observation> {
       }
       case 'get_content':
         return ok({ content_id: req.params.content_id });
+      case 'get_sponsorship_status':
+        // Only the FIRST one is held: the later ones are the approval poll, and
+        // slowing those would only lengthen the run without observing anything.
+        if (statusAsks++ === 0 && s.sponsorshipDelayMs) await sleep(s.sponsorshipDelayMs);
+        return ok({ has_sponsorship: vouched });
+      case 'list_sponsorship_offers':
+        return ok({
+          offers: sponsorship === 'granted'
+            ? [{
+                offer_id: '5a'.repeat(16),
+                sponsor_pubkey: GAME_SPONSOR,
+                auto_approve: true,
+                slots_remaining: 25,
+                requirements: { min_pow_difficulty: 4 },
+                space_scope: SHOAL_SPACE,
+              }]
+            : [],
+        });
+      case 'claim_sponsorship_offer':
+        vouched = true;
+        return ok({ claim_id: 'claim-1' });
       case 'sign_message':
         return ok({ signature: SIG_HEX, public_key: NODE_PUBKEY });
       case 'get_info':
@@ -312,6 +399,16 @@ export async function observe(s: Scenario): Promise<Observation> {
   const root = createRoot(dom.window.document.getElementById('root') as unknown as Element);
   root.render(createElement(App));
 
+  // Sample the boundary's second line off the real DOM. 10 ms is comfortably
+  // finer than any beat — the shortest of them spans a proof-of-work mine and a
+  // round trip — so a line that was drawn cannot be missed between samples.
+  const edgeLines: string[] = [];
+  const sampler = setInterval(() => {
+    const p = dom.window.document.querySelector('.shoal-edge-body');
+    const line = p?.textContent ?? null;
+    if (line !== null && line !== '' && edgeLines[edgeLines.length - 1] !== line) edgeLines.push(line);
+  }, 10);
+
   const pressKey = () => {
     if (!s.press) return;
     dom.window.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: s.press.key }));
@@ -331,11 +428,13 @@ export async function observe(s: Scenario): Promise<Observation> {
 
   await sleep(s.settleMs);
 
+  clearInterval(sampler);
+  const edgeAtEnd = dom.window.document.querySelector('.shoal-edge') !== null;
   root.unmount();
   dom.window.close();
   for (const [k, d] of Object.entries(saved)) {
     if (d === undefined) delete g[k]; else Object.defineProperty(g, k, d);
   }
 
-  return { submitted, sockets, askedShell, rpcCalls };
+  return { submitted, sockets, askedShell, rpcCalls, edgeLines, edgeAtEnd };
 }

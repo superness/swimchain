@@ -25,8 +25,12 @@
  * place with no way of saying what would change it is a dead end. The words
  * live in `wayIn.ts` and are held to the diegetic rule by name in
  * `wayIn.test.ts`; the surface itself is water, a boundary, and one small fish
- * circling on the wrong side of it. It appears for one classified failure and
- * for nothing else — see `wayIn.afterWrite`.
+ * circling on the wrong side of it. It appears for one classified failure —
+ * see `wayIn.afterWrite` — and for one other thing: while this window is
+ * actively trying to have the player brought through (`passage.ts`), when its
+ * second line follows the attempt beat by beat instead of sitting still. Both
+ * are asked through `wayIn.showsTheEdge`, which is why this page holds no rule
+ * of its own about when the boundary is drawn.
  *
  * Two developer affordances survive, both wordless:
  *   - a dim dot in the bottom-right corner, and F1, toggle Task 1's
@@ -113,7 +117,8 @@ import { type ChainSea } from './chainSea';
 import { chooseSeaSource, retryDelayMs, seaFrom } from './seaChoice';
 import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
 import { TheEdge } from './TheEdge';
-import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
+import { openTheWay } from './passage';
+import { afterPassage, afterWrite, enterPassage, OPEN_WATER, showsTheEdge, type Standing } from './wayIn';
 import { identityFromLabel } from './browserIdentity';
 import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
 import { fitBodies, fitScale, followCamera, reckonSmooth, screenToWorld, type Camera, type Viewport } from './render';
@@ -493,8 +498,53 @@ export function App() {
       }
       if (!alive) return;
       if (cfg !== null) {
-        // THE ONLY THING THAT HAPPENS ON SUCCESS. There is deliberately no scene
-        // change alongside it: the frame effect re-runs on `shell` and asks
+        // THE WAY THROUGH, ONCE, BEFORE ANYTHING IS WRITTEN (plan 4b, Task 3b).
+        //
+        // `openTheWay` claims the standing offer the game's sponsor keeps open,
+        // exactly as reef, chess, chips and the trench do. It runs HERE — after
+        // a configuration exists, before `setShell` builds the sea — for one
+        // reason: this is the last moment at which no write has happened yet.
+        // The sea publishes its opening vector on the first frame after it is
+        // built, and a vector mined at mainnet's Argon2id cost only to be
+        // refused is work spent on nothing.
+        //
+        // IT IS AWAITED AND IT CANNOT COST THE PLAYER THE WATER. `openTheWay`
+        // never throws and never blocks longer than its own timeout, the
+        // offline sea keeps folding and drawing underneath the whole time (this
+        // is the same window a 120 s `get_rpc_config` already spends there), and
+        // `setShell` runs on both outcomes. A player nobody could bring through
+        // still gets a sea — they get the one they would have had before this
+        // existed, with the edge up and `wayIn.ts` saying why.
+        //
+        // A RETURNING PLAYER PAYS ONE RPC AND SEES NOTHING. `ensureSponsored`
+        // returns before reporting a single phase when the water already holds a
+        // vouch, so the standing is never touched and no boundary is drawn. That
+        // is why the passage is entered from `onPhase` rather than set up front:
+        // setting it before the call would flash a boundary at every launch.
+        //
+        // WRAPPED, THOUGH NEITHER LINE INSIDE IS SUPPOSED TO THROW. `openTheWay`
+        // catches its own failures by contract, and `cfg.signer` is a promise
+        // `shellConfig` has already resolved. But this whole function is floated
+        // (`void ask(0)`) and it is the only thing that ever calls `setShell`, so
+        // an exception escaping here would not merely skip the claim — it would
+        // strand the window on the offline sea permanently, with no retry
+        // scheduled and nothing said, which is precisely the class of silent
+        // dead end `retryDelayMs` was written to remove.
+        try {
+          const signer = await cfg.signer;
+          const letIn = await openTheWay(cfg.auth, signer, cfg.spaceId, (phase) => {
+            if (!alive) return;
+            setStanding((s) => enterPassage(s, phase));
+          });
+          if (!alive) return;
+          setStanding((s) => afterPassage(s, letIn));
+        } catch (e) {
+          console.error('[shoal] the way through:', e);
+        }
+        if (!alive) return;
+        // THE OTHER THING THAT HAPPENS ON SUCCESS, AND THE ONE THAT MATTERS.
+        // It runs whatever the claim did. There is deliberately no
+        // scene change alongside it: the frame effect re-runs on `shell` and asks
         // `chooseSeaSource` again, which answers `'shell'` whatever offline sea
         // was on screen. A second `setScene` here was the lockout.
         setShell(cfg);
@@ -951,7 +1001,7 @@ export function App() {
       {/* THE EDGE OF THE WATER (spec §2.16). Over the live canvas, never
           instead of it: the sea keeps folding and drawing underneath, because
           a player who cannot get in has to see a place, not an error. */}
-      {standing.atTheEdge && <TheEdge />}
+      {showsTheEdge(standing) && <TheEdge standing={standing} />}
       {typing !== null && (
         // A bare line with a caret. No label, no placeholder, no send button —
         // the diegetic rule holds here too, and there is nothing to say about

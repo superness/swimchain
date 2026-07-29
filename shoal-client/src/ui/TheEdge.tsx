@@ -30,11 +30,20 @@
  *
  * ## The words
  *
- * Two lines, and they are not written here — they are `EDGE_TITLE` and
- * `EDGE_BODY` in `wayIn.ts`, where `wayIn.test.ts` holds them to spec §1.1's
- * diegetic rule by name. A string typed straight into JSX is a string nothing
- * checks, and this is the only player-facing copy in the client apart from a
- * player's own speech.
+ * Two lines, and they are not written here — they are `EDGE_TITLE` and the
+ * `bodyFor` of the standing, in `wayIn.ts`, where `wayIn.test.ts` holds every
+ * one of them to spec §1.1's diegetic rule by name. A string typed straight
+ * into JSX is a string nothing checks, and this is the only player-facing copy
+ * in the client apart from a player's own speech.
+ *
+ * THE SECOND LINE CHANGES WHILE THE WATER IS BEING OPENED. `wayIn.bodyFor`
+ * returns the beat of an attempt in flight, or the standing condition when
+ * there is none, and this layer draws whichever it gets. The `key` on that
+ * paragraph is load-bearing rather than React housekeeping: it makes each new
+ * line a NEW element, so `shoal-edge-line-in` runs again and one sentence
+ * dissolves into the next instead of snapping. A boundary whose words change
+ * without moving reads as a page reloading; one that breathes reads as
+ * something happening to the player.
  *
  * ## Why a `<style>` element rather than inline styles
  *
@@ -47,7 +56,7 @@
  * scoped under one `.shoal-edge` root so nothing here can reach the canvas.
  */
 import type { CSSProperties } from 'react';
-import { EDGE_BODY, EDGE_TITLE } from './wayIn';
+import { bodyFor, EDGE_TITLE, type Standing } from './wayIn';
 
 /** How far, in px, the player's fish circles from the centre of its orbit.
  *  Small — this is a fish going nowhere, not a patrol. */
@@ -139,11 +148,18 @@ const CSS = `
   font: 400 14px/1.62 ui-sans-serif, system-ui, sans-serif;
   color: rgba(140, 178, 191, 0.86);
   text-shadow: 0 1px 10px rgba(0, 12, 18, 0.9);
+  animation: shoal-edge-line-in 900ms ease-out both;
 }
 
 @keyframes shoal-edge-in {
   from { opacity: 0; }
   to   { opacity: 1; }
+}
+/* One sentence dissolving into the next, not snapping. Driven by the React
+   key on the paragraph — see the module header. */
+@keyframes shoal-edge-line-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes shoal-edge-drift {
   from { transform: translateX(0); }
@@ -165,6 +181,7 @@ const CSS = `
   .shoal-edge-wave-far,
   .shoal-edge-wave-near,
   .shoal-edge-orbit,
+  .shoal-edge-body,
   .shoal-edge-beat { animation: none; }
 }
 `;
@@ -227,7 +244,8 @@ function Fish() {
  * see `wayIn.afterWrite` for which of the three kinds of failed write gets
  * here and why the other two must not.
  */
-export function TheEdge() {
+export function TheEdge({ standing }: { standing: Standing }) {
+  const body = bodyFor(standing);
   return (
     <div className="shoal-edge" style={ROOT}>
       <style>{CSS}</style>
@@ -255,7 +273,7 @@ export function TheEdge() {
       </div>
       <div className="shoal-edge-copy">
         <p className="shoal-edge-title">{EDGE_TITLE}</p>
-        <p className="shoal-edge-body">{EDGE_BODY}</p>
+        <p className="shoal-edge-body" key={body}>{body}</p>
       </div>
     </div>
   );
