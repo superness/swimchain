@@ -23,7 +23,7 @@ import { useMemo } from 'react';
 import type { ChipsState } from './lib/chipsEngine';
 import { projectedCrumbs, soggyLook } from './lib/sogProjection';
 import { tunnelDepth, bandsAround, type TunnelBand } from './lib/tunnelDepth';
-import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, BURN_REFUND_NUM, BURN_REFUND_DEN, type Upgrade } from './lib/chipsConst';
+import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, type Upgrade } from './lib/chipsConst';
 import { DOUBLE_DIP_RARITY } from './lib/cooking';
 import { vendorOf, jarAvailable, recruitsAt, stallStatus, type CrewMember } from './lib/crew';
 import { CritterArt } from './Crew';
@@ -633,7 +633,7 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
  * shelf renders, so the two entry points can never drift; arming feed mode
  * closes the sheet so the fryers are visible for the feeding.
  */
-export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches, onDecline }: {
+export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches }: {
   vendor: CrewMember;
   jars: Upgrade[];
   owned: Set<string>;
@@ -651,9 +651,6 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
    *  to look for it. App decides which vendor gets which; an empty list
    *  renders nothing. */
   switches?: { key: string; label: string; hint: string; on: boolean; onToggle: () => void }[];
-  /** Refuse a jar and take 70% of its price. `null` when the table cannot —
-   *  a jar already refused, or a chain rung whose prefix is unowned. */
-  onDecline?: ((key: string) => void) | null;
 }) {
   const status = stallStatus(vendor.id, owned, dipIndex);
   return (
@@ -683,16 +680,6 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
                   capped={u.cost > bowlCap}
                   onJar={onJar}
                 />
-                {/* THE ALTERNATIVE TO TAKING IT. Not a sale — you never own
-                    the jar. You give it up for the run and the crumbs land
-                    now, which is a rush: less game, sooner. It sits UNDER the
-                    jar it refuses because it is a second answer to the same
-                    question, and no crumbs are required to press it. */}
-                {onDecline && (
-                  <button type="button" className="decline" onClick={() => onDecline(u.key)}>
-                    <span>or take <strong>{compact(Math.floor(u.cost * BURN_REFUND_NUM / BURN_REFUND_DEN))}</strong> and never see it again</span>
-                  </button>
-                )}
               </li>
             ))}
           </ul>
