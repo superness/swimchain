@@ -2242,6 +2242,22 @@ h1, h2, h3, p { margin: 0; }
   font-size: 9px; letter-spacing: .06em; color: #b6a385;
 }
 
+/* CHAR — the descent's currency. Reads like salt (same column, same rhythm)
+   but burnt rather than cured: this is scraped off a bowl you broke, and it
+   buys rule changes rather than bigger numbers. It rendered nowhere at all
+   until 2026-07-29, so the first player to earn a grain never knew. */
+.hood-char { text-align: right; }
+.hood-char strong {
+  display: block; font-family: var(--chalk); font-weight: 700;
+  font-variant-numeric: tabular-nums; font-size: clamp(14px, 1.7vw, 25px);
+  color: #ffb27a;                       /* the lava/deep-band ember, not salt's bone white */
+  text-shadow: 0 0 10px rgba(255, 120, 40, .55);
+}
+.hood-char em {
+  display: block; font-style: normal; font-family: var(--chalk);
+  font-size: 9px; letter-spacing: .06em; color: #c08a63;
+}
+
 /* the standing offer, once the floor has been struck */
 /* A card in the counter column (App.tsx), NOT an overlay. It used to be
    `position: fixed` at a hand-picked right/top, which landed it on the depth

@@ -71,13 +71,24 @@ const fold = (rs: ChipsReply[]) => foldChips(header, TABLE, rs, new Map());
   const ok = fold([...deep, reply('broke')]);
   check('`broke` with no argument is accepted', ok.moves[ok.moves.length - 1].outcome === 'broke',
     ok.moves[ok.moves.length - 1]);
-  // A body that tries to NAME its band must not parse — that is the whole
-  // anti-forgery property. If this ever passes, a fresh table can claim the
-  // lava and mint 13 char for it.
+  // THE NUMBER IS A PAYMENT, NEVER A BAND — the anti-forgery property, moved
+  // to where it now lives. The body carries what the chip was worth; the FOLD
+  // still takes the band from `state.broken` alone. If this ever regresses, a
+  // fresh table could claim the lava and mint 13 char for it.
   const named = fold([...deep, reply('broke 5')]);
-  check('`broke <band>` does NOT parse — the client may not name its depth',
-    named.moves[named.moves.length - 1].outcome === 'rejected-parse',
-    named.moves[named.moves.length - 1]);
+  check('a body naming "5" still breaks band 0, not band 5', named.broken === 1, named.broken);
+  check('...and mints only band 0 char', named.char === CHAR_PER_BAND[0], named.char);
+
+  // THE CHIP IS SPENT. A break must credit nothing — not crumbs, not lifetime.
+  // Banking the winning chip as well is what carried a live player past five
+  // unfought bands in one move (2026-07-29).
+  const before = fold(deep);
+  const after = fold([...deep, reply('broke 4826726400')]);
+  check('a break pays no crumbs', after.crumbs === before.crumbs,
+    { before: before.crumbs, after: after.crumbs });
+  check('a break adds no lifetime', after.lifetimeChips === before.lifetimeChips,
+    { before: before.lifetimeChips, after: after.lifetimeChips });
+  check('but the cost is recorded', after.paidToBosses === 4826726400, after.paidToBosses);
 }
 
 /* ── deep enough ──────────────────────────────────────────────────────── */

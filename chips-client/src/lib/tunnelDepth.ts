@@ -82,7 +82,32 @@ const BEYOND_LINES = [
   'dip all the way down',
 ];
 
-export function tunnelDepth(dipIndex: number, lifetimeChips: number): TunnelDepth {
+/**
+ * THE DESCENT IS GATED BY THE BOSSES, NOT BY LIFETIME.
+ *
+ * `broken` is how many deep bands you have actually beaten. Depth may reach the
+ * band below your last kill and no further, so a band you have not earned is
+ * never drawn under you.
+ *
+ * This was missing, and the porcelain made it visible in the worst way. To beat
+ * that boss you must land ONE dip worth more than everything else banked this
+ * run — an enormous dip, by construction. Depth read `lifetimeChips` alone, so
+ * the very dip the fight demanded (4.8 BILLION crumbs, live, 2026-07-29) blew
+ * lifetime past all six band floors at once and dropped the player through The
+ * Table, The Floor, The Dirt and The Lava out the far side, having fought
+ * exactly one boss. Operator: "I went from porcelain and that sent me
+ * immediately past everything."
+ *
+ * The fight was self-defeating: winning it was the thing that skipped the rest
+ * of the descent. Progress belongs to the boss ("an ACT, like having to beat a
+ * boss to progress" — the design), and lifetime only ever positions you WITHIN
+ * the band you have earned.
+ */
+export function tunnelDepth(
+  dipIndex: number,
+  lifetimeChips: number,
+  broken = Number.POSITIVE_INFINITY,
+): TunnelDepth {
   const i = Math.max(0, Math.min(LAST, Math.floor(dipIndex)));
   const life = Math.max(0, lifetimeChips);
 
@@ -100,8 +125,20 @@ export function tunnelDepth(dipIndex: number, lifetimeChips: number): TunnelDept
   let k = 0;
   let lo = LAST_MIN;
   while (life >= lo * 2) { lo *= 2; k++; }
-  const frac = Math.min(0.999, Math.max(0, (life - lo) / lo));
-  const layer = LAST + k;
+  let frac = Math.min(0.999, Math.max(0, (life - lo) / lo));
+  let layer = LAST + k;
+
+  // THE GATE. `broken` bands beaten earns the bands up to and including the
+  // next unbroken one — you stand at the face of the band you are about to
+  // fight, never inside the one after it. Default Infinity so callers that
+  // legitimately draw an ungated shaft (the pre-game doorway) are unchanged.
+  if (Number.isFinite(broken)) {
+    const earned = LAST + Math.max(0, Math.floor(broken)) + 1;
+    if (layer > earned) {
+      layer = earned;
+      frac = 0.999; // pinned at the floor of the band you have not yet broken
+    }
+  }
   return { layer, frac, depth: layer + frac };
 }
 

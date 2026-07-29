@@ -79,7 +79,7 @@ export type QueuedMove =
   | { id: number; tableId: string; author: string; kind: 'tip'; ms: number; sentAt?: number }
   /** One band of the descent. No argument — the fold works out WHICH band
    *  from state it can see, so there is nothing here to forge. */
-  | { id: number; tableId: string; author: string; kind: 'broke'; ms: number; sentAt?: number };
+  | { id: number; tableId: string; author: string; kind: 'broke'; paid: number; ms: number; sentAt?: number };
 
 /** What a caller supplies to `enqueue` — everything but the id, which the
  *  queue itself assigns, and `sentAt`, which only a successful submission may
@@ -207,7 +207,7 @@ export function loadQueue(): QueuedMove[] {
     if (!raw) return [];
     const rows = JSON.parse(raw) as {
       id: unknown; tableId: unknown; author: unknown; kind: unknown; sentAt?: unknown;
-      key?: unknown; amount?: unknown; ms?: unknown;
+      key?: unknown; amount?: unknown; ms?: unknown; paid?: unknown;
       chip?: { ms: unknown; bits: unknown; nonce: unknown };
     }[];
     if (!Array.isArray(rows)) return [];
@@ -242,7 +242,7 @@ export function loadQueue(): QueuedMove[] {
         r.kind === 'broke'
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
       ) {
-        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'broke', ms: r.ms, ...sentAt });
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'broke', paid: typeof r.paid === 'number' ? r.paid : 0, ms: r.ms, ...sentAt });
       } else if (
         r.kind === 'burn' && typeof r.key === 'string'
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
@@ -294,7 +294,7 @@ export function saveQueue(q: QueuedMove[]): void {
           : m.kind === 'tip'
             ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'tip', ms: m.ms, ...mark }
             : m.kind === 'broke'
-              ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'broke', ms: m.ms, ...mark }
+              ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'broke', paid: m.paid, ms: m.ms, ...mark }
               : m.kind === 'burn'
                 ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'burn', key: m.key, ms: m.ms, ...mark }
                 : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };

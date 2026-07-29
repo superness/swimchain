@@ -179,7 +179,7 @@ function wallDebris(seed: number): { y: number; x: number; s: number; r: number 
  * renders the surface (depth 0), which is also the truth.
  */
 export function TunnelBed({ state }: { state: ChipsState | null }) {
-  const { layer, frac, depth } = tunnelDepth(state?.dipIndex ?? 0, state?.lifetimeChips ?? 0);
+  const { layer, frac, depth } = tunnelDepth(state?.dipIndex ?? 0, state?.lifetimeChips ?? 0, state?.broken ?? 0);
   const bands = bandsAround(depth, 2, 3);
   const left = useMemo(() => wallDebris(0x77aa11), []);
   const right = useMemo(() => wallDebris(0x33cc55), []);
@@ -333,7 +333,7 @@ export function TunnelRead({ state, nowMs, counting, countProgress }: TunnelRead
   const crumbs = projectedCrumbs(state, nowMs);
   const soggy = soggyLook(state, nowMs);
   const atRim = crumbs >= state.bowlCap && crumbs > 0;
-  const { layer } = tunnelDepth(state.dipIndex, state.lifetimeChips);
+  const { layer } = tunnelDepth(state.dipIndex, state.lifetimeChips, state.broken);
 
   return (
     <section
