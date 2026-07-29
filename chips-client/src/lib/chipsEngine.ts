@@ -90,6 +90,10 @@ export interface ChipsState {
   /** Bands broken in THIS run. Resets on a tip and on coming up through a
    *  bowl — you are in a new bowl and you dig out of it again. */
   broken: number;
+  /** Jars REFUSED this run (`burn`). You took 70% of the price in crumbs and
+   *  gave up the jar until the bowl goes over — and, for a chain rung, gave
+   *  up everything above it too, because a buy still needs its prefix. */
+  declined: Set<string>;
   /** The most bands ever broken in one run. Permanent. The char watermark. */
   deepest: number;
   /** Grains of char. Permanent, and capped forever at CHAR_TOTAL. */
@@ -158,46 +162,6 @@ export function authoringMs(body: string): number | null {
 
 const ENTRY = /^(\d+):(\d+):([0-9a-fA-F]{1,16})$/;
 
-
-/**
- * Recompute every upgrade-derived stat from `state.owned`, in catalog-chain
- * order so a chain's deepest rung wins.
- *
- * Buying applies effects incrementally, which is fine because a buy only ever
- * ADDS. Burning removes, and an incremental undo would have to know how to
- * reverse each effect — a rule that drifts the moment a new effect field is
- * added and nobody remembers to teach the undo about it. Recomputing cannot
- * drift: `owned` is the only truth and this is the only reader.
- */
-function applyOwned(state: ChipsState): void {
-  state.bowlCap = START_BOWL_CAP;
-  state.seasoningNum = 1;
-  state.seasoningDen = 1;
-  state.fryers = 1;
-  state.goldenBits = GOLDEN_BITS;
-  state.airtight = false;
-  state.sogBonus = 0;
-  state.doubleDipMod = 0;
-  // Chains first, in order, so a deeper rung overwrites a shallower one;
-  // then the unchained jars, whose effects are independent.
-  const chained = new Set(UPGRADE_CHAINS.flat());
-  const inOrder = [...UPGRADE_CHAINS.flat(), ...Object.keys(UPGRADES).filter((k) => !chained.has(k))];
-  for (const key of inOrder) {
-    if (!state.owned.has(key)) continue;
-    const u = UPGRADES[key];
-    if (!u) continue;
-    if (u.bowlCap !== undefined) state.bowlCap = u.bowlCap;
-    if (u.seasoningNum !== undefined && u.seasoningDen !== undefined) {
-      state.seasoningNum = u.seasoningNum;
-      state.seasoningDen = u.seasoningDen;
-    }
-    if (u.fryers !== undefined) state.fryers = u.fryers;
-    if (u.goldenBits !== undefined) state.goldenBits = u.goldenBits;
-    if (u.airtight) state.airtight = true;
-    if (u.sogBonus !== undefined) state.sogBonus += u.sogBonus;
-    if (u.doubleDipMod !== undefined) state.doubleDipMod = u.doubleDipMod;
-  }
-}
 
 export function parseMove(body: string): ParsedMove | null {
   const ms = authoringMs(body);
@@ -413,7 +377,7 @@ function initialState(): ChipsState {
     crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, crispest: 0,
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
-    broken: 0, deepest: 0, char: 0, bowls: 0,
+    broken: 0, deepest: 0, char: 0, bowls: 0, declined: new Set(),
     goldenBits: GOLDEN_BITS, airtight: false,
     sogBonus: 0, doubleDipMod: 0,
     dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
@@ -458,7 +422,9 @@ export function foldChips(
   // in the same sequence whether the strangers were removed before or after.
   const mine = replies.filter((r) => r.author_id === header.owner);
 
-  for (const reply of orderReplies(mine)) {
+  // Labelled so a nested prefix check can abandon the WHOLE reply rather
+  // than just its inner loop — see the `burn` branch.
+  outer: for (const reply of orderReplies(mine)) {
     const parsed = parseMove(reply.body);
     if (!parsed) {
       state.moves.push({ content_id: reply.content_id, ms: 0, outcome: 'rejected-parse' });
@@ -541,6 +507,7 @@ export function foldChips(
       // bands broken in it are gone with it — you are back at the surface of
       // a new one. `deepest` and `char` are prestige and stay (see `broke`).
       state.broken = 0;
+      state.declined = new Set();
       state.crumbs = 0;
       state.lifetimeChips = 0;
       state.crispest = 0;
@@ -559,37 +526,38 @@ export function foldChips(
     }
 
     if (parsed.kind === 'burn') {
-      /* ── GIVE A JAR BACK, FOR BURN_REFUND OF ITS PRICE ──────────────────
-         Unlimited on purpose. Buy at C, burn at 0.7C — every round trip is a
-         30% loss, so there is no cycle that ends up ahead and nothing needs a
-         cooldown. The refund fraction IS the guard.
+      /* ── REFUSE A JAR, TAKE 70% OF ITS PRICE ────────────────────────────
+         You are not selling something back — you never take it. The jar is
+         gone for the run and the crumbs land now. It is a RUSH: convert a
+         permanent upgrade you have earned the right to buy into immediate
+         spending power, and go faster with less.
 
-         Two refusals. You must own it, and NOTHING OWNED MAY STAND ON IT:
-         chained jars are bought in order and out-of-order buys are rejected,
-         so burning a rung with a later owned rung above it would leave a
-         table that could never re-fold to the same state. The deepest owned
-         rung is always fair game. */
+         It pays for itself because the price is REAL, not nominal. Refusing
+         a chain rung forfeits everything above it — a buy still needs its
+         prefix owned, so declining Seasoning III ends the seasoning ladder
+         at III for the rest of the run. The deeper the rung, the bigger the
+         payout and the more of the game you are giving up for it.
+
+         The gate is simply "could you have been offered this": the jar must
+         exist, you must not already own it, you must not already have
+         refused it, and its chain prefix must be owned. Crumbs are NOT
+         required — that is the whole point of a rush. */
       const jar = UPGRADES[parsed.key];
-      if (!jar || !state.owned.has(parsed.key)) {
+      if (!jar || state.owned.has(parsed.key) || state.declined.has(parsed.key)) {
         state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-unowned', upgradeKey: parsed.key });
         continue;
       }
-      const chain = UPGRADE_CHAINS.find((c) => c.includes(parsed.key));
-      if (chain) {
-        const idx = chain.indexOf(parsed.key);
-        const propped = chain.slice(idx + 1).some((k) => state.owned.has(k));
-        if (propped) {
-          state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-order', upgradeKey: parsed.key });
-          continue;
+      const bchain = UPGRADE_CHAINS.find((c) => c.includes(parsed.key));
+      if (bchain) {
+        const bidx = bchain.indexOf(parsed.key);
+        for (let i = 0; i < bidx; i++) {
+          if (!state.owned.has(bchain[i])) {
+            state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-order', upgradeKey: parsed.key });
+            continue outer;
+          }
         }
       }
-
-      state.owned.delete(parsed.key);
-      // EVERY upgrade-derived stat is recomputed from what is left rather
-      // than un-applied field by field. An incremental undo has to know how
-      // to reverse each effect and would drift the moment one is added;
-      // recomputing cannot drift, because `owned` is the only truth.
-      applyOwned(state);
+      state.declined.add(parsed.key);
       state.crumbs = Math.min(state.bowlCap, state.crumbs + Math.floor(jar.cost * BURN_REFUND_NUM / BURN_REFUND_DEN));
       state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'burned', upgradeKey: parsed.key });
       continue;
@@ -640,6 +608,7 @@ export function foldChips(
         state.bowls += 1;
         state.tips += 1;
         state.broken = 0;
+        state.declined = new Set();
         state.crumbs = 0;
         state.lifetimeChips = 0;
         state.crispest = 0;
@@ -694,6 +663,9 @@ function applyBuy(
   const upgrade = UPGRADES[parsed.key];
   if (!upgrade) return push('rejected-parse');
   if (state.owned.has(parsed.key)) return push('rejected-owned');
+  // Refused this run — the crumbs were taken instead, and the jar is gone
+  // until the bowl goes over.
+  if (state.declined.has(parsed.key)) return push('rejected-owned');
 
   // Chained upgrades must be bought in order.
   const chain = UPGRADE_CHAINS.find((c) => c.includes(parsed.key));

@@ -23,7 +23,7 @@ import { useMemo } from 'react';
 import type { ChipsState } from './lib/chipsEngine';
 import { projectedCrumbs, soggyLook } from './lib/sogProjection';
 import { tunnelDepth, bandsAround, type TunnelBand } from './lib/tunnelDepth';
-import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, type Upgrade } from './lib/chipsConst';
+import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, BURN_REFUND_NUM, BURN_REFUND_DEN, type Upgrade } from './lib/chipsConst';
 import { DOUBLE_DIP_RARITY } from './lib/cooking';
 import { vendorOf, jarAvailable, recruitsAt, stallStatus, type CrewMember } from './lib/crew';
 import { CritterArt } from './Crew';
@@ -633,7 +633,7 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
  * shelf renders, so the two entry points can never drift; arming feed mode
  * closes the sheet so the fryers are visible for the feeding.
  */
-export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches, burnable }: {
+export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches, onDecline }: {
   vendor: CrewMember;
   jars: Upgrade[];
   owned: Set<string>;
@@ -651,9 +651,9 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
    *  to look for it. App decides which vendor gets which; an empty list
    *  renders nothing. */
   switches?: { key: string; label: string; hint: string; on: boolean; onToggle: () => void }[];
-  /** Jars on THIS stall you own and may give back, with what they refund.
-   *  Empty when the vendor has none, or when a chain rung stands on them. */
-  burnable?: { key: string; label: string; refund: number; onBurn: () => void }[];
+  /** Refuse a jar and take 70% of its price. `null` when the table cannot —
+   *  a jar already refused, or a chain rung whose prefix is unowned. */
+  onDecline?: ((key: string) => void) | null;
 }) {
   const status = stallStatus(vendor.id, owned, dipIndex);
   return (
@@ -683,6 +683,16 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
                   capped={u.cost > bowlCap}
                   onJar={onJar}
                 />
+                {/* THE ALTERNATIVE TO TAKING IT. Not a sale — you never own
+                    the jar. You give it up for the run and the crumbs land
+                    now, which is a rush: less game, sooner. It sits UNDER the
+                    jar it refuses because it is a second answer to the same
+                    question, and no crumbs are required to press it. */}
+                {onDecline && (
+                  <button type="button" className="decline" onClick={() => onDecline(u.key)}>
+                    <span>or take <strong>{compact(Math.floor(u.cost * BURN_REFUND_NUM / BURN_REFUND_DEN))}</strong> and never see it again</span>
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -714,31 +724,6 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
               </li>
             ))}
           </ul>
-        )}
-        {burnable && burnable.length > 0 && (
-          <>
-            {/* THE SHOP'S REVERSE GEAR. A jar you own can go back over the
-                counter for 70% of what you paid. It lives on the stall that
-                sold it, next to the switches, because that is where a player
-                already goes looking for something they own.
-
-                Unlimited on purpose: every round trip loses 30%, so there is
-                no cycle that comes out ahead and nothing needs a cooldown. */}
-            <p className="burn-head">give one back</p>
-            <ul className="burn-list">
-              {burnable.map((b) => (
-                <li key={b.key}>
-                  <button type="button" className="burn-jar" onClick={b.onBurn}>
-                    <span className="burn-copy">
-                      <strong>{b.label}</strong>
-                      <em>you lose it, and its effect</em>
-                    </span>
-                    <span className="burn-back">+{compact(b.refund)}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </>
         )}
         <button type="button" className="sheet-close" onClick={onClose}>done</button>
       </div>

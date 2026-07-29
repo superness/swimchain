@@ -16,7 +16,7 @@ function check(name: string, cond: boolean, extra?: unknown) {
 }
 
 const freshState = (over: Partial<ChipsState> = {}): ChipsState => ({
-  crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, crispest: 0, owned: new Set(), bowlCap: 1_000_000,
+  crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, declined: new Set(), crispest: 0, owned: new Set(), bowlCap: 1_000_000,
   seasoningNum: 1, seasoningDen: 1, fryers: 1, goldenBits: 16, airtight: false,
   sogBonus: 0, doubleDipMod: 0, dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
   unverifiedBanks: 0, moves: [], ...over,

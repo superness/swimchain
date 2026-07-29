@@ -1088,41 +1088,25 @@ export function App() {
   }
 
   /**
-   * GIVE A JAR BACK for BURN_REFUND of its price.
+   * REFUSE A JAR and take BURN_REFUND of its price in crumbs.
    *
-   * Refused unless you own it and nothing owned stands on it — both rules are
-   * the fold's, repeated here only so the button cannot offer something the
-   * chain will reject. `burnableAt` below is what decides what is even shown.
+   * Not a sale — the jar is never owned. It is given up for the run, and for
+   * a chain rung that forfeits everything above it too, because a buy still
+   * needs its prefix. The fold owns both rules; this only stops the button
+   * offering something the chain would reject.
    */
-  function onBurn(key: string): void {
-    if (!host || !me || !tableId || !state?.owned.has(key)) return;
+  function onDecline(key: string): void {
+    if (!host || !me || !tableId || !state) return;
+    if (state.owned.has(key) || state.declined.has(key)) return;
+    const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
+    if (chain && chain.slice(0, chain.indexOf(key)).some((p) => !state.owned.has(p))) return;
     sfx.pop();
+    setSheetId(null);
+    setNotice(`refused — ${compact(Math.floor(UPGRADES[key].cost * BURN_REFUND_NUM / BURN_REFUND_DEN))} crumbs, and it is gone for this bowl`);
     setQueue((q) => enqueue(
       q, { tableId, author: me.publicKeyHex, kind: 'burn', key, ms: allocMs() },
       nextId.current++
     ));
-  }
-
-  /**
-   * What a vendor will take back right now: jars of theirs you own, minus any
-   * a LATER owned chain rung is standing on — burning one of those would
-   * leave a table that could never re-fold to the same state, and the fold
-   * refuses it. Offering a button the chain would reject is the bug this
-   * client has shipped four times.
-   */
-  function burnableAt(vendorId: string): { key: string; label: string; refund: number; onBurn: () => void }[] {
-    const v = CREW.find((c) => c.id === vendorId);
-    if (!v || !state) return [];
-    return v.sells.filter((k) => state.owned.has(k)).filter((k) => {
-      const chain = UPGRADE_CHAINS.find((c) => c.includes(k));
-      if (!chain) return true;
-      return !chain.slice(chain.indexOf(k) + 1).some((later) => state.owned.has(later));
-    }).map((k) => ({
-      key: k,
-      label: UPGRADES[k].label,
-      refund: Math.floor(UPGRADES[k].cost * BURN_REFUND_NUM / BURN_REFUND_DEN),
-      onBurn: () => { onBurn(k); setSheetId(null); },
-    }));
   }
 
   /** A REASON: whistle the wing onto a basket. Refused without the jar and
@@ -1822,7 +1806,7 @@ export function App() {
           armedKey={feeding?.jarKey ?? null}
           onJar={onJar}
           onClose={() => setSheetId(null)}
-          burnable={burnableAt(sheetVendor.id)}
+          onDecline={onDecline}
           switches={sheetVendor.id === 'angel' && state.owned.has('autodip') ? [{
             key: 'autodip',
             label: 'Sous Chef',
