@@ -34,7 +34,7 @@ function submittable(m: QueuedMove, at: number): boolean {
   try {
     if (m.kind === 'bank') bankBatchBody([m.chip], at);
     else if (m.kind === 'dip') dipBody(m.amount, m.ms);
-    else if (m.kind === 'tip') tipBody(m.ms);
+    else if (m.kind === 'tip') tipBody(m.ms, m.keep ?? null);
     else if (m.kind === 'burn') burnBody(m.key, m.ms);
     else if (m.kind === 'broke') brokeBody(m.paid, m.ms);
     else if (m.kind === 'spend') spendBody(m.ability, m.cost, m.ms);
@@ -85,7 +85,7 @@ export function planSend(queue: QueuedMove[], tableId: string, author: string, a
     : take.kind === 'dip'
       ? dipBody((take.moves[0] as { amount: number }).amount, (take.moves[0] as { ms: number }).ms)
       : take.kind === 'tip'
-        ? tipBody((take.moves[0] as { ms: number }).ms)
+        ? tipBody((take.moves[0] as { ms: number }).ms, (take.moves[0] as { keep?: string }).keep ?? null)
         : take.kind === 'burn'
           ? burnBody((take.moves[0] as { key: string }).key, (take.moves[0] as { ms: number }).ms)
           : take.kind === 'spend'

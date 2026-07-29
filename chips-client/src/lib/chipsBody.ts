@@ -58,9 +58,19 @@ export function dipBody(amount: number, ms: number): string {
 /** Build a `tip` move body: `tip#<ms>~`. No argument by design — the fold
  *  computes the salt itself (chipsEngine.saltFor), so nothing about this
  *  move is client-declared. */
-export function tipBody(ms: number): string {
+export function tipBody(ms: number, keep?: string | null): string {
   if (!Number.isSafeInteger(ms) || ms <= 0) {
     throw new Error(`tipBody: ms must be a positive safe integer, got ${ms}`);
+  }
+  // THE CRACK names one jar to carry through the bowl. It must START WITH A
+  // LETTER: the body can never carry a NUMBER, because a self-declared salt
+  // amount would be free money forever (salt is permanent and compounds).
+  // `keep` names a jar; it can never name a quantity.
+  if (keep !== undefined && keep !== null) {
+    if (!/^[a-z][a-z0-9]*$/.test(keep)) {
+      throw new Error(`tipBody: bad keep key ${keep}`);
+    }
+    return `tip ${keep}#${ms}~`;
   }
   return `tip#${ms}~`;
 }

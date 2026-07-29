@@ -27,6 +27,7 @@ import {
   DIP_TIERS, CONGEAL_GAP_MS, UPGRADES, UPGRADE_CHAINS, MAX_BATCH,
   DEEP_BAND_COUNT, CHAR_PER_BAND, deepBandFloor,
   BURN_REFUND_NUM, BURN_REFUND_DEN,
+  type Upgrade,
 } from './chipsConst';
 import { proofKey } from './proofKey';
 
@@ -153,7 +154,8 @@ export type ParsedMove =
   | { kind: 'dip'; amount: number; ms: number }
   /** The bowl goes back over: everything resets except OLD SALT, which the
    *  FOLD computes from lifetime — never the client (see parseMove). */
-  | { kind: 'tip'; ms: number }
+  /** `keep` is the jar THE CRACK saves from the bowl; null for a plain tip. */
+  | { kind: 'tip'; keep: string | null; ms: number }
   /** `paid` is the chip fed to the boss — it buys the band and pays nothing.
    *  0 for the legacy bare `broke` (one such reply exists on mainnet). */
   | { kind: 'broke'; paid: number; ms: number }
@@ -240,7 +242,14 @@ export function parseMove(body: string): ParsedMove | null {
   // declared by the client, so a hostile body cannot mint prestige. (The
   // dip verb is self-declared because its ceiling is one chip's pot; salt
   // is permanent and compounds across every future run.)
-  if (/^tip$/.test(head)) return { kind: 'tip', ms };
+  // `tip [keep]` — THE CRACK names one jar to carry through the bowl.
+  // Must START WITH A LETTER. Every jar key does, and it keeps the original
+  // security property literally true: a tip can never carry a NUMBER, because
+  // a self-declared salt amount would be free money forever (salt is permanent
+  // and compounds). `keep` names a jar; it can never name a quantity.
+  const tipM = /^tip\s+([a-z][a-z0-9]*)$/.exec(head);
+  if (tipM) return { kind: 'tip', keep: tipM[1], ms };
+  if (/^tip$/.test(head)) return { kind: 'tip', keep: null, ms };
 
   // `broke` — one band of the descent. NO ARGUMENT, for exactly the reason
   // `tip` has none: the band is whichever comes next, which the fold can see,
@@ -533,6 +542,15 @@ export function foldChips(
       state.crumbs = 0;
       state.lifetimeChips = 0;
       state.crispest = 0;
+      // THE CRACK (char): one jar of your choosing survives the bowl. Read
+      // BEFORE `owned` is cleared, honoured after — you cannot keep something
+      // you did not have, and without the ability you cannot keep anything.
+      const keeping = parsed.keep !== null
+        && state.charOwned.has('crack')
+        && state.owned.has(parsed.keep)
+        ? UPGRADES[parsed.keep]
+        : undefined;
+
       state.owned = new Set();
       state.bowlCap = START_BOWL_CAP;
       state.seasoningNum = 1; state.seasoningDen = 1;
@@ -542,6 +560,9 @@ export function foldChips(
       state.sogBonus = 0;
       state.doubleDipMod = 0;
       state.dipIndex = 0;
+      // ...and the kept jar goes back on, effects and all, through the same
+      // path a purchase uses so the two can never drift.
+      if (keeping) applyUpgradeEffects(state, keeping);
       if (confirmed) state.lastBankAt = at;
       state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'tipped', salt: earned });
       continue;
@@ -727,7 +748,21 @@ function applyBuy(
   if (state.crumbs < upgrade.cost) return push('rejected-cost');
 
   state.crumbs -= upgrade.cost;
-  state.owned.add(parsed.key);
+  applyUpgradeEffects(state, upgrade);
+
+  push('bought');
+}
+
+/**
+ * Put a jar's effects on the state. Extracted so BUYING one and KEEPING one
+ * through a tip (THE CRACK) can never drift apart — a kept jar that forgot to
+ * raise your bowl cap would be a silent, unnoticeable wrong.
+ *
+ * Idempotent for everything except `sogBonus`, which accumulates by design;
+ * only ever called once per jar per run.
+ */
+function applyUpgradeEffects(state: ChipsState, upgrade: Upgrade): void {
+  state.owned.add(upgrade.key);
   if (upgrade.bowlCap !== undefined) state.bowlCap = upgrade.bowlCap;
   if (upgrade.seasoningNum !== undefined && upgrade.seasoningDen !== undefined) {
     state.seasoningNum = upgrade.seasoningNum;
@@ -738,6 +773,4 @@ function applyBuy(
   if (upgrade.airtight) state.airtight = true;
   if (upgrade.sogBonus !== undefined) state.sogBonus += upgrade.sogBonus;
   if (upgrade.doubleDipMod !== undefined) state.doubleDipMod = upgrade.doubleDipMod;
-
-  push('bought');
 }

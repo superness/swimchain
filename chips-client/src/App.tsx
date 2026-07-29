@@ -243,6 +243,12 @@ export function App() {
 
   // The crew's reach into the clock: rat siphons + eats on his fryer, the
   // angel's blessing forces a crackle. Read per tick through refs.
+  /** THE MAGMA, owned. Read by the cooking interval via `modsFor`, so it has
+   *  to be a ref rather than state — see modsFor's comment. */
+  const magmaRef = useRef(false);
+  useEffect(() => { magmaRef.current = state?.charOwned.has('magma') ?? false; },
+    [state?.charOwned]);
+
   const modsFor = useCallback((index: number): TickMods => {
     const mods: TickMods = {};
     if (ratRef.current.latched === index) {
@@ -251,6 +257,10 @@ export function App() {
     }
     if (blessRef.current === index) mods.forceCrackle = true;
     if (overcookRef.current === index) mods.overcook = true;
+    // THE MAGMA — overcook stops draining the pot. A ref for the same reason
+    // the others are: `modsFor` must keep a stable identity or the cooking
+    // interval tears down and restarts on every render.
+    if (magmaRef.current) mods.magma = true;
     mods.ceiling = ceilingRef.current;
     return mods;
   }, []);
@@ -1438,7 +1448,7 @@ export function App() {
 
   /** Tip the bowl. The salt is the FOLD's to compute — the body carries no
    *  amount at all (chipsEngine.parseMove) — so this only has to ask. */
-  function onTip(): void {
+  function onTip(keep?: string): void {
     if (!host || !me || !tableId || !state || tipSalt <= 0) return;
     setBowlOpen(false);
     struckRef.current = false;
@@ -1465,7 +1475,14 @@ export function App() {
     window.setTimeout(() => say('scoop', 'see you at the bottom.', 8000), 6400);
     window.setTimeout(() => say('scoop', WELCOME_BACK[3], 9000), 15_000);
     setQueue((q) => enqueue(
-      q, { tableId, author: me.publicKeyHex, kind: 'tip', ms: allocMs() },
+      q, {
+        tableId, author: me.publicKeyHex, kind: 'tip',
+        // THE CRACK: one jar rides through the bowl. Sent only when the
+        // ability is owned AND the jar actually is — the fold checks both
+        // again, but a button should never send something it knows is void.
+        ...(keep && state?.charOwned.has('crack') && state.owned.has(keep) ? { keep } : {}),
+        ms: allocMs(),
+      },
       nextId.current++
     ));
   }
@@ -1915,6 +1932,14 @@ export function App() {
           layerLabel={tier.label}
           jarCount={state.owned.size}
           depth={DIP_TIERS[Math.min(DIP_TIERS.length - 1, state.dipIndex)].label}
+          keepable={
+            // THE CRACK: what this bowl could carry through. Empty without the
+            // ability, which is how the picker stays invisible until earned.
+            state?.charOwned.has('crack')
+              ? [...state.owned].map((k) => UPGRADES[k]).filter(Boolean)
+                  .map((u) => ({ key: u.key, label: u.label }))
+              : []
+          }
           onTip={onTip}
           onClose={() => setBowlOpen(false)}
         />

@@ -36,7 +36,13 @@ const fold = (bodies: string[]) => foldChips(header, TABLE, bodies.map(reply), n
   const p = parseMove(tipBody(12345));
   check('tip parses', p?.kind === 'tip', p);
   check('the tip body has no amount field at all', tipBody(12345) === 'tip#12345~', tipBody(12345));
-  check('a tip with an argument does NOT parse as a tip', parseMove('tip 99999#5~')?.kind !== 'tip');
+  // THE ARGUMENT IS A JAR TO KEEP, NEVER AN AMOUNT. Salt is permanent and
+  // compounds, so a self-declared amount would be free money forever — that
+  // property is unchanged and is why `keep` is a KEY, not a number.
+  check('a numeric argument still does not parse', parseMove('tip 99999#5~')?.kind !== 'tip');
+  check('a jar key parses as the jar to keep',
+    (parseMove('tip bowl2#5~') as { keep: string } | null)?.keep === 'bowl2');
+  check('a plain tip keeps nothing', (parseMove('tip#5~') as { keep: string | null } | null)?.keep === null);
 }
 
 // 2) A deep run tips: salt granted, everything else wiped.

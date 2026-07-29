@@ -28,6 +28,14 @@ import { sogHoursFor, sogNum, type ChipsState } from './chipsEngine';
  * renders a brand-new player's freshly-banked bowl as empty.
  */
 export function projectedCrumbs(state: ChipsState, nowMs: number): number {
+  // THE TILE (char): crumbs stop going soft. Entirely. The floor under the
+  // dip does not absorb, so neither does your bowl.
+  //
+  // Checked FIRST, before the clock guard, so it holds in every state — a
+  // player who owns it must never see a soft number, not even in the window
+  // before their first confirmation. This is the same shape as `airtight`
+  // (which slows sog) taken to its end, which is why it costs a descent.
+  if (state.charOwned.has('tile')) return state.crumbs;
   if (state.lastConfirmedAt <= 0) return state.crumbs;
   let crumbs = state.crumbs;
   if (crumbs <= 0) return crumbs;
@@ -48,6 +56,9 @@ export function projectedCrumbs(state: ChipsState, nowMs: number): number {
  * drives colour, slump and sheen.
  */
 export function soggyLook(state: ChipsState, nowMs: number): number {
+  // THE TILE: nothing goes soft, so nothing should LOOK soft either. A pile
+  // that slumps and dulls while the number never moves would read as a bug.
+  if (state.charOwned.has('tile')) return 0;
   if (state.lastConfirmedAt <= 0) return 0;
   const HALF_LIFE_MS = 23 * 3_600_000;
   const elapsed = nowMs - state.lastConfirmedAt;

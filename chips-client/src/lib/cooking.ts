@@ -174,6 +174,28 @@ export interface TickMods {
   forceCrackle?: boolean;
   /** This fryer is overcooking: crackles come sooner, the pot bleeds. */
   overcook?: boolean;
+  /** THE MAGMA (char ability). Overcook keeps its haste and stops draining.
+   *
+   *  Reading A of "overcook feeds the multiplier instead of draining the pot",
+   *  chosen because it was MEASURED (scripts/magmasim.ts). The other reading —
+   *  the burn buys crackle probability, pot still bleeding — is a trap: it
+   *  costs 12-56% at every session length, because the drain is what makes
+   *  overcook bad and it pays for a speedup reading A gives free.
+   *
+   *  Its profile is the reason it can be the last thing you buy without
+   *  breaking anything. MEASURED THROUGH THIS FUNCTION, not a model of it
+   *  (scripts/magmareal.mjs — the standalone magmasim.ts said +169% at x64/10min
+   *  and the real path says +135.5%; same shape, and the real one is the one
+   *  that ships):
+   *                 x32       x64
+   *      10 min   +61.6%   +135.5%
+   *      30 min    +4.0%    +30.4%
+   *     120 min    +0.0%     +0.1%
+   *  It is not a multiplier, it is a TIME COMPRESSOR — enormous when you have
+   *  twenty minutes, exactly nothing when you have two hours, because the
+   *  crackle ladder is terminal and parking already wins by then. It cannot
+   *  inflate the endgame and it cannot be farmed. */
+  magma?: boolean;
   /** Top of the crackle ladder. Defaults to MAX_CRACKLES; The Long Fry
    *  raises it to LONG_FRY_CRACKLES. Per-tick rather than a module constant
    *  because it is a property of the PLAYER (what they own), not of the
@@ -201,7 +223,8 @@ export function tickChip(
   const grown = chip.pot + (diverted ? 0 : gained);
   // The burn takes its cut AFTER the tick lands, so a lit fryer still shows
   // the pot moving — it just keeps less of it.
-  const burned = lit ? grown * OVERCOOK_DRAIN : 0;
+  // THE MAGMA stops the burn without touching the haste below.
+  const burned = lit && mods.magma !== true ? grown * OVERCOOK_DRAIN : 0;
   const next: CookingChip = {
     ...chip,
     pot: Math.max(0, grown - burned),  // Defensive: grown >= 0, burned <= grown (drain < 1), so unreachable.

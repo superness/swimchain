@@ -37,12 +37,18 @@ const BEAT_MS = 2600;
  * offer. Dismissing it does NOT tip — the bowl stays struck and the offer
  * lives on the counter from then on, so nobody loses a run to a stray tap.
  */
-export function BowlReveal({ salt, layerLabel, jarCount, depth, onTip, onClose }: {
+export function BowlReveal({ salt, layerLabel, jarCount, depth, keepable, onTip, onClose }: {
   salt: number; layerLabel: string; jarCount: number; depth: string;
-  onTip: () => void; onClose: () => void;
+  /** THE CRACK: jars this bowl could carry through. Empty without the ability,
+   *  which is also the whole UI — no picker, no mention, nothing to explain. */
+  keepable: { key: string; label: string }[];
+  onTip: (keep?: string) => void; onClose: () => void;
 }) {
   const DISCOVERY = discoveryFor(layerLabel);
   const [beat, setBeat] = useState(0);
+  /** Which jar THE CRACK carries. Undefined = take nothing through, which
+   *  stays the default: the ability lets you keep one, it does not oblige you. */
+  const [keep, setKeep] = useState<string | undefined>(undefined);
   useEffect(() => {
     if (beat >= DISCOVERY.length) return;
     const t = window.setTimeout(() => setBeat((b) => b + 1), BEAT_MS);
@@ -87,10 +93,38 @@ export function BowlReveal({ salt, layerLabel, jarCount, depth, onTip, onClose }
                 </div>
               </div>
 
+              {/* THE CRACK. Shown only when you own it and have something to
+                  save — a player without the ability never learns this exists,
+                  which is the right amount of explaining. */}
+              {keepable.length > 0 && (
+                <div className="bowl-keep">
+                  <span className="bowl-keep-head">
+                    the crack: one jar comes with you.
+                  </span>
+                  <div className="bowl-keep-row">
+                    <button
+                      type="button"
+                      className={keep === undefined ? 'on' : ''}
+                      onClick={() => setKeep(undefined)}
+                    >nothing</button>
+                    {keepable.map((j) => (
+                      <button
+                        key={j.key}
+                        type="button"
+                        className={keep === j.key ? 'on' : ''}
+                        onClick={() => setKeep(j.key)}
+                      >{j.label}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="bowl-buttons">
                 <button type="button" className="bowl-later primary" onClick={onClose}>keep digging</button>
-                <button type="button" className="bowl-tip danger" onClick={onTip} disabled={salt <= 0}>
-                  {salt > 0 ? 'tip the bowl' : 'not deep enough yet'}
+                <button type="button" className="bowl-tip danger" onClick={() => onTip(keep)} disabled={salt <= 0}>
+                  {salt > 0
+                    ? (keep ? `tip the bowl — keep ${keepable.find((j) => j.key === keep)?.label}` : 'tip the bowl')
+                    : 'not deep enough yet'}
                 </button>
               </div>
               <p className="bowl-fine">
