@@ -38,6 +38,10 @@ pub struct PeerConnection {
     remote_addr: std::net::SocketAddr,
     /// Whether the connection is established (handshake complete)
     established: std::sync::atomic::AtomicBool,
+    /// CONSECUTIVE failed/timed-out sends, reset to zero by any success — so
+    /// this counts a peer that is persistently unreachable, not one that had a
+    /// bad moment. At `MAX_SEND_STRIKES` the peer is dropped from the pool.
+    send_strikes: std::sync::atomic::AtomicU32,
 }
 
 impl PeerConnection {
@@ -55,6 +59,7 @@ impl PeerConnection {
             peer_id,
             remote_addr,
             established: std::sync::atomic::AtomicBool::new(established),
+            send_strikes: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -187,6 +192,19 @@ const INVENTORY_THROTTLE: std::time::Duration = std::time::Duration::from_secs(3
 /// half-open TCP connection must never hang a caller (e.g. an RPC handler that
 /// gossips a self-originated action inline before responding).
 const PEER_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Consecutive failed sends before a peer is dropped from the pool.
+///
+/// A peer that will not take data is not a peer. Before this, a wedged
+/// connection was retried on every broadcast forever: on 2026-07-29 the seed
+/// logged 89 timeouts to the SAME peer id in 20 minutes, each costing
+/// PEER_SEND_TIMEOUT, and the only cure was a manual restart — after which it
+/// re-wedged inside 90 seconds.
+///
+/// Three, not one: a single timeout can be a slow link or a GC pause, and
+/// dropping a healthy peer costs a reconnect and a resync. Three consecutive
+/// failures with no success between them is not bad luck.
+const MAX_SEND_STRIKES: u32 = 3;
 
 impl PeerConnectionPool {
     /// Create a new empty pool
@@ -357,7 +375,7 @@ impl PeerConnectionPool {
         }; // <- lock released HERE, before a single byte is written
 
         let sends = targets.into_iter().map(|(peer_id, conn)| async move {
-            match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
+            let ok = match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
                 Ok(Ok(())) => true,
                 Ok(Err(e)) => {
                     warn!(
@@ -374,14 +392,38 @@ impl PeerConnectionPool {
                     );
                     false
                 }
-            }
+            };
+            // CONSECUTIVE only: any success wipes the slate, so a peer is
+            // dropped for being persistently dead, never for one bad moment.
+            let strikes = if ok {
+                conn.send_strikes
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+                0
+            } else {
+                conn.send_strikes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1
+            };
+            (peer_id, ok, strikes)
         });
 
-        futures::future::join_all(sends)
-            .await
-            .into_iter()
-            .filter(|ok| *ok)
-            .count()
+        let results = futures::future::join_all(sends).await;
+
+        // EVICT WHAT WILL NOT TAKE DATA. After the lock-free sends, and via
+        // `remove` (which takes the write lock only briefly), so this cannot
+        // reintroduce the stall it exists to prevent.
+        for (peer_id, _, strikes) in results.iter().filter(|(_, ok, _)| !*ok) {
+            if *strikes >= MAX_SEND_STRIKES {
+                warn!(
+                    "[PEER-POOL] Dropping {} after {} consecutive failed sends",
+                    hex::encode(&peer_id[..8]),
+                    strikes
+                );
+                self.remove(peer_id).await;
+            }
+        }
+
+        results.into_iter().filter(|(_, ok, _)| *ok).count()
     }
 }
 
@@ -491,6 +533,65 @@ mod tests {
 
         drop(_wedged);
         let _ = tokio::time::timeout(Duration::from_secs(6), broadcasting).await;
+    }
+
+    /// A PEER THAT WILL NOT TAKE DATA MUST BE DROPPED, NOT RETRIED FOREVER.
+    ///
+    /// On 2026-07-29 the seed logged 89 timeouts to the SAME peer id in 20
+    /// minutes, each costing PEER_SEND_TIMEOUT. A restart cleared it and it
+    /// re-wedged inside 90 seconds, because nothing ever removed the peer.
+    #[tokio::test]
+    async fn a_persistently_stuck_peer_is_evicted() {
+        let pool = PeerConnectionPool::new();
+        let (stuck, _keep) = pooled_peer(&pool, 1).await;
+        let _wedged = stuck.writer.try_lock().unwrap();
+
+        assert_eq!(pool.peer_ids().await.len(), 1);
+
+        // Below the threshold it must SURVIVE: one bad moment is not a dead
+        // peer, and dropping a healthy one costs a reconnect and a resync.
+        for i in 1..MAX_SEND_STRIKES {
+            pool.broadcast(&envelope()).await;
+            assert_eq!(
+                pool.peer_ids().await.len(),
+                1,
+                "evicted after only {i} consecutive failures (threshold {MAX_SEND_STRIKES})"
+            );
+        }
+
+        // The strike that reaches the threshold drops it.
+        pool.broadcast(&envelope()).await;
+        assert!(
+            pool.peer_ids().await.is_empty(),
+            "a peer that failed {MAX_SEND_STRIKES} consecutive sends is still pooled —              it will be retried on every broadcast for the life of the process"
+        );
+    }
+
+    /// A SUCCESS WIPES THE SLATE. Strikes must be CONSECUTIVE, or a long-lived
+    /// healthy peer accumulates unrelated blips and is eventually evicted.
+    #[tokio::test]
+    async fn intermittent_failures_do_not_evict() {
+        let pool = PeerConnectionPool::new();
+        let (peer, mut server) = pooled_peer(&pool, 1).await;
+
+        for _ in 0..(MAX_SEND_STRIKES * 3) {
+            {
+                let _wedged = peer.writer.try_lock().unwrap();
+                pool.broadcast(&envelope()).await; // fails
+            } // guard dropped — the next send can succeed
+            let mut buf = [0u8; 4096];
+            let _ = tokio::time::timeout(
+                Duration::from_millis(50),
+                tokio::io::AsyncReadExt::read(&mut server, &mut buf),
+            )
+            .await;
+            pool.broadcast(&envelope()).await; // succeeds, resetting strikes
+            assert_eq!(
+                pool.peer_ids().await.len(),
+                1,
+                "a peer alternating failure and success was evicted — strikes are not                  reset by success, so any long-lived peer eventually dies"
+            );
+        }
     }
 
     /// N stuck peers must cost ONE timeout, not N.
