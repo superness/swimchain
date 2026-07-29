@@ -111,6 +111,53 @@ Related: the bridge has no way to distinguish "you have no sponsor" from "the no
 down" without string-matching an error message. A typed classification in `shoalSend` is a
 small addition and belongs with this work.
 
+#### RECOGNITION HALF DONE 2026-07-28 — the granting half is still open
+
+**What now exists.** `classifySendFailure` (`shoal-client/src/lib/shoalSend.ts`, plan 4a
+Task 3) reads the node's numeric JSON-RPC code and returns
+`'not-sponsored' | 'unreachable' | 'unknown'` — no message text anywhere.
+`chainSea`'s `onWrite` callback carries that classification out of every write,
+`wayIn.afterWrite` (`src/ui/wayIn.ts`) folds it into a standing, and `TheEdge.tsx` draws
+the edge of the water for `'not-sponsored'` and for nothing else. A write that is
+*accepted* clears the standing, so a player vouched in mid-session is simply let in.
+Verified against a real local testnet node answering a real -32015.
+
+**What is still missing: actually granting a vouch.** The node side exists in full —
+`create_sponsorship_offer` / `list_sponsorship_offers` / `claim_sponsorship_offer` /
+`approve_sponsorship_claim` (`src/rpc/methods.rs:1197-1204`), with params in
+`src/rpc/types.rs:1877-1921`. What a client would have to add:
+
+1. **A signed `create_sponsorship_offer` on the sponsor's side.** `CreateSponsorshipOfferParams`
+   wants `sponsor_pubkey`, `slots`, `offer_type`, `expires_days`, `timestamp` and a
+   `signature` over the offer's own preimage — a fourth signing preimage the bridge does
+   not implement (it knows only the action preimage). The sponsor's key must itself be
+   sponsored, which is true of anyone actually in the water.
+2. **A signed, PoW-mined `claim_sponsorship_offer` on the newcomer's side** —
+   `ClaimSponsorshipOfferParams` carries its own nonce/difficulty/hash/signature, a fifth
+   preimage and a second mining path.
+3. **A way for the offer id to travel that is not a link or a code.** This is the real
+   design problem, and §2.16 forbids the easy answer outright. The newcomer cannot write
+   to the room — that IS the condition — but they can *read* it, so an "open hand"
+   published by a swimmer already in the water is the obvious shape. That is a FOURTH wire
+   kind in `shoalWire.ts` (`presence` / `eat` / `checkpoint` / …), which is
+   **consensus and permanent** (spec §4) and must be specified before it is written.
+4. **A mainnet policy decision.** `auto_approve` offers are refused on mainnet except for
+   the operator-designated game sponsor (`methods.rs:17184-17195`). Without that
+   exception, granting is two in-game acts by the sponsor (offer, then approve the claim),
+   not one — which changes the mechanic, not just the plumbing.
+
+Roughly: one spec decision, one consensus wire change, two new signing preimages, a second
+mining path, and a sponsor-side gesture. Deliberately **not** attempted in plan 4a Task 4:
+a grant flow that looks like it works and silently does not is worse than a clear
+"someone already swimming has to bring you through".
+
+**Also still true:** the way-in surface is only reachable where a chain sea is, and
+`buildChainSea` is gated on `import.meta.env.DEV` (`App.tsx`, deliberately — it reads a
+cookie and a weak key derivation out of the address bar). A shipped build folds a demo sea
+and never writes, so it never sees -32015 either. Whatever eventually gives the shipped
+shell a real room (open item 7, mainnet provisioning) is what makes this surface reachable
+by a real downloader; the recognition logic itself is shell-agnostic and needs no change.
+
 ### 12. The shell computes a checkpoint every hour and throws it away — **RESOLVED 2026-07-28**
 
 **Closed by** `feat/the-shoal-shallows`, tasks 1 and 2. The description below is left as

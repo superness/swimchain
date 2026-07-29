@@ -130,6 +130,19 @@
  * black out the window. They go to `onError`, and the last good log keeps
  * being folded. There is no player-facing copy here (nor anywhere in
  * `src/lib/`); the shell decides what, if anything, to say.
+ *
+ * ## A write's outcome is a second channel, and it also reports SUCCESS
+ *
+ * `onError` cannot carry the one fact spec §2.16 needs. A newcomer nobody has
+ * vouched for is refused at ingestion (`check_identity_sponsored`,
+ * src/rpc/methods.rs:753) and Task 3 classified that refusal by its numeric
+ * code; but being LET IN is an in-game act another player performs while this
+ * window is open, and the only evidence of it here is a write that stops
+ * failing. An error channel structurally cannot report that.
+ *
+ * So `onWrite` fires once per attempted write — `null` for accepted, the typed
+ * `SendFailure` for refused — and `wayIn.ts` folds the two into a standing.
+ * This file draws no conclusion from the kind and holds no copy.
  */
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
 import { epochOf } from '../lib/epoch';
@@ -137,8 +150,8 @@ import { fetchRoom } from '../lib/shoalRoom';
 import { adoptCheckpoint, type Adoption } from '../lib/adopt';
 import { DEFAULT_POLL_INTERVAL_MS, startLive } from '../lib/shoalLive';
 import {
-  powProfileFor, sendCheckpoint, sendEat, sendPresence,
-  type SendCtx, type SignFn,
+  classifySendFailure, powProfileFor, sendCheckpoint, sendEat, sendPresence,
+  type SendCtx, type SendFailure, type SignFn,
 } from '../lib/shoalSend';
 import { PRESENCE_TTL_MS } from '../lib/shoalConst';
 import type { RpcAuth } from '../lib/shoalRpc';
@@ -159,6 +172,26 @@ export interface ChainSeaConfig {
   readonly signer: Promise<{ publicKeyHex: string; sign: SignFn }>;
   readonly spawn: { readonly x: number; readonly y: number };
   readonly onError?: (where: string, err: unknown) => void;
+  /**
+   * How every attempted write ended: `null` when the node accepted it,
+   * otherwise the TYPED classification of the refusal (`classifySendFailure`,
+   * shoalSend.ts) — never the error, never its message.
+   *
+   * A SECOND CHANNEL ALONGSIDE `onError`, not a replacement for it, because the
+   * two answer different questions. `onError` is the developer's log: it fires
+   * for reads, for signer trouble and for checkpoint divergence as well as for
+   * writes, it carries the raw thrown value, and nothing is expected to act on
+   * it. This one fires once per WRITE, carries a discriminant a caller can
+   * switch on, and — uniquely — also fires when a write SUCCEEDS. That last
+   * part is what a shell needs and an error channel structurally cannot give:
+   * being let into the water (spec §2.16) shows up as a write that stops being
+   * refused, which is not an event any `onError` can ever report.
+   *
+   * `chainSea` itself draws no conclusion from the kind. Deciding what a
+   * refusal means to a player belongs to `wayIn.ts`, and the words belong to
+   * `TheEdge.tsx`; this file stays as free of player-facing copy as it was.
+   */
+  readonly onWrite?: (failure: SendFailure | null) => void;
 }
 
 /** How long after an event-driven refetch to look again, to cover the gap
@@ -190,6 +223,17 @@ export interface ChainSea extends Sea {
 
 export function chainSea(cfg: ChainSeaConfig): ChainSea {
   const report = (where: string, err: unknown) => { cfg.onError?.(where, err); };
+  /**
+   * Announce how one write ended. Called for all three of them — a presence, an
+   * eat claim and a checkpoint are the same action to the node, and the gate
+   * that refuses one refuses all three, so a shell that watched only presences
+   * would go on believing it was in the water for as long as nobody moved.
+   *
+   * The classification is done HERE rather than by the caller so that no other
+   * module ever has to hold a raw thrown value to find out what happened. The
+   * kind is all that leaves this file.
+   */
+  const noteWrite = (failure: SendFailure | null) => { cfg.onWrite?.(failure); };
 
   let remote: LogEntry[] = [];
   let pending: LogEntry[] = [];
@@ -393,8 +437,11 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
   function publishCheckpoint(cp: NonNullable<ReturnType<typeof advance>['rolled']>, nowMs: number): void {
     void ctxReady
       .then((c) => sendCheckpoint(c, cp, nowMs))
-      .then(() => refetch())
-      .catch((e) => { report('sendCheckpoint', e); });
+      .then(() => { noteWrite(null); return refetch(); })
+      .catch((e) => {
+        noteWrite(classifySendFailure(e));
+        report('sendCheckpoint', e);
+      });
   }
 
   return {
@@ -421,11 +468,12 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       });
       void ctxReady
         .then((c) => sendPresence(c, vec, say))
-        .then(() => refetch())
+        .then(() => { noteWrite(null); return refetch(); })
         .catch((e) => {
           // A dart nobody was told about is not a dart. Take the claim back
           // before reporting, so the sea on screen is the sea that exists.
           withdraw((p) => p.hash === hash);
+          noteWrite(classifySendFailure(e));
           report('sendPresence', e);
         });
     },
@@ -435,10 +483,11 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       pending.push({ kind: 'eat', id: cfg.authorIdHex, cell, ms, hash });
       void ctxReady
         .then((c) => sendEat(c, cell, ms))
-        .then(() => refetch())
+        .then(() => { noteWrite(null); return refetch(); })
         .catch((e) => {
           // Otherwise this client alone believes it grew.
           withdraw((p) => p.hash === hash);
+          noteWrite(classifySendFailure(e));
           report('sendEat', e);
         });
     },

@@ -40,6 +40,8 @@
  */
 import { chainSea, type ChainSea } from './chainSea';
 import { wildSeedFrom } from './demoSea';
+import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
+import type { SendFailure } from '../lib/shoalSend';
 import { encodeCheckpoint, encodeEat, encodePresence } from '../lib/shoalWire';
 import { cellCentre, cellIndex } from '../lib/bloom';
 import { epochEndMs, epochStartMs, epochOf } from '../lib/epoch';
@@ -108,6 +110,13 @@ interface Stub {
   replies: NodeReply[];
   /** When true, `submit_reply` answers with a JSON-RPC error. */
   rejectSubmit: boolean;
+  /**
+   * The JSON-RPC `code` that rejection carries. Default -32000 is the shape of
+   * open item 2's failure on a network that enforces the space gate at
+   * ingestion; section 8 sets it to -32015 (`RpcErrorCode::IdentityNotSponsored`,
+   * src/rpc/error.rs:31) to exercise the way-in classification instead.
+   */
+  submitErrorCode: number;
   /** Every body the sea submitted, in order, with the author it claimed. */
   submitted: { body: string; author: string }[];
   /**
@@ -128,6 +137,7 @@ function installStub(): { stub: Stub; restore: () => void } {
   const stub: Stub = {
     replies: [],
     rejectSubmit: false,
+    submitErrorCode: -32_000,
     submitted: [],
     landSubmissions: false,
     calls: { getReplies: 0, submit: 0, getInfo: 0 },
@@ -164,8 +174,9 @@ function installStub(): { stub: Stub; restore: () => void } {
           jsonrpc: '2.0',
           id: req.id,
           // The real shape of open item 2's failure, on a network that enforces
-          // the gate at ingestion (methods.rs:2917).
-          error: { code: -32_000, message: 'author not authorized in space' },
+          // the gate at ingestion (methods.rs:2917). Section 8 swaps the code
+          // for -32015, which is a different refusal with a different meaning.
+          error: { code: stub.submitErrorCode, message: 'author not authorized in space' },
         });
       }
       const body = req.params?.body ?? '';
@@ -207,8 +218,12 @@ function installStub(): { stub: Stub; restore: () => void } {
   };
 }
 
-function makeSea(onError?: (where: string, err: unknown) => void): ChainSea {
+function makeSea(
+  onError?: (where: string, err: unknown) => void,
+  onWrite?: (failure: SendFailure | null) => void,
+): ChainSea {
   return chainSea({
+    ...(onWrite === undefined ? {} : { onWrite }),
     auth: { endpoint: ENDPOINT, authHeader: null },
     spaceId: SPACE,
     roomContentId: ROOM,
@@ -832,6 +847,103 @@ async function adoptionCatchesUpWhenTheFirstFrameBeatsTheFetch(): Promise<void> 
   }
 }
 
+// ===========================================================================
+// 8. THE WAY IN (spec §2.16) — a refusal for want of a voucher reaches the
+//    shell as a TYPE, and nothing else does
+//
+// This is the join `wayIn.test.ts` cannot make on its own: that file proves
+// `afterWrite` reads a classification correctly, and `shoalSend.test.ts`
+// proves `rpcCall` produces the classification correctly, but neither proves
+// that `chainSea` — the only thing in this client that writes — actually
+// carries one from the wire to the shell. Task 3's report says plainly that
+// `classifySendFailure` had NO CALL SITE. So the whole chain is driven here,
+// end to end, through the real `chainSea`:
+//
+//   node answers -32015  ->  rpcCall throws JsonRpcCallError
+//                        ->  classifySendFailure -> kind 'not-sponsored'
+//                        ->  onWrite -> afterWrite -> atTheEdge
+//
+// and the negative alongside it, on the SAME machinery with one number
+// changed: a different code must leave the player in open water.
+// ===========================================================================
+
+/** Drive one presence write and return the standing the shell would hold, plus
+ *  everything `onWrite` reported. `errors` is collected too, because the
+ *  developer channel must keep firing — the way in replaces nothing. */
+async function writeOnce(
+  code: number | null,
+): Promise<{ standing: Standing; seen: (SendFailure | null)[]; errors: string[] }> {
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  const seen: (SendFailure | null)[] = [];
+  const errors: string[] = [];
+  try {
+    stub.replies = [landed(1, encodePresence(vecAt(T0, 0), ID), T0)];
+    if (code !== null) { stub.rejectSubmit = true; stub.submitErrorCode = code; }
+    sea = makeSea((where) => { errors.push(where); }, (f) => { seen.push(f); });
+    await until(() => stub.calls.getReplies >= 1, 'the first read');
+
+    sea.publish(vecAt(T1, 64));
+    await until(() => seen.length >= 1, 'the write to be reported');
+
+    let standing = OPEN_WATER;
+    for (const f of seen) standing = afterWrite(standing, f);
+    return { standing, seen, errors };
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function theGateReachesTheShellAsAType(): Promise<void> {
+  console.log('\n8a. a write refused with -32015 puts this client at the edge of the water');
+  const { standing, seen, errors } = await writeOnce(-32_015);
+
+  check('the write was reported exactly once', seen.length === 1, seen.length);
+  check('...as a failure, not as an acceptance', seen[0] !== null, seen[0]);
+  check('...classified `not-sponsored` from the CODE, with no message read anywhere',
+    seen[0]?.kind === 'not-sponsored', seen[0]?.kind);
+  check('THE WAY IN: the shell\'s standing is at the edge of the water',
+    standing.atTheEdge === true, standing);
+  check('...and the developer channel still fired too — this adds a channel, it '
+    + 'does not replace one', errors.includes('sendPresence'), errors);
+}
+
+async function anUnrelatedRefusalIsNotTheWayIn(): Promise<void> {
+  console.log('\n8b. THE NEGATIVE: a refusal with any other code leaves them in open water');
+  // -32000 is open item 2's own failure — a real rejection, from a reachable
+  // node, that has nothing to do with whether anyone has vouched for this
+  // swimmer. The ONLY difference from 8a is this number.
+  const { standing, seen, errors } = await writeOnce(-32_000);
+
+  check('the write was reported as a failure', seen.length === 1 && seen[0] !== null, seen);
+  check('...classified `unknown` — the honest bucket', seen[0]?.kind === 'unknown', seen[0]?.kind);
+  check('THE NEGATIVE: the shell does NOT show the way in',
+    standing.atTheEdge === false, standing);
+  check('...and it is still reported to the developer channel, loudly',
+    errors.includes('sendPresence'), errors);
+}
+
+async function anAcceptedWriteReportsAcceptance(): Promise<void> {
+  console.log('\n8c. a write the node accepts is reported as such, and lifts the edge');
+  const { standing, seen, errors } = await writeOnce(null);
+
+  check('the accepted write was reported', seen.length >= 1, seen.length);
+  check('...as `null`, which is what "the water took it" looks like',
+    seen[0] === null, seen[0]);
+  check('nothing went to the developer channel at all', errors.length === 0, errors);
+
+  // The standing folded from an accepted write alone is open water — but the
+  // case that matters is a player who WAS at the edge and has just been let in
+  // by someone in the water, which is the whole point of spec §2.16's "letting
+  // one in is an in-game act". Folded from the edge, the same report lifts it.
+  let letIn = afterWrite({ atTheEdge: true }, seen[0] ?? null);
+  for (const f of seen.slice(1)) letIn = afterWrite(letIn, f);
+  check('a client that was at the edge is in the water the moment a write lands',
+    letIn.atTheEdge === false, letIn);
+  check('...and one that never was stays where it was', standing.atTheEdge === false, standing);
+}
+
 async function main(): Promise<void> {
   wildSeedFromIsPinnedAndAgreesAcrossShells();
   await landedEatMustNotRetireAPendingVector();
@@ -843,6 +955,9 @@ async function main(): Promise<void> {
   await twoCheckpointsForOneEpochAreReported();
   await noCheckpointIsSkippedCleanly();
   await adoptionCatchesUpWhenTheFirstFrameBeatsTheFetch();
+  await theGateReachesTheShellAsAType();
+  await anUnrelatedRefusalIsNotTheWayIn();
+  await anAcceptedWriteReportsAcceptance();
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
