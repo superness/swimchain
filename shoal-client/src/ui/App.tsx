@@ -39,10 +39,20 @@
  *
  * The chain-sea parameters (`?rpc=`, `&cookie=`, `&who=`, …) are a FOURTH set,
  * and unlike those three they are gated on `import.meta.env.DEV` in both
- * `chainParams` and `buildChainSea` — see the comments there. They carry a
+ * `chainParams` and `devChainSea` — see the comments there. They carry a
  * credential and a key derivation, "not reachable from inside the game" is not
  * a security property when `devtools` is on in release, and the static gate is
  * also what keeps `browserIdentity.ts` out of the production bundle at all.
+ *
+ * THERE ARE TWO CONFIGURATION PATHS NOW (plan 4b, Task 2) AND THE GATE COVERS
+ * ONLY ONE OF THEM. The second is `shellConfig.ts`: the desktop shell's own
+ * `get_rpc_config`, the node's own identity, and a signer that signs THROUGH
+ * the node — no URL, no key in the browser, nothing for the gate to protect.
+ * That is what makes a shipped build able to reach real water at all. The rule
+ * that picks between the two lives in `seaChoice.chooseSeaSource`, stated where
+ * a test can drive it at both values of `import.meta.env.DEV`; the gate below
+ * stays exactly where it was, because it is doing a second job the rule cannot
+ * do (dropping `browserIdentity.ts` from the bundle).
  *
  * =============================================================================
  * THE TETHER, THE HUSH AND THE SCATTER (Task 6)
@@ -75,16 +85,15 @@
  * would breach the node's 120/min RPC write cap and crowd every other swimmer
  * out of the per-space mempool budget they all share.
  *
- * WHAT `sea.publish` IS TODAY, stated plainly rather than implied. It appends
- * to the log this sea's own fold walks — which is what a local write does
- * before gossip carries it, since the node merges the mempool into
- * `get_replies` and a client sees its own write back immediately. The real
- * writer is one substitution, `(vec, say) => void sendPresence(ctx, vec, say)`,
- * and it is NOT made here because nothing in this plan establishes a room to
- * write into: `scripts/regtest-smoke.ts` is the only place a Shoal space and
- * room post are ever created, and the shell gets one in Task 7. Wiring an
- * unexercised chain writer would be dead code claiming a capability nobody has
- * run.
+ * WHAT `sea.publish` IS. On an offline sea it appends to the log that sea's own
+ * fold walks. On a chain sea it is `sendPresence` — mined, signed and submitted
+ * — and the local append is the optimistic row that keeps the player's own fish
+ * moving until the node hands the write back (`chainSea.ts`'s "two logs, not
+ * one"). This paragraph used to say the chain writer was NOT wired because
+ * nothing established a room to write into; both halves of that are now false.
+ * `scripts/mint-water.ts` establishes the room, and `shellConfig` finds it
+ * without a URL, so a shipped window publishes through the same call the smoke
+ * scripts do.
  *
  * THE AUTHORING CLOCK IS `wall + TICK_MS`, not `wall`. An entry whose `ms` is
  * at or behind the last folded tick sends `advance` down its bounded-replay
@@ -97,7 +106,9 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
-import { chainSea, type ChainSea } from './chainSea';
+import { type ChainSea } from './chainSea';
+import { chooseSeaSource, seaFrom } from './seaChoice';
+import { shellConfig, type ShellSeaConfig } from './shellConfig';
 import { TheEdge } from './TheEdge';
 import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
 import { identityFromLabel } from './browserIdentity';
@@ -145,7 +156,8 @@ type SceneKind = 'lively' | 'harness' | 'chain';
  * The cookie rides in the query string because a browser cannot read the
  * node's cookie file. That is acceptable for a localhost regtest capture and
  * for nothing else; a shipped shell gets its auth from the Tauri side through
- * `get_rpc_config` (see Diagnostics.tsx), never from a URL.
+ * `get_rpc_config` — `shellConfig.ts`, which is now the path a release build
+ * actually takes — never from a URL.
  */
 interface ChainParams {
   rpc: string;
@@ -157,13 +169,45 @@ interface ChainParams {
 }
 
 /**
- * Build the chain sea from the URL, or `null` if this window was not pointed
- * at a room. Synchronous on purpose: the signing key resolves asynchronously
- * (WebCrypto `importKey`), but `Sea.selfId` must be known on the first frame,
- * so the public key comes from `&id=` and `chainSea` checks the two agree once
- * the key arrives. That keeps the frame loop's construction unchanged.
+ * Build the sea this window is actually pointed at, or `null` for the offline
+ * sea. Synchronous on purpose: `Sea.selfId` must be known on the first frame,
+ * so both paths hand over a public key up front and a `Promise` for the signer.
+ * On the dev path the key comes from `&id=` and the signer resolves later
+ * (WebCrypto `importKey`); on the shell path both are already known by the time
+ * a `ShellSeaConfig` exists, which is why `shell` arrives here as a value the
+ * caller has already awaited rather than as a promise to await inside the
+ * frame loop.
+ *
+ * THE RULE IS `chooseSeaSource` and it is not restated here — see seaChoice.ts
+ * for what a release build does in each of the three cases, and why the dev
+ * path wins the one contest that can occur (`tauri dev`).
+ *
+ * THE WAY IN (spec §2.16) rides along on both paths, from `seaFrom`. Every
+ * write's outcome is typed — accepted, or classified by `classifySendFailure`
+ * from the node's own JSON-RPC code — and what it MEANS is decided by
+ * `wayIn.afterWrite`. Nothing here reads an error message, and this page never
+ * sees one.
  */
-function buildChainSea(onWrite: (failure: SendFailure | null) => void): ChainSea | null {
+function buildChainSea(
+  shell: ShellSeaConfig | null,
+  onWrite: (failure: SendFailure | null) => void,
+): ChainSea | null {
+  switch (chooseSeaSource(import.meta.env.DEV, chainParams() !== null, shell !== null)) {
+    case 'dev': return devChainSea(onWrite);
+    // `chooseSeaSource` only answers `shell` when it was told there is one, so
+    // this narrowing can never actually fall through — it is here because the
+    // compiler cannot know that and a non-null assertion would be a worse way
+    // of saying the same thing.
+    case 'shell': return shell === null ? null : seaFrom(shell, onWrite);
+    case 'offline': return null;
+  }
+}
+
+/**
+ * The DEV path: a real room on a real node, from query parameters — Task 7's
+ * capture, and the first thing in this window that ever wrote to a chain.
+ */
+function devChainSea(onWrite: (failure: SendFailure | null) => void): ChainSea | null {
   // THE STATIC GATE, and it is here as well as inside `chainParams` on purpose.
   // `import.meta.env.DEV` is replaced by the literal `false` in a production
   // build, so this becomes `if (true) return null;` and everything below it —
@@ -172,12 +216,24 @@ function buildChainSea(onWrite: (failure: SendFailure | null) => void): ChainSea
   // Gating `chainParams` alone would not do that: rollup does not inline across
   // the call to prove the branch unreachable, so the weak dev key derivation
   // would still ship, unreferenced but present, in a release the operator has
-  // no reason to expect it in. Verified by grepping `dist/` for `shoal-two:`
-  // after `npm run build`.
+  // no reason to expect it in.
+  //
+  // IT IS ALSO WHY THIS FUNCTION EXISTS SEPARATELY FROM `buildChainSea`. The
+  // shell path must run in a release build, so `buildChainSea` can no longer
+  // open with `if (!import.meta.env.DEV) return null;` — and a gate that had
+  // become a branch inside a function that keeps going would have left
+  // `identityFromLabel` reachable and `browserIdentity.ts` in the bundle. The
+  // gate must DOMINATE the reference, which means the reference has to live in
+  // a function the gate can return out of.
+  //
+  // Verified after `npm run build` by grepping `dist/assets/*.js` (NOT `dist/`,
+  // which includes the sourcemap: `sourcesContent` embeds comments verbatim, so
+  // this very paragraph would answer a search for the dev key's own prefix).
+  // `seaChoice.test.ts` section 3 holds the arrangement in place by name.
   if (!import.meta.env.DEV) return null;
   const p = chainParams();
   if (p === null) return null;
-  return chainSea({
+  return seaFrom({
     auth: {
       endpoint: p.rpc,
       authHeader: p.cookie === null ? null : `Basic ${btoa(`__cookie__:${p.cookie}`)}`,
@@ -186,20 +242,7 @@ function buildChainSea(onWrite: (failure: SendFailure | null) => void): ChainSea
     roomContentId: p.room,
     authorIdHex: p.id,
     signer: identityFromLabel(p.who),
-    // Mid-world, so a fresh window is somewhere the other window's camera can
-    // plausibly reach. The fold overrides this the moment a real vector for
-    // this swimmer arrives; it only decides where the pointer starts steering
-    // from before the first publish.
-    spawn: { x: Math.round(WORLD_W / 2), y: Math.round(WORLD_H / 2) },
-    onError: (where, err) => { console.error(`[shoal] chain sea (${where}):`, err); },
-    // THE WAY IN (spec §2.16). Every write's outcome, typed — accepted, or
-    // classified by `classifySendFailure` from the node's own JSON-RPC code.
-    // What it MEANS is decided by `wayIn.afterWrite`, which raises the edge of
-    // the water for exactly one of the three kinds and leaves the standing
-    // alone for the other two. Nothing here reads an error message, and this
-    // page never sees one.
-    onWrite,
-  });
+  }, onWrite);
 }
 
 function chainParams(): ChainParams | null {
@@ -330,9 +373,53 @@ export function App() {
    * write every few seconds does not re-render the tree.
    */
   const [standing, setStanding] = useState<Standing>(OPEN_WATER);
+  /**
+   * THE SHELL'S CONFIGURATION, once it exists — `null` until then, and `null`
+   * forever in a browser tab (`shellConfig` returns `null` the moment it finds
+   * no `window.__TAURI__`, without a single RPC).
+   *
+   * IT IS ASYNCHRONOUS AND THE WINDOW MUST NOT WAIT FOR IT. `get_rpc_config`
+   * polls the node's own `.rpc_addr`/`.cookie` handoff for up to 120 s
+   * (src-tauri/src/main.rs:172-200), because on a cold first launch the shell
+   * has just started a node that has to open its database and bind a port. A
+   * window that rendered nothing until that resolved would be a black rectangle
+   * for a minute and a half on exactly the launch a new player judges the game
+   * by. So the offline sea is drawn from frame one and this swaps to real water
+   * underneath the player when it lands — which is the whole reason the scene
+   * is allowed to change below rather than being decided once at mount.
+   */
+  const [shell, setShell] = useState<ShellSeaConfig | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const typingRef = useRef<string | null>(null);
   typingRef.current = typing;
+  /** The same value, readable from the key handler's `[]`-deps closure. */
+  const shellRef = useRef<ShellSeaConfig | null>(null);
+  shellRef.current = shell;
+  /** Is this window in water other people are in? Either path counts. */
+  const inRealWater = () => chainParams() !== null || shellRef.current !== null;
+
+  useEffect(() => {
+    // A window the dev path has already won does not ask. Asked through the
+    // same rule rather than by restating it: if a shell configuration could not
+    // change the answer, fetching one would only cost a needless teardown and
+    // rebuild of the very sea a capture is being taken of.
+    if (chooseSeaSource(import.meta.env.DEV, chainParams() !== null, true) === 'dev') return;
+    // ONCE PER WINDOW. `shellConfig` makes four RPC round trips on the way to a
+    // complete answer and there is nothing about it that changes while a window
+    // is open: the node the shell started is the node it started.
+    let alive = true;
+    void shellConfig()
+      .then((cfg) => {
+        if (!alive || cfg === null) return;
+        setShell(cfg);
+        // The offline sea gives way to real water — but never over a scene a
+        // developer asked for by name. `?at=` is a harness replay being
+        // photographed and `chain` is already real water from `?rpc=`.
+        setScene((s) => (s === 'lively' ? 'chain' : s));
+      })
+      .catch((e) => { console.error('[shoal] shell configuration:', e); });
+    return () => { alive = false; };
+  }, []);
 
   /**
    * The queue between the DOM's event handlers and the frame loop.
@@ -382,8 +469,15 @@ export function App() {
       // room's log, and switching back would rebuild them — a stray keystroke
       // during a capture would silently replace the sea being photographed
       // with a scripted one that looks very much like it.
-      else if (e.key === '1' && chainParams() === null) setScene('lively');
-      else if (e.key === '2' && chainParams() === null) setScene('harness');
+      //
+      // THE SHELL'S WATER COUNTS AS A REAL ROOM, and this is the half that had
+      // to change. Until Task 2 a release build never held a chain sea, so the
+      // toggle could only ever swap one offline sea for another; now `1` in a
+      // shipped window would drop a player out of the water they share with
+      // other people and into a scripted one that looks almost identical, with
+      // no way back and nothing said about it. Same rule, one more source.
+      else if (e.key === '1' && !inRealWater()) setScene('lively');
+      else if (e.key === '2' && !inRealWater()) setScene('harness');
       else if (e.key === ' ') { e.preventDefault(); push({ kind: 'dart' }); }
       else if (e.key === 'e' || e.key === 'E') { e.preventDefault(); wantsBiteRef.current = true; }
       else if (e.key === 'Enter') { e.preventDefault(); setTyping(''); }
@@ -404,7 +498,7 @@ export function App() {
     // sea owns a WebSocket and timers, so leaking one across a hot reload
     // would leave a growing pile of subscribers on the node.
     const chain = scene === 'chain'
-      ? buildChainSea((failure) => { setStanding((s) => afterWrite(s, failure)); })
+      ? buildChainSea(shell, (failure) => { setStanding((s) => afterWrite(s, failure)); })
       : null;
     const sea: Sea = chain
       ?? (scene === 'harness'
@@ -717,7 +811,13 @@ export function App() {
       window.removeEventListener('pointercancel', onUp);
       chain?.stop();
     };
-  }, [scene]);
+    // `shell` is a dependency and not a ref read on purpose: it is set exactly
+    // once per window, and the sea has to be REBUILT when it lands rather than
+    // picked up on some later frame — `chainSea` takes its auth, its room and
+    // its signer at construction. React batches this with the `lively -> chain`
+    // scene change in the same `.then`, so the effect tears down and rebuilds
+    // once, not twice.
+  }, [scene, shell]);
 
   return (
     <div style={S.page}>

@@ -124,15 +124,34 @@ export const WATER_APP = 'shoal';
  */
 export const WATER_NAME = 'main';
 
-/** What `create_space` is given for this water — the two halves above, joined
- *  in the form `parse_app_space_name` accepts (`src/types/space_class.rs:52`).
- *  Exported so whatever mints the water and whatever joins it cannot drift. */
+/**
+ * What `create_space` is given for this water — the two halves above, joined in
+ * the form `parse_app_space_name` accepts (`src/types/space_class.rs:52`).
+ *
+ * EXPORTED SO WHATEVER MINTS THE WATER AND WHATEVER JOINS IT CANNOT DRIFT, and
+ * that is now enforced rather than hoped for: `scripts/mint-water.ts` is the
+ * only thing that creates this space, it imports this constant rather than
+ * typing the name, and `seaChoice.test.ts` section 4 fails if it ever grows a
+ * `@shoal:` literal of its own. The failure being prevented has no symptom to
+ * find it by — a mistyped name mints a space that exists, is healthy, accepts
+ * writes, and is invisible to every shipped build forever.
+ *
+ * The smoke scripts are NOT copies of this and must not import it: they mint
+ * `@shoal:smoke`, `@shoal:two` and `@shoal:cp` precisely so a test run cannot
+ * write into the water people are playing in.
+ */
 export const WATER_SPACE_NAME = `@${WATER_APP}:${WATER_NAME}`;
 
 /** The room post every swimmer replies into. Its title and body are the whole
  *  of its identity: `submit_post` hashes `${title}\n\n${body}` and the content
  *  id is that hash, so the room needs no lookup table, no configuration and no
- *  discovery — deriving it from these two strings is exact. */
+ *  discovery — deriving it from these two strings is exact.
+ *
+ *  THE SPACE IS NOT IN THAT PREIMAGE (`src/rpc/methods.rs:2086-2089`) and
+ *  `get_replies` is keyed on the parent content id alone, so two spaces whose
+ *  room posts share a title and body share ONE room and one reply set. That is
+ *  why the smoke scripts have their own room text as well as their own space
+ *  name — see `scripts/regtest-smoke.ts`, where it was not true until Task 2. */
 export const ROOM_TITLE = 'The Shoal';
 export const ROOM_BODY = 'the room every swimmer replies into';
 
