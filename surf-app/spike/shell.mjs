@@ -84,6 +84,7 @@ function settle(target, tuneResult, from, kindOverride = null) {
     },
     onTimeout: () => {
       timer.abort();
+      hud.signalLost(target);
       staticCtl.hide();
       showSignalLost(byId.get(target));
     },

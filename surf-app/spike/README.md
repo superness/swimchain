@@ -13,8 +13,9 @@ protocol's output and the decision rule.
 
 ## Prerequisites
 
-- **Node 20+** on the PC (the spike server and its test suite are
-  zero-dependency ESM, `node --test`).
+- **Node 21+** on the PC (the spike server and its test suite are
+  zero-dependency ESM, `node --test`; the quoted-glob test command below
+  requires Node 21+ for `node --test`'s glob positionals).
 - **A dev node** — the release `sw`/`sw.exe` binary (`cargo build --release`
   if it doesn't exist yet) able to run `--regtest` (or `--testnet`) with
   `node start`.
@@ -91,6 +92,7 @@ protocol's output and the decision rule.
 |---|---|
 | ArrowUp / ArrowDown | flip channel (desktop) |
 | vertical swipe, right-edge strip | flip channel (touch) |
+| mouse wheel over the right-edge strip | flip channel (desktop) |
 | `p` | power toggle |
 | `m` or tap invisible bottom-left 44px corner | toggle HUD |
 | `r` | reset the drift gauge (stage-scoped; used by G4) |
@@ -100,11 +102,18 @@ protocol's output and the decision rule.
 Shell keys are registered on the shell window **and** on every mounted
 frame's window, so they keep working after you click inside a channel.
 
+The exported `surf-spike-results.json` carries `warmViaCounts` (a per-`via`
+tally of warm flips) alongside the `warm`/`cold` stats — audit it: if more
+than a handful of warm samples are `via=dom-peek-backstop`, the median
+under-reports paint on a contended device; treat it as suspect and
+investigate before ruling N=3. It also carries `signalLostCount`, a
+cumulative counter of flips that timed out (SIGNAL LOST) and would otherwise
+vanish from the dataset without a trace.
+
 Full test suite: `node --test "surf-app/spike/*.test.mjs"` — run before every
 commit; seconds to complete.
 
-## Android measurement protocol (condensed — full detail + rationale in the
-plan's Task 7 brief)
+## Android measurement protocol (condensed — full detail + rationale in the plan's Task 7 brief)
 
 1. **Connect:**
    ```powershell
@@ -147,7 +156,7 @@ plan's Task 7 brief)
    | S1 baseline | power-on lands on FEED; settle 2 min | PSS @ 1 warm |
    | S2 | flip to FORUM; settle 2 min | PSS @ 2 warm |
    | S3 | flip to REEF; play it 3 min (board animating) | PSS @ 3 warm incl. game |
-   | S4 flip soak | 15 min realistic flipping across all 5 channels (LRU evictions included), scrolling feed, opening a thread, playing reef. Include ≥25 direction-reversal flips inside the current warm trio (bounce the last two channels — monotone dial cycling at warmSize 3 over 5 channels is *always* cold; G3 needs ≥20 warm samples) | PSS trend; HUD warm/cold stats; any "Aw, Snap"/reload |
+   | S4 flip soak | 15 min realistic flipping across all 5 channels (LRU evictions included), scrolling feed, opening a thread, playing reef. Include ≥25 direction-reversal flips inside the current warm trio (bounce the last two channels — monotone dial cycling at warmSize 3 over 5 channels is *always* cold; G3 needs ≥20 warm samples) | PSS trend; HUD warm/cold stats; any "Aw, Snap"/reload; SIGNAL LOST count |
    | S5 idle | tap-reset the drift gauge first (`r`, via a paired Bluetooth keyboard or `adb shell input text r`), then sit on FEED 5 min, REEF warm underneath | HUD: reef `raf/s` > 0 while occluded; driftMax over S5 only |
    | **S5-export** | before backgrounding anything: tap the invisible bottom-right corner → `surf-spike-results.json` lands in Downloads; `adb pull /sdcard/Download/surf-spike-results.json`. Photograph/screenshot the HUD too | the JSON + HUD capture (all metrics live in renderer memory — if S6 kills the renderer, this export is the only record of S1–S5) |
    | S6 background soak | home button; screen on; Chrome backgrounded **60 min** (sampler keeps logging) | renderer alive? PSS under pressure |
@@ -155,6 +164,9 @@ plan's Task 7 brief)
 
    If the page survived S7, export once more for the post-soak numbers; if
    it reloaded, the S5-export is the dataset and S7 records the death.
+   Chrome's Downloads doesn't overwrite the S5-export file — the second
+   export lands as `surf-spike-results (1).json`. Pull it explicitly:
+   `adb pull "/sdcard/Download/surf-spike-results (1).json"`.
 
 5. **Write `RESULTS.md`** against the gates, fill every cell — no blank
    verdicts.

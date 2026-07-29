@@ -9,7 +9,7 @@
 //   reach the page). Channels get a placeholder rpcAuth; the proxy replaces
 //   the Authorization header on every request regardless.
 //
-// Zero dependencies. Node 20+.
+// Zero dependencies. Node 21+.
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';

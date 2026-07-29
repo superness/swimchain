@@ -9,7 +9,7 @@ Node: <mode, height, peer count during run>. Single renderer confirmed: <yes/no 
 |---|---|---|---|
 | G1 foreground survival | S4: 15-min flip soak, zero renderer deaths | | |
 | G2 background survival | S6/S7: 60-min background, no reload on return | | |
-| G3 warm flip | median <= 300ms over >= 20 warm flips (p95 recorded) | | |
+| G3 warm flip | median <= 300ms over >= 20 warm flips (p95 recorded). Audit `warmViaCounts` in the export — if more than a handful of warm samples are `via=dom-peek-backstop`, the median under-reports paint on a contended device; treat it as suspect and investigate before ruling N=3. | | |
 | G4 event-loop health | S5: occluded REEF raf/s > 0 AND shell driftMax < 250ms **measured over the S5 idle window only (drift gauge reset at S5 start)** | | |
 
 ## Numbers
@@ -18,8 +18,11 @@ Node: <mode, height, peer count during run>. Single renderer confirmed: <yes/no 
 - PSS peak during S4: ___ MB; trend during S6: ___
 - Warm flips: n=___, median=___ms, p95=___ms. Cold: median=___ms vs 2s gate.
 - Longtasks per channel over S4: ___
+- signalLostCount (export payload, cumulative over the run — every SIGNAL LOST is a sample the warm/cold stats silently dropped): ___
 
 ## Verdict
+
+(apply the Decision rule below before filling this in)
 
 **N = ___.** <One paragraph: which gates carried the decision.>
 R3 ceiling for §8: ___ MB (or R2 = ___ MB if N=2).

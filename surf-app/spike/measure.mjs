@@ -28,6 +28,18 @@ export function createFlipTimer(now = () => performance.now()) {
   };
 }
 
+// Pure: counts flips of `kind` by their `via` label. G3's median can be
+// dragged down by a contended device falling back to the DOM-peek backstop
+// on many "warm" flips — this surfaces that split so the export is auditable.
+export function viaCounts(flips, kind) {
+  const out = {};
+  for (const f of flips) {
+    if (f.kind !== kind) continue;
+    out[f.via] = (out[f.via] ?? 0) + 1;
+  }
+  return out;
+}
+
 export function createSink() {
   const channels = new Map(); // id -> mutable metrics record
   return {
@@ -65,6 +77,7 @@ export function attachFrameProbes(id, iframe, sink) {
 export function createHud(el, timer) {
   const sink = createSink();
   const notes = [];
+  let signalLostN = 0;
   const startedAt = performance.now();
   let driftMax = 0, expected = performance.now() + 500;
   setInterval(() => { // shell main-thread starvation probe
@@ -98,6 +111,10 @@ export function createHud(el, timer) {
     },
     toggle() { el.hidden = !el.hidden; },
     note(s) { notes.push(s); },
+    // Survivorship-bias fix: a timed-out flip must leave a trace in the
+    // dataset, not just vanish from the warm/cold samples.
+    signalLost(id) { signalLostN++; notes.push(`SIGNAL LOST ${id}`); },
+    signalLostCount: () => signalLostN,
   };
 }
 
@@ -107,10 +124,12 @@ export function exportResults(timer, hud) {
     ua: navigator.userAgent,
     warm: timer.stats('warm'),
     cold: timer.stats('cold'),
+    warmViaCounts: viaCounts(timer.all(), 'warm'),
     flips: timer.all(),
     channels: Object.fromEntries(hud.sink.entries()),
     driftMaxMs: hud.drift.max(),
     heapMB: globalThis.performance?.memory ? performance.memory.usedJSHeapSize / 1048576 : null,
+    signalLostCount: hud.signalLostCount(),
   };
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }));
