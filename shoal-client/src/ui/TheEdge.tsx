@@ -13,6 +13,19 @@
  * wild shoal drifting through it, live — and this layer does one thing to it:
  * it draws a BOUNDARY across the water and puts the player on the wrong side.
  *
+ * THE SEA UNDERNEATH IS THE SHALLOWS NOW, AND IT IS PLAYABLE. When this was
+ * written the water under this layer was the real one, in which a refused
+ * swimmer could do nothing at all; `seaChoice.chooseWater` now puts them in the
+ * tutorial water while their writes keep knocking, so everything they do moves
+ * a fish they can see. Two consequences for this file, one already acted on and
+ * one left for the plan that owns this surface:
+ *
+ *   - the pall no longer covers the whole window (`theEdge.css`, which carries
+ *     the argument). A game played through frosted glass is not a place to wait.
+ *   - THE CIRCLING FISH BELOW IS NOW A SECOND FISH. It was the player when
+ *     nothing else on screen was theirs; there is a real one in the middle of
+ *     the window now, and only one of the two answers the mouse.
+ *
  *   - above the line, the sea is barely touched. That is where everyone else
  *     is, and it has to stay legible or there is nothing to be outside of;
  *   - below it, the water is drained of colour and light (`backdrop-filter`,
@@ -24,9 +37,10 @@
  *     only thing §2.16 says an unvouched newcomer does: circling at the edge.
  *
  * The whole layer is `pointer-events: none` on purpose. The player can still
- * steer, still dart, still open a line to speak — their writes are refused, so
- * nothing they do reaches anyone, but taking the controls away as well would
- * turn a place into a modal dialog, which is exactly what §2.16 forbids.
+ * steer, still dart, still open a line to speak — and now those verbs reach a
+ * sea that answers them. Their writes into the REAL water are still refused, so
+ * nothing they do reaches another person yet; taking the controls away as well
+ * would turn a place into a modal dialog, which is exactly what §2.16 forbids.
  *
  * ## The words
  *

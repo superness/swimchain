@@ -50,18 +50,39 @@
    filter works on the live canvas underneath, so wild fish drifting across the
    boundary really do dim as they cross it. The mask softens the top edge over
    ~64px so the transition is water, not a seam — the drawn line below is what
-   the eye actually reads as the boundary. */
+   the eye actually reads as the boundary.
+
+   IT USED TO REACH THE BOTTOM OF THE WINDOW, AND THAT WAS RIGHT UNTIL THE SEA
+   UNDERNEATH BECAME PLAYABLE. When this was written, a refused newcomer was
+   looking at water they could not affect, so dimming all of it cost nothing and
+   said the whole thing. They now swim the shallows while their writes keep
+   knocking (`seaChoice.chooseWater`), and the camera holds their own fish at
+   the middle of the window — which is exactly where a `brightness(0.62)
+   blur(1.4px)` pall was sitting. A game you play through frosted glass is not a
+   sea somebody can wait in.
+
+   So the pall is a BAND under the line now: deep where the boundary is, gone by
+   the time it reaches anything the player is steering. The line, the vignette
+   above it and the copy are untouched, and the cold water still reads as cold
+   where the eye is actually looking for it.
+
+   THE REST OF THIS SURFACE IS TASK 2'S, and the surrogate fish is the piece to
+   look at first: `.shoal-edge-orbit` draws one small pale fish circling, which
+   WAS the player when nothing else on screen was theirs. There are two of them
+   on the surface now, and only one of them answers the mouse. */
 .shoal-edge-below {
   position: absolute;
-  left: 0; right: 0; top: 31%; bottom: 0;
-  backdrop-filter: saturate(0.46) brightness(0.62) blur(1.4px);
-  -webkit-backdrop-filter: saturate(0.46) brightness(0.62) blur(1.4px);
+  left: 0; right: 0; top: 31%; height: 22%;
+  backdrop-filter: saturate(0.46) brightness(0.72) blur(1.1px);
+  -webkit-backdrop-filter: saturate(0.46) brightness(0.72) blur(1.1px);
   background: linear-gradient(to bottom,
-    rgba(1, 8, 13, 0.04) 0%,
-    rgba(1, 8, 13, 0.24) 26%,
-    rgba(1, 6, 10, 0.54) 100%);
-  mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px);
-  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px);
+    rgba(1, 8, 13, 0.05) 0%,
+    rgba(1, 8, 13, 0.22) 34%,
+    rgba(1, 6, 10, 0) 100%);
+  mask-image: linear-gradient(to bottom,
+    rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px, rgba(0,0,0,1) 55%, rgba(0,0,0,0) 100%);
+  -webkit-mask-image: linear-gradient(to bottom,
+    rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px, rgba(0,0,0,1) 55%, rgba(0,0,0,0) 100%);
 }
 
 /* The line itself. Two waves, drawn 3x the viewport wide and drifting at

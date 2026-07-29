@@ -97,6 +97,13 @@ import { roomContentId } from './shellConfig';
 /** The copy, imported rather than retyped — it has exactly one home, and this
  *  file compares the rendered DOM against it. */
 import { EDGE_BODY } from './wayIn';
+/** The two spawns, imported rather than retyped: they are what tells the two
+ *  seas apart on the wire (see `whereFrom`). */
+import { SEA_SPAWN } from './seaChoice';
+import { SHALLOWS_SPAWN } from './shallows';
+/** The shipping decoder, so a check reads a write the way a peer would. */
+import { decodeBody } from '../lib/shoalWire';
+import { MAX_EMIT_GAP_MS } from '../lib/shoalEmit';
 
 const NODE_PUBKEY = 'c7'.repeat(32);
 
@@ -104,6 +111,29 @@ const NODE_PUBKEY = 'c7'.repeat(32);
  *  room the shell resolved, is the only evidence that counts. */
 function reachedWater(o: Observation, room: string): boolean {
   return o.submitted.some((w) => w.author === NODE_PUBKEY && w.parent === room);
+}
+
+/**
+ * The swim vectors a window put on the wire, decoded by the same decoder every
+ * peer uses — never by re-splitting the body here.
+ *
+ * A presence body carries WHERE THE AUTHOR IS, so this is how a check can tell
+ * which sea the player's own fish is swimming in. Nothing else in this file's
+ * observations can: a count of writes says a window is alive and says nothing
+ * at all about whether the person holding the mouse has anything to do.
+ */
+function vectorsOf(o: Observation): { x: number; y: number; t: number }[] {
+  const out: { x: number; y: number; t: number }[] = [];
+  for (const w of o.submitted) {
+    const e = decodeBody(w.body, w.author, 'observed');
+    if (e !== null && e.kind === 'presence') out.push({ x: e.vec.x, y: e.vec.y, t: e.vec.t });
+  }
+  return out;
+}
+
+/** Is this vector authored from the point a named sea spawns a swimmer on? */
+function from(v: { x: number; y: number }, spawn: { x: number; y: number }): boolean {
+  return v.x === spawn.x && v.y === spawn.y;
 }
 
 async function main(): Promise<void> {
@@ -306,7 +336,9 @@ async function main(): Promise<void> {
     // again within it. So a window held open past that and seen to write only
     // once has stopped, and one 9.5 s window is the cheapest interval in which
     // "it kept going" and "it gave up after the first refusal" look different.
-    const refused = await observe({ writesRefused: true, awaitWrite: true, settleMs: 9_500 });
+    const started = Date.now();
+    const refused = await observe({ writesRefused: true, awaitWrite: true, settleMs: 12_000 });
+    const ended = Date.now();
     check('a refused swimmer still reaches real water and still writes into it',
       reachedWater(refused, room), refused.submitted);
     // NOT "it wrote once". A window that gave up after the first refusal would
@@ -314,6 +346,58 @@ async function main(): Promise<void> {
     // vector every few seconds forever, refused or not.
     check('...and KEEPS swimming — it is refused again and again, not once and out',
       refused.submitted.length >= 2, refused.submitted.length);
+
+    // =====================================================================
+    // THE INVARIANT. While the edge is up, this client KEEPS ATTEMPTING REAL
+    // WRITES — and it is asserted here, on the wire, because it is the only
+    // thing standing between the newcomer's water and a silent permanent
+    // lockout. A refusal is the only evidence this client will ever have that
+    // it is outside; a write that goes through is the only evidence it will
+    // ever have that it is not. Stop the writes and the door can only be
+    // opened from a side nobody is standing on: no error, nothing wrong in the
+    // logs, and a player sealed in forever.
+    //
+    // MEASURED ON THE AUTHORING INSTANTS THE WRITES THEMSELVES CARRY, not on
+    // when they arrived. Each write is mined before it is sent, so arrival
+    // times carry a variable delay at both ends of any interval and a check
+    // against them is a check against Argon2id's mood. `vec.t` is chosen by
+    // `shouldEmit`'s own clock and is exact.
+    //
+    // `MAX_EMIT_GAP_MS` is the right bar and it is imported, not typed: it is
+    // the CEILING on the gap between one swimmer's writes, so a window that is
+    // still folding must publish again inside it. Spanning a whole one after
+    // the water first refused it is therefore "it is still going", not "the
+    // last few were already in flight".
+    const wrote = vectorsOf(refused);
+    const span = wrote.length < 2 ? 0 : wrote[wrote.length - 1].t - wrote[0].t;
+    check('THE INVARIANT: it is still writing a full emit-gap after the first refusal',
+      span >= MAX_EMIT_GAP_MS, { span, MAX_EMIT_GAP_MS, wrote: wrote.length });
+
+    // ...AND THOSE WRITES ARE STILL ADDRESSED TO THIS HOUR. A vector authored
+    // on the shallows' own clock (a constant instant inside a constant epoch,
+    // shallows.ts) would be dated somewhere in 1970: the node's timestamp
+    // window would refuse it for a second reason, so the -32015 the standing
+    // is built on would stop being what the client is hearing, and an
+    // acceptance could never arrive. The player's body may be in the other
+    // sea; the write may not.
+    check('...on the water\'s own clock, not the shallows\' — every write is dated now',
+      wrote.length > 0 && wrote.every((v) => v.t >= started && v.t <= ended + 1_000),
+      wrote.map((v) => v.t - started));
+
+    // =====================================================================
+    // AND THE PLAYER HAS A SEA TO PLAY. The count above cannot see this: a
+    // window that keeps writing into water it cannot affect, with nothing on
+    // screen the player can move, satisfies every check before this one. A
+    // presence body carries the author's own position, so the wire says which
+    // water their fish is in — and the two spawns are 602 cu apart, so no
+    // window reaches one from the other by accident.
+    const opening = wrote[0];
+    check('the first write — before any refusal — comes from the open water\'s spawn',
+      opening !== undefined && from(opening, SEA_SPAWN), { opening, SEA_SPAWN });
+    check('...and once refused, the player is swimming in the shallows instead',
+      wrote.some((v) => from(v, SHALLOWS_SPAWN)),
+      { wrote, SHALLOWS_SPAWN });
+
     check('...and the edge of the water is up, drawn over the live sea',
       refused.edgeAtEnd === true, refused.edgeAtEnd);
     check('...saying the one line this client owns for it, off the rendered DOM',
@@ -339,6 +423,13 @@ async function main(): Promise<void> {
     check('NON-DEGENERACY: a swimmer the water accepts is never shown a boundary',
       accepted.edgeAtEnd === false && accepted.edgeLine === null,
       { atEnd: accepted.edgeAtEnd, line: accepted.edgeLine });
+    // ...nor sent to the shallows. The tutorial water is where a newcomer waits,
+    // not where a player who is already in the sea plays: a window that drew it
+    // whenever it could would take everyone out of the water they share.
+    check('...and is never sent to the shallows — they are in the water they joined',
+      vectorsOf(accepted).every((v) => !from(v, SHALLOWS_SPAWN))
+      && vectorsOf(accepted).some((v) => from(v, SEA_SPAWN)),
+      vectorsOf(accepted));
     check('...and asks about sponsorship no more than the refused one did',
       accepted.rpcCalls.filter((m) => m.includes('sponsor')).length === 0,
       accepted.rpcCalls);

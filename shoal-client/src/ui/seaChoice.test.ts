@@ -2,12 +2,17 @@
  * Which sea a build shows, and the gate that keeps the dev one out of it —
  * plan 4b, Task 2. Run: npx tsx src/ui/seaChoice.test.ts
  *
- * FOUR GROUPS, AND THEY PROVE DIFFERENT KINDS OF THING. Saying so up front
- * because the difference is the whole reason there are four:
+ * FIVE GROUPS, AND THEY PROVE DIFFERENT KINDS OF THING. Saying so up front
+ * because the difference is the whole reason there are five:
  *
  *  1. **The rule**, driven at both values of `import.meta.env.DEV`. This is
  *     behaviour: what a release build DOES when it is handed each combination
  *     of the two configuration paths. It is not the security property.
+ *  1a. **Which water the player's own body is in**, and — the half that is a
+ *     lockout if it is ever got wrong — where their writes go while they are
+ *     at the edge. Unit-level: `chooseWater` at all four combinations, and
+ *     `knockOn` against a chain sea that records what it was handed. The same
+ *     invariant is asserted end to end, on the wire, in `App.test.ts` §6.
  *  2. **A shell configuration really becomes a sea that writes as the node.**
  *     End to end and with nothing mocked inside the unit: the real
  *     `shellConfig` assembles against a fake node, the real `seaFrom` builds a
@@ -38,8 +43,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-  chooseSeaSource, retryDelayMs, seaFrom, RETRY_BASE_MS, RETRY_CAP_MS, SEA_SPAWN, type SeaSource,
+  chooseSeaSource, chooseWater, knockOn, retryDelayMs, seaFrom,
+  RETRY_BASE_MS, RETRY_CAP_MS, SEA_SPAWN, type PlayedWater, type SeaSource,
 } from './seaChoice';
+import type { ChainSea } from './chainSea';
+import type { Vec } from '../lib/shoalTypes';
 import { shellConfig, waterSpaceId, WATER_APP, WATER_NAME, type InvokeFn } from './shellConfig';
 import { wildSeedFrom } from './demoSea';
 import { decodeBody } from '../lib/shoalWire';
@@ -139,6 +147,87 @@ function theRule(): void {
   // The spawn both paths share. Hand-derived: WORLD_W/2 and WORLD_H/2, rounded.
   check('both paths spawn at the middle of the water',
     SEA_SPAWN.x === Math.round(WORLD_W / 2) && SEA_SPAWN.y === Math.round(WORLD_H / 2), SEA_SPAWN);
+}
+
+// ===========================================================================
+// 1a. Which water the player's body is in, and where their writes go
+// ===========================================================================
+
+/**
+ * Four combinations, hand-written. The row that carries the weight is
+ * `chain=true, edge=true`: a window that has reached real water and been
+ * refused, which must put the player in a sea they can play — and, per
+ * `knockOn` below, must go on writing into the one that refused them.
+ *
+ * `chain=false, edge=true` cannot occur (the standing is raised by a refused
+ * chain write) and is enumerated anyway: a total rule is one nobody has to
+ * check the caller's `null` handling against.
+ */
+const WATERS: { chain: boolean; edge: boolean; want: PlayedWater; note?: string }[] = [
+  { chain: false, edge: false, want: 'scene', note: 'no configuration yet — the offline scene' },
+  { chain: false, edge: true, want: 'scene', note: 'unreachable, and still answered' },
+  { chain: true, edge: false, want: 'chain', note: 'the shipped case: real water' },
+  { chain: true, edge: true, want: 'shallows', note: 'THE NEWCOMER: refused, and swimming anyway' },
+];
+
+/** A chain sea that records what was published into it and does nothing else. */
+function recordingChain(): { chain: ChainSea; wrote: { vec: Vec; say?: string }[] } {
+  const wrote: { vec: Vec; say?: string }[] = [];
+  const chain = {
+    publish: (vec: Vec, say?: string) => { wrote.push({ vec, say }); },
+  } as unknown as ChainSea;
+  return { chain, wrote };
+}
+
+function whichWater(): void {
+  console.log('\n1a. which water the player is in, and where their writes go');
+
+  for (const c of WATERS) {
+    const got = chooseWater(c.chain, c.edge);
+    check(`chain=${c.chain} edge=${c.edge} -> ${c.want}${c.note ? `  (${c.note})` : ''}`,
+      got === c.want, got);
+  }
+  // NON-DEGENERACY: a rule that ignored the standing would pass three rows.
+  check('NON-DEGENERACY: the standing is what separates the last two',
+    chooseWater(true, true) !== chooseWater(true, false),
+    [chooseWater(true, true), chooseWater(true, false)]);
+
+  // THE KNOCK. The vector is the player's own, unchanged but for its
+  // timestamp, and the timestamp is the caller's wall clock — see `knockOn`
+  // on why a write dated on the shallows' fixed epoch would be refused for a
+  // reason that is not the one the standing is built on.
+  const vec: Vec = { x: 2624, y: 1360, heading: 33, speed: 60, t: 144_085_500 };
+  const WALL = 1_785_000_000_000;
+  {
+    const { chain, wrote } = recordingChain();
+    knockOn(chain, 'shallows', vec, WALL, 'hello');
+    check('a refused swimmer\'s vector is published into the water that refused it',
+      wrote.length === 1, wrote.length);
+    check('...unchanged, but for a timestamp on the caller\'s own clock',
+      wrote[0]?.vec.x === vec.x && wrote[0]?.vec.y === vec.y
+      && wrote[0]?.vec.heading === vec.heading && wrote[0]?.vec.speed === vec.speed
+      && wrote[0]?.vec.t === WALL, wrote[0]?.vec);
+    check('...carrying whatever they said', wrote[0]?.say === 'hello', wrote[0]?.say);
+    check('...and the vector it was handed is not mutated on the way through',
+      vec.t === 144_085_500, vec.t);
+  }
+  {
+    // NO DOUBLE WRITE. In real water the played sea IS this chain sea and has
+    // already been handed the vector by `emitDue`; a knock as well would put
+    // every move on the wire twice, at twice the rate the emit floor allows.
+    const { chain, wrote } = recordingChain();
+    knockOn(chain, 'chain', vec, WALL);
+    knockOn(chain, 'scene', vec, WALL);
+    check('nothing is knocked when the played sea is the chain sea itself, or a scene',
+      wrote.length === 0, wrote);
+  }
+  {
+    // And a window with no chain sea at all cannot be made to write by any
+    // value of the other arguments.
+    let threw = false;
+    try { knockOn(null, 'shallows', vec, WALL); } catch { threw = true; }
+    check('a window with no water to knock on does not try, and does not throw', !threw);
+  }
 }
 
 // ===========================================================================
@@ -533,6 +622,7 @@ function theWaterHasOneName(): void {
 
 async function main(): Promise<void> {
   theRule();
+  whichWater();
   lookingAgain();
   await aShellConfigurationBecomesASea();
   theStaticGate();

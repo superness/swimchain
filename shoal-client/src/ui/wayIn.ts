@@ -40,6 +40,22 @@
  * connection then drops is still at the edge, and flickering the surface off
  * on an unrelated failure would be its own kind of dishonesty.
  *
+ * ## What a player at the edge is actually doing while they wait
+ *
+ * Swimming. `seaChoice.chooseWater` puts them in the shallows (shallows.ts) —
+ * the tutorial water, with its cast, its tide and its sweep — for as long as
+ * this flag is up. That is §2.16's "never let a downloader dead-end" applied to
+ * the one player it never used to reach: before this, a refused newcomer got
+ * these two lines drawn over a real sea in which nothing they did had any
+ * effect at all.
+ *
+ * §2.16 also says unvouched newcomers are "visible to everyone", circling at
+ * the edge of the real water. THAT HALF IS NOT DELIVERED AND CANNOT BE FROM
+ * HERE: every write they make is refused at ingestion, so no peer ever receives
+ * one and there is nobody to be visible to. It would take the network carrying
+ * an unvouched swimmer's presence, which is a node decision. Nothing in this
+ * client fakes it.
+ *
  * ## Why a write that succeeds clears it
  *
  * Being let in is an in-game act by another player (spec §2.16), and it can
@@ -55,6 +71,16 @@ import type { SendFailure } from '../lib/shoalSend';
  * Where this client stands with the water. One flag today; an interface rather
  * than a bare boolean because §2.16's other half (who vouched for you, and
  * whether they are still swimming) belongs here when it is built.
+ *
+ * IT DECIDES WHICH SEA THE PLAYER IS IN, not only whether a boundary is drawn
+ * over one. `seaChoice.chooseWater` reads this flag: raised, the player swims
+ * the shallows — a sea with a cast, a tide and a sweep in it — instead of
+ * standing in water that will not carry a single thing they do. Read that
+ * function's header before changing what raises or lowers this, because the
+ * other half of it is the thing that must not change: while this flag is up,
+ * `seaChoice.knockOn` keeps publishing the player's own vectors into the real
+ * water. A client that stops writing can never learn that it has been let in,
+ * and this flag would be up forever.
  */
 export interface Standing {
   /** True once a write was refused because nobody has let this swimmer in. */

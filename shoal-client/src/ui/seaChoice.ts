@@ -33,6 +33,7 @@
 import { chainSea, type ChainSea } from './chainSea';
 import type { RpcAuth } from '../lib/shoalRpc';
 import type { SendFailure, SignFn } from '../lib/shoalSend';
+import type { Vec } from '../lib/shoalTypes';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
 
 /**
@@ -86,6 +87,106 @@ export function chooseSeaSource(dev: boolean, devParams: boolean, shell: boolean
   if (dev && devParams) return 'dev';
   if (shell) return 'shell';
   return 'offline';
+}
+
+// ---------------------------------------------------------------------------
+// Which water the player's own body is in
+// ---------------------------------------------------------------------------
+
+/**
+ * The sea the frame loop folds and draws — which is NOT the same question as
+ * `chooseSeaSource`, and keeping the two apart is the whole of this section.
+ *
+ *   scene     there is no configuration, so there is no water to be in. The
+ *             offline scene picker decides (`App.tsx`'s `SceneKind`).
+ *   chain     real water, and it will have us.
+ *   shallows  real water, and it will NOT have us yet (spec §2.16). The
+ *             player swims the tutorial water while their own writes keep
+ *             knocking at the door of the real one — see `knockOn`.
+ */
+export type PlayedWater = 'scene' | 'chain' | 'shallows';
+
+/**
+ * WHICH WATER THE PLAYER PLAYS IN, given whether a configuration exists and
+ * whether the water has refused them.
+ *
+ * ## The lockout this function is one half of
+ *
+ * "If refused, show the shallows instead of the real water" is the obvious
+ * implementation and it is a SILENT PERMANENT LOCKOUT. The shallows is
+ * offline. If it replaces the chain sea, this client stops writing — and a
+ * write that goes through is the only evidence it will ever have that somebody
+ * has let this swimmer in (`wayIn.ts`). The one signal that could lift the
+ * edge is the one the swap deletes. No error, nothing wrong in the logs, and
+ * the door can only be opened from a side nobody is standing on.
+ *
+ * So this function answers where the player's BODY is, and `knockOn` below
+ * answers where their WRITES go, and the two answers are deliberately
+ * different while the edge is up. Two presences, not two seas.
+ *
+ * ## Why `atTheEdge` cannot decide anything when there is no chain sea
+ *
+ * It never happens — the standing is raised by a refused chain write, so a
+ * window that never had a chain sea cannot be at the edge — but the rule is
+ * written to be total rather than to rely on that, because the caller's own
+ * `null` check and this one would otherwise have to agree by hand. A window
+ * with no configuration shows the offline scene whatever it believes about its
+ * standing.
+ */
+export function chooseWater(hasChain: boolean, atTheEdge: boolean): PlayedWater {
+  if (!hasChain) return 'scene';
+  return atTheEdge ? 'shallows' : 'chain';
+}
+
+/**
+ * KEEP KNOCKING. Publish the vector the player just authored into the real
+ * water as well, while their body is swimming in the shallows.
+ *
+ * ## Why this is a re-stamp of the player's own vector and not a second life
+ *
+ * There is exactly ONE emitter in this client (`input.emitDue`, called once
+ * per frame from `App.tsx` step 3, and only when `shouldEmit` agrees), and
+ * that is a rate discipline as much as an architecture: `MIN_EMIT_GAP_MS`
+ * is the only thing keeping one window from crowding the per-space mempool
+ * budget every swimmer shares (shoalEmit.ts). A separate knocker with a timer
+ * of its own would be a second emitter answering to nothing, and it would
+ * double this window's write rate the moment the edge went up — at exactly the
+ * moment the node has told us it wants fewer of our writes, not more.
+ *
+ * So the knock is the write the player's own game was making anyway. Nothing
+ * is fabricated: the vector is theirs, from the swimmer they are steering, in
+ * the same world coordinates. The only thing that changes is the timestamp.
+ *
+ * ## The timestamp is the load-bearing part
+ *
+ * `vec.t` arrives on the SHALLOWS' clock, which is a constant instant inside a
+ * constant epoch (`SHALLOWS_OPEN_MS`) so that the teaching moment lands on the
+ * same tick on every machine. That instant is somewhere in 1970. A write
+ * carrying it would be refused by the node's own timestamp window rather than
+ * by `check_identity_sponsored`, so the client would stop hearing the one
+ * error code its standing is built on — and an acceptance, when it finally
+ * came, would never arrive at all. `wallAuthorMs` is the caller's own frame
+ * clock, read once, the same read `App.tsx` derives the sea instant from.
+ *
+ * ## Eat claims are NOT knocked, and that is not an oversight
+ *
+ * A presence vector is a statement about the swimmer's own body, and that body
+ * is the same body in either water. An eat claim is a claim on one cell of one
+ * sea's bloom map, judged against where everybody else in THAT sea has been —
+ * and in the real water this swimmer has never been anywhere. Knocking it
+ * would be asking to be credited for a bite taken somewhere else.
+ */
+export function knockOn(
+  chain: ChainSea | null,
+  water: PlayedWater,
+  vec: Vec,
+  wallAuthorMs: number,
+  say?: string,
+): void {
+  // `'chain'` means the played sea IS this chain sea and has already been
+  // handed the write; knocking as well would publish everything twice.
+  if (chain === null || water !== 'shallows') return;
+  chain.publish({ ...vec, t: wallAuthorMs }, say);
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,13 @@
  * circling on the wrong side of it. It appears for one classified failure and
  * for nothing else — see `wayIn.afterWrite`.
  *
+ * AND THE WATER UNDER IT IS A SEA THEY CAN PLAY. A refused swimmer is put in
+ * the shallows (`seaChoice.chooseWater`) rather than left standing in water
+ * that carries nothing they do — while the same frame loop goes on publishing
+ * their vectors into the real water, which is the only way they will ever find
+ * out they have been let in. Both halves are in step 3 of the frame loop, and
+ * `seaChoice.knockOn`'s header is where the reasoning lives.
+ *
  * NOTHING IN THIS CLIENT ASKS FOR OR CHANGES ANYONE'S STANDING WITH THE WATER.
  * Being let in is part of being on the network, not something the game grants:
  * a build that claimed a standing offer on the player's behalf existed briefly
@@ -118,7 +125,7 @@ import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
 import { shallowsSea } from './shallows';
 import { type ChainSea } from './chainSea';
-import { chooseSeaSource, retryDelayMs, seaFrom } from './seaChoice';
+import { chooseSeaSource, chooseWater, knockOn, retryDelayMs, seaFrom } from './seaChoice';
 import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
 import { TheEdge } from './TheEdge';
 import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
@@ -620,12 +627,32 @@ export function App() {
     // exists. The reverse of that sentence is the lockout described on
     // `SceneKind`.
     const chain = buildChainSea(shell, (failure) => { setStanding((s) => afterWrite(s, failure)); });
-    const sea: Sea = chain
-      ?? (scene === 'harness'
-        ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
-        : scene === 'lively'
-          ? livelySea(startWall)
-          : shallowsSea(startWall));
+    /**
+     * WHICH WATER THE PLAYER'S OWN BODY IS IN (spec §2.16). Three answers, and
+     * the third is the newcomer's: real water that will not have them yet, so
+     * they swim the shallows while their writes keep knocking at its door.
+     * The rule is `seaChoice.chooseWater`, stated where a test can drive it at
+     * all four combinations rather than as a conditional in a component.
+     *
+     * THE SHALLOWS IS NOT DRAWN *INSTEAD OF* WRITING. Step 3 below hands every
+     * vector to `knockOn` as well, so the chain sea keeps offering — that
+     * invariant is the only thing between this and a silent permanent lockout,
+     * and `App.test.ts` §6 asserts it on the wire. Read `chooseWater`'s header
+     * before touching either half.
+     *
+     * The offline scene picker is consulted only when there is no water at all
+     * — never as a way of refusing water that exists (`SceneKind`).
+     */
+    const water = chooseWater(chain !== null, standing.atTheEdge);
+    const sea: Sea = water === 'chain' && chain !== null
+      ? chain
+      : water === 'shallows'
+        ? shallowsSea(startWall)
+        : (scene === 'harness'
+          ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
+          : scene === 'lively'
+            ? livelySea(startWall)
+            : shallowsSea(startWall));
 
     // The tether's fade clock. `?played=` overrides it for a screenshot.
     const playedOverride = devNumber('played');
@@ -745,7 +772,25 @@ export function App() {
 
       // --- 3. THE ONE PLACE A VECTOR CAN LEAVE. `emitDue` asks `shouldEmit`
       // and calls `sea.publish` only if it agrees.
-      input = emitDue(input, authorMs, (vec, say) => sea.publish(vec, say));
+      //
+      // AND WHILE THE EDGE IS UP IT LEAVES TWICE: once into the water the
+      // player can see and act in, and once into the water that has refused
+      // them, re-stamped onto this frame's own wall clock (`knockOn`). Still
+      // ONE emitter, still one `shouldEmit` decision, so the write rate is
+      // exactly what it would have been — a second timer here would double
+      // this window's share of the mempool budget at the one moment the node
+      // has said it wants fewer writes from us, and it would be a second place
+      // for the emit floor to be got wrong.
+      //
+      // A CLIENT THAT STOPS KNOCKING IS SEALED IN. A write that goes through
+      // is the only evidence this client will ever have that somebody has let
+      // this swimmer in, and there is no second channel and nothing to poll.
+      // `knockOn` is a no-op in the other two waters, so this line is the
+      // whole of the difference.
+      input = emitDue(input, authorMs, (vec, say) => {
+        sea.publish(vec, say);
+        knockOn(chain, water, vec, wall + TICK_MS, say);
+      });
 
       // --- 4. Fold the world forward and draw it.
       const state = sea.step(wall);
@@ -982,7 +1027,24 @@ export function App() {
     // started is the node it started). Nothing else is set alongside it — the
     // `lively -> chain` scene change that used to accompany it was the lockout
     // and is gone.
-  }, [scene, shell]);
+    //
+    // `standing.atTheEdge` IS A DEPENDENCY, AND IT IS A REBUILD RATHER THAN A
+    // SWAP INSIDE THE LOOP. Two clocks meet here: the shallows maps the wall
+    // clock onto a fixed instant in a fixed epoch, so a window that switched
+    // seas mid-loop would carry an `InputState` whose `lastEmitMs` is decades
+    // ahead of the new sea's own time — and `shouldEmit` compares exactly
+    // those two numbers, so the next write would be due in fifty-six years.
+    // The lockout, by a different road. Everything the loop keeps across
+    // frames (the input state, the camera, the arrival, the locked snapshot)
+    // is effect-local, so re-running the effect is what puts every one of them
+    // back to a start the new sea agrees with, and the shallows opens on its
+    // first second rather than partway through the one lesson it exists for.
+    //
+    // It costs one chain-sea teardown and rebuild (a socket, a refetch), and
+    // it happens at most twice in a session: `afterWrite` returns the SAME
+    // object unless the standing actually changed, so the accepted or refused
+    // write every few seconds re-renders nothing and re-runs nothing.
+  }, [scene, shell, standing.atTheEdge]);
 
   return (
     <div style={S.page}>

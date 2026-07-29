@@ -61,8 +61,24 @@
 import { JSDOM } from 'jsdom';
 
 export interface Observation {
-  /** Every `submit_reply` the window made, in order. */
-  readonly submitted: { author: string; parent: string }[];
+  /**
+   * Every `submit_reply` the window made, in order.
+   *
+   * `body` IS THE WIRE BODY, VERBATIM, and it is here because "the window kept
+   * writing" and "the window is somewhere the player can play" are two
+   * different claims and only one of them is visible in a count. A presence
+   * body carries the position of the swimmer that authored it, so a decoded
+   * write says WHICH SEA the player's own fish is in — the shallows' spawn and
+   * the open water's are different points, and neither is reachable from the
+   * other by accident. `App.test.ts` §6 decodes it with the shipping decoder
+   * rather than parsing fields here.
+   *
+   * `atMs` is when it reached the node, so a check can ask whether writes were
+   * still arriving a whole emit-gap after the first refusal — which is the
+   * difference between a client that is still swimming and one whose last few
+   * writes were already in flight when it gave up.
+   */
+  readonly submitted: { author: string; parent: string; body: string; atMs: number }[];
   /** How many live sockets were opened. One chain sea opens exactly one, so a
    *  second means the sea was torn down and rebuilt. */
   readonly sockets: number;
@@ -232,7 +248,7 @@ function fakeContext(canvas: unknown): unknown {
 
 /** Run one window, from mount to teardown, and report what reached the node. */
 export async function observe(s: Scenario): Promise<Observation> {
-  const submitted: { author: string; parent: string }[] = [];
+  const submitted: { author: string; parent: string; body: string; atMs: number }[] = [];
   const rpcCalls: string[] = [];
   let sockets = 0;
   let askedShell = false;
@@ -323,6 +339,8 @@ export async function observe(s: Scenario): Promise<Observation> {
         submitted.push({
           author: String(req.params.author_id ?? ''),
           parent: String(req.params.parent_id ?? ''),
+          body: String(req.params.body ?? ''),
+          atMs: Date.now(),
         });
         // RECORDED FIRST, THEN REFUSED. A refused write is still a write the
         // window mined, signed and sent — `submitted` is how every other check
