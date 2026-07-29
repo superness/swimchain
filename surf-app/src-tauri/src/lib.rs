@@ -49,15 +49,24 @@ fn get_rpc_endpoint() -> String {
 #[tauri::command]
 async fn get_rpc_auth(state: tauri::State<'_, AppState>) -> Result<String, String> {
     // Wait for THIS run's node, then read the cookie it just regenerated.
-    // Two review-confirmed traps this shape avoids: (1) a raw file poll reads
-    // the PREVIOUS run's stale cookie after process death (401s everywhere);
-    // (2) a fixed ~10s ceiling turns the slow first-launch identity PoW into
-    // a false node-dead card. Ceiling here is generous and only for hangs.
+    // Three review-confirmed traps this shape avoids: (1) a raw file poll
+    // reads the PREVIOUS run's stale cookie after process death (401s
+    // everywhere); (2) a fixed ~10s ceiling turns the slow first-launch
+    // identity PoW into a false node-dead card; (3) the RPC server can still
+    // be writing .cookie for a moment *after* the host slot fills (our own
+    // copied node_host.rs test polls up to 100x100ms after start for exactly
+    // this), so a single unretried read right when `host` first turns Some
+    // can lose that race — keep polling on a transient cookie-read error
+    // instead of returning it. Ceiling here is generous and only for hangs.
     for _ in 0..1200 {
         if state.host.lock().await.is_some() {
             // rpc_auth_from_cookie takes the DATA DIR — it joins ".cookie"
             // itself (see mobile-app lib.rs:78). Never pre-join the filename.
-            return node_host::rpc_auth_from_cookie(&state.data_dir).map_err(|e| e.to_string());
+            if let Ok(auth) = node_host::rpc_auth_from_cookie(&state.data_dir) {
+                return Ok(auth);
+            }
+            // Cookie not written yet — fall through to the shared sleep and
+            // try again next iteration rather than failing hard.
         }
         if let Some(e) = state.start_error.lock().await.clone() {
             return Err(e);
