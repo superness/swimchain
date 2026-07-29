@@ -92,5 +92,7 @@ desktop-app/src-tauri/binaries/
 /swim-clean-testnet/
 /valreg-regtest/
 
+*-client/dist-spike/
+
 # Generated wiki-import output
 tools/wiki-import/out-mc-wikipedia/
