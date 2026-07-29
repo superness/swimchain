@@ -40,6 +40,7 @@ import { CrewRow, FeedBanner, DipTicker, CritterArt, type CrewBubble } from './C
 import { BowlReveal, TipCeremony, BowlTicket, BOWL_LINES, WELCOME_BACK } from './Bowl';
 import { PorcelainFight } from './Porcelain';
 import { ScoopShop } from './Scoop';
+import { freshPolish, polishMult, advance as advancePolish, polishLook, type Polish } from './lib/polish';
 import { porcelainInReach, readiness, cracks } from './lib/porcelain';
 import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
 import { visualFor } from './Kitchen';
@@ -190,6 +191,11 @@ export function App() {
   /** The porcelain takeover is open. Client-only: you choose when it starts. */
   const [porcOpen, setPorcOpen] = useState(false);
   const [scoopOpen, setScoopOpen] = useState(false);
+  /** THE GRAIN's streak. State so the basket's shine re-renders; a ref too
+   *  because onDip reads it synchronously in the same tick it updates it. */
+  const [polish, setPolish] = useState<Polish>(freshPolish);
+  const polishRef = useRef(polish);
+  useEffect(() => { polishRef.current = polish; }, [polish]);
   const [porcBroke, setPorcBroke] = useState(false);
   /** Which fryer is overcooking — client-only, never persisted. */
   const [overcookAt, setOvercookAt] = useState<number | null>(null);
@@ -243,6 +249,11 @@ export function App() {
 
   // The crew's reach into the clock: rat siphons + eats on his fryer, the
   // angel's blessing forces a crackle. Read per tick through refs.
+  /** THE BURROW, owned. Ref for the same reason as the magma below. */
+  const burrowRef = useRef(false);
+  useEffect(() => { burrowRef.current = state?.charOwned.has('burrow') ?? false; },
+    [state?.charOwned]);
+
   /** THE MAGMA, owned. Read by the cooking interval via `modsFor`, so it has
    *  to be a ref rather than state — see modsFor's comment. */
   const magmaRef = useRef(false);
@@ -252,8 +263,15 @@ export function App() {
   const modsFor = useCallback((index: number): TickMods => {
     const mods: TickMods = {};
     if (ratRef.current.latched === index) {
-      mods.divertPot = true;
-      mods.eatCrackle = true;
+      // THE BURROW (char): the rat works FOR you. He still latches, still
+      // fattens, still pays out on a shoo — he simply stops taking it from
+      // your pot and stops eating your crackles. The tension he was built for
+      // ("pure profit on a x1 chip, a disaster on a cooked x8") is exactly
+      // what the ability BUYS OUT, which is why it costs a whole 8 grains.
+      if (!burrowRef.current) {
+        mods.divertPot = true;
+        mods.eatCrackle = true;
+      }
     }
     if (blessRef.current === index) mods.forceCrackle = true;
     if (overcookRef.current === index) mods.overcook = true;
@@ -843,6 +861,16 @@ export function App() {
         ? 'DOUBLE. that’s what happens when you listen to a wing.'
         : 'the strings do not lie. take your reward and pretend you decided that.', 6000);
     }
+    // THE GRAIN (char): consecutive dips in the SAME basket escalate. Applied
+    // after the wing/oracle bonus and multiplicatively with it — both are
+    // reasons this particular dip is worth more, and neither is a tick rate.
+    // Read before advancing, so the dip that STARTS a streak pays x1.
+    if (state?.charOwned.has('grain')) {
+      const pm = polishMult(polishRef.current, index);
+      if (pm > 1) res.amount = Math.floor(res.amount * pm);
+      setPolish((p) => advancePolish(p, index));
+    }
+
     const crackles = Math.round(Math.log2(res.multi));
     launchDip(index, { ms: res.ms, bits: visualFor({ ms: res.ms, crackles }).bits }, res.doubled);
     sfx.dip(res.doubled);
@@ -1868,6 +1896,7 @@ export function App() {
 
       <main className="stage">
         <Kitchen
+          polishOf={state?.charOwned.has('grain') ? (i) => polishLook(polish, i) : undefined}
           chips={chips} onDip={onDip} crackles={crackleAt} ticks={tickAt}
           capRoom={state ? Math.max(0, state.bowlCap - crumbsNow) : Number.MAX_SAFE_INTEGER}
           ratAt={ratNow.latched}

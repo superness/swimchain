@@ -353,8 +353,14 @@ export const CHAR_ABILITIES: Record<string, CharAbility> = {
     blurb: 'a tip keeps ONE jar of your choosing.',
   },
   grain: {
+    // "A second chip cooks in every fryer" was the design's line and all three
+    // literal readings were rejected: doubling the baskets breaks the
+    // four-basket cap, doubling the tick rate is a second multiplier (salt's
+    // job), and two pots per basket doubles the ATTENTION the cap protects.
+    // POLISH instead — see lib/polish.ts. It is the first reason the game has
+    // ever given to dip rather than hold, measured before it was built.
     key: 'grain', label: 'The Grain', cost: 3, from: 'the table',
-    blurb: 'a second chip cooks in every fryer.',
+    blurb: 'dip the same basket again and again — each one pays more.',
   },
   tile: {
     key: 'tile', label: 'The Tile', cost: 5, from: 'the floor',

@@ -260,6 +260,9 @@ export interface RatPerch {
 export type FeedMode = 'any' | 'golden' | null;
 
 interface BasketProps {
+  /** THE GRAIN: 0 (unpolished) to 1 (fully polished). Drives the shine only —
+   *  the payout comes from lib/polish so the two cannot disagree. */
+  polish: number;
   index: number;
   chip: CookingChip;
   onDip: () => void;
@@ -303,7 +306,7 @@ interface BasketProps {
   wingNope: number | null;
 }
 
-function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied, overcooking, onOvercook, ceiling, onWingCall, wingCoolS, wingNope }: BasketProps) {
+function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, feedMode, blessedAt, wingAt, prophesied, overcooking, onOvercook, ceiling, onWingCall, wingCoolS, wingNope, polish }: BasketProps) {
   const golden = isGolden(chip);
   /** Nothing left to cook FOR — distinct from `golden` since The Long Fry.
    *  A golden chip with the jar still has a sixth crackle ahead of it, and
@@ -363,6 +366,17 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
         </span>
         <span className="basket-chip" aria-hidden="true"><Chip chip={visualFor(chip)} /></span>
         <span className="mesh" aria-hidden="true" />
+        {/* THE GRAIN's shine: a streak has to be VISIBLE before it is
+            arithmetic, or a player never learns the basket they keep dipping
+            is the one paying more. Opacity carries the whole signal — no
+            number, no badge, just wood that has been worked. */}
+        {polish > 0 && (
+          <span
+            className="basket-polish"
+            aria-hidden="true"
+            style={{ ['--polish' as string]: polish.toFixed(2) }}
+          />
+        )}
         {golden && <span className="steam" aria-hidden="true"><i /><i /><i /></span>}
         {crackledAt !== null && <span key={crackledAt} className="crackle-flash" aria-hidden="true" />}
         {/* The crackle's WAKE: a banner that lingers ~3.5s, so eyes that were
@@ -530,6 +544,8 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
 }
 
 export interface KitchenProps {
+  /** THE GRAIN: how polished each basket is, 0..1. Empty without the ability. */
+  polishOf?: (index: number) => number;
   chips: CookingChip[];
   onDip: (index: number) => void;
   /** Latest crackle per basket index (timestamps), for the flash. */
@@ -561,7 +577,7 @@ export interface KitchenProps {
   wingNope: { index: number; at: number } | null;
 }
 
-export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook, ceiling, onWingCall, wingCoolS, wingNope }: KitchenProps) {
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook, ceiling, onWingCall, wingCoolS, wingNope, polishOf }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
@@ -582,6 +598,7 @@ export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerc
             overcooking={overcookAt === i}
             onOvercook={onOvercook ? () => onOvercook(i) : null}
             ceiling={ceiling}
+            polish={polishOf ? polishOf(i) : 0}
             onWingCall={onWingCall ? () => onWingCall(i) : null}
             wingCoolS={wingCoolS}
             wingNope={wingNope && wingNope.index === i ? wingNope.at : null}

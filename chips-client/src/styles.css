@@ -2944,3 +2944,24 @@ h1, h2, h3, p { margin: 0; }
 .bowl-keep-row button.on {
   color: #1b110c; background: #ffb27a; border-color: #ffb27a;
 }
+
+
+/* THE GRAIN's shine — a worked basket. Rides `--polish` (0..1) from the same
+   streak the payout uses, so the picture can never claim a bonus that is not
+   being paid. Deliberately NOT a badge or a number: the signal is that this
+   basket looks handled, which teaches the rule by being noticed rather than
+   by being read. */
+.basket-polish {
+  position: absolute; inset: 0; border-radius: inherit;
+  pointer-events: none;
+  opacity: calc(var(--polish) * 0.85);
+  background:
+    linear-gradient(115deg,
+      transparent 38%,
+      rgba(255, 236, 200, calc(var(--polish) * 0.22)) 47%,
+      rgba(255, 250, 235, calc(var(--polish) * 0.34)) 51%,
+      rgba(255, 236, 200, calc(var(--polish) * 0.22)) 55%,
+      transparent 64%);
+  mix-blend-mode: screen;
+  transition: opacity .4s ease-out;
+}
