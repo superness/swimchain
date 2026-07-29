@@ -307,6 +307,28 @@ Entry to the open ocean requires being **vouched in** by an established player. 
 newcomers appear as small fish circling at the edge of the real water, visible to everyone,
 and letting one in is an in-game act — never a link, a code, or an out-of-band chore.
 
+**RESOLVED 2026-07-29 — the two sentences above are superseded, and a future implementer
+should not try to build them.** Operator ruling: The Shoal is a **play-from-your-local-node**
+game, and **sponsorship is part of being on the network**, not something the game grants. The
+client never claims, requests or negotiates sponsorship — no `get_sponsorship_status`, no
+`list_sponsorship_offers`, no `claim_sponsorship_offer`; `App.test.ts` asserts this on the
+wire. The Shoal is deliberately **not** registered with the mainnet game-offer keeper, unlike
+reef, chess, trench and chips. Do not add it.
+
+Two consequences follow, both measured rather than assumed:
+
+- **"Visible to everyone" is impossible from the client.** A refused write never reaches a
+  peer, so there is nobody for the newcomer to be visible *to*. Nothing fakes it.
+- **Therefore "letting one in is an in-game act" cannot hold either** — the voucher has
+  nothing in-game to act on. Vouching happens by whatever means network members are vouched
+  for, outside the game.
+
+What remains, and what is built: a refused newcomer sees **the edge of the water**, swims the
+**shallows** (a complete game, not a waiting room), and their client keeps knocking — writing
+their real presence into the open ocean on every emit. **The edge lifts the moment a write
+stops being refused.** No deadline, no polling, no permission asked. See §2.18 for the lesson
+the shallows teach while they wait.
+
 **Vouchees are kin.** They shield you harder than strangers do, they render with a visible
 bond, and your marks accrue from their survival. Without a *private* return, recruiting is a
 public good that everyone free-rides on and nobody does.
