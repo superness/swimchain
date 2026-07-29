@@ -100,17 +100,33 @@ export function chooseSeaSource(dev: boolean, devParams: boolean, shell: boolean
  * ## WHY THERE IS A RETRY AT ALL
  *
  * `shellConfig` returns `null` for six different reasons and only one of them
- * is permanent. Five are the ordinary condition of a node that has just
- * started:
+ * is permanent. The permanent one is "there is no shell at all" — a browser
+ * tab — and `App.tsx` returns before ever reaching this schedule for it. Of the
+ * rest, one cannot happen twice and the other four are the ordinary condition
+ * of a node that has just started:
  *
- *   - `get_rpc_config` failed, or named no endpoint — the node is not up yet;
- *   - the node reported no identity — it is up, but busy;
- *   - the listing call threw — a hiccup on a node that is also syncing;
- *   - THE WATER IS NOT THERE YET, and this is not an error in any sense. A
- *     brand new node has never heard of `@shoal:main`; it learns about it from
- *     peers, minutes after first launch, and `shellConfig`'s own comment says
- *     so ("the ordinary state of a brand new node and not an error");
- *   - the room post has not arrived yet, for the same reason one tick later.
+ *   - `get_rpc_config` failed, or named no endpoint — the node is up as a
+ *     process but has not bound RPC yet, which takes up to 120 s from launch;
+ *   - the node reported no identity — it is answering, but busy;
+ *   - working out where the water is threw. This one is pure computation now
+ *     (`waterSpaceId` and `roomContentId` are sha256 over two constants), so it
+ *     cannot be a transient and a retry will not help it; it is retried anyway
+ *     because a schedule that has to be told which failures are worth repeating
+ *     is a schedule that will one day be told wrong;
+ *   - THE ROOM'S BODY HAS NOT ARRIVED YET, which is not an error in any sense
+ *     and is the reason this retry earns its place. Content on this network is
+ *     fetched only when something asks: a fresh install's node holds the room's
+ *     content BLOCK within seconds and its BODY only once `request_content` has
+ *     been driven and a peer has answered. `shellConfig` drives that ask on
+ *     every miss, so each turn of this schedule is a fresh attempt rather than
+ *     the same question repeated.
+ *
+ * "THE NODE HAS NEVER HEARD OF THIS WATER" USED TO BE ON THAT LIST AND IS GONE.
+ * The space id was discovered by matching `list_spaces`, which is why a listing
+ * call and a slow sync were both reasons to look again. It is derived now
+ * (`shellConfig.waterSpaceId`) — sha256 over `WATER_APP`/`WATER_NAME` — so
+ * there is no listing to throw and nothing left to not-find. `shellConfig`'s
+ * own header says so by name.
  *
  * Asking once meant a first launch that lost any one of those coin flips
  * showed the offline sea FOREVER, until the player thought to restart — which
@@ -120,12 +136,13 @@ export function chooseSeaSource(dev: boolean, devParams: boolean, shell: boolean
  *
  * ## WHY IT NEVER GIVES UP, AND WHY THAT IS CHEAP
  *
- * There is no attempt count at which "the node still has not synced this space"
- * becomes false, so any ceiling would be a number chosen to look reasonable and
- * would strand exactly the players with the slowest connections. At the cap
- * this costs four localhost RPCs a minute — and `findWaterSpaceId` stops on the
- * first short page, so a node that does not have the space answers in ONE call,
- * not twenty. It stops the instant a configuration exists.
+ * There is no attempt count at which "the body still has not arrived" becomes
+ * false, so any ceiling would be a number chosen to look reasonable and would
+ * strand exactly the players with the slowest connections. At the cap this
+ * costs four localhost RPCs a minute — and each turn is three or four local
+ * reads, not a page walk: the space id is computed rather than searched for, so
+ * nothing here scales with how many spaces a node knows about. It stops the
+ * instant a configuration exists.
  *
  * `attempt` is clamped before the shift so a window left open for a week cannot
  * overflow the exponent into a nonsense delay.

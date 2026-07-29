@@ -474,15 +474,23 @@ export function App() {
     /**
      * ASK, AND KEEP ASKING UNTIL THERE IS WATER.
      *
-     * `shellConfig` answers `null` for six reasons and five of them are the
-     * ordinary condition of a node that has just started — most of all "this
-     * node has never heard of this water", which is simply true of every fresh
-     * install until it has synced the space from a peer. Asking ONCE meant a
-     * first launch that lost any one of those coin flips showed the offline sea
-     * forever, with no error, until the player thought to restart. That is the
-     * same outcome and the same silence as the scene lockout on `SceneKind`,
-     * arrived at from a different direction, and it is not acceptable in a build
-     * whose whole purpose is that somebody can install it and play.
+     * `shellConfig` answers `null` for six reasons, and the ones that matter
+     * here are the ordinary condition of a node that has just started: RPC not
+     * bound yet, no identity yet, and — most of all — THE ROOM'S BODY HAS NOT
+     * ARRIVED YET, which is true of every fresh install until something has
+     * asked the network for it and a peer has answered. (`shellConfig` does the
+     * asking on each miss, so these attempts are not the same question over and
+     * over.) Asking ONCE meant a first launch that lost any one of those coin
+     * flips showed the offline sea forever, with no error, until the player
+     * thought to restart. That is the same outcome and the same silence as the
+     * scene lockout on `SceneKind`, arrived at from a different direction, and
+     * it is not acceptable in a build whose whole purpose is that somebody can
+     * install it and play.
+     *
+     * "This node has never heard of this water" was the reason this comment
+     * used to lead with, and it is no longer one of them: the space id is
+     * derived rather than looked up (`shellConfig.waterSpaceId`), so there is
+     * no listing to miss. `seaChoice.retryDelayMs` carries the full list.
      *
      * The schedule is `retryDelayMs` (seaChoice.ts), which says why it never
      * gives up and what that costs. A throw is treated as "not yet" for the
