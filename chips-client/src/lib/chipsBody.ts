@@ -152,3 +152,26 @@ export function bankBatchBody(chips: ChipEntry[], authoringMs: number): string {
 
   return `bank ${parts.join(',')}#${authoringMs}~`;
 }
+
+/**
+ * Build a `spend` move body: `spend <ability> <cost>#<ms>~`.
+ *
+ * Char buys rule changes from scoop. The COST travels in the body, exactly as a
+ * dip's amount does: prices are policy (lib/chipsConst CHAR_ABILITIES) and must
+ * stay retunable, so the fold's only job is to keep char from going negative.
+ * Freezing five prices into consensus would have been the single irreversible
+ * decision in the feature, for no benefit a self-declared `dip` does not
+ * already concede.
+ */
+export function spendBody(ability: string, cost: number, ms: number): string {
+  if (!/^[a-z0-9]+$/.test(ability)) {
+    throw new Error(`spendBody: bad ability ${ability}`);
+  }
+  if (!Number.isSafeInteger(cost) || cost <= 0) {
+    throw new Error(`spendBody: cost must be a positive safe integer, got ${cost}`);
+  }
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`spendBody: ms must be a positive safe integer, got ${ms}`);
+  }
+  return `spend ${ability} ${cost}#${ms}~`;
+}

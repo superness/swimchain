@@ -52,6 +52,9 @@ export type Outcome =
   | 'dipped'
   | 'tipped' | 'rejected-shallow'
   | 'broke'
+  | 'spent'
+  /** `spend`: not enough char, or you already have it. */
+  | 'rejected-char'
   | 'bought' | 'rejected-cost' | 'rejected-owned' | 'rejected-order' | 'rejected-parse'
   /** `burn` only: you do not have that jar. Distinct from `rejected-owned`,
    *  which is a BUY failing because you already do. */
@@ -102,6 +105,10 @@ export interface ChipsState {
   /** Total worth of chips FED TO BOSSES. Spent, never banked — recorded only
    *  so the UI can say what the descent cost. */
   paidToBosses: number;
+
+  /** Char abilities bought from scoop. PRESTIGE — rides across a tip, like
+   *  char itself: you paid the descent for these, not the run. */
+  charOwned: Set<string>;
   /** Bowls come up through — the one number only the descent can move. */
   bowls: number;
   crispest: number;
@@ -150,6 +157,7 @@ export type ParsedMove =
   /** `paid` is the chip fed to the boss — it buys the band and pays nothing.
    *  0 for the legacy bare `broke` (one such reply exists on mainnet). */
   | { kind: 'broke'; paid: number; ms: number }
+  | { kind: 'spend'; ability: string; cost: number; ms: number }
   /** Give a jar back for BURN_REFUND of its price. Names its key — unlike
    *  `broke`, the choice IS the move, and naming it forges nothing: the fold
    *  still checks you own it and computes the refund from the catalog. */
@@ -241,6 +249,10 @@ export function parseMove(body: string): ParsedMove | null {
   // `broke 5` must therefore FAIL to parse rather than be range-checked.
   // `broke <paid>` — the chip fed to the boss. The bare legacy form still
   // parses and pays nothing, which is the same rule it always should have had.
+  // `spend <ability> <cost>` — char buys a rule change from scoop.
+  const spendM = /^spend\s+([a-z0-9]+)\s+(\d{1,6})$/.exec(head);
+  if (spendM) return { kind: 'spend', ability: spendM[1], cost: Number(spendM[2]), ms };
+
   const brokeM = /^broke\s+(\d{1,15})$/.exec(head);
   if (brokeM) return { kind: 'broke', paid: Number(brokeM[1]), ms };
   if (/^broke$/.test(head)) return { kind: 'broke', paid: 0, ms };
@@ -387,7 +399,7 @@ function initialState(): ChipsState {
     crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, crispest: 0,
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
-    broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, declined: new Set(),
+    broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, charOwned: new Set(), declined: new Set(),
     goldenBits: GOLDEN_BITS, airtight: false,
     sogBonus: 0, doubleDipMod: 0,
     dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
@@ -570,6 +582,26 @@ export function foldChips(
       state.declined.add(parsed.key);
       state.crumbs = Math.min(state.bowlCap, state.crumbs + Math.floor(jar.cost * BURN_REFUND_NUM / BURN_REFUND_DEN));
       state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'burned', upgradeKey: parsed.key });
+      continue;
+    }
+
+    if (parsed.kind === 'spend') {
+      /* ── CHAR BUYS A RULE CHANGE ────────────────────────────────────────
+         The fold's whole job here is that char cannot go negative and nothing
+         is bought twice. WHAT the ability does, and what it costs, are policy
+         (lib/chipsConst CHAR_ABILITIES) — the cost rides in the body the way a
+         dip's amount does, on the same self-declared precedent, so five prices
+         never become five permanent decisions.
+
+         `charOwned` is PRESTIGE and survives a tip: the descent paid for it,
+         not the run. */
+      if (state.charOwned.has(parsed.ability) || state.char < parsed.cost) {
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-char' });
+        continue;
+      }
+      state.char -= parsed.cost;
+      state.charOwned.add(parsed.ability);
+      state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'spent' });
       continue;
     }
 
