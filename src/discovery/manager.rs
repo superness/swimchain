@@ -343,7 +343,11 @@ mod tests {
 
         // And the cache still comes FIRST: seeds are a fallback, not a preference.
         for (i, peer) in peers.iter().take(10).enumerate() {
-            assert_eq!(peer.port, 9809 - i as u16, "cached peers must retain score order and priority");
+            assert_eq!(
+                peer.port,
+                9809 - i as u16,
+                "cached peers must retain score order and priority"
+            );
         }
     }
 
