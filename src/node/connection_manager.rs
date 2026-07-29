@@ -67,6 +67,16 @@ pub struct ConnectionConfig {
     pub min_peers: usize,
     /// Maximum total connections (default: MAX_CONNECTIONS = 500)
     pub max_connections: usize,
+    /// Seed addresses to fall back on when the peer store yields nothing that
+    /// works.
+    ///
+    /// Seeds were previously consulted ONLY by `NodeManager::bootstrap_peers`,
+    /// which runs once at startup. A node whose single startup attempt failed —
+    /// because the seed happened to be down at that moment — had no path back:
+    /// the periodic discovery loop reads only the peer store, so a stale cache
+    /// meant permanent isolation even after the seed recovered. Empty by
+    /// default, so regtest and tests are unaffected.
+    pub seeds: Vec<SocketAddr>,
 }
 
 impl Default for ConnectionConfig {
@@ -77,6 +87,7 @@ impl Default for ConnectionConfig {
             target_peers: CONNECTION_TARGET_PEERS,
             min_peers: CONNECTION_MIN_PEERS,
             max_connections: MAX_CONNECTIONS,
+            seeds: Vec::new(),
         }
     }
 }
@@ -91,6 +102,7 @@ impl ConnectionConfig {
             target_peers: 3,
             min_peers: 1,
             max_connections: 8,
+            seeds: Vec::new(),
         }
     }
 }
@@ -615,6 +627,41 @@ impl ConnectionManager {
         candidates
     }
 
+    /// Seed addresses to retry when the peer store has nothing that connects.
+    #[must_use]
+    pub fn seed_addrs(&self) -> Vec<SocketAddr> {
+        self.config.seeds.clone()
+    }
+
+    /// Record that a DIAL to this address failed.
+    ///
+    /// Without this a dead peer keeps its score forever. `select_peers_to_connect`
+    /// sorts by score descending, so an unreachable address that is never
+    /// penalised stays at the top of the candidate list and gets re-dialled
+    /// every discovery tick, indefinitely.
+    ///
+    /// That is not hypothetical. On 2026-07-29 a handset spent hours dialling a
+    /// single stale LAN address (`10.0.0.202`) from an old local test, with a
+    /// healthy seed available the whole time, because nothing on the dial path
+    /// ever called this:
+    ///     [GETADDR-DISCOVERY] Trying to connect to stored peer 10.0.0.202:9735
+    ///     [BLOCKS] Formation gate OPEN ... (best peer height 0)
+    ///
+    /// `PEER_FAILURE_PENALTY` is 20 and bootstrap candidates are filtered at
+    /// score >= 0, so one recorded failure is enough to demote a fresh dead
+    /// entry — the scoring already worked, it was simply never told.
+    ///
+    /// Missing entries are ignored: a peer we learned from a GETADDR but never
+    /// stored is not an error worth surfacing.
+    pub fn record_dial_failure(&self, wire_addr: &crate::network::messages::WireAddr) {
+        let key = PeerKey::from_wire_addr(wire_addr);
+        match self.peer_store.record_failure(&key) {
+            Ok(()) => {}
+            Err(crate::discovery::DiscoveryError::PeerNotFound) => {}
+            Err(e) => debug!("[PEER-SCORE] could not record dial failure: {e}"),
+        }
+    }
+
     // ========== Reconnection ==========
 
     /// Schedule a reconnection attempt for a peer
@@ -782,6 +829,85 @@ pub(crate) fn socket_addr_to_wire_addr(
 mod tests {
     use super::*;
     use crate::network::messages::WireAddr;
+
+    /// A DEAD PEER MUST SINK, AND SEEDS MUST STAY REACHABLE.
+    ///
+    /// Regression for the 2026-07-29 isolation. Two faults combined: the dial
+    /// path never recorded failures, so an unreachable address kept its score
+    /// forever and — since `select_peers_to_connect` sorts by score descending —
+    /// sat at the top of the candidate list and was re-dialled every tick; and
+    /// seeds were consulted only once at startup, so there was no way back.
+    #[test]
+    fn test_dial_failure_demotes_a_dead_peer() {
+        let store = test_peer_store();
+        let good = make_wire_addr(9801);
+        let dead = make_wire_addr(9802);
+        for a in [&good, &dead] {
+            let mut e = PeerEntry::new(a.clone(), 1_700_000_000);
+            e.score = 50;
+            store.put(&e).unwrap();
+        }
+        let manager = ConnectionManager::new(ConnectionConfig::default(), store.clone());
+
+        // Both start equal, so ordering here says nothing yet.
+        let before = store
+            .get(&PeerKey::from_wire_addr(&dead))
+            .unwrap()
+            .unwrap()
+            .score;
+
+        // One failed dial, exactly as the discovery loop now reports.
+        manager.record_dial_failure(&dead);
+
+        let after = store
+            .get(&PeerKey::from_wire_addr(&dead))
+            .unwrap()
+            .unwrap()
+            .score;
+        assert!(
+            after < before,
+            "a failed dial must cost the peer score (was {before}, now {after}) —              without this it is re-dialled forever"
+        );
+
+        // And it must now rank BELOW the untouched peer, which is what actually
+        // stops the loop wasting every tick on it.
+        let untouched = store
+            .get(&PeerKey::from_wire_addr(&good))
+            .unwrap()
+            .unwrap()
+            .score;
+        assert!(
+            after < untouched,
+            "the dead peer must sort below a healthy one"
+        );
+    }
+
+    /// Recording a failure for an address we never stored must not panic or
+    /// error — GETADDR hands out addresses we may never have persisted.
+    #[test]
+    fn test_dial_failure_for_unknown_peer_is_harmless() {
+        let manager = ConnectionManager::new(ConnectionConfig::default(), test_peer_store());
+        manager.record_dial_failure(&make_wire_addr(9999)); // must not panic
+    }
+
+    /// Seeds configured for the node must be reachable from the discovery loop.
+    /// Empty by default (regtest/tests), populated by NodeManager on real nets.
+    #[test]
+    fn test_seed_addrs_are_exposed_for_fallback() {
+        let seed: SocketAddr = "167.71.241.252:9735".parse().unwrap();
+        let cfg = ConnectionConfig {
+            seeds: vec![seed],
+            ..ConnectionConfig::default()
+        };
+        let manager = ConnectionManager::new(cfg, test_peer_store());
+        assert_eq!(manager.seed_addrs(), vec![seed]);
+
+        let bare = ConnectionManager::new(ConnectionConfig::default(), test_peer_store());
+        assert!(
+            bare.seed_addrs().is_empty(),
+            "default must stay empty so regtest is unaffected"
+        );
+    }
 
     fn test_peer_store() -> Arc<PeerStore> {
         Arc::new(PeerStore::open_temporary().unwrap())

@@ -1647,6 +1647,14 @@ impl BackgroundTaskRunner {
                                         }
                                     }
                                     Err(e) => {
+                                        // PENALISE THE ADDRESS. Without this a dead
+                                        // peer keeps its score forever and, because
+                                        // candidates are sorted by score descending,
+                                        // stays at the top of the list and is
+                                        // re-dialled every tick until the process
+                                        // dies. A handset burned hours this way on
+                                        // 2026-07-29 against one stale LAN address.
+                                        connection_manager.record_dial_failure(&entry.wire_addr);
                                         debug!("[GETADDR-DISCOVERY] Failed to connect to {}: {}", sock_addr, e);
                                     }
                                 }
@@ -1654,6 +1662,55 @@ impl BackgroundTaskRunner {
 
                             if connect_attempts > 0 {
                                 info!("[GETADDR-DISCOVERY] Connected to {} peers from PeerStore", connect_attempts);
+                            } else {
+                                // NOTHING IN THE STORE WORKED — GO BACK TO THE SEEDS.
+                                //
+                                // Seeds used to be tried once, at startup, by
+                                // NodeManager::bootstrap_peers. If that single
+                                // attempt failed — the seed being briefly down is
+                                // enough — the node fell back to this loop, which
+                                // read only the peer store, and never asked a seed
+                                // again for the rest of the process's life. A
+                                // handset sat isolated for hours that way on
+                                // 2026-07-29 while its seed was healthy again.
+                                //
+                                // Reached only when every stored candidate failed,
+                                // so a node with working peers never gets here and
+                                // the seeds carry no extra load.
+                                for seed_addr in connection_manager.seed_addrs() {
+                                    info!("[GETADDR-DISCOVERY] Store exhausted; retrying seed {}", seed_addr);
+                                    match transport.connect(seed_addr).await {
+                                        Ok(conn) => {
+                                            let peer_id = match conn.peer_info() {
+                                                Some(info) => info.node_id,
+                                                None => continue,
+                                            };
+                                            if connection_manager.add_connection(
+                                                peer_id,
+                                                seed_addr,
+                                                crate::transport::ConnectionDirection::Outbound,
+                                            ).is_err() {
+                                                continue;
+                                            }
+                                            let established = conn.is_established();
+                                            let stream = conn.into_stream();
+                                            let peer_conn = connection_pool.add(stream, peer_id, established).await;
+                                            let router_clone = router.clone();
+                                            let pool_clone = connection_pool.clone();
+                                            let cm_clone = connection_manager.clone();
+                                            tokio::spawn(async move {
+                                                Self::message_read_loop(
+                                                    peer_conn, peer_id, router_clone, pool_clone, cm_clone,
+                                                ).await;
+                                            });
+                                            info!("[GETADDR-DISCOVERY] Recovered via seed {}", seed_addr);
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            debug!("[GETADDR-DISCOVERY] Seed {} unreachable: {}", seed_addr, e);
+                                        }
+                                    }
+                                }
                             }
                         }
 
