@@ -521,24 +521,40 @@ h1, h2, h3, p { margin: 0; }
      two scaled apart, and the readout landed on the chip at phone sizes while
      looking fine on a desktop. Measured on all four fryers at 390, 512 and
      1440 wide. */
-  position: absolute; left: 0; right: 0; top: 17%;
-  display: flex; align-items: center; justify-content: center; gap: 3cqw;
+  /* SCALED UP to fill the band (operator, 2026-07-28: "you can increase the
+     scale up of the multipliers ui — can use more of the space"). The row was
+     sized to be certain it fitted rather than to be read, and the band it sits
+     in is wider than it was using: the figure and the lamps together spanned
+     about half the basket and left the rest empty. Every value below is still
+     a container unit, so the whole row grows and shrinks with the fryer and
+     cannot drift against the chip the way an em/% mix once did. */
+  /* CENTRED IN THE BAND. Measured: the free strip between the payout's
+     baseline and the chip's apex is 13.7% of the well, and the old row used
+     9% of it sitting off-centre — 1.9% of slack above and 2.7% below. Sitting
+     it in the middle of the band is what pays for the larger type below. */
+  position: absolute; left: 0; right: 0; top: 15.9%;
+  display: flex; align-items: center; justify-content: center; gap: 4.8cqw;
   pointer-events: none;
 }
 .multi-read b {
   font-family: var(--chalk); font-weight: 400;
-  font-size: 6.4cqw; letter-spacing: .06em;
+  font-size: 11.5cqw; letter-spacing: .05em;
   color: #d8c6a6; text-shadow: 0 1px 4px #000;
+  line-height: 1;   /* the row is one line; do not let the font's leading set its height */
 }
 .multi-read b.top { color: #ffe9a8; text-shadow: 0 0 9px rgba(255, 205, 90, .95), 0 1px 4px #000; }
 .multi-read b.deep { color: #ffb27a; text-shadow: 0 0 11px rgba(255, 120, 40, .95), 0 1px 4px #000; }
-.pips { display: flex; gap: 1.8cqw; }
+.pips { display: flex; gap: 2.9cqw; align-items: center; }
 .pip {
-  width: 3cqw; height: 3cqw; border-radius: 999px;
+  /* Lamps big enough to read at a glance from a phone's arm's length. They
+     are the ladder, so being able to count the unlit ones without looking
+     twice is the entire job. */
+  width: 5.1cqw; height: 5.1cqw; border-radius: 999px;
   background: rgba(0, 0, 0, .45);
   box-shadow: inset 0 0 0 1px rgba(190, 164, 124, .4);
+  flex: none;   /* six lamps must never squeeze to fit — the row wraps first, and the probe catches that */
 }
-.pip.lit { background: #ffd98e; box-shadow: 0 0 6px rgba(255, 205, 90, .8); }
+.pip.lit { background: #ffd98e; box-shadow: 0 0 7px rgba(255, 205, 90, .85); }
 .pip.deep { box-shadow: inset 0 0 0 1px rgba(255, 140, 70, .55); }
 .pip.deep.lit { background: #ff9a54; box-shadow: 0 0 8px rgba(255, 120, 40, .9); }
 
