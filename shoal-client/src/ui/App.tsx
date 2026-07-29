@@ -33,7 +33,9 @@
  *     diagnostics panel. It is the only way to see whether the sidecar is
  *     alive, so it stays reachable — just not visible enough to be part of the
  *     game.
- *   - `1` and `2` switch which sea is being folded (see demoSea.ts).
+ *   - `1`, `2` and `3` switch which offline sea is being folded — the shallows
+ *     (shallows.ts, the default and the one a downloader lands in), the lively
+ *     demo sea, and the harness replay (both demoSea.ts).
  *   - three query parameters — `?at=`, `?played=`, `?me=` — documented on
  *     `devParam` below. None of them is reachable from inside the game.
  *
@@ -106,6 +108,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
+import { shallowsSea } from './shallows';
 import { type ChainSea } from './chainSea';
 import { chooseSeaSource, retryDelayMs, seaFrom } from './seaChoice';
 import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
@@ -156,8 +159,14 @@ import { HUSH_MS, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
  * With the union narrowed there is nothing to promote and nothing to miss: real
  * water simply supersedes whichever offline sea was being drawn, the moment it
  * exists. `App.test.ts` holds that under a deliberately slow cold start.
+ *
+ * THERE ARE THREE OF THEM NOW AND `'shallows'` IS THE DEFAULT (plan 4b, Task 3).
+ * A window with no water to be in is not showing a placeholder any more; it is
+ * showing the tutorial, which is spec §2.16's own answer to "never let a
+ * downloader dead-end". `'lively'` and `'harness'` are unchanged and stay
+ * reachable on `2` and `3` — see the key handler.
  */
-type SceneKind = 'lively' | 'harness';
+type SceneKind = 'shallows' | 'lively' | 'harness';
 
 /**
  * A real room on a real node, from query parameters — Task 7's capture, and
@@ -402,7 +411,7 @@ export function App() {
    * `?at=` cannot change while a window is open. It says NOTHING about whether
    * this window is in real water; see `SceneKind`.
    */
-  const [scene, setScene] = useState<SceneKind>(() => (devNumber('at') !== null ? 'harness' : 'lively'));
+  const [scene, setScene] = useState<SceneKind>(() => (devNumber('at') !== null ? 'harness' : 'shallows'));
   /** The line being typed, or null when not speaking. */
   const [typing, setTyping] = useState<string | null>(null);
   /**
@@ -552,8 +561,8 @@ export function App() {
       //
       // THE SHELL'S WATER COUNTS AS A REAL ROOM, and this is the half that had
       // to change. Until Task 2 a release build never held a chain sea, so the
-      // toggle could only ever swap one offline sea for another; now `1` in a
-      // shipped window would drop a player out of the water they share with
+      // toggle could only ever swap one offline sea for another; now a keypress
+      // in a shipped window would drop a player out of the water they share with
       // other people and into a scripted one that looks almost identical, with
       // no way back and nothing said about it. Same rule, one more source.
       //
@@ -563,8 +572,12 @@ export function App() {
       // offline seas, and whichever one is chosen is superseded the moment a
       // configuration lands. THIS IS ONLY TRUE BECAUSE THE SCENE NO LONGER
       // GATES THE PROMOTION — see `SceneKind`. Held by `App.test.ts`.
-      else if (e.key === '1' && !inRealWater()) setScene('lively');
-      else if (e.key === '2' && !inRealWater()) setScene('harness');
+      // `1` is the shallows (the default), `2` the lively demo sea, `3` the
+      // harness replay. Three offline seas, one key each, all under the same
+      // guard; none of them is reachable once this window is in real water.
+      else if (e.key === '1' && !inRealWater()) setScene('shallows');
+      else if (e.key === '2' && !inRealWater()) setScene('lively');
+      else if (e.key === '3' && !inRealWater()) setScene('harness');
       else if (e.key === ' ') { e.preventDefault(); push({ kind: 'dart' }); }
       else if (e.key === 'e' || e.key === 'E') { e.preventDefault(); wantsBiteRef.current = true; }
       else if (e.key === 'Enter') { e.preventDefault(); setTyping(''); }
@@ -593,7 +606,9 @@ export function App() {
     const sea: Sea = chain
       ?? (scene === 'harness'
         ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
-        : livelySea(startWall));
+        : scene === 'lively'
+          ? livelySea(startWall)
+          : shallowsSea(startWall));
 
     // The tether's fade clock. `?played=` overrides it for a screenshot.
     const playedOverride = devNumber('played');
@@ -658,8 +673,24 @@ export function App() {
       const view: Viewport = { w: cssW, h: cssH };
 
       // ONE CLOCK READ PER FRAME, and one authoring instant derived from it.
+      //
+      // THE AUTHORING INSTANT IS ON THE *SEA'S* CLOCK, not the window's. For a
+      // real room and for `livelySea` those are the same number (`seaMs` is the
+      // identity on both), so this changed nothing for either; for a sea that
+      // maps the wall clock onto a timeline of its own — `harnessSea`'s replay,
+      // and `shallowsSea`'s fixed scenario — it is the difference between a
+      // client that agrees with the world it is drawing and one that does not.
+      //
+      // It was already wrong before the shallows existed, silently: step 5 below
+      // asks the fold's own `canEat` with `nowMs: authorMs` against `me.vec` and
+      // `me.lastBiteMs`, both of which carry the SEA's time. On the harness
+      // replay those two clocks are ~147_600_000 ms apart, so `reckon(me.vec,
+      // authorMs)` was reckoning three days forward and the bite cue could only
+      // ever answer "no". Nothing else noticed because that sea's `publish` is
+      // inert. Reading the one clock the sea itself keeps fixes the cue and is
+      // what lets the shallows be played rather than only watched.
       const wall = Date.now();
-      const authorMs = wall + TICK_MS;
+      const authorMs = sea.seaMs(wall) + TICK_MS;
 
       // --- 1. Fold the events that arrived since the last frame, at the one
       // instant this frame owns.

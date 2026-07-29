@@ -147,10 +147,12 @@ async function main(): Promise<void> {
   // offline sea with no configuration behind it at that instant, by
   // construction rather than by timing.
   //
-  // Hand-derived expectation, stated before the run: `2` selects the harness
-  // replay, which is a legitimate thing to be looking at while there is no
-  // water. When the configuration lands a moment later the window must join the
-  // water ANYWAY. Before the fix it did not, and never would again.
+  // Hand-derived expectation, stated before the run: `2` selects the lively
+  // demo sea, which is a legitimate thing to be looking at while there is no
+  // water — the default is now the shallows (plan 4b Task 3), so this really is
+  // a scene change and not a React bail-out. When the configuration lands a
+  // moment later the window must join the water ANYWAY. Before the fix it did
+  // not, and never would again.
   {
     const cold = await observe({ coldStart: true, awaitWrite: true, settleMs: 200 });
     check('a cold start on its own still reaches real water', reachedWater(cold, room), cold.submitted);
@@ -164,9 +166,11 @@ async function main(): Promise<void> {
     // THERE IS NO `1` CHECK HERE, AND ITS ABSENCE IS DELIBERATE.
     //
     // There was one, and it was vacuous: deleting the `'1'` key branch outright
-    // left it passing. `setScene('lively')` from `'lively'` is a React bail-out,
-    // so with no `?at=` the press changed nothing and the check was a duplicate
-    // of the control two lines above.
+    // left it passing. `setScene(<the default>)` from the default is a React
+    // bail-out, so with no `?at=` the press changed nothing and the check was a
+    // duplicate of the control two lines above. (The default is the shallows
+    // now rather than `'lively'`, and `1` still names it, so the argument is
+    // unchanged.)
     //
     // It cannot be repaired, only replaced or removed, and this is worth
     // writing down because the obvious repair looks like it works. Give the
@@ -198,9 +202,9 @@ async function main(): Promise<void> {
   // anyway.
   //
   // IT HAS TO BE `2`, AND THE FIRST VERSION OF THIS CHECK USED `1` AND WAS
-  // VACUOUS. With no `?at=` the scene is already `'lively'`, so `setScene(
-  // 'lively')` is a React no-op: the effect never re-runs and the socket count
-  // stays 1 whether the guard is there or not. Breaking `inRealWater` on
+  // VACUOUS. With no `?at=` the scene is already the default, so pressing the
+  // key that names the default is a React no-op: the effect never re-runs and
+  // the socket count stays 1 whether the guard is there or not. Breaking `inRealWater` on
   // purpose left this group entirely green, which is how it was caught. `2`
   // asks for a DIFFERENT scene, so an unguarded handler really does rebuild.
   {
