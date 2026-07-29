@@ -36,9 +36,9 @@ Type=simple
 WorkingDirectory=/opt/swim-bot
 Environment=RPC_URL=http://127.0.0.1:9736
 Environment=RPC_COOKIE_FILE=/var/lib/swimchain-mainnet/.cookie
-# reef, chess, trench, chips. Add a space id here when a new game ships —
+# reef, chess, trench, chips, shoal. Add a space id here when a new game ships —
 # this list is the whole registration step.
-Environment=GAME_SPACES=sp1qqzurjh6eeafcdf5qgpqg8mkfwlq3e6cfu,sp1qqzc0w94g6hqlvaqxy735mjss84qrwk88e,sp1qqzl4j83mewf64l7yrhunn2t55aq3a3zl6,sp1qqz7zj8gawkmy3ye7vyxudvalfmqpxt7ue
+Environment=GAME_SPACES=sp1qqzurjh6eeafcdf5qgpqg8mkfwlq3e6cfu,sp1qqzc0w94g6hqlvaqxy735mjss84qrwk88e,sp1qqzl4j83mewf64l7yrhunn2t55aq3a3zl6,sp1qqz7zj8gawkmy3ye7vyxudvalfmqpxt7ue,sp1qqz4vc5lj250danvppc8k2hchy9sxh0ae6
 # Mint a replacement while there is still two months of runway, and well before
 # the last slots go. Both axes matter: an offer is fine at 99/100 and dead at
 # 100/100, with no symptom but new players failing to start.
