@@ -115,6 +115,7 @@ function showSignalLost(ch) {
 }
 
 document.getElementById('retune').addEventListener('click', () => {
+  gate?.cancel(); // a second RETUNE tap must not leave the first gate's peek/timeout live
   const id = deck.current;
   unmount(id); // fresh mount on retune
   settle(id, { mounted: [id], evicted: [] }, null);
