@@ -88,6 +88,56 @@ export function chooseSeaSource(dev: boolean, devParams: boolean, shell: boolean
   return 'offline';
 }
 
+// ---------------------------------------------------------------------------
+// Looking again
+// ---------------------------------------------------------------------------
+
+/**
+ * How long to wait before asking the shell again, given how many times it has
+ * already answered "not yet". Geometric from `RETRY_BASE_MS`, capped at
+ * `RETRY_CAP_MS`, and it never gives up.
+ *
+ * ## WHY THERE IS A RETRY AT ALL
+ *
+ * `shellConfig` returns `null` for six different reasons and only one of them
+ * is permanent. Five are the ordinary condition of a node that has just
+ * started:
+ *
+ *   - `get_rpc_config` failed, or named no endpoint — the node is not up yet;
+ *   - the node reported no identity — it is up, but busy;
+ *   - the listing call threw — a hiccup on a node that is also syncing;
+ *   - THE WATER IS NOT THERE YET, and this is not an error in any sense. A
+ *     brand new node has never heard of `@shoal:main`; it learns about it from
+ *     peers, minutes after first launch, and `shellConfig`'s own comment says
+ *     so ("the ordinary state of a brand new node and not an error");
+ *   - the room post has not arrived yet, for the same reason one tick later.
+ *
+ * Asking once meant a first launch that lost any one of those coin flips
+ * showed the offline sea FOREVER, until the player thought to restart — which
+ * is the same outcome, and the same silence, as the scene lockout this file's
+ * `SceneKind` comment describes. A game that is installed and left open should
+ * join the water when the water shows up.
+ *
+ * ## WHY IT NEVER GIVES UP, AND WHY THAT IS CHEAP
+ *
+ * There is no attempt count at which "the node still has not synced this space"
+ * becomes false, so any ceiling would be a number chosen to look reasonable and
+ * would strand exactly the players with the slowest connections. At the cap
+ * this costs four localhost RPCs a minute — and `findWaterSpaceId` stops on the
+ * first short page, so a node that does not have the space answers in ONE call,
+ * not twenty. It stops the instant a configuration exists.
+ *
+ * `attempt` is clamped before the shift so a window left open for a week cannot
+ * overflow the exponent into a nonsense delay.
+ */
+export const RETRY_BASE_MS = 2_000;
+export const RETRY_CAP_MS = 60_000;
+
+export function retryDelayMs(attempt: number): number {
+  const n = Math.max(0, Math.min(attempt, 30));
+  return Math.min(RETRY_BASE_MS * 2 ** n, RETRY_CAP_MS);
+}
+
 /**
  * Mid-world, so a fresh window is somewhere another window's camera can
  * plausibly reach.

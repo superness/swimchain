@@ -111,7 +111,14 @@ async function main(): Promise<void> {
   // and section 2 is its positive control.
   {
     const o = await observe({ settleMs: 1_200, noShell: true });
-    check('a browser tab asks no shell', !o.askedShell, o);
+    // NOT `!o.askedShell`, which was a tautology: `askedShell` is only settable
+    // inside the block that installs a shell, so it could not fail. The fake
+    // `fetch` is installed for EVERY scenario, so this one can — and the thing
+    // it forbids is real, and named in `shellConfig`'s header: an endpoint
+    // arriving from anywhere but the shell (`resolveAuth`'s postMessage
+    // envelope, an env override) would carry this window's cookie to whatever
+    // it pointed at.
+    check('a browser tab never reaches a node at all', o.rpcCalls.length === 0, o.rpcCalls);
     check('...opens no live socket', o.sockets === 0, o.sockets);
     check('...and writes nothing', o.submitted.length === 0, o.submitted);
   }
@@ -154,10 +161,22 @@ async function main(): Promise<void> {
     check('pressing 2 during the cold start does NOT lock the player out',
       reachedWater(pressed2, room), pressed2.submitted);
 
-    const pressed1 = await observe({
-      coldStart: true, press: { key: '1', when: 'duringColdStart' }, awaitWrite: true, settleMs: 200,
-    });
-    check('...and neither does pressing 1', reachedWater(pressed1, room), pressed1.submitted);
+    // THERE IS NO `1` CHECK HERE, AND ITS ABSENCE IS DELIBERATE.
+    //
+    // There was one, and it was vacuous: deleting the `'1'` key branch outright
+    // left it passing. `setScene('lively')` from `'lively'` is a React bail-out,
+    // so with no `?at=` the press changed nothing and the check was a duplicate
+    // of the control two lines above.
+    //
+    // It cannot be repaired, only replaced or removed, and this is worth
+    // writing down because the obvious repair looks like it works. Give the
+    // window `?at=` so the scene really does change: under the OLD scene-gated
+    // promotion, pressing `1` lands on `'lively'` — the one state the promotion
+    // could still fire from — so the window reaches water and the check passes
+    // anyway. A "reaches water" observable structurally cannot discriminate the
+    // `'1'` branch, because after the fix nothing about the scene can stop a
+    // window reaching water. `2` is the discriminating key and it is checked
+    // above; `?at=` covers a scene that starts elsewhere.
 
     // THE SECOND DOOR into the same state, and the reason gating `?at=` would
     // have been the wrong fix: it closes one door rather than removing the room
@@ -190,6 +209,43 @@ async function main(): Promise<void> {
     });
     check('pressing 2 after joining leaves the sea alone', o.sockets === 1, o.sockets);
     check('...and the window is still in the water it joined', reachedWater(o, room), o.submitted);
+  }
+
+  // =======================================================================
+  console.log('\n5. a node that is not ready yet is not a node that never will be');
+  // =======================================================================
+  //
+  // `shellConfig` answers `null` for six reasons and five of them are the
+  // ordinary condition of a node that has just started. Asking once made every
+  // one of them PERMANENT — the same outcome, and the same silence, as the
+  // lockout in section 3, reached from a different direction.
+  //
+  // Both scenarios below have a node that is up and healthy the whole time.
+  // Neither would ever reach water without a retry.
+  {
+    // The commonest case by far, and it is not a failure at all: a fresh
+    // install has never heard of this water and learns it from a peer minutes
+    // later. `shellConfig` is right to return `null`; the window is wrong to
+    // stop asking.
+    const late = await observe({ waterAppearsAfterListings: 1, awaitWrite: true, settleMs: 200 });
+    check('a node that has not synced the water yet is asked again, and the player gets in',
+      reachedWater(late, room), late.submitted);
+    check('...having really looked more than once',
+      late.rpcCalls.filter((m) => m === 'list_spaces').length >= 2,
+      late.rpcCalls.filter((m) => m === 'list_spaces').length);
+
+    // And a plain transient failure, on the very first call the assembly makes
+    // after the endpoint: one -32603 and the old code was done for good.
+    const hiccup = await observe({ identityFailsTimes: 1, awaitWrite: true, settleMs: 200 });
+    check('one failed identity read does not cost the player the game',
+      reachedWater(hiccup, room), hiccup.submitted);
+
+    // NON-DEGENERACY: the retry must not have quietly become a second, always-on
+    // poll. A window that got in on the first ask looks at the listing ONCE.
+    const clean = await observe({ awaitWrite: true, settleMs: 200 });
+    check('NON-DEGENERACY: a node that was ready is asked exactly once',
+      clean.rpcCalls.filter((m) => m === 'list_spaces').length === 1,
+      clean.rpcCalls.filter((m) => m === 'list_spaces').length);
   }
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

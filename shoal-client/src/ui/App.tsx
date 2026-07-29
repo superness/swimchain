@@ -107,8 +107,8 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
 import { type ChainSea } from './chainSea';
-import { chooseSeaSource, seaFrom } from './seaChoice';
-import { shellConfig, type ShellSeaConfig } from './shellConfig';
+import { chooseSeaSource, retryDelayMs, seaFrom } from './seaChoice';
+import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
 import { TheEdge } from './TheEdge';
 import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
 import { identityFromLabel } from './browserIdentity';
@@ -449,21 +449,56 @@ export function App() {
     // change the answer, fetching one would only cost a needless teardown and
     // rebuild of the very sea a capture is being taken of.
     if (chooseSeaSource(import.meta.env.DEV, chainParams() !== null, true) === 'dev') return;
-    // ONCE PER WINDOW. `shellConfig` makes four RPC round trips on the way to a
-    // complete answer and there is nothing about it that changes while a window
-    // is open: the node the shell started is the node it started.
+
     let alive = true;
-    void shellConfig()
-      .then((cfg) => {
-        if (!alive || cfg === null) return;
-        // THE ONLY THING THAT HAPPENS HERE. There is deliberately no scene
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    /**
+     * ASK, AND KEEP ASKING UNTIL THERE IS WATER.
+     *
+     * `shellConfig` answers `null` for six reasons and five of them are the
+     * ordinary condition of a node that has just started — most of all "this
+     * node has never heard of this water", which is simply true of every fresh
+     * install until it has synced the space from a peer. Asking ONCE meant a
+     * first launch that lost any one of those coin flips showed the offline sea
+     * forever, with no error, until the player thought to restart. That is the
+     * same outcome and the same silence as the scene lockout on `SceneKind`,
+     * arrived at from a different direction, and it is not acceptable in a build
+     * whose whole purpose is that somebody can install it and play.
+     *
+     * The schedule is `retryDelayMs` (seaChoice.ts), which says why it never
+     * gives up and what that costs. A throw is treated as "not yet" for the
+     * same reason: `shellConfig` catches its own failures, so anything reaching
+     * here is unexpected, and giving up permanently on something unexpected is
+     * the behaviour being removed.
+     */
+    const ask = async (attempt: number): Promise<void> => {
+      // A BROWSER TAB IS NOT A SLOW SHELL, and must not be retried at. There is
+      // no shell coming, so this returns before any RPC and the loop ends.
+      if (shellSurface() === null) return;
+      let cfg: ShellSeaConfig | null = null;
+      try {
+        cfg = await shellConfig();
+      } catch (e) {
+        console.error('[shoal] shell configuration:', e);
+      }
+      if (!alive) return;
+      if (cfg !== null) {
+        // THE ONLY THING THAT HAPPENS ON SUCCESS. There is deliberately no scene
         // change alongside it: the frame effect re-runs on `shell` and asks
         // `chooseSeaSource` again, which answers `'shell'` whatever offline sea
         // was on screen. A second `setScene` here was the lockout.
         setShell(cfg);
-      })
-      .catch((e) => { console.error('[shoal] shell configuration:', e); });
-    return () => { alive = false; };
+        return;
+      }
+      timer = setTimeout(() => { void ask(attempt + 1); }, retryDelayMs(attempt));
+    };
+    void ask(0);
+
+    return () => {
+      alive = false;
+      if (timer !== undefined) clearTimeout(timer);
+    };
   }, []);
 
   /**
@@ -866,12 +901,17 @@ export function App() {
       window.removeEventListener('pointercancel', onUp);
       chain?.stop();
     };
-    // `shell` is a dependency and not a ref read on purpose: it is set exactly
-    // once per window, and the sea has to be REBUILT when it lands rather than
-    // picked up on some later frame — `chainSea` takes its auth, its room and
-    // its signer at construction. React batches this with the `lively -> chain`
-    // scene change in the same `.then`, so the effect tears down and rebuilds
-    // once, not twice.
+    // `shell` is a dependency and not a ref read on purpose: the sea has to be
+    // REBUILT when a configuration lands rather than picked up on some later
+    // frame — `chainSea` takes its auth, its room and its signer at
+    // construction.
+    //
+    // IT REBUILDS EXACTLY ONCE because `setShell` is called at most once per
+    // window: the retry loop above returns the moment it succeeds, and a
+    // configuration cannot change while a window is open (the node the shell
+    // started is the node it started). Nothing else is set alongside it — the
+    // `lively -> chain` scene change that used to accompany it was the lockout
+    // and is gone.
   }, [scene, shell]);
 
   return (

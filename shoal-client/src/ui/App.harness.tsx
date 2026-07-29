@@ -40,6 +40,16 @@
  * React state instead would prove the component set a variable; a reply on the
  * wire proves a player is in the water with everyone else. It is the same
  * signal the live shell was judged by in the Task 2 report.
+ *
+ * ## THIS BUNDLE IS NOT GATE EVIDENCE. EVER.
+ *
+ * `App.test.ts` bundles this file with esbuild, and esbuild does not tree-shake
+ * the way rollup does — `identityFromLabel` and `browserIdentity` are textually
+ * PRESENT in `node_modules/.cache/shoal-app-harness.mjs`, behind an
+ * `if (false)` that can never run. That is expected and harmless, and it is a
+ * trap for anyone who greps the wrong artifact: the only build whose contents
+ * say anything about the shipped gate is `dist/assets/*.js`, produced by
+ * `npm run build` (rollup). See `devChainSea`'s comment in `App.tsx`.
  */
 import { JSDOM } from 'jsdom';
 
@@ -51,6 +61,18 @@ export interface Observation {
   readonly sockets: number;
   /** Whether `get_rpc_config` was ever asked. */
   readonly askedShell: boolean;
+  /**
+   * EVERY JSON-RPC method the window called, in order — recorded by the fake
+   * `fetch`, which is installed for every scenario including the ones with no
+   * shell in them.
+   *
+   * That last part is the point. `askedShell` can only ever be set inside the
+   * `!noShell` block, so "a browser tab asked no shell" cannot fail and proves
+   * nothing. This can: a browser tab that reached a node at all — the exact
+   * regression `shellConfig`'s header warns about, where an endpoint arrives
+   * from somewhere that is not the shell — shows up here as a non-empty list.
+   */
+  readonly rpcCalls: string[];
 }
 
 export interface Scenario {
@@ -81,6 +103,17 @@ export interface Scenario {
   readonly settleMs: number;
   /** When set, no `window.__TAURI__` at all — a browser tab. */
   readonly noShell?: boolean;
+  /**
+   * A NODE THAT HAS NOT FINISHED SYNCING. Until this many `list_spaces` calls
+   * have been made, the node answers with an empty listing — it is up, it is
+   * healthy, and it has simply never heard of this water yet. That is the
+   * ordinary state of every fresh install, and `shellConfig` correctly returns
+   * `null` for it.
+   */
+  readonly waterAppearsAfterListings?: number;
+  /** A node that fails `get_identity_info` this many times before answering —
+   *  a transient hiccup on a node that is also busy starting up. */
+  readonly identityFailsTimes?: number;
 }
 
 /** Nothing here mines for longer than this even on a slow machine; a scenario
@@ -149,8 +182,11 @@ function fakeContext(canvas: unknown): unknown {
 /** Run one window, from mount to teardown, and report what reached the node. */
 export async function observe(s: Scenario): Promise<Observation> {
   const submitted: { author: string; parent: string }[] = [];
+  const rpcCalls: string[] = [];
   let sockets = 0;
   let askedShell = false;
+  let listings = 0;
+  let identityAsks = 0;
 
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: `http://localhost/${s.search ?? ''}`,
@@ -189,16 +225,30 @@ export async function observe(s: Scenario): Promise<Observation> {
 
   const nodeFetch = (async (_input: unknown, init?: { headers?: Record<string, string>; body?: string }) => {
     const req = JSON.parse(init?.body ?? '{}') as { method: string; params: Record<string, unknown>; id: number };
+    rpcCalls.push(req.method);
     const ok = (result: unknown) => ({
       ok: true, status: 200, statusText: 'OK',
       json: async () => ({ jsonrpc: '2.0', result, id: req.id }),
       text: async () => '',
     });
+    const err = (code: number, message: string) => ({
+      ok: true, status: 200, statusText: 'OK',
+      json: async () => ({ jsonrpc: '2.0', error: { code, message }, id: req.id }),
+      text: async () => '',
+    });
     switch (req.method) {
       case 'get_identity_info':
+        identityAsks++;
+        if (identityAsks <= (s.identityFailsTimes ?? 0)) return err(-32_603, 'Internal error');
         return ok({ has_identity: true, public_key: NODE_PUBKEY, address: NODE_ADDRESS });
-      case 'list_spaces':
+      case 'list_spaces': {
+        // The node is up and healthy; it has just not learned about this water
+        // from a peer yet. An empty page is a LAST page, so `findWaterSpaceId`
+        // stops after one call — the same single RPC a real fresh node costs.
+        listings++;
+        if (listings <= (s.waterAppearsAfterListings ?? 0)) return ok({ spaces: [], total: 0 });
         return ok({ spaces: [{ space_id: SHOAL_SPACE, name: WATER_NAME, app: WATER_APP }], total: 1 });
+      }
       case 'get_content':
         return ok({ content_id: req.params.content_id });
       case 'sign_message':
@@ -287,5 +337,5 @@ export async function observe(s: Scenario): Promise<Observation> {
     if (d === undefined) delete g[k]; else Object.defineProperty(g, k, d);
   }
 
-  return { submitted, sockets, askedShell };
+  return { submitted, sockets, askedShell, rpcCalls };
 }

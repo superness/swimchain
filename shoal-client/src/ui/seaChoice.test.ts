@@ -37,7 +37,9 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { chooseSeaSource, seaFrom, SEA_SPAWN, type SeaSource } from './seaChoice';
+import {
+  chooseSeaSource, retryDelayMs, seaFrom, RETRY_BASE_MS, RETRY_CAP_MS, SEA_SPAWN, type SeaSource,
+} from './seaChoice';
 import { shellConfig, WATER_APP, WATER_NAME, type InvokeFn } from './shellConfig';
 import { wildSeedFrom } from './demoSea';
 import { decodeBody } from '../lib/shoalWire';
@@ -137,6 +139,60 @@ function theRule(): void {
   // The spawn both paths share. Hand-derived: WORLD_W/2 and WORLD_H/2, rounded.
   check('both paths spawn at the middle of the water',
     SEA_SPAWN.x === Math.round(WORLD_W / 2) && SEA_SPAWN.y === Math.round(WORLD_H / 2), SEA_SPAWN);
+}
+
+// ===========================================================================
+// 1b. Looking again, when the answer was "not yet"
+// ===========================================================================
+
+/**
+ * The schedule, hand-arithmetic'd from `RETRY_BASE_MS = 2_000` and
+ * `RETRY_CAP_MS = 60_000` and written out before the code is run:
+ *
+ *   attempt 0 -> 2_000 * 2^0 =  2_000
+ *           1 -> 2_000 * 2^1 =  4_000
+ *           2 -> 2_000 * 2^2 =  8_000
+ *           3 -> 2_000 * 2^3 = 16_000
+ *           4 -> 2_000 * 2^4 = 32_000
+ *           5 -> 2_000 * 2^5 = 64_000 -> CAPPED at 60_000
+ *           6 -> 128_000               -> 60_000
+ *
+ * So the first minute holds five attempts (t = 0, 2, 6, 14, 30 s) and every
+ * minute after that holds one. The numbers are stated here rather than computed
+ * from the constants, so a change to either constant fails this by name.
+ */
+const SCHEDULE: [number, number][] = [
+  [0, 2_000], [1, 4_000], [2, 8_000], [3, 16_000], [4, 32_000],
+  [5, 60_000], [6, 60_000], [30, 60_000],
+];
+
+function lookingAgain(): void {
+  console.log('\n1b. the backoff for "not yet"');
+
+  for (const [attempt, want] of SCHEDULE) {
+    check(`attempt ${attempt} waits ${want} ms`, retryDelayMs(attempt) === want, retryDelayMs(attempt));
+  }
+
+  // It never gives up: there is no attempt at which "the node still has not
+  // synced this space" becomes false, so any ceiling would strand exactly the
+  // players with the slowest connections. A finite schedule would show up here
+  // as a non-positive or non-finite delay.
+  check('there is no attempt at which it stops looking',
+    [50, 500, 5_000, 1e9].every((n) => Number.isFinite(retryDelayMs(n)) && retryDelayMs(n) === RETRY_CAP_MS),
+    [50, 500, 5_000, 1e9].map(retryDelayMs));
+
+  // NON-DEGENERACY: a schedule that returned the cap immediately would pass
+  // every row from attempt 5 on, and would make a first launch wait a full
+  // minute for its second look at a node that was one second from being ready.
+  check('NON-DEGENERACY: the early attempts are not already the cap',
+    retryDelayMs(0) === RETRY_BASE_MS && retryDelayMs(0) < RETRY_CAP_MS
+    && retryDelayMs(0) < retryDelayMs(1) && retryDelayMs(1) < retryDelayMs(2),
+    [retryDelayMs(0), retryDelayMs(1), retryDelayMs(2)]);
+
+  // ...and one that grew without bound would have a window left open for a week
+  // waiting years for its next look.
+  check('NON-DEGENERACY: it is bounded above, so a long session keeps looking often enough',
+    SCHEDULE.every(([a]) => retryDelayMs(a) <= RETRY_CAP_MS));
 }
 
 // ===========================================================================
@@ -467,6 +523,7 @@ function theWaterHasOneName(): void {
 
 async function main(): Promise<void> {
   theRule();
+  lookingAgain();
   await aShellConfigurationBecomesASea();
   theStaticGate();
   theWaterHasOneName();
