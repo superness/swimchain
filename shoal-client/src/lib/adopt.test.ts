@@ -431,5 +431,81 @@ console.log('\n8. the adopted seed re-serialises to exactly the payload that won
     out.seed?.recent);
 }
 
+// ---------------------------------------------------------------------------
+// 9. ONE OBJECT, TWO NODES, TWO REPORTED AUTHORS — THE PEERS MUST STILL AGREE
+//
+// A checkpoint body is `sha256`'d into its content id, so a hostile client that
+// submits a BYTE-IDENTICAL COPY of a victim's checkpoint through a second node
+// creates no second object — it creates a second CLAIM on the one that exists.
+// The node keeps one copy and whichever action indexes last owns the metadata,
+// and that metadata carries the author (methods.rs:9548-9551 vs :9446,
+// chain.rs:482-483). So the SAME object is reported as victim-authored by one
+// node and attacker-authored by another, and `CheckpointEntry.id` comes from
+// exactly that.
+//
+// This is a node-side defect and no client-side rule can make attribution
+// stable. What a client CAN do is not amplify it. The one thing adoption must
+// never do is turn "the peers disagree about who published this" into "one peer
+// has a seed and the other has none" — that is Blocker 12, bought for one write.
+//
+// Measured on two peered regtest nodes before this case existed: node A
+// decoded the object and node B did not, and their clients adopted
+// `[[…,88]]` and `null` respectively.
+//
+// Both sides below are built from the VICTIM's real body — the exact bytes
+// `encodeCheckpoint` produces for the victim — and differ only in the envelope
+// author each node reports.
+// ---------------------------------------------------------------------------
+console.log('\n9. one object reported under two different authors — both peers adopt the same seed');
+{
+  const VICTIM = PUB_A;
+  const ATTACKER = PUB_D;
+  const body = encodeCheckpoint(CP_P, VICTIM); // the victim's own bytes
+  const asNodeA = decodeCheckpointBody(body, VICTIM, 'sha256:copy');
+  const asNodeB = decodeCheckpointBody(body, ATTACKER, 'sha256:copy');
+
+  check('the same bytes decode under the victim\'s envelope (node A)', asNodeA !== null, asNodeA);
+  check('...and under the attacker\'s envelope too (node B) — one write must not '
+    + 'make a whole node\'s clients blind to the hour',
+    asNodeB !== null, asNodeB);
+
+  const seedOf = (e: CheckpointEntry | null) =>
+    e === null ? null : adoptCheckpoint([e], FOLDING).seed;
+  const seedA = seedOf(asNodeA);
+  const seedB = seedOf(asNodeB);
+  check('node A\'s clients adopt the payload', seedA !== null && serialiseCheckpoint(seedA) === P_TEXT,
+    seedA);
+  check('THE REGRESSION: node B\'s clients adopt the IDENTICAL payload, not nothing',
+    seedB !== null && serialiseCheckpoint(seedB) === P_TEXT, seedB);
+  check('...so a byte-identical copy cannot split two nodes\' clients',
+    seedA !== null && seedB !== null && serialiseCheckpoint(seedA) === serialiseCheckpoint(seedB),
+    { seedA, seedB });
+
+  // AND THE COPY MUST NOT MAKE THE VICTIM LOOK SELF-CONTRADICTING, which is the
+  // one way a copy could do real harm under rule 2. It cannot, and the reason is
+  // structural rather than lucky: a node's reported author is the SIGNER of an
+  // action carrying that content id, and the attacker never signs the victim's
+  // key. So a copy can put the ATTACKER on a payload the victim wrote; it can
+  // never put the VICTIM on a payload the victim did not write. The victim's id
+  // therefore still appears against exactly one payload, and still votes.
+  const withRival = adoptCheckpoint([
+    entry(CP_Q, PUB_B, 'sha256:q'), // an honest rival opinion
+    asNodeA as CheckpointEntry,     // the victim's own, as its own node reports it
+  ], FOLDING);
+  check('the victim still votes — a copy cannot make it self-contradicting',
+    withRival.opinions.find((o) => o.payload === P_TEXT)?.voters.length === 1
+      && withRival.opinions.find((o) => o.payload === P_TEXT)?.voters[0] === VICTIM,
+    withRival.opinions.map((o) => [o.payload === P_TEXT ? 'P' : 'Q', o.voters]));
+  // The attacker paid a sponsored identity and bought a vote for the payload it
+  // copied — which is the victim's own payload. Agreeing with someone loudly is
+  // not an attack on them.
+  const copyCounts = adoptCheckpoint([asNodeB as CheckpointEntry], FOLDING);
+  check('a copy read as attacker-authored is just a vote FOR the payload it copied',
+    copyCounts.opinions.length === 1 && copyCounts.opinions[0].voters.length === 1
+      && copyCounts.opinions[0].voters[0] === ATTACKER
+      && copyCounts.diverged === false,
+    copyCounts.opinions.map((o) => o.voters));
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

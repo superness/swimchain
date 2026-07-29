@@ -581,7 +581,18 @@ interface SubmitReplyResult {
  * `CheckpointEntry.hash`) from `splitRoomReplies`, so a caller can recognise
  * its own write in the next fetched room.
  */
-async function submitToRoom(ctx: SendCtx, body: string, ms: number): Promise<string> {
+/**
+ * Submit a raw, already-encoded body as a reply to the room.
+ *
+ * EXPORTED FOR ADVERSARIAL HARNESSES ONLY. Every honest caller goes through
+ * `sendPresence`/`sendEat`/`sendCheckpoint`, which build the body from the
+ * ctx's own key and cannot author anything else. This entry point exists so a
+ * test can author what an honest client never would — specifically, a
+ * byte-identical COPY of another swimmer's checkpoint, which is the input that
+ * makes a node's author attribution nondeterministic across peers. See
+ * `scripts/two-client-checkpoint.ts`'s copied-checkpoint section.
+ */
+export async function submitToRoom(ctx: SendCtx, body: string, ms: number): Promise<string> {
   assertWireSpaceId(ctx.spaceId, 'shoalSend: ctx.spaceId');
 
   const profile = ctx.powProfile ?? (await powProfileFor(ctx.auth));

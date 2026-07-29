@@ -193,10 +193,12 @@
  *    place to get it wrong, and it is the honest price of point 1 above. It
  *    is mitigated structurally: the salt sits BEFORE the payload, so the
  *    payload is a literal suffix of the body, not something interleaved.
- *  - **A salt is still not authentication**, exactly as for a move: a hostile
- *    client can write any 16 hex characters there, so counting publishers
- *    means counting ENVELOPE authors (`CheckpointEntry.id`), never salts.
- *    The decoder checks the salt's shape and never its value.
+ *  - **A salt is still not authentication.** Counting publishers means counting
+ *    ENVELOPE authors (`CheckpointEntry.id`), never salts. On a CHECKPOINT the
+ *    decoder checks the salt's shape and not its value — deliberately, and
+ *    unlike a move: see `saltMatchesAuthor`'s "WHY A CHECKPOINT IS EXEMPT" for
+ *    why binding it split two nodes' clients and bought nothing back. A move
+ *    body's salt IS compared to its envelope author.
  *
  * ### `epoch` is NOT duplicated as a head field
  *
@@ -531,19 +533,61 @@ export function saltFor(authorIdHex: string): string {
  * production caller is `splitRoomReplies`, which already gates `author_id` on
  * exactly that shape (shoalRoom.ts's `AUTHOR_ID_RE`) before it ever gets here.
  *
- * THE ONE THING THAT GETS WORSE, recorded rather than glossed. A hostile
- * client can still author a byte-identical copy of a victim's body (salt
- * included — it is public). The node keeps one object and whichever action
- * indexes last owns the metadata, so `author_id` for that object is
- * nondeterministic across peers (methods.rs:9548-9551 vs :9446, chain.rs:482-483).
- * Before this check, such an object decoded on every peer, sometimes credited
- * to the wrong swimmer. Now it decodes on the peers that kept the victim as
- * author and is DROPPED on the peers that kept the attacker — a divergence
- * instead of a misattribution. Both are the same underlying node defect and
- * neither is created here; a drop is the better of the two failures (no false
- * credit), and the real fix is a node-side one that keys metadata by action
- * rather than by content hash. Not silently better, though: stated so the next
- * reader knows it was weighed.
+ * =========================================================================
+ * WHAT IT COSTS: THE COPIED BODY, AND WHY A CHECKPOINT IS EXEMPT
+ * =========================================================================
+ *
+ * A hostile client can author a byte-identical copy of a victim's body (the
+ * salt is public). The node keeps ONE object — `content_id = sha256(body)` —
+ * and whichever action indexes last owns the metadata, so `author_id` for that
+ * object is NONDETERMINISTIC ACROSS PEERS (methods.rs:9548-9551 vs :9446,
+ * chain.rs:482-483). Any rule that binds a body to its reported author
+ * inherits that instability. The real fix is node-side — key metadata by
+ * action, not by content hash — and is not available here.
+ *
+ * ON THE MOVE PATH THE BINDING STAYS, because it costs nothing that was not
+ * already lost and it closes something real:
+ *  - A copied move body is divergent EITHER WAY. Without the binding the
+ *    vector decodes under the wrong author on some peers (the attacker appears
+ *    at the victim's position); with it, those peers drop it. Two shapes of the
+ *    same node defect, neither better.
+ *  - A false drop here is BOUNDED AND SELF-HEALING: a swimmer re-emits every
+ *    MIN_EMIT_GAP_MS (3 s), and the next body carries a different `ms`, so it
+ *    is a different content_id and cannot collide. The loss lasts one emit gap.
+ *  - And the binding is the only thing that closes salt-grinding of
+ *    `orderLog`'s `(ms, hash)` tie order, which has no other defence.
+ *
+ * ON THE CHECKPOINT PATH IT IS DROPPED, and the sums run the other way on both
+ * sides. THIS WAS A REGRESSION THIS MODULE SHIPPED, executed on two peered
+ * nodes: node A reported the object as victim-authored and decoded it, node B
+ * reported it as attacker-authored and dropped it, and their clients adopted
+ * `[[…,88]]` and `null`. One write, and every client of the wrong node folds
+ * the hour unseeded — Blocker 12, reopened. A client could reject its OWN
+ * checkpoint that way.
+ *  - **The benefit is now zero.** The binding existed to stop a publisher
+ *    steering its own content id. Nothing in the checkpoint path reads a
+ *    content id any more: `adopt.ts` ranks by voter count, then publisher id,
+ *    then payload text, and `CheckpointEntry.hash` has no reader at all.
+ *  - **The cost is not bounded and does not self-heal.** A checkpoint is
+ *    published once an hour and there is no second one to fall back on, so a
+ *    false drop costs a whole node's clients the entire hour.
+ *  - **Accepting the copy is harmless, and that is checkable rather than
+ *    hopeful.** A copy is a vote FOR the payload it copied, which is the one
+ *    thing that payload's author wants. It cannot make the VICTIM look
+ *    self-contradicting under adopt.ts's rule 2, and the reason is structural:
+ *    a node's reported author is the SIGNER of an action carrying that content
+ *    id, and the attacker cannot sign the victim's key — so a copy can put the
+ *    ATTACKER on a payload the victim wrote, never the VICTIM on a payload it
+ *    did not. Pinned by adopt.test.ts section 9.
+ *
+ * WHAT DROPPING IT DOES NOT FIX, stated plainly. With two payloads in play, a
+ * copy still moves a payload's reported publisher on one node, and the
+ * publisher-id tiebreak reads that — so two nodes' clients can still break a
+ * TIE differently. That residue is unstable attribution itself, it requires a
+ * divergence to already exist, and no client-side key avoids it: a tiebreak on
+ * something stable (the payload) is a tiebreak the attacker authors, which is
+ * exactly the free grind adopt.ts was fixed to remove. Recorded as node-side
+ * work, not papered over.
  */
 function saltMatchesAuthor(salt: string, id: string): boolean {
   return PUBKEY_HEX_RE.test(id) && salt === id.slice(0, SALT_HEX_CHARS);
@@ -655,18 +699,29 @@ export const MAX_RECENT_BITES = Math.floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1
  *     from under it (`f.recentBites` is filtered, `f.lastBiteMs` is not).
  *     Hence `>=`, not `===`.
  *
- * RULE 1 IS PROVABLY REDUNDANT, and that is stated here so nobody writes a test
- * claiming otherwise. Rules 3 and 4 imply it: six entries at least 2_500 ms
- * apart span at least 12_500 ms, which is already past VOID_WINDOW_MS, so rule
- * 4 rejects every array rule 1 would have. Removing rule 1 changes no answer —
- * verified by mutation, which is exactly how it was found — and there is no
- * input that isolates it, so no test can discriminate it either.
+ * RULE 1 IS PROVABLY REDUNDANT AS A CORRECTNESS CHECK, and that is stated here
+ * so nobody writes a test claiming otherwise. Rules 3 and 4 imply it: six
+ * entries at least 2_500 ms apart span at least 12_500 ms, which is already
+ * past VOID_WINDOW_MS, so rule 4 rejects every array rule 1 would have.
+ * Removing it changes no answer — verified by mutation, which is how it was
+ * found — and no input isolates it, so no test can discriminate it either.
  *
- * It is kept for two reasons, neither of them "it might catch something": it is
- * the O(1) check and it fails first on the pathological input (a million-entry
- * array is refused without being scanned), and it is the bound MAX_RECENT_BITES
- * names, which is the number the rest of the codebase reasons about. If the
- * span rule is ever relaxed, this one stops being redundant.
+ * It is kept for two honest reasons, and the dishonest one is recorded because
+ * it took two attempts to get right. It is the bound MAX_RECENT_BITES names,
+ * which is the number the rest of the codebase reasons about; and if the span
+ * rule is ever relaxed, it stops being redundant for correctness too.
+ *
+ * WHAT IT IS *NOT*, twice over. The first version of this comment called it the
+ * "O(1) check" that "refuses a million-entry array without scanning it" — false,
+ * because `checkpointInDomain` had already scanned the whole array before
+ * calling this function. Moving the length check above that scan (which is
+ * where it now lives, duplicated) made that sentence *less* false but still not
+ * true: `JSON.parse` has already built the array and `parseCheckpoint` has
+ * already walked it validating every element, both before either copy of this
+ * check runs, and neither is avoidable from here. Measured on a 1_000_000-entry
+ * ledger: 35.2 ms with the check after the scan, 29.1 ms with it before. A 17%
+ * saving on a parse-dominated cost — worth having, worth stating accurately,
+ * and not a defence against a large array.
  */
 function checkpointLedgerShape(lastBiteMs: number, bites: readonly number[]): boolean {
   if (bites.length > MAX_RECENT_BITES) return false;
@@ -753,6 +808,16 @@ function checkpointInDomain(cp: Checkpoint): boolean {
   for (const [id, lastBiteMs, bites] of cp.recent) {
     if (!PUBKEY_HEX_RE.test(id)) return false;
     if (!ok(lastBiteMs) || lastBiteMs > endMs) return false;
+    // Length before the per-bite scan. This saves ONE PASS over a pathological
+    // array, and that is the whole of the claim — measured, because the two
+    // stronger claims that came before it were both false. It is NOT an "O(1)
+    // refusal without scanning": by the time this function runs, `JSON.parse`
+    // has already built the array and `parseCheckpoint` has already walked it
+    // validating every element as an integer, and neither is avoidable from
+    // here. Measured on a 1_000_000-entry ledger: 35.2 ms with this check after
+    // the scan, 29.1 ms with it before — a 17% saving on a cost dominated by
+    // parsing, not the order-of-magnitude the earlier comments implied.
+    if (bites.length > MAX_RECENT_BITES) return false;
     for (const b of bites) if (!ok(b) || b > endMs) return false;
     if (!checkpointLedgerShape(lastBiteMs, bites)) return false;
   }
@@ -1003,7 +1068,21 @@ export interface CheckpointEntry {
   /** Publisher, from the reply envelope (`author_id`) — never from the body. */
   id: string;
   cp: Checkpoint;
-  /** Content hash from the envelope, for deterministic ordering. */
+  /**
+   * Content hash from the envelope. CARRIED, AND READ BY NOTHING.
+   *
+   * It used to be adoption's tiebreak. That was a vulnerability, not a style
+   * choice — a body's content id is `sha256(body)` and every part of a
+   * checkpoint body is author-chosen, so the key could be ground offline for a
+   * handful of sha256 calls. `adopt.ts` now ranks by voter count, then
+   * publisher id, then payload text, and reads no hash at all.
+   *
+   * Kept because it is the reply's identity and a caller may legitimately want
+   * it (to correlate an adopted checkpoint with the row it came from, or to
+   * report one). DO NOT REINTRODUCE IT AS AN ORDERING KEY: anything the author
+   * writes is something the author can grind, which is the whole argument in
+   * adopt.ts's "WHY THE PUBLISHER ID AND NOT THE CONTENT HASH".
+   */
   hash: string;
 }
 
@@ -1029,9 +1108,17 @@ export function decodeCheckpointBody(body: string, id: string, hash: string): Ch
   // move body is separately rejected on its salt field, so removing this check
   // is only visible against a mis-tagged body. See shoalWire.test.ts.
   if (kind !== 'checkpoint') return null;
-  // Shape, then AUTHOR — see `saltMatchesAuthor` and decodePresenceTail.
+  // SHAPE ONLY — and, unlike a move, deliberately NOT compared to the author.
+  //
+  // This is the one place the salt/author binding is NOT applied, and the
+  // asymmetry is the whole ruling. See `saltMatchesAuthor`'s doc, "WHY A
+  // CHECKPOINT IS EXEMPT". In short: binding here bought nothing (no checkpoint
+  // decision reads a content hash any more) and cost a cross-node split, since a
+  // byte-identical copy of an honest checkpoint is reported as attacker-authored
+  // by whichever node indexed the copy last — so the binding dropped a VALID
+  // checkpoint on that node and left its clients unseeded. One write, Blocker 12
+  // for a whole node's clients. Pinned by adopt.test.ts section 9.
   if (!SALT_RE.test(salt)) return null;
-  if (!saltMatchesAuthor(salt, id)) return null;
 
   // The payload is the whole remaining tail: it may contain DELIM (an id is
   // an arbitrary string) and is not delimiter-checked, because parseCheckpoint

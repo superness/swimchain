@@ -84,6 +84,7 @@ import {
   sendCheckpoint,
   sendEat,
   sendPresence,
+  submitToRoom,
   type SendCtx,
   type SignFn,
 } from '../src/lib/shoalSend';
@@ -92,7 +93,7 @@ import { adoptCheckpoint } from '../src/lib/adopt';
 import { advance, createLoop } from '../src/lib/shoalLoop';
 import { epochEndMs, epochOf, epochStartMs } from '../src/lib/epoch';
 import { serialiseCheckpoint } from '../src/lib/checkpoint';
-import { encodeCheckpoint } from '../src/lib/shoalWire';
+import { decodeCheckpointBody, encodeCheckpoint } from '../src/lib/shoalWire';
 import { cellCentre, cellIndex } from '../src/lib/bloom';
 import { fingerprint } from '../src/lib/shoalFixtures';
 import { EAT_COOLDOWN_MS, EPOCH_MS, MIN_SIZE, PRESENCE_TTL_MS, START_SIZE } from '../src/lib/shoalConst';
@@ -528,6 +529,88 @@ async function main(): Promise<void> {
   check('…and those sizes are the real ones, so the comparison above is not MIN_SIZE == MIN_SIZE',
     [...joined.departed.values()].every((d) => d.size > MIN_SIZE && d.size !== START_SIZE),
     [...joined.departed.values()].map((d) => d.size));
+
+  // ── THE COPIED CHECKPOINT: one object, two nodes, two reported authors ────
+  //
+  // `content_id = sha256(body)`, so a client that submits a BYTE-IDENTICAL copy
+  // of someone else's checkpoint creates no second object — it creates a second
+  // CLAIM on the one that exists. The node accepts the action, drops the
+  // duplicate content-store write while returning success, and the
+  // later-indexed action overwrites the metadata that carries the AUTHOR
+  // (methods.rs:3373-3375, chain.rs:482-483). The two nodes then disagree about
+  // who published it, and `CheckpointEntry.id` comes from exactly that.
+  //
+  // THIS IS THE REGRESSION TEST FOR A REAL SHIPPED DEFECT. When
+  // `decodeCheckpointBody` required the body's salt to match the envelope
+  // author, the node that attributed this copy to B DROPPED a perfectly valid
+  // checkpoint: measured node A decodes=true / node B decodes=false on the same
+  // object, adopting `[[…,88]]` and `null`. One write reopened Blocker 12 for
+  // every client of the wrong node, and a client could reject its own
+  // checkpoint. The salt binding is therefore not applied to checkpoints — see
+  // shoalWire.ts's `saltMatchesAuthor`.
+  //
+  // What must hold is NOT that both nodes agree who published it (they cannot;
+  // that is a node-side defect), but that both nodes' clients still adopt the
+  // SAME SEED.
+  //
+  // THE ASSERTION IS SPLIT IN TWO, and the reason is worth stating because the
+  // obvious single check does not do the job. WHICH node ends up naming WHICH
+  // author is an indexing race this script cannot steer from the client side —
+  // measured: a run where B submitted the copy and BOTH nodes still reported the
+  // original authors, so an end-to-end "do the two nodes agree" check passed
+  // even with the broken binding in place. It is a real end-to-end guard and it
+  // is kept, but on its own it does not discriminate.
+  //
+  // So the discriminating half uses the REAL BYTES A published and asks the
+  // decoder the question the race would have asked it: does this body still
+  // decode when the envelope names the OTHER player? That is deterministic,
+  // needs no race, and is exactly what failed before.
+  {
+    const copyMs = Date.now();
+    await submitToRoom(ctxB, bodyA, copyMs); // B submits A's exact bytes
+    const seen = await waitUntil(async () => {
+      const r = await fetchRoom(authB, spaceId, roomId);
+      return r.checkpoints.length >= 2;
+    }, 60_000);
+    check('the copied checkpoint is on chain and served', seen);
+
+    const afterA = await fetchRoom(authA, spaceId, roomId);
+    const afterB = await fetchRoom(authB, spaceId, roomId);
+    const adoptA = adoptCheckpoint(afterA.checkpoints, EPOCH + 1);
+    const adoptB = adoptCheckpoint(afterB.checkpoints, EPOCH + 1);
+    const seedTextA = adoptA.seed === null ? null : serialiseCheckpoint(adoptA.seed);
+    const seedTextB = adoptB.seed === null ? null : serialiseCheckpoint(adoptB.seed);
+    log(`after the copy: A reports authors ${afterA.checkpoints.map((c) => c.id.slice(0, 8)).join(',')}`
+      + ` / B reports ${afterB.checkpoints.map((c) => c.id.slice(0, 8)).join(',')}`);
+    check('a byte-identical copy leaves both nodes still serving decodable checkpoints',
+      afterA.checkpoints.length >= 2 && afterB.checkpoints.length >= 2,
+      { a: afterA.checkpoints.length, b: afterB.checkpoints.length });
+    check('both nodes\' clients adopt a seed, neither is left unseeded',
+      seedTextA !== null && seedTextB !== null, { seedTextA, seedTextB });
+    check('…and it is the SAME seed', seedTextA === seedTextB, { seedTextA, seedTextB });
+    check('…still the payload both honest clients computed',
+      seedTextA === payloadA, { seedTextA, payloadA });
+
+    // THE DISCRIMINATING HALF. `bodyA` is the exact string A published and both
+    // nodes now hold; the only thing the indexing race changes is which author
+    // the envelope names for it. Both answers must decode to the same payload,
+    // or one node's clients lose the hour.
+    const asA = decodeCheckpointBody(bodyA, pa.publicKeyHex, 'sha256:asA');
+    const asB = decodeCheckpointBody(bodyA, pb.publicKeyHex, 'sha256:asB');
+    check('THE REGRESSION: A\'s real published body decodes when the envelope names A',
+      asA !== null, asA);
+    check('THE REGRESSION: …and when the very same object is reported as B-authored, '
+      + 'which is what the losing node reports after a copy',
+      asB !== null, asB);
+    check('…to the identical payload, so neither node\'s clients are left unseeded',
+      asA !== null && asB !== null
+        && serialiseCheckpoint(asA.cp) === payloadA
+        && serialiseCheckpoint(asB.cp) === payloadA,
+      { asA: asA && serialiseCheckpoint(asA.cp), asB: asB && serialiseCheckpoint(asB.cp) });
+    check('…and each still carries the ENVELOPE\'s id, never the salt\'s owner',
+      asA !== null && asB !== null && asA.id === pa.publicKeyHex && asB.id === pb.publicKeyHex,
+      { a: asA?.id, b: asB?.id });
+  }
 
   // ── THE CONTROL: what the same joiner does with no checkpoint ─────────────
   const unseeded = advance(createLoop(EPOCH + 1, null), roomB.log, TARGET).loop.state;

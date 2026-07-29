@@ -484,21 +484,46 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
     a !== null && b !== null && a.id !== b.id, { a, b });
 }
 {
-  // A checkpoint salted with someone ELSE's key is REJECTED — exactly as a move
-  // now is, and for the reason that matters most here: `adopt.ts` used to ORDER
-  // checkpoints by content hash, and an unconstrained salt let any publisher
-  // grind that hash offline for the price of a few sha256 calls.
+  // A CHECKPOINT IS EXEMPT FROM THE SALT/AUTHOR BINDING, and the exemption is
+  // load-bearing rather than an oversight — binding it here was shipped once and
+  // had to be reverted. `content_id = sha256(body)`, so a byte-identical copy of
+  // an honest checkpoint is ONE object with a nondeterministic reported author;
+  // binding meant the node that attributed the copy to the attacker DROPPED a
+  // valid checkpoint and left its clients unseeded. Measured on two peered
+  // nodes. See `saltMatchesAuthor`'s "WHY A CHECKPOINT IS EXEMPT", and
+  // adopt.test.ts section 9 for the agreement it protects.
+  //
+  // Binding it bought nothing back: no checkpoint decision reads a content hash
+  // any more (`adopt.ts` ranks by voters, then publisher id, then payload).
   const foreign = `v1|checkpoint|${OTHER_SALT}|${CP_JSON}`;
-  check('a checkpoint whose salt disagrees with the envelope author is REJECTED',
-    decodeCheckpointBody(foreign, AUTHOR_HEX, 'hash-q') === null,
-    decodeCheckpointBody(foreign, AUTHOR_HEX, 'hash-q'));
-  const own = decodeCheckpointBody(foreign, OTHER_AUTHOR_HEX, 'hash-q');
-  check('…while the identical body decodes for the author it IS salted with',
-    own !== null && own.id === OTHER_AUTHOR_HEX, own?.id);
-  // A publisher therefore has exactly ONE legal body per payload. The salt is
-  // no longer a free parameter, so it cannot be used to move the content hash.
-  check('…so there is exactly one legal salt per publisher: 2^64 candidates down to 1',
+  const underA = decodeCheckpointBody(foreign, AUTHOR_HEX, 'hash-q');
+  const underOther = decodeCheckpointBody(foreign, OTHER_AUTHOR_HEX, 'hash-q');
+  check('a checkpoint whose salt disagrees with the envelope author still DECODES',
+    underA !== null, underA);
+  check('…and the identical body decodes under the author it IS salted with too',
+    underOther !== null && underOther.id === OTHER_AUTHOR_HEX, underOther?.id);
+  check('…to the identical payload, whichever author the node happened to report — '
+    + 'which is what stops one write splitting two nodes\' clients',
+    underA !== null && underOther !== null
+      && JSON.stringify(underA.cp) === JSON.stringify(underOther.cp),
+    { underA, underOther });
+  check('…while each still carries the ENVELOPE\'s id, never the salt\'s owner',
+    underA !== null && underA.id === AUTHOR_HEX, underA?.id);
+
+  // A MOVE is still bound, and this is the pair that pins the asymmetry: the
+  // same foreign-salt situation, opposite answers, on purpose.
+  check('…whereas a MOVE with a foreign salt is still rejected (the paths differ '
+    + 'deliberately — a dropped move self-heals in one emit gap, a dropped '
+    + 'checkpoint costs a whole node the hour)',
+    decodeBody(`v1|eat|5|1000|${OTHER_SALT}`, AUTHOR_HEX, 'hash-q') === null);
+
+  // The ENCODE side is unchanged: an honest publisher still salts with its own
+  // key, so two agreeing publishers still produce two distinct chain objects —
+  // the salt's original job, which never depended on the decoder checking it.
+  check('an honest publisher still salts with its own key',
     encodeCheckpoint(CP, OTHER_AUTHOR_HEX) === foreign, encodeCheckpoint(CP, OTHER_AUTHOR_HEX));
+  check('…so two agreeing publishers still produce two distinct bodies',
+    encodeCheckpoint(CP, AUTHOR_HEX) !== encodeCheckpoint(CP, OTHER_AUTHOR_HEX));
 }
 
 // --- A checkpoint is not a move, and a move is not a checkpoint ------------
@@ -745,7 +770,10 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
   // actually guards, rather than for the bound it looks like it is testing.
   check('a six-bite ledger is rejected — six bites 2.5 s apart cannot fit in a 10 s span',
     cp(`{"epoch":${E},"sizes":[],"recent":[[${A},15000,[2500,5000,7500,10000,12500,15000]]]}`) === null);
-  check('...and a million-entry ledger is refused too, without being scanned',
+  // Refused, but NOT "without being scanned" — `JSON.parse` and
+  // `parseCheckpoint` have both already walked it by then. See
+  // `checkpointLedgerShape`'s doc for the measured cost, which is parse-bound.
+  check('...and a million-entry ledger is refused too',
     cp(`{"epoch":${E},"sizes":[],"recent":[[${A},15000,[${Array.from({ length: 1_000_000 }, (_, i) => i * 2500).join(',')}]]]}`) === null);
 
   // THE LEDGER'S SHAPE, not just its length. A length bound alone did not make
