@@ -741,7 +741,14 @@ async function twoCheckpointsForOneEpochAreReported(): Promise<void> {
     check('the divergence is REPORTED, exactly once', diverge.length === 1,
       errors.map((e) => e.where));
     const msg = diverge[0] === undefined ? '' : String((diverge[0].err as Error).message ?? '');
-    check('...naming the epoch that disagrees', msg.includes(String(EPOCH)), msg);
+    // The PROSE has to name it, not merely the appended payload dump. The old
+    // spelling of this check was `msg.includes(String(EPOCH))`, which the
+    // `"epoch":N` inside the payload text satisfies on its own — it passed
+    // whether or not the sentence said anything. `describeDivergence` opens
+    // with `epoch <n> has …`, so anchoring to the start of the message is what
+    // actually pins the prose.
+    check('...naming the epoch that disagrees, in the PROSE and not just the payload dump',
+      msg.startsWith(`epoch ${EPOCH} has `), msg.slice(0, 80));
     check('...and both payloads, so the report is the whole picture, not the winner',
       msg.includes('"' + OTHER + '",60') && msg.includes('"' + OTHER + '",100'), msg);
     // Hand-derived: one voter each, so the tie breaks on the lowest content

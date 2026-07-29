@@ -204,8 +204,11 @@
  * rejected for containing a delimiter (unlike `say`). It does not need to be:
  * `parseCheckpoint` validates the whole thing structurally, which is a far
  * stronger check than "contains no `|`", and because the tail is the rest of
- * the string there is no field boundary left to be ambiguous about. An id
- * containing a `|` is therefore a legitimate — if odd — checkpoint.
+ * the string there is no field boundary left to be ambiguous about. (An id
+ * containing a `|` used to be a legitimate — if odd — checkpoint on that
+ * reasoning. It no longer is, but for a different reason: `checkpointInDomain`
+ * now requires every id to be 64-character lowercase hex. The grammar still
+ * does not care what the tail contains; the DOMAIN does.)
  *
  * ### The exact-canonical-form check
  *
@@ -220,15 +223,29 @@
  * EXACTLY `serialiseCheckpoint` of what it parsed to. Reject, never repair,
  * applied to the payload as a whole.
  *
- * On top of that, every number in a checkpoint — `epoch`, each size, each
- * `lastBiteMs`, each bite ms — must be a NON-NEGATIVE SAFE INTEGER.
- * `parseCheckpoint` only asks for `Number.isInteger`, which admits `1e+21`;
- * that spelling survives a JSON round trip verbatim, so the canonical-form
- * check cannot catch it, and a value past `2^53-1` has lost the exact-integer
- * arithmetic every other rule in this game depends on. Non-negativity is a
- * structural property of all four (a count, a magnitude, and two unix
- * instants), not a tuned constant — no POLICY value (MIN_SIZE, START_SIZE) is
- * consulted here, for the same reason `speed` is not bounded by SPEED_DART.
+ * ### The domain check: the trust boundary a checkpoint crosses
+ *
+ * On top of the canonical-form check, every VALUE in a checkpoint is held to
+ * its real domain by `checkpointInDomain` — non-negative safe integers, no
+ * bite time in the future of the epoch being summarised, sizes inside the
+ * fold's own `[MIN_SIZE, MAX_CHECKPOINT_SIZE]`, bounded lengths, and ids of
+ * exactly the shape the envelope author is already held to. That function's
+ * doc carries the justification for each bound, and it is not a formality:
+ * a move body's worst case is one wrong swimmer for PRESENCE_TTL_MS, while a
+ * checkpoint's values are written STRAIGHT INTO FOLD STATE by `foldShoal`'s
+ * seed step and then republished next hour as the adopter's own honest
+ * checkpoint. Adoption is trust-on-first-sight (adopt.ts), so this is the only
+ * place any of it is checked.
+ *
+ * This is where the earlier version of this paragraph was wrong twice, and
+ * both errors are recorded rather than quietly replaced. It said the check was
+ * numeric only, which left `lastBiteMs` free to sit in the future (the swimmer
+ * then never gets hungry, forever, and the lie is republished by whoever
+ * adopts it) and left lengths and ids unbounded. And it called MIN_SIZE and
+ * START_SIZE POLICY values: they are not — both live in shoalConst.ts's
+ * CONSENSUS block, permanent like everything else here, which is exactly why
+ * MIN_SIZE is a legitimate thing for this check to consult. `speed` still is
+ * not bounded by SPEED_DART, because THAT one really is POLICY.
  *
  * ### A checkpoint is NOT a `LogEntry`
  *
@@ -389,7 +406,9 @@
 import type { Vec, LogEntry, Presence, EatClaim, Checkpoint } from './shoalTypes';
 import {
   HEADING_STEPS, WORLD_W, WORLD_H, BLOOM_COLS, BLOOM_ROWS,
+  MIN_SIZE, VOID_WINDOW_MS, EAT_COOLDOWN_MS,
 } from './shoalConst';
+import { epochEndMs } from './epoch';
 import { serialiseCheckpoint, parseCheckpoint } from './checkpoint';
 
 // ---------------------------------------------------------------------------
@@ -496,22 +515,150 @@ function parseIntField(s: string): number | null {
 }
 
 /**
- * Every number a checkpoint carries — `epoch`, each size, each `lastBiteMs`,
- * each bite ms — must be a non-negative safe integer. `parseCheckpoint` only
- * asks for `Number.isInteger`, which admits `1e+21`; that spelling survives a
- * JSON round trip verbatim, so the canonical-form check cannot catch it, and
- * a value past `2^53-1` has lost the exact-integer arithmetic every other
- * rule in this game depends on. See the module header ("The exact-canonical-form
- * check") for why non-negativity is structural here and no POLICY constant
- * (MIN_SIZE, START_SIZE) is consulted.
+ * Ceiling on `sizes.length` and on `recent.length` — how many swimmers one
+ * checkpoint may name. CONSENSUS.
+ *
+ * WHY NOT 25. The design's stated shoal is fifteen to twenty-five (spec §1),
+ * but nothing enforces it: any sponsored identity can write a presence into a
+ * room, so 25 is an intent and a bound set there would refuse honest
+ * checkpoints from any room that got popular. WHY 1000 — forty times that
+ * ceiling — rather than a bigger round number: a room cannot CARRY a thousand
+ * swimmers for the hour a checkpoint summarises. At the emitter's own derived
+ * rate (21 writes/min per swimmer, shoalEmit.ts's MIN_EMIT_GAP_MS) a thousand
+ * swimmers put 21_000 writes/min into one room, and `narrowRoomReplies`
+ * (shoalRoom.ts) THROWS at ROOM_FETCH_LIMIT (100_000) direct replies — under
+ * five minutes, an twelfth of an epoch. So a checkpoint naming more than a
+ * thousand swimmers describes a room no client could have folded to the end of
+ * an epoch in the first place, while a room of a few hundred — implausible but
+ * mechanically possible — still publishes and adopts normally.
+ *
+ * At the header's measured 228 bytes a swimmer this also caps a checkpoint
+ * body at ~228 KB, comfortably inside the 4 MB transport payload limit
+ * (constants.rs:160), so the bound is enforceable rather than a truncation
+ * cliff someone hits first.
  */
-function checkpointNumbersInDomain(cp: Checkpoint): boolean {
+export const MAX_CHECKPOINT_SWIMMERS = 1000;
+
+/**
+ * Ceiling on a carried size. CONSENSUS.
+ *
+ * `clampSize` (shoalEngine.ts) only FLOORS, at MIN_SIZE — nothing in the fold
+ * bounds a size upward, so before this check an adopted checkpoint could seat
+ * a swimmer at `Number.MAX_SAFE_INTEGER` for the price of one write.
+ *
+ * WHY 1e9. The fold's maximum possible growth is one BITE_GROWTH per
+ * EAT_COOLDOWN_MS — `EPOCH_MS / EAT_COOLDOWN_MS + 1 = 1441` bites an epoch,
+ * `1441 * 12 = 17_292` size an epoch — and that rate assumes a swimmer is
+ * credited every 2.5 s for a solid hour, which rivalrous blooms (BLOOM_BITES
+ * per cell, and a cell must be travelled to) put far out of reach. Reaching
+ * 1e9 therefore takes at least 57_830 consecutive epochs: six and a half years
+ * of never once being absent for a whole hour (`rollEpoch` prunes a `departed`
+ * record after one epoch of absence, so a lapse forfeits the total) and never
+ * missing a bite. It is not a game balance number and it is not reachable by
+ * play; it is the point past which a size is provably a lie, and it is nine
+ * million times below MAX_SAFE_INTEGER, which is what makes the check worth
+ * having at all.
+ */
+export const MAX_CHECKPOINT_SIZE = 1_000_000_000;
+
+/**
+ * Ceiling on one swimmer's carried void ledger. CONSENSUS, and DERIVED rather
+ * than chosen: `foldTick` re-prunes `recentBites` to the void window on every
+ * credited bite (`[...f.recentBites, e.ms].filter((ms) => e.ms - ms <=
+ * VOID_WINDOW_MS)`), and `canEat` refuses a bite closer than EAT_COOLDOWN_MS
+ * to the last, so the longest ledger the fold can build is bites at
+ * `{e.ms - 10_000, -7_500, -5_000, -2_500, e.ms}` — exactly
+ * `floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1 = 5`. shoalEngine.test.ts
+ * already pins that the fold never exceeds it.
+ *
+ * It is tight ON PURPOSE and it cannot refuse an honest checkpoint, because
+ * both constants it is derived from are in the CONSENSUS block and therefore
+ * permanent: if 5 could ever be wrong, so could the fold rule that produces it.
+ * The one path that could put a longer array in front of the engine is the
+ * seed itself — `foldShoal` installs `recentBites` from a checkpoint verbatim,
+ * and it is only re-pruned when that swimmer next eats — which is precisely
+ * why the bound belongs here rather than being left to the fold's own
+ * invariant.
+ */
+export const MAX_RECENT_BITES = Math.floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1; // 5
+
+/**
+ * The real domain of a checkpoint — every bound an ADOPTED checkpoint's values
+ * are held to before they are allowed to seed a fold.
+ *
+ * THIS IS THE ONLY TRUST BOUNDARY A CHECKPOINT CROSSES. A move body's worst
+ * case is one wrong swimmer for PRESENCE_TTL_MS; a checkpoint's values are
+ * written straight into fold state by `foldShoal`'s seed step and are then
+ * REPUBLISHED next hour as this client's own honest checkpoint, so an accepted
+ * lie launders itself into a vote. Adoption is trust-on-first-sight by design
+ * (adopt.ts), so nothing downstream re-checks any of this.
+ *
+ * Each bound, and why it is where it is — every one of them is CONSENSUS, so
+ * one set too tight refuses honest checkpoints forever and one set too loose
+ * is not a check:
+ *
+ *  1. **Non-negative safe integers**, as before. `parseCheckpoint` only asks
+ *     for `Number.isInteger`, which admits `1e+21`; that spelling survives a
+ *     JSON round trip verbatim so the canonical-form check cannot catch it,
+ *     and a value past `2^53-1` has lost the exact-integer arithmetic every
+ *     other rule in this game depends on.
+ *  2. **`epochEndMs(cp.epoch)` must itself be a safe integer.** Bound 3 is
+ *     arithmetic on `(epoch + 1) * EPOCH_MS` and means nothing unless that
+ *     product is exact. It permits epochs up to ~2.5e9, i.e. ~285_000 years of
+ *     hours, so it can only ever fire on a fabricated epoch.
+ *  3. **No time in the future of the epoch being summarised.** `lastBiteMs`
+ *     and every bite ms must be `<= epochEndMs(cp.epoch)`. THIS IS THE ONE
+ *     THAT MATTERS MOST: hunger is skipped while
+ *     `t - f.lastBiteMs < HUNGER_TICK_INTERVAL * TICK_MS`
+ *     (shoalEngine.ts step 6), so a `lastBiteMs` of MAX_SAFE_INTEGER makes
+ *     that difference permanently negative and the swimmer NEVER DECAYS — and
+ *     `checkpointFrom` re-includes any swimmer with
+ *     `cutoffMs - lastBiteMs <= VOID_WINDOW_MS`, which a future value always
+ *     satisfies, so the adopting client republishes the injected value next
+ *     hour as its own. The bound is exact-but-loose by one tick and cannot
+ *     refuse an honest checkpoint: `foldTick` applies an entry only at a tick
+ *     `t >= e.ms`, and the last tick an epoch may fold is
+ *     `epochEndMs(e) - TICK_MS`, so every honestly credited bite in epoch `e`
+ *     has `ms <= epochEndMs(e) - TICK_MS`. A seed carried forward from `e - 1`
+ *     is older still.
+ *  4. **Sizes inside the fold's own range**, `[MIN_SIZE, MAX_CHECKPOINT_SIZE]`.
+ *     The floor is exactly what `clampSize` guarantees, so no state the fold
+ *     can reach is excluded; the ceiling is the half `clampSize` never had.
+ *  5. **Lengths.** `sizes` and `recent` at MAX_CHECKPOINT_SWIMMERS, each
+ *     swimmer's `recentBites` at MAX_RECENT_BITES. Without the last one a
+ *     checkpoint can attach an arbitrarily long ledger to ANOTHER swimmer,
+ *     which the sweep both filters per hush and charges
+ *     `voided.length * BITE_GROWTH` for.
+ *  6. **Ids are 64-character lowercase hex**, the same `PUBKEY_HEX_RE` the
+ *     envelope author is already held to (`AUTHOR_ID_RE`, shoalRoom.ts:212).
+ *     Every id in an honest checkpoint originates as a reply's `author_id`,
+ *     which `splitRoomReplies` gates on that shape BEFORE the body is decoded,
+ *     so an id of any other shape names a swimmer no honest client has ever
+ *     folded. This also fixes an id's length, which is what stops the payload
+ *     being padded with arbitrary strings.
+ *
+ * NOT CHECKED, deliberately: that every `recent` id also appears in `sizes`.
+ * `foldShoal` iterates `sizes` and looks `recent` up by id, so an orphan
+ * `recent` row is inert — a rule with nothing to protect is a rule that can
+ * only ever be wrong about an honest payload.
+ */
+function checkpointInDomain(cp: Checkpoint): boolean {
   const ok = (n: number) => Number.isSafeInteger(n) && n >= 0;
   if (!ok(cp.epoch)) return false;
-  for (const [, size] of cp.sizes) if (!ok(size)) return false;
-  for (const [, lastBiteMs, bites] of cp.recent) {
-    if (!ok(lastBiteMs)) return false;
-    for (const b of bites) if (!ok(b)) return false;
+  const endMs = epochEndMs(cp.epoch);
+  if (!Number.isSafeInteger(endMs)) return false;
+  if (cp.sizes.length > MAX_CHECKPOINT_SWIMMERS) return false;
+  if (cp.recent.length > MAX_CHECKPOINT_SWIMMERS) return false;
+  for (const [id, size] of cp.sizes) {
+    if (!PUBKEY_HEX_RE.test(id)) return false;
+    if (!ok(size)) return false;
+    if (size < MIN_SIZE || size > MAX_CHECKPOINT_SIZE) return false;
+  }
+  for (const [id, lastBiteMs, bites] of cp.recent) {
+    if (!PUBKEY_HEX_RE.test(id)) return false;
+    if (!ok(lastBiteMs) || lastBiteMs > endMs) return false;
+    if (bites.length > MAX_RECENT_BITES) return false;
+    for (const b of bites) if (!ok(b) || b > endMs) return false;
   }
   return true;
 }
@@ -628,10 +775,14 @@ export function encodeCheckpoint(cp: Checkpoint, authorIdHex: string): string {
       'Every peer would reject it.',
     );
   }
-  if (!checkpointNumbersInDomain(reparsed)) {
+  if (!checkpointInDomain(reparsed)) {
     throw new RangeError(
-      'encodeCheckpoint: a checkpoint number (epoch, a size, a lastBiteMs or a bite ms) is ' +
-      'negative or past Number.MAX_SAFE_INTEGER.',
+      'encodeCheckpoint: this checkpoint is outside the wire\'s domain and every peer would ' +
+      'reject it — a number that is negative or past Number.MAX_SAFE_INTEGER, a bite time ' +
+      `after the epoch it summarises ends, a size outside [${MIN_SIZE}, ${MAX_CHECKPOINT_SIZE}], ` +
+      `more than ${MAX_CHECKPOINT_SWIMMERS} swimmers, more than ${MAX_RECENT_BITES} carried ` +
+      'bites for one swimmer, or an id that is not 64-character lowercase hex. See ' +
+      'checkpointInDomain.',
     );
   }
   return [WIRE_VERSION, 'checkpoint', salt, payload].join(DELIM);
@@ -791,7 +942,11 @@ export function decodeCheckpointBody(body: string, id: string, hash: string): Ch
   // validates it structurally instead. See the module header.
   const cp = parseCheckpoint(head.rest);
   if (cp === null) return null;
-  if (!checkpointNumbersInDomain(cp)) return null;
+  // The domain check (mutation target 6). This is the ONLY thing standing
+  // between attacker-authored bytes and `foldShoal`'s seed step — see
+  // `checkpointInDomain` for what each bound stops, and shoalWire.test.ts for
+  // the case per bound.
+  if (!checkpointInDomain(cp)) return null;
   // Exact canonical spelling (mutation target 5). parseCheckpoint accepts
   // whitespace, a different key order, an extra key, `1E2` for 100, `-0` for
   // 0, and the lenient no-`recent` form — each of which is a SECOND body, and

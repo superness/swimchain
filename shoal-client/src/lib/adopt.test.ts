@@ -39,19 +39,29 @@ const FOLDING = 8;
 const CLOSED = 7; // === FOLDING - 1
 
 /**
- * Two disagreeing worlds for epoch 7, and a third for epoch 6. Swimmer ids
- * inside a checkpoint are arbitrary strings (`parseCheckpoint` only asks for a
- * string), so short ones are used here to keep the hand-derived JSON readable —
- * the ids' shape is `repliesToLog`'s business, not this module's.
+ * The one swimmer these worlds disagree about. 64 lowercase hex, because
+ * `checkpointInDomain` (shoalWire.ts) now holds a checkpoint's OWN ids to the
+ * same shape the envelope author is held to — every id in an honest checkpoint
+ * came from a reply's `author_id`, which `splitRoomReplies` already gates on
+ * that shape. A short id like `s1` no longer survives `encodeCheckpoint`, so
+ * `entry()` below would throw on it rather than quietly building a fixture no
+ * peer would accept.
  */
-const CP_P: Checkpoint = { epoch: CLOSED, sizes: [['s1', 112]], recent: [] };
-const CP_Q: Checkpoint = { epoch: CLOSED, sizes: [['s1', 100]], recent: [] };
-const CP_OLD: Checkpoint = { epoch: CLOSED - 1, sizes: [['s1', 988]], recent: [] };
+const S1 = '1'.repeat(64);
+
+/** Three disagreeing worlds for epoch 7, and a fourth for epoch 6. */
+const CP_P: Checkpoint = { epoch: CLOSED, sizes: [[S1, 112]], recent: [] };
+const CP_Q: Checkpoint = { epoch: CLOSED, sizes: [[S1, 100]], recent: [] };
+const CP_R: Checkpoint = { epoch: CLOSED, sizes: [[S1, 77]], recent: [] };
+const CP_OLD: Checkpoint = { epoch: CLOSED - 1, sizes: [[S1, 988]], recent: [] };
 
 /** Hand-derived canonical text: `JSON.stringify({epoch, sizes, recent})` with
- *  the three keys in that fixed order and no whitespace. */
-const P_TEXT: string = '{"epoch":7,"sizes":[["s1",112]],"recent":[]}';
-const Q_TEXT: string = '{"epoch":7,"sizes":[["s1",100]],"recent":[]}';
+ *  the three keys in that fixed order and no whitespace. The id is written as
+ *  `S1` rather than spelled out so the shape of the JSON stays readable; the
+ *  three checks in section 0 pin that the real serialiser agrees. */
+const P_TEXT: string = '{"epoch":7,"sizes":[["' + S1 + '",112]],"recent":[]}';
+const Q_TEXT: string = '{"epoch":7,"sizes":[["' + S1 + '",100]],"recent":[]}';
+const R_TEXT: string = '{"epoch":7,"sizes":[["' + S1 + '",77]],"recent":[]}';
 
 function entry(cp: Checkpoint, publisher: string, hash: string): CheckpointEntry {
   const decoded = decodeCheckpointBody(encodeCheckpoint(cp, publisher), publisher, hash);
@@ -63,12 +73,14 @@ function entry(cp: Checkpoint, publisher: string, hash: string): CheckpointEntry
 // 0. The hand-derived payloads, pinned before anything depends on them
 // ---------------------------------------------------------------------------
 console.log('\n0. the canonical payloads these cases are reasoned about');
-check('hand-derived: P serialises to {"epoch":7,"sizes":[["s1",112]],"recent":[]}',
+check('hand-derived: P serialises to {"epoch":7,"sizes":[[<S1>,112]],"recent":[]}',
   serialiseCheckpoint(CP_P) === P_TEXT, serialiseCheckpoint(CP_P));
-check('hand-derived: Q serialises to {"epoch":7,"sizes":[["s1",100]],"recent":[]}',
+check('hand-derived: Q serialises to {"epoch":7,"sizes":[[<S1>,100]],"recent":[]}',
   serialiseCheckpoint(CP_Q) === Q_TEXT, serialiseCheckpoint(CP_Q));
-check('P and Q are genuinely different payloads (or every case below is vacuous)',
-  P_TEXT !== Q_TEXT);
+check('hand-derived: R serialises to {"epoch":7,"sizes":[[<S1>,77]],"recent":[]}',
+  serialiseCheckpoint(CP_R) === R_TEXT, serialiseCheckpoint(CP_R));
+check('P, Q and R are genuinely different payloads (or every case below is vacuous)',
+  P_TEXT !== Q_TEXT && Q_TEXT !== R_TEXT && P_TEXT !== R_TEXT);
 
 // ---------------------------------------------------------------------------
 // 1. NOTHING TO ADOPT — the first epoch a room ever has
@@ -243,32 +255,96 @@ console.log('\n6. a publisher that published two payloads for one epoch votes fo
   check('P is adopted — 1 voter beats 0, no tiebreak needed',
     out.seed !== null && serialiseCheckpoint(out.seed) === P_TEXT, out.seed);
 
-  // ...and had D's hash been the lower one, the tiebreak must NOT rescue it.
+  // ...and the griefer's fabrication must not win on the HASH either. This case
+  // is built so that the voters filter is the only thing that decides it —
+  // the previous version of it (D publishing P and Q, A publishing P) passed
+  // with the filter and without, because cancelling D's votes took a vote off
+  // BOTH payloads and left P ahead either way, so it could not discriminate the
+  // rule it is named for.
+  //
+  // Hand-derived: A publishes P at the HIGHEST hash. D — one key, two
+  // fabrications, neither of them P — publishes Q at the lowest hash of all and
+  // R just above it.
+  //   with rule 2:    P 1 voter, Q 0, R 0            -> P, on votes alone
+  //   without rule 2: P 1 voter, Q 1, R 1 — a three-way tie on votes, broken by
+  //                   the lowest hash 'sha256:00'    -> Q, the griefer's
+  // So this check fails the moment the `voters` filter is removed.
   const lowHash = adoptCheckpoint([
     entry(CP_P, PUB_A, 'sha256:0f'),
-    entry(CP_P, PUB_D, 'sha256:01'),
     entry(CP_Q, PUB_D, 'sha256:00'),
+    entry(CP_R, PUB_D, 'sha256:01'),
   ], FOLDING);
   check('a self-contradicting publisher cannot win on the hash tiebreak either',
     lowHash.seed !== null && serialiseCheckpoint(lowHash.seed) === P_TEXT, lowHash.seed);
+  check('...and the honest payload wins on VOTES, not on its own hash — '
+    + "A's hash is the highest of the three",
+    lowHash.opinions[0]?.payload === P_TEXT && lowHash.opinions[0]?.voters.length === 1
+      && lowHash.opinions[0]?.lowestHash === 'sha256:0f',
+    lowHash.opinions.map((o) => [o.voters.length, o.lowestHash]));
 }
 
 // ---------------------------------------------------------------------------
-// 7. WHEN EVERY OPINION IS SELF-CONTRADICTED THERE IS NOTHING TO ADOPT
+// 7. WHEN EVERY OPINION IS SELF-CONTRADICTED, THE LOWEST HASH IS STILL ADOPTED
 //
-// One publisher, two payloads, nobody else. There is no honest evidence at all,
-// so the client folds unseeded — the same thing it does when no checkpoint
-// exists — and reports the divergence.
+// One publisher, two payloads, nobody else. This case USED to fold unseeded,
+// and that was wrong — not because the griefer deserved better, but because
+// the commonest way to reach it is entirely honest: ONE PLAYER WITH TWO
+// SESSIONS on one key (two tabs, or desktop plus browser) polls independently,
+// rolls the hour independently, and closes it on different entry sets whenever
+// an eat claim is still in flight at the boundary — the same honest race
+// adopt.ts's header already calls routine. In a room where that player was the
+// only publisher for epoch 7, refusing left the next joiner folding UNSEEDED,
+// everyone back at START_SIZE: Blocker 12, reopened by the anti-grief rule and
+// triggered by ordinary use.
+//
+// Rule 2 protects an honest vote from a self-contradicting one. With every
+// opinion self-contradicted there is no honest vote left to protect, so the
+// lowest hash decides — and an attacker gains nothing, since as the sole
+// publisher it would have won trust-on-first-sight for half the writes anyway.
+//
+// Hand-derived: D publishes P at 'sha256:0d' and Q at 'sha256:0e'. Both have
+// zero voters, so the sort degenerates to lowest-hash-first; '0d' < '0e' as
+// plain strings, so P is adopted.
 // ---------------------------------------------------------------------------
-console.log('\n7. nothing but a self-contradicting publisher — unseeded, and reported');
+console.log('\n7. nothing but a self-contradicting publisher — lowest hash, still reported');
 {
   const out = adoptCheckpoint([
     entry(CP_P, PUB_D, 'sha256:0d'),
     entry(CP_Q, PUB_D, 'sha256:0e'),
   ], FOLDING);
-  check('nothing is adopted', out.seed === null, out.seed);
-  check('...and it IS reported', out.diverged === true);
+  check('hand-derived: sha256:0d < sha256:0e, so P is adopted rather than nothing',
+    out.seed !== null && serialiseCheckpoint(out.seed) === P_TEXT, out.seed);
+  check('...on a fallback, not on a vote — every opinion has zero voters',
+    out.opinions.every((o) => o.voters.length === 0),
+    out.opinions.map((o) => o.voters.length));
+  check('...and it IS still reported', out.diverged === true);
   check('...with both payloads surfaced', out.opinions.length === 2, out.opinions.length);
+
+  // Mirror it: swap the hashes and the answer must flip, or the fallback is not
+  // the hash at all but "whichever payload the fixture happened to list first".
+  const mirrored = adoptCheckpoint([
+    entry(CP_P, PUB_D, 'sha256:0e'),
+    entry(CP_Q, PUB_D, 'sha256:0d'),
+  ], FOLDING);
+  check('...and with the hashes swapped, Q is adopted instead',
+    mirrored.seed !== null && serialiseCheckpoint(mirrored.seed) === Q_TEXT, mirrored.seed);
+
+  // THE FALLBACK MUST NOT OUTRANK AN HONEST VOTE. One honest publisher (B on Q)
+  // against a self-contradicting one (D on P and R), with EVERY one of D's
+  // hashes below B's. Hand-derived: Q has 1 voter, P and R have 0, so votes
+  // decide before the hash is ever consulted and Q wins. If rule 4 were applied
+  // ahead of rule 3 — or instead of it — P ('sha256:00') would win here.
+  const withHonest = adoptCheckpoint([
+    entry(CP_Q, PUB_B, 'sha256:0f'),
+    entry(CP_P, PUB_D, 'sha256:00'),
+    entry(CP_R, PUB_D, 'sha256:01'),
+  ], FOLDING);
+  check('an honest vote still beats a self-contradicting publisher holding every lower hash',
+    withHonest.seed !== null && serialiseCheckpoint(withHonest.seed) === Q_TEXT, withHonest.seed);
+  check('hand-derived: Q is the only opinion with a voter',
+    withHonest.opinions[0]?.payload === Q_TEXT && withHonest.opinions[0]?.voters.length === 1
+      && withHonest.opinions.filter((o) => o.voters.length > 0).length === 1,
+    withHonest.opinions.map((o) => [o.voters.length, o.lowestHash]));
 }
 
 // ---------------------------------------------------------------------------
@@ -280,13 +356,16 @@ console.log('\n7. nothing but a self-contradicting publisher — unseeded, and r
 // ---------------------------------------------------------------------------
 console.log('\n8. the adopted seed re-serialises to exactly the payload that won');
 {
+  // S2 sorts after S1 ('2' > '1' at the first character), so this is ascending.
+  const S2 = '2'.repeat(64);
   const withRecent: Checkpoint = {
     epoch: CLOSED,
-    sizes: [['s1', 112], ['s2', 88]],
-    recent: [['s1', 1_000, [1_000]]],
+    sizes: [[S1, 112], [S2, 88]],
+    recent: [[S1, 1_000, [1_000]]],
   };
   // Hand-derived canonical text, keys in fixed order, arrays ascending by id.
-  const text = '{"epoch":7,"sizes":[["s1",112],["s2",88]],"recent":[["s1",1000,[1000]]]}';
+  const text = '{"epoch":7,"sizes":[["' + S1 + '",112],["' + S2 + '",88]],'
+    + '"recent":[["' + S1 + '",1000,[1000]]]}';
   check('hand-derived: the recent-bearing payload serialises as written',
     serialiseCheckpoint(withRecent) === text, serialiseCheckpoint(withRecent));
 

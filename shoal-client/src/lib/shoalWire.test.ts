@@ -10,8 +10,17 @@
 import {
   encodePresence, encodeEat, encodeCheckpoint,
   decodeBody, decodeCheckpointBody, saltFor, MAX_SAY, SALT_HEX_CHARS,
+  MAX_CHECKPOINT_SWIMMERS, MAX_CHECKPOINT_SIZE, MAX_RECENT_BITES,
 } from './shoalWire';
-import { HEADING_STEPS, WORLD_W, WORLD_H, BLOOM_COLS, BLOOM_ROWS } from './shoalConst';
+import {
+  HEADING_STEPS, WORLD_W, WORLD_H, BLOOM_COLS, BLOOM_ROWS,
+  EPOCH_MS, EAT_COOLDOWN_MS, VOID_WINDOW_MS, BITE_GROWTH,
+} from './shoalConst';
+import { parseCheckpoint } from './checkpoint';
+// Imported so the future-time bound can be DEMONSTRATED rather than argued:
+// what it stops is a swimmer that never gets hungry again, which is only
+// visible by folding one. See "Why the future-time bound is NOT cosmetic".
+import { foldShoal } from './shoalEngine';
 import type { Vec, Presence, EatClaim, Checkpoint } from './shoalTypes';
 
 let failures = 0;
@@ -345,18 +354,35 @@ check('an unrecognized kind tag is rejected',
 // never produced by calling the code under test.
 
 // The checkpoint every case below builds on. Two swimmers, one of whom ate
-// recently enough to carry a `recent` row. Ids kept short and readable so the
-// JSON can be checked by eye; the wire places no constraint on an id's shape.
+// recently enough to carry a `recent` row.
+//
+// THE IDS ARE 64-HEX AND THE EPOCH IS A REAL ONE, and both had to change:
+// `checkpointInDomain` holds a checkpoint's own ids to the same shape the
+// reply envelope's author is held to (shoalRoom.ts's AUTHOR_ID_RE), and
+// refuses any carried bite time later than the end of the epoch being
+// summarised. `alice`/`bob` at `epoch: 7` were readable and are not a
+// checkpoint any peer would now accept — a fixture built on them would make
+// every rejection case below pass for the wrong reason.
+//
+// Hand-derived epoch: 1_700_000_000_123 / EPOCH_MS(3_600_000) = 472_222.2…,
+// so that bite falls in epoch 472_222, which runs
+// [472_222 * 3_600_000, 472_223 * 3_600_000) =
+// [1_699_999_200_000, 1_700_002_800_000) — the bite sits 800_123 ms into it.
+const ALICE = 'a'.repeat(64);
+const BOB = 'b'.repeat(64); // 'a' < 'b', so [ALICE, BOB] is strictly ascending
+const CP_EPOCH = 472_222;
+const CP_END_MS = 1_700_002_800_000; // hand-derived: (472_222 + 1) * 3_600_000
 const CP: Checkpoint = {
-  epoch: 7,
-  sizes: [['alice', 112], ['bob', 88]],
-  recent: [['alice', 1_700_000_000_123, [1_700_000_000_123]]],
+  epoch: CP_EPOCH,
+  sizes: [[ALICE, 112], [BOB, 88]],
+  recent: [[ALICE, 1_700_000_000_123, [1_700_000_000_123]]],
 };
 // Hand-assembled, brace by brace, from {epoch, sizes, recent} in that order:
-//   {  "epoch":7  ,  "sizes":[["alice",112],["bob",88]]
-//                 ,  "recent":[["alice",1700000000123,[1700000000123]]]  }
+//   {  "epoch":472222  ,  "sizes":[[<ALICE>,112],[<BOB>,88]]
+//                      ,  "recent":[[<ALICE>,1700000000123,[1700000000123]]]  }
 const CP_JSON =
-  '{"epoch":7,"sizes":[["alice",112],["bob",88]],"recent":[["alice",1700000000123,[1700000000123]]]}';
+  '{"epoch":472222,"sizes":[["' + ALICE + '",112],["' + BOB + '",88]],'
+  + '"recent":[["' + ALICE + '",1700000000123,[1700000000123]]]}';
 const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
 
 // --- Round trip ------------------------------------------------------------
@@ -371,12 +397,12 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
     decoded !== null && decoded.id === 'author-c' && decoded.hash === 'hash-c', decoded);
   check('…and every field of the checkpoint round-trips exactly',
     decoded !== null
-      && decoded.cp.epoch === 7
+      && decoded.cp.epoch === CP_EPOCH
       && decoded.cp.sizes.length === 2
-      && decoded.cp.sizes[0][0] === 'alice' && decoded.cp.sizes[0][1] === 112
-      && decoded.cp.sizes[1][0] === 'bob' && decoded.cp.sizes[1][1] === 88
+      && decoded.cp.sizes[0][0] === ALICE && decoded.cp.sizes[0][1] === 112
+      && decoded.cp.sizes[1][0] === BOB && decoded.cp.sizes[1][1] === 88
       && decoded.cp.recent.length === 1
-      && decoded.cp.recent[0][0] === 'alice'
+      && decoded.cp.recent[0][0] === ALICE
       && decoded.cp.recent[0][1] === 1_700_000_000_123
       && decoded.cp.recent[0][2].length === 1
       && decoded.cp.recent[0][2][0] === 1_700_000_000_123,
@@ -479,27 +505,33 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
 // these in the first place, which is the point.
 {
   const cp = (json: string) => decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h');
+  // Every hand-written payload below uses REAL ids and epoch 7's own time
+  // range (epoch 7 ends at 8 * 3_600_000 = 28_800_000 ms, so a bite time of 1
+  // is well inside it). Anything else would be rejected by the domain check
+  // before the rule each case is named for ever ran.
+  const A = '"' + ALICE + '"';
+  const B = '"' + BOB + '"';
 
   // sizes must already be sorted strictly ascending by id — sorting it here
   // would let two serialisations of one world both parse, which is the whole
   // reason the checkpoint is canonical.
   check('an unsorted `sizes` is rejected',
-    cp('{"epoch":7,"sizes":[["bob",88],["alice",112]],"recent":[]}') === null);
+    cp(`{"epoch":7,"sizes":[[${B},88],[${A},112]],"recent":[]}`) === null);
   check('a duplicated id in `sizes` is rejected (strictly ascending, no dupes)',
-    cp('{"epoch":7,"sizes":[["alice",112],["alice",88]],"recent":[]}') === null);
+    cp(`{"epoch":7,"sizes":[[${A},112],[${A},88]],"recent":[]}`) === null);
   check('an unsorted `recent` is rejected too',
-    cp('{"epoch":7,"sizes":[],"recent":[["bob",1,[1]],["alice",1,[1]]]}') === null);
+    cp(`{"epoch":7,"sizes":[],"recent":[[${B},1,[1]],[${A},1,[1]]]}`) === null);
 
   check('a non-integer size is rejected',
-    cp('{"epoch":7,"sizes":[["alice",112.5]],"recent":[]}') === null);
+    cp(`{"epoch":7,"sizes":[[${A},112.5]],"recent":[]}`) === null);
   check('a non-integer lastBiteMs is rejected',
-    cp('{"epoch":7,"sizes":[],"recent":[["alice",1.5,[1]]]}') === null);
+    cp(`{"epoch":7,"sizes":[],"recent":[[${A},1.5,[1]]]}`) === null);
   check('a non-integer bite ms is rejected',
-    cp('{"epoch":7,"sizes":[],"recent":[["alice",1,[1.5]]]}') === null);
+    cp(`{"epoch":7,"sizes":[],"recent":[[${A},1,[1.5]]]}`) === null);
   check('a non-string id is rejected',
     cp('{"epoch":7,"sizes":[[5,112]],"recent":[]}') === null);
   check('a two-element `recent` row is rejected',
-    cp('{"epoch":7,"sizes":[],"recent":[["alice",1]]}') === null);
+    cp(`{"epoch":7,"sizes":[],"recent":[[${A},1]]}`) === null);
 
   // The epoch's own domain. `epoch` is NOT duplicated as a head field — it
   // lives once, inside the payload — so this is the only place it is checked.
@@ -515,20 +547,26 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
   check('an epoch past Number.MAX_SAFE_INTEGER is rejected (1e+21 survives the canonical-form check)',
     cp('{"epoch":1e+21,"sizes":[],"recent":[]}') === null);
   check('a size past Number.MAX_SAFE_INTEGER is rejected',
-    cp('{"epoch":7,"sizes":[["alice",1e+21]],"recent":[]}') === null);
-  check('a negative size is rejected', cp('{"epoch":7,"sizes":[["alice",-5]],"recent":[]}') === null);
+    cp(`{"epoch":7,"sizes":[[${A},1e+21]],"recent":[]}`) === null);
+  check('a negative size is rejected', cp(`{"epoch":7,"sizes":[[${A},-5]],"recent":[]}`) === null);
   check('a negative lastBiteMs is rejected',
-    cp('{"epoch":7,"sizes":[],"recent":[["alice",-1,[]]]}') === null);
+    cp(`{"epoch":7,"sizes":[],"recent":[[${A},-1,[]]]}`) === null);
   check('a negative bite ms is rejected',
-    cp('{"epoch":7,"sizes":[],"recent":[["alice",1,[-1]]]}') === null);
+    cp(`{"epoch":7,"sizes":[],"recent":[[${A},1,[-1]]]}`) === null);
 
   // Exactly one spelling per value — the same rule that already rejects
   // "007" for 7 in a move's integer fields. `-0` and `1E21` both parse to a
   // legitimate number and are caught by the canonical-form check alone.
-  check('a size of -0 is rejected (JSON.stringify(-0) is "0", so this is a second spelling)',
-    cp('{"epoch":7,"sizes":[["alice",-0]],"recent":[]}') === null);
+  //
+  // `-0` is spelled on a BITE MS rather than on a size, deliberately: `-0` is
+  // below MIN_SIZE, so as a size the domain check would reject it first and
+  // this case would stop discriminating the canonical-form rule it is named
+  // for. As a bite ms it is in domain (`-0 >= 0`, and `-0 <= endMs`), so the
+  // canonical-form check is the only thing left that can reject it.
+  check('a bite ms of -0 is rejected (JSON.stringify(-0) is "0", so this is a second spelling)',
+    cp(`{"epoch":7,"sizes":[],"recent":[[${A},1,[-0]]]}`) === null);
   check('an exponent spelling of a small integer is rejected (1E2 for 100)',
-    cp('{"epoch":7,"sizes":[["alice",1E2]],"recent":[]}') === null);
+    cp(`{"epoch":7,"sizes":[[${A},1E2]],"recent":[]}`) === null);
   check('whitespace inside the payload is rejected (a second spelling of one world)',
     cp('{"epoch": 7, "sizes": [], "recent": []}') === null);
   check('a different key order is rejected (a second spelling of one world)',
@@ -543,7 +581,7 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
     cp('{"epoch":7,"sizes":[]}') === null);
 
   check('a truncated payload (unterminated JSON) is rejected',
-    cp('{"epoch":7,"sizes":[["alice",112]],"recent":[]') === null);
+    cp(`{"epoch":7,"sizes":[[${A},112]],"recent":[]`) === null);
   check('an empty payload is rejected', cp('') === null);
   check('a non-object payload is rejected', cp('7') === null);
   check('a null payload is rejected', cp('null') === null);
@@ -571,13 +609,193 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
 
 // --- The payload is LAST, so a delimiter inside it is not a field boundary --
 // Unlike `say`, the payload is not delimiter-checked: it is taken as
-// everything after the third `|` and then validated in full by
-// `parseCheckpoint`, which is a far stronger check than "contains no `|`".
+// everything after the third `|`. An id containing a `|` USED to decode on
+// that reasoning; it no longer does, because `checkpointInDomain` requires
+// every id to be 64-character lowercase hex.
+//
+// The distinction still matters, and this case is what keeps it honest: the
+// GRAMMAR must still hand the whole tail over rather than truncating it at the
+// first `|`. So the payload below is checked twice — `parseCheckpoint` accepts
+// it (proving the whole tail arrived intact and structurally well-formed) and
+// `decodeCheckpointBody` rejects it (proving the DOMAIN, not the split, is
+// what refuses it). If the tail were being truncated at the delimiter,
+// `parseCheckpoint` would fail on unterminated JSON instead.
 {
   const json = '{"epoch":0,"sizes":[["a|b",100]],"recent":[]}';
-  const d = decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h');
-  check('an id containing the field delimiter still decodes (the payload is the whole tail)',
-    d !== null && d.cp.sizes.length === 1 && d.cp.sizes[0][0] === 'a|b', d);
+  check('a payload containing the delimiter still reaches parseCheckpoint WHOLE',
+    (() => {
+      const parsed = parseCheckpoint(json);
+      return parsed !== null && parsed.sizes.length === 1 && parsed.sizes[0][0] === 'a|b';
+    })(), parseCheckpoint(json));
+  check('…and is then rejected on the id\'s SHAPE, not on the field split',
+    decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h') === null);
+}
+
+// --- The domain bounds ----------------------------------------------------
+// The trust boundary. Before checkpoints existed, no attacker-controlled bytes
+// could seed a fold at all (`createLoop`'s seed was a hard `null`); now an
+// adopted checkpoint is written straight into fold state by `foldShoal` and
+// then REPUBLISHED next hour as the adopter's own honest checkpoint. Adoption
+// is trust-on-first-sight (adopt.ts), so `checkpointInDomain` is the only
+// place any of this is ever checked.
+//
+// Each case is paired with the value one step INSIDE the bound, which must be
+// accepted — a bound on a consensus wire that is one step too tight refuses
+// honest checkpoints forever.
+{
+  const cp = (json: string) => decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h');
+  const A = '"' + ALICE + '"';
+  const E = String(CP_EPOCH);
+
+  // 1. NO TIME IN THE FUTURE OF THE EPOCH BEING SUMMARISED.
+  // Hand-derived: epoch 472_222 ends at 1_700_002_800_000 (CP_END_MS). A
+  // `lastBiteMs` past that is the one that never decays — hunger is skipped
+  // while `t - f.lastBiteMs < HUNGER_TICK_INTERVAL * TICK_MS`, so a future
+  // value makes that difference permanently negative — and `checkpointFrom`
+  // re-emits any swimmer within VOID_WINDOW_MS of the cutoff, which a future
+  // value always satisfies, so the adopter republishes the lie as its own.
+  check('a lastBiteMs one ms after the epoch ends is rejected',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},${CP_END_MS + 1},[]]]}`) === null);
+  check('…and MAX_SAFE_INTEGER, the immortality value, likewise',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},9007199254740991,[]]]}`) === null);
+  check('…while a lastBiteMs exactly ON the epoch end is accepted (the bound is inclusive, '
+    + 'and an honest one is a whole tick below it)',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},${CP_END_MS},[]]]}`) !== null);
+  check('a BITE ms after the epoch ends is rejected too, not just lastBiteMs',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},1,[${CP_END_MS + 1}]]]}`) === null);
+
+  // 2. SIZES INSIDE THE FOLD'S OWN RANGE. `clampSize` floors at MIN_SIZE(60)
+  // and never ceilings, so both halves are checked here.
+  check('a size below MIN_SIZE is rejected (59)',
+    cp(`{"epoch":${E},"sizes":[[${A},59]],"recent":[]}`) === null);
+  check('…while MIN_SIZE itself is accepted (60 — clampSize\'s own floor)',
+    cp(`{"epoch":${E},"sizes":[[${A},60]],"recent":[]}`) !== null);
+  check('a size past MAX_CHECKPOINT_SIZE is rejected (1_000_000_001)',
+    cp(`{"epoch":${E},"sizes":[[${A},1000000001]],"recent":[]}`) === null);
+  check('…while MAX_CHECKPOINT_SIZE itself is accepted',
+    cp(`{"epoch":${E},"sizes":[[${A},1000000000]],"recent":[]}`) !== null);
+  check('hand-derived: MAX_CHECKPOINT_SIZE is 1e9, which at the fold\'s fastest possible '
+    + 'growth (EPOCH_MS/EAT_COOLDOWN_MS + 1 = 1441 bites * BITE_GROWTH 12 = 17_292 an epoch) '
+    + 'is 57_830 unbroken epochs of play',
+    MAX_CHECKPOINT_SIZE === 1_000_000_000
+      && Math.floor(MAX_CHECKPOINT_SIZE / ((EPOCH_MS / EAT_COOLDOWN_MS + 1) * BITE_GROWTH)) === 57_830,
+    Math.floor(MAX_CHECKPOINT_SIZE / ((EPOCH_MS / EAT_COOLDOWN_MS + 1) * BITE_GROWTH)));
+
+  // 3. THE VOID LEDGER'S LENGTH. Derived, not chosen:
+  // floor(VOID_WINDOW_MS 10_000 / EAT_COOLDOWN_MS 2_500) + 1 = 5, which is
+  // exactly the longest ledger `foldTick` can build. An unbounded one can be
+  // attached to ANOTHER swimmer, who is then charged
+  // `voided.length * BITE_GROWTH` on the next sweep and filtered over per hush.
+  check('hand-derived: MAX_RECENT_BITES is floor(10_000 / 2_500) + 1 = 5',
+    MAX_RECENT_BITES === 5 && MAX_RECENT_BITES === Math.floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1,
+    MAX_RECENT_BITES);
+  check('a six-bite ledger is rejected',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},6,[1,2,3,4,5,6]]]}`) === null);
+  check('…while a five-bite ledger — the longest the fold can build — is accepted',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},5,[1,2,3,4,5]]]}`) !== null);
+
+  // 4. HOW MANY SWIMMERS ONE CHECKPOINT MAY NAME.
+  // Ids are generated as zero-padded hex counters so they are 64-hex AND
+  // strictly ascending, which `parseCheckpoint` requires independently.
+  const idAt = (n: number) => n.toString(16).padStart(64, '0');
+  const sizesOf = (n: number) =>
+    Array.from({ length: n }, (_, i) => `["${idAt(i)}",100]`).join(',');
+  check(`a checkpoint naming ${MAX_CHECKPOINT_SWIMMERS + 1} swimmers is rejected`,
+    cp(`{"epoch":${E},"sizes":[${sizesOf(MAX_CHECKPOINT_SWIMMERS + 1)}],"recent":[]}`) === null);
+  check(`…while exactly ${MAX_CHECKPOINT_SWIMMERS} is accepted (40x the design's 25-swimmer `
+    + 'ceiling, which nothing enforces)',
+    cp(`{"epoch":${E},"sizes":[${sizesOf(MAX_CHECKPOINT_SWIMMERS)}],"recent":[]}`) !== null);
+  const recentOf = (n: number) =>
+    Array.from({ length: n }, (_, i) => `["${idAt(i)}",1,[1]]`).join(',');
+  check('`recent` is length-bounded on its own, not only through `sizes`',
+    cp(`{"epoch":${E},"sizes":[],"recent":[${recentOf(MAX_CHECKPOINT_SWIMMERS + 1)}]}`) === null);
+
+  // 5. IDS ARE 64-CHARACTER LOWERCASE HEX — the same shape shoalRoom.ts's
+  // AUTHOR_ID_RE holds the envelope author to. Every id in an honest
+  // checkpoint came from a reply's `author_id`, which is gated on that shape
+  // before the body is ever decoded, so any other shape names a swimmer no
+  // honest client has folded.
+  check('a short id is rejected', cp(`{"epoch":${E},"sizes":[["s1",100]],"recent":[]}`) === null);
+  check('a 63-character id is rejected',
+    cp(`{"epoch":${E},"sizes":[["${'a'.repeat(63)}",100]],"recent":[]}`) === null);
+  check('a 65-character id is rejected',
+    cp(`{"epoch":${E},"sizes":[["${'a'.repeat(65)}",100]],"recent":[]}`) === null);
+  check('an UPPERCASE-hex id is rejected (one swimmer, two spellings)',
+    cp(`{"epoch":${E},"sizes":[["${'A'.repeat(64)}",100]],"recent":[]}`) === null);
+  check('a 64-character non-hex id is rejected',
+    cp(`{"epoch":${E},"sizes":[["${'z'.repeat(64)}",100]],"recent":[]}`) === null);
+  check('a padded-out id is rejected (an arbitrary-length string is not an id)',
+    cp(`{"epoch":${E},"sizes":[["${'a'.repeat(10_000)}",100]],"recent":[]}`) === null);
+  check('`recent`\'s ids are held to the same shape as `sizes`\'s',
+    cp(`{"epoch":${E},"sizes":[],"recent":[["s1",1,[1]]]}`) === null);
+
+  // 6. The epoch bound that keeps bound 1 meaningful: `(epoch + 1) * EPOCH_MS`
+  // must itself be exact, or the future-time comparison is arithmetic on a
+  // number that has lost its integers. MAX_SAFE_INTEGER / 3_600_000 is about
+  // 2.5e9 epochs — ~285_000 years of hours — so this can only fire on a
+  // fabricated epoch.
+  check('an epoch whose end ms is past MAX_SAFE_INTEGER is rejected',
+    cp('{"epoch":9007199254740000,"sizes":[],"recent":[]}') === null);
+}
+
+// --- Why the future-time bound is NOT cosmetic ----------------------------
+// The heading check has a section in this module's header explaining what a
+// bad heading does downstream; this is the same argument for `lastBiteMs`,
+// except it is DEMONSTRATED rather than argued, because the consequence is a
+// silent immortality rather than a NaN.
+//
+// Hunger is skipped while `t - f.lastBiteMs < HUNGER_TICK_INTERVAL * TICK_MS`
+// (shoalEngine.ts step 6). A `lastBiteMs` in the future makes that difference
+// permanently negative, so the swimmer NEVER GETS HUNGRY — not for this epoch,
+// for every epoch, because `checkpointFrom` re-emits any swimmer whose
+// `cutoffMs - lastBiteMs <= VOID_WINDOW_MS`, which a future value always
+// satisfies, so the client that adopted the lie republishes it next hour as
+// its own honest checkpoint.
+//
+// The fold below is hand-derived end to end:
+//   epoch 472_222 starts at 472_222 * 3_600_000 = 1_699_999_200_000
+//   one presence for ALICE at start - 1_000, so she is live throughout
+//   seeded from epoch 472_221 at size 200, folded to start + 60_000
+//   the warm-up runs WARMUP_MS/TICK_MS = 90_000/250 = 360 ticks, then the
+//     epoch runs (60_000/250) + 1 = 241 ticks, so tickCount ends at 601
+//   hunger fires on every 4th tick, i.e. at tickCount 364, 368 … 600 —
+//     ((600 - 364) / 4) + 1 = 60 firings — at HUNGER_AMOUNT 1 apiece
+//   so an honestly-seeded ALICE ends at 200 - 60 = 140.
+{
+  const E = 472_222;
+  const START = 1_699_999_200_000; // hand-derived: 472_222 * 3_600_000
+  const PREV_END = START;          // epoch 472_221 ends where 472_222 begins
+  const pres = decodeBody(
+    encodePresence({ x: 1000, y: 1000, heading: 0, speed: 0, t: START - 1000 }, AUTHOR_HEX),
+    ALICE, 'sha256:pres',
+  );
+  const sizeAfter = (lastBiteMs: number): number => {
+    const seed: Checkpoint = {
+      epoch: E - 1, sizes: [[ALICE, 200]], recent: [[ALICE, lastBiteMs, []]],
+    };
+    return foldShoal(pres === null ? [] : [pres], START + 60_000, { epoch: E, seed })
+      .fish.get(ALICE)?.size ?? -1;
+  };
+
+  check('hand-derived: an honestly-seeded swimmer loses 60 size to hunger over 60 s (200 -> 140)',
+    sizeAfter(PREV_END - 100_000) === 140, sizeAfter(PREV_END - 100_000));
+  check('...and one seeded with a FUTURE lastBiteMs never decays at all (200, forever)',
+    sizeAfter(Number.MAX_SAFE_INTEGER) === 200, sizeAfter(Number.MAX_SAFE_INTEGER));
+  // Which is why the value can never become a seed in the first place: the
+  // only route from a published body to `foldShoal`'s seed is
+  // decodeCheckpointBody -> adoptCheckpoint, and it is refused here.
+  const immortal =
+    '{"epoch":472221,"sizes":[["' + ALICE + '",200]],'
+    + '"recent":[["' + ALICE + '",9007199254740991,[]]]}';
+  check('...so the body carrying it is refused at the wire, which is the only way in',
+    decodeCheckpointBody(`v1|checkpoint|${SALT}|${immortal}`, 'i', 'h') === null);
+  // The identical payload with an in-domain lastBiteMs decodes, so the
+  // rejection above is the TIME bound and not some other thing about the body.
+  const honest =
+    '{"epoch":472221,"sizes":[["' + ALICE + '",200]],'
+    + '"recent":[["' + ALICE + '",' + (PREV_END - 100_000) + ',[]]]}';
+  check('...while the same payload with an in-domain lastBiteMs decodes normally',
+    decodeCheckpointBody(`v1|checkpoint|${SALT}|${honest}`, 'i', 'h') !== null);
 }
 
 // --- Encode-side validation (defensive, not the hostile-input boundary) ----
@@ -588,18 +806,34 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
     check(name, threw);
   };
   throws('encodeCheckpoint throws on an unsorted `sizes`',
-    () => encodeCheckpoint({ epoch: 7, sizes: [['bob', 88], ['alice', 112]], recent: [] }, AUTHOR_HEX));
+    () => encodeCheckpoint({ epoch: 7, sizes: [[BOB, 88], [ALICE, 112]], recent: [] }, AUTHOR_HEX));
   throws('encodeCheckpoint throws on a duplicated id',
-    () => encodeCheckpoint({ epoch: 7, sizes: [['alice', 1], ['alice', 2]], recent: [] }, AUTHOR_HEX));
+    () => encodeCheckpoint({ epoch: 7, sizes: [[ALICE, 100], [ALICE, 200]], recent: [] }, AUTHOR_HEX));
   throws('encodeCheckpoint throws on an unsorted `recent`',
     () => encodeCheckpoint(
-      { epoch: 7, sizes: [], recent: [['bob', 1, [1]], ['alice', 1, [1]]] }, AUTHOR_HEX));
+      { epoch: 7, sizes: [], recent: [[BOB, 1, [1]], [ALICE, 1, [1]]] }, AUTHOR_HEX));
   throws('encodeCheckpoint throws on a non-integer size',
-    () => encodeCheckpoint({ epoch: 7, sizes: [['alice', 1.5]], recent: [] }, AUTHOR_HEX));
+    () => encodeCheckpoint({ epoch: 7, sizes: [[ALICE, 1.5]], recent: [] }, AUTHOR_HEX));
   throws('encodeCheckpoint throws on a negative epoch',
     () => encodeCheckpoint({ epoch: -1, sizes: [], recent: [] }, AUTHOR_HEX));
   throws('encodeCheckpoint throws on a size past Number.MAX_SAFE_INTEGER',
-    () => encodeCheckpoint({ epoch: 7, sizes: [['alice', 1e21]], recent: [] }, AUTHOR_HEX));
+    () => encodeCheckpoint({ epoch: 7, sizes: [[ALICE, 1e21]], recent: [] }, AUTHOR_HEX));
+  // The domain bounds are enforced from the encode side too, so a client
+  // cannot burn a PoW mine on a checkpoint every peer would drop — and cannot
+  // pass one on either, if it somehow folded to an out-of-domain state.
+  throws('encodeCheckpoint throws on an id that is not 64-hex',
+    () => encodeCheckpoint({ epoch: 7, sizes: [['s1', 100]], recent: [] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a size below MIN_SIZE',
+    () => encodeCheckpoint({ epoch: 7, sizes: [[ALICE, 59]], recent: [] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a size past MAX_CHECKPOINT_SIZE',
+    () => encodeCheckpoint(
+      { epoch: 7, sizes: [[ALICE, MAX_CHECKPOINT_SIZE + 1]], recent: [] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a bite time after the epoch ends',
+    () => encodeCheckpoint(
+      { epoch: 7, sizes: [], recent: [[ALICE, 28_800_001, []]] }, AUTHOR_HEX));
+  throws('encodeCheckpoint throws on a ledger longer than MAX_RECENT_BITES',
+    () => encodeCheckpoint(
+      { epoch: 7, sizes: [], recent: [[ALICE, 6, [1, 2, 3, 4, 5, 6]]] }, AUTHOR_HEX));
   throws('encodeCheckpoint throws on a bech32m address instead of a pubkey hex',
     () => encodeCheckpoint(CP, 'sw1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'));
   // A caller that never went through `checkpointFrom` can hand over an object

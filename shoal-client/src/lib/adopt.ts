@@ -75,6 +75,35 @@
  *    listed in the report.
  * 3. Adopt the payload with the most remaining voters. Ties break on the lowest
  *    content hash of any entry carrying that payload.
+ * 4. If rule 2 cancelled EVERY vote, fall back to the lowest-hash payload
+ *    rather than adopting nothing. See below — this rule exists because rule 2
+ *    fires on ordinary honest play, not only on a griefer.
+ *
+ * WHY RULE 4 EXISTS: ONE PLAYER, TWO SESSIONS. Rule 2 reads "two payloads under
+ * one author id is provable misbehaviour", and against a griefer it is. But a
+ * key is not a client. One player with two tabs open — or the desktop app and a
+ * browser — polls independently, rolls the hour independently, and can close it
+ * on different entry sets for exactly the reason the header above already
+ * grants as ROUTINE: an eat claim authored in the last second of an hour and
+ * still in flight is absent from one session's checkpoint and present in the
+ * other's. Both are honest folds. Under rules 2 and 3 alone, that player's key
+ * contradicts itself, its votes vanish, and in a room where it was the only
+ * publisher for `epoch - 1` the next joiner folds UNSEEDED — everyone back at
+ * START_SIZE, which is Blocker 12 returning by way of the rule meant to close
+ * an attack, triggered by ordinary use.
+ *
+ * Falling back costs nothing rule 2 was protecting. Rule 2 protects an HONEST
+ * VOTE from being drowned by a self-contradicting one; when every opinion is
+ * self-contradicted there is no honest vote left in the room to protect. And
+ * it hands an attacker nothing: to be the only publisher for an epoch is
+ * already to win trust-on-first-sight under rule 3, so a griefer who publishes
+ * two payloads instead of one has bought itself a coin flip it could have had
+ * outright for half the writes. What it buys the joiner is real: a size table
+ * two live sessions are both folding from, instead of a world nobody is in.
+ *
+ * The fallback is the LOWEST HASH rather than "most publishers" or "first
+ * seen": with every voter cancelled, hash is the only total order left that all
+ * joiners compute identically, and it is the same tiebreak rule 3 already uses.
  *
  * WHY PLURALITY. A joiner wants to agree with the clients that are still
  * playing, and each of those is folding from the payload IT published. Joining
@@ -123,7 +152,9 @@ export interface CheckpointOpinion {
 
 export interface Adoption {
   /** The checkpoint to seed `createLoop(epoch, …)` with, or `null` to fold
-   *  unseeded — no candidate existed, or every candidate was self-contradicted. */
+   *  unseeded. `null` now means exactly ONE thing — no candidate existed for
+   *  `epoch - 1` at all. A room whose only publisher contradicted itself still
+   *  yields a seed (module header, rule 4). */
   readonly seed: Checkpoint | null;
   /** Every payload published for `epoch - 1`, ranked exactly as the policy
    *  ranks them (most voters first, then lowest hash). Empty when there were
@@ -195,7 +226,14 @@ export function adoptCheckpoint(
     return a.lowestHash < b.lowestHash ? -1 : a.lowestHash > b.lowestHash ? 1 : 0;
   });
 
-  const winner = opinions.find((o) => o.voters.length > 0) ?? null;
+  // Rules 3 and 4 together, and they collapse into one line on purpose. The
+  // sort above is (voters descending, then lowest hash), so `opinions[0]` is
+  // ALWAYS the rule-3 winner when any opinion still has a voter; and when rule
+  // 2 cancelled every vote, every opinion ties at zero voters, the sort
+  // degenerates to lowest-hash-first, and `opinions[0]` is exactly the rule-4
+  // fallback. There is no third case: an empty `opinions` is the only way to
+  // reach `null`, which is the "nobody published for `epoch - 1`" absence.
+  const winner = opinions[0] ?? null;
   return {
     seed: winner === null ? null : winner.cp,
     opinions,
