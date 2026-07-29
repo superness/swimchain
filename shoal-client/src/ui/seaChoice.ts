@@ -34,6 +34,7 @@ import { chainSea, type ChainSea } from './chainSea';
 import type { RpcAuth } from '../lib/shoalRpc';
 import type { SendFailure, SignFn } from '../lib/shoalSend';
 import type { Vec } from '../lib/shoalTypes';
+import { MIN_EMIT_GAP_MS } from '../lib/shoalEmit';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
 
 /**
@@ -176,6 +177,48 @@ export function chooseWater(hasChain: boolean, atTheEdge: boolean): PlayedWater 
  * and in the real water this swimmer has never been anywhere. Knocking it
  * would be asking to be credited for a bite taken somewhere else.
  */
+/**
+ * MAY A WRITE LEAVE THIS WINDOW FOR THE NODE AT `wallMs`, given when the last
+ * one did?
+ *
+ * ## Why the floor needs a second home, on a second clock
+ *
+ * `shouldEmit` (shoalEmit.ts) already holds `MIN_EMIT_GAP_MS`, and its own
+ * header calls the floor absolute with "no change-of-mind exception" — it is
+ * the only thing keeping one window from crowding the per-space mempool budget
+ * that every swimmer in the water shares. But it holds it against an
+ * `InputState`, and the input state is REBUILT whenever the standing changes,
+ * because the shallows and the real water keep clocks decades apart and
+ * carrying one across is a lockout of its own (App.tsx's effect deps). A fresh
+ * `InputState` has a null `last`, for which `shouldEmit` returns true
+ * unconditionally — so the first write on the far side of a transition left
+ * 94 ms after the one before it. Measured, both ways: `[115, 8001, 37, 8013,
+ * 8017]` for a window refused twice and then let in.
+ *
+ * So the floor is enforced a second time HERE, on the wall clock, where it can
+ * be true across a rebuild: this is the one clock both seas' writes are stamped
+ * on (`knockOn` re-stamps the shallows'), and the one the node's rate limit
+ * actually runs on. `lastNodeWriteMs` lives in a ref that outlives the frame
+ * effect, which is the whole point of it.
+ *
+ * ## What a refused write costs, stated rather than hidden
+ *
+ * `emitDue` has already called `markEmitted` by the time this answers, so a
+ * write the floor turns away is one this swimmer's peers never see: the world's
+ * copy of their vector is one behind until the next emit. That is bounded by
+ * `MAX_EMIT_GAP_MS` (8 s) plus this floor (3 s), against a `PRESENCE_TTL_MS` of
+ * 90 s, and it can only happen on the two frames a session where the standing
+ * changes. The alternative — writing anyway — is breaking the one rule that
+ * protects everybody else in the space, to save one vector at a moment when
+ * this window has just published a nearly identical one.
+ *
+ * `lastNodeWriteMs < 0` is "this window has never written", which must not be
+ * treated as a write at the epoch.
+ */
+export function nodeWriteDue(lastNodeWriteMs: number, wallMs: number): boolean {
+  return lastNodeWriteMs < 0 || wallMs - lastNodeWriteMs >= MIN_EMIT_GAP_MS;
+}
+
 export function knockOn(
   chain: ChainSea | null,
   water: PlayedWater,

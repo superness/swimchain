@@ -103,7 +103,7 @@ import { SEA_SPAWN } from './seaChoice';
 import { SHALLOWS_SPAWN } from './shallows';
 /** The shipping decoder, so a check reads a write the way a peer would. */
 import { decodeBody } from '../lib/shoalWire';
-import { MAX_EMIT_GAP_MS } from '../lib/shoalEmit';
+import { MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS } from '../lib/shoalEmit';
 
 const NODE_PUBKEY = 'c7'.repeat(32);
 
@@ -402,6 +402,41 @@ async function main(): Promise<void> {
       refused.edgeAtEnd === true, refused.edgeAtEnd);
     check('...saying the one line this client owns for it, off the rendered DOM',
       refused.edgeLine === EDGE_BODY, refused.edgeLine);
+
+    // (a2) THE EMIT FLOOR IS ABSOLUTE, INCLUDING ACROSS A SEA REBUILD.
+    //
+    // `MIN_EMIT_GAP_MS` is not a style preference: it is the only thing keeping
+    // one window from crowding the per-space mempool budget every swimmer in
+    // the water shares, and shoalEmit.ts calls it absolute with "no
+    // change-of-mind exception". It is enforced by `shouldEmit` against the
+    // input state — and the input state is rebuilt when the standing changes,
+    // because the two seas keep clocks decades apart and carrying one across is
+    // its own lockout (see App.tsx's effect deps). A rebuilt `InputState` has
+    // no memory of when this window last wrote, and `shouldEmit` returns true
+    // unconditionally for a null `last`, so the first write on the far side of
+    // a transition used to leave 94 ms after the one before it.
+    //
+    // MEASURED ON `vec.t` ACROSS BOTH SEAS, which is exactly what makes this
+    // checkable: every write that leaves this window carries a wall-clock
+    // instant, in real water because that sea's clock IS the wall clock and in
+    // the shallows because `knockOn` re-stamps it. So consecutive writes are
+    // comparable straight through the transition they straddle.
+    {
+      const crossed = await observe({ refuseFirst: 2, awaitWrite: true, settleMs: 26_000 });
+      const ts = vectorsOf(crossed).map((v) => v.t);
+      const gaps = ts.slice(1).map((t, i) => t - ts[i]);
+      check('a window that is refused and then let in really crosses over',
+        crossed.submitted.length >= 4 && crossed.edgeAtEnd === false,
+        { writes: crossed.submitted.length, edge: crossed.edgeAtEnd });
+      check('...and no two writes it ever made are closer than the emit floor',
+        gaps.length >= 3 && Math.min(...gaps) >= MIN_EMIT_GAP_MS,
+        { gaps, MIN_EMIT_GAP_MS });
+      // NON-DEGENERACY: the floor is a floor and not the whole cadence. A
+      // window that had simply stopped writing would satisfy the check above.
+      check('...while still keeping up the keep-alive it is judged by',
+        Math.max(...gaps) <= MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS,
+        { gaps, MAX_EMIT_GAP_MS });
+    }
 
     // (b) THE CLAIM FLOW IS GONE, and this is what says so. Not "the file is
     //     deleted" — a check about the filesystem proves nothing about the

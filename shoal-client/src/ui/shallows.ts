@@ -613,8 +613,11 @@ export const SHALLOWS_LIFE_GAP_MS = 4_000;
  * is the scoreboard (§2.8).
  *
  * A bite every SECOND write is +1.5 a second against hunger's -1, which pays
- * for being eaten. Measured over the same thirty minutes: 60-213, moving,
- * with a real spread between the three of them. The gap is still
+ * for being eaten. Measured over the same thirty minutes, the highest each of
+ * the three reached after T+10min: 104, 144 and 117 at a bite every second
+ * write against 74, 79 and 78 at every third — i.e. at the old rate none of
+ * them ever got `SCATTER_COST` (30) clear of the floor, so every sweep put them
+ * straight back on it. `shallows.test.ts` §6 holds that bar. The gap is still
  * `2 * SHALLOWS_LIFE_GAP_MS` = 8_000, comfortably past `EAT_COOLDOWN_MS`
  * (2_500), so no claim is wasted on a cooldown the fold would refuse; one bite
  * per write would be +3 against -1 and would inflate a loner into a whale
@@ -711,9 +714,19 @@ export const SHALLOWS_FORAGE_EVERY = 2;
  *   sweeps in thirty minutes            24 (following) to 50 (running out),
  *                                       gaps 25-99 s, and 16-22 DISTINCT
  *                                       take-lists rather than one repeated
- *   size spread across the cast,        min 59, median 126, max 184
- *     sampled every 10 s from T+10min
- *   swimmers above MIN_SIZE + 30        min 3, median 5, of nine
+ *   size spread across the cast,        44-346 across the three, and
+ *     sampled every 10 s from T+10min   59/118/178 (min/median/max) for the
+ *                                       idle player §6 drives
+ *   swimmers above MIN_SIZE + 30        1-8 of nine, median 4 (running out) to
+ *                                       7 (following)
+ *
+ * The player's own behaviour moves those last two a long way, and correctly: a
+ * newcomer who tucks into the ball keeps the count outside the core down, which
+ * calls the shark less often, which lets the cast keep what it eats — 250 median
+ * spread against 74 for a player who spends the session dragging the sweep back
+ * every twenty-five seconds. Greed costs everybody, which is §2.11's whole
+ * thesis, and the shallows now demonstrates it on the cast as well as on the
+ * player.
  *
  * Against the parked sea this replaces, where from T+8min every swimmer sat on
  * MIN_SIZE — a spread of at most 11 — and the same three fish were taken by
@@ -921,6 +934,57 @@ export function shallowsSea(wallStartMs: number): Sea {
    * school that holds its size and one that starves anyway.
    */
   const nextBiteMs = new Map<string, number>(SHALLOWS_CAST.map((p) => [p.id, SHALLOWS_LIFE_FROM_MS]));
+  /**
+   * THE LAST VECTOR THIS SEA AUTHORED FOR EACH SWIMMER, and the reason it is
+   * kept here rather than read back out of the fold.
+   *
+   * `millDue` used to author from `loop.state.fish.get(id)`, which is the world
+   * as of the PREVIOUS frame — correct as long as no more than one write comes
+   * due per frame, which is true while frames are under
+   * `SHALLOWS_LIFE_GAP_MS` (4 s) apart and false the moment they are not. Past
+   * that, every write in a catch-up burst was authored from the same stale
+   * position: the whole burst says "I am here, going there", nobody arrives
+   * anywhere, and the grazers' claims land nowhere near the cells they were
+   * scheduled on. Measured at fifteen minutes of sea time, cast sizes at the end:
+   *
+   *   250 ms .. 4 s frames   s1..s5 = 161 185 167 187 179   (fed)
+   *   8 s frames             s1..s5 =  71  64 106  71  60
+   *   30 s frames            all nine at or one tick off MIN_SIZE
+   *   120 s frames           all nine on MIN_SIZE
+   *
+   * i.e. a throttled window starved this cast back into exactly the still life
+   * the tide exists to replace — and A BACKGROUNDED WINDOW IS THE NORMAL CASE
+   * for somebody waiting to be let in, because browsers and webviews clamp
+   * `requestAnimationFrame` to seconds, or stop it entirely, in a tab or window
+   * nobody is looking at.
+   *
+   * With the vector chain kept here, the same fifteen minutes now folds the
+   * IDENTICAL world at 250 ms, 1 s, 4 s, 8 s and 30 s frames, and at 120 s the
+   * cast is fed (97..137) rather than on the floor. `shallows.test.ts` §5 holds
+   * four of those frame rates body for body at one exact sea instant.
+   *
+   * WHAT IS STILL FRAME-SHAPED AT 120 s, AND IS NOT THIS SEA'S TO FIX: the
+   * PLAYER writes once a frame, so a window rendering every two minutes writes
+   * every two minutes, and its own presence lapses at `PRESENCE_TTL_MS` (90 s).
+   * Measured, the fold then holds eight swimmers rather than nine on seven
+   * frames in eight, which moves the tension statistic and lands the sweeps
+   * elsewhere. That is the same in real water, and it is a property of the
+   * window rather than of the schedule.
+   *
+   * The seam is exact rather than an approximation of the fold. The fold NEVER
+   * moves a swimmer itself — a scatter changes `size` and nothing else
+   * (shoalEngine.ts step 5) — so a cast member's folded vector IS the last entry
+   * this sea authored for it, and `reckon` is the same pure function on both
+   * sides, clamp and quantization included. What the local copy removes is only
+   * the staleness, plus one real difference in the sea's favour: a swimmer whose
+   * presence had expired used to be authored from its OPENING position, which is
+   * a teleport across the water.
+   *
+   * Seeded from the scenario's own last vector per swimmer, so the first milling
+   * write continues the script rather than looking it up.
+   */
+  const lastVec = new Map<string, Vec>();
+  for (const e of log) if (e.kind === 'presence') lastVec.set(e.id, e.vec);
 
   const seaMs = (wallMs: number) => SHALLOWS_OPEN_MS + (wallMs - wallStartMs);
 
@@ -959,19 +1023,24 @@ export function shallowsSea(wallStartMs: number): Sea {
       let at = nextLifeMs.get(p.id) as number;
       let n = (writes.get(p.id) as number);
       while (at <= toMs) {
-        const f = loop.state.fish.get(p.id);
-        const from = f ? reckon(f.vec, at) : { x: p.x, y: p.y };
+        // FROM THE VECTOR THIS SEA LAST AUTHORED, never from the fold — see
+        // `lastVec`. Every write in a catch-up burst therefore continues the
+        // one before it, exactly as it would have on an unthrottled window.
+        const was = lastVec.get(p.id) as Vec;
+        const from = reckon(was, at);
         const t = lifeTarget(p, at);
         const dx = t.x - from.x;
         const dy = t.y - from.y;
         const dist = Math.hypot(dx, dy);
-        const heading = dist === 0 ? (f ? f.vec.heading : 0) : toBrads(Math.atan2(dy, dx));
+        const heading = dist === 0 ? was.heading : toBrads(Math.atan2(dy, dx));
+        const vec: Vec = { x: from.x, y: from.y, heading, speed: arrivalSpeed(dist), t: at };
+        lastVec.set(p.id, vec);
         log.push({
           kind: 'presence',
           id: p.id,
           ms: at,
           hash: `shl-${p.id}-${serial++}`,
-          vec: { x: from.x, y: from.y, heading, speed: arrivalSpeed(dist), t: at },
+          vec,
         });
         // ...and a bite, for the ones out where the food is. Claimed on the cell
         // this swimmer is standing in, named by the ENGINE's own `cellIndex`, and

@@ -170,6 +170,19 @@ export interface Scenario {
    * the answer.
    */
   readonly writesRefused?: boolean;
+  /**
+   * A NODE THAT REFUSES THE FIRST `n` WRITES AND THEN ACCEPTS EVERYTHING — the
+   * vouch landing while the window is open, which is the only way this client
+   * can ever learn of it (`wayIn.ts`).
+   *
+   * It is here for the WRITE FLOOR rather than for the welcome: the sea is
+   * rebuilt when the standing changes, a rebuilt sea gets a fresh `InputState`,
+   * and a fresh `InputState` has no memory of when this window last wrote. The
+   * first write after a transition therefore used to leave 94 ms after the one
+   * before it, inside a floor `shoalEmit.ts` calls absolute. Nothing else in
+   * this harness can produce a transition to measure that across.
+   */
+  readonly refuseFirst?: number;
 }
 
 /** Nothing here mines for longer than this even on a slow machine; a scenario
@@ -346,7 +359,9 @@ export async function observe(s: Scenario): Promise<Observation> {
         // window mined, signed and sent — `submitted` is how every other check
         // in `App.test.ts` knows the window reached the water at all, and an
         // unsponsored player reaches it exactly as far as anyone else does.
-        if (s.writesRefused) return err(-32_015, 'Identity is not sponsored');
+        if (s.writesRefused || submitted.length <= (s.refuseFirst ?? 0)) {
+          return err(-32_015, 'Identity is not sponsored');
+        }
         return ok({ content_id: `sha256:${'ef'.repeat(32)}` });
       default:
         return ok({});

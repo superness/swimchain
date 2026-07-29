@@ -125,7 +125,7 @@ import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
 import { shallowsSea } from './shallows';
 import { type ChainSea } from './chainSea';
-import { chooseSeaSource, chooseWater, knockOn, retryDelayMs, seaFrom } from './seaChoice';
+import { chooseSeaSource, chooseWater, knockOn, nodeWriteDue, retryDelayMs, seaFrom } from './seaChoice';
 import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
 import { TheEdge } from './TheEdge';
 import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
@@ -459,6 +459,16 @@ export function App() {
    * making it conditional produced.
    */
   const [shell, setShell] = useState<ShellSeaConfig | null>(null);
+  /**
+   * WHEN THIS WINDOW LAST PUT A WRITE ON THE WIRE, on the wall clock. `-1` until
+   * it has.
+   *
+   * A REF, AND THAT IS THE WHOLE REASON IT EXISTS: it has to outlive the frame
+   * effect, because the effect is torn down and rebuilt whenever the standing
+   * changes and the `InputState` that normally holds the emit floor goes with
+   * it. See `seaChoice.nodeWriteDue`.
+   */
+  const lastNodeWriteRef = useRef(-1);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const typingRef = useRef<string | null>(null);
   typingRef.current = typing;
@@ -788,8 +798,19 @@ export function App() {
       // `knockOn` is a no-op in the other two waters, so this line is the
       // whole of the difference.
       input = emitDue(input, authorMs, (vec, say) => {
-        sea.publish(vec, say);
-        knockOn(chain, water, vec, wall + TICK_MS, say);
+        // The offline sea is a local append into a log this window owns, and is
+        // free; only the chain sea's publish mines, signs and reaches a node.
+        if (water !== 'chain') sea.publish(vec, say);
+        if (chain === null || water === 'scene') return;
+        // THE EMIT FLOOR, HELD ON THE WALL CLOCK so that it survives the sea
+        // rebuild a transition performs — `shouldEmit` cannot, because the
+        // input state it holds the floor against is one of the things the
+        // rebuild replaces. `nodeWriteDue`'s header carries the measurement and
+        // what a turned-away write costs.
+        if (!nodeWriteDue(lastNodeWriteRef.current, wall)) return;
+        lastNodeWriteRef.current = wall;
+        if (water === 'chain') sea.publish(vec, say);
+        else knockOn(chain, water, vec, wall + TICK_MS, say);
       });
 
       // --- 4. Fold the world forward and draw it.

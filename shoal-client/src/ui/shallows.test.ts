@@ -44,12 +44,13 @@ import { dist2 } from '../lib/fixed';
 import { readTether, scatterReplay, TETHER_MAX_CU, SCATTER_FREEZE_MS } from './tether';
 import { applyInput, createInput, emitDue, headingTo, positionAt, type InputState } from './input';
 import {
-  HUSH_MS, LOCK_MS, MAX_TAKE, MIN_SIZE, SHELTER_R, SHELTER_THRESHOLD, TENSION_NEUTRAL,
+  HUSH_MS, LOCK_MS, MAX_TAKE, MIN_SIZE, SCATTER_COST, SHELTER_R, SHELTER_THRESHOLD, TENSION_NEUTRAL,
   TENSION_TRIGGER, TICK_MS,
 } from '../lib/shoalConst';
 import {
-  SHALLOWS_CAST, SHALLOWS_EPOCH, SHALLOWS_FIRST_MS, SHALLOWS_GATHER, SHALLOWS_OPEN_MS,
-  SHALLOWS_SELF, SHALLOWS_SPAWN, SHALLOWS_WILD_SEED, shallowsScript, shallowsSea, shallowsSeed,
+  SHALLOWS_CAST, SHALLOWS_EPOCH, SHALLOWS_FIRST_MS, SHALLOWS_GATHER, SHALLOWS_LIFE_FROM_MS,
+  SHALLOWS_OPEN_MS, SHALLOWS_SELF, SHALLOWS_SPAWN, SHALLOWS_TIDE_MS, SHALLOWS_WILD_SEED,
+  shallowsScript, shallowsSea, shallowsSeed,
 } from './shallows';
 
 let failures = 0;
@@ -544,6 +545,50 @@ console.log('\n5. the same sea every time — the lesson is not a coin flip');
   check('...and the same sea, body for body, at the instant the sweep judged it',
     new Set(worlds).size === 1, worlds.map((w) => w.split('|')[2]));
 
+  // A THROTTLED WINDOW FOLDS THE SAME SEA, and this is a much stronger demand
+  // than the four frame rates above because it reaches past
+  // `SHALLOWS_LIFE_GAP_MS`. Browsers and webviews clamp `requestAnimationFrame`
+  // to seconds in a window nobody is looking at, or stop it altogether — and a
+  // BACKGROUNDED WINDOW IS THE NORMAL CASE HERE, because the shallows is where
+  // somebody waits, possibly for hours, to be let into the real water.
+  //
+  // `millDue` used to author each write from `loop.state`, the world as of the
+  // previous frame. Under 4 s frames that is one write per frame and the
+  // difference never shows; past it, a catch-up burst authored every write in
+  // it from the same stale position, nobody arrived anywhere, and the grazers'
+  // claims landed nowhere near the cells they were scheduled on. Measured at
+  // fifteen minutes, cast sizes at the end: 161/185/167/187/179 at 250 ms and
+  // ALL NINE ON MIN_SIZE at 120 s — i.e. the throttled window starved the cast
+  // back into precisely the still life the tide exists to replace.
+  //
+  // Twelve minutes, which is six tides, at four frame rates spanning two orders
+  // of magnitude, compared body for body at one exact sea instant. 720_000 is
+  // divisible by every step, so all four runs end on the same instant rather
+  // than within a frame of it.
+  {
+    const worldAt = (stepMs: number) => {
+      const run = playShallows({ follow: false, untilMs: 720_000, stepMs });
+      return run[run.length - 1].bodies.map((b) => `${b.id}:${b.x},${b.y}:${b.size}`).sort().join(' ');
+    };
+    const throttled = [250, 4_000, 8_000, 30_000].map(worldAt);
+    check('a throttled window folds the same sea — 250 ms to 30 s frames, twelve minutes in',
+      new Set(throttled).size === 1, throttled);
+    // NON-DEGENERACY: the comparison is of a real, fed, moving sea rather than
+    // of four identical floors. A cast pinned on MIN_SIZE would agree perfectly
+    // and prove nothing, which is exactly what the defect produced.
+    const sizes = throttled[0].split(' ').map((s) => Number(s.split(':')[2]));
+    check('...and it is a sea with something in it, not four identical floors',
+      new Set(sizes).size >= 5 && Math.max(...sizes) > 2 * MIN_SIZE, sizes);
+    // WHAT IS NOT CLAIMED, because it is not true and the reason is not this
+    // module's to fix: past ~90 s between frames the PLAYER's own presence
+    // lapses (`PRESENCE_TTL_MS`), since a window that renders once every two
+    // minutes writes once every two minutes. At 120 s frames the fold holds
+    // eight swimmers instead of nine for seven frames in eight — measured — so
+    // the tension statistic differs and the sweeps fall elsewhere. The cast
+    // stays fed (97..137 at fifteen minutes); it is the population that
+    // changes, and it would change identically in real water.
+  }
+
   // And nothing about the world depends on when the icon was pressed: the sea
   // rides its own clock, so two windows opened an hour apart see one sea.
   const later = shallowsSea(3_600_000 * 7 + 12_345);
@@ -641,6 +686,33 @@ console.log('\n6. and then it keeps going — the shallows is a PLACE TO WAIT');
   check('...the school having really fed itself, at nearly every moment of it',
     fedSchool.length >= spreads.length - 10, { fed: fedSchool.length, of: spreads.length });
 
+  // ...AND SO ARE THE THREE OUT IN THE OPEN, which is a separate claim about a
+  // separate rule. `SHALLOWS_FORAGE_EVERY` is their whole economy, and it was
+  // set against hunger alone: break-even income, which the tide's oftener sweep
+  // turned into a slow slide to MIN_SIZE. Nothing pinned it — the interval
+  // could be moved back and every check in this file stayed green.
+  //
+  // THE BAR IS `MIN_SIZE + SCATTER_COST`, DERIVED RATHER THAN OBSERVED, and it
+  // is the smallest bar that means anything: a swimmer that never gets that far
+  // above the floor is one for whom a single sweep is unrecoverable, which is
+  // being pinned on MIN_SIZE with extra steps. At a bite every SECOND write the
+  // income is BITE_GROWTH (12) per 2 * SHALLOWS_LIFE_GAP_MS (8 s) against
+  // hunger's 1 a second — +0.5/s, which pays for being eaten. At every THIRD
+  // write it is +1/s against -1/s exactly: break-even, so `SCATTER_COST` is
+  // taken out of a swimmer with no way to earn it back. Measured over this run,
+  // peaks after T+10min: 104/144/117 at two, 74/79/78 at three.
+  const loners = ['o1', 'o2', 'o3'];
+  const peak = new Map(loners.map((id) => [id, 0]));
+  for (const f of frames) {
+    if ((f.atMs - SHALLOWS_OPEN_MS) < 600_000) continue;
+    for (const b of f.bodies) {
+      if (peak.has(b.id)) peak.set(b.id, Math.max(peak.get(b.id) as number, b.size));
+    }
+  }
+  check('...and the three out in the open are fed enough to survive being eaten',
+    loners.every((id) => (peak.get(id) as number) >= MIN_SIZE + SCATTER_COST),
+    Object.fromEntries(peak));
+
   // THE FLOOR OF THREE, over the whole half hour and all three behaviours. It
   // is the invariant the sweep's reliability rests on (this module's header),
   // and the tide is the first thing that could ever have broken it: when the
@@ -656,12 +728,41 @@ console.log('\n6. and then it keeps going — the shallows is a PLACE TO WAIT');
     check(`the floor of three holds for half an hour (player ${label})`,
       Math.min(...counts) >= 3,
       { min: Math.min(...counts), max: Math.max(...counts) });
-    // NON-DEGENERACY: and it is a floor rather than a constant, which is the
-    // thing the tide changed. A run where the count never moved would mean the
-    // school never left, i.e. the tide is not running at all.
-    check(`...and it is a floor, not a constant — the school really goes out (player ${label})`,
-      Math.max(...counts) > 3, Math.max(...counts));
   }
+
+  // THE TIDE REALLY RUNS, measured on the school's own positions rather than on
+  // the count above.
+  //
+  // THERE WAS A ROW HERE PER BEHAVIOUR CLAIMING THAT `max(outside) > 3` PROVED
+  // THE SCHOOL GOES OUT, AND IT WAS VACUOUS: with the tide disabled outright,
+  // two of the three still passed. The count outside the core is a statistic
+  // over EVERYONE, and the player alone is enough to move it — an idle newcomer
+  // sits 602 cu from the gathering point against a CORE_R of 620, so the median
+  // wandering by twenty cu takes them in and out of it all session, in a sea
+  // where the school never moved at all. Only "follows the crowd" discriminated,
+  // and then only by accident: a player tucked into the ball cannot be the
+  // swimmer whose drift makes the count move.
+  //
+  // So it is measured directly, once, on the five swimmers the claim is about:
+  // there are frames where the whole school is on the gathering point, and
+  // frames where the whole school is out at its patches. The ball is a ring of
+  // radius ~112 about the gathering point and the patches are 453-487 cu from
+  // it, so 200 and 400 separate the two states with room on both sides and
+  // neither threshold is a measurement read back out of the code.
+  const outFromGather = (b: SwimmerBody) => Math.sqrt(dist2(b.x, b.y, SHALLOWS_GATHER.x, SHALLOWS_GATHER.y));
+  const schoolOf = (f: Frame) => f.bodies.filter((b) => b.id.startsWith('s'));
+  const gathered = frames.filter((f) => schoolOf(f).length === 5 && schoolOf(f).every((b) => outFromGather(b) < 200));
+  const feeding = frames.filter((f) => schoolOf(f).length === 5 && schoolOf(f).every((b) => outFromGather(b) > 400));
+  check('the school is really sometimes gathered on the point...',
+    gathered.length > 0, gathered.length);
+  check('...and really sometimes all the way out at its patches',
+    feeding.length > 0, feeding.length);
+  // ...and it is a TIDE rather than one excursion: both states recur, many
+  // times, over half an hour. `SHALLOWS_TIDE_MS` is 120 s, so half an hour is
+  // fifteen of them.
+  const tidesSeen = new Set(feeding.map((f) => Math.floor((f.atMs - SHALLOWS_LIFE_FROM_MS) / SHALLOWS_TIDE_MS)));
+  check('...on a tide that turns again and again, not once',
+    tidesSeen.size >= 12, tidesSeen.size);
 }
 
 // ===========================================================================
