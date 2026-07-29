@@ -347,6 +347,13 @@ function watch(auth: RpcAuth, name: string, spaceId: string): Watcher {
  * the first node to run this smoke and then mint `@shoal:main` would have had
  * every smoke move show up in the real sea. `two-client-smoke.ts` avoids the
  * same trap by having its own text; now so does this.
+ *
+ * THAT IS THE NODE BEING CONTENT-ADDRESSED, NOT THE NODE BEING WRONG. Identical
+ * bytes are one object, uniformly across `submit_post`, `submit_reply` and
+ * `submit_edit`; salting the preimage with a space id would re-score every
+ * content id ever minted. The obligation is entirely on this side of the wire:
+ * a room that must stay separate needs separate TEXT, not just a separate
+ * space. Do not go looking for a node fix for this.
  */
 const SPACE_NAME = '@shoal:smoke';
 const ROOM_TITLE = 'The Shoal (smoke)';

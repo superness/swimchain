@@ -148,10 +148,18 @@ export const WATER_SPACE_NAME = `@${WATER_APP}:${WATER_NAME}`;
  *  discovery — deriving it from these two strings is exact.
  *
  *  THE SPACE IS NOT IN THAT PREIMAGE (`src/rpc/methods.rs:2086-2089`) and
- *  `get_replies` is keyed on the parent content id alone, so two spaces whose
- *  room posts share a title and body share ONE room and one reply set. That is
- *  why the smoke scripts have their own room text as well as their own space
- *  name — see `scripts/regtest-smoke.ts`, where it was not true until Task 2. */
+ *  `get_replies` is keyed on the parent content id alone. THIS IS CONTENT
+ *  ADDRESSING WORKING, NOT A NODE BUG — the same identical-bytes-are-one-object
+ *  rule holds across `submit_post`, `submit_reply` and `submit_edit`, and
+ *  "fixing" it by salting the preimage with a space id would be a consensus
+ *  change that re-scored every content id ever minted. Nobody should go looking
+ *  for that.
+ *
+ *  What it means for US is a naming obligation, and it is ours alone: two
+ *  spaces whose room posts share a title and body share ONE room and one reply
+ *  set. So a room that must stay separate needs separate TEXT, not merely a
+ *  separate space — see `scripts/regtest-smoke.ts`, where it was not true until
+ *  Task 2 and the smoke's moves would have landed in the real water. */
 export const ROOM_TITLE = 'The Shoal';
 export const ROOM_BODY = 'the room every swimmer replies into';
 

@@ -132,7 +132,32 @@ import type { SendFailure } from '../lib/shoalSend';
 import { reckon } from '../lib/fixed';
 import { HUSH_MS, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
 
-type SceneKind = 'lively' | 'harness' | 'chain';
+/**
+ * WHICH OFFLINE SEA — and nothing more than that.
+ *
+ * `'chain'` USED TO BE A THIRD MEMBER OF THIS UNION AND THAT WAS THE DEFECT.
+ * Being in real water is not a scene a window can be switched to; it is a fact
+ * about whether a configuration exists, and it is decided by `chooseSeaSource`
+ * every time the frame effect runs. Modelling it as a scene meant a window had
+ * to be PROMOTED into water by a state transition, the transition could only
+ * fire from `'lively'`, and anything that had moved the scene elsewhere first
+ * silently made the promotion a no-op.
+ *
+ * That is not theoretical: a shipped build spends up to 120 s on the offline
+ * sea while `get_rpc_config` waits for the node to bind, and a new player
+ * watching water and pressing keys to see what happens is the most likely
+ * first-run behaviour there is. Pressing `2` in that window locked them out of
+ * the game PERMANENTLY — the scene became `'harness'`, the promotion never
+ * fired, and `inRealWater()` then went true and disabled the toggle they would
+ * have needed to get back. `?at=` was a second door into the same state, and it
+ * is not DEV-gated. Found by a reviewer pressing a key, which is exactly how it
+ * would have been found by a player.
+ *
+ * With the union narrowed there is nothing to promote and nothing to miss: real
+ * water simply supersedes whichever offline sea was being drawn, the moment it
+ * exists. `App.test.ts` holds that under a deliberately slow cold start.
+ */
+type SceneKind = 'lively' | 'harness';
 
 /**
  * A real room on a real node, from query parameters — Task 7's capture, and
@@ -337,6 +362,23 @@ function writePlayed(ms: number): void {
  *    swimmers. The fixture's own `e0` sits in the sheltered cluster, so it is
  *    the only way to see the hush from inside a swimmer the sweep is about to
  *    take — which is the moment spec 2.10 is entirely about.
+ *
+ * NONE OF THE THREE IS DEV-GATED, AND AFTER THE `SceneKind` FIX NONE OF THEM
+ * NEEDS TO BE. That was a live question: `?at=` selects the harness sea, the
+ * harness sea used to block the promotion into real water, and a release build
+ * with `devtools` on can be handed a query string — so `?at=` was a second door
+ * into the same permanent lockout `2` opened. Gating it would have closed that
+ * one door; narrowing `SceneKind` removed the room behind both. What `?at=`
+ * does in a shipped build now is choose which offline sea is drawn during the
+ * seconds before a configuration arrives, which is worth nothing to an attacker
+ * and costs a player nothing. Unlike `?rpc=` and `&who=` these three carry no
+ * credential and derive no key, so there is nothing here the gate was ever for.
+ *
+ * The one cost, stated so nobody rediscovers it: under `tauri dev`, `?at=` is
+ * superseded by the shell's water a moment after the window opens. Harness
+ * captures are taken from the browser dev server (`npm run dev`, port 5196),
+ * where there is no shell and never was one — which is where every `?at=`
+ * screenshot in `docs/` came from.
  */
 function devParam(name: string): string | null {
   try {
@@ -355,10 +397,12 @@ function devNumber(name: string): number | null {
 
 export function App() {
   const [showDiag, setShowDiag] = useState(false);
-  const [scene, setScene] = useState<SceneKind>(() => {
-    if (chainParams() !== null) return 'chain';
-    return devNumber('at') !== null ? 'harness' : 'lively';
-  });
+  /**
+   * Which offline sea to draw when there is no real water — read once, because
+   * `?at=` cannot change while a window is open. It says NOTHING about whether
+   * this window is in real water; see `SceneKind`.
+   */
+  const [scene, setScene] = useState<SceneKind>(() => (devNumber('at') !== null ? 'harness' : 'lively'));
   /** The line being typed, or null when not speaking. */
   const [typing, setTyping] = useState<string | null>(null);
   /**
@@ -384,9 +428,10 @@ export function App() {
    * has just started a node that has to open its database and bind a port. A
    * window that rendered nothing until that resolved would be a black rectangle
    * for a minute and a half on exactly the launch a new player judges the game
-   * by. So the offline sea is drawn from frame one and this swaps to real water
-   * underneath the player when it lands — which is the whole reason the scene
-   * is allowed to change below rather than being decided once at mount.
+   * by. So the offline sea is drawn from frame one and real water supersedes it
+   * underneath the player when this lands. IT SUPERSEDES WHICHEVER OFFLINE SEA
+   * WAS BEING DRAWN, unconditionally — see `SceneKind` for the lockout that
+   * making it conditional produced.
    */
   const [shell, setShell] = useState<ShellSeaConfig | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -411,11 +456,11 @@ export function App() {
     void shellConfig()
       .then((cfg) => {
         if (!alive || cfg === null) return;
+        // THE ONLY THING THAT HAPPENS HERE. There is deliberately no scene
+        // change alongside it: the frame effect re-runs on `shell` and asks
+        // `chooseSeaSource` again, which answers `'shell'` whatever offline sea
+        // was on screen. A second `setScene` here was the lockout.
         setShell(cfg);
-        // The offline sea gives way to real water — but never over a scene a
-        // developer asked for by name. `?at=` is a harness replay being
-        // photographed and `chain` is already real water from `?rpc=`.
-        setScene((s) => (s === 'lively' ? 'chain' : s));
       })
       .catch((e) => { console.error('[shoal] shell configuration:', e); });
     return () => { alive = false; };
@@ -476,6 +521,13 @@ export function App() {
       // shipped window would drop a player out of the water they share with
       // other people and into a scripted one that looks almost identical, with
       // no way back and nothing said about it. Same rule, one more source.
+      //
+      // IT IS STILL LIVE DURING A COLD START, when `inRealWater()` is false
+      // because no configuration has arrived yet, and that is correct rather
+      // than a gap: there is no water to protect, the scene picks between two
+      // offline seas, and whichever one is chosen is superseded the moment a
+      // configuration lands. THIS IS ONLY TRUE BECAUSE THE SCENE NO LONGER
+      // GATES THE PROMOTION — see `SceneKind`. Held by `App.test.ts`.
       else if (e.key === '1' && !inRealWater()) setScene('lively');
       else if (e.key === '2' && !inRealWater()) setScene('harness');
       else if (e.key === ' ') { e.preventDefault(); push({ kind: 'dart' }); }
@@ -497,9 +549,12 @@ export function App() {
     // Built once per scene, and torn down by this effect's cleanup — a chain
     // sea owns a WebSocket and timers, so leaking one across a hot reload
     // would leave a growing pile of subscribers on the node.
-    const chain = scene === 'chain'
-      ? buildChainSea(shell, (failure) => { setStanding((s) => afterWrite(s, failure)); })
-      : null;
+    // REAL WATER FIRST, ALWAYS. `buildChainSea` returns `null` exactly when
+    // `chooseSeaSource` says `'offline'`, so the scene below is consulted only
+    // when there is no water to be in — never as a way of REFUSING water that
+    // exists. The reverse of that sentence is the lockout described on
+    // `SceneKind`.
+    const chain = buildChainSea(shell, (failure) => { setStanding((s) => afterWrite(s, failure)); });
     const sea: Sea = chain
       ?? (scene === 'harness'
         ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
